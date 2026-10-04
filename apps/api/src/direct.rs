@@ -1,4 +1,4 @@
-//! Account-wide 1:1 conversations. Space owners never acquire DM access.
+//! Account-wide conversations and personal notes. Space owners never acquire DM access.
 use crate::{
     ApiError, AppState,
     auth::{Principal, random_id},
@@ -80,19 +80,13 @@ async fn create_conversation(pool: &PgPool, user: i64, username: &str) -> Result
     let peer: i64 = sqlx::query_scalar("SELECT id FROM public.users WHERE username=$1 AND display_name IS NOT NULL AND deleted_at IS NULL")
         .bind(username).fetch_optional(pool).await.map_err(|_|chat::unavailable())?
         .ok_or_else(||ApiError::new(StatusCode::NOT_FOUND,"account not found"))?;
-    if peer == user {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "choose another person",
-        ));
-    }
     let low = user.min(peer);
     let high = user.max(peer);
     let mut tx = pool.begin().await.map_err(|_| chat::unavailable())?;
     // A canonical lock order serializes both directions and per-account limits.
     let users: Vec<i64> = sqlx::query_scalar("SELECT id FROM public.users WHERE id IN ($1,$2) AND deleted_at IS NULL ORDER BY id FOR UPDATE")
         .bind(low).bind(high).fetch_all(&mut *tx).await.map_err(|_|chat::unavailable())?;
-    if users.len() != 2 {
+    if users.len() != if low == high { 1 } else { 2 } {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "account not found"));
     }
     if let Some(id)=sqlx::query_scalar::<_,String>("SELECT c.external_id FROM public.direct_conversations d JOIN public.channels c ON c.id=d.channel_id WHERE d.low_user_id=$1 AND d.high_user_id=$2")

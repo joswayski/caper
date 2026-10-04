@@ -508,6 +508,10 @@ private struct ChannelSidebar: View {
     @State private var channelsExpanded = true
     @State private var channelSearch = ""
     @State private var browsing = false
+    #if os(macOS)
+    @State private var directHeadingHovered = false
+    @FocusState private var directActionFocused: Bool
+    #endif
     var body: some View {
         VStack(spacing: 0) {
                     HStack(spacing: 6) {
@@ -601,13 +605,38 @@ private struct ChannelSidebar: View {
                         Spacer()
                         Button { sheet = .newDirectMessage } label: { CaperIcon(name: "plus") }
                             .buttonStyle(SidebarIconButton()).accessibilityLabel("New direct message")
-                    }.frame(height: 44)
+                            #if os(macOS)
+                            .focused($directActionFocused)
+                            .opacity(directHeadingHovered || directActionFocused ? 1 : 0)
+                            .allowsHitTesting(directHeadingHovered || directActionFocused)
+                            #endif
+                    }.padding(.horizontal, 16).frame(height: 44)
+                        #if os(macOS)
+                        .contentShape(Rectangle())
+                        .onHover { directHeadingHovered = $0 }
+                        #endif
                     ScrollView {
                         VStack(spacing: 3) {
-                            if model.directMessages.isEmpty {
-                                Text("No direct messages yet.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                            if let account = model.account {
+                                let selfConversation = model.directMessages.first { $0.peer.id == account.id }
+                                Button { Task { await model.openSelfDirectMessage() } } label: {
+                                    HStack(spacing: 9) {
+                                        Avatar(name: account.displayName ?? account.username ?? "You", size: 24, avatarID: account.avatarId)
+                                        Text(account.displayName ?? account.username ?? "You").lineLimit(1)
+                                        Text("you").font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                                            .fixedSize(horizontal: true, vertical: false)
+                                        Spacer()
+                                        if selfConversation?.unread == true { Circle().fill(CaperTheme.terracottaBright).frame(width: 8, height: 8).accessibilityLabel("Unread") }
+                                    }.font(CaperTheme.font(13, weight: .medium))
+                                        .foregroundStyle(selfConversation.map { model.selectedDirectMessageID == $0.id } == true ? CaperTheme.text : CaperTheme.muted)
+                                        .padding(.horizontal, 9).frame(height: 44)
+                                        .background(selfConversation.map { model.selectedDirectMessageID == $0.id } == true ? CaperTheme.terracotta.opacity(0.16) : Color.clear)
+                                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                                        .contentShape(Rectangle())
+                                }.buttonStyle(.plain).modifier(ControlHover()).disabled(model.busy)
+                                    .accessibilityIdentifier("dm-self")
                             }
-                            ForEach(model.directMessages) { conversation in
+                            ForEach(model.directMessages.filter { $0.peer.id != model.account?.id }) { conversation in
                                 Button { Task { await model.select(directMessage: conversation) } } label: {
                                     HStack(spacing: 9) {
                                         CaperIcon(name: "speech", size: 17)
@@ -616,24 +645,41 @@ private struct ChannelSidebar: View {
                                         if conversation.unread { Circle().fill(CaperTheme.terracottaBright).frame(width: 8, height: 8).accessibilityLabel("Unread") }
                                     }.font(CaperTheme.font(13, weight: .medium))
                                         .foregroundStyle(model.selectedDirectMessageID == conversation.id ? CaperTheme.text : CaperTheme.muted)
-                                        .padding(.horizontal, 9).frame(height: 38)
+                                        .padding(.horizontal, 9).frame(height: 44)
                                         .background(model.selectedDirectMessageID == conversation.id ? CaperTheme.terracotta.opacity(0.16) : Color.clear)
                                         .clipShape(RoundedRectangle(cornerRadius: 6))
                                 }.buttonStyle(.plain).accessibilityIdentifier("dm-\(conversation.id)")
                                     .modifier(ControlHover())
                                     .accessibilityValue(model.selectedDirectMessageID == conversation.id ? "Selected" : conversation.unread ? "Unread" : "")
                             }
+                        }.padding(.horizontal, 16)
+                    }.frame(height: min(180, max(47, CGFloat(model.directMessages.filter { $0.peer.id != model.account?.id }.count + 1) * 47)))
+                    Button {
+                        if model.isOwner, model.detail?.space.demo == false { sheet = .manageSpace }
+                        else { sheet = .newDirectMessage }
+                    } label: {
+                        HStack(spacing: 9) {
+                            CaperIcon(name: "plus", size: 17)
+                            Text(model.isOwner && model.detail?.space.demo == false ? "Invite people" : "New message")
+                            Spacer()
                         }
-                    }.frame(height: min(180, max(30, CGFloat(model.directMessages.count) * 41)))
+                        .font(CaperTheme.font(13, weight: .medium)).foregroundStyle(CaperTheme.muted)
+                        .padding(.horizontal, 9).frame(minHeight: 44)
+                        .contentShape(Rectangle())
+                    }.buttonStyle(.plain).modifier(ControlHover()).padding(.horizontal, 16)
+                        .accessibilityIdentifier(model.isOwner && model.detail?.space.demo == false ? "invite-people" : "new-message")
                     if model.pushAvailable {
                         Toggle("Direct message notifications", isOn: Binding(
                             get: { model.pushEnabled },
                             set: { value in Task { await model.changePushEnabled(value) } }
-                        )).font(CaperTheme.font(11)).padding(.vertical, 10)
+                        )).font(CaperTheme.font(11)).padding(.horizontal, 16).padding(.vertical, 10)
                             .accessibilityIdentifier("dm-push-opt-in")
                     }
-                }.padding(.horizontal, 16).padding(.bottom, 8)
+                }.padding(.bottom, 8)
                     .overlay(alignment: .top) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+            }
+            if !narrow, model.voice.phase != .idle, model.voice.phase != .failed {
+                Divider().overlay(CaperTheme.border)
             }
             if !narrow { AccountBar(model: model, sheet: $sheet) }
         }

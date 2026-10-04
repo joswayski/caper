@@ -1520,6 +1520,39 @@ final class APIClientTests: XCTestCase {
     }
 
     @MainActor
+    func testSelfNotesCreateWithOwnUsernameAndReuseWithoutSpace() async throws {
+        let model = AppModel(api: client())
+        model.account = Account(id: "self00000001", username: "notes_owner", displayName: "Notes Owner")
+        model.directMessages = [DirectMessageConversation(id: "dm0000000001", peer: DirectMessagePeer(id: "other", username: "other", displayName: "Other"), lastSeq: "0", readSeq: "0")]
+        var creates = 0
+        MockURLProtocol.handler = { request in
+            switch (request.httpMethod, request.url!.path) {
+            case ("POST", "/api/dms"):
+                creates += 1
+                let body = try JSONSerialization.jsonObject(with: XCTUnwrap(requestBodyData(request))) as? [String: String]
+                XCTAssertEqual(body, ["username": "notes_owner"])
+                return (200, Data(#"{"id":"dm0000000002","peer":{"id":"self00000001","username":"notes_owner","displayName":"Notes Owner"},"lastSeq":"0","readSeq":"0"}"#.utf8))
+            case ("GET", "/api/chat/channels/dm0000000002/messages"):
+                return (200, Data(#"{"space":{"id":"","name":"Direct messages"},"channel":{"id":"dm0000000002","name":"Notes Owner","direct":true},"messages":[],"cursor":"0","hasMore":false}"#.utf8))
+            case ("POST", "/api/chat/session"):
+                return (200, Data(#"{"token":"fixture-chat","author":{"id":"self00000001","name":"Notes Owner","isGuest":false}}"#.utf8))
+            case ("POST", "/api/dms/dm0000000002/read"), ("POST", "/api/auth/logout"): return (204, Data())
+            default: throw URLError(.badURL)
+            }
+        }
+        await model.openSelfDirectMessage()
+        XCTAssertEqual(creates, 1)
+        XCTAssertFalse(model.busy)
+        XCTAssertEqual(model.selectedDirectMessageID, "dm0000000002")
+        XCTAssertEqual(model.chat.channelName, "Notes Owner")
+        await model.openSelfDirectMessage()
+        XCTAssertEqual(creates, 1, "reopening must not create another notes conversation")
+        XCTAssertEqual(model.directMessages.count, 2, "the peer conversation stays alongside notes")
+        XCTAssertNil(model.selectedSpaceID)
+        await model.logout()
+    }
+
+    @MainActor
     func testDirectMessageNavigationWorksWithoutSpaceAndClearsOnLogout() async throws {
         let model = AppModel(api: client())
         model.account = Account(id: "me", username: "me", displayName: "Me")

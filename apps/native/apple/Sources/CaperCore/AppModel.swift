@@ -233,7 +233,8 @@ public final class AppModel {
            selectedDirectMessageID == nil, chat.isPreview == !channel.joined {
             // The displayed conversation remains usable while another target
             // opens. Clicking it cancels that transition, not the live chat.
-            if navigationTarget != nil {
+            // Notes creation keeps the current chat visible while `busy`.
+            if navigationTarget != nil || busy {
                 navigationGeneration += 1
                 navigationTarget = nil
                 openingSpaceID = nil; openingChannelID = nil
@@ -261,16 +262,31 @@ public final class AppModel {
 
     public func createDirectMessage(username: String) async -> Bool {
         let exact = username.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !exact.isEmpty, account != nil else { return false }
+        guard !exact.isEmpty, account != nil, !busy else { return false }
         let attempt = generation
+        navigationGeneration += 1
+        let navigation = navigationGeneration
+        busy = true; error = nil
+        defer { if generation == attempt { busy = false } }
         do {
             let conversation = try await api.createDirectMessage(username: exact)
             guard generation == attempt else { return false }
             if let index = directMessages.firstIndex(where: { $0.id == conversation.id }) { directMessages[index] = conversation }
             else { directMessages.append(conversation) }
-            await select(directMessage: conversation)
+            if navigationGeneration == navigation { await select(directMessage: conversation) }
             return generation == attempt
         } catch { if generation == attempt { self.error = error.localizedDescription }; return false }
+    }
+
+    /// Opens the account's notes conversation, creating it through the normal DM
+    /// endpoint only when the server has not returned one yet.
+    public func openSelfDirectMessage() async {
+        guard let account, let username = account.username else { return }
+        if let conversation = directMessages.first(where: { $0.peer.id == account.id }) {
+            await select(directMessage: conversation)
+        } else {
+            _ = await createDirectMessage(username: username)
+        }
     }
 
     public func select(directMessage conversation: DirectMessageConversation) async {

@@ -3673,8 +3673,10 @@ not validate that integration.
 
 ## Account-global direct messages and deferred mobile push
 
-One-to-one DMs belong to two accounts, not to a space. Start by exact username;
-the canonical pair has one conversation even when both people start it at once.
+One-to-one DMs belong to two accounts, not to a space. Personal notes use the same
+private stream with your own account as both participants. Start by exact username;
+the canonical pair (including a self pair) has one conversation even when started
+concurrently.
 The list appears below channels in every space, including accounts with no spaces.
 Web pins it above the account controls; narrow web and mobile clients expose it in
 Browse navigation. Leaving or deleting a space does not delete DMs. Space owners
@@ -3683,10 +3685,22 @@ encryption. Group DMs, attachments, message deletion, blocking, and DM voice are
 not implemented. Existing text length, send limits, typing, history pagination,
 idempotent sends, outbox and gateway replay rules apply unchanged.
 
+The sidebar pins your real account name with a `you` label. Opening it lazily
+creates or reopens your notes; displaying the row does not write to the database.
+Other accounts cannot read, send, mark read, or subscribe to your notes. Space
+owners have an **Invite people** row that opens the existing space-management
+invitation form for exact usernames; members and accounts with no space get
+**New message** instead. The heading's plus still starts a DM; desktop web, Rust
+desktop and macOS reveal it on heading hover or keyboard focus. Non-hover web,
+iOS and Android keep it visible. Neither action adds invite links or grants DM
+access to owners. Self notes do not send push notifications; mobile push remains
+deferred for all conversations.
+
 API contracts (account authentication required):
 
 - `GET /api/dms` → `{conversations:[{id,peer:{id,username,displayName},lastSeq,readSeq}]}`.
-- `POST /api/dms` with `{username}` returns that pair's conversation.
+- `POST /api/dms` with `{username}` returns that pair's conversation. Your own
+  username returns personal notes with `peer.id` equal to your account ID.
 - `POST /api/dms/{id}/read` with `{seq}` monotonically advances the caller's read
   cursor, bounded to the durable channel head. Sequences are decimal strings.
 - Message history/send/typing and gateway chat subscriptions use the existing
@@ -3698,6 +3712,55 @@ messages. Unread means the durable head is beyond the account's read cursor.
 Read state is account-wide, not device-wide. New conversations are limited to
 20/minute and 1,000 per initiating account. Exact usernames are discoverable by
 starting a conversation; membership in a shared space is not required.
+
+### Deployment order for self notes and sidebar dividers
+
+1. Obtain the immutable merged revision as `MERGED_SHA`; wait for CI, API/web
+   images, and native artifacts. No new infrastructure, secret, configuration,
+   signing setup, permission grant, or provider setup is required. Keep existing
+   database, Valkey, and SFU configuration. The initial DM rollout below, including
+   its migrations/runtime grants and DM-capable gateway, must already be deployed;
+   otherwise complete it first. Merge does not deploy components. Back up the
+   database before rollout; never reset it.
+2. Deploy API first, including `202610040001_self_direct_messages.sql`. Normal API
+   startup applies the migration through the existing direct `MIGRATION_DATABASE_URL`;
+   do not edit an applied migration or run manual production SQL. It changes only
+   the pair check from `<` to `<=`; ordering, uniqueness, and existing DMs remain.
+
+   ```bash
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # Wait for that exact workflow run to succeed, then:
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
+
+   Complete API rollout before exposing the new clients. Gateway needs no rollout:
+   its existing membership and replay queries already accept a self pair. Keep
+   mobile push deferred. Do not reset Valkey/SFU state or restart healthy voice tracks.
+3. After API readiness, web and native can release independently:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # Wait for the web run to succeed, then:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   # After native CI and macOS/Windows/Android/iOS acceptance:
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
+   ```
+
+   The native workflow publishes every platform using existing signing credentials.
+   Reload web tabs and update native apps. The separate cursor/resize-highlight PR
+   can roll out independently; these changes do not depend on it.
+4. Verify edge-to-edge DM/voice dividers, the `you` row, owner invitations versus
+   member **New message**, notes send/reload/reopen across spaces and with no
+   spaces, existing peer DMs, cross-account denial, and no push enqueue. Browser
+   fixtures and Linux rendering do not prove Apple/Android or Windows execution;
+   physical native acceptance remains required before release.
+5. Roll back web to a known-good client revision with the same web deployment
+   command. Roll back native through a reverted main revision and a new release
+   with a higher build number. Keep the migrated schema and notes data; do not
+   restore `<` or delete notes. API rollback requires a reviewed build retaining
+   the applied migration and keeping push deferred; older images fail SQLx ledger
+   validation or reject self creation. Prefer a forward fix after notes exist.
+   No production migration, deploy, or release is performed by this PR.
 
 ### Push is deferred; future delivery uses direct APNs/FCM integrations
 
@@ -3808,7 +3871,21 @@ TEST_VALKEY_URL='redis://127.0.0.1:6379' \
 ```
 
 The loopback UI fixture provides `fixture_alex` / `TEST FIXTURE Alex`, not a real
-account or push provider. Browser checks do not prove native rendering or device
+account or push provider. For self notes, the disposable Postgres/Valkey tests
+cover concurrent canonical creation, send/history, cross-account denial, read
+cursors, authorized gateway replay, and no push enqueue. The browser DM suite
+covers lazy creation, failure/retry, send/reload/reopen, peer-history isolation,
+late-response navigation, invitation action, and desktop/narrow layout. Linux
+Rust desktop tests cover self selection, owner/member/no-space actions, DM-plus
+hover/focus and voice-dock padding/icon geometry; its explicit voice-connected
+fixture was rendered and inspected for divider/row layout. The Linux client was
+also signed into the disposable HTTP fixture:
+opening self notes, sending a reminder, switching to a channel and reopening
+notes retained one conversation and the message; **Invite people** opened the
+existing management form. These are fixture interactions, not live account/SFU
+validation. Swift model coverage was added but not run in the Linux orb. No local
+Apple/Android build, Windows runtime, or Docker-image validation is claimed.
+Browser checks do not prove native rendering or device
 push. Android/Apple compilation and physical device layouts remain native release
 acceptance requirements. APNs/FCM credential validation, physical-device delivery,
 offline behavior and registration lifecycle/pruning must be covered when direct

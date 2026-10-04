@@ -150,6 +150,12 @@ struct NavigationTarget {
     channel: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SelfDirectTarget {
+    Existing(model::DirectConversation),
+    Create(String),
+}
+
 #[derive(Clone)]
 struct PendingReaction {
     desired: bool,
@@ -928,16 +934,23 @@ impl CaperApp {
                 } if generation == self.generation => {
                     self.directs = directs;
                 }
-                Event::DirectCreated { generation, result } if generation == self.generation => {
+                Event::DirectCreated {
+                    generation,
+                    navigation,
+                    result,
+                } if generation == self.generation => {
                     self.loading = false;
                     match result {
                         Ok(direct) => {
                             self.directs.retain(|item| item.id != direct.id);
                             self.directs.push(direct.clone());
-                            self.dialog = None;
-                            self.select_direct(direct);
+                            if navigation == self.navigation {
+                                self.dialog = None;
+                                self.select_direct(direct);
+                            }
                         }
-                        Err(error) => self.error = Some(error),
+                        Err(error) if navigation == self.navigation => self.error = Some(error),
+                        Err(_) => {}
                     }
                 }
                 Event::Restored { generation, result } if generation == self.generation => {
@@ -1228,6 +1241,87 @@ impl CaperApp {
         self.reload_selected_channel(direct.id, false);
     }
 
+    fn select_or_create_self_direct(&mut self) {
+        let Some(target) = self.self_direct_target() else {
+            return;
+        };
+        match target {
+            SelfDirectTarget::Existing(direct) => self.select_direct(direct),
+            SelfDirectTarget::Create(username) => {
+                let Some(token) = self.token.clone() else {
+                    return;
+                };
+                if self.loading {
+                    return;
+                }
+                self.loading = true;
+                self.error = None;
+                self.navigation += 1;
+                self.opening = false;
+                self.navigation_target = None;
+                self.worker.send(Command::CreateDirect {
+                    generation: self.generation,
+                    navigation: self.navigation,
+                    token,
+                    username,
+                });
+            }
+        }
+    }
+
+    fn self_direct_target(&self) -> Option<SelfDirectTarget> {
+        let account = self.account.as_ref()?;
+        if let Some(direct) = self
+            .directs
+            .iter()
+            .find(|direct| direct.peer.id == account.id)
+        {
+            return Some(SelfDirectTarget::Existing(direct.clone()));
+        }
+        account.username.clone().map(SelfDirectTarget::Create)
+    }
+
+    fn open_manage_space(&mut self) {
+        self.form_name = self
+            .detail
+            .as_ref()
+            .map_or_else(String::new, |detail| detail.space.name.clone());
+        self.managed_members = self
+            .detail
+            .as_ref()
+            .map_or_else(Vec::new, |detail| detail.members.clone());
+        self.managed_channel = None;
+        self.managed_invitations.clear();
+        self.member_username.clear();
+        self.member_error = None;
+        if let (Some(token), Some(space)) = (self.token.clone(), self.selected_space.clone()) {
+            self.worker.send(Command::Admin {
+                generation: self.generation,
+                token: token.clone(),
+                operation: AdminOperation::LoadMembers {
+                    space: space.clone(),
+                    channel: None,
+                },
+            });
+            self.worker.send(Command::Admin {
+                generation: self.generation,
+                token,
+                operation: AdminOperation::LoadInvitations { space },
+            });
+        }
+        self.dialog = Some(Dialog::ManageSpace);
+    }
+
+    fn open_direct_action(&mut self) {
+        if self.owner() {
+            self.open_manage_space();
+        } else {
+            self.member_username.clear();
+            self.error = None;
+            self.dialog = Some(Dialog::StartDirect);
+        }
+    }
+
     fn accept_channel(
         &mut self,
         history: model::History,
@@ -1426,7 +1520,8 @@ impl CaperApp {
         let joined_preview = self.selected_is_joined()
             && self.session_error.as_deref() == Some("Join this channel to chat.");
         if selected && !joined_preview {
-            if self.opening {
+            // Self-DM creation uses `loading` while the displayed chat stays open.
+            if self.opening || self.loading {
                 self.navigation += 1;
                 self.opening = false;
                 self.navigation_target = None;
@@ -3383,18 +3478,36 @@ impl CaperApp {
                     .frame(egui::Frame::NONE)
                     .show_inside(ui, |ui| self.account_bar(ui));
                 if self.account.is_some() {
-                    let height = (60.0 + self.directs.len() as f32 * 41.0)
+                    let account_id = self.account.as_ref().map(|account| account.id.as_str());
+                    let other_directs = self
+                        .directs
+                        .iter()
+                        .filter(|direct| Some(direct.peer.id.as_str()) != account_id)
+                        .count();
+                    let height = (60.0 + (other_directs + 2) as f32 * 41.0)
                         .min(ui.available_height() * 0.45);
                     egui::TopBottomPanel::bottom("native-directs")
                         .exact_height(height)
-                        .show_separator_line(true)
+                        .show_separator_line(false)
                         .frame(egui::Frame::NONE)
                         .show_inside(ui, |ui| {
+                            full_bleed_separator(ui, ui.min_rect().top());
                             ui.add_space(10.0);
                             ui.horizontal(|ui| {
+                                let heading_hovered = ui.rect_contains_pointer(ui.max_rect());
                                 ui.label(bold("Direct messages").size(12.0).color(MUTED));
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if drawn_icon_button(ui, NavIcon::Plus, "Start direct message").clicked() {
+                                    // Keep the target in the focus order even when its icon is hidden.
+                                    let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
+                                    let response = ui.interact(rect, egui::Id::new("direct-heading-plus"), egui::Sense::click());
+                                    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), "Start direct message"));
+                                    if heading_hovered || response.has_focus() {
+                                        if response.hovered() || response.has_focus() {
+                                            ui.painter().rect_filled(rect, 6.0, RAISED);
+                                        }
+                                        paint_icon(ui.painter(), rect.shrink(5.0), NavIcon::Plus, if response.hovered() { TEXT } else { MUTED });
+                                    }
+                                    if response.on_hover_text("Start direct message").clicked() {
                                         self.member_username.clear();
                                         self.error = None;
                                         self.dialog = Some(Dialog::StartDirect);
@@ -3402,11 +3515,40 @@ impl CaperApp {
                                 });
                             });
                             egui::ScrollArea::vertical().id_salt("directs-scroll").show(ui, |ui| {
-                                if self.directs.is_empty() {
-                                    ui.label(RichText::new("No direct messages yet").size(11.0).color(MUTED));
-                                }
+                                let account = self.account.clone().expect("account checked above");
+                                let self_direct = self.directs.iter().find(|direct| direct.peer.id == account.id).cloned();
+                                let self_active = self_direct.as_ref().is_some_and(|direct| self.selected_direct.as_deref() == Some(&direct.id));
+                                let self_unread = self_direct.as_ref().is_some_and(|direct| model::sequence(&direct.last_seq).unwrap_or(0) > model::sequence(&direct.read_seq).unwrap_or(0));
+                                ui.horizontal(|ui| {
+                                    let display_name = account.display_name.as_deref().or(account.username.as_deref()).unwrap_or("You");
+                                    let name = format!("{display_name} you");
+                                    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width() - 18.0, 32.0), egui::Sense::click());
+                                    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, ui.is_enabled(), self_active, &name));
+                                    if self_active || response.hovered() || response.has_focus() {
+                                        ui.painter().rect_filled(rect, 6.0, if self_active { Color32::from_rgba_unmultiplied(182, 77, 50, 40) } else { RAISED });
+                                    }
+                                    if response.has_focus() {
+                                        ui.painter().rect_stroke(rect, 6.0, Stroke::new(1.0, TERRACOTTA_BRIGHT), egui::StrokeKind::Inside);
+                                    }
+                                    paint_avatar(ui, egui::Rect::from_center_size(egui::pos2(rect.left() + 17.5, rect.center().y), egui::vec2(24.0, 24.0)), display_name, account.avatar_id);
+                                    let mut label = egui::text::LayoutJob::default();
+                                    label.append(display_name, 0.0, egui::TextFormat {
+                                        font_id: egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into())),
+                                        color: if self_active { TEXT } else { MUTED }, ..Default::default()
+                                    });
+                                    label.append(" you", 0.0, egui::TextFormat {
+                                        font_id: egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Medium".into())),
+                                        color: MUTED, ..Default::default()
+                                    });
+                                    let galley = ui.painter().layout_job(label);
+                                    ui.painter().with_clip_rect(rect).galley(egui::pos2(rect.left() + 35.0, rect.center().y - galley.size().y / 2.0 - 1.0), galley, TEXT);
+                                    if self_unread { ui.label(RichText::new("●").size(9.0).color(TERRACOTTA_BRIGHT)); }
+                                    if response.clicked() { self.select_or_create_self_direct(); }
+                                });
+                                ui.add_space(3.0);
                                 let directs = self.directs.clone();
                                 for direct in directs {
+                                    if direct.peer.id == account.id { continue; }
                                     let active = self.selected_direct.as_deref() == Some(&direct.id);
                                     let unread = model::sequence(&direct.last_seq).unwrap_or(0)
                                         > model::sequence(&direct.read_seq).unwrap_or(0);
@@ -3420,6 +3562,9 @@ impl CaperApp {
                                     });
                                     ui.add_space(3.0);
                                 }
+                                let action = if self.owner() { "Invite people" } else { "New message" };
+                                let (response, _) = channel_button(ui, ui.available_width(), action, NavIcon::Plus, false, false);
+                                if response.clicked() { self.open_direct_action(); }
                             });
                         });
                 }
@@ -3511,42 +3656,7 @@ impl CaperApp {
                                             )
                                             .clicked()
                                         {
-                                            self.form_name = self
-                                                .detail
-                                                .as_ref()
-                                                .map_or_else(String::new, |detail| {
-                                                    detail.space.name.clone()
-                                                });
-                                            self.managed_members = self
-                                                .detail
-                                                .as_ref()
-                                                .map_or_else(Vec::new, |detail| {
-                                                    detail.members.clone()
-                                                });
-                                            self.managed_channel = None;
-                                            self.managed_invitations.clear();
-                                            self.member_username.clear();
-                                            self.member_error = None;
-                                            if let (Some(token), Some(space)) =
-                                                (self.token.clone(), self.selected_space.clone())
-                                            {
-                                                self.worker.send(Command::Admin {
-                                                    generation: self.generation,
-                                                    token: token.clone(),
-                                                    operation: AdminOperation::LoadMembers {
-                                                        space,
-                                                        channel: None,
-                                                    },
-                                                });
-                                                self.worker.send(Command::Admin {
-                                                    generation: self.generation,
-                                                    token,
-                                                    operation: AdminOperation::LoadInvitations {
-                                                        space: self.selected_space.clone().unwrap_or_default(),
-                                                    },
-                                                });
-                                            }
-                                            self.dialog = Some(Dialog::ManageSpace);
+                                            self.open_manage_space();
                                             ui.close();
                                         }
                                     });
@@ -4153,66 +4263,81 @@ impl CaperApp {
                     .map(|_| context.channel_id.clone()),
             };
             ui.add_space(8.0);
-            ui.separator();
+            full_bleed_separator(ui, ui.cursor().top());
+            ui.add_space(8.0);
             let joining = matches!(self.voice.state.phase, Phase::Joining(_));
-            ui.horizontal(|ui| {
-                let (icon, _) =
-                    ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
-                // Web: green when connected, amber while connecting or reconnecting.
-                let tone = if connected {
-                    Color32::from_rgb(140, 178, 98)
-                } else {
-                    Color32::from_rgb(217, 171, 92)
-                };
-                paint_icon(ui.painter(), icon, NavIcon::AudioLines, tone);
-                let status = ui.vertical(|ui| {
-                    ui.add(
-                        egui::Label::new(
-                            bold(if connected {
-                                "Voice connected"
-                            } else if joining {
-                                "Connecting…"
-                            } else {
-                                "Reconnecting…"
-                            })
-                            .size(12.0)
-                            .color(tone),
-                        )
-                        .selectable(false),
-                    );
-                    ui.add(
-                        egui::Label::new(RichText::new(&label).size(11.0).color(MUTED))
+            let status_height = ui
+                .fonts_mut(|fonts| {
+                    fonts.row_height(&egui::FontId::new(
+                        12.0,
+                        egui::FontFamily::Name("Satoshi Bold".into()),
+                    )) + fonts.row_height(&egui::FontId::proportional(11.0))
+                        + 2.0
+                })
+                .max(28.0);
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), status_height),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    let (icon, _) =
+                        ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                    // Web: green when connected, amber while connecting or reconnecting.
+                    let tone = if connected {
+                        Color32::from_rgb(140, 178, 98)
+                    } else {
+                        Color32::from_rgb(217, 171, 92)
+                    };
+                    paint_icon(ui.painter(), icon, NavIcon::AudioLines, tone);
+                    let status = ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        ui.add(
+                            egui::Label::new(
+                                bold(if connected {
+                                    "Voice connected"
+                                } else if joining {
+                                    "Connecting…"
+                                } else {
+                                    "Reconnecting…"
+                                })
+                                .size(12.0)
+                                .color(tone),
+                            )
                             .selectable(false),
-                    );
-                });
-                let open = status.response.interact(egui::Sense::click());
-                open.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &label)
-                });
-                if open.clicked() {
-                    self.navigate(target);
-                }
-                let hangup = ui
-                    .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        drawn_icon_button_with_tooltip(
-                            ui,
-                            NavIcon::PhoneOff,
-                            if connected {
-                                "Leave voice"
-                            } else {
-                                "Cancel joining voice"
-                            },
-                            if connected { "Disconnect" } else { "Cancel" },
-                        )
-                    })
-                    .inner;
-                if hangup.clicked() {
-                    if connected {
-                        self.effects.play(Effect::Disconnect);
+                        );
+                        ui.add(
+                            egui::Label::new(RichText::new(&label).size(11.0).color(MUTED))
+                                .selectable(false),
+                        );
+                    });
+                    let open = status.response.interact(egui::Sense::click());
+                    open.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &label)
+                    });
+                    if open.clicked() {
+                        self.navigate(target);
                     }
-                    self.voice.leave();
-                }
-            });
+                    let hangup = ui
+                        .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            drawn_icon_button_with_tooltip(
+                                ui,
+                                NavIcon::PhoneOff,
+                                if connected {
+                                    "Leave voice"
+                                } else {
+                                    "Cancel joining voice"
+                                },
+                                if connected { "Disconnect" } else { "Cancel" },
+                            )
+                        })
+                        .inner;
+                    if hangup.clicked() {
+                        if connected {
+                            self.effects.play(Effect::Disconnect);
+                        }
+                        self.voice.leave();
+                    }
+                },
+            );
             ui.add_space(8.0);
         }
         if let Some(error) = self.voice.error.clone() {
@@ -6074,7 +6199,7 @@ impl CaperApp {
                                             Dialog::CreateChannel => self.channel_dialog(ui, None),
                                             Dialog::ManageChannel(id) => self.channel_dialog(ui, Some(id)),
                                             Dialog::StartDirect => {
-                                                ui.label("Enter the exact username of the person you want to message.");
+                                                ui.label("Enter an exact username, including your own for personal notes.");
                                                 ui.add_space(12.0);
                                                 ui.add(egui::TextEdit::singleline(&mut self.member_username).hint_text("Username"));
                                                 ui.add_space(16.0);
@@ -6082,7 +6207,7 @@ impl CaperApp {
                                                     && let Some(token) = self.token.clone() {
                                                     self.loading = true;
                                                     self.error = None;
-                                                    self.worker.send(Command::CreateDirect { generation: self.generation, token, username: self.member_username.trim().to_owned() });
+                                                    self.worker.send(Command::CreateDirect { generation: self.generation, navigation: self.navigation, token, username: self.member_username.trim().to_owned() });
                                                 }
                                             }
                                         }
@@ -7647,6 +7772,17 @@ fn destructive(ui: &mut egui::Ui, text: &str) -> egui::Response {
     )
 }
 
+fn full_bleed_separator(ui: &egui::Ui, y: f32) {
+    // Panels clip to their padded content; extend the clip as well as the line.
+    let mut painter = ui.painter().clone();
+    painter.set_clip_rect(ui.clip_rect().expand2(egui::vec2(12.0, 0.5)));
+    painter.hline(
+        (ui.max_rect().left() - 12.0)..=(ui.max_rect().right() + 12.0),
+        y,
+        Stroke::new(1.0, BORDER),
+    );
+}
+
 fn notices(ui: &mut egui::Ui, error: &Option<String>, warning: &Option<String>) {
     if let Some(error) = error {
         ui.add_space(8.0);
@@ -7775,8 +7911,8 @@ fn avatar_icon(index: usize) -> egui::IconData {
 mod tests {
     use super::{
         CaperApp, ConnectionReport, Dialog, GatewayEvent, NavigationTarget, PendingReaction,
-        PendingSend, Phase, avatar_icon, endpoint, media, member_page_ids, normalize_channel,
-        permanent_send_rejection, take_date_divider, timestamp_parts, voice,
+        PendingSend, Phase, SelfDirectTarget, avatar_icon, endpoint, media, member_page_ids,
+        normalize_channel, permanent_send_rejection, take_date_divider, timestamp_parts, voice,
     };
     use crate::navigation;
     use std::time::{Duration, Instant};
@@ -10077,6 +10213,300 @@ mod tests {
         assert!(permanent_send_rejection(Some(422)));
         assert!(!permanent_send_rejection(None));
         assert!(!permanent_send_rejection(Some(503)));
+    }
+
+    #[test]
+    fn sidebar_always_lists_self_first_without_empty_copy() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.directs.clear();
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let texts: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.contains(&"Fixture Owner you"), "{texts:?}");
+        assert!(texts.contains(&"Invite people"), "{texts:?}");
+        assert!(!texts.contains(&"No direct messages yet"));
+        let nodes = output.platform_output.accesskit_update.as_ref().unwrap();
+        assert!(nodes.nodes.iter().any(|(_, node)| {
+            node.label()
+                .is_some_and(|label| label == "Fixture Owner you")
+        }));
+    }
+
+    #[test]
+    fn direct_heading_plus_is_hidden_until_heading_hover_or_keyboard_focus() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        // Bottom panels need two layout passes before reading the prior widget bounds.
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let id = egui::Id::new("direct-heading-plus");
+        let button = context
+            .read_response(id)
+            .expect("hidden button remains focusable")
+            .rect;
+        let painted = |output: &egui::FullOutput| {
+            output.shapes.iter().any(|shape|
+            matches!(&shape.shape, egui::Shape::Mesh(mesh) if button.contains_rect(mesh.calc_bounds())))
+        };
+        assert!(!painted(&output), "plus must not paint before hover");
+        let heading = text_position(&output, "Direct messages");
+        render(&mut app, &context, vec![egui::Event::PointerMoved(heading)]);
+        let hovered = render(&mut app, &context, vec![]);
+        assert!(
+            painted(&hovered),
+            "hovering the title {heading:?}, not only the plus {button:?}, reveals it"
+        );
+        let outside = render(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerMoved(egui::pos2(700.0, 400.0))],
+        );
+        assert!(!painted(&outside), "plus hides after leaving the heading");
+        context.memory_mut(|memory| memory.request_focus(id));
+        assert!(
+            painted(&render(&mut app, &context, vec![])),
+            "keyboard focus reveals the plus"
+        );
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(matches!(app.dialog, Some(Dialog::StartDirect)));
+    }
+
+    #[test]
+    fn self_direct_uses_own_username_then_reuses_peer_id_without_duplicates() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.directs.clear();
+        assert_eq!(
+            app.self_direct_target(),
+            Some(SelfDirectTarget::Create("fixture_owner".into()))
+        );
+        let account = app.account.as_ref().unwrap().clone();
+        let self_direct = model::DirectConversation {
+            id: "self-notes".into(),
+            peer: model::DirectPeer {
+                id: account.id,
+                username: account.username.unwrap(),
+                display_name: account.display_name.unwrap(),
+            },
+            last_seq: "3".into(),
+            read_seq: "2".into(),
+        };
+        app.directs = vec![self_direct.clone()];
+        assert_eq!(
+            app.self_direct_target(),
+            Some(SelfDirectTarget::Existing(self_direct.clone()))
+        );
+        app.select_or_create_self_direct();
+        assert_eq!(app.selected_direct.as_deref(), Some("self-notes"));
+        assert_eq!(app.directs, vec![self_direct]);
+    }
+
+    #[test]
+    fn late_self_creation_does_not_override_clicking_the_displayed_channel() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        let (events, receiver) = std::sync::mpsc::channel();
+        app.worker.events = receiver;
+        app.token = Some("fixture-owner-token".into());
+        let selected = app.selected_channel.clone().unwrap();
+        app.draft = "keep this channel draft".into();
+        app.select_or_create_self_direct();
+        assert!(app.loading);
+        let creation = app.navigation;
+        app.select_channel(selected.clone(), false);
+        assert!(app.navigation > creation);
+        let account = app.account.as_ref().unwrap();
+        let notes = model::DirectConversation {
+            id: "self-notes".into(),
+            peer: model::DirectPeer {
+                id: account.id.clone(),
+                username: account.username.clone().unwrap(),
+                display_name: account.display_name.clone().unwrap(),
+            },
+            last_seq: "0".into(),
+            read_seq: "0".into(),
+        };
+        events
+            .send(crate::worker::Event::DirectCreated {
+                generation: app.generation,
+                navigation: creation,
+                result: Ok(notes.clone()),
+            })
+            .unwrap();
+        app.receive();
+        assert_eq!(app.selected_channel.as_deref(), Some(selected.as_str()));
+        assert!(app.selected_direct.is_none());
+        assert_eq!(app.draft, "keep this channel draft");
+        assert!(!app.loading);
+        assert_eq!(app.directs, vec![notes]);
+    }
+
+    #[test]
+    fn lower_sidebar_action_routes_owner_and_member_or_no_spaces() {
+        let context = egui::Context::default();
+        let api = || crate::api::Api::new("http://127.0.0.1:9").unwrap();
+        let mut owner = CaperApp::new(&context, api(), Some("parity-desktop"));
+        let expected_members = owner.detail.as_ref().unwrap().members.len();
+        owner.open_direct_action();
+        assert!(matches!(owner.dialog, Some(Dialog::ManageSpace)));
+        assert_eq!(owner.managed_members.len(), expected_members);
+
+        let mut member = CaperApp::new(&context, api(), Some("parity-desktop"));
+        member.account.as_mut().unwrap().id = "fixture-maya".into();
+        member.open_direct_action();
+        assert!(matches!(member.dialog, Some(Dialog::StartDirect)));
+
+        let mut no_spaces = CaperApp::new(&context, api(), Some("parity-direct-no-spaces"));
+        no_spaces.open_direct_action();
+        assert!(matches!(no_spaces.dialog, Some(Dialog::StartDirect)));
+    }
+
+    #[test]
+    fn lower_sidebar_separators_span_the_full_sidebar_width() {
+        for width in [220.0, 337.0] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-voice-connected"),
+            );
+            app.sidebar_width = width;
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            // The rail occupies 59px, followed by the channel sidebar and a 1px divider.
+            let dividers: Vec<_> = output.shapes.iter().filter(|shape| matches!(
+                &shape.shape,
+                egui::Shape::LineSegment { points, stroke }
+                    if stroke.color == super::BORDER && points[0].x == 59.0 && points[1].x == 59.0 + width
+            )).collect();
+            assert!(
+                dividers.len() >= 3,
+                "header, DM, and voice separators must span {width}px; found {dividers:?}"
+            );
+            assert!(
+                dividers.iter().all(|shape| shape.clip_rect.left() <= 59.0
+                    && shape.clip_rect.right() >= 59.0 + width),
+                "full-width lines must not be clipped to the padded content: {dividers:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn voice_dock_has_balanced_padding_and_centered_icons() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-voice-connected"),
+        );
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let text_rect = |label: &str| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == label => {
+                        Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let status = text_rect("Voice connected").union(text_rect("general / Fixture Studio"));
+        let icons: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Mesh(mesh) => {
+                    let rect = mesh.calc_bounds();
+                    (rect.left() >= 71.0
+                        && rect.right() <= 327.0
+                        && rect.center().y >= status.top()
+                        && rect.center().y <= status.bottom())
+                    .then_some(rect)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(icons.len(), 2, "audio and disconnect icons: {icons:?}");
+        for icon in &icons {
+            assert!(
+                (icon.center().y - status.center().y).abs() <= 1.0,
+                "icon {icon:?} not centered with {status:?}"
+            );
+        }
+        let divider = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::LineSegment { points, stroke }
+                    if stroke.color == super::BORDER
+                        && points[0].x == 59.0
+                        && points[0].y < status.top() =>
+                {
+                    Some(points[0].y)
+                }
+                _ => None,
+            })
+            .max_by(f32::total_cmp)
+            .unwrap();
+        let account_top = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.rect.left() == 71.0
+                        && rect.rect.top() > status.bottom()
+                        && rect.rect.height() == 42.0 =>
+                {
+                    Some(rect.rect.top())
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            (status.top() - divider - (account_top - status.bottom())).abs() <= 1.0,
+            "unequal voice padding: top {}, bottom {}",
+            status.top() - divider,
+            account_top - status.bottom()
+        );
     }
 
     fn text_position(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
