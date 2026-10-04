@@ -19,6 +19,7 @@ public enum CaperTheme {
     public static let terracotta = Color(red: 182/255, green: 77/255, blue: 50/255)
     public static let terracottaBright = Color(red: 219/255, green: 104/255, blue: 73/255)
     public static let green = Color(red: 99/255, green: 122/255, blue: 67/255)
+    public static let voiceSessionGreen = Color(red: 74/255, green: 168/255, blue: 107/255)
 
     public static func font(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         let name: String
@@ -711,7 +712,7 @@ private struct ChannelSidebarItem: View {
                             TimelineView(.periodic(from: .now, by: 1)) { context in
                                 Text(VoiceSessionDuration.format(startedAtMilliseconds: sessionStartedAt, now: context.date))
                                     .font(CaperTheme.font(11, weight: .medium).monospacedDigit())
-                                    .foregroundStyle(CaperTheme.green)
+                                    .foregroundStyle(CaperTheme.voiceSessionGreen)
                                     .fixedSize(horizontal: true, vertical: false)
                                     .accessibilityLabel("Voice session duration")
                                     .accessibilityValue(VoiceSessionDuration.format(startedAtMilliseconds: sessionStartedAt, now: context.date))

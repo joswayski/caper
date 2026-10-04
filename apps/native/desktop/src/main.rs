@@ -44,6 +44,7 @@ const MUTED: Color32 = Color32::from_rgb(185, 188, 190);
 const TERRACOTTA: Color32 = Color32::from_rgb(182, 77, 50);
 const TERRACOTTA_BRIGHT: Color32 = Color32::from_rgb(219, 104, 73);
 const CAPER: Color32 = Color32::from_rgb(99, 122, 67);
+const VOICE_SESSION_GREEN: Color32 = Color32::from_rgb(74, 168, 107);
 const ERROR: Color32 = Color32::from_rgb(255, 155, 130);
 const MEMBER_PAGE_SIZE: usize = 25;
 
@@ -7104,9 +7105,9 @@ fn channel_button(
     let timer_font = egui::FontId::monospace(11.0);
     let timer_right = rect.right() - if manageable { 34.0 } else { 6.0 };
     let timer_width = duration.map_or(0.0, |text| {
-        let galley = ui
-            .painter()
-            .layout_no_wrap(text.into(), timer_font.clone(), CAPER);
+        let galley =
+            ui.painter()
+                .layout_no_wrap(text.into(), timer_font.clone(), VOICE_SESSION_GREEN);
         let width = galley.size().x;
         let timer_rect = egui::Rect::from_min_size(
             egui::pos2(timer_right - width, rect.center().y - galley.size().y / 2.0),
@@ -7125,7 +7126,8 @@ fn channel_button(
             )
         });
         timer.on_hover_text("Voice session duration");
-        ui.painter().galley(timer_rect.min, galley, CAPER);
+        ui.painter()
+            .galley(timer_rect.min, galley, VOICE_SESSION_GREEN);
         width + 9.0
     });
     ui.painter()

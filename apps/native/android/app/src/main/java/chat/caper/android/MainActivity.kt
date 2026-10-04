@@ -685,7 +685,7 @@ internal fun formatVoiceSessionDuration(startedAt: Long, now: Long): String {
             contentDescription = "Voice session duration"
             stateDescription = duration
         },
-        color = CaperGreen,
+        color = VoiceSessionGreen,
         fontFamily = FontFamily.Monospace,
         fontSize = 11.sp,
         maxLines = 1,
