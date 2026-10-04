@@ -187,7 +187,8 @@ fn apply(options: &Options, args: &[OsString]) -> Result<()> {
     // Windows cannot rename a folder while a program inside it runs, so run the
     // update from a copy outside the install.
     if !options.relocated && env::current_exe()?.starts_with(&install) {
-        return relocate(args);
+        relocate_command(args)?.spawn()?;
+        return Ok(());
     }
     log(&format!(
         "updating {} from build {current}",
@@ -224,7 +225,7 @@ fn apply(options: &Options, args: &[OsString]) -> Result<()> {
     relaunch(layout, &install)
 }
 
-fn relocate(args: &[OsString]) -> Result<()> {
+fn relocate_command(args: &[OsString]) -> Result<Command> {
     let source = env::current_exe()?;
     let name = source.file_name().ok_or("updater has no file name")?;
     let folder = env::temp_dir().join(format!("caper-updater-{}", std::process::id()));
@@ -232,6 +233,9 @@ fn relocate(args: &[OsString]) -> Result<()> {
     let copy = folder.join(name);
     fs::copy(&source, &copy)?;
     let mut command = Command::new(&copy);
+    // Windows also locks a process's working directory. Moving only the exe
+    // leaves an inherited install directory locked and prevents the swap.
+    command.current_dir(&folder);
     // The first updater starts hidden, but Windows does not inherit that flag
     // when it relocates itself outside the directory being replaced.
     #[cfg(windows)]
@@ -239,8 +243,8 @@ fn relocate(args: &[OsString]) -> Result<()> {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    command.args(args).arg(RELOCATED_FLAG).spawn()?;
-    Ok(())
+    command.args(args).arg(RELOCATED_FLAG);
+    Ok(command)
 }
 
 fn relaunch(layout: Layout, install: &Path) -> Result<()> {
@@ -418,6 +422,54 @@ mod tests {
 
         assert!(Options::parse(&[OsString::from("--nope"), OsString::from("1")]).is_err());
         assert!(Options::parse(&[OsString::from("--current-build")]).is_err());
+    }
+
+    #[test]
+    fn relocated_updater_runs_from_its_temporary_folder() {
+        const REPORT: &str = "CAPER_TEST_RELOCATION_REPORT";
+        if let Some(report) = env::var_os(REPORT) {
+            assert!(env::args_os().any(|arg| arg == RELOCATED_FLAG));
+            fs::write(
+                report,
+                serde_json::to_vec(&env::current_dir().unwrap().canonicalize().unwrap()).unwrap(),
+            )
+            .unwrap();
+            return;
+        }
+
+        let report_folder = tempfile::tempdir().unwrap();
+        let report = report_folder.path().join("cwd.json");
+        // Run only this test in the copied executable. After `--`, libtest
+        // accepts the updater's --relocated flag as an additional test filter.
+        let args = [
+            "--exact",
+            "tests::relocated_updater_runs_from_its_temporary_folder",
+            "--",
+        ]
+        .map(OsString::from);
+        let mut command = relocate_command(&args).unwrap();
+        let relocated_folder = Path::new(command.get_program())
+            .parent()
+            .unwrap()
+            .canonicalize()
+            .unwrap();
+        let output = command.env(REPORT, &report).output().unwrap();
+        install::remove_if_present(&relocated_folder).unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let working_folder: PathBuf = serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
+        // Check the actual child process, not only Command's configuration.
+        assert_eq!(working_folder, relocated_folder);
+        let original_folder = env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .canonicalize()
+            .unwrap();
+        assert!(!working_folder.starts_with(original_folder));
     }
 
     #[test]
