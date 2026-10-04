@@ -5,6 +5,9 @@ on:
     paths:
       - apps/native/**
       - apps/api/src/**
+      - apps/web/public/caper-face.svg
+      - scripts/generate-favicons.mjs
+      - tests/desktop-icons.test.mjs
       - shared/design.css
       - shared/emoji/**
       - scripts/native-emoji.mjs
@@ -21,6 +24,9 @@ on:
     paths:
       - apps/native/**
       - apps/api/src/**
+      - apps/web/public/caper-face.svg
+      - scripts/generate-favicons.mjs
+      - tests/desktop-icons.test.mjs
       - shared/design.css
       - shared/emoji/**
       - scripts/native-emoji.mjs
@@ -58,6 +64,7 @@ jobs:
       - run: python -m unittest discover -s tests -p test_apple_release_signing.py -v
       - run: python shared/fonts/test_native_fonts.py -v
       - run: node --test tests/native-parity-fixture.test.mjs
+      - run: node --test tests/desktop-icons.test.mjs
       - name: Verify bundled Apple emoji match the shared artwork and licenses
         run: diff -qr shared/emoji apps/native/apple/Sources/CaperCore/EmojiAssets
 

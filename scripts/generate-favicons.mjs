@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 const source = fileURLToPath(new URL('../apps/web/public/caper-face.svg', import.meta.url));
 const output = fileURLToPath(new URL('../apps/web/public/icons/', import.meta.url));
 const desktop = fileURLToPath(new URL('../apps/native/desktop/resources/', import.meta.url));
+const mac = fileURLToPath(new URL('../apps/native/apple/Resources/CaperIcons.xcassets/AppIcon.appiconset/', import.meta.url));
 const files = new Map();
 const raster = execFileSync('rsvg-convert', ['--width', '1024', '--height', '1024', source]);
 for (const size of [32, 180, 192, 512]) {
@@ -22,15 +23,22 @@ for (const size of [32, 180, 192, 512]) {
   files.set(`${output}caper-main-v3-${size}.png`, png);
 }
 
-// Windows Search and Explorer choose different ICO frames at different DPIs.
-// Render every frame from the main artwork, not an intermediate Apple icon.
-// Store explicit 32-bit RGBA PNGs to preserve the transparent smile and accent.
-const sizes = [16, 24, 32, 48, 64, 128, 256];
-const frames = sizes.map(size => execFileSync('magick', [
-  'png:-', '-resize', `${size}x${size}`, '-depth', '8', '-strip', 'PNG32:-',
-], { input: raster }));
-files.set(`${desktop}caper-icon.png`, frames[sizes.indexOf(128)]);
+// Share the same transparent rasters across Windows, Linux and macOS.
+// Render from the main artwork, not an intermediate platform export.
+const pngs = new Map([16, 24, 32, 48, 64, 128, 256, 512, 1024].map(size => [size,
+  execFileSync('magick', [
+    'png:-', '-resize', `${size}x${size}`, '-depth', '8', '-strip', 'PNG32:-',
+  ], { input: raster }),
+]));
+files.set(`${desktop}caper-icon.png`, pngs.get(128));
+files.set(`${desktop}caper.svg`, readFileSync(source));
+for (const size of [16, 32, 64, 128, 256, 512, 1024]) {
+  files.set(`${mac}icon-${size}.png`, pngs.get(size));
+}
 
+// Windows Search and Explorer choose different ICO frames at different DPIs.
+const sizes = [16, 24, 32, 48, 64, 128, 256];
+const frames = sizes.map(size => pngs.get(size));
 // ICO header + directory, followed by PNG payloads (supported since Vista).
 const directory = Buffer.alloc(6 + 16 * sizes.length);
 directory.writeUInt16LE(1, 2); // Image type: icon.
@@ -55,4 +63,4 @@ for (const [file, bytes] of files) {
     writeFileSync(file, bytes);
   }
 }
-console.log(`${process.argv.includes('--check') ? 'Verified' : 'Exported'} static web PNGs and desktop PNG/ICO from the main mascot SVG.`);
+console.log(`${process.argv.includes('--check') ? 'Verified' : 'Exported'} static web PNGs, Windows ICO, Linux SVG/PNG and macOS PNGs from the main mascot SVG.`);
