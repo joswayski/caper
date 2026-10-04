@@ -506,16 +506,13 @@ async fn persist(
     let seq = head + 1;
     let id = random_id(15);
     let payload = json!({"id":id,"channelId":channel,"seq":seq.to_string(),"author":{"id":author_id,"name":name,"isGuest":user_id.is_none(),"avatarId":avatar_id},"content":content,"createdAt":Utc::now().to_rfc3339(),"clientMessageId":client_id});
-    let message_id: i64 = sqlx::query_scalar("INSERT INTO public.messages (external_id, channel_id, session_id, client_message_id, request_hash, channel_seq, payload) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id")
-        .bind(id).bind(channel_id).bind(session_id).bind(client_id).bind(hash).bind(seq).bind(&payload).fetch_one(&mut *tx).await.map_err(database_error)?;
-    if let Some(user) = user_id {
-        crate::push::enqueue(&mut tx, channel_id, user, message_id)
-            .await
-            .map_err(database_error)?;
-        if space_id.is_none() {
-            sqlx::query("INSERT INTO public.direct_reads (channel_id,user_id,seq) VALUES ($1,$2,$3) ON CONFLICT (channel_id,user_id) DO UPDATE SET seq=GREATEST(direct_reads.seq,EXCLUDED.seq)")
+    sqlx::query("INSERT INTO public.messages (external_id, channel_id, session_id, client_message_id, request_hash, channel_seq, payload) VALUES ($1,$2,$3,$4,$5,$6,$7)")
+        .bind(id).bind(channel_id).bind(session_id).bind(client_id).bind(hash).bind(seq).bind(&payload).execute(&mut *tx).await.map_err(database_error)?;
+    if let Some(user) = user_id
+        && space_id.is_none()
+    {
+        sqlx::query("INSERT INTO public.direct_reads (channel_id,user_id,seq) VALUES ($1,$2,$3) ON CONFLICT (channel_id,user_id) DO UPDATE SET seq=GREATEST(direct_reads.seq,EXCLUDED.seq)")
                 .bind(channel_id).bind(user).bind(seq).execute(&mut *tx).await.map_err(database_error)?;
-        }
     }
     sqlx::query("INSERT INTO public.channel_events (channel_id, seq, payload) VALUES ($1,$2,$3)")
         .bind(channel_id).bind(seq).bind(json!({"type":"message.created","schemaVersion":1,"channelId":channel,"seq":seq.to_string(),"message":payload})).execute(&mut *tx).await.map_err(database_error)?;

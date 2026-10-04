@@ -337,11 +337,13 @@ def main() -> None:
         assert find(desktop, contains=required) is not None, f"Populated shell is missing {required!r}"
     assert find(desktop, text="caper") is None, "The workspace must not have a web-style branding header"
     general = find(desktop, text="general")
+    menu = find(desktop, description="general channel menu")
     join = find(desktop, description="Join voice in #general")
-    assert general is not None and join is not None
+    assert general is not None and menu is not None and join is not None, "General must expose its channel menu and Join voice action"
+    assert abs(center(general)[1] - center(menu)[1]) <= 4, "Channel name and menu must share the top row"
+    general_bottom = int(re.findall(r"\d+", general.attrib["bounds"])[3])
     left, top, right, bottom = map(int, re.findall(r"\d+", join.attrib["bounds"]))
-    channel_bottom = int(re.findall(r"\d+", general.attrib["bounds"])[3])
-    assert top >= channel_bottom, "Join voice must be on a separate row below the channel name"
+    assert top >= general_bottom, "Join voice must be on a separate row below the channel name"
     # viewport() sets density 320: 48dp is 96 physical pixels.
     assert right - left >= 96 and bottom - top >= 96, "Join voice must have a 48dp touch target"
 
