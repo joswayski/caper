@@ -2997,7 +2997,9 @@ only as HMAC-SHA-256 values. Session tokens contain 256 random bits and only the
 SHA-256 hashes are stored. Request limits are enforced in PostgreSQL across API
 replicas: three sends per address per 15 minutes, ten per address per day, twenty
 per keyed IP hash per hour, and a 500-email global hourly budget. Throttled requests
-return an indistinguishable synthetic challenge ID and do not call SES.
+return an indistinguishable synthetic challenge ID and do not call SES. Challenges
+are pruned a week after creation; expired and revoked sessions are kept as sign-in
+history.
 
 External-provider middleware, callbacks, token verification, key fetching, session
 hooks, and browser forwarding remain removed. Server functions retain CSRF middleware.
