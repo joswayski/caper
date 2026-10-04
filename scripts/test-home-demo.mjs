@@ -50,7 +50,6 @@ const speakers = () => evaluate('return [...document.querySelectorAll(".sim-pers
 try {
   browser('open', origin.href);
   browser('network', 'route', '**/api/account/me', '--body', 'null');
-  browser('network', 'route', '**/api/auth/config', '--body', JSON.stringify({ turnstileSiteKey: null }));
   browser('set', 'viewport', '1280', '800', '2');
   browser('set', 'media', 'dark', 'reduced-motion');
   browser('reload');

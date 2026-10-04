@@ -1,4 +1,4 @@
-use crate::{ApiError, RuntimeEnvironment, accounts, email, turnstile::Turnstile};
+use crate::{ApiError, RuntimeEnvironment, accounts, email};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{Duration, Utc};
 use hmac::{Hmac, Mac};
@@ -22,7 +22,6 @@ type HmacSha256 = Hmac<Sha256>;
 #[derive(Clone)]
 pub(crate) struct AuthVerifier {
     enabled: Option<EnabledAuth>,
-    turnstile: Option<Turnstile>,
     #[cfg(test)]
     bypass: bool,
 }
@@ -104,23 +103,18 @@ impl AuthVerifier {
     pub fn new() -> Self {
         Self {
             enabled: None,
-            turnstile: None,
             #[cfg(test)]
             bypass: false,
         }
     }
 
     pub async fn from_env(environment: &RuntimeEnvironment) -> Result<Self, String> {
-        let turnstile = Turnstile::from_env(environment)?;
         let Some(secret) = environment
             .get("AUTH_SECRET")
             .filter(|value| !value.trim().is_empty())
         else {
             tracing::info!("AUTH_SECRET unset; account login remains disabled");
-            return Ok(Self {
-                turnstile,
-                ..Self::new()
-            });
+            return Ok(Self::new());
         };
         if secret.len() < 32 {
             return Err("AUTH_SECRET must contain at least 32 bytes".into());
@@ -133,7 +127,6 @@ impl AuthVerifier {
                 sender: Arc::new(sender),
                 limits,
             }),
-            turnstile,
             #[cfg(test)]
             bypass: false,
         })
@@ -143,7 +136,6 @@ impl AuthVerifier {
     pub fn test_bypass() -> Self {
         Self {
             enabled: None,
-            turnstile: None,
             bypass: true,
         }
     }
@@ -157,25 +149,15 @@ impl AuthVerifier {
         self.enabled.as_ref().ok_or_else(unavailable)
     }
 
-    pub fn turnstile_site_key(&self) -> Option<&str> {
-        self.turnstile
-            .as_ref()
-            .map(|turnstile| turnstile.site_key.as_str())
-    }
-
     pub async fn request_code(
         &self,
         pool: Option<&PgPool>,
         email: &str,
         ip: IpAddr,
-        turnstile_token: Option<&str>,
     ) -> Result<Uuid, ApiError> {
         let auth = self.enabled()?;
         let pool = pool.ok_or_else(unavailable)?;
         let email = normalize_email(email)?;
-        if let Some(turnstile) = &self.turnstile {
-            turnstile.verify(turnstile_token).await?;
-        }
         let ip_hash = keyed_hash(&auth.secret, b"ip", ip.to_string().as_bytes());
         let email_lock_hash = keyed_hash(&auth.secret, b"email-lock", email.as_bytes());
         let ip_lock_hash = keyed_hash(&auth.secret, b"ip-lock", &ip_hash);
@@ -656,7 +638,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reserved_domains_and_missing_verification_never_access_database_or_send_email() {
+    async fn reserved_domains_never_access_database_or_send_email() {
         let sender = Arc::new(RecordingSender {
             deliveries: std::sync::Mutex::new(vec![]),
         });
@@ -666,30 +648,19 @@ mod tests {
                 sender: sender.clone(),
                 limits: AuthLimits::default(),
             }),
-            turnstile: Turnstile::from_env(&RuntimeEnvironment::from_values_for_test([
-                ("TURNSTILE_SITE_KEY", "site-key"),
-                ("TURNSTILE_SECRET_KEY", "test-only-secret"),
-                ("TURNSTILE_HOSTNAMES", "caper.chat"),
-            ]))
-            .unwrap(),
             bypass: false,
         };
         // A lazy pool cannot connect: reaching the database would fail the test
-        // instead of producing the validation errors below.
+        // instead of producing the validation error below.
         let pool = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgres://localhost:1/unreachable")
             .unwrap();
         let ip = "192.0.2.10".parse().unwrap();
         let reserved = verifier
-            .request_code(Some(&pool), "person@example.com", ip, None)
+            .request_code(Some(&pool), "person@example.com", ip)
             .await
             .unwrap_err();
         assert_eq!(reserved.status, axum::http::StatusCode::BAD_REQUEST);
-        let missing = verifier
-            .request_code(Some(&pool), "person@caper.chat", ip, None)
-            .await
-            .unwrap_err();
-        assert_eq!(missing.status, axum::http::StatusCode::FORBIDDEN);
         assert!(sender.deliveries.lock().unwrap().is_empty());
     }
 
@@ -735,13 +706,12 @@ mod tests {
                 sender: sender.clone(),
                 limits: AuthLimits::default(),
             }),
-            turnstile: None,
             bypass: false,
         };
         let ip = "192.0.2.10".parse().unwrap();
 
         let challenge = verifier
-            .request_code(Some(&pool), " Person@Caper.CHAT ", ip, None)
+            .request_code(Some(&pool), " Person@Caper.CHAT ", ip)
             .await
             .unwrap();
         let deliveries = sender.deliveries.lock().unwrap().clone();
@@ -763,7 +733,7 @@ mod tests {
         assert!(session.user.username.is_none());
 
         let repeat_challenge = verifier
-            .request_code(Some(&pool), "person@caper.chat", ip, None)
+            .request_code(Some(&pool), "person@caper.chat", ip)
             .await
             .unwrap();
         let repeat_code = sender.deliveries.lock().unwrap().last().unwrap().1.clone();
@@ -804,7 +774,7 @@ mod tests {
 
         for _ in 0..3 {
             verifier
-                .request_code(Some(&pool), "person@caper.chat", ip, None)
+                .request_code(Some(&pool), "person@caper.chat", ip)
                 .await
                 .unwrap();
         }
@@ -815,7 +785,7 @@ mod tests {
         );
 
         let exhausted = verifier
-            .request_code(Some(&pool), "attempts@caper.chat", ip, None)
+            .request_code(Some(&pool), "attempts@caper.chat", ip)
             .await
             .unwrap();
         let exhausted_code = sender.deliveries.lock().unwrap().last().unwrap().1.clone();
@@ -838,12 +808,12 @@ mod tests {
         assert_eq!(consumed.attempts_remaining, Some(0));
 
         let old = verifier
-            .request_code(Some(&pool), "replacement@caper.chat", ip, None)
+            .request_code(Some(&pool), "replacement@caper.chat", ip)
             .await
             .unwrap();
         let old_code = sender.deliveries.lock().unwrap().last().unwrap().1.clone();
         let replacement = verifier
-            .request_code(Some(&pool), "replacement@caper.chat", ip, None)
+            .request_code(Some(&pool), "replacement@caper.chat", ip)
             .await
             .unwrap();
         let replacement_code = sender.deliveries.lock().unwrap().last().unwrap().1.clone();

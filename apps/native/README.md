@@ -35,13 +35,6 @@ First launch without a valid session opens email sign-in, not a Guest workspace.
 New accounts finish their profile, then name their first space. Existing accounts
 restore their saved session and open their spaces; logging out returns to sign-in.
 
-**Turnstile limitation:** these clients do not yet support a browser challenge or
-browser-to-app authentication handoff. If the API enables Turnstile, new native
-email-code requests are blocked and the client directs people to caper.chat;
-signing into the website does not sign into the native app. Existing native
-sessions remain valid. Keep enforcement disabled until this limitation is
-accepted or native challenge support ships. See the [login rollout](../../docs/media.md#deployment-order-for-login-abuse-protection).
-
 ## Build and download
 
 The **Native development builds** GitHub Actions workflow uses macOS, Windows, and

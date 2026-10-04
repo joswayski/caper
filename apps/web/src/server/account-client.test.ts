@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { AccountApiError, getAccount, getAuthConfig, getRememberedAccount, logout, requestEmailCode, updateProfile, verifyEmailCode } from "../account/client.ts";
+import { AccountApiError, getAccount, getRememberedAccount, logout, requestEmailCode, updateProfile, verifyEmailCode } from "../account/client.ts";
 
 function mockFetch(t: test.TestContext, handler: (path: string, init?: RequestInit) => Response) {
   const original = globalThis.fetch;
@@ -40,24 +40,6 @@ test("web account client uses cookie sessions across the complete onboarding flo
     challengeId: "challenge-1",
     code: "123456",
     tokenTransport: "cookie",
-  });
-});
-
-test("login reads the public site key and sends the verification token only with code requests", async (t) => {
-  const calls: Array<[string, RequestInit | undefined]> = [];
-  mockFetch(t, (path, init) => {
-    calls.push([path, init]);
-    return Response.json(path.endsWith("/config")
-      ? { turnstileSiteKey: "public-site-key" }
-      : { challengeId: "challenge-2" });
-  });
-  assert.deepEqual(await getAuthConfig(), { turnstileSiteKey: "public-site-key" });
-  await requestEmailCode("person@caper.chat", "single-use-test-token");
-  assert.equal(calls[0][0], "/api/auth/config");
-  assert.equal(calls[0][1]?.body, undefined);
-  assert.deepEqual(JSON.parse(String(calls[1][1]?.body)), {
-    email: "person@caper.chat",
-    turnstileToken: "single-use-test-token",
   });
 });
 

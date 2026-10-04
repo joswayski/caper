@@ -459,37 +459,6 @@ async fn deployed_auth_policy_keeps_health_public_and_fails_closed() {
 }
 
 #[tokio::test]
-async fn login_configuration_exposes_only_site_key_and_is_not_cached() {
-    let (mut state, _) = state();
-    state.auth = auth::AuthVerifier::from_env(&RuntimeEnvironment::from_values_for_test([
-        ("AUTH_SECRET", ""),
-        ("TURNSTILE_SITE_KEY", "public-site-key"),
-        ("TURNSTILE_SECRET_KEY", "private-test-only-secret"),
-        ("TURNSTILE_HOSTNAMES", "caper.chat"),
-    ]))
-    .await
-    .unwrap();
-    let response = app(state)
-        .oneshot(
-            Request::builder()
-                .uri("/api/auth/config")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(response.headers()["cache-control"], "no-store");
-    let body = axum::body::to_bytes(response.into_body(), 1024)
-        .await
-        .unwrap();
-    assert_eq!(
-        serde_json::from_slice::<Value>(&body).unwrap(),
-        json!({"turnstileSiteKey": "public-site-key"})
-    );
-}
-
-#[tokio::test]
 async fn public_api_rejects_cookies_legacy_headers_and_media_tokens_as_account_auth() {
     let (mut state, _) = state();
     state.auth = auth::AuthVerifier::new();
