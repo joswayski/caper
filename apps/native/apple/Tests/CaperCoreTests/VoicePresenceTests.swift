@@ -11,11 +11,13 @@ final class VoicePresenceTests: XCTestCase {
         Channel(id: "channel-\(number)", spaceId: "space-a", name: "channel-\(number)", private: false)
     }
 
-    private func snapshot(_ revision: Int, name: String) -> [String: Any] {
-        ["type": "snapshot", "revision": revision, "participants": [
+    private func snapshot(_ revision: Int, name: String, sessionStartedAt: Any? = nil) -> [String: Any] {
+        var value: [String: Any] = ["type": "snapshot", "revision": revision, "participants": [
             ["id": "guest", "name": name, "muted": true, "deafened": false,
              "tracks": [["id": "private-track", "kind": "microphone"]]]
         ]]
+        if let sessionStartedAt { value["sessionStartedAt"] = sessionStartedAt }
+        return value
     }
 
     func testBoundedReadOnlyRostersRejectOldSnapshotsAndRevokedChannels() async {
@@ -46,6 +48,49 @@ final class VoicePresenceTests: XCTestCase {
         XCTAssertTrue(presence.roster(for: channel(1).id).isEmpty)
         await presence.stop()
         XCTAssertTrue(presence.rosters.isEmpty)
+    }
+
+    func testSessionTimestampIsRevisionFencedAndCleared() async {
+        let presence = model()
+        let watched = channel(0)
+        await presence.watch(spaceID: "space-a", channels: [watched], demo: false)
+        presence.receive(snapshot(2, name: "current", sessionStartedAt: 1_700_000_000_123 as NSNumber), generation: 1, channelID: watched.id)
+        XCTAssertEqual(presence.sessionStartedAt(for: watched.id), 1_700_000_000_123)
+        presence.receive(snapshot(1, name: "stale", sessionStartedAt: 9 as NSNumber), generation: 1, channelID: watched.id)
+        XCTAssertEqual(presence.sessionStartedAt(for: watched.id), 1_700_000_000_123)
+        presence.receive(snapshot(3, name: "legacy"), generation: 1, channelID: watched.id)
+        XCTAssertNil(presence.sessionStartedAt(for: watched.id), "absent fields from older servers clear the timer")
+        presence.receive(snapshot(4, name: "current", sessionStartedAt: 12 as NSNumber), generation: 1, channelID: watched.id)
+        presence.receive(snapshot(5, name: "empty", sessionStartedAt: NSNull()), generation: 1, channelID: watched.id)
+        XCTAssertNil(presence.sessionStartedAt(for: watched.id), "an explicit null clears the timer")
+        presence.receive(snapshot(6, name: "current", sessionStartedAt: 12 as NSNumber), generation: 1, channelID: watched.id)
+        presence.revoke(channelID: watched.id)
+        XCTAssertNil(presence.sessionStartedAt(for: watched.id))
+        await presence.stop()
+        XCTAssertTrue(presence.sessionStartedAt.isEmpty)
+    }
+
+    func testAuthenticatedSnapshotParsingIsBackwardsCompatible() throws {
+        let current = try JSONDecoder().decode(VoiceSnapshot.self, from: Data(#"{"participants":[],"revision":4,"sessionStartedAt":1700000000123}"#.utf8))
+        XCTAssertEqual(current.sessionStartedAt, 1_700_000_000_123)
+        let legacy = try JSONDecoder().decode(VoiceSnapshot.self, from: Data(#"{"participants":[],"revision":5}"#.utf8))
+        XCTAssertNil(legacy.sessionStartedAt)
+        let empty = try JSONDecoder().decode(VoiceSnapshot.self, from: Data(#"{"participants":[],"revision":6,"sessionStartedAt":null}"#.utf8))
+        XCTAssertNil(empty.sessionStartedAt)
+    }
+
+    func testVoiceSessionDurationBoundariesAndFutureClamp() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        func formatted(_ seconds: Int) -> String {
+            VoiceSessionDuration.format(startedAtMilliseconds: (now.timeIntervalSince1970 - Double(seconds)) * 1_000, now: now)
+        }
+        XCTAssertEqual(formatted(0), "00:00")
+        XCTAssertEqual(formatted(59), "00:59")
+        XCTAssertEqual(formatted(60), "01:00")
+        XCTAssertEqual(formatted(3_599), "59:59")
+        XCTAssertEqual(formatted(3_600), "1:00:00")
+        XCTAssertEqual(formatted(36_061), "10:01:01")
+        XCTAssertEqual(VoiceSessionDuration.format(startedAtMilliseconds: 10_001_000, now: now), "00:00")
     }
 }
 

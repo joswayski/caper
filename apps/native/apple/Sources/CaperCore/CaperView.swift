@@ -4,6 +4,7 @@ import MediaPlayer
 import UIKit
 #elseif os(macOS)
 import AppKit
+import ServiceManagement
 #endif
 
 public enum CaperTheme {
@@ -19,6 +20,7 @@ public enum CaperTheme {
     public static let terracotta = Color(red: 182/255, green: 77/255, blue: 50/255)
     public static let terracottaBright = Color(red: 219/255, green: 104/255, blue: 73/255)
     public static let green = Color(red: 99/255, green: 122/255, blue: 67/255)
+    public static let voiceSessionGreen = Color(red: 74/255, green: 168/255, blue: 107/255)
 
     public static func font(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         let name: String
@@ -161,12 +163,28 @@ private struct SpacesUnavailableView: View {
 }
 
 private struct Wordmark: View {
+    @AppStorage("daily-dock-icon-index-v1") private var dailyIndex = 0
+    @Environment(\.scenePhase) private var scenePhase
+    private let fixture = ProcessInfo.processInfo.environment["CAPER_TEST_MODE"] == "parity"
+
     var body: some View {
-        Image("CaperWordmark")
-            .resizable()
-            .scaledToFit()
-            .frame(width: 132, height: 35)
+        ZStack(alignment: .topLeading) {
+            Image("CaperWordmarkLetters").resizable().scaledToFit()
+                .frame(width: 132, height: 35)
+            Image("caper-branding-\(fixture ? 0 : dailyIndex)", bundle: caperResourceBundle)
+                .renderingMode(.original).resizable().scaledToFit()
+                .frame(width: 132 * 132 / 1042, height: 132 * 132 / 1042)
+                .offset(x: 132 * 904 / 1042, y: 35 * 91 / 276)
+        }.frame(width: 132, height: 35)
+            .accessibilityElement(children: .ignore)
             .accessibilityLabel("Caper")
+            .onAppear(perform: refresh)
+            .onChange(of: scenePhase) { _, phase in if phase == .active { refresh() } }
+            .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { _ in refresh() }
+    }
+
+    private func refresh() {
+        if !fixture { dailyIndex = CaperDailyIcon.current() }
     }
 }
 
@@ -692,6 +710,16 @@ private struct ChannelSidebarItem: View {
     @Bindable var model: AppModel
     @Binding var sheet: WorkspaceSheet?
     let channel: Channel
+    @State private var confirmLeave = false
+
+    private var sessionStartedAt: Double? {
+        let shared = model.voicePresence.sessionStartedAt(for: channel.id)
+        if model.voice.isActive(channelID: channel.id) {
+            return model.voice.phase == .joining ? shared ?? model.voice.sessionStartedAt : model.voice.sessionStartedAt
+        }
+        return shared
+            ?? (model.pendingVoiceChannelID == channel.id ? Double(model.pendingVoiceStartedAt) : nil)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -702,6 +730,16 @@ private struct ChannelSidebarItem: View {
                             .foregroundStyle(model.selectedChannelID == channel.id ? CaperTheme.terracottaBright : CaperTheme.muted)
                         Text(channel.name).lineLimit(1)
                         Spacer(minLength: 0)
+                        if let sessionStartedAt {
+                            TimelineView(.periodic(from: .now, by: 1)) { context in
+                                Text(VoiceSessionDuration.format(startedAtMilliseconds: sessionStartedAt, now: context.date))
+                                    .font(CaperTheme.font(11, weight: .medium).monospacedDigit())
+                                    .foregroundStyle(CaperTheme.voiceSessionGreen)
+                                    .fixedSize(horizontal: true, vertical: false)
+                                    .accessibilityLabel("Voice session duration")
+                                    .accessibilityValue(VoiceSessionDuration.format(startedAtMilliseconds: sessionStartedAt, now: context.date))
+                            }
+                        }
                     }
                     .font(CaperTheme.font(13, weight: .medium))
                     .foregroundStyle(model.selectedChannelID == channel.id ? CaperTheme.text : CaperTheme.muted)
@@ -720,9 +758,10 @@ private struct ChannelSidebarItem: View {
                     })
                     .accessibilityIdentifier("channel-\(channel.id)")
                     .accessibilityValue(model.openingChannelID == channel.id ? "Opening" : model.selectedChannelID == channel.id ? "Selected" : "")
-                if model.isOwner {
+                if model.detail?.space.demo != true {
                     Menu {
-                        Button("Channel settings") { sheet = .manageChannel(channel) }
+                        if model.isOwner { Button("Channel settings") { sheet = .manageChannel(channel) } }
+                        if channel.joined { Button("Leave channel") { confirmLeave = true } }
                     } label: { CaperIcon(name: "ellipsis") }
                         .menuStyle(.borderlessButton).menuIndicator(.hidden)
                         .foregroundStyle(CaperTheme.muted)
@@ -739,6 +778,20 @@ private struct ChannelSidebarItem: View {
             }
             ChannelVoiceSlot(model: model, channel: channel)
         }
+        .sheet(isPresented: $confirmLeave) {
+            ConfirmationSheet(title: "Leave #\(channel.name)?", detail: channel.private && !model.isOwner ? "You’ll lose access and need another invitation to return. You’ll disconnect from this channel’s voice call." : "It will leave your sidebar. You can preview and rejoin from Browse channels. You’ll disconnect from this channel’s voice call.", action: "Leave channel", close: { confirmLeave = false }) { try await model.leaveChannel(channel) }
+        }
+    }
+}
+
+enum VoiceSessionDuration {
+    static func format(startedAtMilliseconds: Double, now: Date) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince1970 - startedAtMilliseconds / 1_000))
+        let hours = seconds / 3_600
+        let minutes = (seconds % 3_600) / 60
+        let remainder = seconds % 60
+        if hours > 0 { return String(format: "%d:%02d:%02d", hours, minutes, remainder) }
+        return String(format: "%02d:%02d", minutes, remainder)
     }
 }
 
@@ -1121,7 +1174,11 @@ private struct AccountBar: View {
     @Bindable var model: AppModel
     @Bindable var voice: VoiceClient
     @Binding var sheet: WorkspaceSheet?
+    #if os(macOS)
+    @Environment(\.openSettings) private var openSettings
+    #else
     @Bindable private var effects = CaperEffects.shared
+    #endif
     @State private var inputOptions = false
     @State private var outputOptions = false
     init(model: AppModel, sheet: Binding<WorkspaceSheet?>) { self.model = model; voice = model.voice; _sheet = sheet }
@@ -1209,11 +1266,16 @@ private struct AccountBar: View {
             }.buttonStyle(.plain).modifier(ControlHover()).help("Output Options").accessibilityLabel("Output Options")
                 .popover(isPresented: $outputOptions, arrowEdge: .top) { AccountAudioMenu(voice: voice, input: false) }
             Menu {
-                // Web's User Settings menu.
+                #if os(macOS)
+                Button("Settings…") { openSettings() }
+                    .accessibilityIdentifier("open-settings")
+                Divider()
+                #else
                 Section("Audio settings") {
                     Toggle("Caper sound effects", isOn: $effects.soundsEnabled)
                         .accessibilityIdentifier("sound-effects")
                 }
+                #endif
                 Button("Audio test") { sheet = .audio }
                     .disabled(voice.phase == .leaving)
                 if voice.phase == .connected || CaperRuntime.isAudioPreview("audio-statistics") {
@@ -1334,7 +1396,7 @@ struct Avatar: View {
 }
 
 private final class CaperResourceAnchor: NSObject {}
-private var caperResourceBundle: Bundle {
+var caperResourceBundle: Bundle {
     #if SWIFT_PACKAGE
     return .module
     #else
@@ -1391,10 +1453,10 @@ private struct ChatView: View {
     @State private var showConnectionStatus = false
     @State private var joining = false
     @State private var joinError: String?
-    @State private var confirmLeave = false
     // A lazy message row can leave the viewport when the keyboard appears or
     // live messages arrive. Keep the sheet's presenter and target outside it.
     @State private var reactionMessage: ChatMessage?
+    @State private var showingEmojiPicker = false
 
     /// Defer the scroll request; content geometry repeats it when the timeline
     /// finishes measuring, including history above the unsent message.
@@ -1428,9 +1490,6 @@ private struct ChatView: View {
                     .accessibilityLabel(model.selectedDirectMessageID == nil ? "# \(chat.channelName.lowercased())" : "Direct message with \(chat.channelName)")
                     .accessibilityIdentifier("selected-channel-name")
                 Spacer()
-                if model.selectedDirectMessageID == nil, let channel = model.selectedChannel, channel.joined, model.detail?.space.demo != true {
-                    Button("Leave channel") { confirmLeave = true }.font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
-                }
                 if chat.liveState != .connected && showConnectionStatus {
                     Text(chat.liveState == .disconnected ? "Offline" : "Connecting…").font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.muted)
                         .accessibilityIdentifier("chat-connection-status")
@@ -1468,7 +1527,10 @@ private struct ChatView: View {
                                     if index == 0 || !ChatDateDivider.sameLocalDay(chat.messages[index - 1].createdAt, message.createdAt) {
                                         ChatDateDivider(createdAt: message.createdAt)
                                     }
-                                    MessageRow(message: message, chat: chat) { reactionMessage = message }
+                                    MessageRow(message: message, chat: chat) {
+                                        showingEmojiPicker = false
+                                        reactionMessage = message
+                                    }
                                 }.id(message.id)
                             }
                         }
@@ -1588,27 +1650,40 @@ private struct ChatView: View {
             }
             }
             }.padding(.horizontal, 18).padding(.vertical, 12)
-            .sheet(isPresented: $confirmLeave) {
-                if let channel = model.selectedChannel {
-                    ConfirmationSheet(title: "Leave #\(channel.name)?", detail: channel.private && !model.isOwner ? "You’ll lose access and need another invitation to return. You’ll disconnect from this channel’s voice call." : "It will leave your sidebar. You can preview and rejoin from Browse channels. You’ll disconnect from this channel’s voice call.", action: "Leave channel", close: { confirmLeave = false }) { try await model.leaveChannel(channel) }
-                }
-            }
             if chat.draft.unicodeScalars.count >= 3000 {
                 Text("\(chat.draft.unicodeScalars.count.formatted()) / 4,000").font(CaperTheme.font(10)).foregroundStyle(counterTone).padding(.bottom, 6)
             }
         }.background(CaperTheme.conversation)
             .sheet(item: $reactionMessage) { message in
+                #if os(iOS)
+                MessageActionsSheet(message: message, showingEmojiPicker: $showingEmojiPicker,
+                                    canReact: !chat.isPreview && chat.currentAuthor != nil && !chat.reactionSaving.contains(message.id),
+                                    quickReaction: { emoji in
+                                        guard !chat.isPreview, let author = chat.currentAuthor,
+                                              !chat.reactionSaving.contains(message.id),
+                                              let current = chat.messages.first(where: { $0.id == message.id }) else { return }
+                                        let own = current.reactions?.first(where: { $0.emoji == emoji })?.authorIds.contains(author.id) == true
+                                        reactionMessage = nil
+                                        Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: !own) }
+                                    }, selectReaction: { emoji in
+                                        guard !chat.isPreview, chat.currentAuthor != nil,
+                                              !chat.reactionSaving.contains(message.id) else { return }
+                                        reactionMessage = nil
+                                        Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) }
+                                    })
+                #else
                 ReactionPicker { emoji in
                     reactionMessage = nil
                     Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) }
                 }
+                #endif
             }
             .onChange(of: chat.isPreview) { _, preview in
-                if preview { reactionMessage = nil }
+                if preview { reactionMessage = nil; showingEmojiPicker = false }
             }
-            .onChange(of: chat.currentAuthor?.id) { _, _ in reactionMessage = nil }
-            .onChange(of: model.selectedChannelID) { _, _ in reactionMessage = nil }
-            .onChange(of: model.selectedDirectMessageID) { _, _ in reactionMessage = nil }
+            .onChange(of: chat.currentAuthor?.id) { _, _ in reactionMessage = nil; showingEmojiPicker = false }
+            .onChange(of: model.selectedChannelID) { _, _ in reactionMessage = nil; showingEmojiPicker = false }
+            .onChange(of: model.selectedDirectMessageID) { _, _ in reactionMessage = nil; showingEmojiPicker = false }
             .task(id: chat.liveState) {
                 showConnectionStatus = false
                 guard chat.liveState != .connected else { return }
@@ -1713,7 +1788,7 @@ private struct MessageRow: View {
     @Bindable var chat: ChatModel
     let showReactionPicker: () -> Void
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        let row = HStack(alignment: .top, spacing: 10) {
             Avatar(name: message.author.name, size: 34, avatarID: message.author.avatarId)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
@@ -1721,8 +1796,11 @@ private struct MessageRow: View {
                     if message.author.isGuest { Text("GUEST").font(CaperTheme.font(9, weight: .bold)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 5).overlay(RoundedRectangle(cornerRadius: 4).stroke(CaperTheme.border)) }
                     Text(timeLabel(message.createdAt)).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
                 }
-                Text(message.content.text).font(CaperTheme.font(14)).foregroundStyle(Color(red: 222/255, green: 223/255, blue: 224/255)).textSelection(.enabled)
+                Text(message.content.text).font(CaperTheme.font(14)).foregroundStyle(Color(red: 222/255, green: 223/255, blue: 224/255))
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    #if os(macOS)
+                    .textSelection(.enabled)
+                    #endif
                 ReactionRow(message: message, chat: chat, showPicker: showReactionPicker)
                 if let error = chat.reactionErrors[message.id] {
                     HStack(spacing: 8) {
@@ -1733,6 +1811,18 @@ private struct MessageRow: View {
                 }
             }
         }.padding(.horizontal, 18).padding(.vertical, 10)
+            // An identifier on a plain container is copied onto every child,
+            // replacing their own (add-reaction-…, reaction chips). Make the
+            // row a containing element so children keep their identifiers.
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("message-row-\(message.id)")
+        #if os(iOS)
+        row.contentShape(Rectangle())
+            .onLongPressGesture(perform: showReactionPicker)
+            .accessibilityAction(named: Text("Message actions")) { showReactionPicker() }
+        #else
+        row
+        #endif
     }
     private func timeLabel(_ value: String) -> String {
         let fractional = ISO8601DateFormatter()
@@ -1752,6 +1842,7 @@ private struct ReactionRow: View {
             ForEach(message.reactions ?? []) { reaction in
                 ReactionChip(messageID: message.id, reaction: reaction, chat: chat)
             }
+            #if os(macOS)
             Button(action: showPicker) {
                 Image(systemName: "face.smiling").font(.system(size: 16, weight: .medium))
                     .frame(width: 28, height: 28)
@@ -1765,10 +1856,14 @@ private struct ReactionRow: View {
             .disabled(chat.isPreview || chat.reactionSaving.contains(message.id) || chat.currentAuthor == nil)
             .accessibilityLabel("Add reaction")
             .accessibilityIdentifier("add-reaction-\(message.id)")
+            #endif
             if chat.reactionSaving.contains(message.id) {
                 ProgressView().controlSize(.small).accessibilityLabel("Saving reaction")
             }
         }
+        // Without .contain this identifier replaces add-reaction-<id> on the
+        // button inside the row.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("reaction-row-\(message.id)")
     }
 }
@@ -1829,6 +1924,74 @@ private struct ReactionFlowLayout: Layout {
         return (CGSize(width: width.isFinite ? width : max(0, x - spacing), height: y + rowHeight), points)
     }
 }
+
+#if os(iOS)
+private struct MessageActionsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let message: ChatMessage
+    @Binding var showingEmojiPicker: Bool
+    let canReact: Bool
+    let quickReaction: (String) -> Void
+    let selectReaction: (String) -> Void
+
+    private let quickReactions = ["👍", "❤️", "😂", "🎉", "👀"]
+
+    var body: some View {
+        Group {
+            if showingEmojiPicker {
+                ReactionPicker(select: selectReaction)
+            } else {
+                VStack(spacing: 16) {
+                    HStack(spacing: 4) {
+                        ForEach(quickReactions, id: \.self) { emoji in
+                            Button { quickReaction(emoji) } label: {
+                                EmojiArtworkView(emoji: emoji, size: 28).frame(maxWidth: .infinity, minHeight: 44)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(!canReact)
+                            .accessibilityLabel("React with \(emoji)")
+                            .accessibilityIdentifier("quick-reaction-\(emoji)")
+                        }
+                        Button { showingEmojiPicker = true } label: {
+                            Image(systemName: "face.smiling").font(.system(size: 24))
+                                .frame(maxWidth: .infinity, minHeight: 44)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!canReact)
+                        .accessibilityLabel("Add reaction")
+                        .accessibilityIdentifier("message-action-add-reaction")
+                    }
+
+                    VStack(spacing: 0) {
+                        Button {
+                            UIPasteboard.general.string = message.content.text
+                            dismiss()
+                        } label: {
+                            Label("Copy text", systemImage: "doc.on.doc").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        }
+                        Divider()
+                        Button {
+                            UIPasteboard.general.string = message.id
+                            dismiss()
+                        } label: {
+                            Label("Copy message ID", systemImage: "number").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 12)
+                    .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
+                }
+                .padding(16)
+                .font(CaperTheme.font(15))
+                .accessibilityIdentifier("message-actions-sheet")
+            }
+        }
+        .presentationBackground(CaperTheme.raised)
+        .presentationDetents(showingEmojiPicker ? [.medium, .large] : [.height(220)])
+        .presentationDragIndicator(.visible)
+    }
+}
+#endif
 
 private struct ReactionPicker: View {
     @Environment(\.dismiss) private var dismiss
@@ -1938,6 +2101,63 @@ private struct ProfileView: View {
         }.background(CaperTheme.blackout)
     }
 }
+
+#if os(macOS)
+/// The Settings scene is also available before signing in, through Caper → Settings.
+@MainActor public struct CaperSettingsView: View {
+    @State private var loginItem = CaperLoginItem.shared
+    @Bindable private var effects = CaperEffects.shared
+    public init() {}
+
+    public var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                Text("Settings").font(CaperTheme.font(20, weight: .bold))
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Startup").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                    Toggle(isOn: Binding(get: { loginItem.registered }, set: { loginItem.setEnabled($0) })) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Launch at login").font(CaperTheme.font(14))
+                            Text("Open Caper when you sign in to your computer.")
+                                .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                        }
+                    }.toggleStyle(.switch).disabled(!loginItem.available)
+                        .accessibilityIdentifier("launch-at-login")
+                    if loginItem.status == .requiresApproval {
+                        Text("Launch at login needs approval in System Settings.")
+                            .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                        Button("Open Login Items Settings…") { SMAppService.openSystemSettingsLoginItems() }
+                    }
+                    if let error = loginItem.error {
+                        Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
+                        Button("Dismiss startup error") { loginItem.error = nil }
+                    }
+                }
+                Rectangle().fill(CaperTheme.border).frame(height: 1)
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Sounds").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                    Toggle(isOn: $effects.soundsEnabled) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Caper sound effects").font(CaperTheme.font(14))
+                            Text("Play sounds for messages and app interactions.")
+                                .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                        }
+                    }.toggleStyle(.switch).accessibilityIdentifier("sound-effects")
+                }
+            }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(width: 500, height: 380)
+        .background(CaperTheme.surface)
+        .foregroundStyle(CaperTheme.text)
+        .preferredColorScheme(.dark)
+        .tint(CaperTheme.terracotta)
+        .buttonStyle(CaperSecondaryButton())
+        .accessibilityIdentifier("desktop-settings")
+        .onAppear { CaperFontLoader.register(); loginItem.refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in loginItem.refresh() }
+    }
+}
+#endif
 
 private struct WorkspaceSheetView: View {
     let item: WorkspaceSheet

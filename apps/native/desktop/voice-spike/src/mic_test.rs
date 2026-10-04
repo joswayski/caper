@@ -24,6 +24,10 @@ use tokio::sync::mpsc;
 
 const RATE: u32 = 48_000;
 const FRAME: usize = 480;
+const CAPTURE_INITIALIZATION_ERROR: &str =
+    "Microphone could not initialize. Check microphone access or choose another input.";
+pub(crate) const CAPTURE_START_ERROR: &str =
+    "Microphone could not start. Check microphone access or choose another input.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlaybackToken(u64);
@@ -226,21 +230,40 @@ impl MicTestControl {
             // live task must bind a fresh pair of private peers first.
             return Ok(());
         }
-        let track = devices
-            .capture_track
-            .as_ref()
-            .ok_or("local capture is not ready")?
-            .clone();
-        devices.input.set_adm_recording_enabled(true);
-        if !devices.input.init_recording() || !devices.input.start_recording() {
+        self.start_capture(&mut devices)
+    }
+
+    /// Commit a capture epoch only after both ADM startup stages succeed.
+    /// Failure must close the requested gate too, or a retry is skipped as
+    /// "already enabled" even though the microphone never started.
+    fn start_capture(&self, devices: &mut TestDevices) -> Result<(), String> {
+        let result = (|| {
+            let track = devices
+                .capture_track
+                .as_ref()
+                .ok_or("local capture is not ready")?;
+            devices.input.set_adm_recording_enabled(true);
+            if !devices.input.init_recording() {
+                return Err(CAPTURE_INITIALIZATION_ERROR.into());
+            }
+            if !devices.input.start_recording() {
+                return Err(CAPTURE_START_ERROR.into());
+            }
+            track.set_enabled(true);
+            devices.bound_epoch = Some(devices.capture_epoch);
+            devices.previously_live = true;
+            Ok(())
+        })();
+        if result.is_err() {
+            self.change_live_gate(devices, false);
+            devices.bound_epoch = None;
+            if let Some(track) = &devices.capture_track {
+                track.set_enabled(false);
+            }
             devices.input.stop_recording();
             devices.input.set_adm_recording_enabled(false);
-            return Err("microphone could not start capture".into());
         }
-        track.set_enabled(true);
-        devices.bound_epoch = Some(devices.capture_epoch);
-        devices.previously_live = true;
-        Ok(())
+        result
     }
 
     pub(crate) fn live_recording_enabled(&self) -> bool {
@@ -321,19 +344,7 @@ impl MicTestControl {
         {
             return Ok(false);
         }
-        let track = devices
-            .capture_track
-            .as_ref()
-            .ok_or("local capture is not ready")?
-            .clone();
-        devices.input.set_adm_recording_enabled(true);
-        if !devices.input.init_recording() || !devices.input.start_recording() {
-            devices.input.stop_recording();
-            devices.input.set_adm_recording_enabled(false);
-            return Err("microphone could not restart capture".into());
-        }
-        track.set_enabled(true);
-        devices.bound_epoch = Some(epoch);
+        self.start_capture(&mut devices)?;
         Ok(true)
     }
 
@@ -406,16 +417,7 @@ impl MicTestControl {
         if was_live {
             self.change_live_gate(&mut devices, true);
             if !devices.fresh_on_reopen {
-                devices.input.set_adm_recording_enabled(true);
-                if !devices.input.init_recording() || !devices.input.start_recording() {
-                    devices.input.stop_recording();
-                    devices.input.set_adm_recording_enabled(false);
-                    return Err("microphone could not restart capture".into());
-                }
-                if let Some(track) = &devices.capture_track {
-                    track.set_enabled(true);
-                }
-                devices.bound_epoch = Some(devices.capture_epoch);
+                self.start_capture(&mut devices)?;
             }
         }
         Ok(())
@@ -571,8 +573,19 @@ impl MicTest {
         input_guid: Option<&str>,
         output_guid: Option<&str>,
     ) -> Result<Self, String> {
-        if input_guid.is_some_and(|id| !select_device(&input, id, true)) {
-            return Err("selected microphone is unavailable".into());
+        // WebRTC initially chooses the communications default on Windows.
+        // Caper's "System default" picker chooses the normal system default;
+        // resolve it explicitly here as well, including after a fresh reopen.
+        let routed = match input_guid {
+            Some(guid) => select_device(&input, guid, true),
+            None => input.select_default_recording_device(),
+        };
+        if !routed {
+            return Err(if input_guid.is_some() {
+                "selected microphone is unavailable".into()
+            } else {
+                "system default microphone is unavailable".into()
+            });
         }
         let mut config = RtcConfiguration::default();
         config.continual_gathering_policy = ContinualGatheringPolicy::GatherOnce;
@@ -855,11 +868,11 @@ impl MicTest {
                 }
                 devices.output_acquired = true;
             }
-            if self
-                .output_guid
-                .as_deref()
-                .is_some_and(|id| !select_device(&devices.output, id, false))
-            {
+            let routed = match self.output_guid.as_deref() {
+                Some(guid) => select_device(&devices.output, guid, false),
+                None => devices.output.select_default_playout_device(),
+            };
+            if !routed {
                 return Err("selected speaker is unavailable".into());
             }
             self.playback.clear_buffer();
@@ -1608,6 +1621,104 @@ mod tests {
             "stop must close the virtual output"
         );
         assert!(test.play(true, 100).await.is_err());
+    }
+
+    #[test]
+    fn failed_capture_setup_closes_gate_and_does_not_swallow_retry() {
+        let control = MicTestControl::new();
+        for _ in 0..2 {
+            assert_eq!(
+                control.set_live_recording(true),
+                Err("local capture is not ready".into())
+            );
+            assert!(!control.live_recording_enabled());
+            assert_eq!(control.requested_epoch(), None);
+            assert_eq!(control.live_epoch(), None);
+            let devices = control.devices.lock().unwrap();
+            assert!(!devices.input.adm_recording_enabled());
+            assert!(!devices.previously_live);
+        }
+    }
+
+    #[test]
+    fn failed_capture_rebind_retires_the_requested_epoch() {
+        let control = MicTestControl::new();
+        {
+            let mut devices = control.devices.lock().unwrap();
+            control.change_live_gate(&mut devices, true);
+        }
+        let epoch = control.requested_epoch().unwrap();
+        assert_eq!(
+            control.bind_capture(epoch),
+            Err("local capture is not ready".into())
+        );
+        assert!(!control.live_recording_enabled());
+        assert_eq!(control.requested_epoch(), None);
+        assert_eq!(control.live_epoch(), None);
+        assert!(!control.bind_capture(epoch).unwrap());
+    }
+
+    #[test]
+    fn failed_input_switch_restores_live_intent_without_reopening_old_capture() {
+        use super::super::{JoinControl, LocalAudio};
+
+        for live in [false, true] {
+            let capture = MicTestControl::new();
+            capture.require_fresh_on_reopen().unwrap();
+            {
+                let mut devices = capture.devices.lock().unwrap();
+                capture.change_live_gate(&mut devices, live);
+                devices.previously_live = live;
+                devices.bound_epoch = live.then_some(devices.capture_epoch);
+            }
+            let old_epoch = capture.live_epoch();
+            let factory = PeerConnectionFactory::default();
+            let peer = factory
+                .create_peer_connection(RtcConfiguration::default())
+                .unwrap();
+            // Synthetic tracks only: no platform ADM, ICE gathering or mic.
+            let source = NativeAudioSource::new(AudioSourceOptions::default(), RATE, 1, 0);
+            let microphone = factory.create_audio_track("route-rollback-fixture", source.clone());
+            microphone.set_enabled(live);
+            let transceiver = peer
+                .add_transceiver(
+                    microphone.clone().into(),
+                    RtpTransceiverInit {
+                        direction: RtpTransceiverDirection::SendOnly,
+                        stream_ids: vec![],
+                        send_encodings: vec![],
+                    },
+                )
+                .unwrap();
+            let silence = factory.create_audio_track("route-rollback-silence", source.clone());
+            let route = JoinControl::new();
+            *route.capture.lock().unwrap() = Some(capture.clone());
+            *route.local.lock().unwrap() = Some(LocalAudio {
+                factory,
+                peer,
+                sender: transceiver.sender(),
+                microphone: microphone.clone().into(),
+                capture: capture.clone(),
+                source,
+                silence: silence.into(),
+                on_microphone: live,
+            });
+
+            assert!(route.select_input("missing-route-fixture").is_err());
+            assert!(
+                !route.is_cancelled(),
+                "the previous route is still available"
+            );
+            assert_eq!(capture.live_recording_enabled(), live);
+            assert_eq!(capture.requested_epoch().is_some(), live);
+            assert_eq!(capture.live_epoch(), None, "old capture must stay fenced");
+            if live {
+                assert_ne!(capture.requested_epoch(), old_epoch);
+            }
+            assert_eq!(microphone.enabled(), live);
+            assert_eq!(route.device_intent.lock().unwrap().input, None);
+            route.cancel();
+        }
     }
 
     #[tokio::test]

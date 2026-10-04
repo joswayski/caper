@@ -38,18 +38,20 @@ internal class LauncherAvatarRotator(
 ) {
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
 
-    suspend fun update(): Unit = withContext(Dispatchers.IO) {
+    /** Return the applied choice so in-app branding does not draw a second avatar. */
+    suspend fun update(): Int = withContext(Dispatchers.IO) {
         updateMutex.withLock {
             val savedIndex = preferences.getInt(KEY_INDEX, -1)
             val savedDay = preferences.getLong(KEY_DAY, Long.MIN_VALUE)
             val previous = savedIndex.takeIf { it in 0 until LAUNCHER_AVATAR_COUNT }
                 ?.let { LauncherAvatarAssignment(savedDay, it) }
             val today = LocalDate.now(clock.withZone(ZoneOffset.UTC)).toEpochDay()
-            if (previous?.utcDay == today) return@withLock
+            if (previous?.utcDay == today) return@withLock previous.avatarIndex
             val assignment = launcherAvatarAssignment(previous, today, randomIndex)
             if (applyAlias(assignment.avatarIndex)) {
                 preferences.edit().putLong(KEY_DAY, assignment.utcDay).putInt(KEY_INDEX, assignment.avatarIndex).commit()
-            }
+                assignment.avatarIndex
+            } else previous?.avatarIndex ?: 0
         }
     }
 

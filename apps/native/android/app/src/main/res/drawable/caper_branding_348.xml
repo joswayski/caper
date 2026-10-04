@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="256dp" android:height="256dp" android:viewportWidth="256" android:viewportHeight="256"><group>
+<group android:translateX="0" android:translateY="0"><path android:pathData="M49 156C49 111 79 78 127 76C174 72 210 97 216 143C224 190 189 220 144 224C96 230 52 201 49 156Z" android:fillColor="#90ED9E"/></group>
+<group android:translateX="0" android:translateY="0"><path android:pathData="M70 111C50 110 30 96 29 73C29 58 34 43 43 34C42 57 51 68 74 70ZM184 76C200 67 210 52 205 22C220 33 226 58 217 78C213 91 206 97 199 99Z" android:fillColor="#C7F1EC"/></group>
+<group android:translateX="0" android:translateY="0"><path android:pathData="M52 129C49 88 77 54 111 43C148 29 188 54 202 98C162 96 108 105 52 129Z" android:fillColor="#377663"/></group>
+<group android:translateX="0" android:translateY="0"><path android:pathData="M105 46C119 61 125 77 126 110L145 106C141 72 134 53 120 41Z" android:fillColor="#68C5BA"/></group>
+<group android:translateX="0" android:translateY="0"><path android:pathData="M51 122C99 101 157 91 202 94L207 114C151 112 99 126 55 145C50 140 49 131 51 122Z" android:fillColor="#6AC8BE"/></group>
+<group android:translateX="0" android:translateY="0"><path android:pathData="M62 129a5 5 0 1 0 10 0a5 5 0 1 0-10 0M87 119a5 5 0 1 0 10 0a5 5 0 1 0-10 0M115 110a5 5 0 1 0 10 0a5 5 0 1 0-10 0M145 105a5 5 0 1 0 10 0a5 5 0 1 0-10 0M176 103a5 5 0 1 0 10 0a5 5 0 1 0-10 0M113 53a5 5 0 1 0 10 0a5 5 0 1 0-10 0M123 76a5 5 0 1 0 10 0a5 5 0 1 0-10 0" android:fillColor="#8AE7E1"/></group>
+<group android:translateX="0" android:translateY="0"><path android:pathData="M101 163a8 8 0 1 0 16 0a8 8 0 1 0-16 0M166 145a8 8 0 1 0 16 0a8 8 0 1 0-16 0" android:fillColor="#0E200F"/></group>
+<group android:translateX="0" android:translateY="0"><path android:pathData="M132 172C138 175 145 172 150 166C152 163 157 166 154 170C148 179 140 182 132 178C128 177 128 172 132 172ZM177 200C188 194 196 185 201 174C203 170 208 173 206 177C200 190 191 200 180 206C176 208 173 202 177 200Z" android:fillColor="#0E200F"/></group>
+</group></vector>

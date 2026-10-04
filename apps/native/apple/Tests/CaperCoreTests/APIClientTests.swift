@@ -1153,11 +1153,16 @@ final class APIClientTests: XCTestCase {
             held = request; requested.fulfill(); return true
         }
         MockURLProtocol.handler = { _ in throw URLError(.badURL) }
+        let beforeClick = Int64(Date().timeIntervalSince1970 * 1_000)
         let joining = Task { await model.joinVoice(channel: target) }
         await fulfillment(of: [requested], timeout: 2)
         XCTAssertEqual(model.pendingVoiceChannelID, target.id)
+        let clicked = model.pendingVoiceStartedAt
+        XCTAssertGreaterThanOrEqual(clicked, beforeClick)
+        XCTAssertLessThanOrEqual(clicked, Int64(Date().timeIntervalSince1970 * 1_000))
         await model.joinVoice(channel: target)
         XCTAssertEqual(model.pendingVoiceChannelID, target.id, "Duplicate taps cannot replace the pending authorization")
+        XCTAssertEqual(model.pendingVoiceStartedAt, clicked, "Duplicate taps cannot restart the pending timer")
         XCTAssertNil(model.navigationError)
         model.leaveVoice()
         XCTAssertNil(model.pendingVoiceChannelID)

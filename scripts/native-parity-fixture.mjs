@@ -51,7 +51,7 @@ function initialState() {
     joins: new Map(channels.map(channel => [channel.id, channel.private ? [ids.owner, ids.member] : members.map(member => member.id)])),
     grants: new Map([[ids.private, [ids.owner, ids.member]]]), failures: [], challenges: new Map(),
     account, chatSessions: new Map(), sendKeys: new Map(), typingRevision: 0,
-    media: new Map([[ids.design, { type: 'snapshot', revision: 1, participants: [
+    media: new Map([[ids.design, { type: 'snapshot', revision: 1, sessionStartedAt: Date.now() - 1_701_000, participants: [
       { id: 'fixture-voice-maya', name: 'TEST FIXTURE Maya', muted: false, deafened: false, avatarId: 31 },
       { id: 'fixture-voice-alex', name: 'TEST FIXTURE Alex', muted: true, deafened: false, avatarId: 799 },
     ] }]]),
@@ -161,7 +161,10 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         if (body.media) {
           const channelId = body.media.channelId ?? ids.demo;
           if (!channelFor(channelId) || !Array.isArray(body.media.participants)) return reject(response, 400, 'invalid media fixture');
+          const previous = state.media.get(channelId);
           const snapshot = { type: 'snapshot', revision: (state.media.get(channelId)?.revision ?? 0) + 1,
+            sessionStartedAt: body.media.participants.length
+              ? body.media.sessionStartedAt ?? previous?.sessionStartedAt ?? Date.now() : null,
             participants: body.media.participants.map(({ id, name, muted, deafened }) => ({ id, name, muted, deafened })) };
           state.media.set(channelId, snapshot);
           broadcast('media', channelId, snapshot);

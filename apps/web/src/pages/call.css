@@ -228,6 +228,8 @@
 .channel-row:has(.channel-link[aria-current]) { background: rgb(182 77 50 / .14); }
 .channel-row .channel-link { min-width: 0; padding-block: 6px; background: transparent; }
 .channel-row .channel-link > span, .channel-line .channel-select > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.channel-row .channel-link > span:first-of-type, .channel-line .channel-select > span:first-of-type { flex: 1; }
+.channel-line .channel-select > .voice-session-timer, .channel-row .channel-link > .voice-session-timer { flex: none; margin-left: auto; color: var(--voice-session-green); font-size: .72rem; font-weight: 500; font-variant-numeric: tabular-nums; }
 .channel-navigation li[data-voice] { flex-wrap: wrap; }
 .channel-line { flex: 1 1 100%; }
 .channel-line:has(.channel-select[aria-current="page"]) { background: rgb(182 77 50 / .16); }

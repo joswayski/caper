@@ -46,6 +46,76 @@ const nextMoments = count => evaluate(`for (let i = 0; i < ${count}; i++) { wind
 const members = () => evaluate('return [...document.querySelectorAll(".sim-member strong")].map(el => el.textContent)');
 const voices = () => evaluate('return [...document.querySelectorAll(".sim-person strong")].map(el => el.textContent)');
 const speakers = () => evaluate('return [...document.querySelectorAll(".sim-person[data-speaking] strong")].map(el => el.textContent)');
+const checkVoiceSummary = total => {
+  const summary = evaluate(`
+    const stack = document.querySelector('.sim-sidebar .voice-stack');
+    const count = stack.querySelector('.voice-stack-count');
+    return {
+      avatars: [...stack.querySelectorAll('.voice-stack-avatar')].filter(el => el.getClientRects().length > 0).length,
+      overflow: stack.querySelector('.voice-stack-faces small')?.textContent ?? '',
+      label: count.textContent,
+      accessibleLabel: stack.getAttribute('aria-label'),
+      clipped: count.scrollWidth > count.clientWidth,
+    };
+  `);
+  assert.deepEqual(summary, {
+    avatars: 1,
+    overflow: `+${total - 1}`,
+    label: `${total} in voice`,
+    accessibleLabel: `${total} in demo voice`,
+    clipped: false,
+  }, 'One preview avatar plus the remaining people must match the full, unclipped voice total');
+};
+const pointFor = selector => evaluate(`
+    const element = document.querySelector(${JSON.stringify(selector)});
+    const box = element.getBoundingClientRect();
+    const viewport = element.closest('.sim-messages')?.getBoundingClientRect();
+    const left = Math.max(box.left, 0), right = Math.min(box.right, innerWidth);
+    const top = Math.max(box.top, viewport?.top ?? 0, 0), bottom = Math.min(box.bottom, viewport?.bottom ?? innerHeight, innerHeight);
+    for (const across of [.1, .5, .9]) for (const down of [.25, .5, .75]) {
+      const x = Math.round(left + (right - left) * across), y = Math.round(top + (bottom - top) * down);
+      const hit = document.elementFromPoint(x, y);
+      if (element.closest('.live-stage').contains(hit) && !hit.closest('[data-live-control]')) return [x, y];
+    }
+    throw new Error('Preview target is obscured: ' + ${JSON.stringify(selector)});
+  `);
+const checkReadOnlyHover = selectors => {
+  for (const selector of selectors) {
+    browser('mouse', 'move', '0', '0');
+    const appearance = () => evaluate(`
+      const style = getComputedStyle(document.querySelector(${JSON.stringify(selector)}));
+      return [style.backgroundColor, style.borderColor, style.color, style.textDecorationLine];
+    `);
+    const before = appearance();
+    const point = pointFor(selector);
+    browser('mouse', 'move', ...point.map(String));
+    assert.equal(evaluate(`return document.querySelector(${JSON.stringify(selector)}).matches(':hover')`), false, `${selector} is decorative, not a hover target`);
+    assert.deepEqual(appearance(), before, `${selector} must not highlight on hover`);
+    assert.equal(evaluate(`return getComputedStyle(document.elementFromPoint(${point.join(',')})).cursor`), 'grab');
+    assert.equal(evaluate('return getComputedStyle(document.querySelector(".live-invite")).backgroundColor'), 'rgb(243, 244, 245)', 'Hovering the illustration must not highlight the join button');
+    browser('mouse', 'down', 'left');
+    browser('mouse', 'up', 'left');
+    assert.equal(evaluate('return location.pathname'), '/', 'Decorative content clicks never navigate');
+  }
+  browser('mouse', 'move', '0', '0');
+};
+const drag = selector => {
+  const point = pointFor(selector);
+  browser('mouse', 'move', ...point.map(String));
+  browser('mouse', 'down', 'left');
+  try {
+    evaluate('window.dragStartTilt = Number(document.querySelector(".live-scene").style.transform.match(/rotateY\\(([-\\d.]+)deg\\)/)[1]);');
+    browser('mouse', 'move', String(point[0] + 40), String(point[1] + 20));
+    assert.equal(evaluate('return document.querySelector(".live-stage").hasAttribute("data-dragging")'), true, `Dragging ${selector} tilts the preview`);
+    assert.equal(evaluate(`return getComputedStyle(document.querySelector(${JSON.stringify(selector)})).cursor`), 'grabbing');
+    wait('Number(document.querySelector(".live-scene").style.transform.match(/rotateY\\(([-\\d.]+)deg\\)/)[1]) > window.dragStartTilt + 1');
+  } finally {
+    browser('mouse', 'up', 'left');
+  }
+  assert.equal(evaluate('return document.querySelector(".live-stage").hasAttribute("data-dragging")'), false);
+  assert.equal(evaluate('return location.pathname'), '/', 'Dragging never activates the join link');
+  browser('mouse', 'move', '0', '0');
+};
 
 try {
   browser('open', origin.href);
@@ -71,27 +141,47 @@ try {
   assert.deepEqual(evaluate('return [".sim-sidebar", ".sim-chat", ".sim-composer"].map(s => getComputedStyle(document.querySelector(s)).backgroundColor)'), ['rgb(21, 28, 30)', 'rgb(25, 33, 35)', 'rgb(40, 49, 51)']);
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-avatar")).borderRadius'), '30%');
   assert.deepEqual(evaluate('return [...document.fonts].filter(font => font.family === "Satoshi").map(font => [font.weight, font.display]).sort()'), [['400', 'swap'], ['500', 'swap'], ['700', 'swap'], ['900', 'swap']], 'All font weights must paint fallback text while Satoshi downloads');
-  assert.equal(evaluate('return document.querySelector(".sim-chat > header").textContent'), 'general', 'No simulated-demo badge inside the room');
+  assert.equal(evaluate('return document.querySelector(".sim-chat > header").textContent'), '# general', 'No simulated-demo badge inside the room');
   assert.equal(evaluate('return document.querySelector(".live-caption")'), null, 'No visible fictional-conversation caption');
   assert.equal(evaluate('return document.querySelector(".sim-account .account-name").textContent'), 'Maya');
-  assert.equal(evaluate('return document.querySelectorAll(".sim-account .sim-audio-icon svg").length'), 3);
+  assert.equal(evaluate('return document.querySelectorAll(".sim-account .voice-icon-button svg, .sim-account > .call-settings-trigger svg").length'), 3);
+  assert.equal(evaluate('return document.querySelectorAll(".sim-account .device-menu svg").length'), 2, 'Input and output options match the actual account dock');
+  assert.equal(evaluate('return document.querySelector(".sim-direct .direct-section-title").textContent'), 'Direct messages');
+  assert.equal(evaluate('return document.querySelector(".sim-sidebar .voice-dock strong").textContent'), 'Voice connected');
+  assert.equal(evaluate('return document.querySelector(".sim-channel .voice-session-timer").textContent'), '00:03');
+  assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-members")).width'), '220px');
+  assert.equal(evaluate('return document.querySelectorAll(".sim-member .presence-dot[data-status=online]").length'), 3);
+  assert.deepEqual(evaluate('return [".sim-sidebar .channel-navigation > header", ".sim-chat > header"].map(s => document.querySelector(s).offsetHeight)'), [54, 54], 'Sidebar and chat header dividers align');
+  checkVoiceSummary(3);
+  const [accountBounds, composerBounds] = evaluate(`
+    const geometry = selector => {
+      let element = document.querySelector(selector), top = 0;
+      const height = element.offsetHeight;
+      while (element) { top += element.offsetTop + (element.offsetParent?.clientTop ?? 0); element = element.offsetParent; }
+      return [top, height];
+    };
+    return [geometry('.sim-account'), geometry('.sim-composer')];
+  `);
+  assert.deepEqual(accountBounds, composerBounds, 'Account controls and single-line composer align');
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-sidebar .channel-select")).cursor'), 'grab');
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".live-invite")).cursor'), 'pointer');
-  const dragPoint = evaluate('const box = document.querySelector(".sim-brand").getBoundingClientRect(); return [Math.round(box.x + box.width / 2), Math.round(box.y + box.height / 2)];');
-  browser('mouse', 'move', ...dragPoint.map(String));
-  browser('mouse', 'down', 'left');
-  browser('mouse', 'move', String(dragPoint[0] + 40), String(dragPoint[1] + 20));
-  assert.equal(evaluate('return document.querySelector(".live-stage").hasAttribute("data-dragging")'), true);
-  assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-account .account-profile")).cursor'), 'grabbing');
-  browser('mouse', 'up', 'left');
-  assert.equal(evaluate('return document.querySelector(".live-stage").hasAttribute("data-dragging")'), false);
-  // The drag can leave the pointer over a roster row with its normal hover fill.
+  checkReadOnlyHover(['.sim-message:last-of-type', '.sim-reaction', '.sim-avatar', '.sim-person', '.sim-channel-list > li:last-child .channel-line', '.sim-channel-list > li:last-child .channel-select', '.channel-manage', '.channel-join', '.direct-select', '.direct-action', '.browse-channels', '.voice-dock-channel', '.voice-hangup', '.account-profile', '.voice-icon-button', '.call-settings-trigger', '.member-list-toggle']);
+  browser('hover', '.live-invite');
+  wait('getComputedStyle(document.querySelector(".live-invite")).backgroundColor === "rgb(182, 77, 50)"');
   browser('mouse', 'move', '0', '0');
+  browser('focus', '.sim-messages');
+  browser('press', 'Tab');
+  assert.equal(evaluate('return document.activeElement.matches(".live-activator")'), true, 'Tab skips decorative controls and reaches join after the scrollable history');
+  assert.notEqual(evaluate('return getComputedStyle(document.querySelector(".live-invite")).outlineStyle'), 'none', 'The real join link keeps keyboard focus feedback');
+  evaluate('document.activeElement.blur();');
+  console.log('PASS: decorative messages, reactions, profiles, invite, channel and voice controls never highlight or navigate; only join keeps hover and keyboard focus feedback');
+  for (const selector of ['.sim-brand', '.sim-members-heading', '.sim-chat > header h2', '.sim-message:last-of-type p', '.sim-meme', '.sim-reaction img', '.sim-composer']) drag(selector);
+  console.log('PASS: both sidebars, chat header, message text, meme image and composer drag the preview without navigating');
   assert.equal(evaluate('return document.querySelector(".sim-composer").tagName'), 'DIV');
   assert.equal(evaluate('return document.querySelectorAll(".sim-demo :is(button, a, input, textarea, [role=button])").length'), 0, 'Join is the only action; the room is read-only');
   assert.equal(evaluate('return document.querySelectorAll(".live-stage a").length'), 1);
   assert.ok(!evaluate('return /joined voice|joined the channel|Try a reaction|tomato-soup/.test(document.querySelector(".sim-demo").textContent)'));
-  assert.deepEqual(evaluate('return [...document.querySelectorAll(".sim-sidebar .channel-select > span")].map(el => el.textContent)'), ['general', 'feedback']);
+  assert.deepEqual(evaluate('return [...document.querySelectorAll(".sim-channel-list .channel-select > span:first-of-type")].map(el => el.textContent)'), ['general', 'feedback']);
   assert.notEqual(evaluate('return getComputedStyle(document.querySelector(".sim-members")).display'), 'none');
   assert.ok(evaluate('return !!document.querySelector(".sim-people").closest("li[data-voice]")?.querySelector(".channel-select[aria-current=page]")'), 'Voice participants belong beneath their channel');
   assert.ok(!evaluate('return document.querySelector(".sim-sidebar").textContent.includes("In voice")'));
@@ -123,6 +213,7 @@ try {
   assert.deepEqual(speakers(), ['Maya', 'Theo']);
   nextMoments(2); // 10
   assert.ok(voices().includes('Leo'));
+  checkVoiceSummary(4);
   nextMoments(1); // 11
   assert.deepEqual(speakers(), ['June', 'Leo']);
   nextMoments(1); // 12: two messages arrive in the same second
@@ -134,26 +225,33 @@ try {
   assert.equal(evaluate('return document.querySelectorAll(".sim-message").length'), 9, 'Keep every posted message, not just the latest three');
   assert.ok(evaluate('return window.firstDemoMessage === document.querySelector(".sim-message") && window.firstDemoMessage.textContent.includes("okay, this made my entire morning")'));
   assert.ok(evaluate('const el = document.querySelector(".sim-messages"); return el.scrollHeight > el.clientHeight && el.scrollHeight - el.scrollTop - el.clientHeight <= 1;'), 'Full-height history follows new posts');
-  evaluate('const el = document.querySelector(".sim-messages"); el.scrollTop = 0; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));');
+  browser('scroll', 'up', '10000', '--selector', '.sim-messages');
+  wait('document.querySelector(".sim-messages").scrollTop === 0');
   nextMoments(7); // 22
   assert.ok(members().includes('Maya'));
   assert.ok(!voices().includes('Maya'));
+  assert.equal(evaluate('return document.querySelector(".sim-sidebar .voice-dock")'), null, 'The voice dock reflects Maya leaving voice');
+  checkVoiceSummary(4);
   assert.equal(evaluate('return document.querySelector(".sim-messages").scrollTop'), 0, 'Reading older messages is not interrupted by new posts');
   evaluate('const el = document.querySelector(".sim-messages"); el.scrollTop = el.scrollHeight; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));');
   nextMoments(16); // 38
   assert.equal(voices().length, 6);
+  checkVoiceSummary(6);
   nextMoments(1); // 39
   assert.ok(!members().includes('June'));
   assert.ok(!voices().includes('June'));
+  checkVoiceSummary(5);
   nextMoments(6); // 45
   assert.equal(members().length, 6);
   assert.equal(voices().length, 6);
+  checkVoiceSummary(6);
   assert.equal(evaluate('return document.querySelectorAll(".sim-person .participant-country").length'), 0, 'Joining/rejoining demo participants have no flags');
   assert.ok(evaluate('return document.querySelector(".sim-messages").textContent.includes("back with cookies. let’s gooo")'));
   assert.equal(evaluate('return document.querySelectorAll(".sim-message").length'), 24);
   nextMoments(4); // 0: new loop, but the previous conversation stays
   assert.deepEqual(members(), ['Maya', 'Theo', 'June']);
   assert.deepEqual(voices(), ['Maya', 'Theo', 'June']);
+  checkVoiceSummary(3);
   assert.equal(evaluate('return document.querySelectorAll(".sim-message").length'), 25);
   assert.ok(evaluate('return window.firstDemoMessage === document.querySelector(".sim-message")'), 'Keep the same message nodes through the loop boundary');
   assert.equal(evaluate('return document.querySelectorAll(".sim-message:last-of-type .sim-reaction").length'), 0, 'New loop message starts without reactions');
@@ -218,8 +316,14 @@ try {
   // and dragging were exercised above; use the stable view for account fixtures.
   browser('set', 'media', 'dark', 'reduced-motion');
   browser('open', origin.href);
-  wait('document.querySelector(".live-stage[data-ready]")');
+  wait('document.querySelector(".live-stage[data-ready]") && typeof window.advanceDemoClock === "function" && !window.demoClockActive');
   evaluate('await document.fonts.ready; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));');
+  checkVoiceSummary(3);
+  console.log('PASS: one avatar plus remaining participants matches 3–6 voice occupants through joins, leaves and loop resets; desktop and narrow totals are not clipped');
+  browser('scrollintoview', '.sim-message:last-of-type p');
+  checkReadOnlyHover(['.sim-message:last-of-type', '.sim-reaction', '.sim-person', '.account-profile', '.voice-icon-button', '.call-settings-trigger', '.member-list-toggle']);
+  drag('.sim-message:last-of-type p');
+  assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-messages")).cursor'), 'grab');
   const gap = evaluate('return document.querySelector(".live-scene").getBoundingClientRect().top - document.querySelector(".hero-lede").getBoundingClientRect().bottom');
   assert.ok(gap >= 40, `Mobile demo needs clearance above its projected edge; got ${gap}px`);
   assert.notEqual(evaluate('return getComputedStyle(document.querySelector(".sim-sidebar .channel-navigation > ul > li:last-child")).display'), 'none', 'Feedback stays visible on mobile');

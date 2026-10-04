@@ -1,0 +1,104 @@
+import { useEffect, useRef, useState, type ComponentType } from "react";
+import { autoUpdate, flip, FloatingFocusManager, FloatingOverlay, FloatingPortal, offset, shift, useDismiss, useFloating, useInteractions, useRole } from "@floating-ui/react";
+import { Copy, Hash, SmilePlus, X } from "lucide-react";
+import type { ChatMessage } from "./types.ts";
+import { emojiAsset, emojiCode, preloadEmojiImages } from "./emoji.ts";
+
+export interface MessageActionTarget {
+  messageId: string;
+  anchor: HTMLElement;
+  anchorRect?: DOMRect;
+  mode: "actions" | "emoji";
+  drawer: boolean;
+}
+
+const quickReactions = ["👍", "❤️", "😂", "🎉", "👀"];
+
+export function preloadReactionPicker() {
+  void import("./ReactionPicker.tsx").catch(() => {});
+  void preloadEmojiImages();
+}
+
+export default function MessageActions({ message, target, authorId, canReact, onReact, onClose, onCopied }: {
+  message: ChatMessage;
+  target: MessageActionTarget;
+  authorId?: string;
+  canReact: boolean;
+  onReact: (messageId: string, emoji: string, active: boolean) => Promise<void>;
+  onClose: () => void;
+  onCopied: (status: string) => void;
+}) {
+  const [mode, setMode] = useState(target.mode);
+  const [Picker, setPicker] = useState<ComponentType<{ onSelect: (emoji: string) => void }>>();
+  const [loadError, setLoadError] = useState(false);
+  const [copyError, setCopyError] = useState<string>();
+  const returnFocus = useRef(target.anchor);
+  const { refs, floatingStyles, context } = useFloating({
+    open: true, onOpenChange: (open) => { if (!open) onClose(); }, placement: "bottom-end", strategy: "fixed",
+    middleware: [offset(6), flip(), shift({ padding: 12 })], whileElementsMounted: autoUpdate,
+  });
+  const { getFloatingProps } = useInteractions([useDismiss(context), useRole(context)]);
+  useEffect(() => {
+    refs.setReference(target.anchor);
+    // The preview/list handoff can replace a row while its picker is open.
+    // Preserve the trigger's last position instead of anchoring at (0, 0).
+    refs.setPositionReference({
+      contextElement: target.anchor,
+      getBoundingClientRect: () => target.anchor.isConnected ? target.anchor.getBoundingClientRect() : target.anchorRect ?? target.anchor.getBoundingClientRect(),
+    });
+  }, [target.anchor, target.anchorRect, refs.setReference, refs.setPositionReference]);
+  useEffect(() => { if (!canReact && mode === "emoji") onClose(); }, [canReact, mode, onClose]);
+  useEffect(() => {
+    if (mode !== "emoji" || Picker) return;
+    let current = true;
+    import("./ReactionPicker.tsx").then((module) => { if (current) setPicker(() => module.default); }, () => { if (current) setLoadError(true); });
+    return () => { current = false; };
+  }, [mode, Picker]);
+
+  const react = (emoji: string, active: boolean) => {
+    if (!canReact) return;
+    onClose();
+    void onReact(message.id, emoji, active);
+  };
+  const copy = async (text: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      onCopied(`${label} copied.`);
+      onClose();
+    } catch { setCopyError("Couldn’t copy. Check clipboard permission and try again."); }
+  };
+
+  const panel = <FloatingFocusManager context={context} returnFocus={returnFocus}>
+    <div className={mode === "actions" ? "chat-message-actions" : `chat-reaction-picker${target.drawer ? " chat-reaction-picker-drawer" : ""}`}
+      ref={refs.setFloating} style={target.drawer ? undefined : floatingStyles} aria-label={mode === "actions" ? "Message actions" : "Choose a reaction"} {...getFloatingProps()}>
+      {target.drawer && <div className="chat-drawer-handle" aria-hidden="true" />}
+      <div className="chat-reaction-picker-heading"><strong>{mode === "actions" ? "Message actions" : "Add a reaction"}</strong>
+        <button type="button" aria-label={mode === "actions" ? "Close message actions" : "Close emoji picker"} onClick={onClose}><X size={18} /></button>
+      </div>
+      {mode === "actions" ? <div className="chat-message-actions-body">
+        {canReact && <div className="chat-quick-reactions" aria-label="Quick reactions">
+          {quickReactions.map((emoji) => {
+            const mine = !!authorId && !!message.reactions?.some((reaction) => reaction.emoji === emoji && reaction.authorIds.includes(authorId));
+            return <button type="button" key={emoji} aria-label={`React with ${emoji}`} aria-pressed={mine} onClick={() => react(emoji, !mine)}>
+              <img src={emojiAsset(emojiCode(emoji))} width={28} height={28} alt="" />
+            </button>;
+          })}
+          <button type="button" aria-label="Add reaction" onMouseEnter={preloadReactionPicker} onFocus={preloadReactionPicker}
+            onClick={() => setMode("emoji")}><SmilePlus size={24} aria-hidden="true" /></button>
+        </div>}
+        <div className="chat-copy-actions">
+          <button type="button" onClick={() => void copy(message.content.text, "Text")}><Copy size={20} aria-hidden="true" />Copy text</button>
+          <button type="button" onClick={() => void copy(message.id, "Message ID")}><Hash size={20} aria-hidden="true" />Copy message ID</button>
+        </div>
+        {copyError && <p className="chat-action-error" role="alert">{copyError}</p>}
+      </div> : <div className="chat-reaction-picker-body">
+        {Picker ? <Picker onSelect={(emoji) => react(emoji, true)} />
+          : <p role={loadError ? "alert" : "status"}>{loadError ? "Couldn’t load emoji. Close and try again." : "Loading emoji…"}</p>}
+      </div>}
+    </div>
+  </FloatingFocusManager>;
+
+  return <FloatingPortal root={target.anchor.closest<HTMLElement>(".live-scene") ?? undefined}>
+    {target.drawer ? <FloatingOverlay lockScroll className="chat-actions-overlay">{panel}</FloatingOverlay> : panel}
+  </FloatingPortal>;
+}

@@ -33,6 +33,7 @@ class VoiceEngine(
     private val channelId: String,
     private val displayName: String,
     private val demo: Boolean = false,
+    private val joinStartedAt: Long = System.currentTimeMillis(),
     private val onTransportState: (PeerConnection.PeerConnectionState) -> Unit = {},
 ) {
     private val appContext = context.applicationContext
@@ -105,7 +106,7 @@ class VoiceEngine(
         }
     } }
 
-    suspend fun connect(onParticipants: (List<Participant>) -> Unit) = withContext(Dispatchers.IO) {
+    suspend fun connect(onParticipants: (MediaSnapshot) -> Unit) = withContext(Dispatchers.IO) {
         val started = monotonicMs()
         try {
             // Model copy/warmup can take seconds and must not hold the resource
@@ -141,7 +142,7 @@ class VoiceEngine(
             // either publish the token or leave it after a local stop.
             val sessionStarted = monotonicMs()
             val joined: JoinResponse? = withContext(NonCancellable) {
-                val result: JoinResponse = media("join", buildJsonObject { put("name", displayName); put("muted", muted); put("deafened", deafened) })
+                val result: JoinResponse = media("join", buildJsonObject { put("name", displayName); put("muted", muted); put("deafened", deafened); put("joinStartedAt", joinStartedAt) })
                 if (resources.acceptToken(result.token) { mediaToken = it; selfId = result.id; turn = result.turn }) result
                 else {
                     // Stop preceded response: closeLocal never saw this token.
@@ -217,26 +218,26 @@ class VoiceEngine(
         }
     }
 
-    suspend fun heartbeat(onParticipants: (List<Participant>) -> Unit) = lock.withLock {
+    suspend fun heartbeat(onParticipants: (MediaSnapshot) -> Unit) = lock.withLock {
         // A heartbeat that lands during a transport blip waits for recovery;
         // throwing here ended the whole call.
         if (connectionState.value != PeerConnection.PeerConnectionState.CONNECTED) return@withLock
         reconcile(onParticipants)
     }
 
-    private suspend fun reconcile(onParticipants: (List<Participant>) -> Unit) {
+    private suspend fun reconcile(onParticipants: (MediaSnapshot) -> Unit) {
         val token = mediaToken ?: return
         val snapshot: MediaSnapshot = media("snapshot", mediaToken = token)
         reconcile(snapshot, onParticipants, token)
     }
 
-    suspend fun applySnapshot(snapshot: MediaSnapshot, onParticipants: (List<Participant>) -> Unit) = lock.withLock {
+    suspend fun applySnapshot(snapshot: MediaSnapshot, onParticipants: (MediaSnapshot) -> Unit) = lock.withLock {
         reconcile(snapshot, onParticipants, mediaToken ?: return@withLock)
     }
 
-    private suspend fun reconcile(snapshot: MediaSnapshot, onParticipants: (List<Participant>) -> Unit, token: String) {
+    private suspend fun reconcile(snapshot: MediaSnapshot, onParticipants: (MediaSnapshot) -> Unit, token: String) {
         check(resources.isOpen) { "Voice call ended." }
-        onParticipants(snapshot.participants)
+        onParticipants(snapshot)
         synchronized(remoteLock) {
             check(resources.isOpen) { "Voice call ended." }
             participantForTrack.clear()
@@ -270,7 +271,7 @@ class VoiceEngine(
         private set
 
     /** Re-read the roster to pull tracks that were not ready at the last reconcile. */
-    suspend fun retryUnavailable(onParticipants: (List<Participant>) -> Unit) = lock.withLock {
+    suspend fun retryUnavailable(onParticipants: (MediaSnapshot) -> Unit) = lock.withLock {
         if (hasUnavailableTracks && resources.isOpen) reconcile(onParticipants)
     }
 

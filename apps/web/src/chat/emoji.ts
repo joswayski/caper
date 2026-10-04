@@ -9,3 +9,16 @@ export function emojiAsset(unified: string) {
 export function emojiCode(emoji: string) {
   return Array.from(emoji, (point) => point.codePointAt(0)!.toString(16)).join("-");
 }
+
+let imagePreload: Promise<void> | undefined;
+export function preloadEmojiImages() {
+  return imagePreload ??= fetch("/emoji/twemoji-15/preload.json").then(async (response) => {
+    if (!response.ok) throw new Error("Emoji preload unavailable.");
+    const unified: string[] = await response.json();
+    await Promise.all(unified.map((code) => {
+      const image = new Image();
+      image.src = emojiAsset(code);
+      return image.decode();
+    }));
+  }).catch(() => { imagePreload = undefined; });
+}

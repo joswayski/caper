@@ -67,8 +67,10 @@ button:disabled, :is(button, a, summary)[aria-disabled="true"] { cursor: default
 .login-button { display: inline-flex; align-items: center; min-height: 44px; padding: 0 18px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font-weight: 700; text-decoration: none; }
 .login-button:hover { border-color: var(--terracotta); }
 .login-button:focus-visible { outline: 2px solid var(--terracotta); outline-offset: 4px; }
-.wordmark { display: inline-flex; align-items: center; flex: none; width: 132px; }
+.wordmark { position: relative; display: inline-flex; align-items: center; flex: none; width: 132px; }
 .wordmark img { display: block; width: 100%; height: auto; }
+/* Dot slot: (924, 108), 132px square in the original (20 17 1042 276) viewBox. */
+.wordmark .wordmark-character { position: absolute; left: 86.756238%; top: 32.971014%; width: 12.667946%; aspect-ratio: 1; }
 .wordmark:focus-visible { outline: 2px solid var(--terracotta); outline-offset: 4px; }
 /* The live window is the page: copy takes a narrow column, the window the rest.
    Opening the window expands it over this whole box (see LiveWindow). */
@@ -157,6 +159,9 @@ button:disabled, :is(button, a, summary)[aria-disabled="true"] { cursor: default
 .contact-action svg { width: 14px; height: 14px; }
 .contact-action:hover { color: var(--terracotta-bright); }
 .contact-action:focus-visible { outline: 2px solid var(--terracotta); outline-offset: 2px; }
+.contact-label { display: inline-grid; text-align: left; }
+.contact-label > span { grid-area: 1 / 1; }
+.contact-label > [aria-hidden] { visibility: hidden; }
 .contact-feedback { display: block; overflow-wrap: anywhere; font-size: .75rem; }
 .not-found { min-height: 100vh; display: grid; place-content: center; text-align: center; padding: 24px; }
 .not-found p { color: var(--terracotta); font-weight: 700; }

@@ -30,7 +30,8 @@ fi
 set +e
 xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme "$scheme" -configuration Debug \
   -destination "$destination" -derivedDataPath "$ROOT/DerivedData-Parity" \
-  -resultBundlePath "$ROOT/ParityResults.xcresult" test
+  -resultBundlePath "$ROOT/ParityResults.xcresult" \
+  -test-timeouts-enabled YES -default-test-execution-time-allowance 300 -maximum-test-execution-time-allowance 600 test
 xcodebuild_status=$?
 set -e
 if [[ -d "$ROOT/ParityResults.xcresult" ]]; then

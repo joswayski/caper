@@ -151,9 +151,9 @@
 .live-activator:focus-visible .live-invite { outline: calc(2px * var(--counter-scale)) solid #fff; outline-offset: 3px; }
 .live-invite i { position: relative; width: 8px; height: 8px; border-radius: 50%; background: var(--caper); }
 .live-invite i::after { position: absolute; inset: -4px; content: ""; border: 1.5px solid var(--caper); border-radius: 50%; animation: live-ping 2s ease-out infinite; }
-.live-stage:hover .live-invite, .live-activator:focus-visible .live-invite { color: #fff; background: var(--terracotta); }
-.live-stage:hover .live-invite i, .live-activator:focus-visible .live-invite i { background: #fff; }
-.live-stage:hover .live-invite i::after, .live-activator:focus-visible .live-invite i::after { border-color: #fff; }
+.live-invite:hover, .live-activator:focus-visible .live-invite { color: #fff; background: var(--terracotta); }
+.live-invite:hover i, .live-activator:focus-visible .live-invite i { background: #fff; }
+.live-invite:hover i::after, .live-activator:focus-visible .live-invite i::after { border-color: #fff; }
 .live-invite-coarse { display: none; }
 @media (pointer: coarse) {
   .live-invite-fine { display: none; }
@@ -162,71 +162,62 @@
 @keyframes live-invite-in { from { opacity: 0; transform: translateY(12px) scale(var(--counter-scale)); } }
 
 /* The conversation keeps a native scrolling history in the tilted scene. */
-.sim-demo { height: 100%; min-width: 0; display: grid; grid-template-columns: 60px 260px minmax(0, 1fr) 150px; overflow: hidden; border-radius: inherit; background: var(--surface-conversation); transform: translateZ(1px); }
+.sim-demo { --channel-sidebar-inset: 12px; height: 100%; min-width: 0; display: grid; grid-template-columns: 60px 260px minmax(0, 1fr) 220px; overflow: hidden; border-radius: inherit; background: var(--surface-conversation); transform: translateZ(1px); }
+/* Decorative content must not trigger the real app's hover styles or profile
+   tooltips. Keep hit testing only on scroll regions; presses still reach the
+   stage's drag handler. The join link sits outside this illustration. */
+.sim-demo, .sim-demo * { pointer-events: none; }
+.sim-demo :is(.sim-channel-list, .sim-messages, .sim-members) { pointer-events: auto; }
 .sim-rail { position: relative; padding-top: 14px; border-right: 1px solid var(--border); background: var(--blackout); }
 .sim-rail::before { position: absolute; left: 0; top: 22px; width: 3px; height: 24px; border-radius: 0 3px 3px 0; background: var(--terracotta-bright); content: ""; }
 .sim-rail > span { display: grid; place-items: center; width: 40px; height: 40px; margin-inline: auto; border: 1px solid #805143; border-radius: 8px; background: #39231e; font-size: .8rem; font-weight: 850; }
+.sim-rail > .sim-add-space { margin-top: 10px; border-color: var(--border); border-style: dashed; border-radius: 12px; color: var(--terracotta-bright); background: var(--surface); }
+.sim-add-space svg { width: 18px; }
 /* Use the real sidebar/channel/voice CSS, not a second imitation of its roster. */
+.sim-sidebar .sidebar-channels { padding: 0 12px 18px; }
 .sim-brand { display: flex; flex: 1; align-items: center; justify-content: space-between; padding: 6px 8px; font-size: .94rem; font-weight: 750; letter-spacing: -.02em; }
 .sim-brand svg { width: 16px; color: var(--text-muted); }
-.sim-section-title { padding: 4px 6px; color: var(--text-muted); font-size: .76rem; font-weight: 750; }
-.sim-sidebar .channel-select { cursor: inherit; }
-.sim-sidebar .voice-stack { pointer-events: none; }
-.sim-account { margin-top: auto; border-top: 1px solid var(--border); background: var(--surface); }
-.sim-account .account-profile { cursor: inherit; }
-.sim-account .account-profile:hover { background: transparent; }
-.sim-account .account-avatar > .sim-avatar { width: 100%; height: 100%; }
-.sim-presence { position: absolute; right: -2px; bottom: -2px; width: 10px; height: 10px; border: 2px solid var(--surface); border-radius: 50%; background: var(--caper); }
-.sim-audio-icon { display: grid; flex: none; place-items: center; width: 28px; height: 30px; color: var(--text-muted); }
-.sim-audio-icon svg { width: 17px; height: 17px; }
+.sim-section-toggle { display: flex; flex: 1; align-items: center; gap: 6px; padding: 4px 6px; color: var(--text-muted); font-size: .76rem; font-weight: 750; }
+.sim-section-toggle .section-count { margin-left: 0; }
+.sim-section-actions { display: flex; gap: 8px; color: var(--text-muted); }
+.sim-sidebar .sim-channel-list { flex: 1; min-height: 0; align-content: start; overflow-y: auto; }
+.sim-demo :is(.channel-select, .channel-manage, .voice-stack, .channel-join, .browse-channels, .voice-dock-channel, .voice-hangup, .account-profile, .voice-icon-button, .call-settings-trigger, .member-list-toggle, .chat-reaction) { cursor: inherit; }
+.sim-demo :is(.voice-stack-avatar, .direct-avatar, .account-avatar, .member-presence-avatar) > .sim-avatar { width: 100%; height: 100%; }
+/* Match the single-line composer, including its outer bottom inset. */
+.sim-voice-panel { margin-bottom: 11px; }
 .sim-voice-avatar > .sim-avatar { width: 100%; height: 100%; }
-.sim-members { min-width: 0; border-left: 1px solid var(--border); background: var(--surface-sidebar); }
-.sim-members-heading { display: flex; align-items: center; justify-content: space-between; min-height: 54px; padding: 8px 12px; color: var(--text-muted); font-size: .75rem; font-weight: 700; }
-.sim-member { display: flex; align-items: center; gap: 10px; padding: 8px 12px; font-size: .78rem; }
 .sim-person { animation: sim-enter .35s ease-out both; }
 .sim-avatar { width: 34px; height: 34px; display: block; flex: none; border-radius: var(--radius-avatar); background-size: 100% 100%; }
-.sim-time { margin-left: 7px; font-size: .65rem; color: var(--text-muted); }
-.sim-chat { min-width: 0; min-height: 0; display: grid; grid-template-rows: 54px minmax(0, 1fr) auto auto; background: var(--surface-conversation); }
-.sim-chat > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 18px; border-bottom: 1px solid var(--border); }
-.sim-chat > header div { display: flex; align-items: center; gap: 7px; }
-.sim-chat > header svg { width: 17px; color: var(--text-muted); }
-.sim-chat > header strong { font-size: .88rem; }
+.sim-chat { min-height: 0; grid-template-rows: 54px minmax(0, 1fr) auto auto; }
 .sim-messages { min-height: 0; overflow: hidden auto; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
-.sim-messages { cursor: auto; }
 .sim-messages:focus-visible { outline: 2px solid var(--terracotta); outline-offset: -2px; }
-.sim-message-list { display: flex; flex-direction: column; gap: 3px; padding: 12px 0; }
-.sim-message { position: relative; flex-shrink: 0; display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 10px; padding: 10px 18px; animation: sim-enter .35s ease-out both; }
-.sim-message strong { font-size: .82rem; }
-.sim-message p { margin: 4px 0 0; color: #dedfe0; font-size: .86rem; line-height: 1.5; overflow-wrap: anywhere; }
+.sim-message-list { display: flex; flex-direction: column; padding: 12px 0; }
+.sim-message { flex-shrink: 0; animation: sim-enter .35s ease-out both; }
 .sim-meme { display: block; width: 140px; max-width: 100%; height: auto; margin-top: 8px; border: 1px solid var(--border); border-radius: 8px; }
-.sim-typing { min-height: 22px; display: flex; align-items: center; gap: 4px; margin: 0 18px 8px 58px; color: var(--text-muted); font-size: .65rem; }
-.sim-typing i { width: 4px; height: 4px; border-radius: 50%; background: var(--text-muted); animation: sim-dot 1s ease-in-out infinite alternate; }
-.sim-typing i:nth-child(2) { animation-delay: .15s; }
-.sim-typing i:nth-child(3) { margin-right: 3px; animation-delay: .3s; }
-.sim-reactions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
 .sim-reactions:empty { display: none; }
-.sim-reaction { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 8px; color: var(--text-muted); background: var(--surface); font-size: .7rem; }
 .sim-reaction img { width: 18px; height: 18px; }
-.sim-footer { padding: 12px 18px; border-top: 1px solid var(--border); }
-.sim-composer { padding: 10px 11px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-composer); color: var(--text-muted); font-size: .85rem; line-height: 1.4; }
+.sim-composer { min-height: 42px; padding: 10px 11px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-composer); color: var(--text-muted); font-size: .85rem; line-height: 1.4; }
 @keyframes sim-enter { from { opacity: 0; transform: translateY(6px); } }
-@keyframes sim-dot { to { opacity: .25; transform: translateY(-2px); } }
 
 @media (max-width: 1099px) {
   .sim-demo { grid-template-columns: 60px 260px minmax(0, 1fr); }
   .sim-members { display: none; }
 }
 
-@media (max-width: 640px) {
+@media (max-width: 760px) {
   .sim-demo { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
   .sim-rail, .sim-section-title { display: none; }
-  .sim-sidebar .sidebar-channels { padding: 8px 12px; }
+  /* The homepage shows navigation and chat together; the real app switches
+     between them. Keep this read-only phone illustration compact. */
+  .sim-demo.spaces-room.navigation-open > .sim-sidebar { display: flex; }
+  .sim-demo .sim-sidebar > .sidebar-channels { margin: 0; padding: 8px 12px; border-radius: 0; }
+  .sim-demo .sim-sidebar > .sim-voice-panel { margin: 0 12px 11px; }
   .sim-sidebar .channel-navigation > header { display: none; }
+  .sim-direct, .sim-sidebar .browse-channels, .sim-sidebar .voice-dock { display: none; }
+  .sim-channel-list > li:last-child .channel-voice { display: none; }
   /* Keep every demo participant visible without taking over the phone card. */
   .sim-sidebar .voice-occupants .voice-occupants-inner > ul { grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: none; }
-  .sim-chat { grid-template-rows: 48px minmax(0, 1fr) auto auto; }
-  .sim-chat > header { padding-inline: 12px; }
-  .sim-message { padding: 5px 13px; }
+  .sim-message { padding-block: 5px; }
   .sim-meme { width: 96px; }
 }
 

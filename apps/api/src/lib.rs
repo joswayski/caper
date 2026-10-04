@@ -826,6 +826,9 @@ struct Registry {
     cleanup: VecDeque<CleanupJob>,
     reservations: HashMap<Uuid, JoinReservation>,
     revision: u64,
+    /// The continuous occupied voice session; monitors never start one.
+    #[serde(default)]
+    session_started_at: Option<Timestamp>,
     /// Provider sessions and TURN created shortly before a signed-in member joins.
     #[serde(default)]
     prepared: Vec<PreparedJoin>,
@@ -1330,7 +1333,9 @@ async fn account_profile(
     {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid profile"));
     }
-    if state.reserved_usernames.contains(&username) {
+    if principal.user.username.as_deref() != Some(username.as_str())
+        && state.reserved_usernames.contains(&username)
+    {
         return Err(ApiError::new(StatusCode::CONFLICT, "username unavailable"));
     }
     let pool = state.database.as_ref().ok_or_else(|| {
@@ -1679,6 +1684,10 @@ struct Join {
     muted: bool,
     #[serde(default)]
     deafened: bool,
+    /// Join-click time, shared with spectators once admission succeeds. Bound
+    /// client clock skew/backdating to the same 30 s window as reservations.
+    #[serde(default, rename = "joinStartedAt")]
+    join_started_at: Option<Timestamp>,
     /// The browser's first microphone offer. Publishing it inside join saves a
     /// signaling round trip; the same handler state machine runs either way.
     #[serde(default)]
@@ -1705,6 +1714,11 @@ async fn join(
     headers: HeaderMap,
     Json(input): Json<Join>,
 ) -> Result<Json<Value>, ApiError> {
+    let now = Timestamp::now();
+    let joined_at = input
+        .join_started_at
+        .unwrap_or(now)
+        .clamp(now - Duration::from_secs(30), now);
     ensure_enabled(&s)?;
     let submitted_name = input.name.as_deref().unwrap_or_default().trim();
     let account = if let Some(token) = account_token(&headers) {
@@ -1968,7 +1982,7 @@ async fn join(
         deafened: input.deafened,
         state_sequence: 0,
         lease: Timestamp::now(),
-        joined: Timestamp::now(),
+        joined: joined_at,
         tracks: HashMap::new(),
         subscriptions: HashMap::new(),
         pending_offer: false,
@@ -2813,6 +2827,16 @@ struct TrackView {
     id: Uuid,
     kind: Kind,
 }
+fn voice_session_started_at(r: &Registry) -> Option<Timestamp> {
+    // Older stored rooms have no session timestamp. Seed them from the oldest
+    // real participant, then persist it before membership changes.
+    r.participants
+        .values()
+        .filter(|p| p.monitor.is_none())
+        .map(|p| p.joined)
+        .min()
+        .map(|first| r.session_started_at.unwrap_or(first))
+}
 fn public_snapshot(r: &Registry) -> Value {
     let mut participants: Vec<_> = r
         .participants
@@ -2842,7 +2866,7 @@ fn public_snapshot(r: &Registry) -> Value {
             }
         })
         .collect();
-    json!({"participants":participants,"revision":r.revision})
+    json!({"participants":participants,"revision":r.revision,"sessionStartedAt":voice_session_started_at(r)})
 }
 #[derive(Serialize)]
 struct PresenceView<'a> {
@@ -2871,7 +2895,7 @@ fn presence_snapshot(r: &Registry) -> Value {
         })
         .collect();
     participants.sort_by_key(|p| p.id);
-    json!({"participants":participants,"revision":r.revision})
+    json!({"participants":participants,"revision":r.revision,"sessionStartedAt":voice_session_started_at(r)})
 }
 async fn snapshot(
     State(s): State<AppState>,

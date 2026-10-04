@@ -134,6 +134,9 @@ export default defineConfig(async () => {
         "/audio/resampler-v1/**": {
           headers: { "cache-control": "public, max-age=31536000, immutable" },
         },
+        "/emoji/twemoji-15/**": {
+          headers: { "cache-control": "public, max-age=31536000, immutable" },
+        },
         "/assets/**": {
           headers: { "cache-control": "public, max-age=31536000, immutable" },
         },
@@ -141,6 +144,9 @@ export default defineConfig(async () => {
           headers: { "cache-control": "public, max-age=31536000, immutable" },
         },
         "/images/avatars/v3/**": {
+          headers: { "cache-control": "public, max-age=31536000, immutable" },
+        },
+        "/images/branding/v1/**": {
           headers: { "cache-control": "public, max-age=31536000, immutable" },
         },
         "/images/**": {

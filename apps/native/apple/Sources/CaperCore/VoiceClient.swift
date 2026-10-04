@@ -27,7 +27,7 @@ public struct IceServer: Decodable, Sendable {
 private struct TurnGeneration: Codable { let generation: String; let refreshAfterMs: Int; let expiresInMs: Int }
 private struct JoinResponse: Decodable { let token: String; let id: String; let iceServers: [IceServer]; let turn: TurnGeneration? }
 private struct TurnResponse: Decodable { let iceServers: [IceServer]; let turn: TurnGeneration }
-private struct JoinBody: Encodable { let name: String; let muted: Bool; let deafened: Bool }
+private struct JoinBody: Encodable { let name: String; let muted: Bool; let deafened: Bool; let joinStartedAt: Int64 }
 private struct SDP: Codable { let type: String; let sdp: String }
 private struct PublishBody: Encodable { let kind = "microphone"; let mid: String; let sessionDescription: SDP }
 private struct TrackRef: Decodable { let mid: String }
@@ -45,7 +45,11 @@ public struct VoiceParticipant: Decodable, Identifiable, Sendable {
     public let deafened: Bool
     fileprivate let tracks: [VoiceTrack]
 }
-private struct VoiceSnapshot: Decodable { let participants: [VoiceParticipant]; let revision: Int? }
+struct VoiceSnapshot: Decodable {
+    let participants: [VoiceParticipant]
+    let revision: Int?
+    let sessionStartedAt: Double?
+}
 private struct RestartBody: Encodable { let generation: String; let sequence: Int; let sessionDescription: SDP }
 private struct RestartAckBody: Encodable { let generation: String; let sequence: Int }
 
@@ -73,6 +77,7 @@ public final class VoiceClient {
     public var muted = false
     public var deafened = false
     public var participants: [VoiceParticipant] = []
+    public private(set) var sessionStartedAt: Double?
     public var outputGain = UserDefaults.standard.object(forKey: "caper.voice.outputGain") == nil
         ? 100 : min(200, max(0, UserDefaults.standard.integer(forKey: "caper.voice.outputGain")))
     public var participantGains: [String: Int] = [:]
@@ -192,7 +197,8 @@ public final class VoiceClient {
         return configuration
     }
 
-    public func join(channelID: String?, context: VoiceContext, name: String) async {
+    public func join(channelID: String?, context: VoiceContext, name: String,
+                     joinStartedAt: Int64 = Int64(Date().timeIntervalSince1970 * 1_000), sessionStartedAt: Double? = nil) async {
         guard phase == .idle || phase == .failed else { return }
         #if os(iOS)
         // A prejoin comparison must be stopped before this new generation can
@@ -209,6 +215,7 @@ public final class VoiceClient {
         joinName = name
         self.context = context
         phase = .joining; error = nil; self.channelID = channelID
+        self.sessionStartedAt = sessionStartedAt ?? Double(joinStartedAt)
         joinTiming = nil; joinChecks = nil
         let clock = ContinuousClock()
         let started = clock.now
@@ -225,7 +232,7 @@ public final class VoiceClient {
             installAudioObservers(generation: attempt)
             #endif
             let sessionStarted = clock.now
-            let joined: JoinResponse = try await api.media(channelID: channelID, operation: "join", body: JoinBody(name: name, muted: muted, deafened: deafened))
+            let joined: JoinResponse = try await api.media(channelID: channelID, operation: "join", body: JoinBody(name: name, muted: muted, deafened: deafened, joinStartedAt: joinStartedAt))
             guard generation == attempt, phase == .joining else {
                 try? await api.media(channelID: channelID, operation: "leave", token: joined.token, body: EmptyBody())
                 return
@@ -489,6 +496,7 @@ public final class VoiceClient {
         // unavailable-pull retry must be able to reconcile the same roster again.
         guard snapshot.revision == snapshotRevisions.latest || snapshotRevisions.accept(snapshot.revision) else { return }
         participants = snapshot.participants
+        sessionStartedAt = snapshot.sessionStartedAt
         var unavailable = false
         let liveTracks = Set(snapshot.participants.filter { $0.id != selfID }.flatMap(\.tracks).filter { $0.kind == "microphone" }.map(\.id))
         for departed in Set(subscribed.keys).subtracting(liveTracks) {
@@ -655,7 +663,7 @@ public final class VoiceClient {
         peer = nil; delegate = nil; microphone = nil
         remoteAudio = []; remoteAudioByMID = [:]; participantByMID = [:]
         participantGains = [:]; locallyMutedParticipants = []
-        token = nil; selfID = nil; subscribed = [:]; participants = []
+        token = nil; selfID = nil; subscribed = [:]; participants = []; sessionStartedAt = nil
         publishedMID = nil; snapshotRevisions = MonotonicRevision(); signalingOwner = nil
         channelID = nil
         if !preservingContext { context = nil }

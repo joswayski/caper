@@ -943,6 +943,38 @@ test("automatic rejoin is not blocked by old capability cleanup", async (t) => {
   assert.equal(states.at(-1)?.phase, "connected");
 });
 
+for (const occupied of [false, true]) test(`join timer starts at click and adopts shared time (occupied: ${occupied})`, async (t) => {
+  const { client, states, install } = setup(t);
+  const clicked = 1_800_000_000_000;
+  const existing = clicked - 601_000;
+  const originalNow = Date.now;
+  let now = clicked;
+  Date.now = () => now;
+  t.after(() => { Date.now = originalNow; });
+  let offer!: () => void;
+  install("RTCPeerConnection", class extends Peer {
+    async createOffer() {
+      await new Promise<void>((resolve) => { offer = resolve; });
+      return super.createOffer();
+    }
+  });
+  const original = fetch;
+  install("fetch", async (url: string, init: RequestInit) => {
+    if (url.endsWith("/join")) assert.equal(JSON.parse(init.body as string).joinStartedAt, clicked, "offer preparation cannot move the click timestamp");
+    if (url.endsWith("/snapshot")) return Response.json({ participants: [], sessionStartedAt: existing });
+    return original(url, init);
+  });
+  const joining = client.join("Guest", undefined, occupied ? existing : undefined);
+  assert.equal(states.at(-1)?.phase, "joining");
+  assert.equal(states.at(-1)?.sessionStartedAt, occupied ? existing : clicked);
+  assert.deepEqual(states.at(-1)?.participants, [], "a provisional timer cannot invent occupancy");
+  now += 2_345;
+  offer();
+  await joining;
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(states.at(-1)?.sessionStartedAt, existing, "the server's shared start replaces provisional time");
+});
+
 test("join provisioning overlaps permission and leave cleans up both late results", async (t) => {
   const { client, track, calls, states, install } = setup(t);
   let grant!: (s: Stream) => void;
@@ -956,6 +988,7 @@ test("join provisioning overlaps permission and leave cleans up both late result
   assert.equal(track.readyState, "ended");
   assert.deepEqual(calls, ["join", "leave"]);
   assert.equal(states.at(-1)?.phase, "idle");
+  assert.equal(states.at(-1)?.sessionStartedAt, undefined);
 });
 
 test("denied microphone permission leaves the call and shows an actionable error", async (t) => {
@@ -968,6 +1001,7 @@ test("denied microphone permission leaves the call and shows an actionable error
 
   assert.deepEqual(calls, ["join", "leave"]);
   assert.equal(states.at(-1)?.phase, "failed");
+  assert.equal(states.at(-1)?.sessionStartedAt, undefined);
   assert.equal(states.at(-1)?.error, "Microphone permission was denied. Allow access and try again.");
 });
 
@@ -1796,6 +1830,28 @@ test("queued pushed snapshots never suppress a scheduled lease heartbeat", async
   assert.equal(states.at(-1)?.participants[0]?.muted, true);
 });
 
+test("shared session start follows fenced snapshots and clears on leave", async (t) => {
+  const { client, events, states } = setup(t);
+  await client.join();
+  const people = [{ id: "self", name: "Self", muted: false, deafened: false, tracks: [] }];
+  const push = (revision: number, sessionStartedAt: number | null) => events[0].enqueue(new TextEncoder().encode(
+    `event: snapshot\ndata: ${JSON.stringify({ participants: people, revision, sessionStartedAt })}\n\n`,
+  ));
+  push(8, 1_234_567);
+  await tick();
+  assert.equal(states.at(-1)?.sessionStartedAt, 1_234_567);
+  push(7, 9_876_543);
+  await tick();
+  assert.equal(states.at(-1)?.sessionStartedAt, 1_234_567, "a late snapshot cannot restart the timer");
+  push(9, null);
+  await tick();
+  assert.equal(states.at(-1)?.sessionStartedAt, null);
+  push(10, 2_345_678);
+  await tick();
+  await client.leave();
+  assert.equal(states.at(-1)?.sessionStartedAt, undefined);
+});
+
 test("rapid mute changes coalesce to the latest intent behind an in-flight state write", async (t) => {
   const { client, install, states } = setup(t);
   await client.join();
@@ -2242,7 +2298,7 @@ test("join carries current mute/deafen intent without a redundant state write du
   const { client, install, stateUpdates } = setup(t);
   await client.setDeafened(true);
   const original = fetch;
-  let joinBody: unknown;
+  let joinBody: Record<string, unknown> | undefined;
   let finish!: () => void;
   install("fetch", (url: string, init: RequestInit) => {
     if (url.endsWith("/join")) joinBody = JSON.parse(init.body as string);
@@ -2254,7 +2310,10 @@ test("join carries current mute/deafen intent without a redundant state write du
   const joining = client.join("Laptop");
   await tick();
   try {
-    assert.deepEqual(joinBody, {
+    assert.ok(joinBody);
+    const { joinStartedAt, ...body } = joinBody;
+    assert.equal(typeof joinStartedAt, "number");
+    assert.deepEqual(body, {
       name: "Laptop", muted: true, deafened: true, receive: true,
       publish: { mid: "0", sessionDescription: { type: "offer", sdp: "v=0\r\na=mid:0\r\n" } },
     });

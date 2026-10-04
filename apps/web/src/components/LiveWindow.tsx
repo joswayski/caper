@@ -1,10 +1,13 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { ChevronDown, Hash, Headphones, Mic, Settings } from "lucide-react";
+import { AudioLines, ChevronDown, Hash, Headphones, MessageCircle, Mic, MoreHorizontal, PhoneOff, Plus, Search, Settings, Speech, Users } from "lucide-react";
 import { avatarUrl } from "../account/avatar";
+import { sessionDuration } from "../media/session-duration";
+import PresenceDot from "./PresenceDot";
 import { attachLiveMotion } from "./liveMotion";
 import { createDemoTiming } from "./demoTiming";
 import "../pages/call.css";
 import "../spaces/spaces.css";
+import "../chat/chat.css";
 import "./live-window.css";
 
 const people = [
@@ -160,20 +163,22 @@ export default function LiveWindow() {
         <div className="live-shadow" aria-hidden="true" />
         {[5, 4, 3, 2, 1].map((depth) => <div key={depth} className="live-slab" style={{ "--z": -depth * 5 } as CSSProperties} aria-hidden="true" />)}
         <div className="live-window">
-          <div className="sim-demo" aria-label="Simulated Caper conversation">
-            <aside className="sim-rail" aria-label="Demo space"><span>C</span></aside>
-            <aside className="sim-sidebar people-panel spaces-room navigation-open">
+          <div className="sim-demo spaces-room navigation-open" aria-label="Simulated Caper conversation">
+            <aside className="sim-rail" aria-label="Demo space"><span>C</span><span className="sim-add-space" aria-hidden="true"><Plus /></span></aside>
+            <aside className="sim-sidebar people-panel">
               <div className="sidebar-channels">
                 <nav className="channel-navigation" aria-label="Simulated channels">
-                  <header><div className="sim-brand">Caper</div></header>
-                  <div className="channel-section-heading sim-section-title"><ChevronDown aria-hidden="true" />Channels<span className="section-count">2</span></div>
-                  <ul>
+                  <header><div className="sim-brand">Caper<ChevronDown aria-hidden="true" /></div></header>
+                  <div className="channel-section-heading sim-section-title"><span className="sim-section-toggle"><ChevronDown aria-hidden="true" />Channels<span className="section-count">2</span></span><span className="sim-section-actions" aria-hidden="true"><Plus /><MoreHorizontal /></span></div>
+                  <ul className="sim-channel-list">
                     <li data-voice="">
                       <div className="channel-line">
-                        <div className="channel-select sim-channel" aria-current="page"><Hash aria-hidden="true" /><span>general</span></div>
+                        <div className="channel-select sim-channel" aria-current="page"><Hash aria-hidden="true" /><span>general</span><span className="voice-session-timer" aria-label="Simulated voice session duration">{sessionDuration(0, (cycle * cycleLength + phase) * 1_000)}</span></div>
+                        <span className="channel-manage" aria-hidden="true"><MoreHorizontal /></span>
                         <span className="channel-voice">
                           <span className="voice-stack" aria-label={`${voicePeople.length} in demo voice`}>
-                            <span className="voice-stack-faces" aria-hidden="true">{voicePeople.slice(0, 3).map((person) => <span className="voice-stack-avatar" key={person.name}>{person.name[0]}</span>)}{voicePeople.length > 3 && <small>+{voicePeople.length - 3}</small>}</span>
+                            <ChevronDown aria-hidden="true" />
+                            <span className="voice-stack-faces" aria-hidden="true">{voicePeople.slice(0, 1).map((person) => <span className={`voice-stack-avatar${person.speaking ? " speaking" : ""}`} key={person.name}><Avatar person={person} /></span>)}{voicePeople.length > 1 && <small>+{voicePeople.length - 1}</small>}</span>
                             <span className="voice-stack-count">{voicePeople.length} in voice</span>
                           </span>
                         </span>
@@ -189,23 +194,41 @@ export default function LiveWindow() {
                         </div>
                       </div>
                     </li>
-                    <li><div className="channel-select"><Hash aria-hidden="true" /><span>feedback</span></div></li>
+                    <li><div className="channel-line">
+                      <div className="channel-select"><Hash aria-hidden="true" /><span>feedback</span></div>
+                      <span className="channel-manage" aria-hidden="true"><MoreHorizontal /></span>
+                      <span className="channel-voice"><span className="channel-join voice-button"><Speech aria-hidden="true" />Join voice</span></span>
+                    </div></li>
                   </ul>
+                  <section className="direct-section sim-direct" aria-label="Simulated direct messages">
+                    <div className="channel-section-heading"><span className="direct-section-title"><MessageCircle aria-hidden="true" />Direct messages</span><Plus aria-hidden="true" /></div>
+                    <ul><li><div className="channel-select direct-select"><span className="direct-avatar"><Avatar person={people[0]} /></span><span>Maya</span><small>you</small></div></li></ul>
+                    <div className="channel-select direct-action"><Plus aria-hidden="true" /><span>Invite people</span></div>
+                  </section>
+                  <div className="browse-channels"><Search aria-hidden="true" />Browse channels</div>
                 </nav>
               </div>
-              <div className="call-account sim-account" role="img" aria-label="Demo profile: Maya, online, with microphone, headphones and user settings">
-                <span className="account-profile">
-                  <span className="account-avatar"><Avatar person={people[0]} /><span className="sim-presence" /></span>
-                  <strong className="account-name">Maya</strong>
-                </span>
-                <span className="sim-audio-icon"><Mic aria-hidden="true" /></span>
-                <span className="sim-audio-icon"><Headphones aria-hidden="true" /></span>
-                <span className="sim-audio-icon"><Settings aria-hidden="true" /></span>
+              <div className="voice-panel sim-voice-panel">
+                {present[0].voice && <div className="voice-dock" role="img" aria-label="Simulated voice connection to general in Caper">
+                  <div className="connected-channel" data-phase="connected">
+                    <span className="voice-dock-channel"><AudioLines aria-hidden="true" /><span><strong>Voice connected</strong><small>general / Caper</small></span></span>
+                    <span className="voice-hangup" aria-hidden="true"><PhoneOff /></span>
+                  </div>
+                </div>}
+                <div className="call-account sim-account" role="img" aria-label="Demo profile: Maya, online, with microphone, headphones and user settings">
+                  <span className="account-profile">
+                    <span className="account-avatar"><Avatar person={people[0]} /><PresenceDot status="online" /></span>
+                    <strong className="account-name">Maya</strong>
+                  </span>
+                  <span className="voice-action-group"><span className="voice-icon-button"><Mic aria-hidden="true" /></span><span className="device-menu"><span className="call-settings-trigger"><ChevronDown aria-hidden="true" /></span></span></span>
+                  <span className="voice-action-group"><span className="voice-icon-button"><Headphones aria-hidden="true" /></span><span className="device-menu"><span className="call-settings-trigger"><ChevronDown aria-hidden="true" /></span></span></span>
+                  <span className="call-settings-trigger"><Settings aria-hidden="true" /></span>
+                </div>
               </div>
             </aside>
-            <section className="sim-chat">
-              <header><div><Hash aria-hidden="true" /><strong>general</strong></div></header>
-              <div className="sim-messages" ref={messagesRef} role="log" aria-label="Simulated message history" aria-live="off" tabIndex={0} data-live-control onScroll={(event) => {
+            <section className="sim-chat chat-panel">
+              <header className="chat-heading"><h2 className="chat-channel-title"># general</h2><span className="member-list-toggle" aria-hidden="true"><Users /></span></header>
+              <div className="sim-messages" ref={messagesRef} role="log" aria-label="Simulated message history" aria-live="off" tabIndex={0} onScroll={(event) => {
                 const viewport = event.currentTarget;
                 following.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 48;
               }}>
@@ -213,23 +236,23 @@ export default function LiveWindow() {
                   {visibleMessages.map((message) => {
                     const item = message.emoji === undefined ? undefined : emoji[message.emoji];
                     const count = message.reactions.filter((at) => at + message.cycle * cycleLength <= phase + cycle * cycleLength).length;
-                    return <article className="sim-message" key={`${message.cycle}:${message.at}`}>
+                    return <article className="sim-message chat-message" key={`${message.cycle}:${message.at}`}>
                       <Avatar person={people[message.person]} />
-                      <div><strong>{people[message.person].name}</strong><span className="sim-time">just now</span><p>{message.text}</p>{message.meme && <img className="sim-meme" src="/images/demo-tiny-hat.webp" width="384" height="384" alt="A capybara wearing a tiny hat. Caption: Tiny hat. Huge energy." />}
-                        <div className="sim-reactions">
-                          {item && count > 0 && <span className="sim-reaction" role="img" aria-label={`${item.text}, ${count} ${count === 1 ? "reaction" : "reactions"}`}><img src={`/images/demo-emoji/${item.code}.svg`} alt="" /><span>{count}</span></span>}
+                      <div><header><strong>{people[message.person].name}</strong><time>just now</time></header><p>{message.text}</p>{message.meme && <img className="sim-meme" src="/images/demo-tiny-hat.webp" width="384" height="384" draggable={false} alt="A capybara wearing a tiny hat. Caption: Tiny hat. Huge energy." />}
+                        <div className="sim-reactions chat-reactions">
+                          {item && count > 0 && <span className="sim-reaction chat-reaction" role="img" aria-label={`${item.text}, ${count} ${count === 1 ? "reaction" : "reactions"}`}><img src={`/images/demo-emoji/${item.code}.svg`} draggable={false} alt="" /><span>{count}</span></span>}
                         </div>
                       </div>
                     </article>;
                   })}
                 </div>
               </div>
-              <div className="sim-typing">{typingPeople.length > 0 && <><i /><i /><i /> {typingPeople.join(" and ")} {typingPeople.length === 1 ? "is" : "are"} typing</>}</div>
-              <footer className="sim-footer" aria-hidden="true"><div className="sim-composer">Message #general</div></footer>
+              <div className="sim-typing chat-typing"><span className="chat-typing-content" data-visible={typingPeople.length > 0}>{typingPeople.length > 0 && <><span className="chat-typing-dots" aria-hidden="true"><i /><i /><i /></span><span>{typingPeople.join(" and ")} {typingPeople.length === 1 ? "is" : "are"} typing</span></>}</span></div>
+              <footer className="sim-footer chat-composer" aria-hidden="true"><div className="sim-composer">Message #general</div></footer>
             </section>
-            <aside className="sim-members" aria-label="Simulated members">
-              <div className="sim-members-heading">Members <span>{onlinePeople.length}</span></div>
-              {onlinePeople.map((person) => <div className="sim-member" key={person.name}><Avatar person={person} /><strong>{person.name}</strong></div>)}
+            <aside className="sim-members space-member-presence" aria-label="Simulated members">
+              <h2 className="sim-members-heading member-presence-heading"><span>Members</span><span className="section-count">{onlinePeople.length}</span></h2>
+              <div><ul>{onlinePeople.map((person) => <li className="sim-member" key={person.name}><span className="member-presence-avatar"><Avatar person={person} /><PresenceDot status="online" /></span><span><strong>{person.name}</strong></span></li>)}</ul></div>
             </aside>
           </div>
         </div>
