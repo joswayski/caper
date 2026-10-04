@@ -1346,6 +1346,9 @@ private struct ChatView: View {
     @State private var joining = false
     @State private var joinError: String?
     @State private var confirmLeave = false
+    // A lazy message row can leave the viewport when the keyboard appears or
+    // live messages arrive. Keep the sheet's presenter and target outside it.
+    @State private var reactionMessage: ChatMessage?
 
     /// Defer the scroll request; content geometry repeats it when the timeline
     /// finishes measuring, including history above the unsent message.
@@ -1419,7 +1422,7 @@ private struct ChatView: View {
                                     if index == 0 || !ChatDateDivider.sameLocalDay(chat.messages[index - 1].createdAt, message.createdAt) {
                                         ChatDateDivider(createdAt: message.createdAt)
                                     }
-                                    MessageRow(message: message, chat: chat)
+                                    MessageRow(message: message, chat: chat) { reactionMessage = message }
                                 }.id(message.id)
                             }
                         }
@@ -1548,6 +1551,18 @@ private struct ChatView: View {
                 Text("\(chat.draft.unicodeScalars.count.formatted()) / 4,000").font(CaperTheme.font(10)).foregroundStyle(counterTone).padding(.bottom, 6)
             }
         }.background(CaperTheme.conversation)
+            .sheet(item: $reactionMessage) { message in
+                ReactionPicker { emoji in
+                    reactionMessage = nil
+                    Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) }
+                }
+            }
+            .onChange(of: chat.isPreview) { _, preview in
+                if preview { reactionMessage = nil }
+            }
+            .onChange(of: chat.currentAuthor?.id) { _, _ in reactionMessage = nil }
+            .onChange(of: model.selectedChannelID) { _, _ in reactionMessage = nil }
+            .onChange(of: model.selectedDirectMessageID) { _, _ in reactionMessage = nil }
             .task(id: chat.liveState) {
                 showConnectionStatus = false
                 guard chat.liveState != .connected else { return }
@@ -1650,7 +1665,7 @@ struct ChatDateDivider: View {
 private struct MessageRow: View {
     let message: ChatMessage
     @Bindable var chat: ChatModel
-    @State private var pickerVisible = false
+    let showReactionPicker: () -> Void
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Avatar(name: message.author.name, size: 34, avatarID: message.author.avatarId)
@@ -1662,7 +1677,7 @@ private struct MessageRow: View {
                 }
                 Text(message.content.text).font(CaperTheme.font(14)).foregroundStyle(Color(red: 222/255, green: 223/255, blue: 224/255)).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                ReactionRow(message: message, chat: chat) { pickerVisible = true }
+                ReactionRow(message: message, chat: chat, showPicker: showReactionPicker)
                 if let error = chat.reactionErrors[message.id] {
                     HStack(spacing: 8) {
                         Text(error)
@@ -1672,15 +1687,6 @@ private struct MessageRow: View {
                 }
             }
         }.padding(.horizontal, 18).padding(.vertical, 10)
-            .onChange(of: chat.isPreview) { _, preview in
-                if preview { pickerVisible = false }
-            }
-            .sheet(isPresented: $pickerVisible) {
-                ReactionPicker { emoji in
-                    pickerVisible = false
-                    Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) }
-                }
-            }
     }
     private func timeLabel(_ value: String) -> String {
         let fractional = ISO8601DateFormatter()
