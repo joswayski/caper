@@ -578,18 +578,39 @@ internal data class VoiceJoinIntent(
                 }
             }
         }
-        Column(Modifier.fillMaxWidth().heightIn(max = 280.dp).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
+        Column(Modifier.fillMaxWidth().heightIn(max = 340.dp).verticalScroll(rememberScrollState())) {
             if (state.account != null) {
-                HorizontalDivider(Modifier.padding(top = 12.dp), color = Border)
-                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+                HorizontalDivider(color = Border)
+                val invitePeople = owner && detail?.space?.demo == false
+                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable {
+                    show(if (invitePeople) Overlay.ManageSpace else Overlay.StartDirect)
+                }.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(painterResource(if (invitePeople) R.drawable.lucide_plus else R.drawable.lucide_speech), null, Modifier.size(17.dp), tint = TextMuted)
+                    Spacer(Modifier.width(9.dp))
+                    Text(if (invitePeople) "Invite people" else "New message", Modifier.weight(1f), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                }
+                HorizontalDivider(color = Border)
+                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("Direct messages", Modifier.weight(1f), color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     IconButton({ show(Overlay.StartDirect) }) { Icon(painterResource(R.drawable.lucide_plus), "Start direct message", tint = TextMuted) }
                 }
-                if (state.directConversations.isEmpty()) Text("No direct messages yet.", color = TextMuted, fontSize = 11.sp)
-                state.directConversations.forEach { direct ->
+                val selfDirect = state.directConversations.firstOrNull { it.peer.id == state.account.id }
+                val selfSelected = selfDirect?.id == state.selectedDirectId
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
+                    .background(if (selfSelected) TerracottaWash else Color.Transparent)
+                    .clickable(enabled = !state.busy) { viewModel.openSelfDirect(); closeNavigation?.invoke() }.padding(horizontal = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Avatar(state.account.displayName ?: state.account.username ?: "You", 26.dp, avatarId = state.account.avatarId)
+                    Spacer(Modifier.width(9.dp))
+                    Text(state.account.displayName ?: state.account.username ?: "You", color = if (selfSelected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.width(6.dp)); Text("you", Modifier.weight(1f), color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    if (selfDirect?.let { runCatching { java.math.BigInteger(it.lastSeq) > java.math.BigInteger(it.readSeq) }.getOrDefault(false) } == true)
+                        Box(Modifier.size(8.dp).background(TerracottaBright, CircleShape).semantics { contentDescription = "Unread" })
+                }
+                state.directConversations.filter { it.peer.id != state.account.id }.forEach { direct ->
                     val selected = state.selectedDirectId == direct.id
                     val unread = runCatching { java.math.BigInteger(direct.lastSeq) > java.math.BigInteger(direct.readSeq) }.getOrDefault(false)
-                    Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
                         .background(if (selected) TerracottaWash else Color.Transparent)
                         .clickable { viewModel.selectDirect(direct); closeNavigation?.invoke() }.padding(horizontal = 9.dp),
                         verticalAlignment = Alignment.CenterVertically) {
@@ -610,16 +631,18 @@ internal data class VoiceJoinIntent(
                             pushRequestEpoch = viewModel.accountEpoch
                             pushPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                         } else enablePush()
-                    }) { Text(if (pushEnabled) "Disable DM notifications" else "Enable DM notifications", fontSize = 11.sp) }
-                    pushError?.let { Text(it, color = ErrorText, fontSize = 11.sp) }
+                    }, Modifier.padding(horizontal = 16.dp)) { Text(if (pushEnabled) "Disable DM notifications" else "Enable DM notifications", fontSize = 11.sp) }
+                    pushError?.let { Text(it, Modifier.padding(horizontal = 16.dp), color = ErrorText, fontSize = 11.sp) }
                 }
             }
         }
-        if (voice.phase != VoiceState.Phase.IDLE && voice.phase != VoiceState.Phase.FAILED)
+        if (voice.phase != VoiceState.Phase.IDLE && voice.phase != VoiceState.Phase.FAILED) {
+            HorizontalDivider(color = Border)
             ConnectedVoiceContext(voice, { viewModel.openVoiceChannel(voice) { closeNavigation?.invoke() } }, {
                 if (voice.phase == VoiceState.Phase.CONNECTED) CaperEffects.play(CaperEffects.Effect.Disconnect)
                 VoiceCallService.stop(context)
             })
+        }
         // Web shows voice errors in the dock with a dismiss button.
         (voicePermissionError ?: voice.error)?.let { error ->
             Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), color = SurfaceRaised, border = BorderStroke(1.dp, Border), shape = MaterialTheme.shapes.small) {
@@ -1293,7 +1316,7 @@ internal fun counterTone(count: Int): Color = when {
     var username by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     CaperDialog("New direct message", close) {
-        Text("Enter the exact username of the person you want to message.", color = TextMuted, fontSize = 12.sp)
+        Text("Enter an account’s exact username.", color = TextMuted, fontSize = 12.sp)
         OutlinedTextField(username, { username = normalizeUsername(it); error = null }, label = { Text("Username") }, placeholder = { Text("username") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         DialogActions(close, "Start conversation", busy) {

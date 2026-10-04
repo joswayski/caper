@@ -246,6 +246,13 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         done(); selectDirect(conversation)
     }
 
+    /** Opens the signed-in account's notes, creating the real DM on first use. */
+    fun openSelfDirect() {
+        val account = mutable.value.account ?: return
+        mutable.value.directConversations.firstOrNull { it.peer.id == account.id }?.let(::selectDirect)
+            ?: account.username?.let { startDirect(it) }
+    }
+
     fun refreshDirectConversations() {
         val token = accountToken ?: return
         val request = accountGeneration

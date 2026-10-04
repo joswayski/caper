@@ -261,8 +261,10 @@ public final class AppModel {
 
     public func createDirectMessage(username: String) async -> Bool {
         let exact = username.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !exact.isEmpty, account != nil else { return false }
+        guard !exact.isEmpty, account != nil, !busy else { return false }
         let attempt = generation
+        busy = true; error = nil
+        defer { if generation == attempt { busy = false } }
         do {
             let conversation = try await api.createDirectMessage(username: exact)
             guard generation == attempt else { return false }
@@ -271,6 +273,17 @@ public final class AppModel {
             await select(directMessage: conversation)
             return generation == attempt
         } catch { if generation == attempt { self.error = error.localizedDescription }; return false }
+    }
+
+    /// Opens the account's notes conversation, creating it through the normal DM
+    /// endpoint only when the server has not returned one yet.
+    public func openSelfDirectMessage() async {
+        guard let account, let username = account.username else { return }
+        if let conversation = directMessages.first(where: { $0.peer.id == account.id }) {
+            await select(directMessage: conversation)
+        } else {
+            _ = await createDirectMessage(username: username)
+        }
     }
 
     public func select(directMessage conversation: DirectMessageConversation) async {
