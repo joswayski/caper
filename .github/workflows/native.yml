@@ -52,6 +52,10 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  route:
+    uses: ./.github/workflows/mac-route.yml
+    secrets: inherit
+
   artifact-contract:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -77,7 +81,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, windows-2025, macos-15]
-    runs-on: ${{ matrix.os }}
+    needs: route
+    runs-on: ${{ needs.route.outputs.mac == 'true' && matrix.os == 'macos-15' && fromJSON('["self-hosted","josemac"]') || matrix.os }}
     timeout-minutes: 20
     defaults:
       run:
@@ -183,7 +188,7 @@ jobs:
 
   apple:
     name: Apple / ${{ matrix.target }}
-    needs: artifact-contract
+    needs: [artifact-contract, route]
     strategy:
       fail-fast: false
       matrix:
@@ -197,7 +202,8 @@ jobs:
           - os: macos-15
             platform: ios
             target: ios-simulator-arm64
-    runs-on: ${{ matrix.os }}
+    # Intel builds stay on GitHub-hosted macos-15-intel.
+    runs-on: ${{ needs.route.outputs.mac == 'true' && matrix.os == 'macos-15' && fromJSON('["self-hosted","josemac"]') || matrix.os }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
