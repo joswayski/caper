@@ -23,6 +23,26 @@ const screenshot = name => {
   evaluate('new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))');
   browser('screenshot', `${artifacts}/${name}.png`);
 };
+const checkSidebarAlignment = () => {
+  const rows = evaluate(`(() => {
+    const selectors = ['.direct-section-title', '.direct-self', '.direct-action', '.browse-channels'];
+    if (innerWidth > 760) selectors.push('.account-profile');
+    return selectors.map(selector => {
+      const row = document.querySelector(selector), icon = row.firstElementChild;
+      const label = [...row.childNodes].find(node => node.nodeType === 3 && node.textContent.trim()) ?? icon.nextSibling;
+      const range = document.createRange();
+      range.selectNodeContents(label);
+      const box = row.getBoundingClientRect(), iconBox = icon.getBoundingClientRect();
+      return { selector, iconX: iconBox.left + iconBox.width / 2, labelX: range.getBoundingClientRect().left,
+        iconOffsetY: iconBox.top + iconBox.height / 2 - (box.top + box.height / 2) };
+    });
+  })()`);
+  for (const row of rows) {
+    assert.ok(Math.abs(row.iconX - rows[0].iconX) < 0.5, `${row.selector} shares the sidebar icon/avatar center`);
+    assert.ok(Math.abs(row.labelX - rows[0].labelX) < 0.5, `${row.selector} shares the sidebar label column`);
+    assert.ok(Math.abs(row.iconOffsetY) < 0.5, `${row.selector} vertically centers its icon/avatar`);
+  }
+};
 async function control(body) {
   const response = await fetch(`${api}/__fixture/control`, { method: 'POST', headers: { 'content-type': 'application/json', connection: 'close' }, body: JSON.stringify(body) });
   assert.equal(response.status, 200);
@@ -76,10 +96,21 @@ try {
       const s = getComputedStyle(node, selector.includes('header') ? '::after' : '::before');
       return Math.abs(r.left + parseFloat(s.left) - panel.left) < 1 && Math.abs(r.right - parseFloat(s.right) - (panel.right - 1)) < 1;
     }); })()`), 'Sidebar dividers must span the panel, not just its padded contents');
+  checkSidebarAlignment();
+  browser('focus', '[aria-label="Channel sidebar width"]');
+  for (const [key, width] of [['Home', 220], ['End', 440]]) {
+    browser('press', key);
+    wait(`document.querySelector('[aria-label="Channel sidebar width"]').getAttribute('aria-valuenow') === '${width}'`);
+    checkSidebarAlignment();
+  }
+  browser('dblclick', '[aria-label="Channel sidebar width"]');
+  wait('document.querySelector("[aria-label=\\"Channel sidebar width\\"]").getAttribute("aria-valuenow") === "260"');
   screenshot('dm-empty-list');
   for (const width of [1440, 390]) {
     browser('set', 'viewport', String(width), '900', '2');
     if (width === 390) browser('click', '.navigation-toggle');
+    checkSidebarAlignment();
+    console.log(`PASS: sidebar icon/avatar centers, label columns, and vertical centering at ${width}px (220/260/440px desktop sidebar widths)`);
     browser('click', '[aria-label="New direct message"]');
     wait('!!document.querySelector(".space-dialog[open]")');
     assert.equal(evaluate('document.querySelector(".space-dialog > header p").textContent'), 'Enter an exact username. Conversations stay private across all your spaces.');

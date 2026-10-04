@@ -28,13 +28,17 @@
 .spaces-room .voice-panel { position: relative; }
 .spaces-room .voice-panel::before { position: absolute; top: -1px; left: -13px; right: -13px; height: 1px; background: var(--border); content: ""; pointer-events: none; }
 .direct-section .channel-section-heading { flex-shrink: 0; margin-top: 0; }
-.direct-section-title { flex: 1; display: flex; align-items: center; gap: 7px; padding-left: 6px; color: var(--text-muted); font-size: .76rem; font-weight: 750; }
+.direct-section-title { flex: 1; display: flex; align-items: center; gap: 6px; padding-left: 9px; color: var(--text-muted); font-size: .76rem; font-weight: 750; }
+/* Match the account dock's 30px avatar column and 6px label gap. SVG viewBoxes
+   keep the smaller action glyphs centered within the same leading column. */
+.direct-section :is(.direct-section-title, .direct-action) > svg { width: 30px; }
 .spaces-room .direct-section > ul { min-height: 0; overflow-y: auto; }
-.direct-section .direct-select { padding-right: 9px; }
+.direct-section .direct-select { gap: 6px; padding-right: 9px; }
 .direct-select > small { color: var(--text-muted); font-size: .72rem; }
 .direct-self:disabled { opacity: .5; cursor: wait; }
-.direct-section .direct-action { flex-shrink: 0; margin-top: 4px; padding-right: 9px; }
-.direct-select .direct-avatar { flex: 0 0 24px; display: grid; place-items: center; height: 24px; border-radius: 8px; color: var(--text); background: var(--surface-raised); font-size: .7rem; }
+.direct-section .direct-action { flex-shrink: 0; gap: 6px; margin-top: 4px; padding-right: 9px; }
+.direct-section :is(.direct-select, .direct-action) > span { transform: none; }
+.direct-select .direct-avatar { flex: 0 0 30px; display: grid; place-items: center; height: 30px; border-radius: 8px; color: var(--text); background: var(--surface-raised); font-size: .7rem; }
 .direct-select .direct-unread { flex: 0 0 6px; width: 6px; height: 6px; margin-left: auto; border-radius: 50%; background: var(--terracotta-bright); }
 .channel-navigation > header { position: relative; display: flex; align-items: center; gap: 4px; height: 54px; }
 .spaces-room .chat-heading { min-height: 54px; }
@@ -240,6 +244,8 @@
 
 .browse-channels, .pending-channel-invite { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 36px; padding: 7px 9px; border: 0; border-radius: 8px; background: transparent; color: var(--text-muted); font: inherit; font-size: .76rem; text-align: left; cursor: pointer; }
 .browse-channels svg, .pending-channel-invite svg { flex: none; width: 16px; height: 16px; }
+.browse-channels { gap: 6px; }
+.browse-channels svg { width: 30px; }
 .browse-channels:hover, .pending-channel-invite:hover { background: var(--surface-raised); color: var(--text); }
 .pending-channel-invites { margin-top: 20px; }
 .pending-channel-invites h2 { margin: 0 9px 6px; color: var(--text-muted); font-size: .72rem; }
