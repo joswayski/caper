@@ -2,6 +2,8 @@ import XCTest
 import SwiftUI
 #if os(macOS)
 import AppKit
+#elseif os(iOS)
+import UIKit
 #endif
 @testable import CaperCore
 
@@ -46,6 +48,38 @@ final class AvatarTests: XCTestCase {
             XCTAssertNotNil(CaperAvatar.image(for: index), "Missing bundled avatar \(index)")
         }
         for index in [nil, -1, 800] { XCTAssertNil(CaperAvatar.image(for: index)) }
+    }
+
+    @MainActor
+    func testBrandingAssetsResolveWithoutPaintingTheAvatarTile() throws {
+        for index in 0..<800 {
+            let name = "caper-branding-\(index)"
+            #if os(macOS)
+            let image = try XCTUnwrap(caperResourceBundle.image(forResource: NSImage.Name(name)))
+            XCTAssertFalse(image.isTemplate)
+            #else
+            let image = try XCTUnwrap(UIImage(named: name, in: caperResourceBundle, compatibleWith: nil))
+            #endif
+            guard [0, 46, 80, 537, 799].contains(index) else { continue }
+            var pixels = [UInt8](repeating: 0, count: 256 * 256 * 4)
+            try pixels.withUnsafeMutableBytes { bytes in
+                let context = try XCTUnwrap(CGContext(data: bytes.baseAddress, width: 256, height: 256,
+                    bitsPerComponent: 8, bytesPerRow: 256 * 4, space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+                #if os(macOS)
+                NSGraphicsContext.saveGraphicsState()
+                defer { NSGraphicsContext.restoreGraphicsState() }
+                NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+                image.draw(in: CGRect(x: 0, y: 0, width: 256, height: 256))
+                #else
+                UIGraphicsPushContext(context)
+                defer { UIGraphicsPopContext() }
+                image.draw(in: CGRect(x: 0, y: 0, width: 256, height: 256))
+                #endif
+            }
+            XCTAssertEqual(pixels[(128 * 256 + 252) * 4 + 3], 0, "Branding \(index) must not have a tile")
+            XCTAssertTrue(stride(from: 3, to: pixels.count, by: 4).contains { pixels[$0] == 255 }, "Branding \(index) cannot be blank")
+        }
     }
 
     @MainActor
