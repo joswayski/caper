@@ -587,10 +587,10 @@ async fn reactions_are_durable_idempotent_authorized_and_transactional() {
         .await
         .unwrap();
     let bounded_id = bounded["id"].as_str().unwrap();
-    let kinds = [
-        "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "😊", "😇", "🙂", "🙃", "😉", "😌", "😍",
-        "🥰", "😘", "😗", "😙", "😚",
-    ];
+    // 50 distinct kinds, U+1F600 (😀) through U+1F631; 👍 is not among them.
+    let kinds: Vec<String> = (0x1F600..0x1F632)
+        .map(|code| char::from_u32(code).unwrap().to_string())
+        .collect();
     sqlx::query("INSERT INTO public.message_reactions(message_id,emoji,user_id) SELECT m.id,emoji,$3 FROM public.messages m CROSS JOIN unnest($2::text[]) AS emoji WHERE m.external_id=$1")
         .bind(bounded_id).bind(kinds.as_slice()).bind(reader).execute(&pool).await.unwrap();
     assert!(

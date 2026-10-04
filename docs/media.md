@@ -821,7 +821,7 @@ during native gateway handoffs. A visible direct conversation marks sequenced
 reaction events read; HTTP snapshots do not advance that read cursor. Reactions
 do not generate push notifications.
 
-Limits are 20 emoji kinds and 1,000 total contributions per message, plus 60
+Limits are 50 emoji kinds and 1,000 total contributions per message, plus 60
 mutations per actor/channel/minute. No-op retries do not consume that budget.
 Expired rate records are removed when that actor next mutates. Reactions,
 message snapshots, sequence allocation, and outbox commit together.

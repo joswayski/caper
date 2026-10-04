@@ -597,7 +597,7 @@ async fn persist_reaction(
             let (kinds, actors, total): (i64, i64, i64) = sqlx::query_as(
                 "SELECT count(DISTINCT emoji),count(*) FILTER (WHERE emoji=$2),count(*) FROM public.message_reactions WHERE message_id=$1 AND deleted_at IS NULL")
                 .bind(message_id).bind(emoji).fetch_one(&mut *tx).await.map_err(database_error)?;
-            if (actors == 0 && kinds >= 20) || total >= 1000 {
+            if (actors == 0 && kinds >= 50) || total >= 1000 {
                 return Err(ApiError::new(
                     StatusCode::CONFLICT,
                     "reaction limit reached",
