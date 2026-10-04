@@ -109,6 +109,13 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   // Virtuoso needs browser APIs; the server and first client render use the plain list.
   const [hydrated, setHydrated] = useState(false);
   useEffect(() => setHydrated(true), []);
+  useEffect(() => {
+    if (!state.author || readOnly) return;
+    // Warm the code/data after chat settles, without mounting the picker or
+    // fetching the image catalog. Opening still handles a failed import.
+    const timer = setTimeout(() => { void import("./ReactionPicker.tsx").catch(() => {}); }, 1_000);
+    return () => clearTimeout(timer);
+  }, [state.author?.id, readOnly]);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const followLatest = useRef(true);
   const latestMessage = state.messages.at(-1);

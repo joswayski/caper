@@ -23,6 +23,27 @@ const screenshot = name => {
   evaluate('new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))');
   browser('screenshot', `${artifacts}/${name}.png`);
 };
+const visibleEmojiImages = `(() => {
+  const body = document.querySelector('.epr-body').getBoundingClientRect();
+  return [...document.querySelectorAll('.epr-body img')].filter(image => {
+    const rect = image.getBoundingClientRect();
+    return rect.bottom > body.top && rect.top < body.bottom;
+  });
+})()`;
+function checkEmojiCategories(layout) {
+  assert.equal(evaluate(`document.querySelector('.epr-category-nav').getBoundingClientRect().bottom <= document.querySelector('.epr-search-container').getBoundingClientRect().top`), true);
+  for (const [category, firstEmoji] of [['activities', '1f383'], ['flags', '1f3c1'], ['smileys_people', '1f600']]) {
+    const tab = `.epr-icn-${category}`;
+    browser('click', tab);
+    wait(`document.querySelector('${tab}').getAttribute('aria-selected') === 'true' && !!document.querySelector('.epr-body button[data-unified="${firstEmoji}"]')`);
+    wait(`${visibleEmojiImages}.length >= 24 && ${visibleEmojiImages}.every(image => image.complete && image.naturalWidth > 0)`);
+    assert.equal(evaluate(`${visibleEmojiImages}.every(image => image.loading === 'eager' && new URL(image.src).pathname.startsWith('/emoji/twemoji-15/'))`), true, 'Virtualized images must load eagerly from local artwork');
+    assert.equal(evaluate(`getComputedStyle(document.querySelector('${tab}'), '::before').content`), 'none', 'Clicking a category must not show the circular focus ring');
+    assert.deepEqual(evaluate(`(() => { const tab = document.querySelector('${tab}'); const underline = getComputedStyle(tab, '::after'); return [getComputedStyle(tab).color, underline.height, underline.backgroundColor]; })()`), ['rgb(243, 244, 245)', '2px', 'rgb(182, 77, 50)']);
+    screenshot(`emoji-${layout}-${category}`);
+  }
+  assert.ok(evaluate('document.querySelectorAll(".epr-body img").length') < 200, 'Eager loading must retain the virtualized window, not mount the whole catalog');
+}
 async function control(body) {
   const response = await fetch(`${api}/__fixture/control`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   assert.equal(response.status, 200);
@@ -36,9 +57,38 @@ try {
   assert.equal((await (await fetch(`${api}/health`)).json()).fixture, true);
   await control({ reset: true });
   browser('open', 'about:blank');
-  browser('set', 'viewport', '390', '844', '2');
+  browser('set', 'viewport', '1280', '900', '2');
   browser('cookies', 'set', 'caper_fixture', 'owner', '--url', web, '--path', '/', '--sameSite', 'Lax');
   browser('open', `${web}/spaces`);
+  wait('!!document.querySelector(".chat-message") && !document.querySelector(".chat-initial-messages")');
+  wait('performance.getEntriesByType("resource").some(resource => resource.name.includes("ReactionPicker"))');
+  assert.equal(evaluate('!!document.querySelector(".chat-reaction-picker")'), false);
+  assert.equal(evaluate('performance.getEntriesByType("resource").filter(resource => resource.name.includes("/emoji/twemoji-15/")).length'), 0, 'Warming picker code must not fetch the image catalog');
+  const preloadedImages = `performance.getEntriesByType('resource').filter(resource => resource.name.includes('/emoji/twemoji-15/') && resource.name.endsWith('.svg'))`;
+  for (const intent of ['hover', 'focus']) {
+    if (intent === 'focus') {
+      browser('reload');
+      wait('!!document.querySelector(".chat-message") && !document.querySelector(".chat-initial-messages")');
+    }
+    assert.equal(evaluate(`${preloadedImages}.length`), 0);
+    // Vite module requests can fill Chromium's default 250-entry timing buffer.
+    evaluate('(() => { performance.setResourceTimingBufferSize(2000); performance.clearResourceTimings(); })()');
+    const messageKey = evaluate('document.querySelector(".chat-message").dataset.messageKey');
+    const trigger = `[data-message-key="${messageKey}"] .chat-add-reaction`;
+    browser(intent, trigger);
+    wait(`${preloadedImages}.length === 128 && ${preloadedImages}.every(resource => resource.responseEnd > 0 && resource.responseStatus === 200)`);
+    assert.equal(evaluate(`${preloadedImages}.some(resource => resource.name.endsWith('/1f600.svg'))`), true);
+    assert.equal(evaluate('!!document.querySelector(".chat-reaction-picker")'), false, `${intent} must preload images without opening the picker`);
+    browser('mouse', 'move', '10', '10');
+    browser('focus', '.chat-composer textarea');
+    browser(intent, trigger);
+    await delay(100);
+    assert.equal(evaluate(`${preloadedImages}.length`), 128, 'Repeated intent must not issue duplicate image requests');
+  }
+  browser('set', 'viewport', '390', '844', '2');
+  // Initialize the narrow layout instead of carrying the desktop members pane
+  // into its mobile overlay while checking unrelated touch gestures.
+  browser('reload');
   wait('!!document.querySelector(".chat-message") && !document.querySelector(".chat-initial-messages")');
 
   // agent-browser has no touch command. Use its launched Chromium's CDP input
@@ -142,6 +192,7 @@ try {
   await openTarget();
   action('Add reaction');
   wait('!!document.querySelector(".chat-reaction-picker input")');
+  checkEmojiCategories('mobile');
   screenshot('message-actions-mobile-picker');
   const emojiBody = '.chat-reaction-picker .epr-body';
   assert.equal(evaluate(`(() => { const body = document.querySelector(${JSON.stringify(emojiBody)}); return body.scrollHeight > body.clientHeight; })()`), true);
@@ -211,10 +262,27 @@ try {
   wait('!!document.querySelector(".chat-reaction-picker input")');
   wait('document.querySelector(".chat-reaction-picker").getBoundingClientRect().right > innerWidth - 80');
   assert.equal(evaluate('!!document.querySelector(".chat-actions-overlay")'), false);
+  checkEmojiCategories('desktop');
+  browser('fill', '.chat-reaction-picker input', '');
+  browser('focus', '.chat-reaction-picker input');
+  browser('press', 'Tab');
+  wait('document.activeElement?.classList.contains("epr-cat-btn")');
+  assert.equal(evaluate('document.activeElement.matches(":focus-visible") && getComputedStyle(document.activeElement).outlineStyle === "solid"'), true, 'Category tabs must retain keyboard focus indication');
+  screenshot('emoji-desktop-keyboard-focus');
+  const focusedCategory = evaluate('document.activeElement.getAttribute("aria-label")');
+  browser('press', 'Enter');
+  wait(`document.querySelector('.epr-cat-btn[aria-selected="true"]').getAttribute('aria-label') === ${JSON.stringify(focusedCategory)}`);
   screenshot('message-actions-desktop-picker');
   browser('press', 'Escape');
   wait('!document.querySelector(".chat-reaction-picker")');
-  console.log('PASS: Chromium touch gestures (tap/scroll/cancel/hold), hidden inline emoji controls, modal focus/dismissal, exact clipboard text/ID, quick toggles, picker search/live-target retention, clipboard failure, read-only copying, desktop picker.');
+  browser('find', 'first', '.chat-add-reaction:not(:disabled)', 'click');
+  wait('!!document.querySelector(".chat-reaction-picker input")');
+  browser('click', '.epr-icn-activities');
+  wait(`document.querySelector('.epr-icn-activities').getAttribute('aria-selected') === 'true' && !!document.querySelector('.epr-body button[data-unified="1f383"]')`);
+  wait(`${visibleEmojiImages}.length >= 24 && ${visibleEmojiImages}.every(image => image.complete && image.naturalWidth > 0)`);
+  screenshot('emoji-desktop-reopened');
+  browser('press', 'Escape');
+  console.log('PASS: Chromium touch gestures (tap/scroll/cancel/hold), hidden inline emoji controls, modal focus/dismissal, exact clipboard text/ID, quick toggles, picker code warmup without artwork fetches, hover/focus image preload without opening or duplicate requests, eager virtualized category jumps/reopen, underline/no click ring, keyboard tabs, search/live-target retention, clipboard failure, read-only copying, desktop picker.');
 } catch (error) {
   browser('screenshot', '/tmp/message-actions-failure.png');
   throw error;
