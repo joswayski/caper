@@ -46,8 +46,7 @@ const nextMoments = count => evaluate(`for (let i = 0; i < ${count}; i++) { wind
 const members = () => evaluate('return [...document.querySelectorAll(".sim-member strong")].map(el => el.textContent)');
 const voices = () => evaluate('return [...document.querySelectorAll(".sim-person strong")].map(el => el.textContent)');
 const speakers = () => evaluate('return [...document.querySelectorAll(".sim-person[data-speaking] strong")].map(el => el.textContent)');
-const drag = selector => {
-  const point = evaluate(`
+const pointFor = selector => evaluate(`
     const element = document.querySelector(${JSON.stringify(selector)});
     const box = element.getBoundingClientRect();
     const viewport = element.closest('.sim-messages')?.getBoundingClientRect();
@@ -55,10 +54,33 @@ const drag = selector => {
     const top = Math.max(box.top, viewport?.top ?? 0, 0), bottom = Math.min(box.bottom, viewport?.bottom ?? innerHeight, innerHeight);
     for (const across of [.1, .5, .9]) for (const down of [.25, .5, .75]) {
       const x = Math.round(left + (right - left) * across), y = Math.round(top + (bottom - top) * down);
-      if (element.contains(document.elementFromPoint(x, y))) return [x, y];
+      const hit = document.elementFromPoint(x, y);
+      if (element.closest('.live-stage').contains(hit) && !hit.closest('[data-live-control]')) return [x, y];
     }
-    throw new Error('Drag target is obscured: ' + ${JSON.stringify(selector)});
+    throw new Error('Preview target is obscured: ' + ${JSON.stringify(selector)});
   `);
+const checkReadOnlyHover = selectors => {
+  for (const selector of selectors) {
+    browser('mouse', 'move', '0', '0');
+    const appearance = () => evaluate(`
+      const style = getComputedStyle(document.querySelector(${JSON.stringify(selector)}));
+      return [style.backgroundColor, style.borderColor, style.color, style.textDecorationLine];
+    `);
+    const before = appearance();
+    const point = pointFor(selector);
+    browser('mouse', 'move', ...point.map(String));
+    assert.equal(evaluate(`return document.querySelector(${JSON.stringify(selector)}).matches(':hover')`), false, `${selector} is decorative, not a hover target`);
+    assert.deepEqual(appearance(), before, `${selector} must not highlight on hover`);
+    assert.equal(evaluate(`return getComputedStyle(document.elementFromPoint(${point.join(',')})).cursor`), 'grab');
+    assert.equal(evaluate('return getComputedStyle(document.querySelector(".live-invite")).backgroundColor'), 'rgb(243, 244, 245)', 'Hovering the illustration must not highlight the join button');
+    browser('mouse', 'down', 'left');
+    browser('mouse', 'up', 'left');
+    assert.equal(evaluate('return location.pathname'), '/', 'Decorative content clicks never navigate');
+  }
+  browser('mouse', 'move', '0', '0');
+};
+const drag = selector => {
+  const point = pointFor(selector);
   browser('mouse', 'move', ...point.map(String));
   browser('mouse', 'down', 'left');
   try {
@@ -122,6 +144,16 @@ try {
   assert.deepEqual(accountBounds, composerBounds, 'Account controls and single-line composer align');
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-sidebar .channel-select")).cursor'), 'grab');
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".live-invite")).cursor'), 'pointer');
+  checkReadOnlyHover(['.sim-message:last-of-type', '.sim-reaction', '.sim-avatar', '.sim-person', '.sim-channel-list > li:last-child .channel-line', '.sim-channel-list > li:last-child .channel-select', '.channel-manage', '.channel-join', '.direct-select', '.direct-action', '.browse-channels', '.voice-dock-channel', '.voice-hangup', '.account-profile', '.voice-icon-button', '.call-settings-trigger', '.member-list-toggle']);
+  browser('hover', '.live-invite');
+  wait('getComputedStyle(document.querySelector(".live-invite")).backgroundColor === "rgb(182, 77, 50)"');
+  browser('mouse', 'move', '0', '0');
+  browser('focus', '.sim-messages');
+  browser('press', 'Tab');
+  assert.equal(evaluate('return document.activeElement.matches(".live-activator")'), true, 'Tab skips decorative controls and reaches join after the scrollable history');
+  assert.notEqual(evaluate('return getComputedStyle(document.querySelector(".live-invite")).outlineStyle'), 'none', 'The real join link keeps keyboard focus feedback');
+  evaluate('document.activeElement.blur();');
+  console.log('PASS: decorative messages, reactions, profiles, invite, channel and voice controls never highlight or navigate; only join keeps hover and keyboard focus feedback');
   for (const selector of ['.sim-brand', '.sim-members-heading', '.sim-chat > header h2', '.sim-message:last-of-type p', '.sim-meme', '.sim-reaction img', '.sim-composer']) drag(selector);
   console.log('PASS: both sidebars, chat header, message text, meme image and composer drag the preview without navigating');
   assert.equal(evaluate('return document.querySelector(".sim-composer").tagName'), 'DIV');
@@ -260,6 +292,7 @@ try {
   wait('document.querySelector(".live-stage[data-ready]") && typeof window.advanceDemoClock === "function" && !window.demoClockActive');
   evaluate('await document.fonts.ready; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));');
   browser('scrollintoview', '.sim-message:last-of-type p');
+  checkReadOnlyHover(['.sim-message:last-of-type', '.sim-reaction', '.sim-person', '.account-profile', '.voice-icon-button', '.call-settings-trigger', '.member-list-toggle']);
   drag('.sim-message:last-of-type p');
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-messages")).cursor'), 'grab');
   const gap = evaluate('return document.querySelector(".live-scene").getBoundingClientRect().top - document.querySelector(".hero-lede").getBoundingClientRect().bottom');
