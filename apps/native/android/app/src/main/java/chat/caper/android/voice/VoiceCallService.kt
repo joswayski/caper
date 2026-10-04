@@ -134,6 +134,8 @@ class VoiceCallService : Service() {
                 requireNotNull(intent.getStringExtra(EXTRA_SPACE_NAME)),
                 requireNotNull(intent.getStringExtra(EXTRA_DISPLAY_NAME)),
                 intent.getBooleanExtra(EXTRA_DEMO, false),
+                joinStartedAt = intent.getLongExtra(EXTRA_JOIN_STARTED_AT, System.currentTimeMillis()),
+                sessionStartedAt = if (intent.hasExtra(EXTRA_SESSION_STARTED_AT)) intent.getLongExtra(EXTRA_SESSION_STARTED_AT, 0) else null,
             ) else if (engine == null) stopForegroundAndSelf()
             ACTION_MUTE -> scope.launch {
                 if (state.value.monitoring) return@launch
@@ -174,7 +176,8 @@ class VoiceCallService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun startCall(channelId: String, spaceId: String, channelName: String, spaceName: String, displayName: String, demo: Boolean, previous: VoiceEngine? = null) {
+    private fun startCall(channelId: String, spaceId: String, channelName: String, spaceName: String, displayName: String, demo: Boolean, previous: VoiceEngine? = null,
+                          joinStartedAt: Long = System.currentTimeMillis(), sessionStartedAt: Long? = null) {
         if (engine != null) return
         invalidateJoinAuthorization()
         val token = TokenStore(this).read()
@@ -185,12 +188,12 @@ class VoiceCallService : Service() {
         update { VoiceState(VoiceState.Phase.CONNECTING, channelId, spaceId, channelName, spaceName,
             muted = previous?.muted ?: prejoin.muted, deafened = previous?.deafened ?: prejoin.deafened,
             inputGain = preferences.getInt("inputGain", 100), processingStrength = preferences.getInt("strength", 25),
-            outputVolume = preferences.getInt("outputVolume", 100)) }
+            outputVolume = preferences.getInt("outputVolume", 100), sessionStartedAt = sessionStartedAt ?: joinStartedAt) }
         val current = try {
             startForegroundNotification()
             acquireAudio()
             lateinit var created: VoiceEngine
-            created = VoiceEngine(this, CaperApi(), token, channelId, displayName, demo) { transport ->
+            created = VoiceEngine(this, CaperApi(), token, channelId, displayName, demo, joinStartedAt) { transport ->
                 scope.launch { transportState(created, attempt, transport) }
             }
             if (previous != null) created.copyAudioIntentFrom(previous) else created.presetAudioIntent(prejoin)
@@ -200,7 +203,7 @@ class VoiceCallService : Service() {
             activeAttempt = null
             releaseAudio()
             ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-            update { it.copy(phase = VoiceState.Phase.FAILED, error = error.message ?: "Voice could not start.", speakingParticipants = emptySet()) }
+            update { it.copy(phase = VoiceState.Phase.FAILED, sessionStartedAt = null, error = error.message ?: "Voice could not start.", speakingParticipants = emptySet()) }
             stopSelf()
             return
         }
@@ -569,6 +572,8 @@ class VoiceCallService : Service() {
         const val EXTRA_PARTICIPANT_ID = "participantId"
         const val EXTRA_VOLUME = "volume"
         const val EXTRA_CONTROL_EPOCH = "controlEpoch"
+        const val EXTRA_JOIN_STARTED_AT = "joinStartedAt"
+        const val EXTRA_SESSION_STARTED_AT = "sessionStartedAt"
         private const val CHANNEL = "caper_voice"
         private const val NOTIFICATION_ID = 7401
         private val mutableState = MutableStateFlow(VoiceState())
@@ -583,13 +588,14 @@ class VoiceCallService : Service() {
         internal fun navigationEpoch(): Long = controlEpoch.snapshot()
         internal fun invalidateJoinAuthorization() = controlEpoch.end()
 
-        fun start(context: Context, channelId: String, spaceId: String, channelName: String, spaceName: String, displayName: String, demo: Boolean = false, expectedControlEpoch: Long) {
+        fun start(context: Context, channelId: String, spaceId: String, channelName: String, spaceName: String, displayName: String, demo: Boolean = false, expectedControlEpoch: Long,
+                  joinStartedAt: Long = System.currentTimeMillis(), sessionStartedAt: Long? = null) {
             if (!BuildConfig.ENABLE_NATIVE_VOICE || !joinAuthorizationCurrent(expectedControlEpoch)) return
             val current = active
             if (current != null && state.value.channelId != channelId) {
                 val previous = current.engine
                 current.stopCall(stopService = false)
-                current.startCall(channelId, spaceId, channelName, spaceName, displayName, demo, previous)
+                current.startCall(channelId, spaceId, channelName, spaceName, displayName, demo, previous, joinStartedAt, sessionStartedAt)
                 return
             }
             val intent = Intent(context, VoiceCallService::class.java).setAction(ACTION_START)
@@ -597,6 +603,8 @@ class VoiceCallService : Service() {
                 .putExtra(EXTRA_CHANNEL_NAME, channelName).putExtra(EXTRA_SPACE_NAME, spaceName)
                 .putExtra(EXTRA_DISPLAY_NAME, displayName).putExtra(EXTRA_DEMO, demo)
                 .putExtra(EXTRA_CONTROL_EPOCH, expectedControlEpoch)
+                .putExtra(EXTRA_JOIN_STARTED_AT, joinStartedAt)
+            if (sessionStartedAt != null) intent.putExtra(EXTRA_SESSION_STARTED_AT, sessionStartedAt)
             context.startForegroundService(intent)
         }
         fun stop(context: Context) {

@@ -27,7 +27,7 @@ public struct IceServer: Decodable, Sendable {
 private struct TurnGeneration: Codable { let generation: String; let refreshAfterMs: Int; let expiresInMs: Int }
 private struct JoinResponse: Decodable { let token: String; let id: String; let iceServers: [IceServer]; let turn: TurnGeneration? }
 private struct TurnResponse: Decodable { let iceServers: [IceServer]; let turn: TurnGeneration }
-private struct JoinBody: Encodable { let name: String; let muted: Bool; let deafened: Bool }
+private struct JoinBody: Encodable { let name: String; let muted: Bool; let deafened: Bool; let joinStartedAt: Int64 }
 private struct SDP: Codable { let type: String; let sdp: String }
 private struct PublishBody: Encodable { let kind = "microphone"; let mid: String; let sessionDescription: SDP }
 private struct TrackRef: Decodable { let mid: String }
@@ -197,7 +197,8 @@ public final class VoiceClient {
         return configuration
     }
 
-    public func join(channelID: String?, context: VoiceContext, name: String) async {
+    public func join(channelID: String?, context: VoiceContext, name: String,
+                     joinStartedAt: Int64 = Int64(Date().timeIntervalSince1970 * 1_000), sessionStartedAt: Double? = nil) async {
         guard phase == .idle || phase == .failed else { return }
         #if os(iOS)
         // A prejoin comparison must be stopped before this new generation can
@@ -214,6 +215,7 @@ public final class VoiceClient {
         joinName = name
         self.context = context
         phase = .joining; error = nil; self.channelID = channelID
+        self.sessionStartedAt = sessionStartedAt ?? Double(joinStartedAt)
         joinTiming = nil; joinChecks = nil
         let clock = ContinuousClock()
         let started = clock.now
@@ -230,7 +232,7 @@ public final class VoiceClient {
             installAudioObservers(generation: attempt)
             #endif
             let sessionStarted = clock.now
-            let joined: JoinResponse = try await api.media(channelID: channelID, operation: "join", body: JoinBody(name: name, muted: muted, deafened: deafened))
+            let joined: JoinResponse = try await api.media(channelID: channelID, operation: "join", body: JoinBody(name: name, muted: muted, deafened: deafened, joinStartedAt: joinStartedAt))
             guard generation == attempt, phase == .joining else {
                 try? await api.media(channelID: channelID, operation: "leave", token: joined.token, body: EmptyBody())
                 return

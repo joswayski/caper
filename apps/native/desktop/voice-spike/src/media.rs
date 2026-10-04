@@ -1273,11 +1273,12 @@ impl NativeSession {
         input_guid: Option<&str>,
         output_guid: Option<&str>,
         control: &JoinControl,
+        join_started_at: Option<u64>,
     ) -> Result<Self, VoiceError> {
         tokio::select! {
             biased;
             () = control.cancelled() => Err(VoiceError::Local("voice join cancelled".into())),
-            result = Self::join_inner(api, name, intent, input_guid, output_guid, control) => result,
+            result = Self::join_inner(api, name, intent, input_guid, output_guid, control, join_started_at) => result,
         }
     }
 
@@ -1288,12 +1289,13 @@ impl NativeSession {
         input_guid: Option<&str>,
         output_guid: Option<&str>,
         control: &JoinControl,
+        join_started_at: Option<u64>,
     ) -> Result<Self, VoiceError> {
         let joined: JoinResponse = api
             .post(
                 "join",
                 None,
-                json!({"name":name,"muted":intent.muted,"deafened":intent.deafened}),
+                json!({"name":name,"muted":intent.muted,"deafened":intent.deafened,"joinStartedAt":join_started_at}),
             )
             .await
             .map_err(VoiceError::Media)?;
@@ -2976,6 +2978,7 @@ mod tests {
                 Some(&input),
                 Some(&output),
                 &first_control,
+                None,
             )
             .await
             .expect("first silent join/publish/transport");
@@ -2995,6 +2998,7 @@ mod tests {
                 Some(&input),
                 Some(&output),
                 &second_control,
+                None,
             )
             .await
             .expect("second silent join/publish/transport");
@@ -3525,8 +3529,16 @@ mod tests {
             cancelling.cancel();
         });
         let started = Instant::now();
-        let result =
-            NativeSession::join(api, "Guest", AudioIntent::default(), None, None, &control).await;
+        let result = NativeSession::join(
+            api,
+            "Guest",
+            AudioIntent::default(),
+            None,
+            None,
+            &control,
+            None,
+        )
+        .await;
         assert!(
             matches!(result, Err(VoiceError::Local(ref detail)) if detail == "voice join cancelled")
         );
