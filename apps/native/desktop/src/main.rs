@@ -240,6 +240,7 @@ struct CaperApp {
     navigation: u64,
     opening: bool,
     navigation_target: Option<NavigationTarget>,
+    navigation_prefetch: Option<navigation::Target>,
     navigation_error: Option<String>,
     navigation_cache: navigation::NavigationCache,
     navigation_cache_generation: u64,
@@ -340,6 +341,7 @@ impl CaperApp {
             navigation: 0,
             opening: false,
             navigation_target: None,
+            navigation_prefetch: None,
             navigation_error: None,
             navigation_cache: navigation::NavigationCache::default(),
             navigation_cache_generation: 1,
@@ -1000,13 +1002,17 @@ impl CaperApp {
                 } if generation == self.navigation_cache_generation => {
                     let target = navigation::Target { space, channel };
                     match result {
-                        Ok(read) => self.navigation_cache.finish_prefetch(
-                            &target,
-                            request,
-                            read,
-                            Instant::now(),
-                        ),
+                        Ok(read) => {
+                            self.navigation_cache.finish_prefetch(
+                                &target,
+                                request,
+                                read,
+                                Instant::now(),
+                            );
+                        }
                         Err(error) if error.access_denied => {
+                            self.navigation_cache
+                                .cancel_prefetch(&target, request, Instant::now());
                             if error.space_access_denied {
                                 if let Some(space) = &target.space {
                                     self.navigation_cache.forget_space(space);
@@ -1015,7 +1021,10 @@ impl CaperApp {
                                 self.navigation_cache.forget_channel(channel);
                             }
                         }
-                        Err(_) => {}
+                        Err(_) => {
+                            self.navigation_cache
+                                .cancel_prefetch(&target, request, Instant::now());
+                        }
                     }
                 }
                 Event::ChannelLoaded {
@@ -1401,7 +1410,6 @@ impl CaperApp {
     }
 
     fn navigate(&mut self, target: NavigationTarget) {
-        self.remember_conversation();
         let mut cache_target = navigation::Target {
             space: target.space.clone(),
             channel: target.channel.clone(),
@@ -1411,6 +1419,55 @@ impl CaperApp {
             space: cache_target.space.clone(),
             channel: cache_target.channel.clone(),
         };
+        let selected = self.selected_channel.as_ref().is_some_and(|channel| {
+            target.channel.as_ref() == Some(channel) && target.space == self.selected_space
+        });
+        // Joining the displayed preview still needs a participating session.
+        let joined_preview = self.selected_is_joined()
+            && self.session_error.as_deref() == Some("Join this channel to chat.");
+        if selected && !joined_preview {
+            if self.opening {
+                self.navigation += 1;
+                self.opening = false;
+                self.navigation_target = None;
+                self.navigation_prefetch = None;
+                self.navigation_error = None;
+            }
+            return;
+        }
+        if self.opening
+            && self.navigation_target.as_ref().is_some_and(|pending| {
+                pending.space == target.space && pending.channel == target.channel
+            })
+        {
+            return;
+        }
+        self.remember_conversation();
+        self.navigation += 1;
+        self.opening = true;
+        self.navigation_error = None;
+        self.navigation_target = Some(target);
+        self.navigation_prefetch = None;
+        if self
+            .navigation_cache
+            .prefetch_state(&cache_target, Instant::now())
+            == navigation::PrefetchState::Pending
+        {
+            self.navigation_prefetch = Some(cache_target);
+            return;
+        }
+        self.prepare_navigation(cache_target);
+    }
+
+    fn navigation_target_matches(&self, target: &navigation::Target) -> bool {
+        self.opening
+            && self.navigation_target.as_ref().is_some_and(|pending| {
+                pending.space == target.space && pending.channel == target.channel
+            })
+    }
+
+    fn prepare_navigation(&mut self, cache_target: navigation::Target) {
+        self.navigation_prefetch = None;
         let prefetched = self
             .navigation_cache
             .take_prefetch(&cache_target, Instant::now());
@@ -1420,19 +1477,15 @@ impl CaperApp {
                 read.history
             })
         });
-        self.navigation += 1;
-        self.opening = true;
-        self.navigation_error = None;
         self.worker.send(Command::PrepareNavigation {
             generation: self.generation,
             navigation: self.navigation,
             token: self.token.clone(),
-            space: target.space.clone(),
-            channel: target.channel.clone(),
+            space: cache_target.space,
+            channel: cache_target.channel,
             name: self.identity_name(),
             cached,
         });
-        self.navigation_target = Some(target);
     }
 
     fn prefetch(&mut self, target: NavigationTarget) {
@@ -1440,6 +1493,11 @@ impl CaperApp {
             space: target.space,
             channel: target.channel,
         });
+        if self.selected_channel.as_ref() == target.channel.as_ref()
+            && self.selected_space == target.space
+        {
+            return;
+        }
         let Some(request) = self
             .navigation_cache
             .begin_prefetch(target.clone(), Instant::now())
@@ -1518,13 +1576,15 @@ impl CaperApp {
         self.opening = false;
         match result {
             Ok(prepared) => {
-                if self.selected_space.as_deref()
+                let space_changed = self.selected_space.as_deref()
                     != prepared
                         .detail
                         .as_ref()
-                        .map(|detail| detail.space.id.as_str())
-                {
+                        .map(|detail| detail.space.id.as_str());
+                if space_changed {
                     self.voice_join_request += 1;
+                    self.presence.clear();
+                    self.member_page = 0;
                 }
                 self.generation += 1;
                 self.clear_channel_state();
@@ -1534,7 +1594,6 @@ impl CaperApp {
                 self.navigation_error = None;
                 self.navigation_target = None;
                 self.navigation_open = false;
-                self.member_page = 0;
                 let general = prepared.detail.is_none();
                 self.selected_space = prepared
                     .detail
@@ -2409,6 +2468,19 @@ impl CaperApp {
 
     fn periodic(&mut self, context: &egui::Context) {
         let now = Instant::now();
+        if let Some(target) = self.navigation_prefetch.clone() {
+            if !self.navigation_target_matches(&target) {
+                self.navigation_prefetch = None;
+            } else if self.navigation_cache.prefetch_state(&target, now)
+                == navigation::PrefetchState::Pending
+            {
+                context.request_repaint_after(Duration::from_millis(100));
+            } else {
+                // Expired/evicted hover work must fall back to a normal load,
+                // not leave navigation waiting for a discarded completion.
+                self.prepare_navigation(target);
+            }
+        }
         if self.token.is_some()
             && now.duration_since(self.directs_refreshed) >= Duration::from_secs(15)
         {
@@ -7695,10 +7767,12 @@ fn avatar_icon(index: usize) -> egui::IconData {
 #[cfg(test)]
 mod tests {
     use super::{
-        CaperApp, ConnectionReport, Dialog, GatewayEvent, PendingReaction, PendingSend, Phase,
-        avatar_icon, endpoint, media, member_page_ids, normalize_channel, permanent_send_rejection,
-        take_date_divider, timestamp_parts, voice,
+        CaperApp, ConnectionReport, Dialog, GatewayEvent, NavigationTarget, PendingReaction,
+        PendingSend, Phase, avatar_icon, endpoint, media, member_page_ids, normalize_channel,
+        permanent_send_rejection, take_date_divider, timestamp_parts, voice,
     };
+    use crate::navigation;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn daily_avatar_icon_has_correct_colors_and_unpremultiplied_edges() {
@@ -10598,6 +10672,185 @@ mod tests {
         assert!(!app.opening);
         assert!(app.navigation_error.is_none());
         assert!(app.draft.is_empty());
+    }
+
+    #[test]
+    fn channel_selection_is_noop_duplicate_and_cancels_stale_target() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        let selected = app.selected_channel.clone().unwrap();
+        app.draft = "keep me".into();
+        let initial_navigation = app.navigation;
+        app.select_channel(selected.clone(), false);
+        assert_eq!(app.navigation, initial_navigation);
+        assert_eq!(app.draft, "keep me");
+
+        app.select_channel("pending".into(), false);
+        let pending_navigation = app.navigation;
+        app.select_channel("pending".into(), false);
+        assert_eq!(
+            app.navigation, pending_navigation,
+            "duplicate target is ignored"
+        );
+        assert!(app.opening);
+
+        app.select_channel(selected, false);
+        assert!(!app.opening);
+        assert!(app.navigation_target.is_none());
+        assert!(app.navigation > pending_navigation);
+        assert_eq!(app.draft, "keep me");
+        app.accept_navigation(
+            app.generation,
+            pending_navigation,
+            Ok(crate::worker::PreparedNavigation {
+                detail: app.detail.clone(),
+                conversation: Some((history("pending"), Ok(session()))),
+            }),
+        );
+        assert_ne!(app.selected_channel.as_deref(), Some("pending"));
+    }
+
+    #[test]
+    fn joining_the_displayed_preview_still_opens_a_participating_session() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.session = None;
+        app.session_error = Some("Join this channel to chat.".into());
+        let selected = app.selected_channel.clone().unwrap();
+        assert!(app.selected_is_joined(), "membership refresh has completed");
+        app.select_channel(selected, false);
+        assert!(
+            app.opening,
+            "a preview-to-member transition is not a repeat click"
+        );
+    }
+
+    #[test]
+    fn click_waits_for_inflight_hover_and_consumes_its_history() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        let target = navigation::Target {
+            space: app.selected_space.clone(),
+            channel: Some("hovered".into()),
+        };
+        let request = app
+            .navigation_cache
+            .begin_prefetch(target.clone(), Instant::now())
+            .unwrap();
+        app.select_channel("hovered".into(), false);
+        assert!(app.opening);
+        assert_eq!(
+            app.navigation_cache.prefetch_state(&target, Instant::now()),
+            navigation::PrefetchState::Pending
+        );
+
+        assert!(app.navigation_cache.finish_prefetch(
+            &target,
+            request,
+            navigation::Read {
+                detail: app.detail.clone(),
+                history: Some(history("hovered")),
+            },
+            Instant::now(),
+        ));
+        app.periodic(&context);
+        assert!(app.navigation_prefetch.is_none());
+        assert_eq!(
+            app.navigation_cache.prefetch_state(&target, Instant::now()),
+            navigation::PrefetchState::Missing,
+            "the click reuses and consumes the completed hover read"
+        );
+    }
+
+    #[test]
+    fn expired_hover_falls_back_once_without_stalling_navigation() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        let target = navigation::Target {
+            space: app.selected_space.clone(),
+            channel: Some("slow-hover".into()),
+        };
+        let now = Instant::now();
+        app.navigation_cache.begin_prefetch(target.clone(), now);
+        app.select_channel("slow-hover".into(), false);
+        let request = app.navigation;
+        assert_eq!(app.navigation_prefetch.as_ref(), Some(&target));
+        assert_eq!(
+            app.navigation_cache
+                .prefetch_state(&target, now + Duration::from_secs(5)),
+            navigation::PrefetchState::Missing
+        );
+        app.periodic(&context);
+        assert!(
+            app.navigation_prefetch.is_none(),
+            "normal preparation has started"
+        );
+        assert!(app.opening);
+        app.periodic(&context);
+        assert!(app.navigation_prefetch.is_none());
+        assert_eq!(
+            app.navigation, request,
+            "fallback keeps the same navigation attempt"
+        );
+    }
+
+    #[test]
+    fn presence_survives_same_space_navigation_and_clears_across_spaces() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.presence.insert("member".into(), "online".into());
+        let detail = app.detail.clone();
+        app.select_channel("same-space".into(), false);
+        app.accept_navigation(
+            app.generation,
+            app.navigation,
+            Ok(crate::worker::PreparedNavigation {
+                detail,
+                conversation: Some((history("same-space"), Ok(session()))),
+            }),
+        );
+        assert_eq!(
+            app.presence.get("member").map(String::as_str),
+            Some("online")
+        );
+
+        let mut other_detail = app.detail.clone().unwrap();
+        other_detail.space.id = "other-space".into();
+        let mut other_history = history("other-channel");
+        other_history.space.id = "other-space".into();
+        app.navigate(NavigationTarget {
+            space: Some("other-space".into()),
+            channel: Some("other-channel".into()),
+        });
+        app.accept_navigation(
+            app.generation,
+            app.navigation,
+            Ok(crate::worker::PreparedNavigation {
+                detail: Some(other_detail),
+                conversation: Some((other_history, Ok(session()))),
+            }),
+        );
+        assert!(app.presence.is_empty());
     }
 
     #[test]

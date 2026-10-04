@@ -48,3 +48,40 @@ final class VoicePresenceTests: XCTestCase {
         XCTAssertTrue(presence.rosters.isEmpty)
     }
 }
+
+@MainActor
+final class PresenceTests: XCTestCase {
+    func testSameSpaceKeepsMemberPageAndLiveStatusesButChangedSubscriptionsReset() async {
+        let presence = PresenceModel(api: APIClient(baseURL: URL(string: "https://caper.invalid")!))
+        let members = (0..<27).map { Member(id: "member-\($0)", username: "user\($0)", displayName: "Member \($0)", owner: false) }
+        await presence.watch(spaceID: "space-a", members: members)
+        await presence.showPage(1)
+        let ids: Set<String> = ["member-25", "member-26"]
+        presence.receive(["type": "snapshot", "members": [
+            ["userId": "member-25", "status": "online"],
+            ["userId": "member-26", "status": "idle"]
+        ]], generation: 2, expectedIDs: ids)
+        let renamed = members.map { Member(id: $0.id, username: $0.username, displayName: "Updated \($0.displayName)", owner: $0.owner, avatarId: 31) }
+        await presence.watch(spaceID: "space-a", members: renamed)
+        XCTAssertEqual(presence.page, 1)
+        XCTAssertTrue(presence.online)
+        XCTAssertEqual(presence.statuses, ["member-25": .online, "member-26": .idle])
+        XCTAssertEqual(presence.visibleMembers.first?.displayName, "Updated Member 25")
+        XCTAssertEqual(presence.visibleMembers.first?.avatarId, 31)
+
+        await presence.watch(spaceID: "space-a", members: Array(renamed.prefix(26)))
+        XCTAssertEqual(presence.page, 1)
+        XCTAssertFalse(presence.online)
+        XCTAssertTrue(presence.statuses.isEmpty, "a changed member page needs a new snapshot")
+        presence.receive(["type": "snapshot", "members": [["userId": "member-25", "status": "offline"]]], generation: 3, expectedIDs: ["member-25"])
+        XCTAssertEqual(presence.statuses["member-25"], .offline)
+
+        await presence.watch(spaceID: "space-b", members: Array(renamed.prefix(26)))
+        XCTAssertEqual(presence.page, 0)
+        XCTAssertFalse(presence.online)
+        XCTAssertTrue(presence.statuses.isEmpty, "statuses must not carry over to another space")
+        presence.receive(["type": "snapshot", "members": [["userId": "member-25", "status": "online"]]], generation: 3, expectedIDs: ["member-25"])
+        XCTAssertTrue(presence.statuses.isEmpty, "late old-space snapshots must be fenced")
+        await presence.stop()
+    }
+}

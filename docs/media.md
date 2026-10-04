@@ -104,6 +104,28 @@ unguessable short-lived call capability. Clients use Caper track IDs, not
 arbitrary SFU session IDs. Cloudflare terminates transport encryption; this is
 **not E2EE**.
 
+### Channel navigation
+
+Web, Apple and Rust desktop treat clicks on the displayed channel as no-ops;
+clicking it while another channel opens cancels the pending transition. Repeated
+clicks on one pending destination do not duplicate navigation. Hover/focus on
+desktop web, macOS and Rust desktop speculates read-only history, never a sending
+session or voice join. Visited timelines resume from their retained replay cursor;
+native clicks still recheck space access before using speculative history.
+Apple displays prepared history while its sending session opens and retains the
+same space's member page/presence subscription. Rust desktop retains member
+statuses and pagination, but reconnects its combined chat/presence gateway on
+channel changes. Web keeps its unchanged member subscription mounted.
+
+Run `NAVIGATION_TEST_WEB_URL=http://localhost:5174/spaces node scripts/test-desktop-navigation.mjs`
+against Vite for mocked desktop/390px repeat-click, hover/click sharing, cancellation
+and stable presence checks. Web build/tests and Rust desktop tests/Clippy run in
+the Linux orb; Apple regressions require Xcode CI and macOS/iOS render validation.
+iOS shares the Apple repeat-click/presence fixes without hover speculation.
+Android navigation is unchanged and does not preload channels on hover; physical
+device and live-network checks remain separate. No API, infrastructure, secret or
+database rollout is needed; web and affected native releases are independent.
+
 ### Application gateway and account presence
 
 One WebSocket per tab multiplexes authorized chat, voice-roster, and member-status
