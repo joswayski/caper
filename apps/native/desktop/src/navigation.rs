@@ -18,6 +18,13 @@ pub struct Read {
     pub history: Option<History>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrefetchState {
+    Missing,
+    Pending,
+    Ready,
+}
+
 struct Prefetch {
     request: u64,
     expires: Instant,
@@ -71,13 +78,44 @@ impl NavigationCache {
         Some(request)
     }
 
-    pub fn finish_prefetch(&mut self, target: &Target, request: u64, read: Read, now: Instant) {
+    pub fn finish_prefetch(
+        &mut self,
+        target: &Target,
+        request: u64,
+        read: Read,
+        now: Instant,
+    ) -> bool {
         self.expire(now);
         if let Some(entry) = self.prefetches.get_mut(target)
             && entry.request == request
         {
             entry.read = Some(read);
+            return true;
         }
+        false
+    }
+
+    pub fn prefetch_state(&mut self, target: &Target, now: Instant) -> PrefetchState {
+        self.expire(now);
+        match self.prefetches.get(target) {
+            Some(entry) if entry.read.is_some() => PrefetchState::Ready,
+            Some(_) => PrefetchState::Pending,
+            None => PrefetchState::Missing,
+        }
+    }
+
+    pub fn cancel_prefetch(&mut self, target: &Target, request: u64, now: Instant) -> bool {
+        self.expire(now);
+        if self
+            .prefetches
+            .get(target)
+            .is_some_and(|entry| entry.request == request)
+        {
+            self.prefetch_order.retain(|entry| entry != target);
+            self.prefetches.remove(target);
+            return true;
+        }
+        false
     }
 
     pub fn take_prefetch(&mut self, target: &Target, now: Instant) -> Option<Read> {
@@ -277,6 +315,36 @@ mod tests {
             now,
         );
         assert!(cache.take_prefetch(&target(1), now).is_none());
+    }
+
+    #[test]
+    fn pending_prefetch_is_retained_until_its_matching_completion() {
+        let now = Instant::now();
+        let mut cache = NavigationCache::default();
+        let request = cache.begin_prefetch(target(1), now).unwrap();
+        assert_eq!(
+            cache.prefetch_state(&target(1), now),
+            PrefetchState::Pending
+        );
+        assert!(cache.finish_prefetch(
+            &target(1),
+            request,
+            Read {
+                detail: None,
+                history: Some(history(1, "7")),
+            },
+            now,
+        ));
+        assert_eq!(cache.prefetch_state(&target(1), now), PrefetchState::Ready);
+        assert_eq!(
+            cache
+                .take_prefetch(&target(1), now)
+                .unwrap()
+                .history
+                .unwrap()
+                .cursor,
+            "7"
+        );
     }
 
     #[test]

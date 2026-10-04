@@ -1000,6 +1000,16 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
     if (spaceMenu.current) spaceMenu.current.open = false;
     if (channelMenu.current) channelMenu.current.open = false;
     channelNavigationRef.current?.querySelectorAll<HTMLDetailsElement>(".channel-menu[open]").forEach((menu) => { menu.open = false; });
+    // A repeated click must not replace `selected`: that would restart the
+    // navigation effect and remount Chat, losing its draft and scroll state.
+    // Comparing with the requested selection (rather than `view`) also folds
+    // duplicate clicks into one pending request. If another channel is pending,
+    // clicking the still-visible channel differs from `selected` and therefore
+    // intentionally cancels that navigation.
+    if (spaceId === selected.spaceId && channelId === selected.channelId && dmId === selected.dmId) {
+      setNavigationOpen(false);
+      return;
+    }
     activeSpace.current = spaceId;
     setMembershipError(undefined);
     setBrowseOpen(false);
@@ -1512,7 +1522,7 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
               aria-busy={pending && detail.space.id === selected.spaceId && item.id === selected.channelId}
               onMouseEnter={() => prefetch(detail.space.id, item.id)}
               onFocus={() => prefetch(detail.space.id, item.id)}
-              onClick={() => { if (item.id === channel?.id) setNavigationOpen(false); else choose(detail.space.id, item.id); }}
+              onClick={() => choose(detail.space.id, item.id)}
             >
               {item.private ? (
                 <LockKeyhole aria-hidden="true" />
