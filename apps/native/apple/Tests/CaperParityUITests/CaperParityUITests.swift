@@ -113,9 +113,14 @@ final class CaperParityUITests: XCTestCase {
 
     private func capture(_ name: String, app: XCUIApplication) {
         #if os(macOS)
+        // Screenshot the frontmost window (the fixed-size Settings window when
+        // it is open), but hold the layout to the main app window: Settings is
+        // 500×380 by design and is not the desktop parity layout.
         let window = app.windows.firstMatch
         XCTAssertTrue(window.waitForExistence(timeout: 2))
-        let size = window.frame.size
+        let main = app.windows.matching(NSPredicate(format: "identifier != %@", "com_apple_SwiftUI_Settings_window")).firstMatch
+        XCTAssertTrue(main.exists, "The main app window must stay open behind any capture")
+        let size = main.frame.size
         #if arch(arm64)
         let desktop = size.width >= 1_400
         let layout = desktop ? "desktop" : "medium"
@@ -282,7 +287,11 @@ final class CaperParityUITests: XCTestCase {
         search.tap()
         XCTAssertTrue(hasKeyboardFocus(search), "One tap must focus search without reopening the sheet")
         search.typeText("rocket")
-        let rockets = try require(app.buttons["rockets"], timeout: 5, "Searching rocket never showed the rockets emoji")
+        // Scope to the picker grid: on macOS a Touch Bar item also titled
+        // "rockets" appears while searching, so app.buttons["rockets"] matches
+        // twice and tapping it fails.
+        let rockets = try require(app.scrollViews["reaction-picker-grid"].buttons["rockets"], timeout: 5,
+                                  "Searching rocket never showed the rockets emoji")
 
         // Push the presenting row out of the lazy timeline's viewport
         // while the picker is open and its keyboard has focus.
@@ -677,6 +686,12 @@ final class CaperParityUITests: XCTestCase {
         capture("audio-statistics-test-fixture", app: app)
     }
 
+    /// AppKit reports a switch's value as a number (0 or 1), not a string.
+    private func switchState(_ toggle: XCUIElement) -> Bool? {
+        if let number = toggle.value as? NSNumber { return number.boolValue }
+        return (toggle.value as? String).flatMap { ["1": true, "0": false][$0] }
+    }
+
     func testSettingsShortcutWorksWhileSignedOut() {
         let app = launch(signedIn: false)
         assertStaticText("Welcome to Caper", in: app)
@@ -685,16 +700,16 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(startup.waitForExistence(timeout: 5))
         XCTAssertFalse(startup.isEnabled, "Parity mode must never change real Login Items")
         let sounds = app.descendants(matching: .any)["sound-effects"]
-        let original = sounds.value as? String
+        let original = switchState(sounds)
         XCTAssertNotNil(original)
         sounds.tap()
-        XCTAssertNotEqual(sounds.value as? String, original)
+        XCTAssertNotEqual(switchState(sounds), original)
         app.typeKey("w", modifierFlags: .command)
         app.typeKey(",", modifierFlags: .command)
         XCTAssertTrue(startup.waitForExistence(timeout: 3))
-        XCTAssertNotEqual(sounds.value as? String, original, "Settings saves without an Apply button")
+        XCTAssertNotEqual(switchState(sounds), original, "Settings saves without an Apply button")
         sounds.tap()
-        XCTAssertEqual(sounds.value as? String, original)
+        XCTAssertEqual(switchState(sounds), original)
         capture("settings-signed-out", app: app)
     }
     #endif
