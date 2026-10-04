@@ -4,7 +4,6 @@ import SwiftUI
 
 @MainActor
 private final class DailyDockIcon {
-    private let defaults = UserDefaults.standard
     private var timer: Timer?
     private var currentIndex: Int?
 
@@ -18,16 +17,8 @@ private final class DailyDockIcon {
         }
     }
 
-    private func refresh(now: Date = Date()) {
-        let day = CaperDailyIcon.utcDay(containing: now)
-        let savedDay = defaults.string(forKey: "daily-dock-icon-day-v1")
-        let savedIndex = defaults.object(forKey: "daily-dock-icon-index-v1") as? Int
-        let index = CaperDailyIcon.select(day: day, savedDay: savedDay, savedIndex: savedIndex,
-            random: UInt64.random(in: UInt64.min...UInt64.max))
-        if day != savedDay || index != savedIndex {
-            defaults.set(day, forKey: "daily-dock-icon-day-v1")
-            defaults.set(index, forKey: "daily-dock-icon-index-v1")
-        }
+    func refresh(now: Date = Date()) {
+        let index = CaperDailyIcon.current(now: now)
         if currentIndex != index {
             NSApplication.shared.applicationIconImage = CaperAvatar.image(for: index)
             currentIndex = index
@@ -40,6 +31,7 @@ struct CaperMacOSApp: App {
     private let parity = ProcessInfo.processInfo.environment["CAPER_TEST_MODE"] == "parity"
     private let updater = AppUpdater()
     private let dailyDockIcon = DailyDockIcon()
+    @AppStorage("daily-dock-icon-index-v1") private var dailyIndex = 0
 
     var body: some Scene {
         WindowGroup {
@@ -49,6 +41,7 @@ struct CaperMacOSApp: App {
                     updater.start()
                     dailyDockIcon.start(enabled: !parity)
                 }
+                .onChange(of: dailyIndex) { _, _ in if !parity { dailyDockIcon.refresh() } }
         }
         // Keep system window controls in their own title bar, outside the space rail.
         .windowStyle(.titleBar)

@@ -3343,8 +3343,19 @@ not change account avatars. Rotation runs on launch/resume or while the client i
 running; it is not an exact midnight job while closed, suspended or throttled.
 There are no alarms, background services, icon-change prompts or new dependencies.
 
+In-app wordmarks keep the original lettering and replace its plain dot with the
+same installation-local daily character. Web shares one React selection with the
+favicon (including blocked storage); Rust desktop reuses its runtime-icon state;
+macOS shares persisted state with the Dock; Android uses the applied launcher
+choice. iOS and standalone web rotate only the in-app character, leaving their
+packaged/installed icons original. Different installations may choose different
+characters. Native test fixtures use design 0 for deterministic wordmarks.
+The [character catalog](../assets/avatars/README.md) names all 100 designs and
+explains their eight hues; it does not add mascot reactions to the chat protocol.
+
 | Surface | Behavior and validation |
 | --- | --- |
+| In-app wordmarks | Web headers/forms, Rust desktop forms, and Apple/Android shared wordmarks compose dot-free lettering with a bundled v3 character. Clock-controlled Chromium checks cover matching favicon/wordmark selection, same-day navigation/reload, rollover, other tabs, unavailable storage, standalone branding, decorative images and desktop/narrow layouts. Rust desktop is checked separately on Linux X11. Apple/Android builds and rendering need native CI/device acceptance; browser checks do not verify them. |
 | Desktop/mobile browser tabs | SVG plus generated 32/192px PNG favicons; localStorage persists the daily choice across reloads and tabs. Checks every minute and on focus/visibility/storage events. Clock-controlled Chromium tests cover UTC rollover, timer refresh, same-day reload/SPA navigation, shared-tab assignment, PNG/SVG pixels and desktop/narrow asset inspection. Safari/Firefox and physical mobile browsers remain unverified. |
 | Website home-screen shortcuts | Dedicated original-mascot Apple touch and manifest PNGs at 180/192/512px. Explicit standalone launches skip favicon rotation. Browsers/OSes cache installed icons; no reliable scheduled refresh is available. The manifest uses `display: browser`; no offline service worker or background capability is added. Existing shortcuts may need re-adding, and browser-specific icon selection needs device validation. |
 | Native iOS | Original packaged dark-green icon; no alternate-icon calls or alerts. No iOS icon behavior is changed. |
@@ -3358,7 +3369,10 @@ test uses a labelled clock/storage fixture, not a physical home-screen test:
 Static fallback exports use `node scripts/generate-favicons.mjs` (ImageMagick 7 and
 librsvg); launcher declarations use
 `node scripts/generate-android-launcher-aliases.mjs --check`. Native clients reuse
-their already-bundled vector resources. Docker is unavailable; web production
+their already-bundled vector resources. `node scripts/generate-wordmark.mjs`
+exports dot-free lettering to web/Rust, Apple and Android without changing the
+original full-logo source; `--check` runs in web tests to detect drift.
+Docker is unavailable; web production
 build stages and the Rust desktop build were checked directly. Application-only
 desktop Clippy passes with `--no-deps`; full native-workspace Clippy still fails on
 existing vendored WebRTC safety-documentation warnings.

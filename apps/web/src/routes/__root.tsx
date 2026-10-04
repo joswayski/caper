@@ -99,12 +99,11 @@ function RootDocument({ children }: Readonly<{ children: ReactNode }>) {
     <html lang="en" suppressHydrationWarning>
       <head>
         <HeadContent />
-        <RotatingFavicon />
         <style>{"html,body{background:#0c0d0f;color-scheme:dark}"}</style>
         <script dangerouslySetInnerHTML={{ __html: sidebarWidthScript }} />
       </head>
       <body>
-        {children}
+        <RotatingFavicon>{children}</RotatingFavicon>
         <Scripts />
       </body>
     </html>

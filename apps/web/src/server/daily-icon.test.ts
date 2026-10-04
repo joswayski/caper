@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { dailyIcon } from "../components/daily-icon.ts";
+
+test("wordmark exports preserve the original lettering and omit the static dot", () => {
+  execFileSync(process.execPath, [new URL("../../../../scripts/generate-wordmark.mjs", import.meta.url).pathname, "--check"]);
+  const original = readFileSync(new URL("../../public/caper-wordmark.svg", import.meta.url), "utf8");
+  const lettering = readFileSync(new URL("../../public/caper-wordmark-letters.svg", import.meta.url), "utf8");
+  assert.equal((lettering.match(/<path\b/g) ?? []).length, 1);
+  assert.equal(lettering.match(/<path[^>]+>/)?.[0], original.match(/<path[^>]+>/)?.[0]);
+  assert.match(lettering, /viewBox="20 17 1042 276"/);
+});
 
 test("daily icon remains stable until the UTC boundary", () => {
   const saved = { day: 0, index: 143 };
