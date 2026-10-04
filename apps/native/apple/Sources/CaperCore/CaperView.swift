@@ -711,8 +711,12 @@ private struct ChannelSidebarItem: View {
     @State private var confirmLeave = false
 
     private var sessionStartedAt: Double? {
-        if model.voice.isActive(channelID: channel.id) { return model.voice.sessionStartedAt }
-        return model.voicePresence.sessionStartedAt(for: channel.id)
+        let shared = model.voicePresence.sessionStartedAt(for: channel.id)
+        if model.voice.isActive(channelID: channel.id) {
+            return model.voice.phase == .joining ? shared ?? model.voice.sessionStartedAt : model.voice.sessionStartedAt
+        }
+        return shared
+            ?? (model.pendingVoiceChannelID == channel.id ? Double(model.pendingVoiceStartedAt) : nil)
     }
 
     var body: some View {

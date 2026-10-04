@@ -33,6 +33,7 @@ class VoiceEngine(
     private val channelId: String,
     private val displayName: String,
     private val demo: Boolean = false,
+    private val joinStartedAt: Long = System.currentTimeMillis(),
     private val onTransportState: (PeerConnection.PeerConnectionState) -> Unit = {},
 ) {
     private val appContext = context.applicationContext
@@ -141,7 +142,7 @@ class VoiceEngine(
             // either publish the token or leave it after a local stop.
             val sessionStarted = monotonicMs()
             val joined: JoinResponse? = withContext(NonCancellable) {
-                val result: JoinResponse = media("join", buildJsonObject { put("name", displayName); put("muted", muted); put("deafened", deafened) })
+                val result: JoinResponse = media("join", buildJsonObject { put("name", displayName); put("muted", muted); put("deafened", deafened); put("joinStartedAt", joinStartedAt) })
                 if (resources.acceptToken(result.token) { mediaToken = it; selfId = result.id; turn = result.turn }) result
                 else {
                     // Stop preceded response: closeLocal never saw this token.

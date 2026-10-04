@@ -547,7 +547,8 @@ export default function Call({ channel, onReadCursor, channelActions, voiceChann
       client.copyAudioPreferencesFrom(previous);
     }
     setVoiceChannel(target);
-    void clientRef.current!.join(identityName.trim(), deviceId);
+    const startedAt = (channelId ? channelRosters[channelId]?.sessionStartedAt : undefined) ?? publicParticipants[root]?.sessionStartedAt;
+    void clientRef.current!.join(identityName.trim(), deviceId, startedAt);
   };
   /** Signed-in members: create the provider session as the pointer or focus reaches Join. */
   const prepareChannel = (channelId?: string) => {
@@ -684,9 +685,13 @@ export default function Call({ channel, onReadCursor, channelActions, voiceChann
   const voiceChannelKey = (channelId?: string) => channelId ?? "general";
   /** Who is in voice in a channel; your own call's roster (with controls) when you are in it. */
   const rosterFor = (channelId?: string) => {
-    if (!publicRoster && voiceChannel?.id === channelId) return { people: state.participants, startedAt: state.sessionStartedAt, own: true };
     const watched = channelId ? channelRosters[channelId] : undefined;
     const snapshot = watched ?? (channelId === channel?.id ? publicParticipants[mediaRoot] : undefined);
+    if (!idle && voiceChannel?.id === channelId) return {
+      people: publicRoster ? snapshot?.participants ?? [] : state.participants,
+      startedAt: publicRoster ? snapshot?.sessionStartedAt ?? state.sessionStartedAt : state.sessionStartedAt,
+      own: !publicRoster,
+    };
     return { people: snapshot?.participants ?? [], startedAt: snapshot?.sessionStartedAt, own: false };
   };
   const channelLabel = (channelId?: string) => channelId === channel?.id || !channelId ? channel?.name ?? "general" : voiceChannels?.find((item) => item.id === channelId)?.name ?? "voice";
@@ -723,7 +728,7 @@ export default function Call({ channel, onReadCursor, channelActions, voiceChann
       <button ref={viewed && !activeHere ? viewedJoin : undefined} className="voice-button channel-join" type="button" data-channel={channelId ?? ""} data-connected={activeHere ? "" : undefined} aria-label={actionName} aria-disabled={blocked} aria-busy={joiningHere || leavingHere} onPointerEnter={() => { if (!activeHere) prepareChannel(channelId); }} onPointerDown={() => { if (!activeHere) prepareChannel(channelId); }} onFocus={(event) => { focusedJoin.current = event.currentTarget; if (!activeHere) prepareChannel(channelId); }} onClick={() => { if (!blocked) joinChannel(channelId); }}><Speech aria-hidden="true" /><span className="channel-join-label">{actionLabel}</span></button>
     </Tooltip>;
     return {
-      timer: people.length > 0 && startedAt != null ? <VoiceSessionTimer startedAt={startedAt} /> : null,
+      timer: startedAt != null && (people.length > 0 || joiningHere) ? <VoiceSessionTimer startedAt={startedAt} /> : null,
       summary: <span className="channel-voice">{stack}{join}</span>,
       list: people.length > 0 ? <div className="voice-occupants" id={listId} data-open={open ? "" : undefined}>
         <div className="voice-occupants-inner" inert={!open}>{renderRoster(people, own, label)}</div>

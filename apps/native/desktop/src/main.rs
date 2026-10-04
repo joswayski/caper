@@ -237,7 +237,7 @@ struct CaperApp {
     channel_search: String,
     roster_generation: u64,
     voice_join_request: u64,
-    pending_voice_join: Option<(String, u64)>,
+    pending_voice_join: Option<(String, u64, u64)>,
     channel_rosters: BTreeMap<String, Vec<model::VoiceOccupant>>,
     voice_session_starts: BTreeMap<String, u64>,
     unavailable_rosters: BTreeSet<String>,
@@ -652,6 +652,12 @@ impl CaperApp {
                         space_name: "Fixture Studio".into(),
                     };
                     app.voice.active_space = Some("space0000001".into());
+                    if name == "parity-voice-joining" {
+                        app.voice.session_started_at = Some(
+                            (chrono::Utc::now().timestamp_millis().max(0) as u64)
+                                .saturating_sub(2_000),
+                        );
+                    }
                     app.voice.state.phase = if name != "parity-voice-joining" {
                         app.voice.self_id = "fixture-owner".into();
                         app.voice.participants = app
@@ -942,7 +948,7 @@ impl CaperApp {
         if self
             .pending_voice_join
             .as_ref()
-            .is_some_and(|(_, generation)| *generation != self.voice.state.generation)
+            .is_some_and(|(_, generation, _)| *generation != self.voice.state.generation)
         {
             self.pending_voice_join = None;
         }
@@ -1874,7 +1880,7 @@ impl CaperApp {
         if self
             .pending_voice_join
             .as_ref()
-            .is_some_and(|(_, generation)| *generation == self.voice.state.generation)
+            .is_some_and(|(_, generation, _)| *generation == self.voice.state.generation)
             || matches!(
                 self.voice.state.phase,
                 Phase::Joining(_) | Phase::Reconnecting(_)
@@ -1887,9 +1893,10 @@ impl CaperApp {
         let Some((context, space)) = self.voice_target(channel) else {
             return;
         };
+        let clicked = chrono::Utc::now().timestamp_millis().max(0) as u64;
         self.voice_join_request += 1;
         if let Some(space) = space {
-            self.pending_voice_join = Some((channel.into(), self.voice.state.generation));
+            self.pending_voice_join = Some((channel.into(), self.voice.state.generation, clicked));
             self.worker.send(Command::CheckVoice {
                 request: self.voice_join_request,
                 voice_generation: self.voice.state.generation,
@@ -1898,8 +1905,14 @@ impl CaperApp {
                 channel: channel.into(),
             });
         } else {
-            self.voice
-                .join(context, None, self.token.clone(), self.identity_name());
+            self.voice.join(
+                context,
+                None,
+                self.token.clone(),
+                self.identity_name(),
+                clicked,
+                self.voice_session_starts.get(channel).copied(),
+            );
         }
     }
 
@@ -1914,7 +1927,9 @@ impl CaperApp {
         if request != self.voice_join_request {
             return;
         }
-        self.pending_voice_join = None;
+        let Some((_, _, clicked)) = self.pending_voice_join.take() else {
+            return;
+        };
         if voice_generation != self.voice.state.generation {
             return;
         }
@@ -1930,6 +1945,8 @@ impl CaperApp {
                 target_space,
                 self.token.clone(),
                 self.identity_name(),
+                clicked,
+                self.voice_session_starts.get(channel).copied(),
             ),
             Err(error) => {
                 if error.access_denied {
@@ -3860,10 +3877,14 @@ impl CaperApp {
                                 ui.spacing_mut().interact_size.y = 28.0;
                                 let active = self.selected_channel.as_deref() == Some(&id);
                                 let started = if self.voice.state.active_channel() == Some(&id) {
-                                    self.voice.session_started_at.filter(|_| !self.voice.participants.is_empty())
+                                    if matches!(self.voice.state.phase, Phase::Joining(_)) {
+                                        self.voice_session_starts.get(&id).copied().or(self.voice.session_started_at)
+                                    } else {
+                                        self.voice.session_started_at
+                                    }
                                 } else {
                                     self.voice_session_starts.get(&id).copied()
-                                };
+                                }.or_else(|| self.pending_voice_join.as_ref().filter(|(channel, _, _)| channel == &id).map(|(_, _, clicked)| *clicked));
                                 let duration = started.map(|started| {
                                     ui.ctx().request_repaint_after(Duration::from_secs(1));
                                     voice_session_duration(started, chrono::Utc::now().timestamp_millis().max(0) as u64)
@@ -3946,7 +3967,7 @@ impl CaperApp {
         let authorizing = self
             .pending_voice_join
             .as_ref()
-            .map(|(channel, _)| channel.as_str());
+            .map(|(channel, _, _)| channel.as_str());
         let connecting = matches!(
             self.voice.state.phase,
             Phase::Joining(_) | Phase::Reconnecting(_)
@@ -8555,6 +8576,7 @@ mod tests {
         app.voice.state.phase = Phase::Connected(original.clone());
         let chat = app.selected_channel.clone();
         app.voice_join_request = 7;
+        app.pending_voice_join = Some(("chan00000002".into(), 0, 12_345));
         app.accept_voice_target(
             7,
             0,
@@ -9607,7 +9629,7 @@ mod tests {
                 }
                 let labels = match state {
                     "authorizing" => {
-                        app.pending_voice_join = Some(("chan00000001".into(), 0));
+                        app.pending_voice_join = Some(("chan00000001".into(), 0, 12_345));
                         [
                             "Joining voice in #general",
                             "Join voice in #design",
@@ -9625,7 +9647,7 @@ mod tests {
                     "connected" | "switching" => {
                         app.voice.state.phase = Phase::Connected(target);
                         if state == "switching" {
-                            app.pending_voice_join = Some(("chan00000002".into(), 0));
+                            app.pending_voice_join = Some(("chan00000002".into(), 0, 12_345));
                         }
                         [
                             "Leave voice in #general",
@@ -10010,7 +10032,12 @@ mod tests {
         app.join_voice_channel("chan00000002");
         app.join_voice_channel("chan00000003");
         assert_eq!(app.voice_join_request, request);
-        assert_eq!(app.pending_voice_join, Some(("chan00000002".into(), 0)));
+        assert_eq!(
+            app.pending_voice_join
+                .as_ref()
+                .map(|(channel, generation, _)| (channel.as_str(), *generation)),
+            Some(("chan00000002", 0))
+        );
         assert_eq!(app.voice.state.phase, Phase::Connected(original.clone()));
         app.accept_voice_target(
             request,
