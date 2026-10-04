@@ -2,7 +2,6 @@
 import AppKit
 import Observation
 import ServiceManagement
-import SwiftUI
 
 /// Read the OS registration, never a cached UserDefaults preference. In
 /// particular, returning from System Settings must not restore revoked consent.
@@ -30,7 +29,7 @@ import SwiftUI
         refresh()
     }
 
-    /// A checked toggle means registered. Approval-required is explicitly shown
+    /// An enabled switch means registered. Approval-required is explicitly shown
     /// beside it and can still be cancelled by switching the toggle off.
     public var registered: Bool { status == .enabled || status == .requiresApproval }
 
@@ -50,24 +49,6 @@ import SwiftUI
             self.error = "Could not change startup settings: \(error.localizedDescription)"
         }
         refresh()
-    }
-}
-
-/// Shared by the account menu and the macOS app menu (also while signed out).
-@MainActor public struct CaperLaunchAtLoginControls: View {
-    @State private var loginItem = CaperLoginItem.shared
-    public init() {}
-
-    public var body: some View {
-        Toggle("Launch at login", isOn: Binding(
-            get: { loginItem.registered }, set: { loginItem.setEnabled($0) }
-        ))
-        .disabled(!loginItem.available)
-        .accessibilityIdentifier("launch-at-login")
-        if loginItem.status == .requiresApproval {
-            Text("Launch at login needs approval in System Settings.")
-            Button("Open Login Items Settings…") { SMAppService.openSystemSettingsLoginItems() }
-        }
     }
 }
 #endif

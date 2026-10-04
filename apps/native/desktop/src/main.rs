@@ -112,6 +112,7 @@ fn permanent_send_rejection(status: Option<u16>) -> bool {
 enum Dialog {
     SignIn,
     Profile,
+    Settings,
     Audio,
     Connection,
     Diagnostics,
@@ -2598,8 +2599,9 @@ impl CaperApp {
         } else if self.needs_first_space() {
             self.first_space_page(context);
         } else {
+            let dialog_was_open = self.dialog.is_some();
             self.shell(context);
-            self.dialogs(context);
+            self.dialogs(context, dialog_was_open);
         }
     }
 
@@ -4354,59 +4356,26 @@ impl CaperApp {
                         .on_hover_text("User Settings");
                 if settings.clicked() {
                     self.effects.toggle(!egui::Popup::menu(&settings).is_open());
-                    if self.persist_preferences {
-                        match startup::enabled() {
-                            Ok(enabled) => {
-                                self.launch_at_login = enabled;
-                            }
-                            Err(error) => {
-                                self.startup_error =
-                                    Some(format!("Could not read startup settings: {error}"));
-                            }
-                        }
-                    }
                 }
                 egui::Popup::menu(&settings)
                     .align(egui::RectAlign::TOP_END)
                     .width(232.0)
                     .show(|ui| {
-                        let mut requested = self.launch_at_login;
-                        if ui
-                            .add_enabled(
-                                self.persist_preferences,
-                                egui::Checkbox::new(&mut requested, "Launch at login"),
-                            )
-                            .on_hover_text("Open Caper when you sign in to your computer.")
-                            .changed()
-                        {
-                            match startup::set_enabled(requested) {
-                                Ok(()) => {
-                                    self.launch_at_login = requested;
-                                    self.startup_error = None;
-                                }
-                                Err(error) => {
-                                    self.startup_error =
-                                        Some(format!("Could not change startup settings: {error}"));
+                        if ui.button("Settings…").clicked() {
+                            if self.persist_preferences {
+                                match startup::enabled() {
+                                    Ok(enabled) => self.launch_at_login = enabled,
+                                    Err(error) => {
+                                        self.startup_error = Some(format!(
+                                            "Could not read startup settings: {error}"
+                                        ));
+                                    }
                                 }
                             }
-                        }
-                        if let Some(error) = &self.startup_error {
-                            ui.colored_label(ERROR, error);
-                            if ui.button("Dismiss startup error").clicked() {
-                                self.startup_error = None;
-                            }
+                            self.dialog = Some(Dialog::Settings);
+                            ui.close();
                         }
                         ui.separator();
-                        if ui
-                            .checkbox(&mut self.sound_effects, "Caper sound effects")
-                            .changed()
-                        {
-                            self.effects =
-                                Effects::new(self.sound_effects && self.persist_preferences);
-                            if self.sound_effects {
-                                self.effects.play(Effect::ToggleOn);
-                            }
-                        }
                         if ui.button("Audio test").clicked() {
                             self.voice.refresh_devices();
                             self.dialog = Some(Dialog::Audio);
@@ -5899,7 +5868,7 @@ impl CaperApp {
             })
     }
 
-    fn dialogs(&mut self, context: &egui::Context) {
+    fn dialogs(&mut self, context: &egui::Context, dialog_was_open: bool) {
         let Some(dialog) = self.dialog.clone() else {
             return;
         };
@@ -5916,6 +5885,7 @@ impl CaperApp {
                 }
             }
             Dialog::Profile => "Edit profile",
+            Dialog::Settings => "Settings",
             Dialog::Audio => "Audio test",
             Dialog::Connection => "Connection details",
             Dialog::Diagnostics => "Audio diagnostics",
@@ -5944,10 +5914,13 @@ impl CaperApp {
             ))
             .rect_filled(context.viewport_rect(), 0.0, Color32::from_black_alpha(190));
         let wide = matches!(dialog, Dialog::ManageSpace | Dialog::ManageChannel(_));
+        let settings = matches!(dialog, Dialog::Settings);
         let width: f32 = if matches!(dialog, Dialog::Audio) {
             720.0
         } else if wide {
             600.0
+        } else if settings {
+            500.0
         } else {
             440.0
         };
@@ -5961,6 +5934,8 @@ impl CaperApp {
             520.0
         } else if matches!(dialog, Dialog::Profile) {
             460.0
+        } else if settings {
+            400.0
         } else if matches!(
             dialog,
             Dialog::ConfirmDelete { .. } | Dialog::LeaveSpace { .. }
@@ -5980,7 +5955,10 @@ impl CaperApp {
         };
         let mut close = context.input(|input| input.key_pressed(egui::Key::Escape))
             && !egui::Popup::is_any_open(context);
-        let dismiss_on_backdrop = matches!(dialog, Dialog::ManageSpace | Dialog::ManageChannel(_));
+        let dismiss_on_backdrop = matches!(
+            dialog,
+            Dialog::Settings | Dialog::ManageSpace | Dialog::ManageChannel(_)
+        );
         let modal = egui::Area::new(egui::Id::new("caper-dialog"))
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -6052,6 +6030,7 @@ impl CaperApp {
                                         match dialog {
                                             Dialog::SignIn => unreachable!("sign-in is rendered as a full page"),
                                             Dialog::Profile => self.profile_dialog(ui),
+                                            Dialog::Settings => self.settings_dialog(ui),
                                             Dialog::Audio => self.audio_test(ui),
                                             Dialog::Connection => self.connection_details(ui),
                                             Dialog::Diagnostics => self.audio_diagnostics(ui),
@@ -6122,7 +6101,11 @@ impl CaperApp {
                                                 }
                                             }
                                         }
-                                        notices(ui, &self.error, &self.warning);
+                                        // Local preferences have their own startup errors;
+                                        // account/network notices do not belong in Settings.
+                                        if !settings {
+                                            notices(ui, &self.error, &self.warning);
+                                        }
                                     });
                             });
                         if let Some((id, dirty)) = save_bar {
@@ -6141,8 +6124,9 @@ impl CaperApp {
                         }
                     });
             });
-        if dismiss_on_backdrop && !egui::Popup::is_any_open(context) {
-            // Use the press, not the release that may have just opened the modal.
+        if dialog_was_open && dismiss_on_backdrop && !egui::Popup::is_any_open(context) {
+            // A fast click can deliver press and release in the opening frame.
+            // Neither event may dismiss the dialog that click just opened.
             close |= context.input(|input| {
                 input.pointer.any_pressed()
                     && input
@@ -6154,6 +6138,59 @@ impl CaperApp {
         if close && !(self.loading && return_to.is_some()) {
             self.dialog = return_to;
             self.error = None;
+        }
+    }
+
+    fn settings_dialog(&mut self, ui: &mut egui::Ui) {
+        ui.label(bold("Startup").size(12.0).color(MUTED));
+        ui.add_space(6.0);
+        let mut requested = self.launch_at_login;
+        if ui
+            .add_enabled_ui(self.persist_preferences, |ui| {
+                settings_switch(
+                    ui,
+                    &mut requested,
+                    "Launch at login",
+                    "Open Caper when you sign in to your computer.",
+                )
+            })
+            .inner
+            .changed()
+        {
+            match startup::set_enabled(requested) {
+                Ok(()) => {
+                    self.launch_at_login = requested;
+                    self.startup_error = None;
+                }
+                Err(error) => {
+                    self.startup_error =
+                        Some(format!("Could not change startup settings: {error}"));
+                }
+            }
+        }
+        if let Some(error) = &self.startup_error {
+            ui.colored_label(ERROR, error);
+            if ui.button("Dismiss startup error").clicked() {
+                self.startup_error = None;
+            }
+        }
+        ui.add_space(18.0);
+        ui.separator();
+        ui.add_space(18.0);
+        ui.label(bold("Sounds").size(12.0).color(MUTED));
+        ui.add_space(6.0);
+        if settings_switch(
+            ui,
+            &mut self.sound_effects,
+            "Caper sound effects",
+            "Play sounds for messages and app interactions.",
+        )
+        .changed()
+        {
+            self.effects = Effects::new(self.sound_effects && self.persist_preferences);
+            if self.sound_effects {
+                self.effects.play(Effect::ToggleOn);
+            }
         }
     }
 
@@ -6764,6 +6801,52 @@ fn drawn_icon_button(ui: &mut egui::Ui, icon: NavIcon, label: &str) -> egui::Res
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
     });
     response.on_hover_text(label)
+}
+
+fn settings_switch(
+    ui: &mut egui::Ui,
+    value: &mut bool,
+    label: &str,
+    description: &str,
+) -> egui::Response {
+    let row = ui.horizontal(|ui| {
+        ui.vertical(|ui| {
+            ui.set_width((ui.available_width() - 58.0).max(1.0));
+            ui.label(RichText::new(label).size(14.0));
+            ui.label(RichText::new(description).size(12.0).color(MUTED));
+        });
+        ui.allocate_exact_size(egui::vec2(42.0, 24.0), egui::Sense::hover())
+            .0
+    });
+    let rect = row.inner;
+    // The whole labelled row activates the switch, including with keyboard or AX.
+    let mut response = ui.interact(row.response.rect, ui.id().with(label), egui::Sense::click());
+    if response.clicked() {
+        response.request_focus();
+        *value = !*value;
+        response.mark_changed();
+    }
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), *value, label)
+    });
+    let fill = if *value { TERRACOTTA } else { BORDER };
+    ui.painter().rect_filled(rect, 12.0, fill);
+    if response.hovered() || response.has_focus() {
+        ui.painter().rect_stroke(
+            rect.expand(3.0),
+            15.0,
+            Stroke::new(1.0, TERRACOTTA_BRIGHT),
+            egui::StrokeKind::Outside,
+        );
+    }
+    let x = if *value {
+        rect.right() - 12.0
+    } else {
+        rect.left() + 12.0
+    };
+    ui.painter()
+        .circle_filled(egui::pos2(x, rect.center().y), 9.0, TEXT);
+    response
 }
 
 fn drawn_icon_button_with_tooltip(
@@ -9809,6 +9892,30 @@ mod tests {
         render(&mut app, &context, vec![]);
         render(&mut app, &context, vec![]);
         click(&mut app, &context, egui::pos2(307.0, 867.0));
+        let menu = render(&mut app, &context, vec![]);
+        assert!(
+            !menu.shapes.iter().any(|shape| matches!(
+                &shape.shape,
+                egui::Shape::Text(text) if text.galley.job.text == "Launch at login"
+                    || text.galley.job.text == "Caper sound effects"
+            )),
+            "infrequent preferences must not appear in the quick menu"
+        );
+        let pos = text_position(&menu, "Settings…");
+        render(
+            &mut app,
+            &context,
+            [true, false]
+                .into_iter()
+                .map(|pressed| egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                })
+                .collect(),
+        );
+        assert!(matches!(app.dialog, Some(Dialog::Settings)));
         context.enable_accesskit();
         let output = render(&mut app, &context, vec![]);
         let node = output
@@ -9842,11 +9949,28 @@ mod tests {
             Some("parity-desktop"),
         );
         app.startup_error = Some("TEST FIXTURE — startup registration denied".into());
+        app.warning = Some("TEST FIXTURE — unrelated account warning".into());
         render(&mut app, &context, vec![]);
         render(&mut app, &context, vec![]);
         click(&mut app, &context, egui::pos2(307.0, 867.0));
+        let menu = render(&mut app, &context, vec![]);
+        click(&mut app, &context, text_position(&menu, "Settings…"));
         let output = render(&mut app, &context, vec![]);
         text_position(&output, "TEST FIXTURE — startup registration denied");
+        assert!(!output.shapes.iter().any(|shape| matches!(
+            &shape.shape,
+            egui::Shape::Text(text) if text.galley.job.text == "TEST FIXTURE — unrelated account warning"
+        )), "account notices must not leak into local preferences");
+        click(&mut app, &context, egui::pos2(5.0, 5.0));
+        assert!(app.dialog.is_none());
+        assert!(
+            app.startup_error.is_some(),
+            "closing settings must not lose an error"
+        );
+        click(&mut app, &context, egui::pos2(307.0, 867.0));
+        let menu = render(&mut app, &context, vec![]);
+        click(&mut app, &context, text_position(&menu, "Settings…"));
+        let output = render(&mut app, &context, vec![]);
         click(
             &mut app,
             &context,
@@ -9876,6 +10000,8 @@ mod tests {
         click(&mut app, &context, egui::pos2(262.0, 867.0));
         assert!(!app.voice.state.audio.muted && !app.voice.state.audio.deafened);
         click(&mut app, &context, egui::pos2(307.0, 867.0));
+        let menu = render(&mut app, &context, vec![]);
+        click(&mut app, &context, text_position(&menu, "Settings…"));
         let output = render(&mut app, &context, vec![]);
         assert!(app.sound_effects);
         click(
@@ -9884,13 +10010,37 @@ mod tests {
             text_position(&output, "Caper sound effects"),
         );
         assert!(!app.sound_effects);
-        click(&mut app, &context, egui::pos2(307.0, 867.0));
+        assert!(
+            matches!(app.dialog, Some(Dialog::Settings)),
+            "switches must not dismiss settings"
+        );
         let output = render(&mut app, &context, vec![]);
         click(
             &mut app,
             &context,
             text_position(&output, "Caper sound effects"),
         );
+        assert!(app.sound_effects);
+        let output = render(&mut app, &context, vec![]);
+        let pos = text_position(&output, "Caper sound effects");
+        let id = context.memory(|memory| memory.focused().unwrap());
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::Key {
+                key: egui::Key::Space,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(
+            !app.sound_effects,
+            "focused switch must support keyboard activation"
+        );
+        assert_eq!(context.memory(|memory| memory.focused()), Some(id));
+        click(&mut app, &context, pos);
         assert!(app.sound_effects);
         for (fixture, label) in [
             ("parity-voice-joining", "Cancel joining voice"),

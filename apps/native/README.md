@@ -37,12 +37,14 @@ restore their saved session and open their spaces; logging out returns to sign-i
 
 ## Launch at login (desktop only)
 
-**User Settings → Launch at login** opts in to opening Caper when you sign in to
+**Account gear → Settings… → Startup → Launch at login** opts in to opening Caper when you sign in to
 your computer. It is off by default and opens the normal window, not a hidden
-background service. macOS also exposes it in the Caper app menu while signed out.
+background service. Startup and sound preferences use switches in a dedicated
+Settings view, separate from quick audio actions, and save immediately. macOS
+also exposes **Caper → Settings…** (⌘,) while signed out.
 Web, iOS and Android have no startup option.
 
-macOS uses `SMAppService.mainApp`; if approval is required, the menu says so and
+macOS uses `SMAppService.mainApp`; if approval is required, Settings says so and
 links to Login Items in System Settings. Windows registers the current executable
 in the current user's `Run` registry key; Task Manager or system policy can still
 block startup. The Windows uninstaller removes this install's startup entry.

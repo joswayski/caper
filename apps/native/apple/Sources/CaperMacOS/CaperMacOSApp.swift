@@ -55,11 +55,12 @@ struct CaperMacOSApp: App {
         .defaultSize(width: parity ? 1440 : 1180, height: parity ? 900 : 760)
         .commands {
             CommandGroup(after: .appInfo) {
-                CaperLaunchAtLoginControls()
-                Divider()
                 Button("Check for Updates…") { updater.check(manual: true) }
                     .disabled(!updater.isAvailable)
             }
+        }
+        Settings {
+            CaperSettingsView()
         }
     }
 }
