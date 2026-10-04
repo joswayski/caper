@@ -1395,6 +1395,7 @@ private struct ChatView: View {
     // A lazy message row can leave the viewport when the keyboard appears or
     // live messages arrive. Keep the sheet's presenter and target outside it.
     @State private var reactionMessage: ChatMessage?
+    @State private var showingEmojiPicker = false
 
     /// Defer the scroll request; content geometry repeats it when the timeline
     /// finishes measuring, including history above the unsent message.
@@ -1468,7 +1469,10 @@ private struct ChatView: View {
                                     if index == 0 || !ChatDateDivider.sameLocalDay(chat.messages[index - 1].createdAt, message.createdAt) {
                                         ChatDateDivider(createdAt: message.createdAt)
                                     }
-                                    MessageRow(message: message, chat: chat) { reactionMessage = message }
+                                    MessageRow(message: message, chat: chat) {
+                                        showingEmojiPicker = false
+                                        reactionMessage = message
+                                    }
                                 }.id(message.id)
                             }
                         }
@@ -1598,17 +1602,35 @@ private struct ChatView: View {
             }
         }.background(CaperTheme.conversation)
             .sheet(item: $reactionMessage) { message in
+                #if os(iOS)
+                MessageActionsSheet(message: message, showingEmojiPicker: $showingEmojiPicker,
+                                    canReact: !chat.isPreview && chat.currentAuthor != nil && !chat.reactionSaving.contains(message.id),
+                                    quickReaction: { emoji in
+                                        guard !chat.isPreview, let author = chat.currentAuthor,
+                                              !chat.reactionSaving.contains(message.id),
+                                              let current = chat.messages.first(where: { $0.id == message.id }) else { return }
+                                        let own = current.reactions?.first(where: { $0.emoji == emoji })?.authorIds.contains(author.id) == true
+                                        reactionMessage = nil
+                                        Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: !own) }
+                                    }, selectReaction: { emoji in
+                                        guard !chat.isPreview, chat.currentAuthor != nil,
+                                              !chat.reactionSaving.contains(message.id) else { return }
+                                        reactionMessage = nil
+                                        Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) }
+                                    })
+                #else
                 ReactionPicker { emoji in
                     reactionMessage = nil
                     Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) }
                 }
+                #endif
             }
             .onChange(of: chat.isPreview) { _, preview in
-                if preview { reactionMessage = nil }
+                if preview { reactionMessage = nil; showingEmojiPicker = false }
             }
-            .onChange(of: chat.currentAuthor?.id) { _, _ in reactionMessage = nil }
-            .onChange(of: model.selectedChannelID) { _, _ in reactionMessage = nil }
-            .onChange(of: model.selectedDirectMessageID) { _, _ in reactionMessage = nil }
+            .onChange(of: chat.currentAuthor?.id) { _, _ in reactionMessage = nil; showingEmojiPicker = false }
+            .onChange(of: model.selectedChannelID) { _, _ in reactionMessage = nil; showingEmojiPicker = false }
+            .onChange(of: model.selectedDirectMessageID) { _, _ in reactionMessage = nil; showingEmojiPicker = false }
             .task(id: chat.liveState) {
                 showConnectionStatus = false
                 guard chat.liveState != .connected else { return }
@@ -1713,7 +1735,7 @@ private struct MessageRow: View {
     @Bindable var chat: ChatModel
     let showReactionPicker: () -> Void
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        let row = HStack(alignment: .top, spacing: 10) {
             Avatar(name: message.author.name, size: 34, avatarID: message.author.avatarId)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
@@ -1721,8 +1743,11 @@ private struct MessageRow: View {
                     if message.author.isGuest { Text("GUEST").font(CaperTheme.font(9, weight: .bold)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 5).overlay(RoundedRectangle(cornerRadius: 4).stroke(CaperTheme.border)) }
                     Text(timeLabel(message.createdAt)).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
                 }
-                Text(message.content.text).font(CaperTheme.font(14)).foregroundStyle(Color(red: 222/255, green: 223/255, blue: 224/255)).textSelection(.enabled)
+                Text(message.content.text).font(CaperTheme.font(14)).foregroundStyle(Color(red: 222/255, green: 223/255, blue: 224/255))
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    #if os(macOS)
+                    .textSelection(.enabled)
+                    #endif
                 ReactionRow(message: message, chat: chat, showPicker: showReactionPicker)
                 if let error = chat.reactionErrors[message.id] {
                     HStack(spacing: 8) {
@@ -1733,6 +1758,14 @@ private struct MessageRow: View {
                 }
             }
         }.padding(.horizontal, 18).padding(.vertical, 10)
+            .accessibilityIdentifier("message-row-\(message.id)")
+        #if os(iOS)
+        row.contentShape(Rectangle())
+            .onLongPressGesture(perform: showReactionPicker)
+            .accessibilityAction(named: Text("Message actions")) { showReactionPicker() }
+        #else
+        row
+        #endif
     }
     private func timeLabel(_ value: String) -> String {
         let fractional = ISO8601DateFormatter()
@@ -1752,6 +1785,7 @@ private struct ReactionRow: View {
             ForEach(message.reactions ?? []) { reaction in
                 ReactionChip(messageID: message.id, reaction: reaction, chat: chat)
             }
+            #if os(macOS)
             Button(action: showPicker) {
                 Image(systemName: "face.smiling").font(.system(size: 16, weight: .medium))
                     .frame(width: 28, height: 28)
@@ -1765,6 +1799,7 @@ private struct ReactionRow: View {
             .disabled(chat.isPreview || chat.reactionSaving.contains(message.id) || chat.currentAuthor == nil)
             .accessibilityLabel("Add reaction")
             .accessibilityIdentifier("add-reaction-\(message.id)")
+            #endif
             if chat.reactionSaving.contains(message.id) {
                 ProgressView().controlSize(.small).accessibilityLabel("Saving reaction")
             }
@@ -1829,6 +1864,74 @@ private struct ReactionFlowLayout: Layout {
         return (CGSize(width: width.isFinite ? width : max(0, x - spacing), height: y + rowHeight), points)
     }
 }
+
+#if os(iOS)
+private struct MessageActionsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let message: ChatMessage
+    @Binding var showingEmojiPicker: Bool
+    let canReact: Bool
+    let quickReaction: (String) -> Void
+    let selectReaction: (String) -> Void
+
+    private let quickReactions = ["👍", "❤️", "😂", "🎉", "👀"]
+
+    var body: some View {
+        Group {
+            if showingEmojiPicker {
+                ReactionPicker(select: selectReaction)
+            } else {
+                VStack(spacing: 16) {
+                    HStack(spacing: 4) {
+                        ForEach(quickReactions, id: \.self) { emoji in
+                            Button { quickReaction(emoji) } label: {
+                                EmojiArtworkView(emoji: emoji, size: 28).frame(maxWidth: .infinity, minHeight: 44)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(!canReact)
+                            .accessibilityLabel("React with \(emoji)")
+                            .accessibilityIdentifier("quick-reaction-\(emoji)")
+                        }
+                        Button { showingEmojiPicker = true } label: {
+                            Image(systemName: "face.smiling").font(.system(size: 24))
+                                .frame(maxWidth: .infinity, minHeight: 44)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!canReact)
+                        .accessibilityLabel("Add reaction")
+                        .accessibilityIdentifier("message-action-add-reaction")
+                    }
+
+                    VStack(spacing: 0) {
+                        Button {
+                            UIPasteboard.general.string = message.content.text
+                            dismiss()
+                        } label: {
+                            Label("Copy text", systemImage: "doc.on.doc").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        }
+                        Divider()
+                        Button {
+                            UIPasteboard.general.string = message.id
+                            dismiss()
+                        } label: {
+                            Label("Copy message ID", systemImage: "number").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 12)
+                    .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
+                }
+                .padding(16)
+                .font(CaperTheme.font(15))
+                .accessibilityIdentifier("message-actions-sheet")
+            }
+        }
+        .presentationBackground(CaperTheme.raised)
+        .presentationDetents(showingEmojiPicker ? [.medium, .large] : [.height(220)])
+        .presentationDragIndicator(.visible)
+    }
+}
+#endif
 
 private struct ReactionPicker: View {
     @Environment(\.dismiss) private var dismiss
