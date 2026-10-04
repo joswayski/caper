@@ -8,10 +8,10 @@ on:
 permissions:
   contents: read
 
-# A newer push to a pull request supersedes its in-progress run. Pushes to main
-# get a unique group (the run id), so they are never cancelled or queued.
+# A newer push to a pull request supersedes its in-progress run. On main the
+# running build always finishes and only the newest waiting push runs next.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
