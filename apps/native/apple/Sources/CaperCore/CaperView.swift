@@ -171,7 +171,9 @@ private struct Wordmark: View {
         ZStack(alignment: .topLeading) {
             Image("CaperWordmarkLetters").resizable().scaledToFit()
                 .frame(width: 132, height: 35)
-            Avatar(name: "Caper", size: 132 * 132 / 1042, avatarID: fixture ? 0 : dailyIndex)
+            Image("caper-branding-\(fixture ? 0 : dailyIndex)", bundle: caperResourceBundle)
+                .renderingMode(.original).resizable().scaledToFit()
+                .frame(width: 132 * 132 / 1042, height: 132 * 132 / 1042)
                 .offset(x: 132 * 904 / 1042, y: 35 * 91 / 276)
         }.frame(width: 132, height: 35)
             .accessibilityElement(children: .ignore)
@@ -1394,7 +1396,7 @@ struct Avatar: View {
 }
 
 private final class CaperResourceAnchor: NSObject {}
-private var caperResourceBundle: Bundle {
+var caperResourceBundle: Bundle {
     #if SWIFT_PACKAGE
     return .module
     #else

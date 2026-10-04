@@ -27,6 +27,22 @@ test("daily branding removes only the background from all 800 avatars without ch
   }
 });
 
+test("native branding exports preserve the web character geometry, palette and translations", () => {
+  for (let id = 0; id < 800; id++) {
+    const branding = readFileSync(new URL(`../../public/images/branding/v1/${id}.svg`, import.meta.url), "utf8");
+    const apple = readFileSync(new URL(`../../../native/apple/Sources/CaperCore/CaperAvatars.xcassets/caper-branding-${id}.imageset/avatar.svg`, import.meta.url), "utf8");
+    assert.equal(apple, branding, `Apple branding drift for ${id}`);
+    const android = readFileSync(new URL(`../../../native/android/app/src/main/res/drawable/caper_branding_${id}.xml`, import.meta.url), "utf8");
+    const paths = [...branding.matchAll(/<path d="([^"]+)" fill="([^"]+)" transform="translate\(([^,]+),([^\)]+)\)"\/>/g)]
+      .map(([, d, fill, x, y]) => [x, y, d, fill]);
+    const vectors = [...android.matchAll(/<group android:translateX="([^"]+)" android:translateY="([^"]+)"><path android:pathData="([^"]+)" android:fillColor="([^"]+)"\/><\/group>/g)]
+      .map(([, x, y, d, fill]) => [x, y, d, fill]);
+    assert.ok(paths.length > 0);
+    assert.deepEqual(vectors, paths, `Android branding drift for ${id}`);
+    assert.doesNotMatch(android, /<clip-path/);
+  }
+});
+
 test("daily icon remains stable until the UTC boundary", () => {
   const saved = { day: 0, index: 143 };
   assert.deepEqual(dailyIcon(saved, 86_399_999, () => { throw Error("must not draw"); }), saved);

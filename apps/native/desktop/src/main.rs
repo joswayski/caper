@@ -2851,8 +2851,8 @@ impl CaperApp {
         );
         let index = self.daily_icon.as_ref().map_or(0, |icon| icon.index);
         egui::Image::from_bytes(
-            format!("bytes://caper-avatars-v3/{index}.svg"),
-            avatar_images::SVG[index],
+            format!("bytes://caper-branding-v1/{index}.svg"),
+            avatar_images::BRANDING[index],
         )
         .paint_at(ui, character);
     }
@@ -8254,6 +8254,21 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn all_wordmark_characters_render_without_the_avatar_tile() {
+        for (index, svg) in crate::avatar_images::BRANDING.iter().enumerate() {
+            let image = egui_extras::image::load_svg_bytes(svg, &Default::default())
+                .expect("bundled branding character is valid SVG");
+            assert_eq!(image.size, [256, 256]);
+            assert_eq!(image.pixels[128 * 256 + 252].a(), 0, "tile in {index}");
+            assert!(
+                image.pixels.iter().any(|pixel| pixel.a() == 255),
+                "blank {index}"
+            );
+        }
+    }
+
     use crate::model::{
         self, Account, Author, ChatSession, Content, History, HistoryPlace, Member, Message, Space,
         SpaceDetail, Spaces,

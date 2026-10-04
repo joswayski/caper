@@ -235,7 +235,7 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
 ) {
     Image(painterResource(R.drawable.caper_wordmark_letters), null, Modifier.matchParentSize())
     // Same dot slot as web/Rust/Apple; keep the two images decorative to accessibility.
-    Image(painterResource(caperAvatarResources[LocalBrandAvatar.current]), null,
+    Image(painterResource(caperBrandingResources[LocalBrandAvatar.current]), null,
         Modifier.offset(x = (132f * 904 / 1042).dp, y = (35f * 91 / 276).dp)
             .size((132f * 132 / 1042).dp))
 }

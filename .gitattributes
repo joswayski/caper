@@ -3,6 +3,7 @@ apps/web/public/images/avatars/v2/*.svg linguist-generated=true
 apps/web/public/images/avatars/v3/*.svg linguist-generated=true
 apps/web/public/images/branding/v1/*.svg linguist-generated=true
 apps/native/android/app/src/main/res/drawable/caper_avatar_*.xml linguist-generated=true
+apps/native/android/app/src/main/res/drawable/caper_branding_*.xml linguist-generated=true
 apps/native/android/app/src/main/java/chat/caper/android/AvatarResources.kt linguist-generated=true
 apps/native/apple/Sources/CaperCore/CaperAvatars.xcassets/** linguist-generated=true
 apps/native/desktop/src/avatar_images.rs linguist-generated=true
