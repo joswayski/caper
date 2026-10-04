@@ -731,7 +731,6 @@ pub struct AppState {
     store: Option<Arc<media_store::ValkeyStore>>,
     database: Option<PgPool>,
     chat: Option<chat::Chat>,
-    push: Option<push::Push>,
     events: watch::Sender<()>,
     room_events: Arc<std::sync::Mutex<HashMap<Option<String>, watch::Sender<()>>>>,
     room_interest: Arc<Notify>,
@@ -773,7 +772,6 @@ impl AppState {
             store: None,
             database,
             chat: None,
-            push: None,
             events,
             room_events: Arc::new(std::sync::Mutex::new(HashMap::new())),
             room_interest: Arc::new(Notify::new()),
@@ -804,11 +802,6 @@ impl AppState {
         self.chat = chat::Chat::from_env(self.database.as_ref(), environment).await?;
         if let Some(chat) = self.chat.clone() {
             chat::spawn_publisher(chat);
-        }
-        if self.database.is_some() {
-            let push = push::Push::from_env(self.database.as_ref(), environment).await?;
-            push::spawn_worker(push.clone());
-            self.push = Some(push);
         }
         Ok(())
     }
@@ -1070,15 +1063,13 @@ pub fn app(state: AppState) -> Router {
 }
 
 fn app_router(state: AppState, test_only_routes: Router<AppState>) -> Router {
-    let mut protected = Router::new()
+    let protected = Router::new()
         .route("/api/account/me", get(account_me))
         .route("/api/account/profile", post(account_profile))
         .route("/api/auth/logout", post(auth_logout))
         .merge(spaces::routes())
-        .merge(direct::routes());
-    if let Some(push) = state.push.clone() {
-        protected = protected.merge(push::routes(push));
-    }
+        .merge(direct::routes())
+        .merge(push::routes());
     let protected = protected.layer(axum::middleware::from_fn_with_state(
         state.clone(),
         account_auth,
