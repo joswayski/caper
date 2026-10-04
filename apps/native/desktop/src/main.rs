@@ -13,6 +13,7 @@ mod media;
 mod media_gateway;
 mod model;
 mod navigation;
+mod startup;
 #[path = "../voice-spike/src/state.rs"]
 mod state;
 mod updates;
@@ -162,6 +163,8 @@ struct CaperApp {
     voice: Voice,
     effects: Effects,
     sound_effects: bool,
+    launch_at_login: bool,
+    startup_error: Option<String>,
     announced_voice: Option<u64>,
     /// Who else was in the call last frame, for web's join/leave chimes.
     voice_roster: Option<(u64, String, BTreeSet<String>)>,
@@ -270,6 +273,8 @@ impl CaperApp {
             voice,
             effects: Effects::new(fixture.is_none()),
             sound_effects: true,
+            launch_at_login: false,
+            startup_error: None,
             announced_voice: None,
             voice_roster: None,
             generation: 1,
@@ -4349,11 +4354,49 @@ impl CaperApp {
                         .on_hover_text("User Settings");
                 if settings.clicked() {
                     self.effects.toggle(!egui::Popup::menu(&settings).is_open());
+                    if self.persist_preferences {
+                        match startup::enabled() {
+                            Ok(enabled) => {
+                                self.launch_at_login = enabled;
+                            }
+                            Err(error) => {
+                                self.startup_error =
+                                    Some(format!("Could not read startup settings: {error}"));
+                            }
+                        }
+                    }
                 }
                 egui::Popup::menu(&settings)
                     .align(egui::RectAlign::TOP_END)
                     .width(232.0)
                     .show(|ui| {
+                        let mut requested = self.launch_at_login;
+                        if ui
+                            .add_enabled(
+                                self.persist_preferences,
+                                egui::Checkbox::new(&mut requested, "Launch at login"),
+                            )
+                            .on_hover_text("Open Caper when you sign in to your computer.")
+                            .changed()
+                        {
+                            match startup::set_enabled(requested) {
+                                Ok(()) => {
+                                    self.launch_at_login = requested;
+                                    self.startup_error = None;
+                                }
+                                Err(error) => {
+                                    self.startup_error =
+                                        Some(format!("Could not change startup settings: {error}"));
+                                }
+                            }
+                        }
+                        if let Some(error) = &self.startup_error {
+                            ui.colored_label(ERROR, error);
+                            if ui.button("Dismiss startup error").clicked() {
+                                self.startup_error = None;
+                            }
+                        }
+                        ui.separator();
                         if ui
                             .checkbox(&mut self.sound_effects, "Caper sound effects")
                             .changed()
@@ -9753,6 +9796,64 @@ mod tests {
             editor_height(&output) <= 320.0,
             "long drafts must not consume the conversation"
         );
+    }
+
+    #[test]
+    fn startup_control_is_accessible_but_cannot_change_os_registration_in_fixtures() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, vec![]);
+        click(&mut app, &context, egui::pos2(307.0, 867.0));
+        context.enable_accesskit();
+        let output = render(&mut app, &context, vec![]);
+        let node = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Launch at login"))
+            .expect("startup option has an accessible label");
+        assert!(
+            node.1.is_disabled(),
+            "preview must not alter real startup settings"
+        );
+        click(
+            &mut app,
+            &context,
+            text_position(&output, "Launch at login"),
+        );
+        assert!(!app.launch_at_login);
+        assert!(app.startup_error.is_none());
+    }
+
+    #[test]
+    fn startup_failures_remain_visible_until_dismissed() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.startup_error = Some("TEST FIXTURE — startup registration denied".into());
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, vec![]);
+        click(&mut app, &context, egui::pos2(307.0, 867.0));
+        let output = render(&mut app, &context, vec![]);
+        text_position(&output, "TEST FIXTURE — startup registration denied");
+        click(
+            &mut app,
+            &context,
+            text_position(&output, "Dismiss startup error"),
+        );
+        assert!(app.startup_error.is_none());
+        assert!(!app.launch_at_login);
     }
 
     #[test]

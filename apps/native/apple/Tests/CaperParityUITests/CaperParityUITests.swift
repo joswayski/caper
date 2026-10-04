@@ -826,6 +826,14 @@ final class CaperParityUITests: XCTestCase {
         #else
         settings.tap()
         #endif
+        #if os(macOS)
+        let startup = app.descendants(matching: .any)["launch-at-login"]
+        XCTAssertTrue(startup.waitForExistence(timeout: 2))
+        XCTAssertFalse(startup.isEnabled, "Fixture previews must not change real Login Items")
+        capture("startup-settings", app: app)
+        #else
+        XCTAssertFalse(app.descendants(matching: .any)["launch-at-login"].exists, "Startup is desktop-only")
+        #endif
         XCTAssertTrue(app.descendants(matching: .any)["sound-effects"].waitForExistence(timeout: 2), "Web keeps Caper sound effects in the settings menu")
         let preferences = app.descendants(matching: .any)["Audio test"]
         XCTAssertTrue(preferences.waitForExistence(timeout: 2))

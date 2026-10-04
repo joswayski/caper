@@ -35,6 +35,9 @@ public enum CaperTheme {
 @MainActor public struct CaperRootView: View {
     @State private var model: AppModel
     @State private var announcedVoice = false
+    #if os(macOS)
+    @State private var loginItem = CaperLoginItem.shared
+    #endif
     @Environment(\.scenePhase) private var scenePhase
     public init(model: AppModel? = nil) { _model = State(initialValue: model ?? CaperRuntime.makeModel()) }
 
@@ -55,6 +58,16 @@ public enum CaperTheme {
         .tint(CaperTheme.terracottaBright)
         .buttonStyle(CaperSecondaryButton())
         .background(CaperTheme.blackout.ignoresSafeArea())
+        #if os(macOS)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            loginItem.refresh()
+        }
+        .alert("Startup settings", isPresented: Binding(
+            get: { loginItem.error != nil }, set: { if !$0 { loginItem.error = nil } }
+        )) {
+            Button("OK") { loginItem.error = nil }
+        } message: { Text(loginItem.error ?? "") }
+        #endif
         .onChange(of: scenePhase, initial: true) { _, phase in model.applicationActivityChanged(active: phase == .active) }
         .task {
             CaperFontLoader.register()
@@ -1165,6 +1178,10 @@ private struct AccountBar: View {
                 .popover(isPresented: $outputOptions, arrowEdge: .top) { AccountAudioMenu(voice: voice, input: false) }
             Menu {
                 // Web's User Settings menu.
+                #if os(macOS)
+                CaperLaunchAtLoginControls()
+                Divider()
+                #endif
                 Section("Audio settings") {
                     Toggle("Caper sound effects", isOn: $effects.soundsEnabled)
                         .accessibilityIdentifier("sound-effects")

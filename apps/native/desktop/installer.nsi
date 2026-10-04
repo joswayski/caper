@@ -59,6 +59,10 @@ Section "Uninstall"
   IfFileExists "$INSTDIR\app\Caper.exe" 0 +3
     MessageBox MB_OK|MB_ICONSTOP "Close Caper before uninstalling, then try again." /SD IDOK
     Abort
+  ; Remove only this install's opt-in login entry, not a different portable copy.
+  ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Caper"
+  StrCmp $0 '"$INSTDIR\app\Caper.exe"' 0 +2
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Caper"
   RMDir /r "$INSTDIR\app"
   Delete "$SMPROGRAMS\Caper.lnk"
   Delete "$DESKTOP\Caper.lnk"
