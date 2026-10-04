@@ -57,6 +57,7 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -485,6 +486,8 @@ internal data class VoiceJoinIntent(
             }?.forEach { channel ->
                 val selected = channel.id == state.selectedChannel?.id
                 val people = if (activeChannel == channel.id) voice.participants else state.voiceRosters[if (detail.space.demo) "" else channel.id].orEmpty()
+                val voiceRoot = if (detail.space.demo) "" else channel.id
+                val sessionStartedAt = if (activeChannel == channel.id) voice.sessionStartedAt else state.voiceSessionStartedAt[voiceRoot]
                 var rosterOpen by remember(channel.id) { mutableStateOf(false) }
                 var channelMenuOpen by remember(channel.id) { mutableStateOf(false) }
                 val available = state.voiceAvailable(channel)
@@ -511,6 +514,7 @@ internal data class VoiceJoinIntent(
                         Row(Modifier.weight(1f).fillMaxHeight().clickable { viewModel.selectChannel(channel); closeNavigation?.invoke() }, verticalAlignment = Alignment.CenterVertically) {
                             Icon(if (channel.private) painterResource(R.drawable.lucide_lock_keyhole) else painterResource(R.drawable.lucide_hash), null, Modifier.size(17.dp), tint = if (selected) TerracottaBright else TextMuted)
                             Spacer(Modifier.width(9.dp)); Text(channel.name, Modifier.weight(1f), color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            sessionStartedAt?.let { VoiceSessionTimer(it) }
                         }
                         if (owner || (channel.joined && !detail.space.demo)) Box {
                             IconButton({ channelMenuOpen = true }, Modifier.size(48.dp)) { Icon(painterResource(R.drawable.lucide_ellipsis), "${channel.name} channel menu", Modifier.size(18.dp), tint = TextMuted) }
@@ -657,6 +661,37 @@ internal data class VoiceJoinIntent(
         }
         if (showAccountBar) AccountBar(state, voice, viewModel, show)
     }
+}
+
+internal fun formatVoiceSessionDuration(startedAt: Long, now: Long): String {
+    val seconds = ((now - startedAt).coerceAtLeast(0L) / 1_000L)
+    val hours = seconds / 3_600
+    val minutes = (seconds % 3_600) / 60
+    val remainder = seconds % 60
+    return if (hours == 0L) "%02d:%02d".format(Locale.ROOT, minutes, remainder)
+    else "%d:%02d:%02d".format(Locale.ROOT, hours, minutes, remainder)
+}
+
+@Composable private fun VoiceSessionTimer(startedAt: Long) {
+    var now by remember(startedAt) { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(startedAt) {
+        while (isActive) {
+            now = System.currentTimeMillis()
+            delay(1_000L - now.mod(1_000L))
+        }
+    }
+    val duration = formatVoiceSessionDuration(startedAt, now)
+    Text(
+        duration,
+        Modifier.padding(horizontal = 7.dp).clearAndSetSemantics {
+            contentDescription = "Voice session duration"
+            stateDescription = duration
+        },
+        color = VoiceSessionGreen,
+        fontFamily = FontFamily.Monospace,
+        fontSize = 11.sp,
+        maxLines = 1,
+    )
 }
 
 @Composable internal fun VoiceRoster(voice: VoiceState) {

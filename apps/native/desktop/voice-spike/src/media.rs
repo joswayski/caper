@@ -144,6 +144,8 @@ pub struct Snapshot {
     pub participants: Vec<Participant>,
     #[serde(default)]
     pub revision: Option<u64>,
+    #[serde(default, rename = "sessionStartedAt")]
+    pub session_started_at: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -2301,6 +2303,7 @@ mod tests {
                 }],
             }],
             revision: None,
+            session_started_at: None,
         };
         control.reconcile_participants(&snapshot).unwrap();
         control.activate().unwrap();

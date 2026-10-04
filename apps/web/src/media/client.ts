@@ -159,6 +159,7 @@ export class PublicCallClient {
   private pollPromise?: Promise<void>;
   private pollAgain = false;
   private pendingSnapshot?: CallSnapshot & { revision?: number };
+  private sessionStartedAt?: number | null;
   private pushedSnapshotVersion = 0;
   private snapshotInvalidation = 0;
   private latestRevision?: number;
@@ -226,6 +227,7 @@ export class PublicCallClient {
       selfId: this.selfId,
       localMedia: this.localMedia,
       participants: this.participants,
+      sessionStartedAt: this.sessionStartedAt,
       // Subscriptions are negotiated while joining, but nobody may hear the room
       // until the join has actually completed and the microphone is live.
       remoteMedia: this.phase === "connected" ? [...this.remoteMedia.values()] : [],
@@ -567,6 +569,7 @@ export class PublicCallClient {
     this.pushedSnapshotVersion++;
     this.pollAgain = true;
     // Roster presentation is independent of slow SDP work and our own writes.
+    this.sessionStartedAt = snapshot.sessionStartedAt;
     this.setParticipants(snapshot.participants);
     if (this.phase === "connected") {
       const self = snapshot.participants.find((participant) => participant.id === this.selfId);
@@ -1310,6 +1313,7 @@ export class PublicCallClient {
         if (snapshot.revision !== undefined) this.latestRevision = snapshot.revision;
         if (pushedVersion !== this.pushedSnapshotVersion) continue;
         // ontrack uses the roster to associate arriving media with its owner.
+        this.sessionStartedAt = snapshot.sessionStartedAt;
         this.setParticipants(snapshot.participants);
         const available = new Set(snapshot.participants.flatMap((participant) => participant.tracks.map((track) => track.id)));
         const departed = [...this.subscriptions.keys()].filter((id) => !available.has(id));
@@ -1493,6 +1497,7 @@ export class PublicCallClient {
     this.pc = undefined; this.receivePc = undefined; this.token = undefined;
     this.senders.clear(); this.subscriptions.clear(); this.remoteMedia.clear(); this.unassignedMedia.clear(); this.localMedia = undefined; this.pollPromise = undefined; this.pollAgain = false;
     this.pendingSnapshot = undefined; this.pushedSnapshotVersion = 0; this.latestRevision = undefined;
+    this.sessionStartedAt = undefined;
   }
 
   private resetMonitoring() {

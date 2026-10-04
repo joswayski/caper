@@ -826,6 +826,9 @@ struct Registry {
     cleanup: VecDeque<CleanupJob>,
     reservations: HashMap<Uuid, JoinReservation>,
     revision: u64,
+    /// The continuous occupied voice session; monitors never start one.
+    #[serde(default)]
+    session_started_at: Option<Timestamp>,
     /// Provider sessions and TURN created shortly before a signed-in member joins.
     #[serde(default)]
     prepared: Vec<PreparedJoin>,
@@ -2813,6 +2816,16 @@ struct TrackView {
     id: Uuid,
     kind: Kind,
 }
+fn voice_session_started_at(r: &Registry) -> Option<Timestamp> {
+    // Older stored rooms have no session timestamp. Seed them from the oldest
+    // real participant, then persist it before membership changes.
+    r.participants
+        .values()
+        .filter(|p| p.monitor.is_none())
+        .map(|p| p.joined)
+        .min()
+        .map(|first| r.session_started_at.unwrap_or(first))
+}
 fn public_snapshot(r: &Registry) -> Value {
     let mut participants: Vec<_> = r
         .participants
@@ -2842,7 +2855,7 @@ fn public_snapshot(r: &Registry) -> Value {
             }
         })
         .collect();
-    json!({"participants":participants,"revision":r.revision})
+    json!({"participants":participants,"revision":r.revision,"sessionStartedAt":voice_session_started_at(r)})
 }
 #[derive(Serialize)]
 struct PresenceView<'a> {
@@ -2871,7 +2884,7 @@ fn presence_snapshot(r: &Registry) -> Value {
         })
         .collect();
     participants.sort_by_key(|p| p.id);
-    json!({"participants":participants,"revision":r.revision})
+    json!({"participants":participants,"revision":r.revision,"sessionStartedAt":voice_session_started_at(r)})
 }
 async fn snapshot(
     State(s): State<AppState>,

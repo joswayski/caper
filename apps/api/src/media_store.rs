@@ -462,6 +462,12 @@ impl AppState {
         &self,
         update: impl Fn(&mut Registry) -> Result<T, ApiError>,
     ) -> Result<T, ApiError> {
+        let update = |state: &mut Registry| {
+            state.session_started_at = voice_session_started_at(state);
+            let result = update(state)?;
+            state.session_started_at = voice_session_started_at(state);
+            Ok(result)
+        };
         let (result, notify, cleanup_changed) = if let Some(store) = &self.store {
             tokio::time::timeout(
                 IO_TIMEOUT,

@@ -20,7 +20,7 @@ class GatewayClient(
     private val onReaction: (ReactionUpdate) -> Unit = {},
     private val onTyping: (ChatAuthor, Boolean, String) -> Unit = { _, _, _ -> },
     private val onPresence: (PresenceSnapshot) -> Unit = {},
-    private val onMedia: (String, List<Participant>) -> Unit = { _, _ -> },
+    private val onMedia: (String, List<Participant>, Long?) -> Unit = { _, _, _ -> },
     private val onMediaDenied: (String) -> Unit = {}, private val onMediaDisconnected: () -> Unit = {},
     private val onAccessDenied: () -> Unit, private val onResync: () -> Unit,
     private val json: Json = Json { ignoreUnknownKeys = true },
@@ -82,7 +82,7 @@ class GatewayClient(
         val desired = if (demo) listOf("") else channelIds.distinct().take(24)
         mediaSubscriptions.filterValues { it !in desired }.keys.toList().forEach { id ->
             streams().forEach { s -> if (s.hello) s.socket.send("""{"type":"unsubscribe","id":"$id"}"""); s.subscribed.remove(id); s.mediaPosition.remove(id) }
-            val channel = mediaSubscriptions.remove(id)!!; mediaRevisions.remove(id); onMedia(channel, emptyList())
+            val channel = mediaSubscriptions.remove(id)!!; mediaRevisions.remove(id); onMedia(channel, emptyList(), null)
         }
         desired.filter { it !in mediaSubscriptions.values }.forEach { channel ->
             val id = UUID.randomUUID().toString(); mediaSubscriptions[id] = channel
@@ -193,7 +193,10 @@ class GatewayClient(
             val snapshot = json.decodeFromJsonElement(SpectatorSnapshot.serializer(), event); require(snapshot.revision >= 0)
             s.mediaSeen.add(id)
             if (snapshot.revision > (s.mediaPosition[id] ?: -1)) s.mediaPosition[id] = snapshot.revision
-            if (snapshot.revision > (mediaRevisions[id] ?: -1)) { mediaRevisions[id] = snapshot.revision; onMedia(channel, snapshot.participants.map { it.asParticipant() }) }
+            if (snapshot.revision > (mediaRevisions[id] ?: -1)) {
+                mediaRevisions[id] = snapshot.revision
+                onMedia(channel, snapshot.participants.map { it.asParticipant() }, snapshot.sessionStartedAt)
+            }
             maybePromote(s)
         }
     }
@@ -202,7 +205,7 @@ class GatewayClient(
         val id = frame["id"]?.jsonPrimitive?.content ?: return
         val denied = frame["status"]?.jsonPrimitive?.content?.toIntOrNull() in setOf(401, 403, 404)
         if (s === candidate) return fail(s, false)
-        if (id in mediaSubscriptions && denied) { val channel = mediaSubscriptions.remove(id) ?: return; mediaRevisions.remove(id); onMedia(channel, emptyList()); onMediaDenied(channel) }
+        if (id in mediaSubscriptions && denied) { val channel = mediaSubscriptions.remove(id) ?: return; mediaRevisions.remove(id); onMedia(channel, emptyList(), null); onMediaDenied(channel) }
         else if (id == subscriptionId || id == presenceSubscriptionId) fail(s, denied)
         else fail(s, false)
     }

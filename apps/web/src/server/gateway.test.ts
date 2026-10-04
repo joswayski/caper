@@ -19,6 +19,13 @@ test("media projections reject wrong revisions and track shapes before reconcili
   for (const revision of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, "7"]) {
     assert.throws(() => callSnapshot({ ...authenticated, revision }, false), /Invalid live update/);
   }
+  for (const sessionStartedAt of [null, undefined, 1_234_567]) {
+    assert.equal(callSnapshot({ ...authenticated, sessionStartedAt }, false).sessionStartedAt, sessionStartedAt);
+    assert.equal(callSnapshot({ ...spectator, sessionStartedAt }, true).sessionStartedAt, sessionStartedAt);
+  }
+  for (const sessionStartedAt of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, "1234", Infinity]) {
+    assert.throws(() => callSnapshot({ ...spectator, sessionStartedAt }, true), /Invalid live update/);
+  }
   assert.throws(() => callSnapshot({ ...authenticated, participants: [{ ...person, tracks: [{ id: "camera", kind: "camera" }] }] }, false), /Invalid live update/);
 });
 

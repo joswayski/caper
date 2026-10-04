@@ -45,7 +45,11 @@ public struct VoiceParticipant: Decodable, Identifiable, Sendable {
     public let deafened: Bool
     fileprivate let tracks: [VoiceTrack]
 }
-private struct VoiceSnapshot: Decodable { let participants: [VoiceParticipant]; let revision: Int? }
+struct VoiceSnapshot: Decodable {
+    let participants: [VoiceParticipant]
+    let revision: Int?
+    let sessionStartedAt: Double?
+}
 private struct RestartBody: Encodable { let generation: String; let sequence: Int; let sessionDescription: SDP }
 private struct RestartAckBody: Encodable { let generation: String; let sequence: Int }
 
@@ -73,6 +77,7 @@ public final class VoiceClient {
     public var muted = false
     public var deafened = false
     public var participants: [VoiceParticipant] = []
+    public private(set) var sessionStartedAt: Double?
     public var outputGain = UserDefaults.standard.object(forKey: "caper.voice.outputGain") == nil
         ? 100 : min(200, max(0, UserDefaults.standard.integer(forKey: "caper.voice.outputGain")))
     public var participantGains: [String: Int] = [:]
@@ -489,6 +494,7 @@ public final class VoiceClient {
         // unavailable-pull retry must be able to reconcile the same roster again.
         guard snapshot.revision == snapshotRevisions.latest || snapshotRevisions.accept(snapshot.revision) else { return }
         participants = snapshot.participants
+        sessionStartedAt = snapshot.sessionStartedAt
         var unavailable = false
         let liveTracks = Set(snapshot.participants.filter { $0.id != selfID }.flatMap(\.tracks).filter { $0.kind == "microphone" }.map(\.id))
         for departed in Set(subscribed.keys).subtracting(liveTracks) {
@@ -655,7 +661,7 @@ public final class VoiceClient {
         peer = nil; delegate = nil; microphone = nil
         remoteAudio = []; remoteAudioByMID = [:]; participantByMID = [:]
         participantGains = [:]; locallyMutedParticipants = []
-        token = nil; selfID = nil; subscribed = [:]; participants = []
+        token = nil; selfID = nil; subscribed = [:]; participants = []; sessionStartedAt = nil
         publishedMID = nil; snapshotRevisions = MonotonicRevision(); signalingOwner = nil
         channelID = nil
         if !preservingContext { context = nil }

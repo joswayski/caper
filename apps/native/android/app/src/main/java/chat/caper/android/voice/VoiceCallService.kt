@@ -36,6 +36,7 @@ data class VoiceState(
     val channelName: String? = null,
     val spaceName: String? = null,
     val participants: List<Participant> = emptyList(),
+    val sessionStartedAt: Long? = null,
     val selfId: String? = null,
     val muted: Boolean = false,
     val deafened: Boolean = false,
@@ -350,13 +351,20 @@ class VoiceCallService : Service() {
         activeAttempt = null
         heartbeat?.cancel(); speaking?.cancel(); turnRenewal?.cancel(); recovery?.cancel(); pullRetry?.cancel(); recovery = null; mediaEvents?.close(); mediaEvents = null
         val token = current.closeLocal()
-        update { it.copy(phase = VoiceState.Phase.FAILED, error = error.message ?: "Voice connection failed.", speakingParticipants = emptySet(), monitoring = false) }
+        update { it.copy(
+            phase = VoiceState.Phase.FAILED,
+            participants = emptyList(),
+            sessionStartedAt = null,
+            error = error.message ?: "Voice connection failed.",
+            speakingParticipants = emptySet(),
+            monitoring = false,
+        ) }
         notifyState(); releaseAudio(); stopSelf()
         if (token != null) CoroutineScope(SupervisorJob() + Dispatchers.IO).launch { current.leave(token) }
     }
 
-    private fun participants(current: VoiceEngine, attempt: Long, value: List<Participant>) {
-        commitCallResult(current, attempt) { it.copy(participants = value) }
+    private fun participants(current: VoiceEngine, attempt: Long, value: chat.caper.android.model.MediaSnapshot) {
+        commitCallResult(current, attempt) { it.copy(participants = value.participants, sessionStartedAt = value.sessionStartedAt) }
     }
 
     private fun localControlFailed(current: VoiceEngine, attempt: Long, error: Throwable, warning: String) {

@@ -19,6 +19,8 @@ export interface Participant {
 
 export interface CallSnapshot {
   participants: Participant[];
+  /** Continuous occupied voice session, in UTC Unix milliseconds. */
+  sessionStartedAt?: number | null;
 }
 
 export interface JoinResponse {
@@ -103,6 +105,7 @@ export interface CallViewState {
   selfId?: string;
   localMedia?: MediaStream;
   participants: Participant[];
+  sessionStartedAt?: number | null;
   remoteMedia: RemoteMedia[];
   error?: string;
   diagnostics?: ConnectionDiagnostics;

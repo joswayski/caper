@@ -87,6 +87,30 @@ The HTTP/SSE endpoints remain available for older clients and inspection, but th
 current browser uses neither SSE nor HTTP polling for live rosters. Spectators
 never renew call leases.
 
+Channel names show a shared voice-session timer to everyone authorized to view
+the channel's voice roster, including people not in the call. It starts with the
+first real participant, survives that participant leaving while others remain,
+and clears when the last participant leaves or their lease expires. Microphone
+test monitors do not start or extend a session. Authenticated and spectator
+snapshots carry nullable `sessionStartedAt` (UTC Unix milliseconds); clients
+render `MM:SS`, then `H:MM:SS`, and hide it on older servers without the field.
+Valkey stores the start with room metadata. Existing occupied rooms initialize
+from their oldest remaining participant, since an earlier departed participant's
+join time cannot be recovered. Devices calculate elapsed time using their system
+clocks, so clock skew can offset the display; future starts clamp to `00:00`.
+The timer describes continuous channel occupancy, not each person's time in voice
+or guaranteed audio connectivity. Access permissions and roster limits do not change.
+
+Web desktop/narrow and Linux desktop rendering are checked with explicitly labeled
+fixtures, not live SFU calls. Apple/iOS and Android implement the same timestamp
+and display contract but require their platform builds and rendered/device checks;
+browser validation does not establish native acceptance. Deploy the updated API
+and gateway before web/native releases; both server roles embed media handlers.
+No new infrastructure, secrets, or Postgres migration is required. Complete both
+server rollouts rather than leaving old writers that discard the new Valkey field.
+Old clients ignore the additional field; rolled-back clients hide the timer on an
+older server. Never delete shared room state to roll back a display feature.
+
 Browser → same-origin `/api/chat/events` WebSocket → Rust gateway → existing
 authorized media handlers → Cloudflare control API. Fifteen-second `media.snapshot`
 commands renew call leases; pushed snapshots discover roster/track changes.

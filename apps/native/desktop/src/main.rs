@@ -45,6 +45,7 @@ const MUTED: Color32 = Color32::from_rgb(185, 188, 190);
 const TERRACOTTA: Color32 = Color32::from_rgb(182, 77, 50);
 const TERRACOTTA_BRIGHT: Color32 = Color32::from_rgb(219, 104, 73);
 const CAPER: Color32 = Color32::from_rgb(99, 122, 67);
+const VOICE_SESSION_GREEN: Color32 = Color32::from_rgb(74, 168, 107);
 const ERROR: Color32 = Color32::from_rgb(255, 155, 130);
 const MEMBER_PAGE_SIZE: usize = 25;
 
@@ -238,6 +239,7 @@ struct CaperApp {
     voice_join_request: u64,
     pending_voice_join: Option<(String, u64)>,
     channel_rosters: BTreeMap<String, Vec<model::VoiceOccupant>>,
+    voice_session_starts: BTreeMap<String, u64>,
     unavailable_rosters: BTreeSet<String>,
     /// Web's `/status` answers by media root; absent while checking.
     media_availability: BTreeMap<String, bool>,
@@ -343,6 +345,7 @@ impl CaperApp {
             voice_join_request: 0,
             pending_voice_join: None,
             channel_rosters: BTreeMap::new(),
+            voice_session_starts: BTreeMap::new(),
             unavailable_rosters: BTreeSet::new(),
             media_availability: BTreeMap::new(),
             media_status_roots: BTreeSet::new(),
@@ -552,6 +555,10 @@ impl CaperApp {
                                 deafened: false,
                             },
                         ],
+                    );
+                    app.voice_session_starts.insert(
+                        "chan00000002".into(),
+                        chrono::Utc::now().timestamp_millis().max(0) as u64 - 1_701_000,
                     );
                     app.navigation_open = name.ends_with("-narrow");
                 } else if name == "parity-typing" {
@@ -1461,6 +1468,7 @@ impl CaperApp {
         };
         self.roster_generation += 1;
         self.channel_rosters.clear();
+        self.voice_session_starts.clear();
         self.unavailable_rosters.clear();
         let media = gateway::MediaWatch {
             epoch: self.roster_generation,
@@ -1912,6 +1920,7 @@ impl CaperApp {
                 if error.access_denied {
                     self.unavailable_rosters.insert(channel.into());
                     self.channel_rosters.remove(channel);
+                    self.voice_session_starts.remove(channel);
                 }
                 self.voice.error = Some(error.message);
             }
@@ -1924,6 +1933,7 @@ impl CaperApp {
                 generation,
                 channel,
                 participants,
+                session_started_at,
             } if generation == self.roster_generation
                 && self.selected_channel.is_some()
                 && self.detail.as_ref().is_some_and(|detail| {
@@ -1931,6 +1941,11 @@ impl CaperApp {
                 }) =>
             {
                 self.unavailable_rosters.remove(&channel);
+                if let Some(started) = session_started_at.filter(|_| !participants.is_empty()) {
+                    self.voice_session_starts.insert(channel.clone(), started);
+                } else {
+                    self.voice_session_starts.remove(&channel);
+                }
                 self.channel_rosters.insert(channel, participants);
             }
             GatewayEvent::VoiceUnavailable {
@@ -1939,6 +1954,7 @@ impl CaperApp {
                 revoked,
             } if generation == self.roster_generation => {
                 self.channel_rosters.remove(&channel);
+                self.voice_session_starts.remove(&channel);
                 self.unavailable_rosters.insert(channel.clone());
                 if revoked {
                     self.voice.revoke_channel(&channel);
@@ -1946,6 +1962,7 @@ impl CaperApp {
             }
             GatewayEvent::VoiceReset { generation } if generation == self.roster_generation => {
                 self.channel_rosters.clear();
+                self.voice_session_starts.clear();
             }
             GatewayEvent::Status {
                 generation,
@@ -2211,6 +2228,7 @@ impl CaperApp {
         self.worker.send(Command::StopGateway);
         self.roster_generation += 1;
         self.channel_rosters.clear();
+        self.voice_session_starts.clear();
         self.unavailable_rosters.clear();
         self.selected_channel = None;
         self.session = None;
@@ -3562,7 +3580,7 @@ impl CaperApp {
                                     ui.horizontal(|ui| {
                                         let (response, _) = channel_button(
                                             ui, ui.available_width() - 18.0,
-                                            &direct.peer.display_name, NavIcon::Speech, active, false,
+                                            &direct.peer.display_name, NavIcon::Speech, active, false, None,
                                         );
                                         if unread { ui.label(RichText::new("●").size(9.0).color(TERRACOTTA_BRIGHT)); }
                                         if response.clicked() { self.select_direct(direct.clone()); }
@@ -3570,7 +3588,7 @@ impl CaperApp {
                                     ui.add_space(3.0);
                                 }
                                 let action = if self.owner() { "Invite people" } else { "New message" };
-                                let (response, _) = channel_button(ui, ui.available_width(), action, NavIcon::Plus, false, false);
+                                let (response, _) = channel_button(ui, ui.available_width(), action, NavIcon::Plus, false, false, None);
                                 if response.clicked() { self.open_direct_action(); }
                             });
                         });
@@ -3833,6 +3851,15 @@ impl CaperApp {
                                 ui.spacing_mut().item_spacing.y = 0.0;
                                 ui.spacing_mut().interact_size.y = 28.0;
                                 let active = self.selected_channel.as_deref() == Some(&id);
+                                let started = if self.voice.state.active_channel() == Some(&id) {
+                                    self.voice.session_started_at.filter(|_| !self.voice.participants.is_empty())
+                                } else {
+                                    self.voice_session_starts.get(&id).copied()
+                                };
+                                let duration = started.map(|started| {
+                                    ui.ctx().request_repaint_after(Duration::from_secs(1));
+                                    voice_session_duration(started, chrono::Utc::now().timestamp_millis().max(0) as u64)
+                                });
                                 let (response, settings) = channel_button(
                                     ui,
                                     ui.available_width(),
@@ -3840,6 +3867,7 @@ impl CaperApp {
                                     if private { NavIcon::Lock } else { NavIcon::Hash },
                                     active,
                                     self.owner(),
+                                    duration.as_deref(),
                                 );
                                 if settings {
                                     self.open_manage_channel(&id, &name, private);
@@ -7143,6 +7171,16 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
     }
 }
 
+fn voice_session_duration(started_at: u64, now: u64) -> String {
+    let seconds = now.saturating_sub(started_at) / 1_000;
+    let tail = format!("{:02}:{:02}", seconds / 60 % 60, seconds % 60);
+    if seconds < 3_600 {
+        tail
+    } else {
+        format!("{}:{tail}", seconds / 3_600)
+    }
+}
+
 fn channel_button(
     ui: &mut egui::Ui,
     width: f32,
@@ -7150,6 +7188,7 @@ fn channel_button(
     icon: NavIcon,
     active: bool,
     manageable: bool,
+    duration: Option<&str>,
 ) -> (egui::Response, bool) {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 32.0), egui::Sense::click());
     response.widget_info(|| {
@@ -7189,13 +7228,38 @@ fn channel_button(
         icon,
         if active { TERRACOTTA_BRIGHT } else { color },
     );
+    let timer_font = egui::FontId::monospace(11.0);
+    let timer_right = rect.right() - if manageable { 34.0 } else { 6.0 };
+    let timer_width = duration.map_or(0.0, |text| {
+        let galley =
+            ui.painter()
+                .layout_no_wrap(text.into(), timer_font.clone(), VOICE_SESSION_GREEN);
+        let width = galley.size().x;
+        let timer_rect = egui::Rect::from_min_size(
+            egui::pos2(timer_right - width, rect.center().y - galley.size().y / 2.0),
+            galley.size(),
+        );
+        let timer = ui.interact(
+            timer_rect,
+            response.id.with("duration"),
+            egui::Sense::hover(),
+        );
+        timer.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::Label,
+                true,
+                format!("Voice session duration: {text}"),
+            )
+        });
+        timer.on_hover_text("Voice session duration");
+        ui.painter()
+            .galley(timer_rect.min, galley, VOICE_SESSION_GREEN);
+        width + 9.0
+    });
     ui.painter()
         .with_clip_rect(egui::Rect::from_min_max(
             egui::pos2(rect.left() + 34.0, rect.top()),
-            egui::pos2(
-                rect.right() - if manageable { 34.0 } else { 6.0 },
-                rect.bottom(),
-            ),
+            egui::pos2(timer_right - timer_width, rect.bottom()),
         ))
         .text(
             egui::pos2(rect.left() + 35.0, rect.center().y - 1.0),
@@ -8436,19 +8500,24 @@ mod tests {
             generation: 42,
             channel: "chan00000002".into(),
             participants: people.clone(),
+            session_started_at: Some(1_000),
         });
         assert!(app.channel_rosters.is_empty());
+        assert!(app.voice_session_starts.is_empty());
         app.selected_channel = selected;
         app.gateway(GatewayEvent::VoiceRoster {
             generation: 43,
             channel: "chan00000003".into(),
             participants: people,
+            session_started_at: Some(5_000),
         });
         assert!(app.channel_rosters.contains_key("chan00000003"));
+        assert_eq!(app.voice_session_starts["chan00000003"], 5_000);
         app.gateway(GatewayEvent::VoiceReset { generation: 42 });
         assert!(!app.channel_rosters.is_empty());
         app.gateway(GatewayEvent::VoiceReset { generation: 43 });
         assert!(app.channel_rosters.is_empty());
+        assert!(app.voice_session_starts.is_empty());
     }
 
     #[test]
@@ -10018,6 +10087,28 @@ mod tests {
             Some("Use lowercase letters separated by single dashes.")
         );
         assert_eq!(crate::channel_name_error("project-updates"), None);
+    }
+
+    #[test]
+    fn voice_session_duration_clamps_and_crosses_minute_and_hour_boundaries() {
+        for (elapsed, expected) in [
+            (999, "00:00"),
+            (60_000, "01:00"),
+            (3_599_999, "59:59"),
+            (3_600_000, "1:00:00"),
+            (7_384_000, "2:03:04"),
+        ] {
+            assert_eq!(
+                crate::voice_session_duration(12_345, 12_345 + elapsed),
+                expected
+            );
+        }
+        assert_eq!(crate::voice_session_duration(12_345, 12_000), "00:00");
+        let old: crate::media::Snapshot = serde_json::from_str(r#"{"participants":[]}"#).unwrap();
+        assert_eq!(old.session_started_at, None);
+        let current: crate::media::Snapshot =
+            serde_json::from_str(r#"{"participants":[],"sessionStartedAt":12345}"#).unwrap();
+        assert_eq!(current.session_started_at, Some(12_345));
     }
 
     #[test]
