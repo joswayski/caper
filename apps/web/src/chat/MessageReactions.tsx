@@ -1,6 +1,7 @@
 import { SmilePlus } from "lucide-react";
 import type { ChatMessage } from "./types.ts";
 import { emojiAsset, emojiCode } from "./emoji.ts";
+import { preloadReactionPicker } from "./MessageActions.tsx";
 
 export interface ReactionSave {
   emoji: string;
@@ -24,6 +25,7 @@ export default function MessageReactions({ message, authorId, readOnly = false, 
 
   return <>
     <button type="button" className="chat-add-reaction" onClick={(event) => onOpenPicker(event.currentTarget)}
+      onMouseEnter={() => { if (canReact && !saving) preloadReactionPicker(); }} onFocus={preloadReactionPicker}
       disabled={!canReact || saving} aria-label="Add reaction" title="Add reaction" aria-haspopup="dialog" aria-expanded={pickerOpen}>
       <SmilePlus size={18} aria-hidden="true" />
     </button>

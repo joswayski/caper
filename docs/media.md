@@ -824,13 +824,19 @@ The picker offers standard Emoji 15.0 artwork, self-hosted from `@twemoji/svg`
 and attributed at `/emoji/NOTICE.txt` (Twemoji graphics, CC BY 4.0). The web
 build/dev preparation verifies artwork for every offered emoji. It makes no
 emoji-CDN requests. Writable web chat warms the code/data chunk after one second;
-it does not mount the picker or fetch the artwork catalog. The virtualized grid
-loads its mounted image window eagerly, including after category jumps. Versioned
+it does not mount the picker or fetch the artwork catalog. Hovering or focusing
+**Add reaction** also warms the code and preloads/decodes the first 128 Emoji 15.0
+smileys/people images, generated from the picker catalog at build time. This
+covers the opening grid, not the full catalog, and does not open the picker.
+Preloads are shared across message buttons; failures allow the next intent to retry.
+The virtualized grid loads its mounted image window eagerly, including after
+category jumps. Versioned
 `/emoji/twemoji-15/**` artwork is served with a one-year immutable browser cache;
 changed artwork must use a new path. Web category tabs sit above search, brighten
 on hover/selection, and underline the selected category in terracotta. Pointer
 clicks have no circular ring; keyboard focus retains a separate outline.
 `node scripts/test-message-actions.mjs` checks warmup without artwork requests,
+hover/focus preloading without opening or duplicate image requests,
 populated category jumps/reopening, eager loading with virtualization, selected
 tab styling, and keyboard navigation on desktop and Chromium touch-emulated web.
 Native picker loading/styling is intentionally unchanged: those independent

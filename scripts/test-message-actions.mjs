@@ -57,13 +57,39 @@ try {
   assert.equal((await (await fetch(`${api}/health`)).json()).fixture, true);
   await control({ reset: true });
   browser('open', 'about:blank');
-  browser('set', 'viewport', '390', '844', '2');
+  browser('set', 'viewport', '1280', '900', '2');
   browser('cookies', 'set', 'caper_fixture', 'owner', '--url', web, '--path', '/', '--sameSite', 'Lax');
   browser('open', `${web}/spaces`);
   wait('!!document.querySelector(".chat-message") && !document.querySelector(".chat-initial-messages")');
   wait('performance.getEntriesByType("resource").some(resource => resource.name.includes("ReactionPicker"))');
   assert.equal(evaluate('!!document.querySelector(".chat-reaction-picker")'), false);
   assert.equal(evaluate('performance.getEntriesByType("resource").filter(resource => resource.name.includes("/emoji/twemoji-15/")).length'), 0, 'Warming picker code must not fetch the image catalog');
+  const preloadedImages = `performance.getEntriesByType('resource').filter(resource => resource.name.includes('/emoji/twemoji-15/') && resource.name.endsWith('.svg'))`;
+  for (const intent of ['hover', 'focus']) {
+    if (intent === 'focus') {
+      browser('reload');
+      wait('!!document.querySelector(".chat-message") && !document.querySelector(".chat-initial-messages")');
+    }
+    assert.equal(evaluate(`${preloadedImages}.length`), 0);
+    // Vite module requests can fill Chromium's default 250-entry timing buffer.
+    evaluate('(() => { performance.setResourceTimingBufferSize(2000); performance.clearResourceTimings(); })()');
+    const messageKey = evaluate('document.querySelector(".chat-message").dataset.messageKey');
+    const trigger = `[data-message-key="${messageKey}"] .chat-add-reaction`;
+    browser(intent, trigger);
+    wait(`${preloadedImages}.length === 128 && ${preloadedImages}.every(resource => resource.responseEnd > 0 && resource.responseStatus === 200)`);
+    assert.equal(evaluate(`${preloadedImages}.some(resource => resource.name.endsWith('/1f600.svg'))`), true);
+    assert.equal(evaluate('!!document.querySelector(".chat-reaction-picker")'), false, `${intent} must preload images without opening the picker`);
+    browser('mouse', 'move', '10', '10');
+    browser('focus', '.chat-composer textarea');
+    browser(intent, trigger);
+    await delay(100);
+    assert.equal(evaluate(`${preloadedImages}.length`), 128, 'Repeated intent must not issue duplicate image requests');
+  }
+  browser('set', 'viewport', '390', '844', '2');
+  // Initialize the narrow layout instead of carrying the desktop members pane
+  // into its mobile overlay while checking unrelated touch gestures.
+  browser('reload');
+  wait('!!document.querySelector(".chat-message") && !document.querySelector(".chat-initial-messages")');
 
   // agent-browser has no touch command. Use its launched Chromium's CDP input
   // rather than synthesizing DOM events or installing another browser package.
@@ -256,7 +282,7 @@ try {
   wait(`${visibleEmojiImages}.length >= 24 && ${visibleEmojiImages}.every(image => image.complete && image.naturalWidth > 0)`);
   screenshot('emoji-desktop-reopened');
   browser('press', 'Escape');
-  console.log('PASS: Chromium touch gestures (tap/scroll/cancel/hold), hidden inline emoji controls, modal focus/dismissal, exact clipboard text/ID, quick toggles, picker code warmup without artwork fetches, eager virtualized category jumps/reopen, underline/no click ring, keyboard tabs, search/live-target retention, clipboard failure, read-only copying, desktop picker.');
+  console.log('PASS: Chromium touch gestures (tap/scroll/cancel/hold), hidden inline emoji controls, modal focus/dismissal, exact clipboard text/ID, quick toggles, picker code warmup without artwork fetches, hover/focus image preload without opening or duplicate requests, eager virtualized category jumps/reopen, underline/no click ring, keyboard tabs, search/live-target retention, clipboard failure, read-only copying, desktop picker.');
 } catch (error) {
   browser('screenshot', '/tmp/message-actions-failure.png');
   throw error;

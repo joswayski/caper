@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ComponentType } from "react";
 import { autoUpdate, flip, FloatingFocusManager, FloatingOverlay, FloatingPortal, offset, shift, useDismiss, useFloating, useInteractions, useRole } from "@floating-ui/react";
 import { Copy, Hash, SmilePlus, X } from "lucide-react";
 import type { ChatMessage } from "./types.ts";
-import { emojiAsset, emojiCode } from "./emoji.ts";
+import { emojiAsset, emojiCode, preloadEmojiImages } from "./emoji.ts";
 
 export interface MessageActionTarget {
   messageId: string;
@@ -13,6 +13,11 @@ export interface MessageActionTarget {
 }
 
 const quickReactions = ["👍", "❤️", "😂", "🎉", "👀"];
+
+export function preloadReactionPicker() {
+  void import("./ReactionPicker.tsx").catch(() => {});
+  void preloadEmojiImages();
+}
 
 export default function MessageActions({ message, target, authorId, canReact, onReact, onClose, onCopied }: {
   message: ChatMessage;
@@ -78,7 +83,8 @@ export default function MessageActions({ message, target, authorId, canReact, on
               <img src={emojiAsset(emojiCode(emoji))} width={28} height={28} alt="" />
             </button>;
           })}
-          <button type="button" aria-label="Add reaction" onClick={() => setMode("emoji")}><SmilePlus size={24} aria-hidden="true" /></button>
+          <button type="button" aria-label="Add reaction" onMouseEnter={preloadReactionPicker} onFocus={preloadReactionPicker}
+            onClick={() => setMode("emoji")}><SmilePlus size={24} aria-hidden="true" /></button>
         </div>}
         <div className="chat-copy-actions">
           <button type="button" onClick={() => void copy(message.content.text, "Text")}><Copy size={20} aria-hidden="true" />Copy text</button>

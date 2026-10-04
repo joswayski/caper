@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { ChatTimeline } from "../chat/timeline.ts";
 import { isChatReactionEvent, type ChatMessage, type ChatReactionEvent } from "../chat/types.ts";
-import { emojiAsset, emojiCode } from "../chat/emoji.ts";
+import { emojiAsset, emojiCode, preloadEmojiImages } from "../chat/emoji.ts";
 
 function message(seq: string, id = `message-${seq}`): ChatMessage {
   return {
@@ -87,6 +87,45 @@ test("Twemoji filenames handle selectors, keycaps, flags, skin tones and ZWJ seq
     assert.equal(emojiAsset(emojiCode(emoji)), `/emoji/twemoji-15/${filename}.svg`);
   }
   assert.equal(emojiAsset("0031-fe0f-20e3"), "/emoji/twemoji-15/31-20e3.svg");
+});
+
+test("emoji preload shares image decoding, retries failures, and stays warm across messages", async (t) => {
+  const manifest = ["1f600", "0031-fe0f-20e3", "1f469-200d-2695-fe0f"];
+  const fetchMock = t.mock.method(globalThis, "fetch", async () => Response.json(manifest));
+  fetchMock.mock.mockImplementationOnce(async () => new Response(null, { status: 503 }));
+  const images: { src: string }[] = [];
+  const decoded: (() => void)[] = [];
+  let failImage = true;
+  const originalImage = globalThis.Image;
+  globalThis.Image = class {
+    src = "";
+    constructor() { images.push(this); }
+    decode() {
+      return failImage ? Promise.reject(new Error("Artwork unavailable")) : new Promise<void>((resolve) => decoded.push(resolve));
+    }
+  } as unknown as typeof Image;
+  t.after(() => {
+    if (originalImage) globalThis.Image = originalImage;
+    else Reflect.deleteProperty(globalThis, "Image");
+  });
+
+  await preloadEmojiImages();
+  assert.equal(images.length, 0, "a failed manifest must not start image requests");
+  await preloadEmojiImages();
+  assert.equal(images.length, 3);
+  failImage = false;
+  const first = preloadEmojiImages();
+  assert.strictEqual(preloadEmojiImages(), first, "simultaneous hovers must share the preload");
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(fetchMock.mock.callCount(), 3, "manifest and image failures must both allow retry");
+  assert.deepEqual(images.slice(3).map((image) => image.src), [
+    "/emoji/twemoji-15/1f600.svg", "/emoji/twemoji-15/31-20e3.svg", "/emoji/twemoji-15/1f469-200d-2695-fe0f.svg",
+  ]);
+  assert.equal(decoded.length, 3);
+  decoded.forEach((finish) => finish());
+  await first;
+  assert.strictEqual(preloadEmojiImages(), first, "a later message must reuse completed preload work");
+  assert.equal(fetchMock.mock.callCount(), 3);
 });
 
 test("message snapshots retain identity until visible contents change", () => {
