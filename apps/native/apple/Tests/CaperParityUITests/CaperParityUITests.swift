@@ -636,6 +636,27 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Copy connection details"].exists)
         capture("audio-statistics-test-fixture", app: app)
     }
+
+    func testSettingsShortcutWorksWhileSignedOut() {
+        let app = launch(signedIn: false)
+        assertStaticText("Welcome to Caper", in: app)
+        app.typeKey(",", modifierFlags: .command)
+        let startup = app.descendants(matching: .any)["launch-at-login"]
+        XCTAssertTrue(startup.waitForExistence(timeout: 5))
+        XCTAssertFalse(startup.isEnabled, "Parity mode must never change real Login Items")
+        let sounds = app.descendants(matching: .any)["sound-effects"]
+        let original = sounds.value as? String
+        XCTAssertNotNil(original)
+        sounds.tap()
+        XCTAssertNotEqual(sounds.value as? String, original)
+        app.typeKey("w", modifierFlags: .command)
+        app.typeKey(",", modifierFlags: .command)
+        XCTAssertTrue(startup.waitForExistence(timeout: 3))
+        XCTAssertNotEqual(sounds.value as? String, original, "Settings saves without an Apply button")
+        sounds.tap()
+        XCTAssertEqual(sounds.value as? String, original)
+        capture("settings-signed-out", app: app)
+    }
     #endif
 
     func testLogin() {
@@ -863,7 +884,23 @@ final class CaperParityUITests: XCTestCase {
         #else
         settings.tap()
         #endif
+        #if os(macOS)
+        XCTAssertFalse(app.descendants(matching: .any)["launch-at-login"].exists, "Startup must not appear in the quick menu")
+        XCTAssertFalse(app.descendants(matching: .any)["sound-effects"].exists, "Persistent preferences belong in Settings")
+        app.descendants(matching: .any)["open-settings"].tap()
+        let startup = app.descendants(matching: .any)["launch-at-login"]
+        XCTAssertTrue(startup.waitForExistence(timeout: 2))
+        XCTAssertFalse(startup.isEnabled, "Fixture previews must not change real Login Items")
+        XCTAssertTrue(app.descendants(matching: .any)["sound-effects"].exists)
+        capture("startup-settings", app: app)
+        app.typeKey("w", modifierFlags: .command)
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.descendants(matching: .any)["desktop-settings"])
+        XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 3), .completed)
+        settings.tap()
+        #else
+        XCTAssertFalse(app.descendants(matching: .any)["launch-at-login"].exists, "Startup is desktop-only")
         XCTAssertTrue(app.descendants(matching: .any)["sound-effects"].waitForExistence(timeout: 2), "Web keeps Caper sound effects in the settings menu")
+        #endif
         let preferences = app.descendants(matching: .any)["Audio test"]
         XCTAssertTrue(preferences.waitForExistence(timeout: 2))
         preferences.tap()

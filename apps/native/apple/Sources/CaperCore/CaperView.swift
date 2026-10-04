@@ -4,6 +4,7 @@ import MediaPlayer
 import UIKit
 #elseif os(macOS)
 import AppKit
+import ServiceManagement
 #endif
 
 public enum CaperTheme {
@@ -1121,7 +1122,11 @@ private struct AccountBar: View {
     @Bindable var model: AppModel
     @Bindable var voice: VoiceClient
     @Binding var sheet: WorkspaceSheet?
+    #if os(macOS)
+    @Environment(\.openSettings) private var openSettings
+    #else
     @Bindable private var effects = CaperEffects.shared
+    #endif
     @State private var inputOptions = false
     @State private var outputOptions = false
     init(model: AppModel, sheet: Binding<WorkspaceSheet?>) { self.model = model; voice = model.voice; _sheet = sheet }
@@ -1209,11 +1214,16 @@ private struct AccountBar: View {
             }.buttonStyle(.plain).modifier(ControlHover()).help("Output Options").accessibilityLabel("Output Options")
                 .popover(isPresented: $outputOptions, arrowEdge: .top) { AccountAudioMenu(voice: voice, input: false) }
             Menu {
-                // Web's User Settings menu.
+                #if os(macOS)
+                Button("Settings…") { openSettings() }
+                    .accessibilityIdentifier("open-settings")
+                Divider()
+                #else
                 Section("Audio settings") {
                     Toggle("Caper sound effects", isOn: $effects.soundsEnabled)
                         .accessibilityIdentifier("sound-effects")
                 }
+                #endif
                 Button("Audio test") { sheet = .audio }
                     .disabled(voice.phase == .leaving)
                 if voice.phase == .connected || CaperRuntime.isAudioPreview("audio-statistics") {
@@ -2041,6 +2051,63 @@ private struct ProfileView: View {
         }.background(CaperTheme.blackout)
     }
 }
+
+#if os(macOS)
+/// The Settings scene is also available before signing in, through Caper → Settings.
+@MainActor public struct CaperSettingsView: View {
+    @State private var loginItem = CaperLoginItem.shared
+    @Bindable private var effects = CaperEffects.shared
+    public init() {}
+
+    public var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                Text("Settings").font(CaperTheme.font(20, weight: .bold))
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Startup").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                    Toggle(isOn: Binding(get: { loginItem.registered }, set: { loginItem.setEnabled($0) })) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Launch at login").font(CaperTheme.font(14))
+                            Text("Open Caper when you sign in to your computer.")
+                                .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                        }
+                    }.toggleStyle(.switch).disabled(!loginItem.available)
+                        .accessibilityIdentifier("launch-at-login")
+                    if loginItem.status == .requiresApproval {
+                        Text("Launch at login needs approval in System Settings.")
+                            .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                        Button("Open Login Items Settings…") { SMAppService.openSystemSettingsLoginItems() }
+                    }
+                    if let error = loginItem.error {
+                        Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
+                        Button("Dismiss startup error") { loginItem.error = nil }
+                    }
+                }
+                Rectangle().fill(CaperTheme.border).frame(height: 1)
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Sounds").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                    Toggle(isOn: $effects.soundsEnabled) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Caper sound effects").font(CaperTheme.font(14))
+                            Text("Play sounds for messages and app interactions.")
+                                .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                        }
+                    }.toggleStyle(.switch).accessibilityIdentifier("sound-effects")
+                }
+            }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(width: 500, height: 380)
+        .background(CaperTheme.surface)
+        .foregroundStyle(CaperTheme.text)
+        .preferredColorScheme(.dark)
+        .tint(CaperTheme.terracotta)
+        .buttonStyle(CaperSecondaryButton())
+        .accessibilityIdentifier("desktop-settings")
+        .onAppear { CaperFontLoader.register(); loginItem.refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in loginItem.refresh() }
+    }
+}
+#endif
 
 private struct WorkspaceSheetView: View {
     let item: WorkspaceSheet

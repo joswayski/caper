@@ -59,5 +59,8 @@ struct CaperMacOSApp: App {
                     .disabled(!updater.isAvailable)
             }
         }
+        Settings {
+            CaperSettingsView()
+        }
     }
 }

@@ -4,6 +4,9 @@ $ErrorActionPreference = 'Stop'
 $Install = Join-Path $env:LOCALAPPDATA 'Programs\Caper'
 $Registry = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Caper'
 if ((Test-Path $Install) -or (Test-Path $Registry)) { throw 'Installer test requires a clean host without Caper installed' }
+$Startup = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+$StartupCommand = '"' + (Join-Path $Install 'app\Caper.exe') + '"'
+if (Get-ItemPropertyValue $Startup -Name Caper -ErrorAction SilentlyContinue) { throw 'Installer test requires no existing Caper login entry' }
 $Shell = New-Object -ComObject WScript.Shell
 $Links = @((Join-Path $Shell.SpecialFolders.Item('Programs') 'Caper.lnk'), (Join-Path $Shell.SpecialFolders.Item('Desktop') 'Caper.lnk'))
 foreach ($Link in $Links) { if (Test-Path $Link) { throw "Existing shortcut: $Link" } }
@@ -22,6 +25,11 @@ foreach ($Attempt in 1..2) {
     if ($Shell.CreateShortcut($Link).TargetPath -ne (Join-Path $Install 'app\Caper.exe')) { throw "Wrong shortcut: $Link" }
   }
   if ((Get-ItemProperty $Registry).DisplayName -ne 'Caper') { throw 'Missing installed-app registration' }
+  if ($Attempt -eq 1) {
+    if (Get-ItemPropertyValue $Startup -Name Caper -ErrorAction SilentlyContinue) { throw 'Install must not opt in to startup' }
+    New-Item $Startup -Force | Out-Null
+    New-ItemProperty $Startup -Name Caper -Value $StartupCommand -PropertyType String -Force | Out-Null
+  } elseif ((Get-ItemPropertyValue $Startup -Name Caper) -ne $StartupCommand) { throw 'Reinstall changed startup opt-in' }
 }
 # Run in place without NSIS's asynchronous temporary-uninstaller handoff.
 $Uninstaller = Join-Path $env:TEMP "caper-uninstall-test-$PID.exe"
@@ -32,5 +40,6 @@ try {
   foreach ($Path in @($Registry, $Install) + $Links) {
     if (Test-Path $Path) { throw "Uninstaller left behind: $Path" }
   }
+  if (Get-ItemPropertyValue $Startup -Name Caper -ErrorAction SilentlyContinue) { throw 'Uninstaller left Caper startup enabled' }
 } finally { Remove-Item $Uninstaller -Force }
-Write-Host 'PASS: GUI subsystem, install, reinstall, payload hashes, shortcuts, registration, uninstall'
+Write-Host 'PASS: GUI subsystem, install, reinstall, payload hashes, shortcuts, registration, startup opt-in preserved/removed, uninstall'
