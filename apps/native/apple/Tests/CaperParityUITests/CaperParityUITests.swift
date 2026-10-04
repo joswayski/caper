@@ -190,9 +190,96 @@ final class CaperParityUITests: XCTestCase {
         #endif
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         capture("reaction-picker-open-fixture", app: app)
-        type("definitely-no-such-emoji", into: search)
+        // Retapping until focus succeeds can hide a dismiss/re-present loop.
+        search.tap()
+        XCTAssertTrue(hasKeyboardFocus(search), "Emoji search must keep focus after one tap")
+        search.typeText("definitely-no-such-emoji")
         XCTAssertTrue(app.descendants(matching: .any)["reaction-picker-empty"].waitForExistence(timeout: 5))
         capture("reaction-picker-empty-fixture", app: app)
+    }
+
+    func testReactionPickerRetainsSearchAndTargetDuringLiveScroll() async throws {
+        func control(_ body: [String: Any]) async throws {
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:3001/__fixture/control")!)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            let (_, response) = try await URLSession.shared.data(for: request)
+            XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        }
+
+        try await control(["reset": true])
+        do {
+            let app = launch()
+            let targetID = "message-chan00000001-1"
+            let add = app.buttons["add-reaction-\(targetID)"]
+            XCTAssertTrue(add.waitForExistence(timeout: 30))
+            let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: add)
+            XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
+            add.tap()
+            #if os(iOS)
+            let search = app.textFields["reaction-picker-search"]
+            #else
+            let search = app.searchFields.firstMatch
+            #endif
+            XCTAssertTrue(search.waitForExistence(timeout: 5))
+            search.tap()
+            XCTAssertTrue(hasKeyboardFocus(search), "One tap must focus search without reopening the sheet")
+            search.typeText("rocket")
+            XCTAssertTrue(app.buttons["rockets"].waitForExistence(timeout: 5))
+
+            // Push the presenting row out of the lazy timeline's viewport
+            // while the picker is open and its keyboard has focus.
+            var lastText = ""
+            for index in 0..<12 {
+                lastText = "Picker live scroll \(index)\n" + String(repeating: "TEST FIXTURE timeline layout change.\n", count: 8)
+                try await control(["incomingMessage": ["channelId": "chan00000001", "text": lastText]])
+                XCTAssertEqual(search.value as? String, "rocket", "Live delivery must not reset the search")
+                XCTAssertTrue(hasKeyboardFocus(search), "Live scrolling must not replace the sheet")
+            }
+            capture("reaction-picker-focused-after-live-scroll-fixture", app: app)
+            app.buttons["rockets"].tap()
+            let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: search)
+            XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
+            assertStaticText("TEST FIXTURE — \(lastText)", in: app)
+            XCTAssertFalse(add.isHittable, "The original presenter must have left the visible timeline")
+
+            // Check persistence on the original target, not only picker closure
+            // or an optimistic chip on whichever message is now visible.
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:3001/api/chat/channels/chan00000001/messages")!,
+                                     cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 5)
+            request.setValue("Bearer fixture-owner-token", forHTTPHeaderField: "authorization")
+            var messages: [[String: Any]] = []
+            var saved = false
+            for _ in 0..<50 {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+                let history = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+                messages = try XCTUnwrap(history["messages"] as? [[String: Any]])
+                let target = try XCTUnwrap(messages.first { $0["id"] as? String == targetID })
+                saved = (target["reactions"] as? [[String: Any]])?.contains {
+                    $0["emoji"] as? String == "🚀" && $0["authorIds"] as? [String] == ["owner0000001"]
+                } == true
+                if saved { break }
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            XCTAssertTrue(saved, "The reaction must be stored on the original message")
+            let latest = try XCTUnwrap(messages.last)
+            XCTAssertTrue((latest["reactions"] as? [[String: Any]] ?? []).isEmpty)
+            let latestID = try XCTUnwrap(latest["id"] as? String)
+            app.buttons["add-reaction-\(latestID)"].tap()
+            XCTAssertTrue(search.waitForExistence(timeout: 5))
+            XCTAssertEqual(search.value as? String, "", "A newly opened picker starts with a fresh query")
+            app.buttons["Cancel"].tap()
+            let cancelled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: search)
+            XCTAssertEqual(XCTWaiter.wait(for: [cancelled], timeout: 5), .completed)
+            app.terminate()
+        } catch {
+            launchedApp?.terminate()
+            try? await control(["reset": true])
+            throw error
+        }
+        try await control(["reset": true])
     }
 
     private func assertStaticText(_ text: String, in app: XCUIApplication, timeout: TimeInterval = 10) {
