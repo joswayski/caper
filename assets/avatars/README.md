@@ -28,6 +28,11 @@ and 69 dinosaur. There is no sombrero design in the current artwork.
 atlas from the sheets (ImageMagick 7). Current vectors are exported by
 `node scripts/generate-avatar-vectors.mjs`; `--check` verifies all client copies.
 
+Website wordmarks and rotating favicons use `/images/branding/v1/{id}.svg`,
+exported by the same generator with only the background path and circular crop
+removed. Character paths, hues, daily selections, account avatars and native
+assets are unchanged. Installed website touch/manifest icons stay fixed.
+
 ## Original mascot (not an account design)
 
 `plain-caper` is the plain Caper dot. It predates the account set and has no design ID. Keep it
