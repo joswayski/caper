@@ -121,6 +121,22 @@ Run the unpacked binary directly, or install the Debian package with
 `https://caper.chat`; development may use `--api-url http://localhost:PORT` or
 `CAPER_API_URL`. Plain HTTP is rejected for non-loopback hosts.
 
+## Windows microphone access and firewall prompts
+
+Windows capture uses WebRTC's WASAPI **shared mode**. A Discord call does not
+normally prevent Caper from using the same microphone. Caper cannot bypass
+Windows microphone privacy settings or another application's exclusive access.
+**System default** consistently resolves the normal Windows input/output
+default, not WebRTC's implicit communications default. Failed startup closes
+the capture gate and reports the failing stage.
+
+Voice and local audio tests open WebRTC sockets and can trigger a Windows
+Firewall prompt. This is separate from microphone permission; Caper does not
+automatically change firewall rules or suppress security prompts. The unsigned
+Windows executable can also show **Publisher: Unknown**. See the
+[Windows audio and firewall runbook](../../../docs/media.md#windows-microphone-access-and-firewall-prompts)
+for troubleshooting, network-profile guidance, and Windows acceptance gaps.
+
 ## Calling and known parity gaps
 
 Voice is **experimental**, not live/physical-device accepted. Source and local
@@ -220,6 +236,8 @@ does not provide live SFU media. Use normal `--api-url` for networked chat tests
 `parity-voice-joining` and `parity-voice-connected` preview Cancel/Leave and the
 audio bar without starting a media transport; `parity-voice-speaking` adds fixed
 speaking rings for you and Maya.
+`parity-voice-error` and `parity-audio-error` preview capture failure guidance in
+the voice dock and Audio test dialog without starting capture or a transport.
 `parity-direct` and `parity-direct-new` preview a two-person DM and its
 exact-username dialog without a live account or notification provider.
 `parity-direct-no-spaces` previews the first-space page's Direct messages entry
