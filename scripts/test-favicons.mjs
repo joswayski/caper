@@ -66,9 +66,9 @@ writeFileSync(init, `(${fixture.toString()})();`);
 const session = `favicons-${process.pid}`;
 const browser = (...args) => execFileSync('agent-browser', ['--session', session, '--init-script', init, ...args], { encoding: 'utf8', timeout: 40000 });
 const evaluate = code => JSON.parse(browser('eval', code));
-const waitForWordmark = index => browser('wait', '--fn', `[...document.querySelectorAll('.wordmark-character')].length > 0 && [...document.querySelectorAll('.wordmark-character')].every(image => image.getAttribute('src') === '/images/avatars/v3/${index}.svg' && image.complete && image.naturalWidth === 256)`);
+const waitForWordmark = index => browser('wait', '--fn', `[...document.querySelectorAll('.wordmark-character')].length > 0 && [...document.querySelectorAll('.wordmark-character')].every(image => image.getAttribute('src') === '/images/branding/v1/${index}.svg' && image.complete && image.naturalWidth === 256)`);
 const waitForIcon = (index, previousPNG = '') => {
-  browser('wait', '--fn', `document.querySelector('#caper-favicon-svg')?.getAttribute('href') === '/images/avatars/v3/${index}.svg' && document.querySelector('#caper-favicon-32')?.href.startsWith('data:image/png') && document.querySelector('#caper-favicon-32')?.href !== ${JSON.stringify(previousPNG)}`);
+  browser('wait', '--fn', `document.querySelector('#caper-favicon-svg')?.getAttribute('href') === '/images/branding/v1/${index}.svg' && document.querySelector('#caper-favicon-32')?.href.startsWith('data:image/png') && document.querySelector('#caper-favicon-32')?.href !== ${JSON.stringify(previousPNG)}`);
   waitForWordmark(index);
 };
 const record = () => evaluate(`Object.fromEntries(['svg','32','192'].map(key => [key,document.querySelector('#caper-favicon-'+key).getAttribute('href')]))`);
@@ -107,10 +107,10 @@ try {
       if (image.width !== size || image.height !== size) throw Error('Wrong PNG dimensions');
       const canvas = document.createElement('canvas'); canvas.width = canvas.height = 32;
       const ctx = canvas.getContext('2d'); ctx.drawImage(image,0,0,32,32);
-      if (ctx.getImageData(0,0,1,1).data[3] !== 0 || ctx.getImageData(16,12,1,1).data[3] !== 255) throw Error('Wrong avatar alpha');
+      if (ctx.getImageData(0,0,1,1).data[3] !== 0 || ctx.getImageData(16,0,1,1).data[3] !== 0 || ctx.getImageData(16,12,1,1).data[3] !== 255) throw Error('Wrong character alpha or background still present');
       if (size === 32) {
-        const pixel = [...ctx.getImageData(16,12,1,1).data]; ctx.clearRect(0,0,32,32); ctx.drawImage(source,0,0,32,32);
-        if (pixel.join() !== [...ctx.getImageData(16,12,1,1).data].join()) throw Error('PNG and SVG depict different avatars');
+        const pixels = [...ctx.getImageData(0,0,32,32).data]; ctx.clearRect(0,0,32,32); ctx.drawImage(source,0,0,32,32);
+        if (pixels.join() !== [...ctx.getImageData(0,0,32,32).data].join()) throw Error('PNG and SVG depict different characters');
       }
     }
     const apple = document.querySelector('link[rel="apple-touch-icon"]');
@@ -121,8 +121,20 @@ try {
     if ([...ctx.getImageData(0,0,1,1).data].join() !== '12,13,15,255') throw Error('Touch icon must be opaque');
     return true;
   })()`), true);
+  assert.equal(evaluate(`(async () => {
+    const canvas = document.createElement('canvas'); canvas.width = canvas.height = 256;
+    const ctx = canvas.getContext('2d', {willReadFrequently:true});
+    for (let id = 0; id < 800; id++) {
+      const image = new Image(); image.src = '/images/branding/v1/'+id+'.svg'; await image.decode();
+      ctx.clearRect(0,0,256,256); ctx.drawImage(image,0,0);
+      // Inside the old tile, outside the artwork; tall accessories may reach the top.
+      if (ctx.getImageData(252,128,1,1).data[3] !== 0) throw Error('Background remains for character '+id);
+      if (!ctx.getImageData(0,0,256,256).data.some((value,at) => at % 4 === 3 && value === 255)) throw Error('Missing character artwork for '+id);
+    }
+    return true;
+  })()`), true);
   browser('set', 'viewport', '390', '844', '2');
-  assert.equal(record().svg, '/images/avatars/v3/1.svg');
+  assert.equal(record().svg, '/images/branding/v1/1.svg');
   waitForWordmark(1);
   if (artifacts) {
     browser('eval', 'new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
@@ -161,7 +173,7 @@ try {
   browser('tab', 't1');
   browser('eval', 'window.dispatchEvent(new Event("focus"));');
   waitForIcon(77);
-  assert.equal(record().svg, '/images/avatars/v3/77.svg', 'Other tabs adopt the saved daily icon instead of rerolling');
+  assert.equal(record().svg, '/images/branding/v1/77.svg', 'Other tabs adopt the saved daily icon instead of rerolling');
   browser('open', `${origin}?installed-icon-test=1&icon-now=${clock}`);
   waitForWordmark(77);
   assert.equal(evaluate(`document.querySelector('#caper-favicon-svg').getAttribute('href')`), '/caper-face.svg?v=3', 'Explicitly mocked standalone launch keeps original identity');
@@ -171,7 +183,7 @@ try {
   waitForIcon(160);
   browser('eval', 'window.__iconNow += 1; window.dispatchEvent(new Event("focus"));');
   waitForIcon(560);
-  console.log('Favicon + wordmark checks passed: same shared character; same-day reload + navigation stability; UTC focus + timer rotation; cross-tab persistence; blocked-storage stability; SVG/PNG agreement; fixed installed icons with rotating in-app branding; accessible home link; desktop/narrow layouts.');
+  console.log('Favicon + wordmark checks passed: all 800 characters decode without backgrounds; same shared character; same-day reload + navigation stability; UTC focus + timer rotation; cross-tab persistence; blocked-storage stability; SVG/PNG agreement; fixed installed icons with rotating in-app branding; accessible home link; desktop/narrow layouts.');
 } finally {
   browser('close');
   rmSync(scratch, { recursive: true, force: true });
