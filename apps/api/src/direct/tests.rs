@@ -80,7 +80,102 @@ async fn two_person_privacy_durability_read_cursors_and_gateway_replay(pool: PgP
             .0,
         StatusCode::UNAUTHORIZED
     );
-    assert!(create_conversation(&pool, users[0], "alice").await.is_err());
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            "/api/push/config",
+            Some("alice"),
+            None,
+            Value::Null
+        )
+        .await,
+        (StatusCode::OK, json!({"platforms":[]})),
+    );
+    for method in ["POST", "DELETE"] {
+        assert_eq!(
+            request(
+                &app,
+                method,
+                "/api/push/devices",
+                Some("alice"),
+                None,
+                json!({"platform":"fcm","token":"test-device"}),
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND,
+            "device registration is deferred until direct provider integrations exist",
+        );
+    }
+    let (notes, reopened) = tokio::join!(
+        create_conversation(&pool, users[0], "alice"),
+        create_conversation(&pool, users[0], " @ALICE ")
+    );
+    let notes = notes.unwrap();
+    assert_eq!(
+        notes,
+        reopened.unwrap(),
+        "concurrent self creation is canonical"
+    );
+    let listed = conversations(&pool, users[0]).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["peer"]["username"], "alice");
+    let notes_path = format!("/api/chat/channels/{notes}/messages");
+    let note = request(
+        &app,
+        "POST",
+        &notes_path,
+        None,
+        Some("chat-alice"),
+        json!({"clientMessageId":Uuid::new_v4(),"text":"A private reminder to myself"}),
+    )
+    .await;
+    assert_eq!(note.0, StatusCode::OK);
+    let history = request(&app, "GET", &notes_path, Some("alice"), None, Value::Null).await;
+    assert_eq!(history.0, StatusCode::OK);
+    assert_eq!(history.1["channel"]["direct"], true);
+    assert_eq!(history.1["channel"]["name"], "alice");
+    assert_eq!(
+        history.1["messages"][0]["content"]["text"],
+        "A private reminder to myself"
+    );
+    for other in ["bob", "outsider"] {
+        assert_eq!(
+            request(&app, "GET", &notes_path, Some(other), None, Value::Null)
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            request(
+                &app,
+                "POST",
+                &notes_path,
+                None,
+                Some(&format!("chat-{other}")),
+                json!({"clientMessageId":Uuid::new_v4(),"text":"not my notes"})
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM push_notifications")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0,
+        "notes must not send notifications to their author"
+    );
+    mark_read(&pool, users[0], &notes, 99).await.unwrap();
+    mark_read(&pool, users[0], &notes, 0).await.unwrap();
+    assert_eq!(
+        conversations(&pool, users[0]).await.unwrap()[0]["readSeq"],
+        "1"
+    );
+    assert!(mark_read(&pool, users[1], &notes, 1).await.is_err());
     assert!(
         create_conversation(&pool, users[0], "missing")
             .await
@@ -183,15 +278,13 @@ async fn two_person_privacy_durability_read_cursors_and_gateway_replay(pool: PgP
     assert_eq!(first.0, StatusCode::OK);
     assert_eq!(first, retry);
     assert_eq!(first.1["seq"], "1");
-    let notifications: Vec<i64> =
-        sqlx::query_scalar("SELECT recipient_user_id FROM push_notifications")
-            .fetch_all(&pool)
-            .await
-            .unwrap();
     assert_eq!(
-        notifications,
-        [users[1]],
-        "one idempotent notification, only for the peer"
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM push_notifications")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0,
+        "DM sends must not enqueue deferred push notifications",
     );
     let history = request(&app, "GET", &path, Some("bob"), None, Value::Null)
         .await
@@ -228,11 +321,16 @@ async fn two_person_privacy_durability_read_cursors_and_gateway_replay(pool: PgP
         StatusCode::SERVICE_UNAVAILABLE
     );
     assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM push_notifications")
-            .fetch_one(&pool)
-            .await
-            .unwrap(),
-        1
+        sqlx::query_as::<_, (i64, i64, i64)>(
+            "SELECT (SELECT count(*) FROM messages),
+                    (SELECT count(*) FROM channel_events),
+                    (SELECT count(*) FROM push_notifications)",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        (2, 2, 0),
+        "only the earlier note and peer message remain after a failed outbox insert; no push is queued",
     );
     sqlx::query("ALTER TABLE channel_events DROP CONSTRAINT reject_dm")
         .execute(&pool)
@@ -276,6 +374,34 @@ async fn two_person_privacy_durability_read_cursors_and_gateway_replay(pool: PgP
     }
     assert_eq!(replay[0]["message"], first.1);
     assert_eq!(replay[1]["type"], "ready");
+    let notes_request = |account: &str| {
+        let mut request = format!("ws://{addr}/api/chat/events?channelId={notes}&after=0")
+            .into_client_request()
+            .unwrap();
+        request.headers_mut().insert(
+            "cookie",
+            format!("caper_session={account}").parse().unwrap(),
+        );
+        request
+    };
+    assert!(connect_async(notes_request("bob")).await.is_err());
+    let (mut notes_socket, _) = connect_async(notes_request("alice")).await.unwrap();
+    let mut notes_replay = Vec::new();
+    while notes_replay.len() < 2 {
+        match tokio::time::timeout(Duration::from_secs(6), notes_socket.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+        {
+            Message::Text(text) => notes_replay.push(serde_json::from_str::<Value>(&text).unwrap()),
+            Message::Ping(bytes) => notes_socket.send(Message::Pong(bytes)).await.unwrap(),
+            _ => {}
+        }
+    }
+    assert_eq!(notes_replay[0]["message"], note.1);
+    assert_eq!(notes_replay[1]["type"], "ready");
+    notes_socket.close(None).await.unwrap();
     sqlx::query("UPDATE account_sessions SET revoked_at=now() WHERE user_id=$1")
         .bind(users[0])
         .execute(&pool)

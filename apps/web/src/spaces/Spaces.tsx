@@ -798,7 +798,7 @@ function StartDirectDialog({ onClose, onCreated }: { onClose: () => void; onCrea
   const [username, setUsername] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
-  return <Dialog title="New direct message" description="Enter an exact username. This conversation stays between the two of you, across all your spaces." onClose={onClose}>
+  return <Dialog title="New direct message" description="Enter an exact username, or your own for private notes. Conversations stay private across all your spaces." onClose={onClose}>
     <form onSubmit={(event) => {
       event.preventDefault();
       if (pending || !username.trim()) return;
@@ -958,10 +958,12 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
   const [view, setView] = useState<PreparedSpace>();
   const [directs, setDirects] = useState<DirectConversation[]>([]);
   const [directError, setDirectError] = useState<string>();
+  const [selfDirectPending, setSelfDirectPending] = useState(false);
   const [directView, setDirectView] = useState<{ conversation: DirectConversation; history?: GeneralChatHistory; error?: string }>();
   const detail = view?.detail ?? (!spaces.length ? { space: { id: "", name: "Direct messages", ownerId: "" }, channels: [], members: [] } : undefined);
   const navigation = useRef(createSpaceNavigation());
   const [selected, setSelected] = useState<{ spaceId?: string; channelId?: string; dmId?: string }>(() => embedded ? {} : selectedFromUrl());
+  const navigationRevision = useRef(0);
   const activeSpace = useRef(selected.spaceId);
   activeSpace.current = selected.spaceId;
   const membershipRevision = useRef(0);
@@ -997,9 +999,20 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
   }, []);
 
   const choose = (spaceId?: string, channelId?: string, replace = false, dmId?: string) => {
+    navigationRevision.current++;
     if (spaceMenu.current) spaceMenu.current.open = false;
     if (channelMenu.current) channelMenu.current.open = false;
     channelNavigationRef.current?.querySelectorAll<HTMLDetailsElement>(".channel-menu[open]").forEach((menu) => { menu.open = false; });
+    // A repeated click must not replace `selected`: that would restart the
+    // navigation effect and remount Chat, losing its draft and scroll state.
+    // Comparing with the requested selection (rather than `view`) also folds
+    // duplicate clicks into one pending request. If another channel is pending,
+    // clicking the still-visible channel differs from `selected` and therefore
+    // intentionally cancels that navigation.
+    if (spaceId === selected.spaceId && channelId === selected.channelId && dmId === selected.dmId) {
+      setNavigationOpen(false);
+      return;
+    }
     activeSpace.current = spaceId;
     setMembershipError(undefined);
     setBrowseOpen(false);
@@ -1020,6 +1033,21 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
   const openDirect = (conversation: DirectConversation) => {
     choose(detail?.space.id || undefined, undefined, false, conversation.id);
     setNavigationOpen(false);
+  };
+
+  const selfDirect = directs.find((conversation) => conversation.peer.id === account?.id);
+  const openSelfDirect = async () => {
+    if (!account?.username || selfDirectPending) return;
+    if (selfDirect) return openDirect(selfDirect);
+    const request = ++navigationRevision.current;
+    setSelfDirectPending(true);
+    setDirectError(undefined);
+    try {
+      const conversation = await createDirectConversation(account.username);
+      setDirects((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
+      if (request === navigationRevision.current) openDirect(conversation);
+    } catch (reason) { setDirectError(errorMessage(reason)); }
+    finally { setSelfDirectPending(false); }
   };
 
   const refreshDirects = async () => {
@@ -1073,7 +1101,10 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
 
   useEffect(() => {
     if (embedded) return;
-    const pop = () => setSelected(selectedFromUrl());
+    const pop = () => {
+      navigationRevision.current++;
+      setSelected(selectedFromUrl());
+    };
     window.addEventListener("popstate", pop);
     return () => window.removeEventListener("popstate", pop);
   }, []);
@@ -1272,10 +1303,21 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
   const directNavigation = <section className="direct-section" aria-label="Direct messages">
     <div className="channel-section-heading">
       <span className="direct-section-title"><MessageCircle aria-hidden="true" />Direct messages</span>
-      <button type="button" aria-label="New direct message" title="New direct message" onClick={() => setDialog("direct")}><Plus aria-hidden="true" /></button>
+      <span className="channel-section-actions">
+        <button type="button" aria-label="New direct message" title="New direct message" onClick={() => setDialog("direct")}><Plus aria-hidden="true" /></button>
+      </span>
     </div>
     <ul>
-      {directs.map((conversation) => <li key={conversation.id}>
+      {account && <li>
+        <button type="button" className="channel-select direct-select direct-self" disabled={selfDirectPending} aria-busy={selfDirectPending}
+          aria-current={selfDirect && selfDirect.id === directView?.conversation.id ? "page" : undefined}
+          title="Your private notes" onClick={() => void openSelfDirect()}>
+          <span className="direct-avatar"><Avatar avatarId={account.avatarId} name={account.displayName ?? account.username ?? "You"} /></span>
+          <span>{account.displayName ?? account.username ?? "You"}</span><small>you</small>
+          {selfDirect && directUnread(selfDirect) && <span className="direct-unread" aria-label="Unread messages" />}
+        </button>
+      </li>}
+      {directs.filter((conversation) => conversation.peer.id !== account?.id).map((conversation) => <li key={conversation.id}>
         <button type="button" className="channel-select direct-select" aria-current={conversation.id === directView?.conversation.id ? "page" : undefined}
           title={`@${conversation.peer.username}`} onClick={() => openDirect(conversation)}>
           <span className="direct-avatar" aria-hidden="true">{conversation.peer.displayName.slice(0, 1).toUpperCase()}</span>
@@ -1284,7 +1326,9 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
         </button>
       </li>)}
     </ul>
-    {!directs.length && !directError && <p className="direct-empty">Private conversations, across every space.</p>}
+    <button type="button" className="channel-select direct-action" onClick={() => setDialog(owner ? "manage-space" : "direct")}>
+      <Plus aria-hidden="true" /><span>{owner ? "Invite people" : "New message"}</span>
+    </button>
     {directError && <p className="space-sidebar-error" role="alert">{directError}<button type="button" onClick={() => void refreshDirects()}>Retry direct messages</button></p>}
     {dialog === "direct" && <StartDirectDialog onClose={() => setDialog(undefined)} onCreated={(conversation) => {
       setDirects((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
@@ -1512,7 +1556,7 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
               aria-busy={pending && detail.space.id === selected.spaceId && item.id === selected.channelId}
               onMouseEnter={() => prefetch(detail.space.id, item.id)}
               onFocus={() => prefetch(detail.space.id, item.id)}
-              onClick={() => { if (item.id === channel?.id) setNavigationOpen(false); else choose(detail.space.id, item.id); }}
+              onClick={() => choose(detail.space.id, item.id)}
             >
               {item.private ? (
                 <LockKeyhole aria-hidden="true" />

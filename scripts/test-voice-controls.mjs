@@ -246,6 +246,31 @@ try {
     const geometry = () => evaluate(`return [...document.querySelectorAll('.channel-line')].map(line => [...line.querySelectorAll('.channel-select, .channel-manage, .channel-join, .channel-join-slot')].map(node => { const r = node.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; }));`);
     const countPosition = () => evaluate(`const r = document.querySelector('.channel-section-toggle .section-count').getBoundingClientRect(); return [r.x, r.y];`);
     const actionContentsFit = () => evaluate(`return [...document.querySelectorAll('.channel-join')].every(button => { const bounds = button.getBoundingClientRect(), icon = button.querySelector('svg').getBoundingClientRect(), label = button.querySelector('.channel-join-label').getBoundingClientRect(); return icon.width === 14 && icon.height === 14 && icon.left > bounds.left && icon.right < label.left && label.right < bounds.right && label.top >= bounds.top && label.bottom <= bounds.bottom; });`);
+    const checkChannelTargets = () => {
+      for (const area of ['leading padding', 'icon', 'name', 'trailing padding']) {
+        for (const name of ['beta', 'alpha']) {
+          const [x, y] = evaluate(`const button = [...document.querySelectorAll('.channel-select')].find(button => button.textContent === ${JSON.stringify(name)});
+            const r = button.getBoundingClientRect(), area = ${JSON.stringify(area)};
+            const target = area === 'icon' ? button.querySelector('svg') : area === 'name' ? button.querySelector('span') : button;
+            const t = target.getBoundingClientRect();
+            const x = area === 'leading padding' ? r.left + 3 : area === 'trailing padding' ? r.right - 3 : t.left + Math.min(t.width / 2, 20);
+            if (!button.contains(document.elementFromPoint(x, r.top + r.height / 2))) throw Error('Channel target is obscured: ' + area);
+            if (getComputedStyle(target).cursor !== 'pointer') throw Error('Channel target needs a hand cursor: ' + area);
+            return [Math.round(x), Math.round(r.top + r.height / 2)];`);
+          browser('mouse', 'move', String(x), String(y));
+          browser('mouse', 'down', 'left'); browser('mouse', 'up', 'left');
+          wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === ${JSON.stringify(name)} && document.querySelector('.chat-heading h2')?.textContent.includes(${JSON.stringify(name)})`);
+        }
+      }
+      for (const selector of ['.space-rail button:enabled', '.call-account button:enabled', '.browse-channels']) {
+        assert.ok(evaluate(`const buttons = [...document.querySelectorAll(${JSON.stringify(selector)})]; return buttons.length > 0 && buttons.every(button => getComputedStyle(button).cursor === 'pointer');`), `${selector}: enabled controls need hand cursors`);
+      }
+      assert.ok(evaluate(`return [...document.querySelectorAll('.channel-manage')].every(button => getComputedStyle(button).cursor === 'pointer');`), 'Owner channel options need hand cursors');
+      assert.ok(evaluate(`const button = document.querySelector('.browse-channels');
+        button.disabled = true; const disabled = getComputedStyle(button).cursor; button.disabled = false;
+        button.setAttribute('aria-disabled', 'true'); const ariaDisabled = getComputedStyle(button).cursor; button.removeAttribute('aria-disabled');
+        return disabled !== 'pointer' && ariaDisabled !== 'pointer';`), 'Disabled controls must not advertise a click');
+    };
     for (const width of [1280, 390]) {
       browser('set', 'viewport', String(width), '900', '2');
       evaluate(`await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));`);
@@ -392,7 +417,19 @@ try {
         assert.ok(evaluate(`return [...document.querySelectorAll('.channel-line')].every(line => line.querySelector('.channel-join').getBoundingClientRect().right <= line.getBoundingClientRect().right);`), 'Actions must fit at the 220px sidebar minimum');
         assert.ok(evaluate(`return [...document.querySelectorAll('.channel-voice')].every(row => row.innerText.trim() === 'Join voice');`), 'Minimum-width empty rows also omit redundant status text');
         assert.ok(actionContentsFit(), 'Icons and labels must fit at the 220px sidebar minimum');
+        checkChannelTargets();
         screenshot('channel-minimum-sidebar');
+        evaluate(`document.activeElement.blur();`);
+        const [x, y] = evaluate(`const r = document.querySelector('.channel-sidebar-resize').getBoundingClientRect(); return [Math.round(r.left + r.width / 2), Math.round(r.top + 100)];`);
+        browser('mouse', 'move', String(x), String(y));
+        browser('mouse', 'down', 'left');
+        browser('mouse', 'move', String(x + 67), String(y));
+        assert.equal(evaluate(`return document.querySelector('.people-panel').getBoundingClientRect().width;`), 287, 'Pointer dragging must still resize the sidebar');
+        assert.equal(evaluate(`return getComputedStyle(document.querySelector('.channel-sidebar-resize')).cursor;`), 'col-resize');
+        assert.equal(evaluate(`return getComputedStyle(document.querySelector('.channel-sidebar-resize'), '::after').content;`), 'none', 'Hover/drag must not create a colored resize line');
+        screenshot('channel-sidebar-drag-no-highlight');
+        browser('mouse', 'up', 'left');
+        browser('focus', '[aria-label="Channel sidebar width"]'); browser('press', 'Home');
         browser('press', 'ArrowRight'); browser('press', 'ArrowRight'); browser('press', 'ArrowRight'); browser('press', 'ArrowRight');
       } else {
         assert.ok(before.every(row => row[1][2] >= 44 && row[1][3] >= 44 && row[2][3] >= 44), 'Narrow controls need 44px tap targets');
@@ -410,6 +447,7 @@ try {
     wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha' && !document.querySelector('.channel-manage')`);
     assert.equal(evaluate(`return document.querySelectorAll('.channel-join').length;`), 3, 'Members retain voice actions without owner management controls');
     assert.deepEqual(countPosition(), ownerDesktopCount, 'Owned and shared spaces keep the channel count in the same position');
+    checkChannelTargets();
     screenshot('channel-1280-member');
     browser('set', 'viewport', '390', '900', '2');
     browser('find', 'role', 'button', 'click', '--name', 'Browse', '--exact');

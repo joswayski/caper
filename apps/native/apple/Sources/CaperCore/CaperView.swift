@@ -127,7 +127,7 @@ private struct FirstSpaceView: View {
                 HStack {
                     Spacer()
                     Button("Log out") { Task { await model.logout() } }.buttonStyle(.plain)
-                        .font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
+                        .font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).modifier(ControlHover())
                 }
             }.padding(28).frame(maxWidth: 440).frame(maxWidth: .infinity)
         }.background(CaperTheme.blackout)
@@ -155,7 +155,7 @@ private struct SpacesUnavailableView: View {
                 .buttonStyle(CaperSecondaryButton()).disabled(model.busy)
             Button("Direct messages") { model.navigationOpen = true }
             Button("Log out") { Task { await model.logout() } }.buttonStyle(.plain)
-                .font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
+                .font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).modifier(ControlHover())
         }.padding(28).frame(maxWidth: .infinity, maxHeight: .infinity).background(CaperTheme.blackout)
     }
 }
@@ -206,7 +206,6 @@ private struct WorkspaceView: View {
     @State private var sheet: WorkspaceSheet?
     @AppStorage("caper.channelSidebarWidth") private var sidebarWidth = 280.0
     @State private var sidebarDragStart: Double?
-    @State private var sidebarHovered = false
     @FocusState private var sidebarFocused: Bool
     @State private var membersPreference: Bool?
     @State private var modalDismissDisabled = false
@@ -271,11 +270,10 @@ private struct WorkspaceView: View {
                             .padding(.trailing, narrow ? 8 : 0)
                             .overlay(alignment: .trailing) {
                                 if !narrow {
-                                    Rectangle().fill(sidebarHovered || sidebarFocused ? CaperTheme.terracottaBright : Color.clear)
-                                        .frame(width: 2).frame(width: 8).frame(maxHeight: .infinity)
+                                    Color.clear
+                                        .frame(width: 8).frame(maxHeight: .infinity)
                                         .contentShape(Rectangle())
                                         .onHover { hovering in
-                                            sidebarHovered = hovering
                                             #if os(macOS)
                                             if hovering { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
                                             #endif
@@ -449,7 +447,7 @@ private struct SpaceRail: View {
                                 .frame(width: 40, height: 40).background(CaperTheme.surface)
                                 .clipShape(RoundedRectangle(cornerRadius: 12))
                                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(CaperTheme.terracottaBright, style: StrokeStyle(lineWidth: 1, dash: [3])))
-                        }.buttonStyle(.plain).help("Invitation to \(invitation.name)").accessibilityLabel("Invitation to \(invitation.name)")
+                        }.buttonStyle(.plain).modifier(ControlHover()).help("Invitation to \(invitation.name)").accessibilityLabel("Invitation to \(invitation.name)")
                     }
                 }
                 Button(action: model.account == nil ? showLogin : create) {
@@ -459,7 +457,7 @@ private struct SpaceRail: View {
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                         .overlay(RoundedRectangle(cornerRadius: 12).stroke(CaperTheme.border, style: StrokeStyle(lineWidth: 1, dash: [4])))
                 }
-                .buttonStyle(.plain).disabled(model.account != nil && !model.canCreateSpace)
+                .buttonStyle(.plain).modifier(ControlHover()).disabled(model.account != nil && !model.canCreateSpace)
                 .help(createHelp)
             }.padding(.vertical, 14).frame(maxWidth: .infinity)
         }
@@ -510,6 +508,10 @@ private struct ChannelSidebar: View {
     @State private var channelsExpanded = true
     @State private var channelSearch = ""
     @State private var browsing = false
+    #if os(macOS)
+    @State private var directHeadingHovered = false
+    @FocusState private var directActionFocused: Bool
+    #endif
     var body: some View {
         VStack(spacing: 0) {
                     HStack(spacing: 6) {
@@ -539,7 +541,7 @@ private struct ChannelSidebar: View {
                                 Text("Channels")
                                 Text("\(model.detail?.channels.filter(\.joined).count ?? 0)").font(CaperTheme.font(10, weight: .bold))
                             }.font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
-                        }.buttonStyle(.plain)
+                        }.buttonStyle(.plain).modifier(ControlHover())
                         Spacer()
                         if model.isOwner {
                             let createHelp = model.canCreateChannel ? "Create channel" : "Channel limit reached (\(model.limits?.channelsPerSpace ?? 100))"
@@ -565,20 +567,20 @@ private struct ChannelSidebar: View {
 
                     Divider().overlay(CaperTheme.border).padding(.vertical, 10)
                     Button(browsing ? "Close Browse" : "Browse channels") { browsing.toggle(); channelSearch = "" }
-                        .buttonStyle(.plain).font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                        .buttonStyle(.plain).font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted).modifier(ControlHover())
                     if browsing {
                     TextField("Search channels", text: $channelSearch).textFieldStyle(CaperTextFieldStyle()).padding(.vertical, 6)
                     ForEach((model.detail?.channels ?? []).filter { channelSearch.isEmpty || $0.name.localizedCaseInsensitiveContains(channelSearch) }) { channel in
                         Button { Task { await model.select(channel: channel) } } label: {
                             HStack { CaperIcon(name: channel.private ? "lock" : "hash", size: 16); Text(channel.name); Spacer(); Text(channel.joined ? "Joined" : "Preview").font(CaperTheme.font(10)) }
-                        }.buttonStyle(.plain).padding(.vertical, 6)
+                        }.buttonStyle(.plain).padding(.vertical, 6).modifier(ControlHover())
                     }
                     }
                     if let invitations = model.detail?.channelInvitations, !invitations.isEmpty {
                         Text("Private invitations").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted).padding(.top, 12)
                         ForEach(invitations) { invitation in
                             Button("#\(invitation.channel.name) · from @\(invitation.inviter.username)") { sheet = .channelInvitation(invitation) }
-                                .buttonStyle(.plain).padding(.vertical, 6)
+                                .buttonStyle(.plain).padding(.vertical, 6).modifier(ControlHover())
                         }
                     }
 
@@ -603,13 +605,38 @@ private struct ChannelSidebar: View {
                         Spacer()
                         Button { sheet = .newDirectMessage } label: { CaperIcon(name: "plus") }
                             .buttonStyle(SidebarIconButton()).accessibilityLabel("New direct message")
-                    }.frame(height: 44)
+                            #if os(macOS)
+                            .focused($directActionFocused)
+                            .opacity(directHeadingHovered || directActionFocused ? 1 : 0)
+                            .allowsHitTesting(directHeadingHovered || directActionFocused)
+                            #endif
+                    }.padding(.horizontal, 16).frame(height: 44)
+                        #if os(macOS)
+                        .contentShape(Rectangle())
+                        .onHover { directHeadingHovered = $0 }
+                        #endif
                     ScrollView {
                         VStack(spacing: 3) {
-                            if model.directMessages.isEmpty {
-                                Text("No direct messages yet.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                            if let account = model.account {
+                                let selfConversation = model.directMessages.first { $0.peer.id == account.id }
+                                Button { Task { await model.openSelfDirectMessage() } } label: {
+                                    HStack(spacing: 9) {
+                                        Avatar(name: account.displayName ?? account.username ?? "You", size: 24, avatarID: account.avatarId)
+                                        Text(account.displayName ?? account.username ?? "You").lineLimit(1)
+                                        Text("you").font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                                            .fixedSize(horizontal: true, vertical: false)
+                                        Spacer()
+                                        if selfConversation?.unread == true { Circle().fill(CaperTheme.terracottaBright).frame(width: 8, height: 8).accessibilityLabel("Unread") }
+                                    }.font(CaperTheme.font(13, weight: .medium))
+                                        .foregroundStyle(selfConversation.map { model.selectedDirectMessageID == $0.id } == true ? CaperTheme.text : CaperTheme.muted)
+                                        .padding(.horizontal, 9).frame(height: 44)
+                                        .background(selfConversation.map { model.selectedDirectMessageID == $0.id } == true ? CaperTheme.terracotta.opacity(0.16) : Color.clear)
+                                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                                        .contentShape(Rectangle())
+                                }.buttonStyle(.plain).modifier(ControlHover()).disabled(model.busy)
+                                    .accessibilityIdentifier("dm-self")
                             }
-                            ForEach(model.directMessages) { conversation in
+                            ForEach(model.directMessages.filter { $0.peer.id != model.account?.id }) { conversation in
                                 Button { Task { await model.select(directMessage: conversation) } } label: {
                                     HStack(spacing: 9) {
                                         CaperIcon(name: "speech", size: 17)
@@ -618,23 +645,41 @@ private struct ChannelSidebar: View {
                                         if conversation.unread { Circle().fill(CaperTheme.terracottaBright).frame(width: 8, height: 8).accessibilityLabel("Unread") }
                                     }.font(CaperTheme.font(13, weight: .medium))
                                         .foregroundStyle(model.selectedDirectMessageID == conversation.id ? CaperTheme.text : CaperTheme.muted)
-                                        .padding(.horizontal, 9).frame(height: 38)
+                                        .padding(.horizontal, 9).frame(height: 44)
                                         .background(model.selectedDirectMessageID == conversation.id ? CaperTheme.terracotta.opacity(0.16) : Color.clear)
                                         .clipShape(RoundedRectangle(cornerRadius: 6))
                                 }.buttonStyle(.plain).accessibilityIdentifier("dm-\(conversation.id)")
+                                    .modifier(ControlHover())
                                     .accessibilityValue(model.selectedDirectMessageID == conversation.id ? "Selected" : conversation.unread ? "Unread" : "")
                             }
+                        }.padding(.horizontal, 16)
+                    }.frame(height: min(180, max(47, CGFloat(model.directMessages.filter { $0.peer.id != model.account?.id }.count + 1) * 47)))
+                    Button {
+                        if model.isOwner, model.detail?.space.demo == false { sheet = .manageSpace }
+                        else { sheet = .newDirectMessage }
+                    } label: {
+                        HStack(spacing: 9) {
+                            CaperIcon(name: "plus", size: 17)
+                            Text(model.isOwner && model.detail?.space.demo == false ? "Invite people" : "New message")
+                            Spacer()
                         }
-                    }.frame(height: min(180, max(30, CGFloat(model.directMessages.count) * 41)))
+                        .font(CaperTheme.font(13, weight: .medium)).foregroundStyle(CaperTheme.muted)
+                        .padding(.horizontal, 9).frame(minHeight: 44)
+                        .contentShape(Rectangle())
+                    }.buttonStyle(.plain).modifier(ControlHover()).padding(.horizontal, 16)
+                        .accessibilityIdentifier(model.isOwner && model.detail?.space.demo == false ? "invite-people" : "new-message")
                     if model.pushAvailable {
                         Toggle("Direct message notifications", isOn: Binding(
                             get: { model.pushEnabled },
                             set: { value in Task { await model.changePushEnabled(value) } }
-                        )).font(CaperTheme.font(11)).padding(.vertical, 10)
+                        )).font(CaperTheme.font(11)).padding(.horizontal, 16).padding(.vertical, 10)
                             .accessibilityIdentifier("dm-push-opt-in")
                     }
-                }.padding(.horizontal, 16).padding(.bottom, 8)
+                }.padding(.bottom, 8)
                     .overlay(alignment: .top) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+            }
+            if !narrow, model.voice.phase != .idle, model.voice.phase != .failed {
+                Divider().overlay(CaperTheme.border)
             }
             if !narrow { AccountBar(model: model, sheet: $sheet) }
         }
@@ -999,7 +1044,7 @@ private struct VoiceRoster: View {
                     if !voice.isSelf(participantID: participant.id) {
                         Button { audioParticipantID = audioParticipantID == participant.id ? nil : participant.id } label: {
                             Text("Audio").font(CaperTheme.font(10, weight: .bold))
-                        }.buttonStyle(.plain)
+                        }.buttonStyle(.plain).modifier(ControlHover())
                             .accessibilityLabel("Audio controls for \(participant.name)")
                             .accessibilityIdentifier("participant-audio-\(participant.id)")
                             .popover(isPresented: Binding(
@@ -1104,7 +1149,7 @@ private struct AccountBar: View {
                                 .font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).lineLimit(1)
                         }
                         }.frame(maxWidth: .infinity, alignment: .leading)
-                    }.buttonStyle(.plain)
+                    }.buttonStyle(.plain).modifier(ControlHover())
                     Button { if voice.phase == .connected { CaperEffects.shared.play(.disconnect) }; model.leaveVoice() } label: { CaperIcon(name: "phone-off") }
                         .buttonStyle(SidebarIconButton()).help(voice.phase == .connected ? "Disconnect" : "Cancel")
                         .accessibilityLabel(voice.phase == .connected ? "Leave voice" : "Cancel joining voice")
@@ -1127,7 +1172,7 @@ private struct AccountBar: View {
                         .overlay(alignment: .bottomTrailing) { PresenceDot(status: ownPresence, live: model.presence.online) }
                     Text(identityName).font(CaperTheme.font(13, weight: .medium)).lineLimit(1).truncationMode(.tail)
                 }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-            }.buttonStyle(.plain)
+            }.buttonStyle(.plain).modifier(ControlHover())
                 // Web: the account's name, else the guest chat identity, with its profile label.
                 .accessibilityLabel(model.account == nil ? "Sign in to edit your profile" : "Edit profile for \(identityName)")
                 .accessibilityIdentifier("account-profile")
@@ -1145,7 +1190,7 @@ private struct AccountBar: View {
                     .frame(width: 14, height: 28)
                     #endif
                     .contentShape(Rectangle())
-            }.buttonStyle(.plain).help("Input Options").accessibilityLabel("Input Options")
+            }.buttonStyle(.plain).modifier(ControlHover()).help("Input Options").accessibilityLabel("Input Options")
                 .popover(isPresented: $inputOptions, arrowEdge: .top) { AccountAudioMenu(voice: voice, input: true) }
             Button { CaperEffects.shared.toggle(voice.deafened); Task { await voice.setDeafened(!voice.deafened) } } label: {
                 CaperIcon(name: voice.deafened ? "volume-x" : "headphones", size: 20)
@@ -1161,7 +1206,7 @@ private struct AccountBar: View {
                     .frame(width: 14, height: 28)
                     #endif
                     .contentShape(Rectangle())
-            }.buttonStyle(.plain).help("Output Options").accessibilityLabel("Output Options")
+            }.buttonStyle(.plain).modifier(ControlHover()).help("Output Options").accessibilityLabel("Output Options")
                 .popover(isPresented: $outputOptions, arrowEdge: .top) { AccountAudioMenu(voice: voice, input: false) }
             Menu {
                 // Web's User Settings menu.
@@ -1347,14 +1392,18 @@ private struct ChatView: View {
     @State private var joining = false
     @State private var joinError: String?
     @State private var confirmLeave = false
+    // A lazy message row can leave the viewport when the keyboard appears or
+    // live messages arrive. Keep the sheet's presenter and target outside it.
+    @State private var reactionMessage: ChatMessage?
 
-    /// Scroll the unsent message into view after the current layout pass, so a
-    /// row that just grew (its error and actions appeared) is fully visible.
+    /// Defer the scroll request; content geometry repeats it when the timeline
+    /// finishes measuring, including history above the unsent message.
     private func revealPending(_ proxy: ScrollViewProxy) {
-        guard chat.pendingMessage != nil else { return }
+        guard let pendingID = chat.pendingMessage?.id else { return }
         Task { @MainActor in
             await Task.yield()
-            proxy.scrollTo("chat-timeline-bottom", anchor: .bottom)
+            guard chat.pendingMessage?.id == pendingID else { return }
+            proxy.scrollTo("pending-\(pendingID)", anchor: .bottom)
         }
     }
     init(model: AppModel, narrow: Bool, browse: @escaping () -> Void, membersVisible: Bool, toggleMembers: @escaping () -> Void) {
@@ -1373,7 +1422,7 @@ private struct ChatView: View {
                         }.foregroundStyle(CaperTheme.muted).padding(.horizontal, 9).frame(height: 34)
                             .overlay(RoundedRectangle(cornerRadius: 6).stroke(CaperTheme.border, lineWidth: 1))
                             .frame(minHeight: 44).contentShape(Rectangle())
-                    }.buttonStyle(.plain).accessibilityLabel("Browse")
+                    }.buttonStyle(.plain).modifier(ControlHover()).accessibilityLabel("Browse")
                 }
                 Text(model.selectedDirectMessageID == nil ? "# \(chat.channelName.lowercased())" : chat.channelName).font(CaperTheme.font(14, weight: .medium)).lineLimit(1)
                     .accessibilityLabel(model.selectedDirectMessageID == nil ? "# \(chat.channelName.lowercased())" : "Direct message with \(chat.channelName)")
@@ -1396,39 +1445,46 @@ private struct ChatView: View {
 
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(spacing: 0) {
-                        if !chat.loadFailed { HStack(spacing: 6) {
-                            if chat.olderError != nil {
-                                Text("Couldn’t load older messages.")
-                                Button("Retry") { Task { await chat.loadOlder() } }.disabled(chat.loadingOlder)
-                                    .accessibilityIdentifier("load-older-messages")
-                            } else if chat.hasMore {
-                                Button(chat.loadingOlder ? "Loading…" : "Load older messages") {
-                                    Task { await chat.loadOlder() }
-                                }.disabled(chat.loadingOlder)
-                                    .accessibilityIdentifier("load-older-messages")
+                    VStack(spacing: 0) {
+                        LazyVStack(spacing: 0) {
+                            if !chat.loadFailed { HStack(spacing: 6) {
+                                if chat.olderError != nil {
+                                    Text("Couldn’t load older messages.")
+                                    Button("Retry") { Task { await chat.loadOlder() } }.disabled(chat.loadingOlder)
+                                        .accessibilityIdentifier("load-older-messages")
+                                } else if chat.hasMore {
+                                    Button(chat.loadingOlder ? "Loading…" : "Load older messages") {
+                                        Task { await chat.loadOlder() }
+                                    }.disabled(chat.loadingOlder)
+                                        .accessibilityIdentifier("load-older-messages")
+                                }
+                                else { Text("Beginning of conversation") }
+                            }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.muted).frame(height: 44) }
+                            if chat.loading && chat.messages.isEmpty {
+                                Text("Loading messages…").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).padding(.top, 80)
                             }
-                            else { Text("Beginning of conversation") }
-                        }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.muted).frame(height: 44) }
-                        if chat.loading && chat.messages.isEmpty {
-                            Text("Loading messages…").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).padding(.top, 80)
-                        }
-                        ForEach(Array(chat.messages.enumerated()), id: \.element.id) { index, message in
-                            if index == 0 || !ChatDateDivider.sameLocalDay(chat.messages[index - 1].createdAt, message.createdAt) {
-                                ChatDateDivider(createdAt: message.createdAt)
+                            ForEach(Array(chat.messages.enumerated()), id: \.element.id) { index, message in
+                                VStack(spacing: 0) {
+                                    if index == 0 || !ChatDateDivider.sameLocalDay(chat.messages[index - 1].createdAt, message.createdAt) {
+                                        ChatDateDivider(createdAt: message.createdAt)
+                                    }
+                                    MessageRow(message: message, chat: chat) { reactionMessage = message }
+                                }.id(message.id)
                             }
-                            MessageRow(message: message, chat: chat).id(message.id)
                         }
+                        // Keep the scroll target eager even when lazy history
+                        // has not yet resolved the heights of preceding rows.
                         if let pending = chat.pendingMessage {
-                            if chat.messages.last.map({ ChatDateDivider.sameLocalDay($0.createdAt, pending.createdAt) }) != true {
-                                ChatDateDivider(createdAt: pending.createdAt)
-                            }
-                            PendingMessageRow(pending: pending, author: chat.currentAuthor, error: chat.error,
-                                              rejected: chat.sendRejected, canEdit: chat.draft.isEmpty,
-                                              retry: { Task { await chat.send() } },
-                                              edit: { _ = chat.discardRejected(edit: true) },
-                                              dismiss: { _ = chat.discardRejected() })
-                                .id("pending-\(pending.id)")
+                            VStack(spacing: 0) {
+                                if chat.messages.last.map({ ChatDateDivider.sameLocalDay($0.createdAt, pending.createdAt) }) != true {
+                                    ChatDateDivider(createdAt: pending.createdAt)
+                                }
+                                PendingMessageRow(pending: pending, author: chat.currentAuthor, error: chat.error,
+                                                  rejected: chat.sendRejected, canEdit: chat.draft.isEmpty,
+                                                  retry: { Task { await chat.send() } },
+                                                  edit: { _ = chat.discardRejected(edit: true) },
+                                                  dismiss: { _ = chat.discardRejected() })
+                            }.id("pending-\(pending.id)")
                         }
                         if chat.loadFailed, let error = chat.error {
                             // Web's failed first load: the error with Try again, in place of the conversation.
@@ -1443,8 +1499,10 @@ private struct ChatView: View {
                                 Text(model.selectedDirectMessageID == nil ? "Start the conversation in #\(chat.channelName.lowercased())." : "Only you and \(chat.channelName) can read this conversation.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                             }.padding(.top, 80)
                         }
-                        Color.clear.frame(height: 1).id("chat-timeline-bottom")
                     }
+                    // Preceding history can move the pending row without
+                    // changing that row's own height; observe the whole extent.
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { _ in revealPending(proxy) }
                 }
                 .accessibilityIdentifier("chat-timeline")
                 #if os(macOS)
@@ -1479,7 +1537,7 @@ private struct ChatView: View {
                 HStack(spacing: 8) {
                     Text(sessionError).font(CaperTheme.font(11)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51))
                     Button("Retry session") { Task { await chat.retrySession() } }.buttonStyle(.plain)
-                        .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.text)
+                        .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.text).modifier(ControlHover())
                     Spacer()
                 }.padding(.horizontal, 18)
             }
@@ -1539,6 +1597,18 @@ private struct ChatView: View {
                 Text("\(chat.draft.unicodeScalars.count.formatted()) / 4,000").font(CaperTheme.font(10)).foregroundStyle(counterTone).padding(.bottom, 6)
             }
         }.background(CaperTheme.conversation)
+            .sheet(item: $reactionMessage) { message in
+                ReactionPicker { emoji in
+                    reactionMessage = nil
+                    Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) }
+                }
+            }
+            .onChange(of: chat.isPreview) { _, preview in
+                if preview { reactionMessage = nil }
+            }
+            .onChange(of: chat.currentAuthor?.id) { _, _ in reactionMessage = nil }
+            .onChange(of: model.selectedChannelID) { _, _ in reactionMessage = nil }
+            .onChange(of: model.selectedDirectMessageID) { _, _ in reactionMessage = nil }
             .task(id: chat.liveState) {
                 showConnectionStatus = false
                 guard chat.liveState != .connected else { return }
@@ -1641,7 +1711,7 @@ struct ChatDateDivider: View {
 private struct MessageRow: View {
     let message: ChatMessage
     @Bindable var chat: ChatModel
-    @State private var pickerVisible = false
+    let showReactionPicker: () -> Void
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Avatar(name: message.author.name, size: 34, avatarID: message.author.avatarId)
@@ -1653,7 +1723,7 @@ private struct MessageRow: View {
                 }
                 Text(message.content.text).font(CaperTheme.font(14)).foregroundStyle(Color(red: 222/255, green: 223/255, blue: 224/255)).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                ReactionRow(message: message, chat: chat) { pickerVisible = true }
+                ReactionRow(message: message, chat: chat, showPicker: showReactionPicker)
                 if let error = chat.reactionErrors[message.id] {
                     HStack(spacing: 8) {
                         Text(error)
@@ -1663,15 +1733,6 @@ private struct MessageRow: View {
                 }
             }
         }.padding(.horizontal, 18).padding(.vertical, 10)
-            .onChange(of: chat.isPreview) { _, preview in
-                if preview { pickerVisible = false }
-            }
-            .sheet(isPresented: $pickerVisible) {
-                ReactionPicker { emoji in
-                    pickerVisible = false
-                    Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) }
-                }
-            }
     }
     private func timeLabel(_ value: String) -> String {
         let fractional = ISO8601DateFormatter()
@@ -1700,6 +1761,7 @@ private struct ReactionRow: View {
             }
             .buttonStyle(.plain)
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+            .modifier(ControlHover())
             .disabled(chat.isPreview || chat.reactionSaving.contains(message.id) || chat.currentAuthor == nil)
             .accessibilityLabel("Add reaction")
             .accessibilityIdentifier("add-reaction-\(message.id)")
@@ -1733,6 +1795,7 @@ private struct ReactionChip: View {
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(own ? CaperTheme.terracottaBright : CaperTheme.border))
         }
         .buttonStyle(.plain)
+        .modifier(ControlHover())
         .disabled(chat.isPreview || chat.reactionSaving.contains(messageID) || chat.currentAuthor == nil)
         .accessibilityLabel("\(reaction.emoji) reaction, \(reaction.authorIds.count), \(own ? "selected by you" : "not selected by you")")
         .accessibilityAddTraits(own ? .isSelected : [])
@@ -1794,7 +1857,7 @@ private struct ReactionPicker: View {
                             ForEach(choices) { entry in
                                 Button { select(entry.emoji) } label: {
                                     EmojiArtworkView(emoji: entry.emoji, size: 30).frame(width: 42, height: 42)
-                                }.buttonStyle(.plain).accessibilityLabel(entry.name)
+                                }.buttonStyle(.plain).modifier(ControlHover()).accessibilityLabel(entry.name)
                             }
                         }.padding(12)
                     }.accessibilityIdentifier("reaction-picker-grid")
@@ -1869,7 +1932,7 @@ private struct ProfileView: View {
                 HStack {
                     Spacer()
                     Button("Log out") { Task { await model.logout() } }.buttonStyle(.plain)
-                        .font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
+                        .font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).modifier(ControlHover())
                 }
             }.padding(28).frame(maxWidth: 440).frame(maxWidth: .infinity)
         }.background(CaperTheme.blackout)
@@ -2015,7 +2078,7 @@ private struct LoginPage: View {
                             HStack { Text(model.busy ? "Checking…" : "Continue"); Spacer(); Image(systemName: "arrow.right") }
                         }.buttonStyle(LoginActionButton()).disabled(model.busy || code.count != 6).padding(.top, 12)
                     }
-                    Button("Use a different email") { model.challengeID = nil; model.error = nil }.buttonStyle(.plain).foregroundStyle(CaperTheme.muted).padding(.top, 18)
+                    Button("Use a different email") { model.challengeID = nil; model.error = nil }.buttonStyle(.plain).foregroundStyle(CaperTheme.muted).padding(.top, 18).modifier(ControlHover())
                 }
             }
             .frame(maxWidth: 440)
@@ -2481,7 +2544,7 @@ private struct AudioPreferencesView: View {
                 Button(action: close) {
                     CaperIcon(name: "x").frame(width: 28, height: 28)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.plain).modifier(ControlHover())
                 .accessibilityLabel("Close audio settings")
                 .accessibilityIdentifier("close-audio-preferences")
                 .keyboardShortcut(.cancelAction)
@@ -2679,7 +2742,7 @@ private struct ConnectionDetailsView: View {
                 Text("Connection details").font(CaperTheme.font(20, weight: .bold))
                 Spacer()
                 Button(action: close) { CaperIcon(name: "x").frame(width: 28, height: 28) }
-                    .buttonStyle(.plain).accessibilityLabel("Close audio settings").keyboardShortcut(.cancelAction)
+                    .buttonStyle(.plain).modifier(ControlHover()).accessibilityLabel("Close audio settings").keyboardShortcut(.cancelAction)
             }
             if statisticsPreview { Text("TEST FIXTURE — synthetic statistics layout; no voice connection.")
                 .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.terracottaBright) }

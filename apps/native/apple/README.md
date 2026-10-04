@@ -13,20 +13,26 @@ Native SwiftUI clients backed by AppKit on macOS and UIKit on iPhone. They conta
 
 The native UI and platform projects still require exact-head Apple CI before they are considered build-verified. The Linux orb used for implementation has no Swift or Xcode installation.
 
-## Direct-message notifications (iOS)
+## Deferred direct APNs notifications (iOS)
 
-The notification toggle appears only after authenticated `GET /api/push/config` advertises the build's provider: Debug uses `apnsSandbox`, Release uses `apns`. Opt-in requests notification permission and registers the APNs token with `POST /api/push/devices`; token rotation re-registers it, and logout first sends `DELETE /api/push/devices`. A tap reads only `conversationId` from the privacy-preserving payload and opens that DM after authentication. The expected alert is fixed server-side to title `Caper` and body `You have a new direct message.`; message text must never be included.
+Mobile push is not currently available. When needed, the server will integrate
+directly with APNs. Authenticated `GET /api/push/config` currently returns
+`{"platforms":[]}`, so the notification toggle stays hidden. Device registration
+and delivery are not implemented server-side; signing or provider configuration
+alone cannot enable notifications.
 
-Enable Push Notifications for both development and distribution identifiers in Apple Developer, and configure the server provider with an APNs token key (never add the `.p8` file here). Generate/build with the normal commands, supplying the registered identifier and team:
+The existing iOS permission, token and notification-tap code is dormant
+scaffolding for that future work. `Configuration/iOS-Debug.entitlements` selects
+the APNs sandbox and `iOS-Release.entitlements` selects production. A future direct
+integration will require the key ID, team ID, bundle topic and `.p8` key in the
+server's secret store; never commit provider credentials or put them in clients.
+Unsigned simulator builds cannot receive APNs device tokens.
 
-```sh
-CAPER_IOS_BUNDLE_ID=chat.caper.ios ./apps/native/apple/prepare.sh
-xcodebuild -project apps/native/apple/CaperApple.xcodeproj -scheme CaperIOS \
-  -configuration Release -destination 'generic/platform=iOS' \
-  DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CAPER_IOS_BUNDLE_ID=chat.caper.ios archive
-```
-
-`Configuration/iOS-Debug.entitlements` selects the APNs sandbox and `iOS-Release.entitlements` selects production; automatic signing supplies the matching provisioning profile. Unsigned simulator builds continue to build but cannot receive APNs device tokens. Provider setup requires the key ID, team ID, bundle topic, and `.p8` contents in the server's secret store; no provider key belongs in source control. Validate permission denial/re-enable, token rotation, logout deletion, account switching, sandbox and production delivery, foreground receipt, terminated-app taps, and payload privacy on physical signed devices. Simulator and Linux checks do not validate APNs delivery; macOS notification registration is intentionally not implemented in this change.
+Validate explicit opt-in, permission denial/re-enable, token rotation, logout and
+account switching, sandbox/production delivery, foreground receipt, terminated-app
+taps, authenticated DM access and payload privacy on physical signed devices when
+implementing direct delivery. Client scaffolding is not end-to-end push support;
+macOS notification registration is not implemented.
 
 ## Fonts and licenses
 

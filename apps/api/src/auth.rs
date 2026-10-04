@@ -462,7 +462,19 @@ impl AuthVerifier {
 
 fn normalize_email(value: &str) -> Result<String, ApiError> {
     let email = value.trim().to_ascii_lowercase();
-    if email.len() > 254 || !email_address::EmailAddress::is_valid(&email) {
+    let domain = email.rsplit_once('@').map_or("", |(_, domain)| domain);
+    let reserved = [
+        "example.com",
+        "example.net",
+        "example.org",
+        "example",
+        "test",
+        "invalid",
+        "localhost",
+    ]
+    .iter()
+    .any(|reserved| domain == *reserved || domain.ends_with(&format!(".{reserved}")));
+    if email.len() > 254 || !email_address::EmailAddress::is_valid(&email) || reserved {
         return Err(ApiError::new(
             axum::http::StatusCode::BAD_REQUEST,
             "invalid email",
@@ -578,8 +590,8 @@ mod tests {
     #[test]
     fn email_normalization_is_strict_and_code_hash_is_challenge_bound() {
         assert_eq!(
-            normalize_email(" Person@Example.COM ").unwrap(),
-            "person@example.com"
+            normalize_email(" Person@Caper.CHAT ").unwrap(),
+            "person@caper.chat"
         );
         assert!(normalize_email("not-an-email").is_err());
         let id = Uuid::new_v4();
@@ -591,6 +603,65 @@ mod tests {
         );
         assert_ne!(hash, code_hash(secret, id, "other@example.com", "123456"));
         assert_ne!(hash, code_hash(secret, id, "person@example.com", "654321"));
+    }
+
+    #[test]
+    fn reserved_email_domains_are_rejected_without_blocking_real_test_names() {
+        for domain in [
+            "example.com",
+            "Example.NET",
+            "example.org",
+            "sub.example.com",
+            "example",
+            "team.example",
+            "test",
+            "mail.test",
+            "invalid",
+            "mail.invalid",
+            "localhost",
+            "mail.localhost",
+        ] {
+            assert!(
+                normalize_email(&format!("person@{domain}")).is_err(),
+                "{domain}"
+            );
+        }
+        for email in [
+            "test@gmail.com",
+            "example@caper.chat",
+            "person@test.com",
+            "person@myexample.com",
+            "person@example.com.au",
+        ] {
+            assert!(normalize_email(email).is_ok(), "{email}");
+        }
+    }
+
+    #[tokio::test]
+    async fn reserved_domains_never_access_database_or_send_email() {
+        let sender = Arc::new(RecordingSender {
+            deliveries: std::sync::Mutex::new(vec![]),
+        });
+        let verifier = AuthVerifier {
+            enabled: Some(EnabledAuth {
+                secret: Arc::from(b"a sufficiently long test-only auth secret".as_slice()),
+                sender: sender.clone(),
+                limits: AuthLimits::default(),
+            }),
+            bypass: false,
+        };
+        // A lazy pool cannot connect: reaching the database would fail the test
+        // instead of producing the validation error below.
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://localhost:1/unreachable")
+            .unwrap();
+        let ip = "192.0.2.10".parse().unwrap();
+        let reserved = verifier
+            .request_code(Some(&pool), "person@example.com", ip)
+            .await
+            .unwrap_err();
+        assert_eq!(reserved.status, axum::http::StatusCode::BAD_REQUEST);
+        assert!(sender.deliveries.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -640,11 +711,11 @@ mod tests {
         let ip = "192.0.2.10".parse().unwrap();
 
         let challenge = verifier
-            .request_code(Some(&pool), " Person@Example.COM ", ip)
+            .request_code(Some(&pool), " Person@Caper.CHAT ", ip)
             .await
             .unwrap();
         let deliveries = sender.deliveries.lock().unwrap().clone();
-        assert_eq!(deliveries[0].0, "person@example.com");
+        assert_eq!(deliveries[0].0, "person@caper.chat");
         let code = &deliveries[0].1;
         let wrong_code = if code == "AAAAAA" { "BBBBBB" } else { "AAAAAA" };
         let wrong = verifier
@@ -658,11 +729,11 @@ mod tests {
             .await
             .unwrap();
         assert!(session.user_created);
-        assert_eq!(session.user.email.as_deref(), Some("person@example.com"));
+        assert_eq!(session.user.email.as_deref(), Some("person@caper.chat"));
         assert!(session.user.username.is_none());
 
         let repeat_challenge = verifier
-            .request_code(Some(&pool), "person@example.com", ip)
+            .request_code(Some(&pool), "person@caper.chat", ip)
             .await
             .unwrap();
         let repeat_code = sender.deliveries.lock().unwrap().last().unwrap().1.clone();
@@ -703,7 +774,7 @@ mod tests {
 
         for _ in 0..3 {
             verifier
-                .request_code(Some(&pool), "person@example.com", ip)
+                .request_code(Some(&pool), "person@caper.chat", ip)
                 .await
                 .unwrap();
         }
@@ -714,7 +785,7 @@ mod tests {
         );
 
         let exhausted = verifier
-            .request_code(Some(&pool), "attempts@example.com", ip)
+            .request_code(Some(&pool), "attempts@caper.chat", ip)
             .await
             .unwrap();
         let exhausted_code = sender.deliveries.lock().unwrap().last().unwrap().1.clone();
@@ -737,12 +808,12 @@ mod tests {
         assert_eq!(consumed.attempts_remaining, Some(0));
 
         let old = verifier
-            .request_code(Some(&pool), "replacement@example.com", ip)
+            .request_code(Some(&pool), "replacement@caper.chat", ip)
             .await
             .unwrap();
         let old_code = sender.deliveries.lock().unwrap().last().unwrap().1.clone();
         let replacement = verifier
-            .request_code(Some(&pool), "replacement@example.com", ip)
+            .request_code(Some(&pool), "replacement@caper.chat", ip)
             .await
             .unwrap();
         let replacement_code = sender.deliveries.lock().unwrap().last().unwrap().1.clone();

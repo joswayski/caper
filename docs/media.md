@@ -104,6 +104,28 @@ unguessable short-lived call capability. Clients use Caper track IDs, not
 arbitrary SFU session IDs. Cloudflare terminates transport encryption; this is
 **not E2EE**.
 
+### Channel navigation
+
+Web, Apple and Rust desktop treat clicks on the displayed channel as no-ops;
+clicking it while another channel opens cancels the pending transition. Repeated
+clicks on one pending destination do not duplicate navigation. Hover/focus on
+desktop web, macOS and Rust desktop speculates read-only history, never a sending
+session or voice join. Visited timelines resume from their retained replay cursor;
+native clicks still recheck space access before using speculative history.
+Apple displays prepared history while its sending session opens and retains the
+same space's member page/presence subscription. Rust desktop retains member
+statuses and pagination, but reconnects its combined chat/presence gateway on
+channel changes. Web keeps its unchanged member subscription mounted.
+
+Run `NAVIGATION_TEST_WEB_URL=http://localhost:5174/spaces node scripts/test-desktop-navigation.mjs`
+against Vite for mocked desktop/390px repeat-click, hover/click sharing, cancellation
+and stable presence checks. Web build/tests and Rust desktop tests/Clippy run in
+the Linux orb; Apple regressions require Xcode CI and macOS/iOS render validation.
+iOS shares the Apple repeat-click/presence fixes without hover speculation.
+Android navigation is unchanged and does not preload channels on hover; physical
+device and live-network checks remain separate. No API, infrastructure, secret or
+database rollout is needed; web and affected native releases are independent.
+
 ### Application gateway and account presence
 
 One WebSocket per tab multiplexes authorized chat, voice-roster, and member-status
@@ -3132,6 +3154,13 @@ certificates and does not publish releases or submit to stores.
   `.app` cannot run on a phone, even with a paid developer membership. TestFlight
   also has review/distribution requirements; no automatic approval is promised.
   See [Apple's preparation guide](https://developer.apple.com/documentation/xcode/preparing_your_app_for_distribution).
+  Release CI archives with a local ad-hoc signature (`CODE_SIGN_IDENTITY=-`,
+  `AD_HOC_CODE_SIGNING_ALLOWED=YES`) to retain push entitlements without creating
+  an Apple Development certificate on each fresh runner. This intermediate
+  archive is not a phone-installable release. Only export uses the App Store
+  Connect key and automatic cloud-managed distribution signing/upload; do not
+  disable signing or clear entitlements on the archive. Existing development
+  certificates do not need to be revoked for this CI path.
 - **Windows:** unsigned installers and executables can be distributed, but SmartScreen,
   Smart App Control, and organization policy may warn or block execution. There
   is no guaranteed per-app override. Trusted code signing may use a certificate
@@ -3480,6 +3509,50 @@ build stages were validated directly rather than building container images.
    assignments intact**. Old code ignores it. Do not drop/recreate the column or
    regenerate assignments. No shared migration or deployment was run during development.
 
+### Login email abuse protection
+
+The API rejects reserved `example.com`, `example.net`, `example.org`, `.example`,
+`.test`, `.invalid`, and `.localhost` email domains, including subdomains, before
+creating challenges or calling SES. This is not a mailbox-existence check: fake
+inboxes on real domains can still bounce. Login copy and web/native sign-in stay
+unchanged; no CAPTCHA or client exemption is required.
+
+Caper enforces durable email/IP/global limits before sending: defaults are three
+per email in 15 minutes, five per email per day, ten per source IP per hour, and
+500 globally per hour. These are application limits, not SES quotas. SES sending
+quotas limit capacity; they do not validate recipients or prevent every bounce.
+SES account-level suppression, not a Caper database list, handles suppressed
+recipients. A bounce alarm alone does not mean the SES account is under review.
+
+#### Deployment order for login abuse protection
+
+1. Merge and wait for the merged commit's immutable API image to publish. No new
+   infrastructure, secrets/configuration, or database migration is required.
+   Existing API settings and rate limits remain unchanged. Merging does not deploy.
+2. From an authenticated operator machine, deploy only the API. List runs and
+   select the exact run dispatched for this SHA, then wait for its success before
+   checking the Kubernetes rollout:
+   ```sh
+   MERGED_SHA=REPLACE_WITH_FULL_40_CHARACTER_MERGE_SHA
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   gh run list --repo joswayski/infrastructure --workflow deploy-caper-api.yml --event workflow_dispatch --limit 5
+   gh run watch REPLACE_WITH_DISPATCHED_RUN_ID --repo joswayski/infrastructure --exit-status
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
+   No gateway/web deployment or native release is required. The Android smoke
+   assertion changes affect CI only, not the shipped app.
+3. Verify a reserved-domain request returns 400, then verify ordinary sign-in to a
+   controlled inbox on web and native clients. Monitor SES bounce/reputation
+   metrics separately. No production email or infrastructure change was tested
+   during development.
+4. Rollback by redeploying the previous immutable API image through the same
+   workflow, waiting for that exact run and rollout as above:
+   ```sh
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha=REPLACE_WITH_PREVIOUS_API_IMAGE_SHA
+   ```
+   No configuration or database rollback is needed; the previous image restores
+   the previous email validation.
+
 ### Removed account lifecycle integration
 
 The provider lifecycle endpoint, signing secret, event receipt table, and delivery
@@ -3604,10 +3677,12 @@ desktop/mobile account access, and live authenticated SFU voice remain untested.
 Earlier media results above predate account-backed participant display names and do
 not validate that integration.
 
-## Account-global direct messages and optional mobile push
+## Account-global direct messages and deferred mobile push
 
-One-to-one DMs belong to two accounts, not to a space. Start by exact username;
-the canonical pair has one conversation even when both people start it at once.
+One-to-one DMs belong to two accounts, not to a space. Personal notes use the same
+private stream with your own account as both participants. Start by exact username;
+the canonical pair (including a self pair) has one conversation even when started
+concurrently.
 The list appears below channels in every space, including accounts with no spaces.
 Web pins it above the account controls; narrow web and mobile clients expose it in
 Browse navigation. Leaving or deleting a space does not delete DMs. Space owners
@@ -3616,10 +3691,22 @@ encryption. Group DMs, attachments, message deletion, blocking, and DM voice are
 not implemented. Existing text length, send limits, typing, history pagination,
 idempotent sends, outbox and gateway replay rules apply unchanged.
 
+The sidebar pins your real account name with a `you` label. Opening it lazily
+creates or reopens your notes; displaying the row does not write to the database.
+Other accounts cannot read, send, mark read, or subscribe to your notes. Space
+owners have an **Invite people** row that opens the existing space-management
+invitation form for exact usernames; members and accounts with no space get
+**New message** instead. The heading's plus still starts a DM; desktop web, Rust
+desktop and macOS reveal it on heading hover or keyboard focus. Non-hover web,
+iOS and Android keep it visible. Neither action adds invite links or grants DM
+access to owners. Self notes do not send push notifications; mobile push remains
+deferred for all conversations.
+
 API contracts (account authentication required):
 
 - `GET /api/dms` → `{conversations:[{id,peer:{id,username,displayName},lastSeq,readSeq}]}`.
-- `POST /api/dms` with `{username}` returns that pair's conversation.
+- `POST /api/dms` with `{username}` returns that pair's conversation. Your own
+  username returns personal notes with `peer.id` equal to your account ID.
 - `POST /api/dms/{id}/read` with `{seq}` monotonically advances the caller's read
   cursor, bounded to the durable channel head. Sequences are decimal strings.
 - Message history/send/typing and gateway chat subscriptions use the existing
@@ -3632,90 +3719,105 @@ Read state is account-wide, not device-wide. New conversations are limited to
 20/minute and 1,000 per initiating account. Exact usernames are discoverable by
 starting a conversation; membership in a shared space is not required.
 
-### Push is optional and requires provider acceptance
+### Deployment order for self notes and sidebar dividers
 
-`GET /api/push/config` returns supported platforms (`fcm`, `apns`, `apnsSandbox`).
-Authenticated `POST`/`DELETE /api/push/devices` accept `{platform,token}`.
-Registrations are bound to a valid account session and hashed device token; raw
-tokens are submitted to SNS, not retained in Postgres. Endpoint ARNs are private
-server data. Users explicitly opt in; clients hide the control for unavailable
-platforms. Browser Web Push, macOS push and Rust desktop OS notifications are
-intentionally not included. Android requires its Firebase build configuration;
-iOS requires a signed device with the matching APS entitlement.
+1. Obtain the immutable merged revision as `MERGED_SHA`; wait for CI, API/web
+   images, and native artifacts. No new infrastructure, secret, configuration,
+   signing setup, permission grant, or provider setup is required. Keep existing
+   database, Valkey, and SFU configuration. The initial DM rollout below, including
+   its migrations/runtime grants and DM-capable gateway, must already be deployed;
+   otherwise complete it first. Merge does not deploy components. Back up the
+   database before rollout; never reset it.
+2. Deploy API first, including `202610040001_self_direct_messages.sql`. Normal API
+   startup applies the migration through the existing direct `MIGRATION_DATABASE_URL`;
+   do not edit an applied migration or run manual production SQL. It changes only
+   the pair check from `<` to `<=`; ordering, uniqueness, and existing DMs remain.
 
-SNS uses its standard AWS workload-identity/region provider chain. Configure any
-subset of `PUSH_FCM_APPLICATION_ARN`, `PUSH_APNS_APPLICATION_ARN` and
-`PUSH_APNS_SANDBOX_APPLICATION_ARN` in the API's private runtime configuration.
-Blank disables that provider; all blank starts no push worker and requires no
-additional AWS access. The gateway needs no SNS configuration. Do not supply
-provider keys to the browser or API; SNS holds the FCM service-account/APNs key.
+   ```bash
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # Wait for that exact workflow run to succeed, then:
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
 
-Each committed DM enqueues one peer notification in the message transaction.
-The API worker expands valid devices, claims with `SKIP LOCKED`, retries temporary
-errors up to eight attempts, and abandons notifications after 24 hours or session
-revocation/account reassignment. SNS acceptance is not proof of device receipt.
-Crash recovery can deliver duplicates; this is at-least-once best effort, not
-exactly-once. Notifications contain only opaque conversation/message IDs and
-generic copy: **Caper / You have a new direct message.** No sender or message text
-is sent to the provider. Android uses data-only FCM v1 messages so local opt-out
-can suppress display; APNs uses a standard alert, not PushKit/incoming-call push.
-Already submitted provider notifications cannot be recalled after logout.
-Opening a notification still requires current account authorization.
-Logout clears local account/conversation state and push opt-in without waiting
-for provider cleanup. iOS unregisters locally and relies on session revocation;
-Android starts session revocation independently of its best-effort, ten-second
-push unregister attempt. Offline remote revocation can still fail.
+   Complete API rollout before exposing the new clients. Gateway needs no rollout:
+   its existing membership and replay queries already accept a self pair. Keep
+   mobile push deferred. Do not reset Valkey/SFU state or restart healthy voice tracks.
+3. After API readiness, web and native can release independently:
 
-Provider provisioning is an operator action, not part of merging this PR. On a
-trusted operator machine, disable shell tracing, use `umask 077`, and prepare
-private SNS attribute JSON files outside this checkout:
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # Wait for the web run to succeed, then:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   # After native CI and macOS/Windows/Android/iOS acceptance:
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
+   ```
 
-- FCM: `{"PlatformCredential":"<contents of Firebase service-account JSON as a string>"}`.
-- APNs: `PlatformPrincipal` = signing key ID, `PlatformCredential` = `.p8`
-  contents, `ApplePlatformTeamID` = team ID, `ApplePlatformBundleID` = registered
-  iOS bundle ID. Use the same attributes for production and sandbox applications.
+   The native workflow publishes every platform using existing signing credentials.
+   Reload web tabs and update native apps. The separate cursor/resize-highlight PR
+   can roll out independently; these changes do not depend on it.
+4. Verify edge-to-edge DM/voice dividers, the `you` row, owner invitations versus
+   member **New message**, notes send/reload/reopen across spaces and with no
+   spaces, existing peer DMs, cross-account denial, and no push enqueue. Browser
+   fixtures and Linux rendering do not prove Apple/Android or Windows execution;
+   physical native acceptance remains required before release.
+5. Roll back web to a known-good client revision with the same web deployment
+   command. Roll back native through a reverted main revision and a new release
+   with a higher build number. Keep the migrated schema and notes data; do not
+   restore `<` or delete notes. API rollback requires a reviewed build retaining
+   the applied migration and keeping push deferred; older images fail SQLx ledger
+   validation or reject self creation. Prefer a forward fix after notes exist.
+   No production migration, deploy, or release is performed by this PR.
 
-```sh
-aws sns create-platform-application --region us-east-1 --name CaperAndroid \
-  --platform GCM --attributes file:///secure/caper/fcm-attributes.json \
-  --query PlatformApplicationArn --output text
-aws sns create-platform-application --region us-east-1 --name CaperIOS \
-  --platform APNS --attributes file:///secure/caper/apns-attributes.json \
-  --query PlatformApplicationArn --output text
-aws sns create-platform-application --region us-east-1 --name CaperIOSSandbox \
-  --platform APNS_SANDBOX --attributes file:///secure/caper/apns-attributes.json \
-  --query PlatformApplicationArn --output text
-```
+### Push is deferred; future delivery uses direct APNs/FCM integrations
 
-Use approved credentials/profile for the target account. Only provision desired
-platforms, and retain the returned ARNs securely. The API role needs only
-`sns:CreatePlatformEndpoint`, `sns:SetEndpointAttributes`, and `sns:Publish`, not
-platform-application administration or endpoint deletion. SNS registration actions
-do not support resource-level IAM permissions; use `Resource: "*"` with the
-approved region/account constraints, and review direct-publish permissions with
-the infrastructure owner. There is no user-controlled ARN or unrestricted SNS
-proxy. Follow AWS's [FCM v1 setup](https://docs.aws.amazon.com/sns/latest/dg/sns-fcm-authentication-methods.html),
-[APNs attributes](https://docs.aws.amazon.com/sns/latest/api/API_SetPlatformApplicationAttributes.html),
-and [IAM action support](https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonsns.html).
+There is currently no server-side push registration, enqueue or delivery.
+Authenticated `GET /api/push/config` remains as a compatibility endpoint and
+returns `{"platforms":[]}`. Existing Android/iOS clients use it to hide notification
+controls. `POST`/`DELETE /api/push/devices` are not exposed. DM persistence, unread
+cursors and live gateway events do not depend on push and continue unchanged.
+
+When mobile push is needed, implement direct APNs delivery for iOS and FCM HTTP v1
+delivery for Android. Provider credentials belong only in the server's secret
+store, never in client builds or source control. The native permission, token and
+tap handlers are dormant scaffolding, not working end-to-end notifications;
+Firebase build configuration and Apple push entitlements alone cannot enable them.
+Browser Web Push, macOS push and Rust desktop OS notifications are not implemented.
+
+Future work must include explicit opt-in, session-bound device ownership, token
+rotation/invalidation, logout/account switching, durable enqueue/retry/deduplication,
+and authenticated notification-tap navigation. Keep payloads limited to opaque
+conversation/message IDs and generic copy; do not send sender names or message
+text to providers. Provider acceptance does not prove device receipt, and already
+submitted notifications cannot be recalled. Validate direct delivery on physical
+Android and signed iOS devices before advertising supported platforms.
+
+`202610030002_push.sql` and its tables remain only for published migration-history
+compatibility. The API no longer uses them to register devices or queue/deliver
+notifications, including previously queued rows. Do not edit applied migrations,
+drop existing data or reuse the legacy `endpoint_arn` column as a direct-provider
+token contract. Future direct delivery needs its own reviewed schema migration.
 
 ### Deployment order
 
+The steps below cover an initial DM rollout. If DMs are already deployed, this
+push-deferral update needs only the API image rollout in step 3 and verification
+in step 6; existing gateway and client releases remain compatible.
+
 1. **Prerequisites/infrastructure:** existing account auth, Postgres, Valkey and
    compatible shared-mode API/gateway must be healthy. No DNS/SFU/TURN changes are
-   needed for DMs. Keep the existing API replica policy. Push may stay disabled:
-   no SNS/IAM/Firebase/APNs changes are then necessary. If enabling it, first
-   provision the selected applications and reviewed API IAM permissions above.
-2. **Secrets/configuration:** if enabling push, securely merge returned ARN keys
-   into `production/apps/caper` (never replace its other keys) and ensure they are
-   projected into the API environment. From a trusted machine with an already
-   reviewed complete replacement JSON file:
-   `aws secretsmanager put-secret-value --region us-east-1 --secret-id production/apps/caper --secret-string file:///secure/caper/reviewed-runtime.json`.
-   Do not print its contents. Native Firebase/APNs setup follows each native
-   README. No additional configuration is needed with push disabled.
+   needed for DMs or push deferral. Keep the existing API replica policy. No mobile
+   push provider provisioning or new IAM permissions are needed.
+2. **Secrets/configuration:** no new settings or secret changes are required.
+   Legacy mobile-push settings are ignored by this API. Removing unused settings,
+   permissions or provider resources from shared infrastructure is a separate
+   reviewed operator action; do not replace or remove the other application keys.
 3. **Database/API:** after image builds, deploy the exact merged SHA. API startup
-   applies `202610030001_direct_messages.sql` and `202610030002_push.sql` through
-   the migration role and grants runtime table/sequence access. No separate SQL
-   job or manual migration is required. Back up the database first; never reset it.
+   applies any pending published migrations, including
+   `202610030001_direct_messages.sql` and the legacy `202610030002_push.sql`, through
+   the migration role and grants runtime table/sequence access. Push deferral adds
+   no migration; already-applied versions and checksums remain unchanged. No
+   separate SQL job or manual migration is required. Back up the database first;
+   never reset it.
    These versions follow the already-published channel-joining
    migration; never rename or edit migrations already recorded in a shared ledger.
    Inspect the ledger before rollout. If a non-disposable database ran the earlier
@@ -3747,12 +3849,13 @@ and [IAM action support](https://docs.aws.amazon.com/service-authorization/lates
    ```
 6. **Verify/rollback:** with two owned accounts, create in both directions, send,
    reconnect, page history, switch spaces and check unread/read state; a third
-   account must get 404 for history/send/socket. Verify opted-in physical Android
-   and signed iOS devices, sandbox/production APNs, background/terminated taps,
-   denied permission, token rotation, logout and account switching before enabling
-   those providers broadly. To stop push, blank its ARN keys through the reviewed
-   configuration path and restart the API. Rolling back web/native removes the
-   entry points. Keep the API on an image containing the applied migrations:
+   account must get 404 for history/send/socket. Confirm authenticated push config
+   returns an empty platform list, device registration returns 404, and new DM
+   sends do not add rows to the legacy push tables. Native notification controls
+   must remain hidden. Rolling back web/native removes the DM entry points.
+   An older push-capable API may resume delivery of legacy queued rows if its old
+   provider configuration remains; do not roll back to it without a reviewed plan
+   to keep push disabled. Keep the API on an image containing the applied migrations:
    SQLx validates the database's migration history, so a pre-migration API image
    is not a safe rollback. An API rollback requires a reviewed build retaining
    those migrations and disabling the feature, not deleting migration records.
@@ -3762,7 +3865,7 @@ and [IAM action support](https://docs.aws.amazon.com/service-authorization/lates
 
 ### Validation boundary
 
-Run the disposable DB/gateway and fake-provider tests in addition to the ordinary
+Run the disposable DB/gateway tests in addition to the ordinary
 Rust suite (never point these at shared databases):
 
 ```sh
@@ -3774,8 +3877,22 @@ TEST_VALKEY_URL='redis://127.0.0.1:6379' \
 ```
 
 The loopback UI fixture provides `fixture_alex` / `TEST FIXTURE Alex`, not a real
-account or push provider. Browser checks do not prove native rendering or device
-push. Android/Apple compilation, physical device layouts, APNs/FCM credential
-validation and sustained/offline notification delivery remain release acceptance
-requirements. Notifications currently have no scheduled pruning; operators must
-review storage growth and provider endpoint lifecycle before a large rollout.
+account or push provider. For self notes, the disposable Postgres/Valkey tests
+cover concurrent canonical creation, send/history, cross-account denial, read
+cursors, authorized gateway replay, and no push enqueue. The browser DM suite
+covers lazy creation, failure/retry, send/reload/reopen, peer-history isolation,
+late-response navigation, invitation action, and desktop/narrow layout. Linux
+Rust desktop tests cover self selection, owner/member/no-space actions, DM-plus
+hover/focus and voice-dock padding/icon geometry; its explicit voice-connected
+fixture was rendered and inspected for divider/row layout. The Linux client was
+also signed into the disposable HTTP fixture:
+opening self notes, sending a reminder, switching to a channel and reopening
+notes retained one conversation and the message; **Invite people** opened the
+existing management form. These are fixture interactions, not live account/SFU
+validation. Swift model coverage was added but not run in the Linux orb. No local
+Apple/Android build, Windows runtime, or Docker-image validation is claimed.
+Browser checks do not prove native rendering or device
+push. Android/Apple compilation and physical device layouts remain native release
+acceptance requirements. APNs/FCM credential validation, physical-device delivery,
+offline behavior and registration lifecycle/pruning must be covered when direct
+mobile push is implemented, not treated as current supported functionality.
