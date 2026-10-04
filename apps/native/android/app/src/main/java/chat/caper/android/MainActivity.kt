@@ -1,6 +1,8 @@
 package chat.caper.android
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
@@ -950,6 +952,12 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 }
 
 @Composable private fun MessageTimeline(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, pendingStatus: @Composable () -> Unit = {}) {
+    var actionTarget by remember { mutableStateOf<ChatMessage?>(null) }
+    var pickerTarget by remember { mutableStateOf<ChatMessage?>(null) }
+    LaunchedEffect(state.account?.id, state.selectedSpace?.space?.id, state.selectedChannel?.id, state.selectedDirectId) {
+        actionTarget = null
+        pickerTarget = null
+    }
     // Web's chat phases: loading, failed first load, then the conversation.
     if (state.messagesLoading) return Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Text("Loading messages…", color = TextMuted, fontSize = 13.sp)
@@ -982,7 +990,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             if (index == 0 || !sameLocalDay(state.messages[index - 1].createdAt, message.createdAt)) {
                 DateDivider(message.createdAt)
             }
-            ReactionMessageRow(message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError)
+            ReactionMessageRow(message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError) {
+                actionTarget = message
+            }
         }
         state.pendingMessage?.let { pending -> item("pending:${pending.clientMessageId}") {
             Column {
@@ -999,6 +1009,22 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 Text("Start the conversation in #${state.selectedChannel?.name.orEmpty()}.", color = TextMuted, fontSize = 12.sp)
             }
         } }
+    }
+    actionTarget?.let { target ->
+        val presented = state.messages.firstOrNull { it.id == target.id } ?: target
+        MessageActionsSheet(
+            presented, state,
+            onDismiss = { actionTarget = null },
+            setReaction = viewModel::setReaction,
+            openPicker = { actionTarget = null; pickerTarget = presented },
+        )
+    }
+    pickerTarget?.let { target ->
+        val canReact = state.selectedChannel?.joined == true && (state.chatAuthorId ?: state.account?.id) != null
+        if (canReact) EmojiPicker(onDismiss = { pickerTarget = null }) { emoji ->
+            pickerTarget = null
+            viewModel.setReaction(target.id, emoji, true)
+        } else LaunchedEffect(Unit) { pickerTarget = null }
     }
 }
 
@@ -1022,15 +1048,18 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     setReaction: (String, String, Boolean) -> Unit,
     retryReaction: (String, String) -> Unit,
     dismissReactionError: (String, String) -> Unit,
+    openActions: (ChatMessage) -> Unit,
 ) {
-    var picker by remember { mutableStateOf(false) }
     val own = state.chatAuthorId ?: state.account?.id
-    val canReact = state.selectedChannel?.joined == true
-    LaunchedEffect(canReact) { if (!canReact) picker = false }
+    val canReact = state.selectedChannel?.joined == true && own != null
     val saves = state.reactionSaves.filterKeys { it.startsWith("${message.id}:") }.values
     val saving = saves.firstOrNull { it.saving }
     Column {
-        MessageRow(message)
+        Box(Modifier.combinedClickable(
+            onClick = {},
+            onLongClick = { openActions(message) },
+            onLongClickLabel = "Message actions for ${message.author.name}",
+        )) { MessageRow(message) }
         FlowRow(Modifier.padding(start = 62.dp, end = 18.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             message.reactions.forEach { reaction ->
                 val selected = own != null && own in reaction.authorIds
@@ -1045,9 +1074,6 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     },
                 ) { EmojiImage(reaction.emoji, null, Modifier.size(19.dp)); Spacer(Modifier.width(5.dp)); Text(reaction.authorIds.size.toString()) }
             }
-            OutlinedButton({ picker = true }, enabled = canReact && saving == null, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border), contentPadding = PaddingValues(6.dp), modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).semantics { contentDescription = "Add reaction" }) {
-                EmojiImage("🙂", null, Modifier.size(19.dp))
-            }
         }
         if (saving != null) Text("Saving ${saving.emoji} reaction…", Modifier.padding(start = 62.dp, top = 4.dp), color = TextMuted, fontSize = 11.sp)
         saves.filter { it.error != null }.forEach { save ->
@@ -1060,13 +1086,60 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             }
         }
     }
-    if (picker && canReact) EmojiPicker(onDismiss = { picker = false }) { emoji ->
-        picker = false
-        setReaction(message.id, emoji, true)
+}
+
+private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable internal fun MessageActionsSheet(
+    message: ChatMessage,
+    state: AppUiState,
+    onDismiss: () -> Unit,
+    setReaction: (String, String, Boolean) -> Unit,
+    openPicker: () -> Unit,
+) {
+    val context = LocalContext.current
+    val clipboard = context.getSystemService(ClipboardManager::class.java)
+    val own = state.chatAuthorId ?: state.account?.id
+    val canReact = state.selectedChannel?.joined == true && own != null
+    val saving = state.reactionSaves.any { (key, save) -> key.startsWith("${message.id}:") && save.saving }
+    fun copy(label: String, value: String) {
+        clipboard.setPrimaryClip(ClipData.newPlainText(label, value))
+        onDismiss()
+    }
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = SurfaceRaised, contentColor = Text) {
+        Column(Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Message actions", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            if (canReact) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    quickReactions.forEach { emoji ->
+                        val selected = message.reactions.firstOrNull { it.emoji == emoji }?.authorIds?.contains(own) == true
+                        IconButton(
+                            onClick = { setReaction(message.id, emoji, !selected); onDismiss() },
+                            enabled = !saving,
+                            modifier = Modifier.weight(1f).heightIn(min = 48.dp).background(if (selected) TerracottaWash else Color.Transparent, MaterialTheme.shapes.small).semantics {
+                                this.selected = selected
+                                contentDescription = "$emoji quick reaction"
+                            },
+                        ) { EmojiImage(emoji, null, Modifier.size(28.dp)) }
+                    }
+                    IconButton(openPicker, enabled = !saving, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
+                        Icon(painterResource(R.drawable.lucide_plus), "Add reaction", Modifier.size(24.dp), tint = TextMuted)
+                    }
+                }
+            }
+            Surface(shape = MaterialTheme.shapes.small, color = Surface) {
+                Column {
+                    TextButton({ copy("Message text", message.content.text) }, Modifier.fillMaxWidth().heightIn(min = 48.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) { Text("Copy text", Modifier.fillMaxWidth()) }
+                    HorizontalDivider(color = Border)
+                    TextButton({ copy("Message ID", message.id) }, Modifier.fillMaxWidth().heightIn(min = 48.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) { Text("Copy message ID", Modifier.fillMaxWidth()) }
+                }
+            }
+        }
     }
 }
 
-@Composable private fun EmojiPicker(onDismiss: () -> Unit, select: (String) -> Unit) {
+@Composable internal fun EmojiPicker(onDismiss: () -> Unit, select: (String) -> Unit) {
     val context = LocalContext.current
     val catalog = remember { EmojiArtwork.catalog(context).filter { it.selectable } }
     var query by rememberSaveable { mutableStateOf("") }

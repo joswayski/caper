@@ -1,5 +1,8 @@
 import Foundation
 import XCTest
+#if os(iOS)
+import UIKit
+#endif
 
 @MainActor
 final class CaperParityUITests: XCTestCase {
@@ -172,6 +175,22 @@ final class CaperParityUITests: XCTestCase {
         #endif
     }
 
+    private func openReactionPicker(for messageID: String, in app: XCUIApplication) {
+        #if os(iOS)
+        let row = app.descendants(matching: .any)["message-row-\(messageID)"]
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        row.press(forDuration: 0.8)
+        let add = app.buttons["message-action-add-reaction"]
+        XCTAssertTrue(add.waitForExistence(timeout: 5))
+        #else
+        let add = app.buttons["add-reaction-\(messageID)"]
+        XCTAssertTrue(add.waitForExistence(timeout: 10))
+        #endif
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: add)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
+        add.tap()
+    }
+
     func testReactionChipsPickerAndEmptySearchState() {
         let app = launch(fixture: "reaction-chips")
         let own = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "selected by you")).firstMatch
@@ -179,10 +198,30 @@ final class CaperParityUITests: XCTestCase {
         let other = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "not selected by you")).firstMatch
         XCTAssertTrue(other.exists)
         XCTAssertGreaterThanOrEqual(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "reaction,")).count, 20)
+        #if os(macOS)
         XCTAssertGreaterThanOrEqual(app.buttons.matching(NSPredicate(format: "label == %@", "Add reaction")).count, 2, "fixture includes long and empty reaction rows")
+        #else
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label == %@", "Add reaction")).count, 0, "iPhone must not show an add-reaction button under each message")
+        #endif
         capture("reaction-chips-wrapped-fixture", app: app)
-        let add = app.buttons.matching(NSPredicate(format: "label == %@", "Add reaction")).firstMatch
-        XCTAssertTrue(add.exists); add.tap()
+        let targetID = "message-chan00000001-1"
+        #if os(iOS)
+        let row = app.descendants(matching: .any)["message-row-\(targetID)"]
+        XCTAssertTrue(row.waitForExistence(timeout: 5)); row.press(forDuration: 0.8)
+        XCTAssertTrue(app.descendants(matching: .any)["message-actions-sheet"].waitForExistence(timeout: 5))
+        capture("message-actions-drawer-fixture", app: app)
+        app.buttons["Copy text"].tap()
+        XCTAssertEqual(UIPasteboard.general.string, "TEST FIXTURE — local sample data, not a live conversation.")
+        var dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.descendants(matching: .any)["message-actions-sheet"])
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed)
+        row.press(forDuration: 0.8)
+        XCTAssertTrue(app.descendants(matching: .any)["message-actions-sheet"].waitForExistence(timeout: 5))
+        app.buttons["Copy message ID"].tap()
+        XCTAssertEqual(UIPasteboard.general.string, targetID)
+        dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.descendants(matching: .any)["message-actions-sheet"])
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed)
+        #endif
+        openReactionPicker(for: targetID, in: app)
         #if os(iOS)
         let search = app.textFields["reaction-picker-search"]
         #else
@@ -212,11 +251,9 @@ final class CaperParityUITests: XCTestCase {
         do {
             let app = launch()
             let targetID = "message-chan00000001-1"
-            let add = app.buttons["add-reaction-\(targetID)"]
-            XCTAssertTrue(add.waitForExistence(timeout: 30))
-            let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: add)
-            XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
-            add.tap()
+            let row = app.descendants(matching: .any)["message-row-\(targetID)"]
+            XCTAssertTrue(row.waitForExistence(timeout: 30))
+            openReactionPicker(for: targetID, in: app)
             #if os(iOS)
             let search = app.textFields["reaction-picker-search"]
             #else
@@ -242,7 +279,7 @@ final class CaperParityUITests: XCTestCase {
             let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: search)
             XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
             assertStaticText("TEST FIXTURE — \(lastText)", in: app)
-            XCTAssertFalse(add.isHittable, "The original presenter must have left the visible timeline")
+            XCTAssertFalse(row.isHittable, "The original presenter must have left the visible timeline")
 
             // Check persistence on the original target, not only picker closure
             // or an optimistic chip on whichever message is now visible.
@@ -267,7 +304,7 @@ final class CaperParityUITests: XCTestCase {
             let latest = try XCTUnwrap(messages.last)
             XCTAssertTrue((latest["reactions"] as? [[String: Any]] ?? []).isEmpty)
             let latestID = try XCTUnwrap(latest["id"] as? String)
-            app.buttons["add-reaction-\(latestID)"].tap()
+            openReactionPicker(for: latestID, in: app)
             XCTAssertTrue(search.waitForExistence(timeout: 5))
             XCTAssertEqual(search.value as? String, "", "A newly opened picker starts with a fresh query")
             app.buttons["Cancel"].tap()

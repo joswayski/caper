@@ -756,18 +756,45 @@ pre-spaces image after migration; complete the forward rollout instead.
 
 ## Message reactions
 
-Desktop web exposes **Add reaction** on message hover or keyboard focus. On
-narrow/touch browser layouts it stays visible, and the searchable picker opens
-as a bottom sheet. Reactions appear below the message with counts; your own
+Desktop web exposes **Add reaction** on message hover or keyboard focus. Mobile
+web, Android and iPhone hide the per-message add button. Press and hold a
+committed message to open a bottom drawer with five fixed quick reactions
+(👍 ❤️ 😂 🎉 👀), the searchable emoji picker, **Copy text**, and
+**Copy message ID**. Copy uses the exact text or globally unique public message
+`id`, never the client retry UUID or channel-local sequence. Read-only previews
+allow copying but not reaction mutations. Message links and unsupported actions
+(reply, forward, threads, pins, bookmarks, reminders, delete) are not exposed.
+Web offers a keyboard/screen-reader message-actions button; iPhone provides a
+VoiceOver action and Android a labelled long-click action. Desktop Apple/Rust
+clients intentionally retain their existing reaction controls rather than
+adopting the mobile drawer.
+
+Reactions appear below the message with counts; your own
 chips have a terracotta tint and `aria-pressed=true`. Clicking a chip adds or
-removes your contribution. Choosing an emoji in the picker only adds it. Pending
-messages cannot be reacted to. Failed saves show an explicit retry of the same
+removes your contribution, as does a quick reaction. Choosing an emoji in the
+picker only adds it. Pending messages cannot be reacted to or have their
+unconfirmed IDs copied. Failed saves show an explicit retry of the same
 desired state rather than an ambiguous toggle.
 
 Android, iOS/macOS, and Rust desktop also provide searchable standard-emoji
 pickers, counted chips, own-contribution highlighting, add/remove, and save-error
-retry. Native/mobile actions remain visible without hover. Clients preserve
-per-message reaction revisions independently of the channel replay cursor.
+retry. Clients preserve per-message reaction revisions independently of the
+channel replay cursor.
+
+`node scripts/test-message-actions.mjs` uses the disposable
+`native-parity-fixture.mjs` server and Vite, with Chromium touch input and verified
+coarse-pointer emulation. It covers hold versus tap/scroll/cancel, clipboard
+content/ID, quick toggles, search, live-scroll target retention, focus/dismissal,
+clipboard errors, read-only previews and the desktop picker. This is browser
+fixture evidence, not native or physical-device acceptance. The native reaction
+UI suites cover the new drawer but require Android instrumentation and Xcode;
+run them and inspect iPhone/Android drawers before releasing those clients.
+No API, gateway, migration, infrastructure or secret change is needed for this
+client-only menu update. Web, Android and iPhone can release independently;
+desktop clients do not need an update for the drawer. Roll back web by restoring
+the previous image. For mobile, release a revert build with a higher build/version
+number instead of attempting an installed-app downgrade. No database rollback
+is needed.
 
 The picker offers standard Emoji 15.0 artwork, self-hosted from `@twemoji/svg`
 and attributed at `/emoji/NOTICE.txt` (Twemoji graphics, CC BY 4.0). The web
