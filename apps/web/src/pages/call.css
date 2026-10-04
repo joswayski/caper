@@ -48,9 +48,7 @@
 .call-room { width: min(1400px, calc(100% - 56px)); min-height: calc(100vh - 104px); margin: 0 auto 24px; display: grid; grid-template: minmax(0, 1fr) / auto minmax(0, 1fr); overflow: hidden; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
 .people-panel { position: relative; min-height: 0; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--border); background: var(--surface-sidebar); }
 .channel-sidebar-resize { position: absolute; z-index: 7; top: 0; bottom: 0; right: -4px; width: 8px; touch-action: none; cursor: col-resize; }
-.channel-sidebar-resize::after { position: absolute; top: 0; bottom: 0; left: 3px; width: 2px; content: ""; }
-.channel-sidebar-resize:is(:hover, :focus-visible, :active)::after { background: var(--terracotta); }
-.channel-sidebar-resize:focus-visible { outline: none; }
+.channel-sidebar-resize:focus-visible { outline: 1px solid var(--text-muted); outline-offset: -2px; }
 .sidebar-channels { flex: 1; min-height: 0; padding: 20px 16px; overflow-y: auto; }
 .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .panel-heading h1 { margin: 0; letter-spacing: -.04em; font-size: 1.3rem; }
