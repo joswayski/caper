@@ -510,6 +510,10 @@ private struct ChannelSidebar: View {
     @State private var channelsExpanded = true
     @State private var channelSearch = ""
     @State private var browsing = false
+    #if os(macOS)
+    @State private var directHeadingHovered = false
+    @FocusState private var directActionFocused: Bool
+    #endif
     var body: some View {
         VStack(spacing: 0) {
                     HStack(spacing: 6) {
@@ -603,7 +607,16 @@ private struct ChannelSidebar: View {
                         Spacer()
                         Button { sheet = .newDirectMessage } label: { CaperIcon(name: "plus") }
                             .buttonStyle(SidebarIconButton()).accessibilityLabel("New direct message")
+                            #if os(macOS)
+                            .focused($directActionFocused)
+                            .opacity(directHeadingHovered || directActionFocused ? 1 : 0)
+                            .allowsHitTesting(directHeadingHovered || directActionFocused)
+                            #endif
                     }.padding(.horizontal, 16).frame(height: 44)
+                        #if os(macOS)
+                        .contentShape(Rectangle())
+                        .onHover { directHeadingHovered = $0 }
+                        #endif
                     ScrollView {
                         VStack(spacing: 3) {
                             if let account = model.account {

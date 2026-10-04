@@ -41,6 +41,31 @@ try {
   assert.equal(evaluate('document.querySelector(".direct-self small").textContent'), 'you');
   assert.equal(evaluate('document.querySelector(".direct-section").textContent.includes("No direct messages yet")'), false);
   assert.equal((await conversations()).conversations.length, 0, 'Showing the self row must not create a conversation');
+  const plusOpacity = () => evaluate('getComputedStyle(document.querySelector(".direct-section .channel-section-actions")).opacity');
+  if (evaluate('matchMedia("(hover: hover)").matches')) {
+    browser('mouse', 'move', '700', '400');
+    wait('getComputedStyle(document.querySelector(".direct-section .channel-section-actions")).opacity === "0"');
+    browser('hover', '.direct-section-title');
+    wait('getComputedStyle(document.querySelector(".direct-section .channel-section-actions")).opacity === "1"');
+    browser('click', '.direct-section [aria-label="New direct message"]');
+    wait('!!document.querySelector(".space-dialog[open]")');
+    browser('click', '[aria-label="Close New direct message"]');
+    browser('mouse', 'move', '700', '400');
+    evaluate(`(() => { const buttons = [...document.querySelectorAll('button:not(:disabled), a[href], summary, textarea:not(:disabled)')].filter(node => node.getClientRects().length);
+      const plus = document.querySelector('.direct-section [aria-label="New direct message"]');
+      buttons[buttons.indexOf(plus) - 1].focus(); })()`);
+    browser('press', 'Tab');
+    assert.equal(evaluate('document.activeElement?.getAttribute("aria-label")'), 'New direct message', 'Hidden plus stays in the keyboard focus order');
+    wait('getComputedStyle(document.querySelector(".direct-section .channel-section-actions")).opacity === "1"');
+    browser('press', 'Enter');
+    wait('!!document.querySelector(".space-dialog[open]")');
+    browser('click', '[aria-label="Close New direct message"]');
+    evaluate('document.activeElement.blur()');
+    wait('getComputedStyle(document.querySelector(".direct-section .channel-section-actions")).opacity === "0"');
+    assert.equal(plusOpacity(), '0');
+  } else {
+    assert.equal(plusOpacity(), '1', 'Non-hover clients keep the DM action visible');
+  }
   assert.ok(evaluate(`(() => { const panel = document.querySelector('.people-panel').getBoundingClientRect();
     return ['.channel-navigation > header', '.direct-section'].every(selector => {
       const node = document.querySelector(selector), r = node.getBoundingClientRect();

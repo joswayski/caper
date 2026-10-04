@@ -3646,9 +3646,11 @@ creates or reopens your notes; displaying the row does not write to the database
 Other accounts cannot read, send, mark read, or subscribe to your notes. Space
 owners have an **Invite people** row that opens the existing space-management
 invitation form for exact usernames; members and accounts with no space get
-**New message** instead. The heading's plus still starts a DM. Neither action
-adds invite links or grants DM access to owners. Self notes do not send push
-notifications; mobile push remains deferred for all conversations.
+**New message** instead. The heading's plus still starts a DM; desktop web, Rust
+desktop and macOS reveal it on heading hover or keyboard focus. Non-hover web,
+iOS and Android keep it visible. Neither action adds invite links or grants DM
+access to owners. Self notes do not send push notifications; mobile push remains
+deferred for all conversations.
 
 API contracts (account authentication required):
 
@@ -3830,9 +3832,10 @@ cover concurrent canonical creation, send/history, cross-account denial, read
 cursors, authorized gateway replay, and no push enqueue. The browser DM suite
 covers lazy creation, failure/retry, send/reload/reopen, peer-history isolation,
 late-response navigation, invitation action, and desktop/narrow layout. Linux
-Rust desktop tests cover self selection and owner/member/no-space actions; its
-explicit voice-connected fixture was rendered and inspected for divider/row
-layout. The Linux client was also signed into the disposable HTTP fixture:
+Rust desktop tests cover self selection, owner/member/no-space actions, DM-plus
+hover/focus and voice-dock padding/icon geometry; its explicit voice-connected
+fixture was rendered and inspected for divider/row layout. The Linux client was
+also signed into the disposable HTTP fixture:
 opening self notes, sending a reminder, switching to a channel and reopening
 notes retained one conversation and the message; **Invite people** opened the
 existing management form. These are fixture interactions, not live account/SFU

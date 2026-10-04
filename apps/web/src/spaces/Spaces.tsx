@@ -1303,7 +1303,9 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
   const directNavigation = <section className="direct-section" aria-label="Direct messages">
     <div className="channel-section-heading">
       <span className="direct-section-title"><MessageCircle aria-hidden="true" />Direct messages</span>
-      <button type="button" aria-label="New direct message" title="New direct message" onClick={() => setDialog("direct")}><Plus aria-hidden="true" /></button>
+      <span className="channel-section-actions">
+        <button type="button" aria-label="New direct message" title="New direct message" onClick={() => setDialog("direct")}><Plus aria-hidden="true" /></button>
+      </span>
     </div>
     <ul>
       {account && <li>

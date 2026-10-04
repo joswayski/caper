@@ -3487,9 +3487,20 @@ impl CaperApp {
                             full_bleed_separator(ui, ui.min_rect().top());
                             ui.add_space(10.0);
                             ui.horizontal(|ui| {
+                                let heading_hovered = ui.rect_contains_pointer(ui.max_rect());
                                 ui.label(bold("Direct messages").size(12.0).color(MUTED));
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if drawn_icon_button(ui, NavIcon::Plus, "Start direct message").clicked() {
+                                    // Keep the target in the focus order even when its icon is hidden.
+                                    let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
+                                    let response = ui.interact(rect, egui::Id::new("direct-heading-plus"), egui::Sense::click());
+                                    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), "Start direct message"));
+                                    if heading_hovered || response.has_focus() {
+                                        if response.hovered() || response.has_focus() {
+                                            ui.painter().rect_filled(rect, 6.0, RAISED);
+                                        }
+                                        paint_icon(ui.painter(), rect.shrink(5.0), NavIcon::Plus, if response.hovered() { TEXT } else { MUTED });
+                                    }
+                                    if response.on_hover_text("Start direct message").clicked() {
                                         self.member_username.clear();
                                         self.error = None;
                                         self.dialog = Some(Dialog::StartDirect);
@@ -4246,66 +4257,80 @@ impl CaperApp {
             };
             ui.add_space(8.0);
             full_bleed_separator(ui, ui.cursor().top());
-            ui.add_space(1.0);
+            ui.add_space(8.0);
             let joining = matches!(self.voice.state.phase, Phase::Joining(_));
-            ui.horizontal(|ui| {
-                let (icon, _) =
-                    ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
-                // Web: green when connected, amber while connecting or reconnecting.
-                let tone = if connected {
-                    Color32::from_rgb(140, 178, 98)
-                } else {
-                    Color32::from_rgb(217, 171, 92)
-                };
-                paint_icon(ui.painter(), icon, NavIcon::AudioLines, tone);
-                let status = ui.vertical(|ui| {
-                    ui.add(
-                        egui::Label::new(
-                            bold(if connected {
-                                "Voice connected"
-                            } else if joining {
-                                "Connecting…"
-                            } else {
-                                "Reconnecting…"
-                            })
-                            .size(12.0)
-                            .color(tone),
-                        )
-                        .selectable(false),
-                    );
-                    ui.add(
-                        egui::Label::new(RichText::new(&label).size(11.0).color(MUTED))
+            let status_height = ui
+                .fonts_mut(|fonts| {
+                    fonts.row_height(&egui::FontId::new(
+                        12.0,
+                        egui::FontFamily::Name("Satoshi Bold".into()),
+                    )) + fonts.row_height(&egui::FontId::proportional(11.0))
+                        + 2.0
+                })
+                .max(28.0);
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), status_height),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    let (icon, _) =
+                        ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                    // Web: green when connected, amber while connecting or reconnecting.
+                    let tone = if connected {
+                        Color32::from_rgb(140, 178, 98)
+                    } else {
+                        Color32::from_rgb(217, 171, 92)
+                    };
+                    paint_icon(ui.painter(), icon, NavIcon::AudioLines, tone);
+                    let status = ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        ui.add(
+                            egui::Label::new(
+                                bold(if connected {
+                                    "Voice connected"
+                                } else if joining {
+                                    "Connecting…"
+                                } else {
+                                    "Reconnecting…"
+                                })
+                                .size(12.0)
+                                .color(tone),
+                            )
                             .selectable(false),
-                    );
-                });
-                let open = status.response.interact(egui::Sense::click());
-                open.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &label)
-                });
-                if open.clicked() {
-                    self.navigate(target);
-                }
-                let hangup = ui
-                    .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        drawn_icon_button_with_tooltip(
-                            ui,
-                            NavIcon::PhoneOff,
-                            if connected {
-                                "Leave voice"
-                            } else {
-                                "Cancel joining voice"
-                            },
-                            if connected { "Disconnect" } else { "Cancel" },
-                        )
-                    })
-                    .inner;
-                if hangup.clicked() {
-                    if connected {
-                        self.effects.play(Effect::Disconnect);
+                        );
+                        ui.add(
+                            egui::Label::new(RichText::new(&label).size(11.0).color(MUTED))
+                                .selectable(false),
+                        );
+                    });
+                    let open = status.response.interact(egui::Sense::click());
+                    open.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &label)
+                    });
+                    if open.clicked() {
+                        self.navigate(target);
                     }
-                    self.voice.leave();
-                }
-            });
+                    let hangup = ui
+                        .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            drawn_icon_button_with_tooltip(
+                                ui,
+                                NavIcon::PhoneOff,
+                                if connected {
+                                    "Leave voice"
+                                } else {
+                                    "Cancel joining voice"
+                                },
+                                if connected { "Disconnect" } else { "Cancel" },
+                            )
+                        })
+                        .inner;
+                    if hangup.clicked() {
+                        if connected {
+                            self.effects.play(Effect::Disconnect);
+                        }
+                        self.voice.leave();
+                    }
+                },
+            );
             ui.add_space(8.0);
         }
         if let Some(error) = self.voice.error.clone() {
@@ -10037,6 +10062,60 @@ mod tests {
     }
 
     #[test]
+    fn direct_heading_plus_is_hidden_until_heading_hover_or_keyboard_focus() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        // Bottom panels need two layout passes before reading the prior widget bounds.
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let id = egui::Id::new("direct-heading-plus");
+        let button = context
+            .read_response(id)
+            .expect("hidden button remains focusable")
+            .rect;
+        let painted = |output: &egui::FullOutput| {
+            output.shapes.iter().any(|shape|
+            matches!(&shape.shape, egui::Shape::Mesh(mesh) if button.contains_rect(mesh.calc_bounds())))
+        };
+        assert!(!painted(&output), "plus must not paint before hover");
+        let heading = text_position(&output, "Direct messages");
+        render(&mut app, &context, vec![egui::Event::PointerMoved(heading)]);
+        let hovered = render(&mut app, &context, vec![]);
+        assert!(
+            painted(&hovered),
+            "hovering the title {heading:?}, not only the plus {button:?}, reveals it"
+        );
+        let outside = render(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerMoved(egui::pos2(700.0, 400.0))],
+        );
+        assert!(!painted(&outside), "plus hides after leaving the heading");
+        context.memory_mut(|memory| memory.request_focus(id));
+        assert!(
+            painted(&render(&mut app, &context, vec![])),
+            "keyboard focus reveals the plus"
+        );
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(matches!(app.dialog, Some(Dialog::StartDirect)));
+    }
+
+    #[test]
     fn self_direct_uses_own_username_then_reuses_peer_id_without_duplicates() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -10162,6 +10241,88 @@ mod tests {
                 "full-width lines must not be clipped to the padded content: {dividers:?}"
             );
         }
+    }
+
+    #[test]
+    fn voice_dock_has_balanced_padding_and_centered_icons() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-voice-connected"),
+        );
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let text_rect = |label: &str| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == label => {
+                        Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let status = text_rect("Voice connected").union(text_rect("general / Fixture Studio"));
+        let icons: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Mesh(mesh) => {
+                    let rect = mesh.calc_bounds();
+                    (rect.left() >= 71.0
+                        && rect.right() <= 327.0
+                        && rect.center().y >= status.top()
+                        && rect.center().y <= status.bottom())
+                    .then_some(rect)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(icons.len(), 2, "audio and disconnect icons: {icons:?}");
+        for icon in &icons {
+            assert!(
+                (icon.center().y - status.center().y).abs() <= 1.0,
+                "icon {icon:?} not centered with {status:?}"
+            );
+        }
+        let divider = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::LineSegment { points, stroke }
+                    if stroke.color == super::BORDER
+                        && points[0].x == 59.0
+                        && points[0].y < status.top() =>
+                {
+                    Some(points[0].y)
+                }
+                _ => None,
+            })
+            .max_by(f32::total_cmp)
+            .unwrap();
+        let account_top = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.rect.left() == 71.0
+                        && rect.rect.top() > status.bottom()
+                        && rect.rect.height() == 42.0 =>
+                {
+                    Some(rect.rect.top())
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            (status.top() - divider - (account_top - status.bottom())).abs() <= 1.0,
+            "unequal voice padding: top {}, bottom {}",
+            status.top() - divider,
+            account_top - status.bottom()
+        );
     }
 
     fn text_position(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
