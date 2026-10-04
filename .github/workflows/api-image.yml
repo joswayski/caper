@@ -25,6 +25,7 @@ concurrency:
 jobs:
   api:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
     permissions:
       contents: read
       id-token: write
