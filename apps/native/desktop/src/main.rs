@@ -2524,6 +2524,18 @@ impl CaperApp {
             self.shell(context);
             self.dialogs(context);
         }
+        // egui's buttons and custom click targets do not set a hand cursor.
+        // Only supply a fallback: text fields and resize handles keep theirs.
+        if context.output(|output| output.cursor_icon == egui::CursorIcon::Default) {
+            let hovered = context.interaction_snapshot(|snapshot| snapshot.hovered.clone());
+            if hovered.into_iter().any(|id| {
+                context.read_response(id).is_some_and(|response| {
+                    response.enabled() && response.hovered() && response.sense.senses_click()
+                })
+            }) {
+                context.set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+        }
     }
 
     /// A full-width strip above everything when a newer release is ready.
@@ -3074,7 +3086,6 @@ impl CaperApp {
                             egui::Id::new("sidebar-resize"),
                             egui::Sense::click_and_drag(),
                         )
-                        .on_hover_cursor(egui::CursorIcon::ResizeHorizontal)
                         .on_hover_text(
                             "Drag to resize. Arrow keys to adjust. Double-click to reset.",
                         );
@@ -3095,12 +3106,8 @@ impl CaperApp {
                     if separator.clicked() {
                         separator.request_focus();
                     }
-                    if separator.hovered() || separator.dragged() || separator.has_focus() {
-                        ui.painter().vline(
-                            separator_rect.center().x,
-                            separator_rect.y_range(),
-                            Stroke::new(2.0, TERRACOTTA),
-                        );
+                    if separator.hovered() || separator.dragged() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
                     }
                     if separator.has_focus() {
                         ui.memory_mut(|memory| {
@@ -9211,6 +9218,10 @@ mod tests {
                 click(&mut app, &context, pos);
                 let opened = render(&mut app, &context, vec![]);
                 assert_eq!(app.selected_channel, selected);
+                assert!(
+                    app.navigation_target.is_none(),
+                    "options must not start channel navigation"
+                );
                 assert!(matches!(app.voice.state.phase, Phase::Idle));
                 click(
                     &mut app,
@@ -9223,6 +9234,179 @@ mod tests {
                 assert_eq!(app.selected_channel, selected);
             }
         }
+    }
+
+    #[test]
+    fn channel_name_icon_and_padding_all_select_the_channel() {
+        for sidebar in [220.0, 337.0] {
+            for owner in [true, false] {
+                for offset in [5.0, 17.5, 39.0, sidebar - 70.0] {
+                    let context = egui::Context::default();
+                    let mut app = CaperApp::new(
+                        &context,
+                        crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                        Some("parity-desktop"),
+                    );
+                    app.sidebar_width = sidebar;
+                    if !owner {
+                        app.account.as_mut().unwrap().id = "fixture-member".into();
+                    }
+                    render(&mut app, &context, vec![]);
+                    render(&mut app, &context, vec![]);
+                    context.enable_accesskit();
+                    let output = render(&mut app, &context, vec![]);
+                    let bounds = output
+                        .platform_output
+                        .accesskit_update
+                        .unwrap()
+                        .nodes
+                        .into_iter()
+                        .find(|(_, node)| node.label() == Some("design"))
+                        .unwrap()
+                        .1
+                        .bounds()
+                        .unwrap();
+                    let pos = egui::pos2(
+                        bounds.x0 as f32 + offset,
+                        ((bounds.y0 + bounds.y1) / 2.0) as f32,
+                    );
+                    click(&mut app, &context, pos);
+                    assert_eq!(
+                        app.navigation_target
+                            .as_ref()
+                            .and_then(|target| target.channel.as_deref()),
+                        Some("chan00000002"),
+                        "missed channel click at {pos:?}, sidebar {sidebar}, owner {owner}"
+                    );
+                    assert!(app.dialog.is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn clickable_controls_use_hand_but_resize_and_text_keep_their_cursors() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.token = Some("fixture-only".into());
+        app.session = Some(session());
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, vec![]);
+        context.enable_accesskit();
+        let output = render(&mut app, &context, vec![]);
+        let nodes = output.platform_output.accesskit_update.unwrap().nodes;
+        for label in [
+            "C",
+            "F",
+            "design",
+            "Channel options for design",
+            "Join voice in #design",
+            "Create space",
+            "Browse channels",
+            "Mute microphone",
+            "User Settings",
+        ] {
+            let bounds = nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some(label))
+                .unwrap_or_else(|| panic!("missing {label}"))
+                .1
+                .bounds()
+                .unwrap();
+            let pos = egui::pos2(
+                ((bounds.x0 + bounds.x1) / 2.0) as f32,
+                ((bounds.y0 + bounds.y1) / 2.0) as f32,
+            );
+            let output = render(&mut app, &context, vec![egui::Event::PointerMoved(pos)]);
+            assert_eq!(
+                output.platform_output.cursor_icon,
+                egui::CursorIcon::PointingHand,
+                "{label}"
+            );
+        }
+        let resize = egui::pos2(340.0, 400.0);
+        let output = render(&mut app, &context, vec![egui::Event::PointerMoved(resize)]);
+        assert_eq!(
+            output.platform_output.cursor_icon,
+            egui::CursorIcon::ResizeHorizontal
+        );
+        assert!(
+            !output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::LineSegment { points, stroke }
+                    if points[0].x == points[1].x && (points[1].y - points[0].y).abs() > 400.0
+                        && stroke.color == super::TERRACOTTA
+            )),
+            "resizing must not paint an orange line"
+        );
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerButton {
+                pos: resize,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        let dragged = resize + egui::vec2(67.0, 0.0);
+        let output = render(&mut app, &context, vec![egui::Event::PointerMoved(dragged)]);
+        assert_eq!(app.sidebar_width, 347.0);
+        assert_eq!(
+            output.platform_output.cursor_icon,
+            egui::CursorIcon::ResizeHorizontal
+        );
+        assert!(
+            !output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::LineSegment { points, stroke }
+                    if points[0].x == points[1].x && (points[1].y - points[0].y).abs() > 400.0
+                        && stroke.color == super::TERRACOTTA
+            )),
+            "dragging must not paint an orange line"
+        );
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerButton {
+                pos: dragged,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        app.sidebar_width = 280.0;
+        render(&mut app, &context, vec![]);
+        let output = render(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerMoved(egui::pos2(440.0, 867.0))],
+        );
+        assert_eq!(output.platform_output.cursor_icon, egui::CursorIcon::Text);
+        app.media_availability.insert("chan00000002".into(), false);
+        render(&mut app, &context, vec![]);
+        let bounds = nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Join voice in #design"))
+            .unwrap()
+            .1
+            .bounds()
+            .unwrap();
+        let output = render(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerMoved(egui::pos2(
+                ((bounds.x0 + bounds.x1) / 2.0) as f32,
+                ((bounds.y0 + bounds.y1) / 2.0) as f32,
+            ))],
+        );
+        assert_eq!(
+            output.platform_output.cursor_icon,
+            egui::CursorIcon::Default,
+            "disabled buttons must not advertise a click"
+        );
     }
 
     #[test]

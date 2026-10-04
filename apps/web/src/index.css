@@ -52,6 +52,9 @@ body {
   background: var(--blackout);
 }
 
+button:enabled, a[href], summary { cursor: pointer; }
+button:disabled, :is(button, a, summary)[aria-disabled="true"] { cursor: default; }
+
 .page { min-height: 100vh; background: #0c0d0f; }
 .shell { width: min(1520px, calc(100% - 80px)); margin-inline: auto; }
 .site-header, .call-header { width: min(1520px, calc(100% - 80px)); min-height: 88px; margin-inline: auto; display: flex; align-items: center; justify-content: space-between; }
