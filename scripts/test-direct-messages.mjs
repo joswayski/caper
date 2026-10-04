@@ -38,6 +38,10 @@ try {
   browser('cookies', 'set', 'caper_fixture', 'owner', '--url', web, '--path', '/', '--sameSite', 'Lax');
   browser('open', `${web}/spaces`);
   wait('!!document.querySelector(".direct-section") && !!document.querySelector(".chat-composer textarea")');
+  assert.equal(evaluate('document.querySelector(".chat-heading").textContent.includes("Leave channel")'), false);
+  browser('click', '[aria-label="Manage general"]');
+  assert.ok(evaluate('document.querySelector(".channel-menu[open]").textContent.includes("Channel settings") && document.querySelector(".channel-menu[open]").textContent.includes("Leave channel")'), 'Owners retain settings and can leave through the same menu');
+  browser('press', 'Escape');
   assert.equal(evaluate('document.querySelector(".direct-self small").textContent'), 'you');
   assert.equal(evaluate('document.querySelector(".direct-section").textContent.includes("No direct messages yet")'), false);
   assert.equal((await conversations()).conversations.length, 0, 'Showing the self row must not create a conversation');
@@ -73,6 +77,32 @@ try {
       return Math.abs(r.left + parseFloat(s.left) - panel.left) < 1 && Math.abs(r.right - parseFloat(s.right) - (panel.right - 1)) < 1;
     }); })()`), 'Sidebar dividers must span the panel, not just its padded contents');
   screenshot('dm-empty-list');
+  for (const width of [1440, 390]) {
+    browser('set', 'viewport', String(width), '900', '2');
+    if (width === 390) browser('click', '.navigation-toggle');
+    browser('click', '[aria-label="New direct message"]');
+    wait('!!document.querySelector(".space-dialog[open]")');
+    assert.equal(evaluate('document.querySelector(".space-dialog > header p").textContent'), 'Enter an exact username. Conversations stay private across all your spaces.');
+    browser('fill', '.space-dialog input', 'fixture_alex');
+    const inside = evaluate('(() => { const r = document.querySelector(".space-dialog").getBoundingClientRect(); return [r.left + 8, r.top + 8]; })()');
+    browser('mouse', 'move', ...inside.map(String));
+    browser('mouse', 'down', 'left');
+    browser('mouse', 'up', 'left');
+    assert.equal(evaluate('!!document.querySelector(".space-dialog[open]")'), true, 'Clicking dialog padding keeps it open');
+    browser('mouse', 'down', 'left');
+    browser('mouse', 'move', '2', '2');
+    browser('mouse', 'up', 'left');
+    assert.equal(evaluate('!!document.querySelector(".space-dialog[open]")'), true, 'A drag starting inside the dialog cannot dismiss it');
+    assert.equal(evaluate('document.querySelector(".space-dialog input").value'), 'fixture_alex');
+    screenshot(`dm-start-dialog-${width}`);
+    browser('mouse', 'down', 'left');
+    browser('mouse', 'up', 'left');
+    wait('!document.querySelector(".space-dialog[open]")');
+    assert.equal(evaluate('document.activeElement?.getAttribute("aria-label")'), 'New direct message', 'Backdrop dismissal restores focus to its opener');
+    assert.equal((await conversations()).conversations.length, 0, 'Dismissing does not create a conversation');
+  }
+  browser('set', 'viewport', '1440', '900', '2');
+  console.log('PASS: shortened direct-message copy; outside click dismisses, inside clicks/drags stay open, focus returns at desktop/narrow widths');
   browser('click', '.direct-action');
   wait('document.querySelector(".space-dialog h2")?.textContent === "Manage space"');
   browser('fill', '.member-add input', 'sam');
@@ -158,7 +188,7 @@ try {
   assert.equal(evaluate('document.querySelector(".chat-composer textarea").value'), 'A global draft survives losing a space.');
   assert.ok(evaluate('document.querySelector(".chat-messages").textContent.includes("A live reply from Alex.")'), 'Space revocation must not clear global DM history');
   browser('open', `${web}/spaces?dm=dm0000000001`);
-  wait('document.querySelector(".chat-heading")?.textContent.includes("TEST FIXTURE Alex")');
+  wait('document.querySelector(".chat-heading")?.textContent.includes("TEST FIXTURE Alex") && document.querySelector(".chat-messages")?.textContent.includes("A live reply from Alex.")');
   screenshot('dm-no-spaces');
   assert.ok(evaluate('document.querySelector(".chat-messages").textContent.includes("A live reply from Alex.")'), 'Global DM survives loss of space membership');
   assert.equal(evaluate('document.querySelector(".chat-composer textarea").disabled'), false, 'No-space DMs remain writable');

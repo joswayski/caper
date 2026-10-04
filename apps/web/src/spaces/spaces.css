@@ -265,8 +265,6 @@
 .channel-preview .primary:hover:not(:disabled) { background: var(--terracotta-bright); }
 .channel-preview .primary:disabled { opacity: .45; cursor: wait; }
 .channel-preview [role="alert"] { flex-basis: 100%; margin: 0; color: #ff9b82; font-size: .76rem; }
-.channel-membership-actions .channel-membership-leave { width: auto; height: auto; padding: 5px 8px; font-size: .7rem; color: var(--text-muted); }
-.channel-membership-actions .channel-membership-leave:hover { color: var(--text); }
 
 :is(.space-dialog, .channel-navigation, .spaces-state, .spaces-empty, .empty-channel) :is(button, summary), .navigation-toggle {
   transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease, opacity 140ms ease;

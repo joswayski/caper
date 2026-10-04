@@ -708,6 +708,7 @@ private struct ChannelSidebarItem: View {
     @Bindable var model: AppModel
     @Binding var sheet: WorkspaceSheet?
     let channel: Channel
+    @State private var confirmLeave = false
 
     private var sessionStartedAt: Double? {
         if model.voice.isActive(channelID: channel.id) { return model.voice.sessionStartedAt }
@@ -751,9 +752,10 @@ private struct ChannelSidebarItem: View {
                     })
                     .accessibilityIdentifier("channel-\(channel.id)")
                     .accessibilityValue(model.openingChannelID == channel.id ? "Opening" : model.selectedChannelID == channel.id ? "Selected" : "")
-                if model.isOwner {
+                if model.detail?.space.demo != true {
                     Menu {
-                        Button("Channel settings") { sheet = .manageChannel(channel) }
+                        if model.isOwner { Button("Channel settings") { sheet = .manageChannel(channel) } }
+                        if channel.joined { Button("Leave channel") { confirmLeave = true } }
                     } label: { CaperIcon(name: "ellipsis") }
                         .menuStyle(.borderlessButton).menuIndicator(.hidden)
                         .foregroundStyle(CaperTheme.muted)
@@ -769,6 +771,9 @@ private struct ChannelSidebarItem: View {
                 }
             }
             ChannelVoiceSlot(model: model, channel: channel)
+        }
+        .sheet(isPresented: $confirmLeave) {
+            ConfirmationSheet(title: "Leave #\(channel.name)?", detail: channel.private && !model.isOwner ? "You’ll lose access and need another invitation to return. You’ll disconnect from this channel’s voice call." : "It will leave your sidebar. You can preview and rejoin from Browse channels. You’ll disconnect from this channel’s voice call.", action: "Leave channel", close: { confirmLeave = false }) { try await model.leaveChannel(channel) }
         }
     }
 }
@@ -1442,7 +1447,6 @@ private struct ChatView: View {
     @State private var showConnectionStatus = false
     @State private var joining = false
     @State private var joinError: String?
-    @State private var confirmLeave = false
     // A lazy message row can leave the viewport when the keyboard appears or
     // live messages arrive. Keep the sheet's presenter and target outside it.
     @State private var reactionMessage: ChatMessage?
@@ -1480,9 +1484,6 @@ private struct ChatView: View {
                     .accessibilityLabel(model.selectedDirectMessageID == nil ? "# \(chat.channelName.lowercased())" : "Direct message with \(chat.channelName)")
                     .accessibilityIdentifier("selected-channel-name")
                 Spacer()
-                if model.selectedDirectMessageID == nil, let channel = model.selectedChannel, channel.joined, model.detail?.space.demo != true {
-                    Button("Leave channel") { confirmLeave = true }.font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
-                }
                 if chat.liveState != .connected && showConnectionStatus {
                     Text(chat.liveState == .disconnected ? "Offline" : "Connecting…").font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.muted)
                         .accessibilityIdentifier("chat-connection-status")
@@ -1643,11 +1644,6 @@ private struct ChatView: View {
             }
             }
             }.padding(.horizontal, 18).padding(.vertical, 12)
-            .sheet(isPresented: $confirmLeave) {
-                if let channel = model.selectedChannel {
-                    ConfirmationSheet(title: "Leave #\(channel.name)?", detail: channel.private && !model.isOwner ? "You’ll lose access and need another invitation to return. You’ll disconnect from this channel’s voice call." : "It will leave your sidebar. You can preview and rejoin from Browse channels. You’ll disconnect from this channel’s voice call.", action: "Leave channel", close: { confirmLeave = false }) { try await model.leaveChannel(channel) }
-                }
-            }
             if chat.draft.unicodeScalars.count >= 3000 {
                 Text("\(chat.draft.unicodeScalars.count.formatted()) / 4,000").font(CaperTheme.font(10)).foregroundStyle(counterTone).padding(.bottom, 6)
             }

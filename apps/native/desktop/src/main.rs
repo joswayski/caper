@@ -3593,9 +3593,9 @@ impl CaperApp {
                                     let unread = model::sequence(&direct.last_seq).unwrap_or(0)
                                         > model::sequence(&direct.read_seq).unwrap_or(0);
                                     ui.horizontal(|ui| {
-                                        let (response, _) = channel_button(
+                                        let (response, _, _) = channel_button(
                                             ui, ui.available_width() - 18.0,
-                                            &direct.peer.display_name, NavIcon::Speech, active, false, None,
+                                            &direct.peer.display_name, NavIcon::Speech, active, None, None,
                                         );
                                         if unread { ui.label(RichText::new("●").size(9.0).color(TERRACOTTA_BRIGHT)); }
                                         if response.clicked() { self.select_direct(direct.clone()); }
@@ -3603,7 +3603,7 @@ impl CaperApp {
                                     ui.add_space(3.0);
                                 }
                                 let action = if self.owner() { "Invite people" } else { "New message" };
-                                let (response, _) = channel_button(ui, ui.available_width(), action, NavIcon::Plus, false, false, None);
+                                let (response, _, _) = channel_button(ui, ui.available_width(), action, NavIcon::Plus, false, None, None);
                                 if response.clicked() { self.open_direct_action(); }
                             });
                         });
@@ -3875,17 +3875,28 @@ impl CaperApp {
                                     ui.ctx().request_repaint_after(Duration::from_secs(1));
                                     voice_session_duration(started, chrono::Utc::now().timestamp_millis().max(0) as u64)
                                 });
-                                let (response, settings) = channel_button(
+                                let (response, settings, leave) = channel_button(
                                     ui,
                                     ui.available_width(),
                                     &name,
                                     if private { NavIcon::Lock } else { NavIcon::Hash },
                                     active,
-                                    self.owner(),
+                                    self.detail
+                                        .as_ref()
+                                        .filter(|detail| !detail.space.demo)
+                                        .map(|_| self.owner()),
                                     duration.as_deref(),
                                 );
                                 if settings {
                                     self.open_manage_channel(&id, &name, private);
+                                } else if leave
+                                    && let Some(space) = self.selected_space.clone()
+                                {
+                                    self.dialog = Some(Dialog::LeaveChannel {
+                                        space,
+                                        channel: id.clone(),
+                                        name: name.clone(),
+                                    });
                                 } else if response.clicked() {
                                     self.select_channel(id.clone(), false);
                                 } else if response.hovered() || response.has_focus() {
@@ -5322,12 +5333,10 @@ impl CaperApp {
                                     if self.selected_direct.is_none() {
                                         if let (Some(space), Some(channel)) = (self.selected_space.clone(), self.selected_channel.clone())
                                             && let Some(entry) = self.detail.as_ref().and_then(|detail| detail.channels.iter().find(|item| item.id == channel)).cloned()
+                                            && !entry.joined
+                                            && ui.button("Join channel").clicked()
                                         {
-                                            if !entry.joined && ui.button("Join channel").clicked() {
-                                                self.admin(AdminOperation::JoinChannel { space, channel });
-                                            } else if entry.joined && !self.detail.as_ref().is_some_and(|detail| detail.space.demo) && ui.small_button("Leave").clicked() {
-                                                self.dialog = Some(Dialog::LeaveChannel { space, channel, name: entry.name });
-                                            }
+                                            self.admin(AdminOperation::JoinChannel { space, channel });
                                         }
                                         if self
                                             .detail
@@ -6132,7 +6141,7 @@ impl CaperApp {
             && !egui::Popup::is_any_open(context);
         let dismiss_on_backdrop = matches!(
             dialog,
-            Dialog::Settings | Dialog::ManageSpace | Dialog::ManageChannel(_)
+            Dialog::Settings | Dialog::ManageSpace | Dialog::ManageChannel(_) | Dialog::StartDirect
         );
         let modal = egui::Area::new(egui::Id::new("caper-dialog"))
             .order(egui::Order::Foreground)
@@ -6264,7 +6273,7 @@ impl CaperApp {
                                             Dialog::CreateChannel => self.channel_dialog(ui, None),
                                             Dialog::ManageChannel(id) => self.channel_dialog(ui, Some(id)),
                                             Dialog::StartDirect => {
-                                                ui.label("Enter an exact username, including your own for personal notes.");
+                                                ui.label("Enter an exact username.");
                                                 ui.add_space(12.0);
                                                 ui.add(egui::TextEdit::singleline(&mut self.member_username).hint_text("Username"));
                                                 ui.add_space(16.0);
@@ -7202,9 +7211,9 @@ fn channel_button(
     name: &str,
     icon: NavIcon,
     active: bool,
-    manageable: bool,
+    manageable: Option<bool>,
     duration: Option<&str>,
-) -> (egui::Response, bool) {
+) -> (egui::Response, bool, bool) {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 32.0), egui::Sense::click());
     response.widget_info(|| {
         egui::WidgetInfo::selected(
@@ -7244,7 +7253,7 @@ fn channel_button(
         if active { TERRACOTTA_BRIGHT } else { color },
     );
     let timer_font = egui::FontId::monospace(11.0);
-    let timer_right = rect.right() - if manageable { 34.0 } else { 6.0 };
+    let timer_right = rect.right() - if manageable.is_some() { 34.0 } else { 6.0 };
     let timer_width = duration.map_or(0.0, |text| {
         let galley =
             ui.painter()
@@ -7284,7 +7293,8 @@ fn channel_button(
             color,
         );
     let mut manage = false;
-    if manageable {
+    let mut leave = false;
+    if let Some(manageable) = manageable {
         let rect = egui::Rect::from_center_size(
             egui::pos2(rect.right() - 18.0, rect.center().y),
             egui::vec2(32.0, 32.0),
@@ -7322,14 +7332,21 @@ fn channel_button(
             .align(egui::RectAlign::BOTTOM_END)
             .width(180.0)
             .show(|ui| {
-                if ui.button("Channel settings").clicked() {
+                if manageable && ui.button("Channel settings").clicked() {
                     manage = true;
+                    ui.close();
+                }
+                if ui
+                    .button(RichText::new("Leave channel").color(ERROR))
+                    .clicked()
+                {
+                    leave = true;
                     ui.close();
                 }
             });
         settings.on_hover_text(format!("Channel options for {name}"));
     }
-    (response, manage)
+    (response, manage, leave)
 }
 
 fn users_button(ui: &mut egui::Ui, active: bool) -> egui::Response {
@@ -8366,6 +8383,33 @@ mod tests {
             );
             assert!(!app.loading);
         }
+
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.dialog = Some(Dialog::StartDirect);
+        for _ in 0..3 {
+            render(&mut app, &context, vec![]);
+        }
+        let bounds =
+            context.memory(|memory| memory.area_rect(egui::Id::new("caper-dialog")).unwrap());
+        click(
+            &mut app,
+            &context,
+            bounds.left_top() + egui::vec2(10.0, 10.0),
+        );
+        assert!(
+            matches!(app.dialog, Some(Dialog::StartDirect)),
+            "inside click dismissed direct-message dialog"
+        );
+        click(&mut app, &context, egui::pos2(5.0, 5.0));
+        assert!(
+            app.dialog.is_none(),
+            "outside click did not dismiss direct-message dialog"
+        );
     }
 
     #[test]
@@ -8966,6 +9010,10 @@ mod tests {
             })
             .collect();
         assert!(labels.contains(&"Join channel"), "{labels:?}");
+        assert!(
+            !labels.contains(&"Leave"),
+            "preview header must only offer Join: {labels:?}"
+        );
         assert!(labels.contains(&"Preview"), "{labels:?}");
         assert!(
             labels.contains(&"Join #design to interact with people here"),
@@ -9597,7 +9645,7 @@ mod tests {
     }
 
     #[test]
-    fn permanent_owner_channel_menu_opens_settings_without_selecting_text() {
+    fn channel_options_leave_without_navigation_and_only_offer_owner_settings() {
         let mut count_position = None;
         for owner in [true, false] {
             let context = egui::Context::default();
@@ -9622,10 +9670,9 @@ mod tests {
                 .nodes
                 .iter()
                 .find(|(_, node)| node.label() == Some("Channel options for design"));
-            assert_eq!(
+            assert!(
                 menu.is_some(),
-                owner,
-                "menu must exist without hover only for owners"
+                "joined channels need options for every member"
             );
             if let Some((_, menu)) = menu {
                 let bounds = menu.bounds().unwrap();
@@ -9643,14 +9690,30 @@ mod tests {
                     "options must not start channel navigation"
                 );
                 assert!(matches!(app.voice.state.phase, Phase::Idle));
-                click(
-                    &mut app,
-                    &context,
-                    text_position(&opened, "Channel settings"),
-                );
-                assert!(
-                    matches!(app.dialog, Some(Dialog::ManageChannel(ref id)) if id == "chan00000002")
-                );
+                if owner {
+                    click(
+                        &mut app,
+                        &context,
+                        text_position(&opened, "Channel settings"),
+                    );
+                    assert!(
+                        matches!(app.dialog, Some(Dialog::ManageChannel(ref id)) if id == "chan00000002")
+                    );
+                } else {
+                    assert!(
+                        !opened.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Channel settings")),
+                        "nonowners must not see channel settings"
+                    );
+                    click(&mut app, &context, text_position(&opened, "Leave channel"));
+                    assert!(matches!(
+                        app.dialog,
+                        Some(Dialog::LeaveChannel {
+                            ref channel,
+                            ref name,
+                            ..
+                        }) if channel == "chan00000002" && name == "design"
+                    ));
+                }
                 assert_eq!(app.selected_channel, selected);
             }
         }
@@ -10049,6 +10112,12 @@ mod tests {
                 && text.pos.x > 340.0
                 && text.pos.y < 54.0),
             "web joins voice from the channel list, not the chat header"
+        );
+        assert!(
+            !texts.iter().any(|text| text.galley.job.text == "Leave"
+                && text.pos.x > 340.0
+                && text.pos.y < 54.0),
+            "channel leave belongs in channel options, not the chat header"
         );
         // Independent values from the current web CSS: 54px header, 44px history.
         for (label, center) in [

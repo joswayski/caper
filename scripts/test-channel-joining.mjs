@@ -126,7 +126,17 @@ try {
   assert.equal(evaluate('channelFixture.requests.filter(r => r.path.endsWith("/reactions")).length'), reactionWrites);
   browser('find', 'role', 'button', 'click', '--name', 'Join channel', '--exact');
   wait('!!document.querySelector("#chat-message") && channelFixture.state.joined.includes("other1234567")');
-  browser('click', '.channel-membership-leave');
+  assert.equal(evaluate('document.querySelector(".chat-heading").textContent.includes("Leave channel")'), false, 'Leaving is not a chat-header action');
+  browser('click', '[aria-label="Manage design"]');
+  assert.equal(evaluate('document.querySelector(".channel-menu[open]").textContent.includes("Channel settings")'), false, 'Members can leave without gaining owner settings');
+  browser('find', 'role', 'button', 'click', '--name', 'Leave channel', '--exact');
+  wait('!!document.querySelector(".leave-channel-consent")');
+  browser('find', 'role', 'button', 'click', '--name', 'Cancel', '--exact');
+  assert.equal(evaluate('document.activeElement.getAttribute("aria-label")'), 'Manage design', 'Cancelling restores focus to the channel menu');
+  assert.ok(evaluate('channelFixture.state.joined.includes("other1234567")'), 'Opening the menu and cancelling never changes membership');
+  browser('click', '[aria-label="Manage design"]');
+  screenshot('leave-channel-menu-1280');
+  browser('find', 'role', 'button', 'click', '--name', 'Leave channel', '--exact');
   browser('find', 'role', 'button', 'click', '--name', 'Leave channel', '--exact');
   wait('!channelFixture.state.joined.includes("other1234567") && !!document.querySelector(".channel-preview")');
   browser('click', '.pending-channel-invite');
@@ -136,7 +146,8 @@ try {
   screenshot('private-channel-consent-1280');
   browser('find', 'role', 'button', 'click', '--name', 'Accept invitation', '--exact');
   wait('channelFixture.state.granted && !!document.querySelector("#chat-message")');
-  browser('click', '.channel-membership-leave');
+  browser('click', '[aria-label="Manage planning"]');
+  browser('find', 'role', 'button', 'click', '--name', 'Leave channel', '--exact');
   assert.ok(evaluate('document.querySelector(".leave-channel-consent").textContent.includes("another invitation")'));
   browser('find', 'role', 'button', 'click', '--name', 'Leave channel', '--exact');
   wait('!channelFixture.state.granted && !document.querySelector("#space-channel-list").textContent.includes("planning")');

@@ -407,6 +407,29 @@ final class CaperParityUITests: XCTestCase {
         capture("channel-settings-from-menu", app: app)
     }
 
+    func testLeaveChannelLivesInItsOwnOptionsMenu() {
+        let app = launch()
+        assertElement("selected-channel-name", label: "# general", in: app)
+        XCTAssertFalse(app.buttons["Leave channel"].exists, "Leave must not appear in the chat header")
+        #if os(iOS)
+        app.buttons["Browse"].tap()
+        #endif
+        let options = app.descendants(matching: .any)["channel-options-chan00000002"]
+        XCTAssertTrue(options.waitForExistence(timeout: 10))
+        options.tap()
+        let leave = app.descendants(matching: .any)["Leave channel"].firstMatch
+        XCTAssertTrue(leave.waitForExistence(timeout: 3))
+        leave.tap()
+        assertStaticText("Leave #design?", in: app, timeout: 3)
+        app.buttons["Cancel"].tap()
+        #if os(iOS)
+        app.buttons["Chat"].tap()
+        #endif
+        assertElement("selected-channel-name", label: "# general", in: app)
+        XCTAssertFalse(app.buttons["Leave channel"].exists)
+        capture("channel-leave-from-menu", app: app)
+    }
+
     func testSpectatorRosterCollapsesAndVoiceTargetDoesNotChangeChat() async throws {
         let app = launch()
         assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app)
