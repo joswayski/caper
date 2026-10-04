@@ -16,7 +16,10 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
 - Account space/channel navigation, including accessible private channels.
 - Bounded read-only hover prefetch, retained conversation cursors and last-channel
   restoration. Navigation rechecks access; mutations and revocation discard
-  cached data and fence in-flight completions.
+  cached data and fence in-flight completions. Pending navigation and initial
+  history use message-pane skeletons, not a layout-shifting banner. Navigation
+  failures offer in-pane retry/dismiss; drafts and scroll state remain retained,
+  and the composer pauses until navigation finishes or is cancelled/dismissed.
 - HTTP message history and idempotent writes. A timeout or lost response retains
   the same client message UUID and original text for retry; a definitive
   validation rejection unlocks editing and the next send gets a new UUID. A
@@ -221,6 +224,10 @@ speaking rings for you and Maya.
 exact-username dialog without a live account or notification provider.
 `parity-direct-no-spaces` previews the first-space page's Direct messages entry
 and the global list without any space membership.
+`parity-opening`, `parity-opening-narrow`, and `parity-opening-error` preview
+pending navigation and its retry state with retained conversation chrome and a
+labelled fixture draft; `parity-loading` previews the initial history skeleton.
+These previews do not start a navigation request or a media transport.
 
 After `npm ci`, run `node scripts/native-icons.mjs --check` to verify the bundled
 vectors match the web client's pinned Lucide package. Omit `--check` to regenerate.
