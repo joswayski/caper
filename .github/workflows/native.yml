@@ -87,6 +87,8 @@ jobs:
           toolchain: 1.94.0
           components: rustfmt, clippy
           cache-workspaces: apps/native/updater
+          # Pull requests restore main's cache but do not upload their own.
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt -- --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
@@ -114,6 +116,11 @@ jobs:
           toolchain: 1.94.0
           components: rustfmt, clippy
           cache-workspaces: apps/native/desktop
+          # Keep in sync with release.yml so releases reuse this cache.
+          # Bumped on Windows when its target-triple directory became cacheable.
+          cache-key: ${{ matrix.target == 'windows-x64' && 'windows-target-triple' || '' }}
+          # Pull requests restore main's cache but do not upload their own.
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Linux native build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -144,6 +151,18 @@ jobs:
           ./apps/native/desktop/build.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./apps/native/desktop/test-installer.ps1 -Setup "$PWD/apps/native/desktop/dist/Caper-windows-x64-Setup.exe" -Stage "$PWD/apps/native/desktop/target/package/Caper-windows-x64"
+      - name: Let the Rust cache keep Windows target-triple dependencies
+        # build.ps1 passes --target, so dependencies land in
+        # target/x86_64-pc-windows-msvc. rust-cache only treats a directory as
+        # a nested target dir when it has a CACHEDIR.TAG; otherwise it deletes
+        # its debug/ and release/ folders before saving.
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: bash
+        run: |
+          triple_dir=apps/native/desktop/target/x86_64-pc-windows-msvc
+          if [[ -d "$triple_dir" && ! -e "$triple_dir/CACHEDIR.TAG" ]]; then
+            printf 'Signature: 8a477f597d28d172789f06886806bc55\n' >"$triple_dir/CACHEDIR.TAG"
+          fi
       - name: Record exact checked-out revision and checksums
         shell: bash
         env:
@@ -250,6 +269,9 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      # Caches the Gradle user home (wrapper, dependencies). Writes only from
+      # main; pull requests restore read-only.
+      - uses: gradle/actions/setup-gradle@v4
       - uses: android-actions/setup-android@v3
         with:
           cmdline-tools-version: '13114758'
