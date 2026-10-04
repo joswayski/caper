@@ -46,6 +46,26 @@ const nextMoments = count => evaluate(`for (let i = 0; i < ${count}; i++) { wind
 const members = () => evaluate('return [...document.querySelectorAll(".sim-member strong")].map(el => el.textContent)');
 const voices = () => evaluate('return [...document.querySelectorAll(".sim-person strong")].map(el => el.textContent)');
 const speakers = () => evaluate('return [...document.querySelectorAll(".sim-person[data-speaking] strong")].map(el => el.textContent)');
+const checkVoiceSummary = total => {
+  const summary = evaluate(`
+    const stack = document.querySelector('.sim-sidebar .voice-stack');
+    const count = stack.querySelector('.voice-stack-count');
+    return {
+      avatars: [...stack.querySelectorAll('.voice-stack-avatar')].filter(el => el.getClientRects().length > 0).length,
+      overflow: stack.querySelector('.voice-stack-faces small')?.textContent ?? '',
+      label: count.textContent,
+      accessibleLabel: stack.getAttribute('aria-label'),
+      clipped: count.scrollWidth > count.clientWidth,
+    };
+  `);
+  assert.deepEqual(summary, {
+    avatars: 1,
+    overflow: `+${total - 1}`,
+    label: `${total} in voice`,
+    accessibleLabel: `${total} in demo voice`,
+    clipped: false,
+  }, 'One preview avatar plus the remaining people must match the full, unclipped voice total');
+};
 const pointFor = selector => evaluate(`
     const element = document.querySelector(${JSON.stringify(selector)});
     const box = element.getBoundingClientRect();
@@ -132,6 +152,7 @@ try {
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-members")).width'), '220px');
   assert.equal(evaluate('return document.querySelectorAll(".sim-member .presence-dot[data-status=online]").length'), 3);
   assert.deepEqual(evaluate('return [".sim-sidebar .channel-navigation > header", ".sim-chat > header"].map(s => document.querySelector(s).offsetHeight)'), [54, 54], 'Sidebar and chat header dividers align');
+  checkVoiceSummary(3);
   const [accountBounds, composerBounds] = evaluate(`
     const geometry = selector => {
       let element = document.querySelector(selector), top = 0;
@@ -192,6 +213,7 @@ try {
   assert.deepEqual(speakers(), ['Maya', 'Theo']);
   nextMoments(2); // 10
   assert.ok(voices().includes('Leo'));
+  checkVoiceSummary(4);
   nextMoments(1); // 11
   assert.deepEqual(speakers(), ['June', 'Leo']);
   nextMoments(1); // 12: two messages arrive in the same second
@@ -209,22 +231,27 @@ try {
   assert.ok(members().includes('Maya'));
   assert.ok(!voices().includes('Maya'));
   assert.equal(evaluate('return document.querySelector(".sim-sidebar .voice-dock")'), null, 'The voice dock reflects Maya leaving voice');
+  checkVoiceSummary(4);
   assert.equal(evaluate('return document.querySelector(".sim-messages").scrollTop'), 0, 'Reading older messages is not interrupted by new posts');
   evaluate('const el = document.querySelector(".sim-messages"); el.scrollTop = el.scrollHeight; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));');
   nextMoments(16); // 38
   assert.equal(voices().length, 6);
+  checkVoiceSummary(6);
   nextMoments(1); // 39
   assert.ok(!members().includes('June'));
   assert.ok(!voices().includes('June'));
+  checkVoiceSummary(5);
   nextMoments(6); // 45
   assert.equal(members().length, 6);
   assert.equal(voices().length, 6);
+  checkVoiceSummary(6);
   assert.equal(evaluate('return document.querySelectorAll(".sim-person .participant-country").length'), 0, 'Joining/rejoining demo participants have no flags');
   assert.ok(evaluate('return document.querySelector(".sim-messages").textContent.includes("back with cookies. let’s gooo")'));
   assert.equal(evaluate('return document.querySelectorAll(".sim-message").length'), 24);
   nextMoments(4); // 0: new loop, but the previous conversation stays
   assert.deepEqual(members(), ['Maya', 'Theo', 'June']);
   assert.deepEqual(voices(), ['Maya', 'Theo', 'June']);
+  checkVoiceSummary(3);
   assert.equal(evaluate('return document.querySelectorAll(".sim-message").length'), 25);
   assert.ok(evaluate('return window.firstDemoMessage === document.querySelector(".sim-message")'), 'Keep the same message nodes through the loop boundary');
   assert.equal(evaluate('return document.querySelectorAll(".sim-message:last-of-type .sim-reaction").length'), 0, 'New loop message starts without reactions');
@@ -291,6 +318,8 @@ try {
   browser('open', origin.href);
   wait('document.querySelector(".live-stage[data-ready]") && typeof window.advanceDemoClock === "function" && !window.demoClockActive');
   evaluate('await document.fonts.ready; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));');
+  checkVoiceSummary(3);
+  console.log('PASS: one avatar plus remaining participants matches 3–6 voice occupants through joins, leaves and loop resets; desktop and narrow totals are not clipped');
   browser('scrollintoview', '.sim-message:last-of-type p');
   checkReadOnlyHover(['.sim-message:last-of-type', '.sim-reaction', '.sim-person', '.account-profile', '.voice-icon-button', '.call-settings-trigger', '.member-list-toggle']);
   drag('.sim-message:last-of-type p');
