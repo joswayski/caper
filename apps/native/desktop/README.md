@@ -224,3 +224,17 @@ and the global list without any space membership.
 
 After `npm ci`, run `node scripts/native-icons.mjs --check` to verify the bundled
 vectors match the web client's pinned Lucide package. Omit `--check` to regenerate.
+
+Static desktop icons use the main `apps/web/public/caper-face.svg` artwork.
+With ImageMagick 7 and librsvg installed, run
+`node scripts/generate-favicons.mjs` from the repository root to regenerate the
+web fallback PNGs, Linux SVG, desktop fallback PNG, multi-size Windows ICO,
+and macOS AppIcon PNGs. Use
+`node scripts/generate-favicons.mjs --check` to detect asset drift without writes.
+The executable, installer, and uninstaller all use that ICO; Start and desktop
+shortcuts use the executable's icon. Linux packages the same main SVG under
+`hicolor/scalable/apps/caper.svg`; macOS uses matching transparent PNGs from
+16 to 1024px. Daily runtime rotation is separate; the opaque iOS icon is unchanged.
+After installing an updated Windows build, Search may retain a cached icon;
+sign out and back in before checking again. Asset checks in Linux do not verify
+Windows Search, macOS Finder/Dock or pinned-shortcut cache behavior.
