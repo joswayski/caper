@@ -123,8 +123,14 @@ function ContactLinks() {
 
   return <>
     <a className="contact-action" href={xUrl} target="_blank" rel="noreferrer" aria-label="Jose on X"><svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M18.9 2H22l-6.8 7.8L23.2 22h-6.3L12 14.6 5.5 22H2.3l7.9-9L1.8 2h6.5l4.5 6.6L18.9 2Zm-1.1 18h1.7L7.3 3.9H5.5L17.8 20Z" /></svg></a>{" "}
-    or <button type="button" className="contact-action" onClick={() => void copyEmail()} title={contactEmail}>{status === "copied" ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}<span>{status === "copied" ? "Copied!" : "Copy email"}</span></button>.
-    <span className="contact-feedback" role="status">{status === "copied" ? "Email address copied to clipboard." : status === "failed" ? `Couldn’t copy. ${contactEmail}` : ""}</span>
+    or <button type="button" className="contact-action" onClick={() => void copyEmail()} title={contactEmail}>
+      {status === "copied" ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+      <span className="contact-label">
+        <span aria-hidden="true">Copy email</span>
+        <span>{status === "copied" ? "Copied!" : "Copy email"}</span>
+      </span>
+    </button>.
+    <span className={status === "failed" ? "contact-feedback" : "sr-only"} role="status">{status === "copied" ? "Email address copied to clipboard." : status === "failed" ? `Couldn’t copy. ${contactEmail}` : ""}</span>
   </>;
 }
 
