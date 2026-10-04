@@ -38,7 +38,7 @@
 .direct-self:disabled { opacity: .5; cursor: wait; }
 .direct-section .direct-action { flex-shrink: 0; gap: 6px; margin-top: 4px; padding-right: 9px; }
 .direct-section :is(.direct-select, .direct-action) > span { transform: none; }
-.direct-select .direct-avatar { flex: 0 0 30px; display: grid; place-items: center; height: 30px; border-radius: 8px; color: var(--text); background: var(--surface-raised); font-size: .7rem; }
+.direct-select .direct-avatar { flex: 0 0 30px; display: grid; place-items: center; height: 30px; border-radius: var(--radius-avatar); color: var(--text); font-size: .7rem; }
 .direct-select .direct-unread { flex: 0 0 6px; width: 6px; height: 6px; margin-left: auto; border-radius: 50%; background: var(--terracotta-bright); }
 .channel-navigation > header { position: relative; display: flex; align-items: center; gap: 4px; height: 54px; }
 .spaces-room .chat-heading { min-height: 54px; }

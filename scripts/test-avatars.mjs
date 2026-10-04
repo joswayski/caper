@@ -32,6 +32,7 @@ function fixture() {
     if (!path.startsWith('/api/')) return original(input, options);
     if (path === '/api/account/me') return Response.json(account);
     if (path === '/api/account/profile') { Object.assign(account, JSON.parse(options.body)); return Response.json(account); }
+    if (path === '/api/dms') return Response.json({ conversations: [] });
     if (path === '/api/spaces') return Response.json({ spaces: [space], limits: { ownedSpaces: 5, totalSpaces: 10, channelsPerSpace: 25 } });
     if (path.endsWith('/members')) return Response.json({ members });
     if (path === '/api/spaces/' + space.id) return Response.json({ space, channels: [channel], members });
@@ -68,17 +69,27 @@ try {
   wait('!document.querySelector(".chat-initial-messages") && document.querySelectorAll(".chat-avatar [data-avatar-id]").length === 5 && document.querySelectorAll(".participant-avatar [data-avatar-id]").length === 3');
   assert.deepEqual(evaluate('[...document.querySelectorAll(".chat-avatar [data-avatar-id]")].map(e => Number(e.dataset.avatarId))'), [0, 31, 32, 799, 143]);
   assert.deepEqual(evaluate('[...document.querySelectorAll(".member-presence-avatar [data-avatar-id]")].map(e => Number(e.dataset.avatarId))'), [0, 31, 32, 799, 143]);
-  assert.deepEqual(evaluate('[...document.querySelectorAll(".voice-stack-avatar [data-avatar-id]")].map(e => Number(e.dataset.avatarId))'), [0, 31, 32]);
+  assert.deepEqual(evaluate('[...document.querySelectorAll(".voice-stack-avatar [data-avatar-id]")].map(e => Number(e.dataset.avatarId))'), [0, 31]);
+  assert.equal(evaluate('document.querySelector(".direct-self .direct-avatar [data-avatar-id]").dataset.avatarId'), '0');
   assert.equal(evaluate('document.querySelector(".account-avatar [data-avatar-id]").dataset.avatarId'), '0');
   assert.equal(evaluate('[...document.querySelectorAll(".chat-avatar")].every(e => e.querySelector("[data-avatar-id]"))'), true, 'Every account has a saved profile picture');
   assert.equal(evaluate('document.querySelector(".account-avatar .presence-dot").getAttribute("aria-label")'), 'Online');
   assert.equal(evaluate('[...document.querySelectorAll("[data-avatar-id]")].every(e => getComputedStyle(e).backgroundColor === "rgba(0, 0, 0, 0)" && getComputedStyle(e.parentElement).backgroundColor === "rgba(0, 0, 0, 0)")'), true, 'Image avatars and their containers must have transparent backing');
+  assert.equal(evaluate('[...document.querySelectorAll(".avatar, .voice-stack-avatar")].every(e => getComputedStyle(e).borderTopColor === "rgba(0, 0, 0, 0)" && getComputedStyle(e).boxShadow === "none")'), true, 'Idle voice avatars must not have a painted border or halo');
   assert.equal(evaluate('[...document.querySelectorAll("[data-avatar-id]")].every(e => getComputedStyle(e).backgroundImage.endsWith(`/images/avatars/v3/${e.dataset.avatarId}.svg")`))'), true);
   browser('eval', 'Promise.all([0,31,32,799,143].map(id => new Promise((resolve,reject) => { const image = new Image(); image.onload=()=>resolve(true); image.onerror=reject; image.src=`/images/avatars/v3/${id}.svg`; })))');
   wait('document.querySelector(".chat-reaction[aria-pressed=true]") && !document.querySelector(".chat-add-reaction").disabled');
   assert.deepEqual(evaluate('[...document.querySelectorAll(".chat-reaction")].map(e => [e.getAttribute("aria-pressed"), e.textContent])'), [['true', '2'], ['false', '1']]);
   assert.equal(evaluate('document.querySelector(".chat-reaction").closest(".chat-message").querySelector("[data-avatar-id]").dataset.avatarId'), '0');
   if (artifacts) browser('screenshot', join(artifacts, 'avatars-desktop.png'));
+  // Explicit style-state mock: no microphone, transport, or live speaking detection.
+  browser('click', '.voice-stack');
+  wait('document.querySelector(".voice-occupants[data-open]") && !document.querySelector(".voice-occupants[data-open]").getAnimations({ subtree: true }).some(a => a.playState === "running")');
+  browser('eval', '[...document.querySelectorAll(".avatar, .voice-stack-avatar")].forEach(e => e.classList.add("speaking"))');
+  assert.equal(evaluate('[...document.querySelectorAll(".avatar, .voice-stack-avatar")].every(e => getComputedStyle(e).borderTopColor === "rgb(99, 122, 67)" && getComputedStyle(e).boxShadow !== "none")'), true, 'Speaking avatars retain their green border and halo');
+  if (artifacts) browser('screenshot', join(artifacts, 'avatars-speaking-style-mock.png'));
+  browser('eval', '[...document.querySelectorAll(".avatar, .voice-stack-avatar")].forEach(e => e.classList.remove("speaking"))');
+  browser('click', '.voice-stack');
   browser('find', 'first', '.chat-add-reaction', 'click');
   wait('!!document.querySelector(".chat-reaction-picker input")');
   if (artifacts) browser('screenshot', join(artifacts, 'avatars-reaction-picker.png'));
@@ -98,13 +109,24 @@ try {
   browser('eval', 'new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
   assert.deepEqual(evaluate('[...document.querySelectorAll(".chat-avatar [data-avatar-id]")].map(e => Number(e.dataset.avatarId))'), [0, 31, 32, 799, 143]);
   assert.equal(evaluate('[...document.querySelectorAll("[data-avatar-id]")].every(e => getComputedStyle(e.parentElement).backgroundColor === "rgba(0, 0, 0, 0)")'), true);
+  assert.equal(evaluate('[...document.querySelectorAll(".avatar, .voice-stack-avatar")].every(e => getComputedStyle(e).borderTopColor === "rgba(0, 0, 0, 0)" && getComputedStyle(e).boxShadow === "none")'), true, 'Narrow idle voice avatars stay unframed');
   if (artifacts) browser('screenshot', join(artifacts, 'avatars-narrow-members.png'));
+  browser('click', '.navigation-toggle');
+  wait('document.querySelector(".call-room").classList.contains("navigation-open")');
+  assert.equal(evaluate('getComputedStyle(document.querySelector(".direct-self .direct-avatar")).backgroundColor'), 'rgba(0, 0, 0, 0)', 'Narrow Browse self avatar has no backdrop');
+  if (artifacts) browser('screenshot', join(artifacts, 'avatars-narrow-browse.png'));
+  browser('click', '[aria-label="Close navigation"]');
+  wait('!document.querySelector(".call-room").classList.contains("navigation-open")');
   browser('click', '.member-list-toggle');
   wait('!document.querySelector(".space-member-presence")');
   browser('scroll', 'up', '1000', '--selector', '.chat-scroller');
   wait('document.querySelector(".chat-scroller").scrollTop === 0');
   if (artifacts) browser('screenshot', join(artifacts, 'avatars-narrow.png'));
-  browser('find', 'first', '.chat-add-reaction', 'click');
+  // Narrow layouts hide the hover button; use the keyboard message-actions entry.
+  browser('focus', '[data-message-key="client0"] .chat-message-actions-trigger');
+  browser('press', 'Enter');
+  wait('!!document.querySelector(".chat-message-actions")');
+  browser('click', '.chat-message-actions [aria-label="Add reaction"]');
   wait('!!document.querySelector(".chat-reaction-picker input")');
   assert.equal(evaluate('(() => { const r=document.querySelector(".chat-reaction-picker").getBoundingClientRect(); return r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight; })()'), true);
   if (artifacts) browser('screenshot', join(artifacts, 'avatars-reaction-picker-narrow.png'));

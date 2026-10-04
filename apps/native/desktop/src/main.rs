@@ -4030,7 +4030,6 @@ impl CaperApp {
                         person.muted
                     };
                     let speaking = own && self.voice.speaking(&person.id, muted, now);
-                    ui.painter().circle_filled(center, 11.0, SURFACE);
                     paint_avatar(
                         ui,
                         egui::Rect::from_center_size(center, egui::vec2(20.0, 20.0)),
@@ -4041,9 +4040,6 @@ impl CaperApp {
                         // Web: caper border plus a 1px caper ring.
                         ui.painter()
                             .circle_stroke(center, 11.0, Stroke::new(2.5, CAPER));
-                    } else {
-                        ui.painter()
-                            .circle_stroke(center, 11.0, Stroke::new(1.0, BORDER));
                     }
                 }
                 let count_x = rect.left()

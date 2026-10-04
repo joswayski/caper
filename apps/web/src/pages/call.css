@@ -249,7 +249,7 @@
 .voice-stack > svg { flex: none; width: 10px; height: 10px; transition: transform .2s ease; }
 .voice-stack[aria-expanded="false"] > svg { transform: rotate(-90deg); }
 .voice-stack:focus-visible { outline: 2px solid var(--terracotta-bright); outline-offset: 1px; }
-.voice-stack-avatar { width: 20px; height: 20px; display: grid; place-items: center; border: 2px solid var(--surface-sidebar); border-radius: var(--radius-avatar); color: #fff; font-size: .55rem; font-weight: 900; }
+.voice-stack-avatar { width: 20px; height: 20px; display: grid; place-items: center; border: 2px solid transparent; border-radius: var(--radius-avatar); color: #fff; font-size: .55rem; font-weight: 900; }
 .voice-stack-avatar + .voice-stack-avatar { margin-left: -6px; }
 .voice-stack-avatar.speaking { border-color: var(--caper); box-shadow: 0 0 0 1px var(--caper); }
 .voice-stack-faces small { margin-left: 4px; font-size: .7rem; font-weight: 750; font-variant-numeric: tabular-nums; }
