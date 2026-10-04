@@ -263,6 +263,8 @@ public final class AppModel {
         let exact = username.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !exact.isEmpty, account != nil, !busy else { return false }
         let attempt = generation
+        navigationGeneration += 1
+        let navigation = navigationGeneration
         busy = true; error = nil
         defer { if generation == attempt { busy = false } }
         do {
@@ -270,7 +272,7 @@ public final class AppModel {
             guard generation == attempt else { return false }
             if let index = directMessages.firstIndex(where: { $0.id == conversation.id }) { directMessages[index] = conversation }
             else { directMessages.append(conversation) }
-            await select(directMessage: conversation)
+            if navigationGeneration == navigation { await select(directMessage: conversation) }
             return generation == attempt
         } catch { if generation == attempt { self.error = error.localizedDescription }; return false }
     }

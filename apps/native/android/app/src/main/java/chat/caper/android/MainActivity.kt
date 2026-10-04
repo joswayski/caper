@@ -582,28 +582,22 @@ internal data class VoiceJoinIntent(
             if (state.account != null) {
                 HorizontalDivider(color = Border)
                 val invitePeople = owner && detail?.space?.demo == false
-                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable {
-                    show(if (invitePeople) Overlay.ManageSpace else Overlay.StartDirect)
-                }.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(painterResource(if (invitePeople) R.drawable.lucide_plus else R.drawable.lucide_speech), null, Modifier.size(17.dp), tint = TextMuted)
-                    Spacer(Modifier.width(9.dp))
-                    Text(if (invitePeople) "Invite people" else "New message", Modifier.weight(1f), fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                }
-                HorizontalDivider(color = Border)
                 Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("Direct messages", Modifier.weight(1f), color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     IconButton({ show(Overlay.StartDirect) }) { Icon(painterResource(R.drawable.lucide_plus), "Start direct message", tint = TextMuted) }
                 }
                 val selfDirect = state.directConversations.firstOrNull { it.peer.id == state.account.id }
-                val selfSelected = selfDirect?.id == state.selectedDirectId
+                val selfSelected = selfDirect != null && selfDirect.id == state.selectedDirectId
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
                     .background(if (selfSelected) TerracottaWash else Color.Transparent)
                     .clickable(enabled = !state.busy) { viewModel.openSelfDirect(); closeNavigation?.invoke() }.padding(horizontal = 9.dp),
                     verticalAlignment = Alignment.CenterVertically) {
                     Avatar(state.account.displayName ?: state.account.username ?: "You", 26.dp, avatarId = state.account.avatarId)
                     Spacer(Modifier.width(9.dp))
-                    Text(state.account.displayName ?: state.account.username ?: "You", color = if (selfSelected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Spacer(Modifier.width(6.dp)); Text("you", Modifier.weight(1f), color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                        Text(state.account.displayName ?: state.account.username ?: "You", Modifier.weight(1f, fill = false), color = if (selfSelected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Spacer(Modifier.width(6.dp)); Text("you", color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    }
                     if (selfDirect?.let { runCatching { java.math.BigInteger(it.lastSeq) > java.math.BigInteger(it.readSeq) }.getOrDefault(false) } == true)
                         Box(Modifier.size(8.dp).background(TerracottaBright, CircleShape).semantics { contentDescription = "Unread" })
                 }
@@ -622,6 +616,13 @@ internal data class VoiceJoinIntent(
                         }
                         if (unread) Box(Modifier.size(8.dp).background(TerracottaBright, CircleShape).semantics { contentDescription = "Unread" })
                     }
+                }
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).heightIn(min = 48.dp).clip(MaterialTheme.shapes.small).clickable {
+                    show(if (invitePeople) Overlay.ManageSpace else Overlay.StartDirect)
+                }.padding(horizontal = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(painterResource(R.drawable.lucide_plus), null, Modifier.size(17.dp), tint = TextMuted)
+                    Spacer(Modifier.width(9.dp))
+                    Text(if (invitePeople) "Invite people" else "New message", Modifier.weight(1f), color = TextMuted, fontSize = 13.sp)
                 }
                 if (pushAvailable) {
                     TextButton({

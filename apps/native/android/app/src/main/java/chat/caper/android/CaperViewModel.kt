@@ -240,10 +240,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startDirect(username: String, done: () -> Unit = {}) = launchAction { request ->
+        val navigation = generation
         val conversation = api.startDirectConversation(requireAccountToken(), username)
         if (request != accountGeneration) return@launchAction
         mutable.value = mutable.value.copy(directConversations = mergeDirects(mutable.value.directConversations, listOf(conversation)))
-        done(); selectDirect(conversation)
+        if (navigation == generation) { done(); selectDirect(conversation) }
     }
 
     /** Opens the signed-in account's notes, creating the real DM on first use. */

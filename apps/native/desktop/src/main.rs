@@ -934,16 +934,23 @@ impl CaperApp {
                 } if generation == self.generation => {
                     self.directs = directs;
                 }
-                Event::DirectCreated { generation, result } if generation == self.generation => {
+                Event::DirectCreated {
+                    generation,
+                    navigation,
+                    result,
+                } if generation == self.generation => {
                     self.loading = false;
                     match result {
                         Ok(direct) => {
                             self.directs.retain(|item| item.id != direct.id);
                             self.directs.push(direct.clone());
-                            self.dialog = None;
-                            self.select_direct(direct);
+                            if navigation == self.navigation {
+                                self.dialog = None;
+                                self.select_direct(direct);
+                            }
                         }
-                        Err(error) => self.error = Some(error),
+                        Err(error) if navigation == self.navigation => self.error = Some(error),
+                        Err(_) => {}
                     }
                 }
                 Event::Restored { generation, result } if generation == self.generation => {
@@ -1249,8 +1256,12 @@ impl CaperApp {
                 }
                 self.loading = true;
                 self.error = None;
+                self.navigation += 1;
+                self.opening = false;
+                self.navigation_target = None;
                 self.worker.send(Command::CreateDirect {
                     generation: self.generation,
+                    navigation: self.navigation,
                     token,
                     username,
                 });
@@ -3490,8 +3501,28 @@ impl CaperApp {
                                 let self_active = self_direct.as_ref().is_some_and(|direct| self.selected_direct.as_deref() == Some(&direct.id));
                                 let self_unread = self_direct.as_ref().is_some_and(|direct| model::sequence(&direct.last_seq).unwrap_or(0) > model::sequence(&direct.read_seq).unwrap_or(0));
                                 ui.horizontal(|ui| {
-                                    let name = format!("{} you", account.display_name.as_deref().or(account.username.as_deref()).unwrap_or("You"));
-                                    let (response, _) = channel_button(ui, ui.available_width() - 18.0, &name, NavIcon::Speech, self_active, false);
+                                    let display_name = account.display_name.as_deref().or(account.username.as_deref()).unwrap_or("You");
+                                    let name = format!("{display_name} you");
+                                    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width() - 18.0, 32.0), egui::Sense::click());
+                                    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, ui.is_enabled(), self_active, &name));
+                                    if self_active || response.hovered() || response.has_focus() {
+                                        ui.painter().rect_filled(rect, 6.0, if self_active { Color32::from_rgba_unmultiplied(182, 77, 50, 40) } else { RAISED });
+                                    }
+                                    if response.has_focus() {
+                                        ui.painter().rect_stroke(rect, 6.0, Stroke::new(1.0, TERRACOTTA_BRIGHT), egui::StrokeKind::Inside);
+                                    }
+                                    paint_avatar(ui, egui::Rect::from_center_size(egui::pos2(rect.left() + 17.5, rect.center().y), egui::vec2(24.0, 24.0)), display_name, account.avatar_id);
+                                    let mut label = egui::text::LayoutJob::default();
+                                    label.append(display_name, 0.0, egui::TextFormat {
+                                        font_id: egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into())),
+                                        color: if self_active { TEXT } else { MUTED }, ..Default::default()
+                                    });
+                                    label.append(" you", 0.0, egui::TextFormat {
+                                        font_id: egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Medium".into())),
+                                        color: MUTED, ..Default::default()
+                                    });
+                                    let galley = ui.painter().layout_job(label);
+                                    ui.painter().with_clip_rect(rect).galley(egui::pos2(rect.left() + 35.0, rect.center().y - galley.size().y / 2.0 - 1.0), galley, TEXT);
                                     if self_unread { ui.label(RichText::new("●").size(9.0).color(TERRACOTTA_BRIGHT)); }
                                     if response.clicked() { self.select_or_create_self_direct(); }
                                 });
@@ -6143,7 +6174,7 @@ impl CaperApp {
                                                     && let Some(token) = self.token.clone() {
                                                     self.loading = true;
                                                     self.error = None;
-                                                    self.worker.send(Command::CreateDirect { generation: self.generation, token, username: self.member_username.trim().to_owned() });
+                                                    self.worker.send(Command::CreateDirect { generation: self.generation, navigation: self.navigation, token, username: self.member_username.trim().to_owned() });
                                                 }
                                             }
                                         }
@@ -7709,7 +7740,10 @@ fn destructive(ui: &mut egui::Ui, text: &str) -> egui::Response {
 }
 
 fn full_bleed_separator(ui: &egui::Ui, y: f32) {
-    ui.painter().hline(
+    // Panels clip to their padded content; extend the clip as well as the line.
+    let mut painter = ui.painter().clone();
+    painter.set_clip_rect(ui.clip_rect().expand2(egui::vec2(12.0, 0.5)));
+    painter.hline(
         (ui.max_rect().left() - 12.0)..=(ui.max_rect().right() + 12.0),
         y,
         Stroke::new(1.0, BORDER),
@@ -10058,23 +10092,32 @@ mod tests {
 
     #[test]
     fn lower_sidebar_separators_span_the_full_sidebar_width() {
-        let context = egui::Context::default();
-        let mut app = CaperApp::new(
-            &context,
-            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
-            Some("parity-voice-connected"),
-        );
-        render(&mut app, &context, vec![]);
-        let output = render(&mut app, &context, vec![]);
-        let full_width = output.shapes.iter().filter(|shape| matches!(
-            &shape.shape,
-            egui::Shape::LineSegment { points, stroke }
-                if stroke.color == super::BORDER && points[0].x == 0.0 && points[1].x == 280.0
-        )).count();
-        assert!(
-            full_width >= 3,
-            "header, DM, and voice separators must be full width; found {full_width}"
-        );
+        for width in [220.0, 337.0] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-voice-connected"),
+            );
+            app.sidebar_width = width;
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            // The rail occupies 59px, followed by the channel sidebar and a 1px divider.
+            let dividers: Vec<_> = output.shapes.iter().filter(|shape| matches!(
+                &shape.shape,
+                egui::Shape::LineSegment { points, stroke }
+                    if stroke.color == super::BORDER && points[0].x == 59.0 && points[1].x == 59.0 + width
+            )).collect();
+            assert!(
+                dividers.len() >= 3,
+                "header, DM, and voice separators must span {width}px; found {dividers:?}"
+            );
+            assert!(
+                dividers.iter().all(|shape| shape.clip_rect.left() <= 59.0
+                    && shape.clip_rect.right() >= 59.0 + width),
+                "full-width lines must not be clipped to the padded content: {dividers:?}"
+            );
+        }
     }
 
     fn text_position(output: &egui::FullOutput, label: &str) -> egui::Pos2 {

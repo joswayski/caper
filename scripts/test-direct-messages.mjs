@@ -38,7 +38,23 @@ try {
   browser('cookies', 'set', 'caper_fixture', 'owner', '--url', web, '--path', '/', '--sameSite', 'Lax');
   browser('open', `${web}/spaces`);
   wait('!!document.querySelector(".direct-section") && !!document.querySelector(".chat-composer textarea")');
+  assert.equal(evaluate('document.querySelector(".direct-self small").textContent'), 'you');
+  assert.equal(evaluate('document.querySelector(".direct-section").textContent.includes("No direct messages yet")'), false);
+  assert.equal((await conversations()).conversations.length, 0, 'Showing the self row must not create a conversation');
+  assert.ok(evaluate(`(() => { const panel = document.querySelector('.people-panel').getBoundingClientRect();
+    return ['.channel-navigation > header', '.direct-section'].every(selector => {
+      const node = document.querySelector(selector), r = node.getBoundingClientRect();
+      const s = getComputedStyle(node, selector.includes('header') ? '::after' : '::before');
+      return Math.abs(r.left + parseFloat(s.left) - panel.left) < 1 && Math.abs(r.right - parseFloat(s.right) - (panel.right - 1)) < 1;
+    }); })()`), 'Sidebar dividers must span the panel, not just its padded contents');
   screenshot('dm-empty-list');
+  browser('click', '.direct-action');
+  wait('document.querySelector(".space-dialog h2")?.textContent === "Manage space"');
+  browser('fill', '.member-add input', 'sam');
+  browser('click', '.member-add button[type="submit"]');
+  wait('document.querySelector(".member-manager")?.textContent.includes("@sam · Invited")');
+  screenshot('dm-invite-people');
+  browser('click', '[aria-label="Close Manage space"]');
   browser('click', '[aria-label="New direct message"]');
   wait('!!document.querySelector(".space-dialog[open]")');
   browser('fill', '.space-dialog input', 'missing_account');
@@ -65,7 +81,7 @@ try {
   await control({ incomingMessage: { channelId: 'dm0000000001', text: 'Unread while browsing a channel.' } });
   browser('reload');
   wait('!!document.querySelector(".direct-unread")');
-  browser('click', '.direct-select');
+  browser('click', '.direct-select:not(.direct-self)');
   wait('document.querySelector(".chat-messages")?.textContent.includes("Unread while browsing a channel.") && !document.querySelector(".direct-unread")');
   assert.equal((await conversations()).conversations[0].readSeq, '3');
   const dmHistory = await (await fetch(`${api}/api/chat/channels/dm0000000001/messages`, { headers: { authorization: 'Bearer fixture-owner-token', connection: 'close' } })).json();
@@ -95,8 +111,8 @@ try {
   browser('click', '.space-dialog button[type="submit"]');
   wait('document.querySelector(".space-menu h1")?.textContent === "TEST FIXTURE Second space" && document.querySelector(".chat-heading")?.textContent.includes("general")');
   assert.equal(evaluate('document.querySelectorAll("#space-channel-list > li").length'), 1);
-  assert.equal(evaluate('document.querySelectorAll(".direct-select").length'), 1, 'Same global DM list in a different space');
-  browser('click', '.direct-select');
+  assert.equal(evaluate('document.querySelectorAll(".direct-select").length'), 2, 'Self row and the same global DM in a different space');
+  browser('click', '.direct-select:not(.direct-self)');
   wait('document.querySelector(".chat-messages")?.textContent.includes("A live reply from Alex.")');
   assert.equal(evaluate('document.querySelector("vite-error-overlay")'), null, 'Switching channel/DM/space must not surface cancelled requests as dev errors');
   screenshot('dm-second-space');
@@ -108,7 +124,7 @@ try {
   browser('click', '.navigation-toggle');
   wait('!!document.querySelector(".spaces-room.navigation-open")');
   screenshot('dm-narrow-browse');
-  browser('click', '.direct-select');
+  browser('click', '.direct-select:not(.direct-self)');
   wait('!document.querySelector(".spaces-room.navigation-open")');
   browser('fill', '.chat-composer textarea', 'A global draft survives losing a space.');
   await control({ noSpaces: true });
@@ -134,7 +150,61 @@ try {
   browser('click', '.space-dialog button[type="submit"]');
   wait('document.querySelector(".chat-messages")?.textContent.includes("still messaging without a space.") && !document.querySelector(".space-dialog[open]")');
   assert.equal((await conversations()).conversations.length, 1, 'No-space onboarding can reopen the existing global DM');
-  console.log('PASS: DM start/error, canonical reopen, live send/reply, reaction add/remove/persistence/read receipts, channel isolation, read/unread, space switching, space-revocation draft/history, deep link, no-space send/onboarding and desktop/narrow navigation.');
+  browser('click', '.navigation-toggle');
+  wait('!!document.querySelector(".spaces-room.navigation-open")');
+  assert.equal(evaluate('document.querySelector(".direct-action").textContent'), 'New message', 'No-space accounts cannot invite people to a space');
+  await control({ failure: { path: '/api/dms', method: 'POST', status: 503, error: 'TEST FIXTURE: notes temporarily unavailable' } });
+  browser('click', '.direct-self');
+  wait('document.querySelector(".direct-section [role=alert]")?.textContent.includes("notes temporarily unavailable")');
+  screenshot('dm-self-error');
+  assert.equal((await conversations()).conversations.length, 1);
+  // Hold the creation request while the user chooses another conversation.
+  // A late response may add the notes row, but must not steal that selection.
+  evaluate(`(() => {
+    const fetch = window.fetch.bind(window);
+    window.fetch = async (...args) => {
+      if (args[0] === '/api/dms' && args[1]?.method === 'POST') {
+        window.fetch = fetch;
+        await new Promise(resolve => { window.releaseNotesRequest = resolve; });
+      }
+      return fetch(...args);
+    };
+  })()`);
+  browser('click', '.direct-self');
+  wait('typeof window.releaseNotesRequest === "function" && document.querySelector(".direct-self").disabled');
+  browser('click', '.direct-select:not(.direct-self)');
+  wait('document.querySelector(".chat-heading")?.textContent.includes("TEST FIXTURE Alex") && !document.querySelector(".spaces-room.navigation-open")');
+  evaluate('window.releaseNotesRequest()');
+  wait('!document.querySelector(".direct-self").disabled');
+  assert.equal(new URL(evaluate('location.href')).searchParams.get('dm'), 'dm0000000001', 'Late notes creation must not override a subsequent selection');
+  assert.ok(evaluate('document.querySelector(".chat-heading").textContent.includes("TEST FIXTURE Alex")'));
+  browser('click', '.navigation-toggle');
+  wait('!!document.querySelector(".spaces-room.navigation-open")');
+  browser('click', '.direct-self');
+  wait('document.querySelector(".chat-heading")?.textContent.includes("Fixture Owner") && !document.querySelector(".spaces-room.navigation-open")');
+  browser('fill', '.chat-composer textarea', 'TEST FIXTURE — private notes that survive a reload.');
+  browser('press', 'Enter');
+  wait('document.querySelector(".chat-messages")?.textContent.includes("private notes that survive a reload.")');
+  browser('reload');
+  wait('document.querySelector(".chat-messages")?.textContent.includes("private notes that survive a reload.")');
+  browser('set', 'viewport', '1440', '900', '2');
+  wait('!!document.querySelector(".direct-self[aria-current=page]")');
+  assert.equal(evaluate('document.querySelectorAll(".direct-self").length'), 1, 'Stored notes must not duplicate the pinned self row');
+  screenshot('dm-self-desktop');
+  browser('click', '.direct-select:not(.direct-self)');
+  wait('document.querySelector(".chat-heading")?.textContent.includes("TEST FIXTURE Alex")');
+  assert.equal(evaluate('document.querySelector(".chat-messages").textContent.includes("private notes that survive a reload.")'), false);
+  browser('click', '.direct-self');
+  wait('document.querySelector(".chat-messages")?.textContent.includes("private notes that survive a reload.")');
+  const saved = (await conversations()).conversations;
+  assert.equal(saved.length, 2, 'Reopening self notes must reuse the same conversation');
+  assert.equal(saved.find(item => item.peer.id === 'owner0000001').id, 'dm0000000002');
+  browser('set', 'viewport', '390', '844', '2');
+  browser('click', '.navigation-toggle');
+  wait('!!document.querySelector(".spaces-room.navigation-open")');
+  assert.ok(evaluate('document.documentElement.scrollWidth <= innerWidth'));
+  screenshot('dm-self-narrow-browse');
+  console.log('PASS: self notes lazy creation/error/reuse/send/persistence/isolation/navigation race, full-width dividers, real space invitation action, DM start/error/reopen/live replies/reactions/read receipts, space independence, and desktop/narrow navigation (disposable fixture).');
 } finally {
   browser('close');
 }

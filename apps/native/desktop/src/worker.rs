@@ -15,6 +15,7 @@ pub enum Command {
     },
     CreateDirect {
         generation: u64,
+        navigation: u64,
         token: String,
         username: String,
     },
@@ -262,6 +263,7 @@ pub enum Event {
     },
     DirectCreated {
         generation: u64,
+        navigation: u64,
         result: Result<DirectConversation, String>,
     },
     Restored {
@@ -666,10 +668,12 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
         },
         Command::CreateDirect {
             generation,
+            navigation,
             token,
             username,
         } => Event::DirectCreated {
             generation,
+            navigation,
             result: api
                 .create_direct(&token, &username)
                 .map_err(|error| error.to_string()),

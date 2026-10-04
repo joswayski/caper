@@ -598,21 +598,6 @@ private struct ChannelSidebar: View {
             }
             if model.account != nil {
                 VStack(spacing: 0) {
-                    Button {
-                        if model.isOwner, model.detail?.space.demo == false { sheet = .manageSpace }
-                        else { sheet = .newDirectMessage }
-                    } label: {
-                        HStack(spacing: 9) {
-                            CaperIcon(name: model.isOwner && model.detail?.space.demo == false ? "plus" : "speech", size: 17)
-                            Text(model.isOwner && model.detail?.space.demo == false ? "Invite people" : "New message")
-                            Spacer()
-                        }
-                        .font(CaperTheme.font(13, weight: .bold)).foregroundStyle(CaperTheme.text)
-                        .padding(.horizontal, 16).frame(minHeight: 44)
-                        .contentShape(Rectangle())
-                    }.buttonStyle(.plain).modifier(ControlHover())
-                        .accessibilityIdentifier(model.isOwner && model.detail?.space.demo == false ? "invite-people" : "new-message")
-                    Divider().overlay(CaperTheme.border)
                     HStack {
                         Text("Direct messages").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
                         Spacer()
@@ -625,17 +610,19 @@ private struct ChannelSidebar: View {
                                 let selfConversation = model.directMessages.first { $0.peer.id == account.id }
                                 Button { Task { await model.openSelfDirectMessage() } } label: {
                                     HStack(spacing: 9) {
-                                        CaperIcon(name: "speech", size: 17)
+                                        Avatar(name: account.displayName ?? account.username ?? "You", size: 24, avatarID: account.avatarId)
                                         Text(account.displayName ?? account.username ?? "You").lineLimit(1)
                                         Text("you").font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                                            .fixedSize(horizontal: true, vertical: false)
                                         Spacer()
                                         if selfConversation?.unread == true { Circle().fill(CaperTheme.terracottaBright).frame(width: 8, height: 8).accessibilityLabel("Unread") }
                                     }.font(CaperTheme.font(13, weight: .medium))
                                         .foregroundStyle(selfConversation.map { model.selectedDirectMessageID == $0.id } == true ? CaperTheme.text : CaperTheme.muted)
-                                        .padding(.horizontal, 9).frame(height: 38)
+                                        .padding(.horizontal, 9).frame(height: 44)
                                         .background(selfConversation.map { model.selectedDirectMessageID == $0.id } == true ? CaperTheme.terracotta.opacity(0.16) : Color.clear)
                                         .clipShape(RoundedRectangle(cornerRadius: 6))
-                                }.buttonStyle(.plain).disabled(model.busy)
+                                        .contentShape(Rectangle())
+                                }.buttonStyle(.plain).modifier(ControlHover()).disabled(model.busy)
                                     .accessibilityIdentifier("dm-self")
                             }
                             ForEach(model.directMessages.filter { $0.peer.id != model.account?.id }) { conversation in
@@ -647,14 +634,28 @@ private struct ChannelSidebar: View {
                                         if conversation.unread { Circle().fill(CaperTheme.terracottaBright).frame(width: 8, height: 8).accessibilityLabel("Unread") }
                                     }.font(CaperTheme.font(13, weight: .medium))
                                         .foregroundStyle(model.selectedDirectMessageID == conversation.id ? CaperTheme.text : CaperTheme.muted)
-                                        .padding(.horizontal, 9).frame(height: 38)
+                                        .padding(.horizontal, 9).frame(height: 44)
                                         .background(model.selectedDirectMessageID == conversation.id ? CaperTheme.terracotta.opacity(0.16) : Color.clear)
                                         .clipShape(RoundedRectangle(cornerRadius: 6))
                                 }.buttonStyle(.plain).accessibilityIdentifier("dm-\(conversation.id)")
                                     .accessibilityValue(model.selectedDirectMessageID == conversation.id ? "Selected" : conversation.unread ? "Unread" : "")
                             }
                         }.padding(.horizontal, 16)
-                    }.frame(height: min(180, max(41, CGFloat(model.directMessages.filter { $0.peer.id != model.account?.id }.count + 1) * 41)))
+                    }.frame(height: min(180, max(47, CGFloat(model.directMessages.filter { $0.peer.id != model.account?.id }.count + 1) * 47)))
+                    Button {
+                        if model.isOwner, model.detail?.space.demo == false { sheet = .manageSpace }
+                        else { sheet = .newDirectMessage }
+                    } label: {
+                        HStack(spacing: 9) {
+                            CaperIcon(name: "plus", size: 17)
+                            Text(model.isOwner && model.detail?.space.demo == false ? "Invite people" : "New message")
+                            Spacer()
+                        }
+                        .font(CaperTheme.font(13, weight: .medium)).foregroundStyle(CaperTheme.muted)
+                        .padding(.horizontal, 9).frame(minHeight: 44)
+                        .contentShape(Rectangle())
+                    }.buttonStyle(.plain).modifier(ControlHover()).padding(.horizontal, 16)
+                        .accessibilityIdentifier(model.isOwner && model.detail?.space.demo == false ? "invite-people" : "new-message")
                     if model.pushAvailable {
                         Toggle("Direct message notifications", isOn: Binding(
                             get: { model.pushEnabled },
