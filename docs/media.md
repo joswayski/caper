@@ -3294,6 +3294,51 @@ The test is ignored by default and requires `CAPER_SPEECH_SFU_SMOKE=authorized-2
 and its exact private PulseAudio socket. Each public run needs explicit approval;
 do not run all ignored tests as a batch. Local roster/probe regressions run in CI.
 
+### Windows microphone access and firewall prompts
+
+Windows desktop capture uses the pinned WebRTC WASAPI implementation's
+**shared mode**. A Discord call does not normally prevent Caper from using the
+same microphone. Caper cannot bypass Windows microphone privacy settings or
+another application's exclusive access. If initialization/start fails, check
+**Settings → Privacy & security → Microphone → Microphone access / Let desktop
+apps access your microphone**, or select an available input in Caper. Disconnect
+from Discord temporarily to isolate a sharing/driver problem; muting Discord
+may leave capture open. The generic failure does not establish a Discord conflict.
+
+**System default** means the normal Windows input/output default, including at
+startup, replay, and fresh microphone reopen. WebRTC's implicit default is the
+communications default, which can be a different or unavailable device. An
+explicit saved device never falls back to another microphone. Failed capture
+startup closes the publication gate and reports whether initialization or start
+failed; retry must not be treated as an already-running microphone. A failed
+input switch restores the previous route's live/muted intent, while keeping old
+capture epochs fenced until the fresh peer is ready.
+
+Windows Firewall may ask to allow `caper-desktop` when voice or an audio test
+first gathers WebRTC ICE candidates. Both calls and the local test's private
+peer pair open network sockets. Test recordings stay on this machine and are
+never uploaded, but the test is not socket-free. Firewall permission is separate
+from microphone access and cannot fix a WASAPI capture failure. For a trusted
+home network, allow **Private networks**; leave **Public networks** unchecked
+unless voice is also needed on networks Windows classifies as public. Windows
+can classify a home connection as public, so check the active network profile.
+Cancelling can create a block rule; review Caper's existing rules in Windows
+Firewall if voice later cannot connect. Caper does not change firewall rules or
+disable security prompts automatically. The installer keeps a stable executable
+path across updates, but portable copies at new paths can prompt again.
+
+**Publisher: Unknown** reflects the unsigned Windows executable. Adding version
+metadata does not replace trusted Authenticode signing, and signing does not
+itself grant firewall or microphone access. See Microsoft's
+[application firewall rules](https://learn.microsoft.com/en-us/windows/security/operating-system-security/network-security/windows-firewall/rules#applications-rules).
+
+Windows acceptance still requires distinct normal/communications defaults,
+explicit input selection, mute/reopen, concurrent Discord capture, denied mic
+permission, and fresh firewall-rule checks on private/public profiles. Linux
+unit tests and virtual-device checks do not establish Windows behavior. Static
+`parity-voice-error` and `parity-audio-error` fixtures check error presentation
+without capturing audio or opening a transport.
+
 ### Account diagnostics visibility
 
 `DEBUG_USERS` is an optional, server-only comma-separated username allowlist for

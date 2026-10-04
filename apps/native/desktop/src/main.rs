@@ -534,6 +534,8 @@ impl CaperApp {
                     app.media_availability.clear();
                 } else if name == "parity-voice-unavailable" {
                     app.media_availability.insert("chan00000001".into(), false);
+                } else if name == "parity-voice-error" {
+                    app.voice.error = Some(media::mic_test::CAPTURE_START_ERROR.into());
                 } else if name == "parity-browse" {
                     app.navigation_open = true;
                 } else if matches!(name, "parity-voice-rosters" | "parity-voice-rosters-narrow") {
@@ -615,13 +617,19 @@ impl CaperApp {
                 } else if name == "parity-audio-debug" {
                     app.account.as_mut().unwrap().debug_enabled = true;
                     app.dialog = Some(Dialog::Diagnostics);
-                } else if matches!(name, "parity-audio" | "parity-audio-recorded") {
+                } else if matches!(
+                    name,
+                    "parity-audio" | "parity-audio-recorded" | "parity-audio-error"
+                ) {
                     app.dialog = Some(Dialog::Audio);
                     if name == "parity-audio-recorded" {
                         app.voice.microphone = MicrophoneState::Ready(Recorded {
                             seconds: 3.6,
                             silent: false,
                         });
+                    } else if name == "parity-audio-error" {
+                        app.voice.microphone_error =
+                            Some(media::mic_test::CAPTURE_START_ERROR.into());
                     }
                 } else if matches!(
                     name,
@@ -9270,6 +9278,49 @@ mod tests {
             app.members_visible,
             "narrow toggle must preserve wide preference"
         );
+    }
+
+    #[test]
+    fn microphone_errors_wrap_within_the_dock_and_audio_dialog() {
+        for fixture in ["parity-voice-error", "parity-audio-error"] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some(fixture),
+            );
+            app.sidebar_width = 220.0;
+            for _ in 0..3 {
+                render(&mut app, &context, vec![]);
+            }
+            let output = if fixture == "parity-audio-error" {
+                scroll_modal_to_bottom(&mut app, &context)
+            } else {
+                render(&mut app, &context, vec![])
+            };
+            let shape = output
+                .shapes
+                .iter()
+                .find(|shape| matches!(
+                    &shape.shape,
+                    egui::Shape::Text(text) if text.galley.job.text == crate::media::mic_test::CAPTURE_START_ERROR
+                ))
+                .unwrap_or_else(|| {
+                    panic!("{fixture} microphone failure must be visible");
+                });
+            let egui::Shape::Text(text) = &shape.shape else {
+                unreachable!();
+            };
+            let bounds = egui::Rect::from_min_size(text.pos, text.galley.size());
+            assert!(
+                shape.clip_rect.contains_rect(bounds),
+                "{fixture} error is clipped"
+            );
+            if fixture == "parity-voice-error" {
+                assert!(text.galley.rows.len() > 1, "dock error must wrap");
+                assert!(bounds.right() <= 59.0 + app.sidebar_width);
+            }
+        }
     }
 
     #[test]
