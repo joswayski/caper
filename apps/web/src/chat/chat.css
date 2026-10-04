@@ -57,10 +57,18 @@
 .chat-reaction-picker-heading button { display: grid; place-items: center; width: 30px; height: 30px; border: 0; border-radius: 8px; background: none; color: var(--text-muted); cursor: pointer; }
 .chat-reaction-picker-body { flex: 1; min-height: 0; }
 .chat-reaction-picker-body > p { padding: 16px; font-size: .85rem; }
-.chat-reaction-picker .EmojiPickerReact { --epr-bg-color: var(--surface); --epr-text-color: var(--text-muted); --epr-category-label-bg-color: var(--surface); --epr-search-input-bg-color: var(--blackout, #0c0d0f); --epr-search-input-text-color: var(--text); --epr-search-border-color: var(--border); --epr-search-input-bg-color-active: #0c0d0f; --epr-search-border-color-active: #b64d32; --epr-highlight-color: #b64d32; --epr-hover-bg-color: #292c2f; --epr-focus-bg-color: #34383b; --epr-emoji-size: 26px; --epr-emoji-padding: 7px; --epr-category-navigation-button-size: 24px; --epr-header-padding: 4px 12px; border: 0; font-family: inherit; }
+.chat-reaction-picker .EmojiPickerReact { --epr-bg-color: var(--surface); --epr-text-color: var(--text-muted); --epr-category-label-bg-color: var(--surface); --epr-search-input-bg-color: var(--blackout, #0c0d0f); --epr-search-input-text-color: var(--text); --epr-search-border-color: var(--border); --epr-search-input-bg-color-active: #0c0d0f; --epr-search-border-color-active: #b64d32; --epr-highlight-color: #b64d32; --epr-hover-bg-color: #292c2f; --epr-focus-bg-color: #34383b; --epr-emoji-size: 26px; --epr-emoji-padding: 7px; --epr-category-navigation-button-size: 32px; --epr-category-icon-active-color: var(--text); --epr-category-icon-inactive-color: var(--text-muted); --epr-header-padding: 4px 12px; border: 0; font-family: inherit; }
+.chat-reaction-picker .EmojiPickerReact .epr-header { display: flex; flex-direction: column; }
+.chat-reaction-picker .EmojiPickerReact .epr-category-nav { order: -1; padding: 0 8px; margin-bottom: 8px; border-bottom: 1px solid var(--border); }
+.chat-reaction-picker .EmojiPickerReact .epr-category-nav .epr-cat-btn { height: 40px; }
+.chat-reaction-picker .EmojiPickerReact .epr-category-nav .epr-cat-btn.epr-active::after { content: ""; position: absolute; left: -2px; right: -2px; bottom: -1px; height: 2px; background: var(--terracotta); }
+/* Pointer clicks select with an underline, not the library's circular :focus
+   ring. Keep a separate, keyboard-only focus indicator. */
+.chat-reaction-picker .EmojiPickerReact .epr-category-nav .epr-cat-btn:focus::before { content: none; }
+.chat-reaction-picker .EmojiPickerReact .epr-category-nav .epr-cat-btn:focus-visible { outline: 2px solid var(--terracotta); outline-offset: -2px; border-radius: 8px; }
 /* The picker's live result status is otherwise screen-reader-only. Show it
-   below the category bar when the search has no visible categories. */
-.chat-reaction-picker .EmojiPickerReact:not(:has(.epr-emoji-category:not(.epr-hidden))) .epr-status-search-results { clip: auto; clip-path: none; width: 100%; height: auto; overflow: visible; white-space: normal; top: calc(100% + 48px); left: 0; text-align: center; font-size: .85rem; color: var(--text-muted); }
+   below the search field when the search has no visible categories. */
+.chat-reaction-picker .EmojiPickerReact:not(:has(.epr-emoji-category:not(.epr-hidden))) .epr-status-search-results { clip: auto; clip-path: none; width: 100%; height: auto; overflow: visible; white-space: normal; top: calc(100% + 24px); left: 0; text-align: center; font-size: .85rem; color: var(--text-muted); }
 @media (max-width: 600px) {
   .chat-reaction { min-height: 36px; padding-inline: 10px; }
 }
