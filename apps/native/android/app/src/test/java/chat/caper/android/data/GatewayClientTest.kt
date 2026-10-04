@@ -83,12 +83,12 @@ class GatewayClientTest {
         }
         val messages = ArrayBlockingQueue<String>(4)
         val reactions = ArrayBlockingQueue<String>(4)
-        val rosters = ArrayBlockingQueue<String>(4)
+        val rosters = ArrayBlockingQueue<Pair<String, Long?>>(4)
         val resets = AtomicInteger()
         val gateway = GatewayClient(
             server.url("/").toString().trimEnd('/'), "account-secret", "chat00000001", "7", { messages.add(it.seq) },
             onReaction = { reactions.add(it.seq) },
-            onMedia = { _, people -> rosters.add(people.single().name) }, onMediaDisconnected = { resets.incrementAndGet() },
+            onMedia = { _, people, startedAt -> rosters.add(people.single().name to startedAt) }, onMediaDisconnected = { resets.incrementAndGet() },
             onAccessDenied = { fail("handoff is not revocation") }, onResync = { fail("handoff must not resync") },
         )
         fun subscriptions(after: String): Pair<String, String> {
@@ -103,20 +103,20 @@ class GatewayClientTest {
             send("""{"type":"subscribed","id":"$chat"}"""); send("""{"type":"subscribed","id":"$media"}""")
             send("""{"type":"event","id":"$chat","event":{"type":"ready","cursor":"$cursor"}}""")
         }
-        fun WebSocket.roster(id: String, revision: Int) = send("""{"type":"event","id":"$id","event":{"type":"snapshot","revision":$revision,"participants":[{"id":"speaker","name":"revision-$revision","muted":false,"deafened":false}]}}""")
+        fun WebSocket.roster(id: String, revision: Int) = send("""{"type":"event","id":"$id","event":{"type":"snapshot","revision":$revision,"sessionStartedAt":${revision * 1000},"participants":[{"id":"speaker","name":"revision-$revision","muted":false,"deafened":false}]}}""")
         fun WebSocket.message(id: String, seq: String) = send("""{"type":"event","id":"$id","event":{"type":"message.created","seq":"$seq","message":{"id":"message-$seq","channelId":"chat00000001","seq":"$seq","clientMessageId":"00000000-0000-4000-8000-00000000000$seq","createdAt":"2026-10-03T00:00:00Z","author":{"id":"author","name":"Author","isGuest":false},"content":{"version":1,"type":"text","text":"message $seq"}}}}""")
         fun WebSocket.reaction(id: String, seq: String) = send("""{"type":"event","id":"$id","event":{"type":"message.reactions","schemaVersion":1,"channelId":"chat00000001","seq":"$seq","messageId":"message-7","reactions":[{"emoji":"👍","authorIds":["author"]}]}}""")
         try {
             gateway.watchMedia(listOf("voice000001"), false); gateway.start()
             val old = sockets.poll(2, TimeUnit.SECONDS)!!; val (chat, media) = subscriptions("7")
             old.ready(chat, media, "7"); old.roster(media, 5)
-            assertEquals("revision-5", rosters.poll(2, TimeUnit.SECONDS))
+            assertEquals("revision-5" to 5000L, rosters.poll(2, TimeUnit.SECONDS))
             old.send("""{"type":"migrating"}""")
             val candidate = sockets.poll(2, TimeUnit.SECONDS)!!; assertEquals(chat to media, subscriptions("7"))
             candidate.ready(chat, media, "7"); candidate.roster(media, 4)
             assertNull(closed.poll(250, TimeUnit.MILLISECONDS))
             old.reaction(chat, "8"); old.roster(media, 6)
-            assertEquals("8", reactions.poll(2, TimeUnit.SECONDS)); assertEquals("revision-6", rosters.poll(2, TimeUnit.SECONDS))
+            assertEquals("8", reactions.poll(2, TimeUnit.SECONDS)); assertEquals("revision-6" to 6000L, rosters.poll(2, TimeUnit.SECONDS))
             candidate.roster(media, 6)
             assertNull("media alone cannot promote a chat stream still behind", closed.poll(250, TimeUnit.MILLISECONDS))
             candidate.reaction(chat, "8")
@@ -248,12 +248,12 @@ class GatewayClientTest {
             }
             override fun onMessage(webSocket: WebSocket, text: String) { incoming.add(text) }
         }))
-        val rosters = ArrayBlockingQueue<Pair<String, Int>>(8)
+        val rosters = ArrayBlockingQueue<Triple<String, Int, Long?>>(8)
         val denied = ArrayBlockingQueue<String>(2)
         val gateway = GatewayClient(
             baseUrl = server.url("/").toString().trimEnd('/'), token = "account-secret",
             channelId = "chat00000001", initialCursor = "0", onMessage = {},
-            onMedia = { channel, people -> rosters.add(channel to people.size) },
+            onMedia = { channel, people, startedAt -> rosters.add(Triple(channel, people.size, startedAt)) },
             onMediaDenied = { denied.add(it) }, onAccessDenied = { fail("chat must remain accessible") }, onResync = {},
         )
         var socket: WebSocket? = null
@@ -270,12 +270,12 @@ class GatewayClientTest {
             val first = media.first { it["channelId"]?.jsonPrimitive?.content == "voice000001" }.getValue("id").jsonPrimitive.content
             val second = media.first { it["channelId"]?.jsonPrimitive?.content == "voice000002" }.getValue("id").jsonPrimitive.content
             val participant = """{"id":"person","name":"One","muted":false,"deafened":false}"""
-            socket.send("""{"type":"event","id":"$first","event":{"type":"snapshot","revision":2,"participants":[$participant]}}""")
-            assertEquals("voice000001" to 1, rosters.poll(2, TimeUnit.SECONDS))
-            socket.send("""{"type":"event","id":"$first","event":{"type":"snapshot","revision":1,"participants":[]}}""")
+            socket.send("""{"type":"event","id":"$first","event":{"type":"snapshot","revision":2,"sessionStartedAt":1000,"participants":[$participant]}}""")
+            assertEquals(Triple("voice000001", 1, 1000L), rosters.poll(2, TimeUnit.SECONDS))
+            socket.send("""{"type":"event","id":"$first","event":{"type":"snapshot","revision":1,"sessionStartedAt":2000,"participants":[]}}""")
             assertNull(rosters.poll(250, TimeUnit.MILLISECONDS))
             socket.send("""{"type":"error","id":"$second","status":403,"error":"denied"}""")
-            assertEquals("voice000002" to 0, rosters.poll(2, TimeUnit.SECONDS))
+            assertEquals(Triple("voice000002", 0, null), rosters.poll(2, TimeUnit.SECONDS))
             assertEquals("voice000002", denied.poll(2, TimeUnit.SECONDS))
             socket.send("""{"type":"event","id":"$second","event":{"type":"snapshot","revision":3,"participants":[$participant]}}""")
             assertNull(rosters.poll(250, TimeUnit.MILLISECONDS))

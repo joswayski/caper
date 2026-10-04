@@ -58,6 +58,7 @@ pub enum GatewayEvent {
         generation: u64,
         channel: String,
         participants: Vec<VoiceOccupant>,
+        session_started_at: Option<u64>,
     },
     VoiceUnavailable {
         generation: u64,
@@ -566,6 +567,7 @@ fn receive_frame(
                 generation: media_epoch,
                 channel: channel.id.clone(),
                 participants,
+                session_started_at: event["sessionStartedAt"].as_u64(),
             });
         }
         Some("error")
@@ -983,6 +985,7 @@ mod tests {
                     generation,
                     channel,
                     participants,
+                    session_started_at: _,
                 } => {
                     assert_eq!(generation, 91);
                     rosters.push((channel, participants[0].name.clone()));

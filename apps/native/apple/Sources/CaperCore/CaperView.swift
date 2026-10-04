@@ -693,6 +693,11 @@ private struct ChannelSidebarItem: View {
     @Binding var sheet: WorkspaceSheet?
     let channel: Channel
 
+    private var sessionStartedAt: Double? {
+        if model.voice.isActive(channelID: channel.id) { return model.voice.sessionStartedAt }
+        return model.voicePresence.sessionStartedAt(for: channel.id)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 2) {
@@ -702,6 +707,16 @@ private struct ChannelSidebarItem: View {
                             .foregroundStyle(model.selectedChannelID == channel.id ? CaperTheme.terracottaBright : CaperTheme.muted)
                         Text(channel.name).lineLimit(1)
                         Spacer(minLength: 0)
+                        if let sessionStartedAt {
+                            TimelineView(.periodic(from: .now, by: 1)) { context in
+                                Text(VoiceSessionDuration.format(startedAtMilliseconds: sessionStartedAt, now: context.date))
+                                    .font(CaperTheme.font(11, weight: .medium).monospacedDigit())
+                                    .foregroundStyle(CaperTheme.green)
+                                    .fixedSize(horizontal: true, vertical: false)
+                                    .accessibilityLabel("Voice session duration")
+                                    .accessibilityValue(VoiceSessionDuration.format(startedAtMilliseconds: sessionStartedAt, now: context.date))
+                            }
+                        }
                     }
                     .font(CaperTheme.font(13, weight: .medium))
                     .foregroundStyle(model.selectedChannelID == channel.id ? CaperTheme.text : CaperTheme.muted)
@@ -739,6 +754,17 @@ private struct ChannelSidebarItem: View {
             }
             ChannelVoiceSlot(model: model, channel: channel)
         }
+    }
+}
+
+enum VoiceSessionDuration {
+    static func format(startedAtMilliseconds: Double, now: Date) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince1970 - startedAtMilliseconds / 1_000))
+        let hours = seconds / 3_600
+        let minutes = (seconds % 3_600) / 60
+        let remainder = seconds % 60
+        if hours > 0 { return String(format: "%d:%02d:%02d", hours, minutes, remainder) }
+        return String(format: "%02d:%02d", minutes, remainder)
     }
 }
 

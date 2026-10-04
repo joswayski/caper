@@ -1564,6 +1564,7 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
                 <Hash aria-hidden="true" />
               )}
               <span>{item.name}</span>
+              {voice?.timer}
             </button>
             {owner && (
               <details

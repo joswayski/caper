@@ -99,6 +99,7 @@ enum MicCommand {
 pub struct Voice {
     pub state: CallState,
     pub participants: Vec<Participant>,
+    pub session_started_at: Option<u64>,
     pub self_id: String,
     pub error: Option<String>,
     pub diagnostics: Option<(media::Diagnostics, Instant)>,
@@ -176,6 +177,7 @@ impl Voice {
         Self {
             state: CallState::default(),
             participants: vec![],
+            session_started_at: None,
             self_id: String::new(),
             error: None,
             diagnostics: None,
@@ -493,6 +495,7 @@ impl Voice {
         self.commands = None;
         self.active_space = None;
         self.participants.clear();
+        self.session_started_at = None;
         self.self_id.clear();
         self.diagnostics = None;
         self.join_times = None;
@@ -849,6 +852,7 @@ impl Voice {
     }
 
     fn roster(&mut self, snapshot: Snapshot) {
+        self.session_started_at = snapshot.session_started_at;
         self.participants = snapshot.participants;
         self.apply_playback();
     }

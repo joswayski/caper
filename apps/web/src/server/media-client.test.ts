@@ -1796,6 +1796,28 @@ test("queued pushed snapshots never suppress a scheduled lease heartbeat", async
   assert.equal(states.at(-1)?.participants[0]?.muted, true);
 });
 
+test("shared session start follows fenced snapshots and clears on leave", async (t) => {
+  const { client, events, states } = setup(t);
+  await client.join();
+  const people = [{ id: "self", name: "Self", muted: false, deafened: false, tracks: [] }];
+  const push = (revision: number, sessionStartedAt: number | null) => events[0].enqueue(new TextEncoder().encode(
+    `event: snapshot\ndata: ${JSON.stringify({ participants: people, revision, sessionStartedAt })}\n\n`,
+  ));
+  push(8, 1_234_567);
+  await tick();
+  assert.equal(states.at(-1)?.sessionStartedAt, 1_234_567);
+  push(7, 9_876_543);
+  await tick();
+  assert.equal(states.at(-1)?.sessionStartedAt, 1_234_567, "a late snapshot cannot restart the timer");
+  push(9, null);
+  await tick();
+  assert.equal(states.at(-1)?.sessionStartedAt, null);
+  push(10, 2_345_678);
+  await tick();
+  await client.leave();
+  assert.equal(states.at(-1)?.sessionStartedAt, undefined);
+});
+
 test("rapid mute changes coalesce to the latest intent behind an in-flight state write", async (t) => {
   const { client, install, states } = setup(t);
   await client.join();

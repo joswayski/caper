@@ -798,6 +798,82 @@ async fn public_presence_shows_voice_participants_without_tracks_or_authenticati
     assert!(visible.get("tracks").is_none());
     assert_eq!(presence["participants"].as_array().unwrap().len(), 1);
 }
+
+async fn exercise_voice_session_duration(a: &AppState, b: &AppState) {
+    assert!(a.read(|r| Ok(presence_snapshot(r))).await.unwrap()["sessionStartedAt"].is_null());
+    let first = joined(a, "first").await;
+    let first_id: Uuid = first["id"].as_str().unwrap().parse().unwrap();
+    let started = Timestamp::now() - Duration::from_secs(601);
+    // Model a room stored before the timer existed. Even removing its oldest
+    // participant as the first upgraded write must retain the original start.
+    a.update(|r| {
+        r.participants.get_mut(&first_id).unwrap().joined = started;
+        r.session_started_at = None;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let second = joined(b, "second").await;
+    let second_id: Uuid = second["id"].as_str().unwrap().parse().unwrap();
+    assert_eq!(
+        monitor_joined(a, first["token"].as_str().unwrap(), "sender")
+            .await
+            .0,
+        StatusCode::OK
+    );
+    for snapshot in a
+        .read(|r| Ok([public_snapshot(r), presence_snapshot(r)]))
+        .await
+        .unwrap()
+    {
+        assert_eq!(snapshot["sessionStartedAt"], json!(started));
+        assert_eq!(snapshot["participants"].as_array().unwrap().len(), 2);
+    }
+    a.update(|r| {
+        remove_participant_locked(r, first_id);
+        Ok(())
+    })
+    .await
+    .unwrap();
+    b.read(|r| {
+        assert_eq!(presence_snapshot(r)["sessionStartedAt"], json!(started));
+        let restored: Registry = serde_json::from_value(serde_json::to_value(r).unwrap()).unwrap();
+        assert_eq!(
+            public_snapshot(&restored)["sessionStartedAt"],
+            json!(started)
+        );
+        Ok(())
+    })
+    .await
+    .unwrap();
+    b.update(|r| {
+        remove_participant_locked(r, second_id);
+        Ok(())
+    })
+    .await
+    .unwrap();
+    a.read(|r| {
+        assert!(r.session_started_at.is_none());
+        assert!(public_snapshot(r)["sessionStartedAt"].is_null());
+        assert!(presence_snapshot(r)["sessionStartedAt"].is_null());
+        Ok(())
+    })
+    .await
+    .unwrap();
+    joined(a, "new session").await;
+    let restarted = b.read(|r| Ok(presence_snapshot(r))).await.unwrap();
+    assert!(
+        restarted["sessionStartedAt"].as_u64().unwrap()
+            > serde_json::to_value(started).unwrap().as_u64().unwrap()
+    );
+}
+
+#[tokio::test]
+async fn voice_session_timer_survives_departures_and_resets_when_empty() {
+    let (s, _) = state();
+    exercise_voice_session_duration(&s, &s).await;
+}
+
 async fn monitor_joined(s: &AppState, token: &str, role: &str) -> (StatusCode, Value) {
     call(
         app(s.clone()),
