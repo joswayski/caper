@@ -142,6 +142,15 @@ try {
     return [geometry('.sim-account'), geometry('.sim-composer')];
   `);
   assert.deepEqual(accountBounds, composerBounds, 'Account controls and single-line composer align');
+  assert.equal(evaluate(`
+    const leftOf = selector => {
+      let element = document.querySelector(selector), left = 0;
+      while (element) { left += element.offsetLeft + (element.offsetParent?.clientLeft ?? 0); element = element.offsetParent; }
+      return left;
+    };
+    return leftOf('.sim-direct .direct-select > span:nth-child(2)') - leftOf('.sim-account .account-name');
+  `), 0, 'Simulation profile name aligns with the direct-message name above it, independent of the scene tilt');
+  assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-direct .direct-avatar > .sim-avatar")).transform'), 'none', 'Simulation avatar artwork is not shifted into its clipping edge');
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-sidebar .channel-select")).cursor'), 'grab');
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".live-invite")).cursor'), 'pointer');
   checkReadOnlyHover(['.sim-message:last-of-type', '.sim-reaction', '.sim-avatar', '.sim-person', '.sim-channel-list > li:last-child .channel-line', '.sim-channel-list > li:last-child .channel-select', '.channel-manage', '.channel-join', '.direct-select', '.direct-action', '.browse-channels', '.voice-dock-channel', '.voice-hangup', '.account-profile', '.voice-icon-button', '.call-settings-trigger', '.member-list-toggle']);

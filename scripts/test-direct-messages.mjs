@@ -42,6 +42,28 @@ const checkSidebarAlignment = () => {
     assert.ok(Math.abs(row.labelX - rows[0].labelX) < 0.5, `${row.selector} shares the sidebar label column`);
     assert.ok(Math.abs(row.iconOffsetY) < 0.5, `${row.selector} vertically centers its icon/avatar`);
   }
+  const dock = evaluate(`(() => {
+    const account = document.querySelector('.call-account').getBoundingClientRect();
+    const avatar = document.querySelector('.direct-self .direct-avatar').getBoundingClientRect();
+    const artwork = document.querySelector('.direct-self .direct-avatar > span').getBoundingClientRect();
+    const panel = document.querySelector('.voice-panel'), box = panel.getBoundingClientRect();
+    const style = getComputedStyle(panel), divider = getComputedStyle(panel, '::before');
+    return {
+      artworkEdges: [artwork.left - avatar.left, artwork.top - avatar.top, artwork.right - avatar.right, artwork.bottom - avatar.bottom],
+      controlOffsets: [...document.querySelectorAll('.call-account :is(.account-avatar, .account-name, .voice-icon-button, .call-settings-trigger, .voice-icon-button > svg, .call-settings-trigger > svg)')].map(node => {
+        const rect = node.getBoundingClientRect();
+        return rect.top + rect.height / 2 - (account.top + account.height / 2);
+      }),
+      dividerGap: -parseFloat(style.borderTopWidth) - parseFloat(divider.top),
+      bottomGap: panel.parentElement.getBoundingClientRect().bottom - box.bottom,
+    };
+  })()`);
+  assert.ok(dock.artworkEdges.every(offset => Math.abs(offset) < 0.5), 'Actual self-avatar artwork fills its container without shifting or clipping');
+  assert.ok(dock.controlOffsets.every(offset => Math.abs(offset) < 0.5), 'Profile, microphone, headphones, dropdowns, settings and their glyphs share the dock vertical center');
+  if (evaluate('innerWidth > 760')) {
+    assert.equal(dock.dividerGap, 12, 'Dock starts 12px below the divider, not flush against it');
+    assert.equal(dock.bottomGap, 12, 'Dock keeps the same 12px inset below it');
+  }
 };
 async function control(body) {
   const response = await fetch(`${api}/__fixture/control`, { method: 'POST', headers: { 'content-type': 'application/json', connection: 'close' }, body: JSON.stringify(body) });

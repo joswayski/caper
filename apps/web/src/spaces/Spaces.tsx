@@ -1737,7 +1737,6 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
         spaceRail={rail}
         channelNavigation={channelNavigation}
         membersPanel={directView || channel.joined === false ? undefined : (onClose) => <MemberPresence spaceId={detail.space.id} members={detail.members} demo={detail.space.demo} onClose={onClose} />}
-        onVoiceChannelOpen={(channelId, spaceId) => choose(spaceId, channelId)}
         navigationOpen={navigationOpen}
         onNavigationToggle={() => setNavigationOpen((open) => !open)}
       />

@@ -3,6 +3,7 @@
 // Run against Vite: node scripts/test-voice-controls.mjs [http://localhost:5174]
 // Focus on stable channel rows with VOICE_TEST_CHANNEL_ROWS=1.
 // Focus only on avatar borders with VOICE_TEST_AVATARS=1.
+// Focus on the profile/voice dock with VOICE_TEST_DOCK=1.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
@@ -213,7 +214,38 @@ try {
   browser('wait', '1500');
   evaluate(`await (${fixture.toString()})();`);
   wait(`document.querySelector('#chat-message:not(:disabled)') && document.querySelector('.voice-button[aria-disabled="false"]')`);
-  if (process.env.VOICE_TEST_AVATARS === '1') {
+  if (process.env.VOICE_TEST_DOCK === '1') {
+    evaluate(`voiceFixture.showSpaces();`);
+    wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha' && document.querySelector('.voice-button[aria-disabled="false"]')`);
+    click('Mute microphone');
+    click('Join voice');
+    wait(`document.querySelector('[aria-label="Leave voice"]')`);
+    for (const width of [1280, 390]) {
+      browser('set', 'viewport', String(width), '900', '2');
+      if (width === 390) browser('find', 'role', 'button', 'click', '--name', 'Browse', '--exact');
+      evaluate(`await document.fonts.ready; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));`);
+      assert.ok(evaluate(`const dock = document.querySelector('.call-account').getBoundingClientRect();
+        return [...document.querySelectorAll('.call-account :is(.account-avatar, .account-name, .voice-icon-button, .call-settings-trigger)')].every(node => {
+          const box = node.getBoundingClientRect();
+          return Math.abs(box.top + box.height / 2 - (dock.top + dock.height / 2)) < .5 && box.top >= dock.top && box.bottom <= dock.bottom;
+        });`), 'Connected profile/audio controls are centered and contained, not clipped');
+      assert.equal(evaluate(`return document.querySelector('.voice-dock-channel').matches('button, a, [role="button"], [tabindex]');`), false, 'Connection status is not an interactive control');
+      browser('hover', '.voice-dock-channel');
+      assert.deepEqual(evaluate(`const status = document.querySelector('.voice-dock-channel'); return [getComputedStyle(status).backgroundColor, getComputedStyle(status).cursor, getComputedStyle(status.querySelector('small')).textDecorationLine];`), ['rgba(0, 0, 0, 0)', 'default', 'none'], 'Status hover has no highlight, hand cursor, or underline');
+      const beforeClick = evaluate(`return location.href;`);
+      browser('click', '.voice-dock-channel');
+      assert.equal(evaluate(`return location.href;`), beforeClick, 'Status clicks do not navigate');
+      assert.equal(evaluate(`return !!document.querySelector('dialog[open]');`), false, 'Status clicks do not open a dialog');
+      assert.ok(evaluate(`return !!document.querySelector('[aria-label="Leave voice"]');`), 'Disconnect remains an explicit button');
+      browser('mouse', 'move', '5', '5');
+      screenshot(`dock-connected-${width}`);
+    }
+    click('Leave voice');
+    wait(`!document.querySelector('.connected-channel')`);
+    assert.equal(evaluate(`return voiceFixture.captures.at(-1).readyState;`), 'ended', 'Disconnect still releases the microphone');
+    evaluate(`await voiceFixture.cleanup();`);
+    console.log('PASS centered/unclipped connected profile dock, neutral non-interactive status, and working disconnect at 1280px/390px (mock signaling/WebRTC)');
+  } else if (process.env.VOICE_TEST_AVATARS === '1') {
     evaluate(`voiceFixture.showSpaces();`);
     wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha' && document.querySelector('.voice-button[aria-disabled="false"]')`);
     click('Mute microphone');
@@ -735,11 +767,9 @@ try {
   assert.ok(evaluate(`return document.querySelector('[aria-label="User Settings"]') === voiceFixture.settingsNode;`), 'Settings must not remount on navigation');
   assert.ok(evaluate(`return !!document.querySelector('[aria-label="Switch voice to #beta"]') && !!document.querySelector('[aria-label="Unmute microphone"]');`));
   screenshot('voice-browsing-another-channel');
-  browser('click', '.connected-channel button:first-child');
-  wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha'`);
+  browser('click', '.voice-dock-channel');
+  assert.equal(evaluate(`return document.querySelector('.channel-select[aria-current="page"]')?.textContent;`), 'beta', 'Connection status must not act as channel navigation');
   assert.ok(evaluate(`return !!document.querySelector('[aria-label="Leave voice"]');`));
-  browser('find', 'role', 'button', 'click', '--name', 'beta', '--exact');
-  wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'beta' && document.querySelector('.voice-button[aria-disabled="false"]')`);
   click('Switch voice to #beta');
   wait(`document.querySelector('[aria-label="Leave voice"]')`);
   assert.equal(evaluate(`return voiceFixture.callTrack.readyState;`), 'ended', 'Explicit Join must release the previous call');
