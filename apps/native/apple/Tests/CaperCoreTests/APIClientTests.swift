@@ -1484,7 +1484,7 @@ final class APIClientTests: XCTestCase {
         await chat.preview(history: initial)
         chat.receive(["type": "message.reactions", "channelId": channel, "seq": "3"], generation: 1, channelID: channel)
         await fulfillment(of: [refreshed], timeout: 2)
-        for _ in 0..<20 where chat.messages.isEmpty { await Task.yield() }
+        await waitUntil { !chat.messages.isEmpty }
         XCTAssertTrue(chat.isPreview)
         XCTAssertNil(chat.currentAuthor)
         XCTAssertEqual(chat.messages.first?.content.text, "Refreshed")
