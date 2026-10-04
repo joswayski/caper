@@ -406,6 +406,114 @@ async fn profile_rejects_reserved_names_before_database_access() {
 }
 
 #[tokio::test]
+async fn profile_keeps_an_existing_reserved_username_before_database_access() {
+    let (mut state, _) = state();
+    state.reserved_usernames = accounts::ReservedUsernames::from_env(
+        &RuntimeEnvironment::from_values_for_test([("RESERVED_USERNAMES", "test")]),
+    );
+    let (status, _) = call(
+        app(state),
+        "POST",
+        "/api/account/profile",
+        None,
+        json!({"username":" TEST ","displayName":"Updated Name"}),
+    )
+    .await;
+    // The authenticated fixture owns "test"; validation must reach persistence.
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable Postgres DATABASE_URL"]
+async fn profile_updates_preserve_reserved_names_but_reject_new_claims(pool: sqlx::PgPool) {
+    let user_id: i64 = sqlx::query_scalar(
+        "INSERT INTO public.users(external_id) VALUES ('profile-fixture') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES ($1,$2,now()+interval '1 hour')")
+        .bind(Sha256::digest(b"profile-session").as_slice())
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (mut state, _) = state();
+    state.database = Some(pool.clone());
+    state.auth = auth::AuthVerifier::new();
+    state.reserved_usernames = accounts::ReservedUsernames::from_env(
+        &RuntimeEnvironment::from_values_for_test([("RESERVED_USERNAMES", "trust")]),
+    );
+    let router = app(state);
+    for (current, requested, succeeds, expected_username) in [
+        (Some("support"), " SUPPORT ", true, Some("support")),
+        (Some("trust"), " TrUsT ", true, Some("trust")),
+        (Some("support"), "available", true, Some("available")),
+        (None, "available", true, Some("available")),
+        (None, "support", false, None),
+        (None, "trust", false, None),
+        (Some("alice"), "support", false, Some("alice")),
+        (Some("support"), "admin", false, Some("support")),
+        (Some("alice"), "trust", false, Some("alice")),
+    ] {
+        sqlx::query("UPDATE public.users SET username=$2,display_name='Original Name' WHERE id=$1")
+            .bind(user_id)
+            .bind(current)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/account/profile")
+                    .header("content-type", "application/json")
+                    .header("cookie", "caper_session=profile-session")
+                    .body(Body::from(
+                        json!({"username":requested,"displayName":" Updated Name "}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            if succeeds {
+                StatusCode::OK
+            } else {
+                StatusCode::CONFLICT
+            },
+            "{current:?} -> {requested}",
+        );
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), BODY_LIMIT).await.unwrap())
+                .unwrap();
+        if succeeds {
+            assert_eq!(body["username"], expected_username.unwrap());
+            assert_eq!(body["displayName"], "Updated Name");
+        } else {
+            assert_eq!(body["error"], "username unavailable");
+        }
+        let saved: (Option<String>, String) =
+            sqlx::query_as("SELECT username,display_name FROM public.users WHERE id=$1")
+                .bind(user_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(saved.0.as_deref(), expected_username);
+        assert_eq!(
+            saved.1,
+            if succeeds {
+                "Updated Name"
+            } else {
+                "Original Name"
+            }
+        );
+    }
+}
+
+#[tokio::test]
 async fn deployed_auth_policy_keeps_health_public_and_fails_closed() {
     let (mut state, _) = state();
     state.auth = auth::AuthVerifier::new();

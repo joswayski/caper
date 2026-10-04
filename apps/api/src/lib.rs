@@ -1333,7 +1333,9 @@ async fn account_profile(
     {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid profile"));
     }
-    if state.reserved_usernames.contains(&username) {
+    if principal.user.username.as_deref() != Some(username.as_str())
+        && state.reserved_usernames.contains(&username)
+    {
         return Err(ApiError::new(StatusCode::CONFLICT, "username unavailable"));
     }
     let pool = state.database.as_ref().ok_or_else(|| {
