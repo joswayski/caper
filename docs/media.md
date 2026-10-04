@@ -3503,6 +3503,50 @@ build stages were validated directly rather than building container images.
    assignments intact**. Old code ignores it. Do not drop/recreate the column or
    regenerate assignments. No shared migration or deployment was run during development.
 
+### Login email abuse protection
+
+The API rejects reserved `example.com`, `example.net`, `example.org`, `.example`,
+`.test`, `.invalid`, and `.localhost` email domains, including subdomains, before
+creating challenges or calling SES. This is not a mailbox-existence check: fake
+inboxes on real domains can still bounce. Login copy and web/native sign-in stay
+unchanged; no CAPTCHA or client exemption is required.
+
+Caper enforces durable email/IP/global limits before sending: defaults are three
+per email in 15 minutes, five per email per day, ten per source IP per hour, and
+500 globally per hour. These are application limits, not SES quotas. SES sending
+quotas limit capacity; they do not validate recipients or prevent every bounce.
+SES account-level suppression, not a Caper database list, handles suppressed
+recipients. A bounce alarm alone does not mean the SES account is under review.
+
+#### Deployment order for login abuse protection
+
+1. Merge and wait for the merged commit's immutable API image to publish. No new
+   infrastructure, secrets/configuration, or database migration is required.
+   Existing API settings and rate limits remain unchanged. Merging does not deploy.
+2. From an authenticated operator machine, deploy only the API. List runs and
+   select the exact run dispatched for this SHA, then wait for its success before
+   checking the Kubernetes rollout:
+   ```sh
+   MERGED_SHA=REPLACE_WITH_FULL_40_CHARACTER_MERGE_SHA
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   gh run list --repo joswayski/infrastructure --workflow deploy-caper-api.yml --event workflow_dispatch --limit 5
+   gh run watch REPLACE_WITH_DISPATCHED_RUN_ID --repo joswayski/infrastructure --exit-status
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
+   No gateway/web deployment or native release is required. The Android smoke
+   assertion changes affect CI only, not the shipped app.
+3. Verify a reserved-domain request returns 400, then verify ordinary sign-in to a
+   controlled inbox on web and native clients. Monitor SES bounce/reputation
+   metrics separately. No production email or infrastructure change was tested
+   during development.
+4. Rollback by redeploying the previous immutable API image through the same
+   workflow, waiting for that exact run and rollout as above:
+   ```sh
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha=REPLACE_WITH_PREVIOUS_API_IMAGE_SHA
+   ```
+   No configuration or database rollback is needed; the previous image restores
+   the previous email validation.
+
 ### Removed account lifecycle integration
 
 The provider lifecycle endpoint, signing secret, event receipt table, and delivery
