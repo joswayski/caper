@@ -12,6 +12,7 @@ import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.espresso.Espresso.pressBack
+import androidx.test.espresso.base.RootViewPicker.RootViewWithoutFocusException
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import chat.caper.android.model.*
@@ -88,7 +89,7 @@ class ReactionUiTest {
         compose.onNodeWithContentDescription("👍 quick reaction").assertIsNotEnabled()
         compose.onNodeWithContentDescription("Add reaction").assertIsNotEnabled()
         compose.onNodeWithText("Copy text").assertIsEnabled()
-        pressBack()
+        pressBackWhenFocused()
         compose.waitForIdle()
         compose.runOnIdle {
             state.value = state.value.copy(reactionSaves = mapOf("${message.id}:🚀" to ReactionSaveUi("🚀", true, false, "Simulated save failure")))
@@ -116,8 +117,23 @@ class ReactionUiTest {
 
         compose.onNodeWithText(message.content.text).performTouchInput { longClick() }
         compose.onNodeWithText("Message actions").assertIsDisplayed()
-        pressBack()
+        pressBackWhenFocused()
         compose.onNodeWithText("Message actions").assertDoesNotExist()
+    }
+
+    // Copying shows the system clipboard overlay (Android 13+), which can hold
+    // window focus for several seconds; Espresso gives up waiting for the app
+    // window after 10s. Retry so the back press still reaches the sheet.
+    private fun pressBackWhenFocused(attempts: Int = 3) {
+        repeat(attempts - 1) {
+            try {
+                pressBack()
+                return
+            } catch (focusLost: RootViewWithoutFocusException) {
+                // The overlay still has focus; Espresso already waited 10s, so retry.
+            }
+        }
+        pressBack()
     }
 
     private fun assertClipboard(expected: String) {

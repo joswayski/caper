@@ -15,7 +15,8 @@ export CAPER_MACOS_BUNDLE_ID="$MAC_BUNDLE_ID" CAPER_IOS_BUNDLE_ID="$IOS_BUNDLE_I
 "$ROOT/prepare.sh"
 xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme CaperMacOS -configuration Debug \
   -destination 'platform=macOS' -derivedDataPath "$ROOT/DerivedData-Tests" \
-  CAPER_MACOS_BUNDLE_ID="$MAC_BUNDLE_ID" CAPER_IOS_BUNDLE_ID="$IOS_BUNDLE_ID" test
+  CAPER_MACOS_BUNDLE_ID="$MAC_BUNDLE_ID" CAPER_IOS_BUNDLE_ID="$IOS_BUNDLE_ID" \
+  -test-timeouts-enabled YES -default-test-execution-time-allowance 300 -maximum-test-execution-time-allowance 600 test
 
 case "$MODE" in
   macos)
@@ -54,7 +55,8 @@ case "$MODE" in
   ios)
     xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme CaperIOS -configuration Debug \
       -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' -derivedDataPath "$ROOT/DerivedData-iOS-Tests" \
-      CAPER_MACOS_BUNDLE_ID="$MAC_BUNDLE_ID" CAPER_IOS_BUNDLE_ID="$IOS_BUNDLE_ID" test
+      CAPER_MACOS_BUNDLE_ID="$MAC_BUNDLE_ID" CAPER_IOS_BUNDLE_ID="$IOS_BUNDLE_ID" \
+      -test-timeouts-enabled YES -default-test-execution-time-allowance 300 -maximum-test-execution-time-allowance 600 test
     rm -rf "$ROOT/DerivedData" "$ROOT/dist/Caper.app"
     xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme CaperIOS -configuration Release \
       -destination 'generic/platform=iOS Simulator' -derivedDataPath "$ROOT/DerivedData" \
