@@ -3832,7 +3832,11 @@ covers lazy creation, failure/retry, send/reload/reopen, peer-history isolation,
 late-response navigation, invitation action, and desktop/narrow layout. Linux
 Rust desktop tests cover self selection and owner/member/no-space actions; its
 explicit voice-connected fixture was rendered and inspected for divider/row
-layout. Swift model coverage was added but not run in the Linux orb. No local
+layout. The Linux client was also signed into the disposable HTTP fixture:
+opening self notes, sending a reminder, switching to a channel and reopening
+notes retained one conversation and the message; **Invite people** opened the
+existing management form. These are fixture interactions, not live account/SFU
+validation. Swift model coverage was added but not run in the Linux orb. No local
 Apple/Android build, Windows runtime, or Docker-image validation is claimed.
 Browser checks do not prove native rendering or device
 push. Android/Apple compilation and physical device layouts remain native release

@@ -329,8 +329,8 @@ async fn two_person_privacy_durability_read_cursors_and_gateway_replay(pool: PgP
         .fetch_one(&pool)
         .await
         .unwrap(),
-        (1, 1, 0),
-        "failed outbox inserts still roll back the message without queuing push",
+        (2, 2, 0),
+        "only the earlier note and peer message remain after a failed outbox insert; no push is queued",
     );
     sqlx::query("ALTER TABLE channel_events DROP CONSTRAINT reject_dm")
         .execute(&pool)

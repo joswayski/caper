@@ -1520,7 +1520,8 @@ impl CaperApp {
         let joined_preview = self.selected_is_joined()
             && self.session_error.as_deref() == Some("Join this channel to chat.");
         if selected && !joined_preview {
-            if self.opening {
+            // Self-DM creation uses `loading` while the displayed chat stays open.
+            if self.opening || self.loading {
                 self.navigation += 1;
                 self.opening = false;
                 self.navigation_target = None;
@@ -7878,9 +7879,8 @@ fn avatar_icon(index: usize) -> egui::IconData {
 mod tests {
     use super::{
         CaperApp, ConnectionReport, Dialog, GatewayEvent, NavigationTarget, PendingReaction,
-        PendingSend, Phase,
-        SelfDirectTarget, avatar_icon, endpoint, media, member_page_ids, normalize_channel,
-        permanent_send_rejection, take_date_divider, timestamp_parts, voice,
+        PendingSend, Phase, SelfDirectTarget, avatar_icon, endpoint, media, member_page_ids,
+        normalize_channel, permanent_send_rejection, take_date_divider, timestamp_parts, voice,
     };
     use crate::navigation;
     use std::time::{Duration, Instant};
@@ -10068,6 +10068,50 @@ mod tests {
         app.select_or_create_self_direct();
         assert_eq!(app.selected_direct.as_deref(), Some("self-notes"));
         assert_eq!(app.directs, vec![self_direct]);
+    }
+
+    #[test]
+    fn late_self_creation_does_not_override_clicking_the_displayed_channel() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        let (events, receiver) = std::sync::mpsc::channel();
+        app.worker.events = receiver;
+        app.token = Some("fixture-owner-token".into());
+        let selected = app.selected_channel.clone().unwrap();
+        app.draft = "keep this channel draft".into();
+        app.select_or_create_self_direct();
+        assert!(app.loading);
+        let creation = app.navigation;
+        app.select_channel(selected.clone(), false);
+        assert!(app.navigation > creation);
+        let account = app.account.as_ref().unwrap();
+        let notes = model::DirectConversation {
+            id: "self-notes".into(),
+            peer: model::DirectPeer {
+                id: account.id.clone(),
+                username: account.username.clone().unwrap(),
+                display_name: account.display_name.clone().unwrap(),
+            },
+            last_seq: "0".into(),
+            read_seq: "0".into(),
+        };
+        events
+            .send(crate::worker::Event::DirectCreated {
+                generation: app.generation,
+                navigation: creation,
+                result: Ok(notes.clone()),
+            })
+            .unwrap();
+        app.receive();
+        assert_eq!(app.selected_channel.as_deref(), Some(selected.as_str()));
+        assert!(app.selected_direct.is_none());
+        assert_eq!(app.draft, "keep this channel draft");
+        assert!(!app.loading);
+        assert_eq!(app.directs, vec![notes]);
     }
 
     #[test]

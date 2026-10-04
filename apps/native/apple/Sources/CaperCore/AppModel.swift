@@ -233,7 +233,8 @@ public final class AppModel {
            selectedDirectMessageID == nil, chat.isPreview == !channel.joined {
             // The displayed conversation remains usable while another target
             // opens. Clicking it cancels that transition, not the live chat.
-            if navigationTarget != nil {
+            // Notes creation keeps the current chat visible while `busy`.
+            if navigationTarget != nil || busy {
                 navigationGeneration += 1
                 navigationTarget = nil
                 openingSpaceID = nil; openingChannelID = nil
