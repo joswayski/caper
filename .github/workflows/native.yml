@@ -44,9 +44,12 @@ on:
 permissions:
   contents: read
 
+# PRs cancel superseded runs. On main, the running build always finishes and
+# only the newest waiting push runs next (GitHub replaces older pending runs in
+# the group), so fast pushes neither starve main of finished builds nor pile up.
 concurrency:
   group: native-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   artifact-contract:
