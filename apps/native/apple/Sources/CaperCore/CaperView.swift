@@ -711,8 +711,12 @@ private struct ChannelSidebarItem: View {
     @State private var confirmLeave = false
 
     private var sessionStartedAt: Double? {
-        if model.voice.isActive(channelID: channel.id) { return model.voice.sessionStartedAt }
-        return model.voicePresence.sessionStartedAt(for: channel.id)
+        let shared = model.voicePresence.sessionStartedAt(for: channel.id)
+        if model.voice.isActive(channelID: channel.id) {
+            return model.voice.phase == .joining ? shared ?? model.voice.sessionStartedAt : model.voice.sessionStartedAt
+        }
+        return shared
+            ?? (model.pendingVoiceChannelID == channel.id ? Double(model.pendingVoiceStartedAt) : nil)
     }
 
     var body: some View {
@@ -1805,6 +1809,10 @@ private struct MessageRow: View {
                 }
             }
         }.padding(.horizontal, 18).padding(.vertical, 10)
+            // An identifier on a plain container is copied onto every child,
+            // replacing their own (add-reaction-…, reaction chips). Make the
+            // row a containing element so children keep their identifiers.
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("message-row-\(message.id)")
         #if os(iOS)
         row.contentShape(Rectangle())
@@ -1851,6 +1859,9 @@ private struct ReactionRow: View {
                 ProgressView().controlSize(.small).accessibilityLabel("Saving reaction")
             }
         }
+        // Without .contain this identifier replaces add-reaction-<id> on the
+        // button inside the row.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("reaction-row-\(message.id)")
     }
 }

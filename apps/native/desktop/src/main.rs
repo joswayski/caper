@@ -237,7 +237,7 @@ struct CaperApp {
     channel_search: String,
     roster_generation: u64,
     voice_join_request: u64,
-    pending_voice_join: Option<(String, u64)>,
+    pending_voice_join: Option<(String, u64, u64)>,
     channel_rosters: BTreeMap<String, Vec<model::VoiceOccupant>>,
     voice_session_starts: BTreeMap<String, u64>,
     unavailable_rosters: BTreeSet<String>,
@@ -534,6 +534,8 @@ impl CaperApp {
                     app.media_availability.clear();
                 } else if name == "parity-voice-unavailable" {
                     app.media_availability.insert("chan00000001".into(), false);
+                } else if name == "parity-voice-error" {
+                    app.voice.error = Some(media::mic_test::CAPTURE_START_ERROR.into());
                 } else if name == "parity-browse" {
                     app.navigation_open = true;
                 } else if matches!(name, "parity-voice-rosters" | "parity-voice-rosters-narrow") {
@@ -586,6 +588,21 @@ impl CaperApp {
                 } else if name == "parity-loading" {
                     app.timeline = Timeline::default();
                     app.loading = true;
+                } else if matches!(
+                    name,
+                    "parity-opening" | "parity-opening-narrow" | "parity-opening-error"
+                ) {
+                    app.navigation_target = Some(NavigationTarget {
+                        space: app.selected_space.clone(),
+                        channel: Some("chan00000002".into()),
+                    });
+                    app.draft = "TEST FIXTURE · loading preview".into();
+                    app.opening = name != "parity-opening-error";
+                    if !app.opening {
+                        app.navigation_error = Some(
+                            "Could not reach Caper. Check your connection and try again.".into(),
+                        );
+                    }
                 } else if name == "parity-older-error" {
                     app.has_more = true;
                     app.older_error = Some("History unavailable".into());
@@ -615,13 +632,19 @@ impl CaperApp {
                 } else if name == "parity-audio-debug" {
                     app.account.as_mut().unwrap().debug_enabled = true;
                     app.dialog = Some(Dialog::Diagnostics);
-                } else if matches!(name, "parity-audio" | "parity-audio-recorded") {
+                } else if matches!(
+                    name,
+                    "parity-audio" | "parity-audio-recorded" | "parity-audio-error"
+                ) {
                     app.dialog = Some(Dialog::Audio);
                     if name == "parity-audio-recorded" {
                         app.voice.microphone = MicrophoneState::Ready(Recorded {
                             seconds: 3.6,
                             silent: false,
                         });
+                    } else if name == "parity-audio-error" {
+                        app.voice.microphone_error =
+                            Some(media::mic_test::CAPTURE_START_ERROR.into());
                     }
                 } else if matches!(
                     name,
@@ -637,6 +660,12 @@ impl CaperApp {
                         space_name: "Fixture Studio".into(),
                     };
                     app.voice.active_space = Some("space0000001".into());
+                    if name == "parity-voice-joining" {
+                        app.voice.session_started_at = Some(
+                            (chrono::Utc::now().timestamp_millis().max(0) as u64)
+                                .saturating_sub(2_000),
+                        );
+                    }
                     app.voice.state.phase = if name != "parity-voice-joining" {
                         app.voice.self_id = "fixture-owner".into();
                         app.voice.participants = app
@@ -927,7 +956,7 @@ impl CaperApp {
         if self
             .pending_voice_join
             .as_ref()
-            .is_some_and(|(_, generation)| *generation != self.voice.state.generation)
+            .is_some_and(|(_, generation, _)| *generation != self.voice.state.generation)
         {
             self.pending_voice_join = None;
         }
@@ -1535,7 +1564,7 @@ impl CaperApp {
             && self.session_error.as_deref() == Some("Join this channel to chat.");
         if selected && !joined_preview {
             // Self-DM creation uses `loading` while the displayed chat stays open.
-            if self.opening || self.loading {
+            if self.opening || self.loading || self.navigation_error.is_some() {
                 self.navigation += 1;
                 self.opening = false;
                 self.navigation_target = None;
@@ -1859,7 +1888,7 @@ impl CaperApp {
         if self
             .pending_voice_join
             .as_ref()
-            .is_some_and(|(_, generation)| *generation == self.voice.state.generation)
+            .is_some_and(|(_, generation, _)| *generation == self.voice.state.generation)
             || matches!(
                 self.voice.state.phase,
                 Phase::Joining(_) | Phase::Reconnecting(_)
@@ -1872,9 +1901,10 @@ impl CaperApp {
         let Some((context, space)) = self.voice_target(channel) else {
             return;
         };
+        let clicked = chrono::Utc::now().timestamp_millis().max(0) as u64;
         self.voice_join_request += 1;
         if let Some(space) = space {
-            self.pending_voice_join = Some((channel.into(), self.voice.state.generation));
+            self.pending_voice_join = Some((channel.into(), self.voice.state.generation, clicked));
             self.worker.send(Command::CheckVoice {
                 request: self.voice_join_request,
                 voice_generation: self.voice.state.generation,
@@ -1883,8 +1913,14 @@ impl CaperApp {
                 channel: channel.into(),
             });
         } else {
-            self.voice
-                .join(context, None, self.token.clone(), self.identity_name());
+            self.voice.join(
+                context,
+                None,
+                self.token.clone(),
+                self.identity_name(),
+                clicked,
+                self.voice_session_starts.get(channel).copied(),
+            );
         }
     }
 
@@ -1899,7 +1935,9 @@ impl CaperApp {
         if request != self.voice_join_request {
             return;
         }
-        self.pending_voice_join = None;
+        let Some((_, _, clicked)) = self.pending_voice_join.take() else {
+            return;
+        };
         if voice_generation != self.voice.state.generation {
             return;
         }
@@ -1915,6 +1953,8 @@ impl CaperApp {
                 target_space,
                 self.token.clone(),
                 self.identity_name(),
+                clicked,
+                self.voice_session_starts.get(channel).copied(),
             ),
             Err(error) => {
                 if error.access_denied {
@@ -3171,28 +3211,6 @@ impl CaperApp {
 
     fn shell(&mut self, context: &egui::Context) {
         let narrow = context.viewport_rect().width() <= 760.0;
-        if self.opening || self.navigation_error.is_some() {
-            egui::TopBottomPanel::top("navigation-status")
-                .frame(egui::Frame::new().fill(SURFACE).inner_margin(12.0))
-                .show(context, |ui| {
-                    ui.add_enabled_ui(self.dialog.is_none(), |ui| {
-                        if self.opening {
-                            ui.horizontal(|ui| {
-                                ui.spinner();
-                                ui.label("Opening conversation…");
-                            });
-                        }
-                        if let Some(error) = &self.navigation_error {
-                            ui.colored_label(ERROR, error);
-                            if ui.button("Retry opening").clicked()
-                                && let Some(target) = self.navigation_target.clone()
-                            {
-                                self.navigate(target);
-                            }
-                        }
-                    });
-                });
-        }
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(SURFACE))
             .show(context, |ui| {
@@ -3867,10 +3885,14 @@ impl CaperApp {
                                 ui.spacing_mut().interact_size.y = 28.0;
                                 let active = self.selected_channel.as_deref() == Some(&id);
                                 let started = if self.voice.state.active_channel() == Some(&id) {
-                                    self.voice.session_started_at.filter(|_| !self.voice.participants.is_empty())
+                                    if matches!(self.voice.state.phase, Phase::Joining(_)) {
+                                        self.voice_session_starts.get(&id).copied().or(self.voice.session_started_at)
+                                    } else {
+                                        self.voice.session_started_at
+                                    }
                                 } else {
                                     self.voice_session_starts.get(&id).copied()
-                                };
+                                }.or_else(|| self.pending_voice_join.as_ref().filter(|(channel, _, _)| channel == &id).map(|(_, _, clicked)| *clicked));
                                 let duration = started.map(|started| {
                                     ui.ctx().request_repaint_after(Duration::from_secs(1));
                                     voice_session_duration(started, chrono::Utc::now().timestamp_millis().max(0) as u64)
@@ -3953,7 +3975,7 @@ impl CaperApp {
         let authorizing = self
             .pending_voice_join
             .as_ref()
-            .map(|(channel, _)| channel.as_str());
+            .map(|(channel, _, _)| channel.as_str());
         let connecting = matches!(
             self.voice.state.phase,
             Phase::Joining(_) | Phase::Reconnecting(_)
@@ -5291,7 +5313,14 @@ impl CaperApp {
 
     fn conversation(&mut self, ui: &mut egui::Ui, narrow: bool) {
         if self.no_accessible_channels() {
-            self.empty_channels(ui, narrow);
+            if self.opening || self.navigation_error.is_some() {
+                egui::Frame::new().fill(CONVERSATION).show(ui, |ui| {
+                    ui.set_min_size(ui.available_size());
+                    self.navigation_state(ui);
+                });
+            } else {
+                self.empty_channels(ui, narrow);
+            }
             return;
         }
         egui::Frame::new().fill(CONVERSATION).show(ui, |ui| {
@@ -5376,6 +5405,9 @@ impl CaperApp {
                         .inner_margin(egui::Margin::symmetric(18, 12)),
                 )
                 .show_inside(ui, |ui| {
+                    if self.opening || self.navigation_error.is_some() {
+                        ui.disable();
+                    }
                     ui.visuals_mut().widgets.inactive.corner_radius = CornerRadius::same(6);
                     ui.visuals_mut().widgets.hovered.corner_radius = CornerRadius::same(6);
                     ui.visuals_mut().widgets.active.corner_radius = CornerRadius::same(6);
@@ -5510,6 +5542,16 @@ impl CaperApp {
                         });
                     }
                 });
+            // Keep loading/retry inside the existing message viewport. Do not
+            // touch the retained history's scroll state or paging anchors.
+            if self.navigation_state(ui) {
+                return;
+            }
+            let empty = self.timeline.messages().next().is_none() && self.pending.is_none();
+            if self.loading && empty {
+                message_skeleton(ui);
+                return;
+            }
             // Web's End key on the message list jumps to the latest message.
             let jump_latest = ui.memory(|memory| memory.focused().is_none())
                 && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::End));
@@ -5522,14 +5564,7 @@ impl CaperApp {
             } else if jump_latest {
                 history = history.vertical_scroll_offset(f32::MAX);
             }
-            let empty = self.timeline.messages().next().is_none() && self.pending.is_none();
             let history = history.show(ui, |ui| {
-                    if self.loading && empty {
-                        chat_state(ui, 1, |ui| {
-                            ui.label(RichText::new("Loading messages…").color(MUTED));
-                        });
-                        return;
-                    }
                     if let Some(error) = self.load_error.clone().filter(|_| empty) {
                         chat_state(ui, 2, |ui| {
                             ui.label(RichText::new(error).color(MUTED));
@@ -5618,6 +5653,33 @@ impl CaperApp {
             self.emoji_picker(ui.ctx());
             self.after_history(ui, &history, heading.response.rect);
         });
+    }
+
+    fn navigation_state(&mut self, ui: &mut egui::Ui) -> bool {
+        if self.opening {
+            message_skeleton(ui);
+            return true;
+        }
+        let Some(error) = self.navigation_error.clone() else {
+            return false;
+        };
+        chat_state(ui, 2, |ui| {
+            ui.set_max_width((ui.available_width() - 36.0).min(440.0));
+            ui.label(RichText::new(error).color(ERROR));
+            ui.add_space(10.0);
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Retry opening").clicked()
+                    && let Some(target) = self.navigation_target.clone()
+                {
+                    self.navigate(target);
+                }
+                if ui.button("Dismiss").clicked() {
+                    self.navigation_error = None;
+                    self.navigation_target = None;
+                }
+            });
+        });
+        true
     }
 
     fn history_header(&mut self, ui: &mut egui::Ui) {
@@ -7882,6 +7944,36 @@ fn dialog_actions(ui: &mut egui::Ui, label: &str, enabled: bool) -> (bool, bool)
     .inner
 }
 
+fn message_skeleton(ui: &mut egui::Ui) {
+    let (rect, response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Other, ui.is_enabled(), "Loading messages")
+    });
+    let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+    let width = (rect.width() - 80.0).max(0.0);
+    for (row, fraction) in [0.72, 0.92, 0.56, 0.81, 0.64].into_iter().enumerate() {
+        let top = rect.top() + 28.0 + row as f32 * 84.0;
+        if top + 54.0 > rect.bottom() {
+            break;
+        }
+        painter.circle_filled(egui::pos2(rect.left() + 35.0, top + 17.0), 17.0, BORDER);
+        for (offset, length, height) in [
+            (0.0, width.min(96.0), 12.0),
+            (24.0, width.min(520.0) * fraction, 10.0),
+            (42.0, width.min(340.0) * fraction, 10.0),
+        ] {
+            painter.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(rect.left() + 62.0, top + offset),
+                    egui::vec2(length, height),
+                ),
+                4.0,
+                BORDER,
+            );
+        }
+    }
+}
+
 /// Web's `.chat-state`: a 120 px block at the top of the list, content centered.
 fn chat_state(ui: &mut egui::Ui, lines: u8, content: impl FnOnce(&mut egui::Ui)) {
     let height = if lines > 1 { 58.0 } else { 18.0 };
@@ -8063,6 +8155,7 @@ fn main() -> eframe::Result {
             name,
             "parity-narrow"
                 | "parity-browse"
+                | "parity-opening-narrow"
                 | "parity-channel-preview-narrow"
                 | "parity-channel-directory-narrow"
                 | "parity-voice-rosters-narrow"
@@ -8491,6 +8584,7 @@ mod tests {
         app.voice.state.phase = Phase::Connected(original.clone());
         let chat = app.selected_channel.clone();
         app.voice_join_request = 7;
+        app.pending_voice_join = Some(("chan00000002".into(), 0, 12_345));
         app.accept_voice_target(
             7,
             0,
@@ -9273,6 +9367,49 @@ mod tests {
     }
 
     #[test]
+    fn microphone_errors_wrap_within_the_dock_and_audio_dialog() {
+        for fixture in ["parity-voice-error", "parity-audio-error"] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some(fixture),
+            );
+            app.sidebar_width = 220.0;
+            for _ in 0..3 {
+                render(&mut app, &context, vec![]);
+            }
+            let output = if fixture == "parity-audio-error" {
+                scroll_modal_to_bottom(&mut app, &context)
+            } else {
+                render(&mut app, &context, vec![])
+            };
+            let shape = output
+                .shapes
+                .iter()
+                .find(|shape| matches!(
+                    &shape.shape,
+                    egui::Shape::Text(text) if text.galley.job.text == crate::media::mic_test::CAPTURE_START_ERROR
+                ))
+                .unwrap_or_else(|| {
+                    panic!("{fixture} microphone failure must be visible");
+                });
+            let egui::Shape::Text(text) = &shape.shape else {
+                unreachable!();
+            };
+            let bounds = egui::Rect::from_min_size(text.pos, text.galley.size());
+            assert!(
+                shape.clip_rect.contains_rect(bounds),
+                "{fixture} error is clipped"
+            );
+            if fixture == "parity-voice-error" {
+                assert!(text.galley.rows.len() > 1, "dock error must wrap");
+                assert!(bounds.right() <= 59.0 + app.sidebar_width);
+            }
+        }
+    }
+
+    #[test]
     fn escape_closes_device_popup_before_audio_dialog() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -9543,7 +9680,7 @@ mod tests {
                 }
                 let labels = match state {
                     "authorizing" => {
-                        app.pending_voice_join = Some(("chan00000001".into(), 0));
+                        app.pending_voice_join = Some(("chan00000001".into(), 0, 12_345));
                         [
                             "Joining voice in #general",
                             "Join voice in #design",
@@ -9561,7 +9698,7 @@ mod tests {
                     "connected" | "switching" => {
                         app.voice.state.phase = Phase::Connected(target);
                         if state == "switching" {
-                            app.pending_voice_join = Some(("chan00000002".into(), 0));
+                            app.pending_voice_join = Some(("chan00000002".into(), 0, 12_345));
                         }
                         [
                             "Leave voice in #general",
@@ -9946,7 +10083,12 @@ mod tests {
         app.join_voice_channel("chan00000002");
         app.join_voice_channel("chan00000003");
         assert_eq!(app.voice_join_request, request);
-        assert_eq!(app.pending_voice_join, Some(("chan00000002".into(), 0)));
+        assert_eq!(
+            app.pending_voice_join
+                .as_ref()
+                .map(|(channel, generation, _)| (channel.as_str(), *generation)),
+            Some(("chan00000002", 0))
+        );
         assert_eq!(app.voice.state.phase, Phase::Connected(original.clone()));
         app.accept_voice_target(
             request,
@@ -11657,7 +11799,7 @@ mod tests {
     }
 
     #[test]
-    fn navigation_keeps_visible_conversation_and_rejects_stale_completions() {
+    fn navigation_retains_conversation_and_rejects_stale_completions() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
             &context,
@@ -11712,6 +11854,215 @@ mod tests {
         assert!(!app.opening);
         assert!(app.navigation_error.is_none());
         assert!(app.draft.is_empty());
+    }
+
+    #[test]
+    fn navigation_loading_and_retry_do_not_shift_the_shell_or_consume_scroll_state() {
+        for size in [egui::vec2(1440.0, 900.0), egui::vec2(390.0, 844.0)] {
+            let context = egui::Context::default();
+            context.enable_accesskit();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-desktop"),
+            );
+            app.draft = "Unsent draft".into();
+            let frame = |app: &mut CaperApp, events| {
+                context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                        events,
+                        ..Default::default()
+                    },
+                    |context| app.page(context),
+                )
+            };
+            frame(&mut app, vec![]);
+            let ready = frame(&mut app, vec![]);
+            let labels = if size.x > 760.0 {
+                vec![
+                    "Fixture Studio",
+                    "Channels",
+                    "# general",
+                    "Unsent draft",
+                    "Members",
+                ]
+            } else {
+                vec!["# general", "Unsent draft"]
+            };
+            let positions: Vec<_> = labels
+                .iter()
+                .map(|label| text_position(&ready, label))
+                .collect();
+            let selected = app.selected_channel.clone().unwrap();
+            let target = navigation::Target {
+                space: app.selected_space.clone(),
+                channel: Some("chan00000002".into()),
+            };
+            app.navigation_cache.begin_prefetch(target, Instant::now());
+            app.select_channel("chan00000002".into(), false);
+            app.history_offset = Some(63.0);
+            app.older_anchor = Some(123.0);
+            app.history_height = 987.0;
+            app.older_armed = false;
+            app.has_more = true;
+            let opening = frame(&mut app, vec![]);
+            assert!(
+                opening
+                    .platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .any(|(_, node)| node.label() == Some("Loading messages"))
+            );
+            assert!(
+                opening
+                    .platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| node.role() == egui::accesskit::Role::MultilineTextInput)
+                    .unwrap()
+                    .1
+                    .is_disabled()
+            );
+            assert!(!opening.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if ["Opening conversation…", "Loading messages…", "No messages yet.",
+                    "TEST FIXTURE — local sample data, not a live conversation."].contains(&text.galley.job.text.as_str()))));
+            app.accept_navigation(
+                app.generation,
+                app.navigation,
+                Err(LoadError {
+                    message: "Connection unavailable".into(),
+                    access_denied: false,
+                    space_access_denied: false,
+                }),
+            );
+            let failed = frame(&mut app, vec![]);
+            assert!(
+                text_position(&failed, "Retry opening").y > text_position(&failed, "# general").y
+            );
+            for output in [&opening, &failed] {
+                for (label, position) in labels.iter().zip(&positions) {
+                    assert_eq!(
+                        text_position(output, label),
+                        *position,
+                        "{size:?}: {label} moved"
+                    );
+                }
+            }
+            assert_eq!(app.history_offset, Some(63.0));
+            assert_eq!(app.older_anchor, Some(123.0));
+            assert_eq!(app.history_height, 987.0);
+            assert!(!app.older_armed);
+            assert!(
+                !app.loading_older,
+                "hidden history must not load older pages"
+            );
+            assert_eq!(app.draft, "Unsent draft");
+            assert_eq!(app.timeline.messages().count(), 4);
+            let retry = text_position(&failed, "Retry opening");
+            for pressed in [true, false] {
+                frame(
+                    &mut app,
+                    vec![
+                        egui::Event::PointerMoved(retry),
+                        egui::Event::PointerButton {
+                            pos: retry,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            }
+            assert!(
+                app.opening,
+                "{size:?}: retry at {retry:?} did not start navigation; error {:?}",
+                app.navigation_error
+            );
+            assert!(app.navigation_error.is_none());
+            app.select_channel(selected.clone(), false);
+            assert!(!app.opening);
+            app.history_offset = None;
+            app.older_anchor = None;
+            let restored = frame(&mut app, vec![]);
+            assert_eq!(app.selected_channel.as_deref(), Some(selected.as_str()));
+            assert_eq!(app.draft, "Unsent draft");
+            assert!(
+                !restored
+                    .platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| node.role() == egui::accesskit::Role::MultilineTextInput)
+                    .unwrap()
+                    .1
+                    .is_disabled()
+            );
+            assert!(restored.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.job.text == "TEST FIXTURE — local sample data, not a live conversation.")));
+        }
+    }
+
+    #[test]
+    fn initial_history_uses_skeleton_and_failed_navigation_without_a_channel_can_retry() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-loading"),
+        );
+        render(&mut app, &context, vec![]);
+        let loading = render(&mut app, &context, vec![]);
+        assert!(
+            loading
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Loading messages"))
+        );
+        assert!(!loading.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if ["Loading messages…", "No messages yet."].contains(&text.galley.job.text.as_str()))));
+        app.loading = false;
+        let empty = render(&mut app, &context, vec![]);
+        text_position(&empty, "No messages yet.");
+
+        app.selected_channel = None;
+        app.navigation_target = Some(NavigationTarget {
+            space: app.selected_space.clone(),
+            channel: Some("chan00000002".into()),
+        });
+        app.navigation_error = Some("Channel unavailable".into());
+        let failed = render(&mut app, &context, vec![]);
+        click(&mut app, &context, text_position(&failed, "Retry opening"));
+        assert!(app.opening);
+        assert!(app.navigation_error.is_none());
+        let request = app.navigation;
+        app.accept_navigation(
+            app.generation,
+            request,
+            Err(LoadError {
+                message: "Channel unavailable".into(),
+                access_denied: false,
+                space_access_denied: false,
+            }),
+        );
+        let failed = render(&mut app, &context, vec![]);
+        click(&mut app, &context, text_position(&failed, "Dismiss"));
+        assert!(app.navigation_error.is_none());
+        assert!(app.navigation_target.is_none());
+        text_position(&render(&mut app, &context, vec![]), "No joined channels");
     }
 
     #[test]

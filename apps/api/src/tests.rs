@@ -909,7 +909,29 @@ async fn public_presence_shows_voice_participants_without_tracks_or_authenticati
 
 async fn exercise_voice_session_duration(a: &AppState, b: &AppState) {
     assert!(a.read(|r| Ok(presence_snapshot(r))).await.unwrap()["sessionStartedAt"].is_null());
-    let first = joined(a, "first").await;
+    let clicked = Timestamp::now() - Duration::from_millis(2_345);
+    let mut updates = b.room_updates();
+    let (status, first) = call(
+        app(a.clone()),
+        "POST",
+        "/api/media/join",
+        None,
+        json!({"name":"first","joinStartedAt":clicked}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    tokio::time::timeout(Duration::from_secs(3), updates.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    b.read(|r| {
+        for snapshot in [public_snapshot(r), presence_snapshot(r)] {
+            assert_eq!(snapshot["sessionStartedAt"], json!(clicked));
+        }
+        Ok(())
+    })
+    .await
+    .unwrap();
     let first_id: Uuid = first["id"].as_str().unwrap().parse().unwrap();
     let started = Timestamp::now() - Duration::from_secs(601);
     // Model a room stored before the timer existed. Even removing its oldest
@@ -980,6 +1002,63 @@ async fn exercise_voice_session_duration(a: &AppState, b: &AppState) {
 async fn voice_session_timer_survives_departures_and_resets_when_empty() {
     let (s, _) = state();
     exercise_voice_session_duration(&s, &s).await;
+}
+
+#[tokio::test]
+async fn voice_session_start_precedes_slow_provisioning_without_client_timestamp() {
+    let (s, mock) = state();
+    mock.block_provision.store(true, Ordering::SeqCst);
+    let joining = tokio::spawn({
+        let s = s.clone();
+        async move { joined(&s, "slow join").await }
+    });
+    while mock.provisioning.load(Ordering::SeqCst) & 3 != 3 {
+        tokio::task::yield_now().await;
+    }
+    let provisioning = Timestamp::now();
+    assert!(s.read(|r| Ok(presence_snapshot(r))).await.unwrap()["sessionStartedAt"].is_null());
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    mock.block_provision.store(false, Ordering::SeqCst);
+    joining.await.unwrap();
+    s.read(|r| {
+        assert!(voice_session_started_at(r).unwrap() <= provisioning);
+        Ok(())
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn voice_session_start_bounds_client_clock_skew() {
+    for submitted in [
+        Timestamp::now() + Duration::from_secs(60),
+        Timestamp::now() - Duration::from_secs(600),
+    ] {
+        let (s, _) = state();
+        let before = Timestamp::now();
+        let (status, _) = call(
+            app(s.clone()),
+            "POST",
+            "/api/media/join",
+            None,
+            json!({"name":"clock skew","joinStartedAt":submitted}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let after = Timestamp::now();
+        s.read(|r| {
+            let started = voice_session_started_at(r).unwrap();
+            if submitted > before {
+                assert!(started >= before && started <= after);
+            } else {
+                assert!(started >= before - Duration::from_secs(30));
+                assert!(started <= after - Duration::from_secs(30));
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
 }
 
 async fn monitor_joined(s: &AppState, token: &str, role: &str) -> (StatusCode, Value) {

@@ -36,6 +36,7 @@ public final class AppModel {
     /// Voice availability by media root ("general" or a channel id); nil while unchecked.
     public private(set) var voiceAvailability: [String: Bool] = [:]
     public private(set) var pendingVoiceChannelID: String?
+    public private(set) var pendingVoiceStartedAt: Int64 = 0
     public var navigationError: String?
     public let api: APIClient
     public let chat: ChatModel
@@ -888,6 +889,8 @@ public final class AppModel {
               voice.context?.channelID != channel.id || voice.phase == .idle || voice.phase == .failed else { return }
         voiceJoinGeneration += 1
         let joinAttempt = voiceJoinGeneration
+        let clicked = Int64(Date().timeIntervalSince1970 * 1_000)
+        pendingVoiceStartedAt = clicked
         pendingVoiceChannelID = channel.id
         defer { if voiceJoinGeneration == joinAttempt { pendingVoiceChannelID = nil } }
         let accountGeneration = generation
@@ -915,7 +918,8 @@ public final class AppModel {
             await voice.join(channelID: space.demo == true ? nil : channel.id,
                              context: VoiceContext(channelID: channel.id, channelName: channel.name,
                                                    spaceID: space.id, spaceName: space.name),
-                             name: account?.displayName ?? "Guest")
+                             name: account?.displayName ?? "Guest", joinStartedAt: clicked,
+                             sessionStartedAt: voicePresence.sessionStartedAt(for: channel.id))
         } catch {
             guard voiceJoinGeneration == joinAttempt, generation == accountGeneration else { return }
             voicePresence.revoke(channelID: channel.id)

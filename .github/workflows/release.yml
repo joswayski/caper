@@ -54,6 +54,7 @@ jobs:
     name: Resolve release commit
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       contents: read
       id-token: write
@@ -452,6 +453,7 @@ jobs:
     name: Publish native-latest
     needs: [resolve, macos, android, desktop]
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       contents: write
       id-token: write
@@ -555,6 +557,7 @@ jobs:
     needs: [resolve, macos, testflight, android, desktop, publish]
     if: ${{ always() && inputs.discord_message_id != '' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:

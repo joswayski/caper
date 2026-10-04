@@ -94,12 +94,22 @@ current browser uses neither SSE nor HTTP polling for live rosters. Spectators
 never renew call leases.
 
 Channel names show a shared voice-session timer to everyone authorized to view
-the channel's voice roster, including people not in the call. It starts with the
-first real participant, survives that participant leaving while others remain,
+the channel's voice roster, including people not in the call. It starts from the
+first accepted participant's **Join click**, not completion of provider or audio
+setup, survives that participant leaving while others remain,
 and clears when the last participant leaves or their lease expires. Microphone
 test monitors do not start or extend a session. Authenticated and spectator
 snapshots carry nullable `sessionStartedAt` (UTC Unix milliseconds); clients
-render `MM:SS`, then `H:MM:SS`, and hide it on older servers without the field.
+render `MM:SS`, then `H:MM:SS`. Web, Android, Apple and Rust desktop show a local
+provisional timer during a pending join, preserve an occupied channel's existing
+start, and adopt the shared timestamp when admission completes. Cancelled/failed
+joins clear provisional time; they do not clear another participant's session.
+Spectators see only accepted membership, not another client's pending click.
+Join requests carry optional `joinStartedAt` (integer UTC Unix milliseconds).
+The API bounds it to the 30 seconds before request receipt, clamping future
+client clocks to receipt time; clients without it start at request receipt.
+Preparation/warm sessions never start timers. Older servers without the snapshot
+field hide the shared timer after pending joins finish.
 Valkey stores the start with room metadata. Existing occupied rooms initialize
 from their oldest remaining participant, since an earlier departed participant's
 join time cannot be recovered. Devices calculate elapsed time using their system
@@ -107,15 +117,23 @@ clocks, so clock skew can offset the display; future starts clamp to `00:00`.
 The timer describes continuous channel occupancy, not each person's time in voice
 or guaranteed audio connectivity. Access permissions and roster limits do not change.
 
+Run `VOICE_TEST_TIMERS=1 node scripts/test-voice-controls.mjs http://localhost:5174`
+against Vite for delayed join, occupied-room/spectator time, cancellation and
+permission-failure checks at desktop and narrow widths. These use synthetic audio
+and mocked signaling/WebRTC. API tests cover pre-provisioning time, bounded clock
+skew, cross-member snapshots and cross-instance Valkey persistence/fanout.
+
 Web desktop/narrow and Linux desktop rendering are checked with explicitly labeled
 fixtures, not live SFU calls. Apple/iOS and Android implement the same timestamp
 and display contract but require their platform builds and rendered/device checks;
 browser validation does not establish native acceptance. Deploy the updated API
 and gateway before web/native releases; both server roles embed media handlers.
-No new infrastructure, secrets, or Postgres migration is required. Complete both
-server rollouts rather than leaving old writers that discard the new Valkey field.
-Old clients ignore the additional field; rolled-back clients hide the timer on an
-older server. Never delete shared room state to roll back a display feature.
+No new infrastructure, secrets, Postgres migration or room-schema change is required
+for click-time starts. Native releases sending `joinStartedAt` require both updated
+server roles: old handlers reject unknown join fields. Web retains its legacy
+join fallback. Roll back clients before rolling back server support for the new
+request field; keep that support while updated native clients remain in use.
+Never delete shared room state to roll back a display feature.
 
 Browser → same-origin `/api/chat/events` WebSocket → Rust gateway → existing
 authorized media handlers → Cloudflare control API. Fifteen-second `media.snapshot`
@@ -3293,6 +3311,51 @@ multi-network, sustained, Bluetooth, lock-screen, or interruption acceptance.
 The test is ignored by default and requires `CAPER_SPEECH_SFU_SMOKE=authorized-20s`
 and its exact private PulseAudio socket. Each public run needs explicit approval;
 do not run all ignored tests as a batch. Local roster/probe regressions run in CI.
+
+### Windows microphone access and firewall prompts
+
+Windows desktop capture uses the pinned WebRTC WASAPI implementation's
+**shared mode**. A Discord call does not normally prevent Caper from using the
+same microphone. Caper cannot bypass Windows microphone privacy settings or
+another application's exclusive access. If initialization/start fails, check
+**Settings → Privacy & security → Microphone → Microphone access / Let desktop
+apps access your microphone**, or select an available input in Caper. Disconnect
+from Discord temporarily to isolate a sharing/driver problem; muting Discord
+may leave capture open. The generic failure does not establish a Discord conflict.
+
+**System default** means the normal Windows input/output default, including at
+startup, replay, and fresh microphone reopen. WebRTC's implicit default is the
+communications default, which can be a different or unavailable device. An
+explicit saved device never falls back to another microphone. Failed capture
+startup closes the publication gate and reports whether initialization or start
+failed; retry must not be treated as an already-running microphone. A failed
+input switch restores the previous route's live/muted intent, while keeping old
+capture epochs fenced until the fresh peer is ready.
+
+Windows Firewall may ask to allow `caper-desktop` when voice or an audio test
+first gathers WebRTC ICE candidates. Both calls and the local test's private
+peer pair open network sockets. Test recordings stay on this machine and are
+never uploaded, but the test is not socket-free. Firewall permission is separate
+from microphone access and cannot fix a WASAPI capture failure. For a trusted
+home network, allow **Private networks**; leave **Public networks** unchecked
+unless voice is also needed on networks Windows classifies as public. Windows
+can classify a home connection as public, so check the active network profile.
+Cancelling can create a block rule; review Caper's existing rules in Windows
+Firewall if voice later cannot connect. Caper does not change firewall rules or
+disable security prompts automatically. The installer keeps a stable executable
+path across updates, but portable copies at new paths can prompt again.
+
+**Publisher: Unknown** reflects the unsigned Windows executable. Adding version
+metadata does not replace trusted Authenticode signing, and signing does not
+itself grant firewall or microphone access. See Microsoft's
+[application firewall rules](https://learn.microsoft.com/en-us/windows/security/operating-system-security/network-security/windows-firewall/rules#applications-rules).
+
+Windows acceptance still requires distinct normal/communications defaults,
+explicit input selection, mute/reopen, concurrent Discord capture, denied mic
+permission, and fresh firewall-rule checks on private/public profiles. Linux
+unit tests and virtual-device checks do not establish Windows behavior. Static
+`parity-voice-error` and `parity-audio-error` fixtures check error presentation
+without capturing audio or opening a transport.
 
 ### Account diagnostics visibility
 

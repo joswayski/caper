@@ -221,6 +221,8 @@ impl Voice {
         space: Option<String>,
         token: Option<String>,
         name: String,
+        join_started_at: u64,
+        session_started_at: Option<u64>,
     ) {
         let started = Instant::now();
         self.leave();
@@ -238,6 +240,7 @@ impl Voice {
         };
         self.active_space = space.clone();
         let generation = self.state.join(context);
+        self.session_started_at = Some(session_started_at.unwrap_or(join_started_at));
         self.error = None;
         let control = JoinControl::new();
         if let Err(error) = control
@@ -294,6 +297,7 @@ impl Voice {
                 input.as_deref(),
                 output.as_deref(),
                 &control,
+                Some(join_started_at),
             ));
             let mut session = match session {
                 Ok(session) => session,
@@ -1473,9 +1477,12 @@ mod tests {
             None,
             Some("account-not-for-public-media".into()),
             "Guest".into(),
+            12_345,
+            None,
         );
         voice.state.browse("planning".into());
         assert_eq!(voice.state.active_channel(), Some("general"));
+        assert_eq!(voice.session_started_at, Some(12_345));
         handle.join().unwrap();
         for _ in 0..100 {
             voice.receive();
@@ -1502,7 +1509,15 @@ mod tests {
             std::thread::sleep(Duration::from_millis(200));
         });
         let mut voice = Voice::new(base, egui::Context::default());
-        voice.join(context("general"), None, None, "Guest".into());
+        voice.join(
+            context("general"),
+            None,
+            None,
+            "Guest".into(),
+            12_345,
+            Some(10_000),
+        );
+        assert_eq!(voice.session_started_at, Some(10_000));
         received.recv_timeout(Duration::from_secs(3)).unwrap();
         let now = Instant::now();
         voice.leave();
