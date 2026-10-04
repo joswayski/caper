@@ -90,12 +90,13 @@ class MainActivity : ComponentActivity() {
     private val viewModel: CaperViewModel by viewModels()
     private val launcherAvatar by lazy { LauncherAvatarRotator(applicationContext) }
     private var launcherAvatarJob: Job? = null
+    private var brandingAvatar by mutableStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         CaperEffects.init(applicationContext)
         viewModel.openDirectFromNotification(intent.getStringExtra("conversationId"))
-        setContent { CaperTheme { CaperApp(viewModel) } }
+        setContent { CompositionLocalProvider(LocalBrandAvatar provides brandingAvatar) { CaperTheme { CaperApp(viewModel) } } }
     }
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); viewModel.openDirectFromNotification(intent.getStringExtra("conversationId")) }
 
@@ -106,7 +107,7 @@ class MainActivity : ComponentActivity() {
         launcherAvatarJob?.cancel()
         launcherAvatarJob = lifecycleScope.launch {
             while (isActive) {
-                launcherAvatar.update()
+                brandingAvatar = launcherAvatar.update()
                 delay(15 * 60 * 1000L)
             }
         }
@@ -226,11 +227,17 @@ internal data class VoiceJoinIntent(
     }
 }
 
-@Composable private fun Wordmark(modifier: Modifier = Modifier) = Image(
-    painter = painterResource(R.drawable.caper_wordmark),
-    contentDescription = "Caper",
-    modifier = modifier.size(width = 132.dp, height = 35.dp),
-)
+private val LocalBrandAvatar = compositionLocalOf { 0 }
+
+@Composable private fun Wordmark(modifier: Modifier = Modifier) = Box(
+    modifier.size(width = 132.dp, height = 35.dp).clearAndSetSemantics { contentDescription = "Caper" },
+) {
+    Image(painterResource(R.drawable.caper_wordmark_letters), null, Modifier.matchParentSize())
+    // Same dot slot as web/Rust/Apple; keep the two images decorative to accessibility.
+    Image(painterResource(caperAvatarResources[LocalBrandAvatar.current]), null,
+        Modifier.offset(x = (132f * 904 / 1042).dp, y = (35f * 91 / 276).dp)
+            .size((132f * 132 / 1042).dp))
+}
 
 @Composable private fun HomeScreen(
     state: AppUiState,

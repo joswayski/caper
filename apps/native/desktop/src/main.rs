@@ -2796,6 +2796,27 @@ impl CaperApp {
             && !self.spaces.iter().any(|space| !space.demo)
     }
 
+    fn wordmark(&self, ui: &mut egui::Ui) {
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(132.0, 35.0), egui::Sense::hover());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, "Caper"));
+        egui::Image::new(egui::include_image!(
+            "../../../web/public/caper-wordmark-letters.svg"
+        ))
+        .paint_at(ui, rect);
+        // Dot slot in the original viewBox (20 17 1042 276): x=924, y=108, size=132.
+        let character = egui::Rect::from_min_size(
+            rect.min + egui::vec2(rect.width() * 904.0 / 1042.0, rect.height() * 91.0 / 276.0),
+            egui::vec2(rect.width() * 132.0 / 1042.0, rect.width() * 132.0 / 1042.0),
+        );
+        let index = self.daily_icon.as_ref().map_or(0, |icon| icon.index);
+        egui::Image::from_bytes(
+            format!("bytes://caper-avatars-v3/{index}.svg"),
+            avatar_images::SVG[index],
+        )
+        .paint_at(ui, character);
+    }
+
     fn first_space_page(&mut self, context: &egui::Context) {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(BLACKOUT))
@@ -2805,9 +2826,7 @@ impl CaperApp {
                         ui.set_max_width(440.0);
                         ui.add_space(100.0);
                         ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                            ui.add(egui::Image::new(egui::include_image!(
-                                "../../../web/public/caper-wordmark.svg"
-                            )).fit_to_exact_size(egui::vec2(132.0, 35.0)));
+                            self.wordmark(ui);
                             ui.add_space(58.0);
                             ui.label(black("Name your space").size(40.0));
                             ui.add_space(20.0);
@@ -2894,9 +2913,7 @@ impl CaperApp {
                         ui.set_max_width(440.0);
                         ui.add_space(100.0);
                         ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                            ui.add(egui::Image::new(egui::include_image!(
-                                "../../../web/public/caper-wordmark.svg"
-                            )).fit_to_exact_size(egui::vec2(132.0, 35.0)));
+                            self.wordmark(ui);
                             ui.add_space(58.0);
                             ui.label(
                                 bold("ONE LAST THING")
@@ -3005,9 +3022,7 @@ impl CaperApp {
                     ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                         // This form controls its own gaps; don't add egui's item spacing too.
                         ui.spacing_mut().item_spacing.y = 0.0;
-                        ui.add(egui::Image::new(egui::include_image!(
-                            "../../../web/public/caper-wordmark.svg"
-                        )).fit_to_exact_size(egui::vec2(132.0, 35.0)));
+                        self.wordmark(ui);
                         ui.add_space(58.0);
                         ui.label(black(if self.challenge.is_some() {
                             "Check your email."

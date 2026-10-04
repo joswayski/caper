@@ -20,6 +20,18 @@ final class AvatarTests: XCTestCase {
         XCTAssertEqual(CaperDailyIcon.utcDay(containing: Date(timeIntervalSince1970: 86_400)), "1970-01-02")
     }
 
+    func testWordmarkAndDockReuseThePersistedChoiceAcrossRollover() throws {
+        let suite = "caper-daily-icon-test-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let before = Date(timeIntervalSince1970: 86_399)
+        let after = Date(timeIntervalSince1970: 86_400)
+        XCTAssertEqual(CaperDailyIcon.current(now: before, defaults: defaults, random: 143), 143)
+        XCTAssertEqual(CaperDailyIcon.current(now: before, defaults: defaults, random: 799), 143)
+        XCTAssertEqual(CaperDailyIcon.current(now: after, defaults: defaults, random: 143), 144)
+        XCTAssertEqual(CaperDailyIcon.current(now: after, defaults: defaults, random: 0), 144)
+    }
+
     func testPersistedIndicesAndFallback() throws {
         for index in [0, 31, 32, 255, 256, 799] { XCTAssertEqual(CaperAvatar.index(for: index), index) }
         for index in [nil, -1, 800] { XCTAssertNil(CaperAvatar.index(for: index)) }
