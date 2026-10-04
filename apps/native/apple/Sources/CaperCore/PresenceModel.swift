@@ -33,13 +33,19 @@ public final class PresenceModel {
     public func status(for member: Member) -> PresenceStatus { statuses[member.id] ?? .unknown }
 
     public func watch(spaceID: String, members: [Member]) async {
+        let sameSpace = self.spaceID == spaceID
+        let previousIDs = visibleMembers.map(\.id)
+        self.members = members
+        page = sameSpace ? min(page, pageCount - 1) : 0
+        // Channels share the space member page. Refresh names/avatars without
+        // dropping live statuses or restarting the unchanged subscription.
+        if sameSpace, previousIDs == visibleMembers.map(\.id) { return }
         generation += 1
         let attempt = generation
         let previous = subscriptionID
         subscriptionID = nil
         self.spaceID = spaceID
-        self.members = members
-        page = 0; statuses = [:]; online = false; error = nil
+        statuses = [:]; online = false; error = nil
         if let previous { await gateway.unsubscribe(previous) }
         await subscribe(generation: attempt)
     }
@@ -77,7 +83,7 @@ public final class PresenceModel {
         subscriptionID = subscription
     }
 
-    private func receive(_ event: [String: Any], generation attempt: Int, expectedIDs: Set<String>) {
+    func receive(_ event: [String: Any], generation attempt: Int, expectedIDs: Set<String>) {
         guard generation == attempt else { return }
         if event["type"] as? String == "subscription.error" {
             statuses = [:]; online = false

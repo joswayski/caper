@@ -14,8 +14,8 @@ storage allowance (1 GB by default). Desktop opens video and audio in the
 system player. See [Uploads and attachments](docs/media.md#uploads-and-attachments).
 
 Signed-in accounts can start persistent, private one-to-one messages by username.
-The Direct messages list is shared across spaces. Optional iOS/Android push needs
-provider configuration and signed-device validation; it is not enabled by default.
+The Direct messages list is shared across spaces. Mobile push is deferred;
+when needed, the server will integrate directly with APNs for iOS and FCM for Android.
 
 ## Development
 

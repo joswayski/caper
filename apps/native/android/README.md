@@ -36,18 +36,25 @@ The build first invokes `scripts/native_fonts.py`, which downloads and verifies 
 
 The API defaults to `https://caper.chat`. Override it at build time with `-PcaperApiBaseUrl=https://host.example` (HTTPS is required by the manifest).
 
-### Optional Firebase DM notifications
+### Deferred direct FCM notifications
 
-Firebase is build-time opt-in. Download the Android app's `google-services.json` from Firebase Console and place it at `apps/native/android/app/google-services.json` (the path is ignored by Git), then build normally:
+Mobile push is not currently available. When needed, the server will send directly
+through FCM's HTTP v1 API. Authenticated `GET /api/push/config` currently returns
+`{"platforms":[]}`, so the notification control stays hidden even in a
+Firebase-configured build. Device registration and delivery are not implemented
+server-side; adding Firebase configuration alone cannot enable notifications.
 
-```bash
-cp /secure/path/google-services.json apps/native/android/app/google-services.json
-./apps/native/android/build.sh
-```
+The existing Firebase client code is dormant scaffolding for that future work.
+Without the ignored `app/google-services.json`, `FIREBASE_ENABLED` is false and
+ordinary builds work without Firebase configuration. Never commit that file or
+service credentials. A future direct integration must handle explicit opt-in,
+Android 13+ notification permission, token rotation, logout/account switching,
+private payloads containing only `conversationId`/`messageId`, and authenticated
+notification-tap navigation.
 
-Without that file, `FIREBASE_ENABLED` is false, no notification opt-in is shown, and ordinary builds continue to work. Never commit the file or service credentials. The server must return `fcm` from `GET /api/push/config` and accept the authenticated device registration routes. After login, the user must explicitly choose **Enable DM notifications** and grant Android 13+ notification permission. Registration is refreshed on FCM token rotation and removed before logout. Push payloads must contain only `conversationId` and `messageId`; Android supplies the privacy-safe title/body locally. A tap is retained through authentication and opens the matching global DM.
-
-Real-device FCM delivery, denied/revoked notification permission, token rotation, notification taps from killed/background processes, and registration removal during poor connectivity remain physical-device validation gaps; this orb has no KVM or attached Android device.
+Real-device FCM delivery, denied/revoked permission, token rotation, background and
+terminated-app taps, and cleanup during poor connectivity must be validated when
+implementing direct delivery. Client scaffolding is not end-to-end push support.
 
 Release tasks fail when signing is absent instead of producing an unsigned or debug-signed release. To sign a release, set all four variables: `CAPER_ANDROID_KEYSTORE`, `CAPER_ANDROID_KEYSTORE_PASSWORD`, `CAPER_ANDROID_KEY_ALIAS`, and `CAPER_ANDROID_KEY_PASSWORD`. Never commit those values.
 

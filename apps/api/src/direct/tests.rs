@@ -81,6 +81,34 @@ async fn two_person_privacy_durability_read_cursors_and_gateway_replay(pool: PgP
             .0,
         StatusCode::UNAUTHORIZED
     );
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            "/api/push/config",
+            Some("alice"),
+            None,
+            Value::Null
+        )
+        .await,
+        (StatusCode::OK, json!({"platforms":[]})),
+    );
+    for method in ["POST", "DELETE"] {
+        assert_eq!(
+            request(
+                &app,
+                method,
+                "/api/push/devices",
+                Some("alice"),
+                None,
+                json!({"platform":"fcm","token":"test-device"}),
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND,
+            "device registration is deferred until direct provider integrations exist",
+        );
+    }
     assert!(create_conversation(&pool, users[0], "alice").await.is_err());
     assert!(
         create_conversation(&pool, users[0], "missing")
@@ -184,15 +212,13 @@ async fn two_person_privacy_durability_read_cursors_and_gateway_replay(pool: PgP
     assert_eq!(first.0, StatusCode::OK);
     assert_eq!(first, retry);
     assert_eq!(first.1["seq"], "1");
-    let notifications: Vec<i64> =
-        sqlx::query_scalar("SELECT recipient_user_id FROM push_notifications")
-            .fetch_all(&pool)
-            .await
-            .unwrap();
     assert_eq!(
-        notifications,
-        [users[1]],
-        "one idempotent notification, only for the peer"
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM push_notifications")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0,
+        "DM sends must not enqueue deferred push notifications",
     );
     let history = request(&app, "GET", &path, Some("bob"), None, Value::Null)
         .await
@@ -229,11 +255,16 @@ async fn two_person_privacy_durability_read_cursors_and_gateway_replay(pool: PgP
         StatusCode::SERVICE_UNAVAILABLE
     );
     assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM push_notifications")
-            .fetch_one(&pool)
-            .await
-            .unwrap(),
-        1
+        sqlx::query_as::<_, (i64, i64, i64)>(
+            "SELECT (SELECT count(*) FROM messages),
+                    (SELECT count(*) FROM channel_events),
+                    (SELECT count(*) FROM push_notifications)",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        (1, 1, 0),
+        "failed outbox inserts still roll back the message without queuing push",
     );
     sqlx::query("ALTER TABLE channel_events DROP CONSTRAINT reject_dm")
         .execute(&pool)

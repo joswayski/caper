@@ -229,6 +229,20 @@ public final class AppModel {
 
     public func select(channel: Channel) async {
         guard let space = detail?.space else { return }
+        if selectedSpaceID == space.id, selectedChannelID == channel.id,
+           selectedDirectMessageID == nil, chat.isPreview == !channel.joined {
+            // The displayed conversation remains usable while another target
+            // opens. Clicking it cancels that transition, not the live chat.
+            if navigationTarget != nil {
+                navigationGeneration += 1
+                navigationTarget = nil
+                openingSpaceID = nil; openingChannelID = nil
+                navigationError = nil
+            }
+            navigationOpen = false
+            return
+        }
+        if openingSpaceID == space.id, openingChannelID == channel.id { return }
         await navigate(space: space, channelID: channel.id)
     }
 
@@ -335,6 +349,8 @@ public final class AppModel {
 
     /// Performs read-only speculative work. It never opens chat, starts a socket, or creates a chat session.
     public func prefetch(space: Space, channelID: String? = nil) {
+        if selectedSpaceID == space.id, selectedDirectMessageID == nil,
+           channelID == nil || channelID == selectedChannelID { return }
         let key = navigationKey(spaceID: space.id, channelID: channelID)
         if let entry = prefetches[key], entry.expires > Date(), entry.generation == generation { return }
         prefetches[key]?.task.cancel()
@@ -1084,11 +1100,22 @@ public final class ChatModel {
             clearLocal(preservingPending: preservingPending)
         }
         if preservingPending { draft = preservedDraft }
-        loading = true
+        // Prepared history is already loaded and authorized by navigation.
+        // Show it immediately; obtaining a sending capability is not a new
+        // history load (and must not flash the previous channel's title).
+        if let prepared {
+            self.channelID = prepared.channel?.id; spaceID = prepared.space?.id
+            reactionSnapshots.seed(prepared.messages)
+            messages = prepared.messages.map { reactionSnapshots.overlay($0) }
+            delivery.reset(cursor: prepared.cursor); hasMore = prepared.hasMore
+            channelName = prepared.channel?.name ?? "general"
+            spaceName = prepared.space?.name ?? "Caper"
+        }
+        loading = prepared == nil
         if let oldSubscription { await gateway.unsubscribe(oldSubscription) }
         guard generation == requestGeneration else { return }
         self.channelID = channelID
-        loading = true; error = nil; loadFailed = false; sessionError = nil
+        loading = prepared == nil; error = nil; loadFailed = false; sessionError = nil
         do {
             async let sessionRequest = api.chatSession(name: displayName)
             let history: ChatHistory
@@ -1111,22 +1138,24 @@ public final class ChatModel {
                 after: preservedCursor,
                 through: history.cursor
             )
-            if canRetain {
-                // Include HTTP confirmations received while refresh was pending.
-                merge(history.messages) // The refreshed representation wins overlapping IDs.
-            } else {
-                // Preserve a newer reaction revision on overlapping rows, but
-                // discard snapshots for rows no longer in the fresh window.
-                reactionSnapshots.seed(history.messages)
-                messages = history.messages.map { reactionSnapshots.overlay($0) }
-                reactionSnapshots.reset()
-                reactionSnapshots.seed(messages)
+            if prepared == nil {
+                if canRetain {
+                    // Include HTTP confirmations received while refresh was pending.
+                    merge(history.messages) // The refreshed representation wins overlapping IDs.
+                } else {
+                    // Preserve a newer reaction revision on overlapping rows, but
+                    // discard snapshots for rows no longer in the fresh window.
+                    reactionSnapshots.seed(history.messages)
+                    messages = history.messages.map { reactionSnapshots.overlay($0) }
+                    reactionSnapshots.reset()
+                    reactionSnapshots.seed(messages)
+                }
+                delivery.reset(cursor: history.cursor, preservingPending: preservingPending)
+                let retainedOlderPrefix = canRetain && firstRefreshed.map { first in
+                    preservedMessages.contains { (try? Sequence.compare($0.seq, first)) == .orderedAscending }
+                } == true
+                hasMore = retainedOlderPrefix ? preservedHasMore : history.hasMore
             }
-            delivery.reset(cursor: history.cursor, preservingPending: preservingPending)
-            let retainedOlderPrefix = canRetain && firstRefreshed.map { first in
-                preservedMessages.contains { (try? Sequence.compare($0.seq, first)) == .orderedAscending }
-            } == true
-            hasMore = retainedOlderPrefix ? preservedHasMore : history.hasMore
             channelName = history.channel?.name ?? "general"
             spaceName = history.space?.name ?? "Caper"
             session = chatSession

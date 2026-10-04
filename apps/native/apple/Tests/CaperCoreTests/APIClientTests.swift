@@ -1308,6 +1308,93 @@ final class APIClientTests: XCTestCase {
     }
 
     @MainActor
+    func testRepeatChannelSelectionPreservesDraftAndCancelsPendingNavigation() async throws {
+        let model = AppModel(api: client())
+        let first = Channel(id: "chan00000001", spaceId: "space0000001", name: "one", private: false)
+        let second = Channel(id: "chan00000002", spaceId: first.spaceId, name: "two", private: false)
+        let space = Space(id: first.spaceId, name: "S", ownerId: "owner0000001", demo: nil)
+        let detail = SpaceDetail(space: space, channels: [first, second], members: [])
+        var paths: [String] = []
+        MockURLProtocol.handler = { request in
+            let path = request.url!.path
+            paths.append(path)
+            switch path {
+            case "/api/spaces/space0000001": return (200, try JSONEncoder().encode(detail))
+            case "/api/chat/channels/chan00000001/messages":
+                return (200, Data(#"{"space":{"id":"space0000001","name":"S"},"channel":{"id":"chan00000001","name":"one"},"messages":[],"cursor":"41","hasMore":false}"#.utf8))
+            case "/api/chat/session":
+                return (200, Data(#"{"token":"chat-secret","author":{"id":"me","name":"Me","isGuest":false}}"#.utf8))
+            default: throw URLError(.badURL)
+            }
+        }
+        model.detail = detail
+        await model.select(channel: first)
+        model.chat.draft = "Keep this draft"
+        let count = paths.count
+        await model.select(channel: first)
+        model.prefetch(space: space, channelID: first.id)
+        XCTAssertEqual(paths.count, count)
+        XCTAssertEqual(model.navigationCacheCounts.prefetches, 0)
+        XCTAssertEqual(model.chat.draft, "Keep this draft")
+        XCTAssertEqual(model.chat.currentSnapshot()?.cursor, "41")
+
+        let started = expectation(description: "second channel navigation started")
+        var held: MockURLProtocol?
+        MockURLProtocol.deferred = { request, urlRequest in
+            guard urlRequest.url?.path == "/api/spaces/space0000001" else { return false }
+            XCTAssertNil(held, "duplicate selection must share the pending navigation")
+            held = request; started.fulfill(); return true
+        }
+        let opening = Task { await model.select(channel: second) }
+        await fulfillment(of: [started], timeout: 2)
+        await model.select(channel: second)
+        await model.select(channel: first)
+        XCTAssertNil(model.openingChannelID)
+        held?.respond(status: 200, data: try JSONEncoder().encode(detail))
+        await opening.value
+        XCTAssertEqual(model.selectedChannelID, first.id)
+        XCTAssertEqual(model.chat.draft, "Keep this draft")
+        XCTAssertEqual(model.chat.currentSnapshot()?.cursor, "41")
+        XCTAssertFalse(paths.contains("/api/chat/channels/chan00000002/messages"))
+    }
+
+    @MainActor
+    func testPreparedHistoryIsVisibleWhileSessionLoadsIncludingEmptyChannels() async throws {
+        for sequences in [[], [5]] {
+            let chat = ChatModel(api: client())
+            let page = try JSONDecoder().decode(ChatHistory.self, from: chatHistory("Channel12345", sequences: sequences, cursor: 5, hasMore: !sequences.isEmpty))
+            let history = ChatHistory(space: HistoryIdentity(id: "Space1234567", name: "Prepared space"),
+                                      channel: HistoryIdentity(id: "Channel12345", name: "planning"),
+                                      messages: page.messages, cursor: "5", hasMore: !sequences.isEmpty)
+            let started = expectation(description: "chat session started")
+            var held: MockURLProtocol?
+            MockURLProtocol.deferred = { request, urlRequest in
+                guard urlRequest.url?.path == "/api/chat/session" else { return false }
+                held = request; started.fulfill(); return true
+            }
+            MockURLProtocol.handler = { request in
+                XCTAssertTrue(request.url!.query?.contains("before=5") == true, "prepared history must not fetch the first page again")
+                return (200, chatHistory("Channel12345", sequences: [2], cursor: 5, hasMore: false))
+            }
+            let opening = Task { await chat.open(history: history, displayName: "Me") }
+            await fulfillment(of: [started], timeout: 2)
+            XCTAssertFalse(chat.loading, "a pending sending capability is not a history load")
+            XCTAssertEqual(chat.messages.map(\.seq), sequences.map(String.init))
+            XCTAssertEqual(chat.spaceName, "Prepared space")
+            XCTAssertEqual(chat.channelName, "planning")
+            if !sequences.isEmpty {
+                await chat.loadOlder()
+                XCTAssertEqual(chat.messages.map(\.seq), ["2", "5"])
+            }
+            held?.respond(status: 200, data: Data(#"{"token":"chat-secret","author":{"id":"me","name":"Me","isGuest":false}}"#.utf8))
+            await opening.value
+            XCTAssertEqual(chat.messages.map(\.seq), sequences.isEmpty ? [] : ["2", "5"], "session completion must not overwrite history loaded in the meantime")
+            XCTAssertFalse(chat.hasMore)
+            await chat.stop()
+        }
+    }
+
+    @MainActor
     func testSequencedReactionAdvancesDirectMessageReadCursorButHTTPSnapshotDoesNot() async throws {
         let channel = "dm0000000001"
         let messageID = "Message00000001"
@@ -1397,7 +1484,7 @@ final class APIClientTests: XCTestCase {
         await chat.preview(history: initial)
         chat.receive(["type": "message.reactions", "channelId": channel, "seq": "3"], generation: 1, channelID: channel)
         await fulfillment(of: [refreshed], timeout: 2)
-        for _ in 0..<20 where chat.messages.isEmpty { await Task.yield() }
+        await waitUntil { !chat.messages.isEmpty }
         XCTAssertTrue(chat.isPreview)
         XCTAssertNil(chat.currentAuthor)
         XCTAssertEqual(chat.messages.first?.content.text, "Refreshed")
