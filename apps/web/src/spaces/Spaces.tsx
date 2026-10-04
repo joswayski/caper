@@ -798,7 +798,7 @@ function StartDirectDialog({ onClose, onCreated }: { onClose: () => void; onCrea
   const [username, setUsername] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
-  return <Dialog title="New direct message" description="Enter an exact username, or your own for private notes. Conversations stay private across all your spaces." onClose={onClose}>
+  return <Dialog title="New direct message" description="Enter an exact username. Conversations stay private across all your spaces." dismissOnBackdrop onClose={onClose}>
     <form onSubmit={(event) => {
       event.preventDefault();
       if (pending || !username.trim()) return;
@@ -1566,7 +1566,7 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
               <span>{item.name}</span>
               {voice?.timer}
             </button>
-            {owner && (
+            {!detail.space.demo && (
               <details
                 className="channel-menu"
                 onKeyDown={(event) => {
@@ -1581,12 +1581,18 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
               >
                 <summary className="channel-manage" aria-label={`Manage ${item.name}`} title={`Channel actions for ${item.name}`}><MoreHorizontal aria-hidden="true" /></summary>
                 <div className="space-actions">
-                  <button type="button" onClick={(event) => {
+                  {owner && <button type="button" onClick={(event) => {
                     const menu = event.currentTarget.closest("details")!;
                     menu.open = false;
                     menu.querySelector("summary")?.focus();
                     setManageChannel(item);
-                  }}><Settings aria-hidden="true" />Channel settings</button>
+                  }}><Settings aria-hidden="true" />Channel settings</button>}
+                  <button type="button" disabled={membershipPending} onClick={(event) => {
+                    const menu = event.currentTarget.closest("details")!;
+                    menu.open = false;
+                    menu.querySelector("summary")?.focus();
+                    setLeavingChannel(item);
+                  }}><LogOut aria-hidden="true" />Leave channel</button>
                 </div>
               </details>
             )}
@@ -1722,7 +1728,7 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
           <div><strong>Preview</strong><span>Join <strong>#{channel.name}</strong> to interact with people here</span></div>
           <button type="button" className="primary" disabled={membershipPending} onClick={() => void changeChannelMembership(() => joinChannel(detail.space.id, channel.id)).catch((reason) => setMembershipError(errorMessage(reason)))}>{membershipPending ? "Joining…" : "Join channel"}</button>
           {membershipError && <p role="alert">{membershipError}</p>}
-        </div> : !directView ? <div className="channel-membership-actions"><button className="channel-membership-leave" type="button" disabled={membershipPending} onClick={() => setLeavingChannel(channel)}>Leave channel</button></div> : undefined}
+        </div> : undefined}
         initialAccount={account}
         initialHistory={directView ? directView.history : view?.history?.channel.id === channel.id ? view.history : undefined}
         initialHistoryError={directView ? directView.error : view?.channelId === channel.id ? view.historyError : undefined}

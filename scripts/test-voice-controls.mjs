@@ -444,8 +444,12 @@ try {
     assert.deepEqual(countPosition(), ownerDesktopCount, 'Revealing owner section actions cannot shift the count');
     screenshot('channel-1280-owner');
     evaluate(`voiceFixture.showSpaces(false);`);
-    wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha' && !document.querySelector('.channel-manage')`);
-    assert.equal(evaluate(`return document.querySelectorAll('.channel-join').length;`), 3, 'Members retain voice actions without owner management controls');
+    wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha' && document.querySelector('.channel-manage')`);
+    browser('click', '[aria-label="Manage alpha"]');
+    assert.equal(evaluate(`return document.querySelector('.channel-menu[open]').textContent.includes('Channel settings');`), false, 'Members cannot access owner settings');
+    assert.equal(evaluate(`return document.querySelector('.channel-menu[open]').textContent.includes('Leave channel');`), true, 'Members can leave from channel options');
+    browser('press', 'Escape');
+    assert.equal(evaluate(`return document.querySelectorAll('.channel-join').length;`), 3, 'Members retain voice actions alongside channel options');
     assert.deepEqual(countPosition(), ownerDesktopCount, 'Owned and shared spaces keep the channel count in the same position');
     checkChannelTargets();
     screenshot('channel-1280-member');

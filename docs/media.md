@@ -9,7 +9,7 @@ unified text/voice channels; history, live messages, presence and calls require
 membership. See [spaces and channel access](#spaces-and-channel-access).
 Participants use their account display name and saved Caper avatar. This is not an outgoing-call flow.
 No camera, screen sharing, or server-side voice recording.
-Web channel names and owner-only `⋯` actions have a separate row above voice
+Web channel names and `⋯` actions have a separate row above voice
 activity. Join, Joining and Switch here use one fixed-width action slot;
 connected channels reserve that space without an inline Leave action.
 Disconnect lives in the bottom voice dock beside the account.
@@ -18,8 +18,11 @@ status text. Only occupied channels show a voice count. Hover and connection/ros
 updates do not shift the action target. The Channels count stays beside its label
 in both owned and shared spaces. Selecting a channel
 opens text without switching voice. Participant lists start collapsed and expand
-from the voice count. Channel actions open the existing privacy/member settings;
-at the minimum sidebar width, counts take priority over avatars; narrow web
+from the voice count. Joined-channel menus offer Leave channel to members;
+owners also have the existing privacy/member settings. Leave channel requires
+confirmation and no longer appears in the chat header on web, Apple or Rust
+desktop; Android already uses its channel menu.
+At the minimum sidebar width, counts take priority over avatars; narrow web
 layouts retain 44px action targets.
 Run `VOICE_TEST_CHANNEL_ROWS=1 node scripts/test-voice-controls.mjs http://localhost:5174`
 against Vite for mocked desktop/narrow/minimum-width geometry, roster disclosure,
@@ -31,8 +34,11 @@ released separately; browser checks do not establish native rendering parity.
 Browser modals use viewport-bounded, stable-height shells with scrollable overflow;
 errors, pending states and member loading do not resize or recenter them. Channel
 settings reserve the hidden save bar, and profile forms reserve error space so
-retrying a save does not move its button. Channel and space settings dismiss on
-outside click/tap; nested delete confirmation dismissal leaves settings open.
+retrying a save does not move its button. Channel and space settings and new
+direct-message dialogs dismiss on outside click/tap; nested delete confirmation
+dismissal leaves settings open. Rust desktop also dismisses new direct messages
+on outside clicks; Apple keeps platform sheet dismissal, and Android keeps its
+existing outside-tap behavior.
 Run `MODALS_ONLY=1 SPACES_TEST_WEB_URL=http://localhost:5174/spaces node scripts/test-space-controls.mjs`
 against Vite for desktop, narrow and short-viewport geometry, overflow reachability
 and backdrop regression checks with mocked APIs. Android, Apple and Rust desktop
