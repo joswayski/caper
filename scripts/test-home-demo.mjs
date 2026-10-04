@@ -50,12 +50,20 @@ const checkVoiceSummary = people => {
   const summary = evaluate(`
     const stack = document.querySelector('.sim-sidebar .voice-stack');
     const count = stack.querySelector('.voice-stack-count');
+    const frames = [...stack.querySelectorAll('.voice-stack-avatar'), ...document.querySelectorAll('.sim-voice-avatar')].map(el => ({
+      style: getComputedStyle(el),
+      speaking: el.classList.contains('speaking'),
+    }));
     return {
       avatars: [...stack.querySelectorAll('.voice-stack-avatar')].filter(el => el.getClientRects().length > 0).map(el => el.querySelector('.sim-avatar').getAttribute('aria-label')),
       overflow: stack.querySelector('.voice-stack-faces small')?.textContent ?? '',
       label: count.textContent,
       accessibleLabel: stack.getAttribute('aria-label'),
       clipped: count.scrollWidth > count.clientWidth,
+      transparentBackgrounds: frames.every(({ style }) => style.backgroundColor === 'rgba(0, 0, 0, 0)'),
+      roundFrames: frames.every(({ style }) => style.borderRadius === '50%'),
+      unframedIdleAvatars: frames.filter(({ speaking }) => !speaking).every(({ style }) => style.borderColor === 'rgba(0, 0, 0, 0)' && style.boxShadow === 'none'),
+      speakingRings: frames.filter(({ speaking }) => speaking).every(({ style }) => style.borderColor === 'rgb(99, 122, 67)' && style.boxShadow !== 'none'),
     };
   `);
   assert.deepEqual(summary, {
@@ -64,7 +72,11 @@ const checkVoiceSummary = people => {
     label: `${people.length} in voice`,
     accessibleLabel: `${people.length} in demo voice`,
     clipped: false,
-  }, 'Every voice participant must have a visible preview avatar beside the full, unclipped voice total');
+    transparentBackgrounds: true,
+    roundFrames: true,
+    unframedIdleAvatars: true,
+    speakingRings: true,
+  }, 'Every voice avatar must be visible without a gray frame; round speaking rings and the full voice total remain');
 };
 const pointFor = selector => evaluate(`
     const element = document.querySelector(${JSON.stringify(selector)});
