@@ -272,6 +272,8 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      # Caches the Gradle user home (wrapper, dependencies) from main.
+      - uses: gradle/actions/setup-gradle@v4
       - uses: android-actions/setup-android@v3
         with:
           cmdline-tools-version: '13114758'
@@ -383,6 +385,8 @@ jobs:
           toolchain: 1.94.0
           components: rustfmt, clippy
           cache-workspaces: apps/native/desktop
+          # Same key as native.yml's desktop job, so releases reuse its cache.
+          cache-key: ${{ matrix.target == 'windows-x64' && 'windows-target-triple' || '' }}
       - name: Linux native build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -427,6 +431,16 @@ jobs:
           New-Item -ItemType Directory -Force release | Out-Null
           Copy-Item apps/native/desktop/dist/Caper-windows-x64-Setup.exe release/Caper-Windows-x64-Setup.exe
           Copy-Item apps/native/desktop/dist/Caper-windows-x64.zip release/Caper-Windows-x64.zip
+      - name: Let the Rust cache keep Windows target-triple dependencies
+        # See native.yml: without CACHEDIR.TAG, rust-cache deletes
+        # target/x86_64-pc-windows-msvc/{debug,release} before saving.
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: bash
+        run: |
+          triple_dir=apps/native/desktop/target/x86_64-pc-windows-msvc
+          if [[ -d "$triple_dir" && ! -e "$triple_dir/CACHEDIR.TAG" ]]; then
+            printf 'Signature: 8a477f597d28d172789f06886806bc55\n' >"$triple_dir/CACHEDIR.TAG"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: release-desktop-${{ matrix.target }}
