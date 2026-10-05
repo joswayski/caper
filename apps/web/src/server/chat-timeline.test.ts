@@ -89,9 +89,11 @@ test("Twemoji filenames handle selectors, keycaps, flags, skin tones and ZWJ seq
   assert.equal(emojiAsset("0031-fe0f-20e3"), "/emoji/twemoji-15/31-20e3.svg");
 });
 
-test("emoji preload shares image decoding, retries failures, and stays warm across messages", async (t) => {
+test("emoji preload shares decoding per category, retries failures, and stays warm across messages", async (t) => {
   const manifest = ["1f600", "0031-fe0f-20e3", "1f469-200d-2695-fe0f"];
-  const fetchMock = t.mock.method(globalThis, "fetch", async () => Response.json(manifest));
+  const fetchMock = t.mock.method(globalThis, "fetch", async (url: string) => Response.json(
+    String(url).endsWith("preload-flags.json") ? ["1f3c1", "1f1e9-1f1f4"] : manifest,
+  ));
   fetchMock.mock.mockImplementationOnce(async () => new Response(null, { status: 503 }));
   const images: { src: string }[] = [];
   const decoded: (() => void)[] = [];
@@ -126,6 +128,28 @@ test("emoji preload shares image decoding, retries failures, and stays warm acro
   await first;
   assert.strictEqual(preloadEmojiImages(), first, "a later message must reuse completed preload work");
   assert.equal(fetchMock.mock.callCount(), 3);
+  assert.ok(fetchMock.mock.calls.every(({ arguments: args }) => args[0] === "/emoji/twemoji-15/preload.json"));
+
+  failImage = true;
+  await preloadEmojiImages("flags");
+  assert.strictEqual(preloadEmojiImages(), first, "a category failure must not evict another category");
+  failImage = false;
+  const flags = preloadEmojiImages("flags");
+  const food = preloadEmojiImages("food_drink");
+  assert.strictEqual(preloadEmojiImages("flags"), flags, "concurrent intent must share only its category");
+  assert.notStrictEqual(food, flags, "different categories must preload independently");
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(fetchMock.mock.calls.slice(3).map(({ arguments: args }) => args[0]), [
+    "/emoji/twemoji-15/preload-flags.json", "/emoji/twemoji-15/preload-flags.json", "/emoji/twemoji-15/preload-food_drink.json",
+  ]);
+  assert.deepEqual(images.slice(8, 10).map((image) => image.src), [
+    "/emoji/twemoji-15/1f3c1.svg", "/emoji/twemoji-15/1f1e9-1f1f4.svg",
+  ]);
+  decoded.slice(3).forEach((finish) => finish());
+  await Promise.all([flags, food]);
+  assert.strictEqual(preloadEmojiImages("flags"), flags);
+  assert.strictEqual(preloadEmojiImages("food_drink"), food);
+  assert.equal(fetchMock.mock.callCount(), 6, "completed categories must stay warm when the picker reopens");
 });
 
 test("message snapshots retain identity until visible contents change", () => {

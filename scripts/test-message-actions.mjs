@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { emojiAsset } from '../apps/web/src/chat/emoji.ts';
 
 const web = process.env.MESSAGE_TEST_WEB_URL ?? 'http://127.0.0.1:5174';
 const api = process.env.MESSAGE_TEST_API_URL ?? 'http://127.0.0.1:3001';
@@ -99,6 +100,65 @@ try {
     await delay(100);
     assert.equal(evaluate(`${preloadedImages}.length`), 128, 'Repeated intent must not issue duplicate image requests');
   }
+
+  browser('find', 'first', '.chat-add-reaction:not(:disabled)', 'click');
+  wait('!!document.querySelector(".chat-reaction-picker input")');
+  wait(`${visibleEmojiImages}.length >= 24 && ${visibleEmojiImages}.every(image => image.complete && image.naturalWidth > 0)`);
+  // The library itself warms some off-screen assets. Chromium can reuse them
+  // without a new Resource Timing entry, so count only genuinely cold assets.
+  const loadedAssets = new Set(evaluate(`${preloadedImages}.map(resource => new URL(resource.name).pathname)`));
+  for (const [category, firstEmoji, count, intent] of [
+    ['travel_places', '1f30d', 128, 'hover'], ['flags', '1f3c1', 128, 'focus'],
+    ['animals_nature', '1f435', 128, 'hover'], ['food_drink', '1f347', 128, 'focus'],
+    ['activities', '1f383', 85, 'hover'], ['objects', '1f453', 128, 'focus'],
+    ['symbols', '1f3e7', 128, 'hover'],
+  ]) {
+    const response = await fetch(`${web}/emoji/twemoji-15/preload-${category}.json`);
+    assert.equal(response.status, 200);
+    const codes = await response.json();
+    assert.equal(codes.length, count);
+    assert.equal(codes[0], firstEmoji);
+    const assets = codes.map(emojiAsset);
+    const coldAssets = assets.filter(asset => !loadedAssets.has(asset));
+    evaluate('performance.clearResourceTimings()');
+    // Hover the nested SVG, not just the button, to exercise target resolution.
+    browser(intent, `.epr-icn-${category}${intent === 'hover' ? ' svg' : ''}`);
+    wait(`${JSON.stringify(coldAssets)}.every(asset => ${preloadedImages}.some(resource => new URL(resource.name).pathname === asset && resource.responseEnd > 0 && resource.responseStatus === 200))`);
+    const requestedAssets = evaluate(`${preloadedImages}.map(resource => new URL(resource.name).pathname)`);
+    assert.ok(requestedAssets.length <= count && requestedAssets.every(asset => assets.includes(asset)), 'Category intent must fetch only its bounded manifest');
+    requestedAssets.forEach(asset => loadedAssets.add(asset));
+    assert.ok(assets.every(asset => loadedAssets.has(asset)), 'Every prefetched asset must be loaded before selection');
+    const manifests = `performance.getEntriesByType('resource').filter(resource => resource.name.includes('/emoji/twemoji-15/preload-') && resource.name.endsWith('.json'))`;
+    assert.deepEqual(evaluate(`${manifests}.map(resource => new URL(resource.name).pathname)`), [`/emoji/twemoji-15/preload-${category}.json`]);
+    assert.equal(evaluate(`document.querySelector('.epr-cat-btn[aria-selected="true"]').classList.contains('epr-icn-smileys_people')`), true, 'Category intent must not select or scroll away from smileys');
+    assert.equal(evaluate('document.querySelector(".epr-body").scrollTop'), 0);
+    browser('mouse', 'move', '10', '10');
+    browser('focus', '.chat-reaction-picker input');
+    browser(intent, `.epr-icn-${category}`);
+    await delay(100);
+    assert.equal(evaluate(`${preloadedImages}.length`), requestedAssets.length, 'Repeated category intent must reuse loaded images');
+    assert.equal(evaluate(`${manifests}.length`), 1, 'Repeated category intent must reuse its manifest');
+  }
+  evaluate('performance.clearResourceTimings()');
+  browser('hover', '.chat-reaction-picker input');
+  browser('focus', '.chat-reaction-picker input');
+  await delay(100);
+  assert.equal(evaluate(`${preloadedImages}.length`), 0, 'Unrelated picker controls must not preload categories');
+  browser('click', '.epr-icn-travel_places');
+  wait(`document.querySelector('.epr-icn-travel_places').getAttribute('aria-selected') === 'true' && !!document.querySelector('.epr-body button[data-unified="1f30d"]')`);
+  wait(`${visibleEmojiImages}.length >= 24 && ${visibleEmojiImages}.every(image => image.complete && image.naturalWidth > 0)`);
+  screenshot('emoji-desktop-prefetched-travel');
+  browser('press', 'Escape');
+  browser('find', 'first', '.chat-add-reaction:not(:disabled)', 'click');
+  wait('!!document.querySelector(".chat-reaction-picker input")');
+  wait(`${visibleEmojiImages}.length >= 24 && ${visibleEmojiImages}.every(image => image.complete && image.naturalWidth > 0)`);
+  evaluate('performance.clearResourceTimings()');
+  browser('hover', '.epr-icn-travel_places svg');
+  browser('focus', '.epr-icn-flags');
+  await delay(100);
+  assert.equal(evaluate(`performance.getEntriesByType('resource').filter(resource => resource.name.includes('/emoji/twemoji-15/')).length`), 0, 'Reopening must preserve completed category preloads');
+  browser('press', 'Escape');
+
   browser('set', 'viewport', '390', '844', '2');
   // Initialize the narrow layout instead of carrying the desktop members pane
   // into its mobile overlay while checking unrelated touch gestures.
@@ -331,9 +391,13 @@ try {
   assert.equal(evaluate('document.body.textContent.includes("Saving reaction")'), false);
   screenshot('reaction-desktop-optimistic');
   evaluate('window.holdReactions = false; window.heldReactions.at(-1)()');
-  console.log('PASS: Chromium touch gestures (tap/scroll/cancel/hold), hidden inline emoji controls, modal focus/dismissal, exact clipboard text/ID, quick toggles, picker code warmup without artwork fetches, hover/focus image preload without opening or duplicate requests, eager virtualized category jumps/reopen, underline/no click ring, keyboard tabs, search/live-target retention, clipboard failure, read-only copying, desktop picker.');
+  console.log('PASS: Chromium touch gestures (tap/scroll/cancel/hold), hidden inline emoji controls, modal focus/dismissal, exact clipboard text/ID, quick toggles, picker code warmup without artwork fetches, trigger and all seven category hover/focus preloads without duplicate requests or selection, category cache across reopen, eager virtualized category jumps/reopen, underline/no click ring, keyboard tabs, search/live-target retention, clipboard failure, read-only copying, desktop picker.');
   console.log('PASS: optimistic mobile/desktop reactions before request delivery, enabled chips, no saving status, rapid add/remove without stale-ack flicker, error rollback and immediate retry.');
 } catch (error) {
+  console.error('Emoji requests at failure:', evaluate(`(() => {
+    const resources = performance.getEntriesByType('resource').filter(resource => resource.name.includes('/emoji/twemoji-15/'));
+    return { images: resources.filter(resource => resource.name.endsWith('.svg')).length, manifests: resources.filter(resource => resource.name.endsWith('.json')).map(resource => new URL(resource.name).pathname) };
+  })()`));
   browser('screenshot', '/tmp/message-actions-failure.png');
   throw error;
 } finally {
