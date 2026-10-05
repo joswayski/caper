@@ -2,30 +2,6 @@ import CaperCore
 import AppKit
 import SwiftUI
 
-@MainActor
-private final class DailyDockIcon {
-    private var timer: Timer?
-    private var currentIndex: Int?
-
-    func start(enabled: Bool) {
-        guard enabled, timer == nil else { return }
-        refresh()
-        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
-            object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.refresh() } }
-        timer = Timer.scheduledTimer(withTimeInterval: 15 * 60, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
-        }
-    }
-
-    func refresh(now: Date = Date()) {
-        let index = CaperDailyIcon.current(now: now)
-        if currentIndex != index {
-            NSApplication.shared.applicationIconImage = CaperAvatar.image(for: index)
-            currentIndex = index
-        }
-    }
-}
-
 @main
 struct CaperMacOSApp: App {
     private let parity = ProcessInfo.processInfo.environment["CAPER_TEST_MODE"] == "parity"
