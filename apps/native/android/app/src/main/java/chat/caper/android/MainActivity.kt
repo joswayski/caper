@@ -88,8 +88,8 @@ import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val viewModel: CaperViewModel by viewModels()
-    private val launcherAvatar by lazy { LauncherAvatarRotator(applicationContext) }
-    private var launcherAvatarJob: Job? = null
+    private val dailyBranding by lazy { DailyBrandingAvatar(applicationContext) }
+    private var brandingJob: Job? = null
     private var brandingAvatar by mutableStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -104,10 +104,10 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         viewModel.setForeground(true)
         if (BuildConfig.FIXTURE_MODE) return
-        launcherAvatarJob?.cancel()
-        launcherAvatarJob = lifecycleScope.launch {
+        brandingJob?.cancel()
+        brandingJob = lifecycleScope.launch {
             while (isActive) {
-                brandingAvatar = launcherAvatar.update()
+                brandingAvatar = dailyBranding.update()
                 delay(15 * 60 * 1000L)
             }
         }
@@ -115,8 +115,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onPause() {
         viewModel.setForeground(false)
-        launcherAvatarJob?.cancel()
-        launcherAvatarJob = null
+        brandingJob?.cancel()
+        brandingJob = null
         super.onPause()
     }
 }

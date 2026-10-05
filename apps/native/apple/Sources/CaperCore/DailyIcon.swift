@@ -1,13 +1,13 @@
 import Foundation
 
-/// Shared selection for in-app wordmarks and the running macOS Dock icon.
+/// Daily selection for in-app wordmarks only. App icons keep the original mascot.
 /// Account avatar IDs are deliberately unrelated to this installation-local choice.
 public enum CaperDailyIcon {
     public static let count = 800
 
     public static func current(now: Date = Date(), defaults: UserDefaults = .standard,
                                random: UInt64 = UInt64.random(in: UInt64.min...UInt64.max)) -> Int {
-        // Retain the existing macOS keys; iOS uses them only for in-app branding.
+        // Retain the existing keys for in-app branding on macOS and iOS.
         let day = utcDay(containing: now)
         let savedDay = defaults.string(forKey: "daily-dock-icon-day-v1")
         let savedIndex = defaults.object(forKey: "daily-dock-icon-index-v1") as? Int
