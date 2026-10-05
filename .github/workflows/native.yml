@@ -239,8 +239,10 @@ jobs:
           - os: macos-15
             platform: ios
             target: ios-simulator-arm64
-    # Intel builds stay on GitHub-hosted macos-15-intel.
-    runs-on: ${{ needs.route.outputs.mac == 'true' && matrix.os == 'macos-15' && fromJSON('["self-hosted","josemac"]') || matrix.os }}
+    # Intel builds stay on GitHub-hosted macos-15-intel. On the self-hosted Mac
+    # the macOS UI tests (josemac-ui) and the iOS simulator (josemac-sim) run in
+    # different VMs so the two jobs run at the same time.
+    runs-on: ${{ needs.route.outputs.mac == 'true' && matrix.os == 'macos-15' && (matrix.platform == 'ios' && fromJSON('["self-hosted","josemac-sim"]') || fromJSON('["self-hosted","josemac-ui"]')) || matrix.os }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
