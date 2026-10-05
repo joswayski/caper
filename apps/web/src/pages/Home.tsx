@@ -74,7 +74,7 @@ export default function Home({ account, initialNow, latestChanges, downloadPlatf
           </div>
           <p className="experimental-note">
             <span className="experimental-warning">Caper is a work in progress and may contain bugs or incomplete features.</span>{" "}
-            Mobile apps are available. If you&apos;d like access or have feedback, reach out on{" "}
+            Mobile apps are available. If you&apos;d like access to them or have feedback, reach out on{" "}
             <ContactLinks />
           </p>
           <p className="made-by">Made by <a href={authorUrl} target="_blank" rel="noreferrer">Jose Valerio</a></p>
@@ -123,13 +123,10 @@ function ContactLinks() {
 
   return <>
     <a className="contact-action" href={xUrl} target="_blank" rel="noreferrer" aria-label="Jose on X"><svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M18.9 2H22l-6.8 7.8L23.2 22h-6.3L12 14.6 5.5 22H2.3l7.9-9L1.8 2h6.5l4.5 6.6L18.9 2Zm-1.1 18h1.7L7.3 3.9H5.5L17.8 20Z" /></svg></a>{" "}
-    or <button type="button" className="contact-action" onClick={() => void copyEmail()} title={contactEmail}>
+    or <button type="button" className="contact-action" data-copied={status === "copied"} onClick={() => void copyEmail()} title={contactEmail}>
       {status === "copied" ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
-      <span className="contact-label">
-        <span aria-hidden="true">Copy email</span>
-        <span>{status === "copied" ? "Copied!" : "Copy email"}</span>
-      </span>
-    </button>.
+      <span>{status === "copied" ? "Copied!" : "Copy email."}</span>
+    </button>
     <span className={status === "failed" ? "contact-feedback" : "sr-only"} role="status">{status === "copied" ? "Email address copied to clipboard." : status === "failed" ? `Couldn’t copy. ${contactEmail}` : ""}</span>
   </>;
 }
