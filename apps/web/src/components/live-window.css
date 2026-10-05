@@ -174,7 +174,7 @@
 .sim-rail > .sim-add-space { margin-top: 10px; border-color: var(--border); border-style: dashed; border-radius: 12px; color: var(--terracotta-bright); background: var(--surface); }
 .sim-add-space svg { width: 18px; }
 /* Use the real sidebar/channel/voice CSS, not a second imitation of its roster. */
-.sim-sidebar .sidebar-channels { padding: 0 12px 18px; }
+.sim-sidebar .sidebar-channels { padding: 0 16px 18px; }
 .sim-brand { display: flex; flex: 1; align-items: center; justify-content: space-between; padding: 6px 8px; font-size: .94rem; font-weight: 750; letter-spacing: -.02em; }
 .sim-brand svg { width: 16px; color: var(--text-muted); }
 .sim-section-toggle { display: flex; flex: 1; align-items: center; gap: 6px; padding: 4px 6px; color: var(--text-muted); font-size: .76rem; font-weight: 750; }

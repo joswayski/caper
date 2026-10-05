@@ -611,7 +611,7 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
                     .background(if (selfSelected) TerracottaWash else Color.Transparent)
                     .clickable(enabled = !state.busy) { viewModel.openSelfDirect(); closeNavigation?.invoke() }.padding(horizontal = 9.dp),
                     verticalAlignment = Alignment.CenterVertically) {
-                    Avatar(state.account.displayName ?: state.account.username ?: "You", 26.dp, avatarId = state.account.avatarId)
+                    Avatar(state.account.displayName ?: state.account.username ?: "You", 20.dp, modifier = Modifier.padding(horizontal = 3.dp), avatarId = state.account.avatarId)
                     Spacer(Modifier.width(9.dp))
                     Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
                         Text(state.account.displayName ?: state.account.username ?: "You", Modifier.weight(1f, fill = false), color = if (selfSelected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -627,7 +627,7 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
                         .background(if (selected) TerracottaWash else Color.Transparent)
                         .clickable { viewModel.selectDirect(direct); closeNavigation?.invoke() }.padding(horizontal = 9.dp),
                         verticalAlignment = Alignment.CenterVertically) {
-                        Avatar(direct.peer.displayName, 26.dp)
+                        Avatar(direct.peer.displayName, 20.dp, modifier = Modifier.padding(horizontal = 3.dp))
                         Spacer(Modifier.width(9.dp))
                         Column(Modifier.weight(1f)) {
                             Text(direct.peer.displayName, color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)

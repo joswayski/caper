@@ -3542,15 +3542,16 @@ impl CaperApp {
                         .iter()
                         .filter(|direct| Some(direct.peer.id.as_str()) != account_id)
                         .count();
-                    let height = (60.0 + (other_directs + 2) as f32 * 41.0)
+                    let height = (40.0 + (other_directs + 2) as f32 * 30.0)
                         .min(ui.available_height() * 0.45);
                     egui::TopBottomPanel::bottom("native-directs")
                         .exact_height(height)
                         .show_separator_line(false)
                         .frame(egui::Frame::NONE)
                         .show_inside(ui, |ui| {
+                            ui.spacing_mut().interact_size.y = 28.0;
                             full_bleed_separator(ui, ui.min_rect().top());
-                            ui.add_space(10.0);
+                            ui.add_space(6.0);
                             ui.horizontal(|ui| {
                                 let heading_hovered = ui.rect_contains_pointer(ui.max_rect());
                                 ui.label(bold("Direct messages").size(12.0).color(MUTED));
@@ -3580,7 +3581,7 @@ impl CaperApp {
                                 ui.horizontal(|ui| {
                                     let display_name = account.display_name.as_deref().or(account.username.as_deref()).unwrap_or("You");
                                     let name = format!("{display_name} you");
-                                    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width() - 18.0, 32.0), egui::Sense::click());
+                                    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width() - 18.0, 28.0), egui::Sense::click());
                                     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, ui.is_enabled(), self_active, &name));
                                     if self_active || response.hovered() || response.has_focus() {
                                         ui.painter().rect_filled(rect, 6.0, if self_active { Color32::from_rgba_unmultiplied(182, 77, 50, 40) } else { RAISED });
@@ -3588,7 +3589,7 @@ impl CaperApp {
                                     if response.has_focus() {
                                         ui.painter().rect_stroke(rect, 6.0, Stroke::new(1.0, TERRACOTTA_BRIGHT), egui::StrokeKind::Inside);
                                     }
-                                    paint_avatar(ui, egui::Rect::from_center_size(egui::pos2(rect.left() + 17.5, rect.center().y), egui::vec2(24.0, 24.0)), display_name, account.avatar_id);
+                                    paint_avatar(ui, egui::Rect::from_center_size(egui::pos2(rect.left() + 17.5, rect.center().y), egui::vec2(20.0, 20.0)), display_name, account.avatar_id);
                                     let mut label = egui::text::LayoutJob::default();
                                     label.append(display_name, 0.0, egui::TextFormat {
                                         font_id: egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into())),
@@ -3603,7 +3604,7 @@ impl CaperApp {
                                     if self_unread { ui.label(RichText::new("●").size(9.0).color(TERRACOTTA_BRIGHT)); }
                                     if response.clicked() { self.select_or_create_self_direct(); }
                                 });
-                                ui.add_space(3.0);
+                                ui.add_space(2.0);
                                 let directs = self.directs.clone();
                                 for direct in directs {
                                     if direct.peer.id == account.id { continue; }
@@ -3612,16 +3613,16 @@ impl CaperApp {
                                         > model::sequence(&direct.read_seq).unwrap_or(0);
                                     ui.horizontal(|ui| {
                                         let (response, _, _) = channel_button(
-                                            ui, ui.available_width() - 18.0,
+                                            ui, egui::vec2(ui.available_width() - 18.0, 28.0),
                                             &direct.peer.display_name, NavIcon::Speech, active, None, None,
                                         );
                                         if unread { ui.label(RichText::new("●").size(9.0).color(TERRACOTTA_BRIGHT)); }
                                         if response.clicked() { self.select_direct(direct.clone()); }
                                     });
-                                    ui.add_space(3.0);
+                                    ui.add_space(2.0);
                                 }
                                 let action = if self.owner() { "Invite people" } else { "New message" };
-                                let (response, _, _) = channel_button(ui, ui.available_width(), action, NavIcon::Plus, false, None, None);
+                                let (response, _, _) = channel_button(ui, egui::vec2(ui.available_width(), 28.0), action, NavIcon::Plus, false, None, None);
                                 if response.clicked() { self.open_direct_action(); }
                             });
                         });
@@ -3899,7 +3900,7 @@ impl CaperApp {
                                 });
                                 let (response, settings, leave) = channel_button(
                                     ui,
-                                    ui.available_width(),
+                                    egui::vec2(ui.available_width(), 32.0),
                                     &name,
                                     if private { NavIcon::Lock } else { NavIcon::Hash },
                                     active,
@@ -4052,7 +4053,6 @@ impl CaperApp {
                         person.muted
                     };
                     let speaking = own && self.voice.speaking(&person.id, muted, now);
-                    ui.painter().circle_filled(center, 11.0, SURFACE);
                     paint_avatar(
                         ui,
                         egui::Rect::from_center_size(center, egui::vec2(20.0, 20.0)),
@@ -4063,9 +4063,6 @@ impl CaperApp {
                         // Web: caper border plus a 1px caper ring.
                         ui.painter()
                             .circle_stroke(center, 11.0, Stroke::new(2.5, CAPER));
-                    } else {
-                        ui.painter()
-                            .circle_stroke(center, 11.0, Stroke::new(1.0, BORDER));
                     }
                 }
                 let count_x = rect.left()
@@ -7269,14 +7266,14 @@ fn voice_session_duration(started_at: u64, now: u64) -> String {
 
 fn channel_button(
     ui: &mut egui::Ui,
-    width: f32,
+    size: egui::Vec2,
     name: &str,
     icon: NavIcon,
     active: bool,
     manageable: Option<bool>,
     duration: Option<&str>,
 ) -> (egui::Response, bool, bool) {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 32.0), egui::Sense::click());
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
     response.widget_info(|| {
         egui::WidgetInfo::selected(
             egui::WidgetType::SelectableLabel,
@@ -8558,7 +8555,7 @@ mod tests {
             sidebar_text(&output, "Maya").is_none(),
             "rosters start collapsed"
         );
-        assert!(sidebar_text(&output, "2 in voice").is_some());
+        let count = sidebar_text(&output, "2 in voice").expect("voice count is visible");
         // The saved avatar is an image now, not the old clickable "M" initial.
         let stack = output
             .shapes
@@ -8568,7 +8565,8 @@ mod tests {
                     if rect.brush.as_ref().is_some_and(|brush| {
                         brush.uv == egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0))
                     }) && rect.rect.width() == 20.0
-                        && rect.rect.center().x < 340.0 =>
+                        && rect.rect.center().x < 340.0
+                        && (rect.rect.center().y - count.y).abs() < 14.0 =>
                 {
                     Some(rect.rect.center())
                 }
@@ -10826,6 +10824,79 @@ mod tests {
             node.label()
                 .is_some_and(|label| label == "Fixture Owner you")
         }));
+    }
+
+    #[test]
+    fn direct_rows_are_compact_without_shrinking_channels_or_the_dock() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-direct"),
+        );
+        let mut second = app.directs[0].clone();
+        second.id = "second-direct".into();
+        second.peer.id = "second-peer".into();
+        second.peer.display_name = "Second fixture peer".into();
+        second.last_seq = "7".into();
+        app.directs.push(second);
+        render(&mut app, &context, vec![]);
+        let started = std::time::Instant::now();
+        while context.has_pending_images() {
+            assert!(started.elapsed() < std::time::Duration::from_secs(30));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            render(&mut app, &context, vec![]);
+        }
+        render(&mut app, &context, vec![]);
+        context.enable_accesskit();
+        let output = render(&mut app, &context, vec![]);
+        let nodes = &output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes;
+        let bounds = |label: &str| {
+            nodes
+                .iter()
+                .find_map(|(_, node)| {
+                    (node.label() == Some(label))
+                        .then(|| node.bounds())
+                        .flatten()
+                })
+                .unwrap_or_else(|| panic!("missing bounds for {label}"))
+        };
+        let self_row = bounds("Fixture Owner you");
+        let peer = bounds("TEST FIXTURE Maya");
+        let second_peer = bounds("Second fixture peer");
+        for row in [self_row, peer, second_peer, bounds("Invite people")] {
+            assert_eq!(row.height(), 28.0);
+        }
+        assert_eq!(peer.y0 - self_row.y1, 2.0);
+        assert_eq!(second_peer.y0 - peer.y1, 2.0);
+        assert_eq!(bounds("general").height(), 32.0);
+        let images: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect) if rect.brush.is_some() => Some(rect.rect),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            images.iter().any(|rect| (rect.width() - 20.0).abs() < 0.01
+                && (rect.height() - 20.0).abs() < 0.01
+                && (rect.center().y as f64 - (self_row.y0 + self_row.y1) / 2.0).abs() < 0.5),
+            "DM artwork stays small and vertically centered in {self_row:?}: {images:?}"
+        );
+        let microphone = bounds("Mute microphone");
+        assert!(
+            images.iter().any(|rect| (rect.width() - 30.0).abs() < 0.01
+                && (rect.height() - 30.0).abs() < 0.01
+                && rect.left() as f64 >= self_row.x0
+                && (rect.center().y as f64 - (microphone.y0 + microphone.y1) / 2.0).abs() < 0.5),
+            "the account dock keeps its larger avatar"
+        );
     }
 
     #[test]
