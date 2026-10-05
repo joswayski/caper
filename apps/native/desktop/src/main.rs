@@ -2752,9 +2752,7 @@ impl eframe::App for CaperApp {
     fn update(&mut self, context: &egui::Context, _: &mut eframe::Frame) {
         if let Some(icon) = &mut self.daily_icon {
             context.request_repaint_after(Duration::from_secs(60));
-            if icon.refresh(chrono::Utc::now()) {
-                set_runtime_icon(context, icon.index);
-            }
+            icon.refresh(chrono::Utc::now());
         }
         if context.input(|input| !input.events.is_empty()) {
             self.worker.send(Command::Activity);
@@ -8251,69 +8249,22 @@ fn main() -> eframe::Result {
                 app.restore_preferences(storage);
             }
             if fixture.is_none() {
-                let icon = daily_icon::DailyIcon::load(creation.storage);
-                set_runtime_icon(&creation.egui_ctx, icon.index);
-                app.daily_icon = Some(icon);
+                app.daily_icon = Some(daily_icon::DailyIcon::load(creation.storage));
             }
             Ok(Box::new(app))
         }),
     )
 }
 
-fn set_runtime_icon(context: &egui::Context, index: usize) {
-    context.send_viewport_cmd(egui::ViewportCommand::Icon(Some(std::sync::Arc::new(
-        avatar_icon(index),
-    ))));
-}
-
-fn avatar_icon(index: usize) -> egui::IconData {
-    let image = egui_extras::image::load_svg_bytes(avatar_images::SVG[index], &Default::default())
-        .expect("bundled Caper avatar is valid SVG");
-    let rgba = image
-        .pixels
-        .iter()
-        .flat_map(|pixel| pixel.to_srgba_unmultiplied())
-        .collect();
-    egui::IconData {
-        rgba,
-        width: image.width() as u32,
-        height: image.height() as u32,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         CaperApp, ConnectionReport, Dialog, GatewayEvent, NavigationTarget, PendingReaction,
-        PendingSend, Phase, SelfDirectTarget, avatar_icon, endpoint, media, member_page_ids,
-        normalize_channel, permanent_send_rejection, projected_reactions, take_date_divider,
-        timestamp_parts, voice,
+        PendingSend, Phase, SelfDirectTarget, endpoint, media, member_page_ids, normalize_channel,
+        permanent_send_rejection, projected_reactions, take_date_divider, timestamp_parts, voice,
     };
     use crate::navigation;
     use std::time::{Duration, Instant};
-
-    #[test]
-    fn daily_avatar_icon_has_correct_colors_and_unpremultiplied_edges() {
-        for (index, background) in [(0, [70, 33, 61]), (799, [41, 24, 60])] {
-            let icon = avatar_icon(index);
-            assert_eq!((icon.width, icon.height), (256, 256));
-            assert_eq!(icon.rgba.len(), (icon.width * icon.height * 4) as usize);
-            assert_eq!(&icon.rgba[..4], &[0, 0, 0, 0]);
-            let top = ((2 * icon.width + 128) * 4) as usize;
-            assert_eq!(&icon.rgba[top..top + 3], &background);
-            assert_eq!(icon.rgba[top + 3], 255);
-            assert!(
-                icon.rgba.chunks_exact(4).any(|pixel| {
-                    (64..=192).contains(&pixel[3])
-                        && pixel[..3]
-                            .iter()
-                            .zip(background)
-                            .all(|(&channel, expected)| channel.abs_diff(expected) <= 2)
-                }),
-                "translucent circular crop must keep straight-alpha background colors"
-            );
-        }
-    }
 
     #[test]
     fn all_wordmark_characters_render_without_the_avatar_tile() {

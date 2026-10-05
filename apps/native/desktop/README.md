@@ -259,7 +259,8 @@ and macOS AppIcon PNGs. Use
 The executable, installer, and uninstaller all use that ICO; Start and desktop
 shortcuts use the executable's icon. Linux packages the same main SVG under
 `hicolor/scalable/apps/caper.svg`; macOS uses matching transparent PNGs from
-16 to 1024px. Daily runtime rotation is separate; the opaque iOS icon is unchanged.
+16 to 1024px. Runtime window icons also stay on the original green mascot;
+daily characters rotate only in in-app wordmarks. The opaque iOS icon is unchanged.
 After installing an updated Windows build, Search may retain a cached icon;
 sign out and back in before checking again. Asset checks in Linux do not verify
 Windows Search, macOS Finder/Dock or pinned-shortcut cache behavior.
