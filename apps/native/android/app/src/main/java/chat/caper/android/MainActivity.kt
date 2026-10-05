@@ -145,6 +145,7 @@ internal data class VoiceJoinIntent(
     val accountEpoch: Long,
     val demo: Boolean,
     val controlEpoch: Long,
+    val joinStartedAt: Long = System.currentTimeMillis(),
 ) {
     fun isCurrent(state: AppUiState, currentAccountEpoch: Long, freshChannelIds: Set<String>? = null): Boolean =
         state.screen == SessionScreen.Home &&
@@ -234,7 +235,7 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
 ) {
     Image(painterResource(R.drawable.caper_wordmark_letters), null, Modifier.matchParentSize())
     // Same dot slot as web/Rust/Apple; keep the two images decorative to accessibility.
-    Image(painterResource(caperAvatarResources[LocalBrandAvatar.current]), null,
+    Image(painterResource(caperBrandingResources[LocalBrandAvatar.current]), null,
         Modifier.offset(x = (132f * 904 / 1042).dp, y = (35f * 91 / 276).dp)
             .size((132f * 132 / 1042).dp))
 }
@@ -260,7 +261,8 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
                 voicePermissionError = null
                 viewModel.authorizeVoiceJoin(requested, {
                     VoiceCallService.start(context, requested.channelId, requested.spaceId, requested.channelName,
-                        requested.spaceName, requested.displayName, requested.demo, requested.controlEpoch)
+                        requested.spaceName, requested.displayName, requested.demo, requested.controlEpoch,
+                        requested.joinStartedAt, latestState.voiceSessionStartedAt[if (requested.demo) "" else requested.channelId])
                     if (pendingVoiceJoin == requested) pendingVoiceJoin = null
                 }, {
                     if (pendingVoiceJoin == requested) pendingVoiceJoin = null
@@ -311,7 +313,7 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
                             SpaceRail(state, viewModel, show, Modifier.width(60.dp))
                             ChannelSidebar(state, voice, viewModel, show,
                                 Modifier.weight(1f).padding(top = 8.dp, end = 8.dp).clip(RoundedCornerShape(16.dp)),
-                                channelsExpanded, { channelsExpanded = it }, joinVoice, pendingVoiceJoin?.channelId, voicePermissionError,
+                                channelsExpanded, { channelsExpanded = it }, joinVoice, pendingVoiceJoin, voicePermissionError,
                                 { voicePermissionError = null }, showAccountBar = false) { setNavigationOpen(false) }
                         }
                         AccountBar(state, voice, viewModel, show)
@@ -328,7 +330,7 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
                     }
                 } else Row {
                     SpaceRail(state, viewModel, show, Modifier.width(60.dp))
-                    ChannelSidebar(state, voice, viewModel, show, Modifier.width(280.dp), channelsExpanded, { channelsExpanded = it }, joinVoice, pendingVoiceJoin?.channelId, voicePermissionError, { voicePermissionError = null })
+                    ChannelSidebar(state, voice, viewModel, show, Modifier.width(280.dp), channelsExpanded, { channelsExpanded = it }, joinVoice, pendingVoiceJoin, voicePermissionError, { voicePermissionError = null })
                     if (medium) Box(Modifier.weight(1f).fillMaxHeight()) {
                         Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, voicePermissionError, Modifier.fillMaxSize()) { setNavigationOpen(true) }
                         if (membersVisible && state.selectedChannel?.joined == true && state.selectedDirectId == null) MemberPresencePanel(state, viewModel, Modifier.padding(top = 54.dp).width(220.dp).fillMaxHeight().align(Alignment.CenterEnd))
@@ -388,7 +390,7 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
     channelsExpanded: Boolean,
     setChannelsExpanded: (Boolean) -> Unit,
     joinVoice: (Channel) -> Unit,
-    pendingVoiceChannelId: String?,
+    pendingVoiceJoin: VoiceJoinIntent?,
     voicePermissionError: String?,
     dismissVoicePermissionError: () -> Unit,
     showAccountBar: Boolean = true,
@@ -494,7 +496,11 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
                 val selected = channel.id == state.selectedChannel?.id
                 val people = if (activeChannel == channel.id) voice.participants else state.voiceRosters[if (detail.space.demo) "" else channel.id].orEmpty()
                 val voiceRoot = if (detail.space.demo) "" else channel.id
-                val sessionStartedAt = if (activeChannel == channel.id) voice.sessionStartedAt else state.voiceSessionStartedAt[voiceRoot]
+                val sessionStartedAt = (if (activeChannel == channel.id) {
+                    if (voice.phase == VoiceState.Phase.CONNECTING) state.voiceSessionStartedAt[voiceRoot] ?: voice.sessionStartedAt
+                    else voice.sessionStartedAt
+                } else state.voiceSessionStartedAt[voiceRoot])
+                    ?: pendingVoiceJoin?.takeIf { it.channelId == channel.id }?.joinStartedAt
                 var rosterOpen by remember(channel.id) { mutableStateOf(false) }
                 var channelMenuOpen by remember(channel.id) { mutableStateOf(false) }
                 val available = state.voiceAvailable(channel)
@@ -502,10 +508,10 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
                     if (channel.joined && BuildConfig.ENABLE_NATIVE_VOICE && available == null) viewModel.checkVoiceAvailability(channel)
                 }
                 val activeHere = activeChannel == channel.id
-                val joiningHere = (activeHere && (voice.phase == VoiceState.Phase.CONNECTING || voice.phase == VoiceState.Phase.RECONNECTING)) || pendingVoiceChannelId == channel.id
+                val joiningHere = (activeHere && (voice.phase == VoiceState.Phase.CONNECTING || voice.phase == VoiceState.Phase.RECONNECTING)) || pendingVoiceJoin?.channelId == channel.id
                 val switching = activeChannel != null && !activeHere
                 val denied = channel.id in state.deniedVoiceChannels
-                val actionEnabled = pendingVoiceChannelId == null && voice.phase != VoiceState.Phase.CONNECTING && voice.phase != VoiceState.Phase.RECONNECTING &&
+                val actionEnabled = pendingVoiceJoin == null && voice.phase != VoiceState.Phase.CONNECTING && voice.phase != VoiceState.Phase.RECONNECTING &&
                     !denied && available == true
                 val actionLabel = if (joiningHere) "Joining…" else if (switching) "Switch here" else "Join voice"
                 val actionDescription = if (joiningHere) {

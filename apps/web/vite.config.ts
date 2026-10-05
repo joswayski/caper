@@ -146,6 +146,9 @@ export default defineConfig(async () => {
         "/images/avatars/v3/**": {
           headers: { "cache-control": "public, max-age=31536000, immutable" },
         },
+        "/images/branding/v1/**": {
+          headers: { "cache-control": "public, max-age=31536000, immutable" },
+        },
         "/images/**": {
           headers: { "cache-control": "public, max-age=86400" },
         },

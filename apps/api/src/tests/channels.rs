@@ -129,13 +129,14 @@ async fn isolation_and_revocation(shared: bool) {
         .0,
         StatusCode::NOT_FOUND
     );
+    let clicked = Timestamp::now() - Duration::from_millis(2_345);
     let (status, alpha) = request(
         &state,
         "ChannelAlpha",
         "join",
         Some("owner-session"),
         None,
-        json!({"name":"Owner"}),
+        json!({"name":"Owner","joinStartedAt":clicked}),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{alpha}");
@@ -162,6 +163,22 @@ async fn isolation_and_revocation(shared: bool) {
     .await;
     assert_eq!(roster["participants"].as_array().unwrap().len(), 1);
     assert_eq!(roster["participants"][0]["id"], alpha["id"]);
+    assert_eq!(
+        roster["sessionStartedAt"],
+        json!(clicked),
+        "another member sees the initiating member's click time"
+    );
+    let (status, own) = request(
+        &state,
+        "ChannelAlpha",
+        "snapshot",
+        Some("owner-session"),
+        Some(alpha_token),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(own["sessionStartedAt"], roster["sessionStartedAt"]);
     assert_eq!(
         state.read(|r| Ok(r.participants.len())).await.unwrap(),
         0,

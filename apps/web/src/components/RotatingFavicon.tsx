@@ -1,6 +1,5 @@
 import { createContext, useEffect, useState, type ReactNode } from "react";
-import { avatarUrl } from "../account/avatar";
-import { dailyIcon, type DailyIcon } from "./daily-icon";
+import { dailyIcon, dailyIconUrl, type DailyIcon } from "./daily-icon";
 
 export const DailyIconContext = createContext<number | null>(null);
 
@@ -22,7 +21,7 @@ export default function RotatingFavicon({ children }: { children: ReactNode }) {
       try { localStorage.setItem("caper.daily-icon.v1", JSON.stringify(saved)); } catch { /* Rotation still works in this tab. */ }
       setIndex(saved.index);
       if (standalone) return;
-      const url = avatarUrl(saved.index)!;
+      const url = dailyIconUrl(saved.index);
       const svg = document.querySelector<HTMLLinkElement>("#caper-favicon-svg");
       if (!svg || (svg.getAttribute("href") === url && renderedIndex === saved.index)) return;
       svg.href = url;

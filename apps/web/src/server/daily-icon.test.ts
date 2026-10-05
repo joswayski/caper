@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { dailyIcon } from "../components/daily-icon.ts";
+import { dailyIcon, dailyIconUrl } from "../components/daily-icon.ts";
 
 test("wordmark exports preserve the original lettering and omit the static dot", () => {
   execFileSync(process.execPath, [new URL("../../../../scripts/generate-wordmark.mjs", import.meta.url).pathname, "--check"]);
@@ -11,6 +11,36 @@ test("wordmark exports preserve the original lettering and omit the static dot",
   assert.equal((lettering.match(/<path\b/g) ?? []).length, 1);
   assert.equal(lettering.match(/<path[^>]+>/)?.[0], original.match(/<path[^>]+>/)?.[0]);
   assert.match(lettering, /viewBox="20 17 1042 276"/);
+});
+
+test("daily branding removes only the background from all 800 avatars without changing character paths", () => {
+  assert.equal(dailyIconUrl(null), "/caper-face.svg?v=3");
+  for (let id = 0; id < 800; id++) {
+    assert.equal(dailyIconUrl(id), `/images/branding/v1/${id}.svg`);
+    const original = readFileSync(new URL(`../../public/images/avatars/v3/${id}.svg`, import.meta.url), "utf8");
+    const branding = readFileSync(new URL(`../../public${dailyIconUrl(id)}`, import.meta.url), "utf8");
+    const paintedPaths = (svg: string) => [...svg.matchAll(/<path\b[^>]+fill="[^"]+"[^>]*\/>/g)].map(([path]) => path);
+    assert.ok(paintedPaths(original).length > 1);
+    assert.deepEqual(paintedPaths(branding), paintedPaths(original).slice(1), `Character changed for ID ${id}`);
+    assert.match(branding, /viewBox="0 0 256 256"/);
+    assert.doesNotMatch(branding, /<clipPath|clip-path|<image|data:/i);
+  }
+});
+
+test("native branding exports preserve the web character geometry, palette and translations", () => {
+  for (let id = 0; id < 800; id++) {
+    const branding = readFileSync(new URL(`../../public/images/branding/v1/${id}.svg`, import.meta.url), "utf8");
+    const apple = readFileSync(new URL(`../../../native/apple/Sources/CaperCore/CaperAvatars.xcassets/caper-branding-${id}.imageset/avatar.svg`, import.meta.url), "utf8");
+    assert.equal(apple, branding, `Apple branding drift for ${id}`);
+    const android = readFileSync(new URL(`../../../native/android/app/src/main/res/drawable/caper_branding_${id}.xml`, import.meta.url), "utf8");
+    const paths = [...branding.matchAll(/<path d="([^"]+)" fill="([^"]+)" transform="translate\(([^,]+),([^\)]+)\)"\/>/g)]
+      .map(([, d, fill, x, y]) => [x, y, d, fill]);
+    const vectors = [...android.matchAll(/<group android:translateX="([^"]+)" android:translateY="([^"]+)"><path android:pathData="([^"]+)" android:fillColor="([^"]+)"\/><\/group>/g)]
+      .map(([, x, y, d, fill]) => [x, y, d, fill]);
+    assert.ok(paths.length > 0);
+    assert.deepEqual(vectors, paths, `Android branding drift for ${id}`);
+    assert.doesNotMatch(android, /<clip-path/);
+  }
 });
 
 test("daily icon remains stable until the UTC boundary", () => {

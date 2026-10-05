@@ -974,6 +974,7 @@ impl JoinControl {
                         Some(Some(previous)) => capture.select_input(previous),
                         _ => capture.select_default_input(),
                     }
+                    .and_then(|()| capture.set_live_recording(was_enabled))
                     .is_ok();
                 }
                 chosen
@@ -1272,11 +1273,12 @@ impl NativeSession {
         input_guid: Option<&str>,
         output_guid: Option<&str>,
         control: &JoinControl,
+        join_started_at: Option<u64>,
     ) -> Result<Self, VoiceError> {
         tokio::select! {
             biased;
             () = control.cancelled() => Err(VoiceError::Local("voice join cancelled".into())),
-            result = Self::join_inner(api, name, intent, input_guid, output_guid, control) => result,
+            result = Self::join_inner(api, name, intent, input_guid, output_guid, control, join_started_at) => result,
         }
     }
 
@@ -1287,12 +1289,13 @@ impl NativeSession {
         input_guid: Option<&str>,
         output_guid: Option<&str>,
         control: &JoinControl,
+        join_started_at: Option<u64>,
     ) -> Result<Self, VoiceError> {
         let joined: JoinResponse = api
             .post(
                 "join",
                 None,
-                json!({"name":name,"muted":intent.muted,"deafened":intent.deafened}),
+                json!({"name":name,"muted":intent.muted,"deafened":intent.deafened,"joinStartedAt":join_started_at}),
             )
             .await
             .map_err(VoiceError::Media)?;
@@ -1330,7 +1333,17 @@ impl NativeSession {
         factory.set_adm_recording_enabled(false);
         let capture = MicTestControl::new();
         guard.capture = Some(capture.clone());
-        let mut live_microphone = MicTest::start(capture.clone(), None, None).await?;
+        let initial_input = control
+            .device_intent
+            .lock()
+            .map_err(|_| "device intent unavailable")?
+            .input
+            .as_ref()
+            .map(|route| route.as_deref())
+            .unwrap_or(input_guid)
+            .map(str::to_owned);
+        let mut live_microphone =
+            MicTest::start(capture.clone(), initial_input.as_deref(), None).await?;
         capture.require_fresh_on_reopen()?;
         {
             let intent = control
@@ -1356,7 +1369,7 @@ impl NativeSession {
                 Some(guid) if !select_device(&factory, guid, false) => {
                     return Err("selected speaker is unavailable".into());
                 }
-                None if intent.output.is_some() && !factory.select_default_playout_device() => {
+                None if !factory.select_default_playout_device() => {
                     return Err("system default speaker is unavailable".into());
                 }
                 _ => {}
@@ -1598,7 +1611,7 @@ impl NativeSession {
                 if !select_device(&factory, guid, false) {
                     return Err("selected speaker is unavailable".into());
                 }
-            } else if intent.output.is_some() && !factory.select_default_playout_device() {
+            } else if !factory.select_default_playout_device() {
                 return Err("system default speaker is unavailable".into());
             }
             if let Ok(mut local) = control.local.lock() {
@@ -2704,7 +2717,14 @@ mod tests {
         );
         capture_control.set_live_recording(true).unwrap();
         assert!(route.select_input("missing-private-device").is_err());
-        assert!(route.is_cancelled());
+        assert!(
+            !route.is_cancelled(),
+            "the previous default route is available"
+        );
+        assert!(
+            !capture_control.live_recording_enabled(),
+            "a failed switch must preserve the previous published mute intent"
+        );
         assert!(pactl(&["list", "short", "source-outputs"]).is_empty());
         capture_control.cancel();
         let _ = pactl(&["set-default-source", "caper_silent_sink.monitor"]);
@@ -2958,6 +2978,7 @@ mod tests {
                 Some(&input),
                 Some(&output),
                 &first_control,
+                None,
             )
             .await
             .expect("first silent join/publish/transport");
@@ -2977,6 +2998,7 @@ mod tests {
                 Some(&input),
                 Some(&output),
                 &second_control,
+                None,
             )
             .await
             .expect("second silent join/publish/transport");
@@ -3507,8 +3529,16 @@ mod tests {
             cancelling.cancel();
         });
         let started = Instant::now();
-        let result =
-            NativeSession::join(api, "Guest", AudioIntent::default(), None, None, &control).await;
+        let result = NativeSession::join(
+            api,
+            "Guest",
+            AudioIntent::default(),
+            None,
+            None,
+            &control,
+            None,
+        )
+        .await;
         assert!(
             matches!(result, Err(VoiceError::Local(ref detail)) if detail == "voice join cancelled")
         );

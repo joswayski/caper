@@ -28,6 +28,14 @@ and 69 dinosaur. There is no sombrero design in the current artwork.
 atlas from the sheets (ImageMagick 7). Current vectors are exported by
 `node scripts/generate-avatar-vectors.mjs`; `--check` verifies all client copies.
 
+Website wordmarks and rotating favicons use `/images/branding/v1/{id}.svg`.
+Native in-app wordmarks bundle the same transparent artwork: Rust's `BRANDING`
+table, Apple's `caper-branding-{id}` assets and Android's `caper_branding_{id}`
+drawables. The generator removes only the background path and circular crop;
+character paths, hues and daily selections are unchanged. Profile avatars and
+external window/Dock/launcher icons still use the original circular artwork.
+Installed website touch/manifest icons and the iOS home-screen icon stay fixed.
+
 ## Original mascot (not an account design)
 
 `plain-caper` is the plain Caper dot. It predates the account set and has no design ID. Keep it

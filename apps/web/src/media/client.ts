@@ -160,6 +160,7 @@ export class PublicCallClient {
   private pollAgain = false;
   private pendingSnapshot?: CallSnapshot & { revision?: number };
   private sessionStartedAt?: number | null;
+  private joinStartedAt?: number;
   private pushedSnapshotVersion = 0;
   private snapshotInvalidation = 0;
   private latestRevision?: number;
@@ -227,7 +228,7 @@ export class PublicCallClient {
       selfId: this.selfId,
       localMedia: this.localMedia,
       participants: this.participants,
-      sessionStartedAt: this.sessionStartedAt,
+      sessionStartedAt: this.phase === "joining" ? this.sessionStartedAt ?? this.joinStartedAt : this.sessionStartedAt,
       // Subscriptions are negotiated while joining, but nobody may hear the room
       // until the join has actually completed and the microphone is live.
       remoteMedia: this.phase === "connected" ? [...this.remoteMedia.values()] : [],
@@ -322,7 +323,7 @@ export class PublicCallClient {
     } finally { window.clearTimeout(timer); }
   }
 
-  private async prepareJoin(started: number) {
+  private async prepareJoin(started: number, joinStartedAt = Date.now()) {
     let microphoneMs = 0;
     const capture = this.openMicrophone(this.microphoneDeviceId).then((track) => {
       microphoneMs = performance.now() - started;
@@ -334,7 +335,7 @@ export class PublicCallClient {
     const warm = takeWarmVoice();
     const offering = (async () => {
       if (warm) {
-        try { return { ...await this.offerAndJoin(this.makePeerConnection(warm.iceServers, false, warm.main), started, warm.ticket), warm }; }
+        try { return { ...await this.offerAndJoin(this.makePeerConnection(warm.iceServers, false, warm.main), started, joinStartedAt, warm.ticket), warm }; }
         catch (error) {
           closeWarmVoice(warm);
           if (!(error instanceof CallApiError && (error.code === "warm_unavailable" || error.status === 422))) throw error;
@@ -343,7 +344,7 @@ export class PublicCallClient {
       // An offer needs a transceiver, not audio. Create it while the microphone
       // opens so session creation and publication share one request. TURN servers
       // arrive with that response and are configured before the offer is applied.
-      return { ...await this.offerAndJoin(this.makePeerConnection([]), started), warm: undefined };
+      return { ...await this.offerAndJoin(this.makePeerConnection([]), started, joinStartedAt), warm: undefined };
     })();
     const [captureResult, joinResult] = await Promise.allSettled([capture, offering]);
     if (captureResult.status === "rejected" || joinResult.status === "rejected") {
@@ -359,7 +360,7 @@ export class PublicCallClient {
   }
 
   /** Adds the microphone's transceiver, offers, and joins with that offer. Closes `pc` on failure. */
-  private async offerAndJoin(pc: RTCPeerConnection, started: number, warmTicket?: string) {
+  private async offerAndJoin(pc: RTCPeerConnection, started: number, joinStartedAt: number, warmTicket?: string) {
     try {
       const transceiver = pc.addTransceiver("audio", { direction: "sendonly", streams: [new MediaStream([])] });
       preferOpus(transceiver);
@@ -367,7 +368,7 @@ export class PublicCallClient {
       const mid = audioMid(offer.sdp);
       if (!mid) throw new Error("The browser did not assign a media identifier.");
       const initialState = { muted: this.muted, deafened: this.deafened };
-      const joined = await this.joinWithOffer(offer, mid, initialState, warmTicket);
+      const joined = await this.joinWithOffer(offer, mid, initialState, joinStartedAt, warmTicket);
       return { joined, initialState, publication: { pc, transceiver, offer, mid }, sessionMs: performance.now() - started };
     } catch (error) {
       pc.close();
@@ -375,14 +376,15 @@ export class PublicCallClient {
     }
   }
 
-  private async joinWithOffer(offer: RTCSessionDescriptionInit, mid: string, initialState: { muted: boolean; deafened: boolean }, warm?: string) {
-    const body = { name: this.name, ...initialState };
+  private async joinWithOffer(offer: RTCSessionDescriptionInit, mid: string, initialState: { muted: boolean; deafened: boolean }, joinStartedAt: number, warm?: string) {
+    const legacyBody = { name: this.name, ...initialState };
+    const body = { ...legacyBody, joinStartedAt };
     const publish = { mid, sessionDescription: { type: "offer", sdp: offer.sdp } };
     // The offer belongs to the warm connection: no fallback shape can reuse it.
     if (warm) return this.api<JoinResponse>("join", { ...body, publish, receive: true, warm }, undefined);
     // Older APIs reject unknown fields during deserialization, before any
     // mutation: retry without join-time pulls, then without combined publication.
-    const attempts: object[] = [{ ...body, publish }, body];
+    const attempts: object[] = [{ ...body, publish }, legacyBody];
     if (!this.receiveUnsupported) attempts.unshift({ ...body, publish, receive: true });
     for (const [index, request] of attempts.entries()) {
       try { return await this.api<JoinResponse>("join", request, undefined); } catch (error) {
@@ -393,8 +395,10 @@ export class PublicCallClient {
     throw new Error("Join failed.");
   }
 
-  async join(name = "Guest", microphoneDeviceId?: string) {
+  async join(name = "Guest", microphoneDeviceId?: string, sessionStartedAt?: number | null) {
     if (this.phase !== "idle" && this.phase !== "failed") return;
+    const joinStartedAt = this.joinStartedAt = Date.now();
+    this.sessionStartedAt = sessionStartedAt;
     this.stopLocalMicTest();
     const started = performance.now();
     this.name = name.trim();
@@ -405,7 +409,7 @@ export class PublicCallClient {
     const generation = ++this.generation;
     let capturedMicrophone: MediaStreamTrack | undefined;
     try {
-      const prepared = await this.prepareJoin(started);
+      const prepared = await this.prepareJoin(started, joinStartedAt);
       capturedMicrophone = prepared.microphone;
       if (generation !== this.generation || this.phase !== "joining") {
         prepared.publication.pc.close();
@@ -1498,6 +1502,7 @@ export class PublicCallClient {
     this.senders.clear(); this.subscriptions.clear(); this.remoteMedia.clear(); this.unassignedMedia.clear(); this.localMedia = undefined; this.pollPromise = undefined; this.pollAgain = false;
     this.pendingSnapshot = undefined; this.pushedSnapshotVersion = 0; this.latestRevision = undefined;
     this.sessionStartedAt = undefined;
+    this.joinStartedAt = undefined;
   }
 
   private resetMonitoring() {

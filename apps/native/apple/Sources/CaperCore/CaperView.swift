@@ -171,7 +171,9 @@ private struct Wordmark: View {
         ZStack(alignment: .topLeading) {
             Image("CaperWordmarkLetters").resizable().scaledToFit()
                 .frame(width: 132, height: 35)
-            Avatar(name: "Caper", size: 132 * 132 / 1042, avatarID: fixture ? 0 : dailyIndex)
+            Image("caper-branding-\(fixture ? 0 : dailyIndex)", bundle: caperResourceBundle)
+                .renderingMode(.original).resizable().scaledToFit()
+                .frame(width: 132 * 132 / 1042, height: 132 * 132 / 1042)
                 .offset(x: 132 * 904 / 1042, y: 35 * 91 / 276)
         }.frame(width: 132, height: 35)
             .accessibilityElement(children: .ignore)
@@ -716,8 +718,12 @@ private struct ChannelSidebarItem: View {
     @State private var confirmLeave = false
 
     private var sessionStartedAt: Double? {
-        if model.voice.isActive(channelID: channel.id) { return model.voice.sessionStartedAt }
-        return model.voicePresence.sessionStartedAt(for: channel.id)
+        let shared = model.voicePresence.sessionStartedAt(for: channel.id)
+        if model.voice.isActive(channelID: channel.id) {
+            return model.voice.phase == .joining ? shared ?? model.voice.sessionStartedAt : model.voice.sessionStartedAt
+        }
+        return shared
+            ?? (model.pendingVoiceChannelID == channel.id ? Double(model.pendingVoiceStartedAt) : nil)
     }
 
     var body: some View {
@@ -1395,7 +1401,7 @@ struct Avatar: View {
 }
 
 private final class CaperResourceAnchor: NSObject {}
-private var caperResourceBundle: Bundle {
+var caperResourceBundle: Bundle {
     #if SWIFT_PACKAGE
     return .module
     #else
@@ -1810,6 +1816,10 @@ private struct MessageRow: View {
                 }
             }
         }.padding(.horizontal, 18).padding(.vertical, 10)
+            // An identifier on a plain container is copied onto every child,
+            // replacing their own (add-reaction-…, reaction chips). Make the
+            // row a containing element so children keep their identifiers.
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("message-row-\(message.id)")
         #if os(iOS)
         row.contentShape(Rectangle())
@@ -1856,6 +1866,9 @@ private struct ReactionRow: View {
                 ProgressView().controlSize(.small).accessibilityLabel("Saving reaction")
             }
         }
+        // Without .contain this identifier replaces add-reaction-<id> on the
+        // button inside the row.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("reaction-row-\(message.id)")
     }
 }
