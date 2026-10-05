@@ -66,6 +66,7 @@ mod notifications;
 mod presence;
 mod push;
 mod spaces;
+mod updates;
 use media_store::Timestamp;
 
 pub use db::{connect_database, connect_runtime_database, migrate_database};
@@ -742,6 +743,7 @@ pub struct AppState {
     debug_users: accounts::DebugUsers,
     reserved_usernames: accounts::ReservedUsernames,
     notifications_webhook: notifications::NotificationsWebhook,
+    updates: Arc<updates::Updates>,
 }
 impl AppState {
     pub fn new(config: Config, provider: Arc<dyn Provider>) -> Self {
@@ -785,6 +787,7 @@ impl AppState {
             notifications_webhook: notifications::NotificationsWebhook::from_env(
                 &RuntimeEnvironment::default(),
             ),
+            updates: Arc::new(updates::Updates::new()),
         }
     }
 
@@ -1085,6 +1088,7 @@ fn app_router(state: AppState, test_only_routes: Router<AppState>) -> Router {
         .route("/readyz", get(ready))
         .route("/api/health", get(|| async { StatusCode::NO_CONTENT }))
         .merge(account_login)
+        .merge(updates::routes())
         .merge(protected)
         .merge(channel_media::routes())
         .merge(chat::routes())
@@ -1116,6 +1120,10 @@ fn app_router(state: AppState, test_only_routes: Router<AppState>) -> Router {
         )
         .layer(axum::middleware::from_fn(
             |request: axum::extract::Request, next: axum::middleware::Next| async move {
+                let update_metadata = request
+                    .extensions()
+                    .get::<axum::extract::MatchedPath>()
+                    .is_some_and(|path| path.as_str() == "/api/updates/native");
                 let mut response = if request
                     .headers()
                     .get("sec-fetch-site")
@@ -1125,10 +1133,14 @@ fn app_router(state: AppState, test_only_routes: Router<AppState>) -> Router {
                 } else {
                     next.run(request).await
                 };
-                response.headers_mut().insert(
-                    "cache-control",
-                    axum::http::HeaderValue::from_static("no-store"),
-                );
+                // Account/media responses (including SSE's default no-cache)
+                // must remain no-store. Only public update metadata opts in.
+                if !update_metadata || !response.status().is_success() {
+                    response.headers_mut().insert(
+                        "cache-control",
+                        axum::http::HeaderValue::from_static("no-store"),
+                    );
+                }
                 response
             },
         ))
