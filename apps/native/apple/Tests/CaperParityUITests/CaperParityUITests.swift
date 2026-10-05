@@ -54,7 +54,8 @@ final class CaperParityUITests: XCTestCase {
     #endif
 
     override func tearDown() {
-        if (testRun?.failureCount ?? 0) > 0, let app = launchedApp {
+        // A test that already terminated the app has no screen to capture.
+        if (testRun?.failureCount ?? 0) > 0, let app = launchedApp, app.state != .notRunning {
             let hierarchy = XCTAttachment(string: app.debugDescription)
             hierarchy.name = "accessibility-hierarchy-\(name)"
             hierarchy.lifetime = .keepAlways
@@ -369,7 +370,10 @@ final class CaperParityUITests: XCTestCase {
         let latestID = try XCTUnwrap(latest["id"] as? String)
         try openReactionPicker(for: latestID, in: app)
         try require(search, timeout: 5, "The reopened reaction picker has no search field")
-        XCTAssertEqual(search.value as? String, "", "A newly opened picker starts with a fresh query")
+        // An empty field reports its placeholder as its value on iOS 27.
+        let query = search.value as? String
+        XCTAssertTrue(query == "" || query == search.placeholderValue,
+                      "A newly opened picker starts with a fresh query, got \(query ?? "nil")")
         try require(app.buttons["Cancel"], timeout: 2, "The reaction picker has no Cancel button").tap()
         let cancelled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: search)
         XCTAssertEqual(XCTWaiter.wait(for: [cancelled], timeout: 5), .completed)
