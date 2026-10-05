@@ -156,8 +156,12 @@ TestFlight public link get new builds automatically.
 
 **Desktop self-updates.** Release builds of the Mac, Windows and Linux apps carry
 `caper-updater` (`apps/native/updater`) and the run number as their build number.
-About 20 seconds after launch and every six hours they read `latest.json` from
-`native-latest`. That file is signed with the Ed25519 key in
+About 20 seconds after launch and every hour they check
+`https://caper.chat/api/updates/native`. The Rust API caches GitHub's
+`native-latest/latest.json` and its signature together for 60 seconds per process;
+simultaneous refresh requests share one upstream fetch. The updater falls back
+to GitHub directly if the site is unavailable or its response fails verification.
+Downloads still come from GitHub. That manifest is signed with the Ed25519 key in
 the `caper_update` section of `production/signing/release`, and each app only trusts the public key compiled
 into it. When a newer build exists, the Mac app shows an alert (and has
 **Caper › Check for Updates…**), and the Windows and Linux app shows a banner.

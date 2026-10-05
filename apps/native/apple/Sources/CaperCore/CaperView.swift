@@ -228,10 +228,12 @@ private struct WorkspaceView: View {
     @State private var membersPreference: Bool?
     @State private var modalDismissDisabled = false
     private let parityFixture: String?
+    private let parityMode: Bool
 
     init(model: AppModel) {
         self.model = model
         let environment = ProcessInfo.processInfo.environment
+        parityMode = environment["CAPER_TEST_MODE"] == "parity"
         parityFixture = environment["CAPER_TEST_MODE"] == "parity" ? environment["CAPER_UI_FIXTURE"] : nil
         _sheet = State(initialValue: parityFixture == "login" ? .login : nil)
     }
@@ -404,6 +406,9 @@ private struct WorkspaceView: View {
             else if parityFixture == "manage-channel", let channel = model.detail?.channels.first(where: { $0.private }) { sheet = .manageChannel(channel) }
             else if parityFixture == "voice-roster" { CaperRuntime.showVoiceRosterPreview(model) }
         }
+        #if os(iOS)
+        .overlay(alignment: .topLeading) { if parityMode { ParityPasteboardProbe() } }
+        #endif
     }
 
     private func sidebarMaximum(for viewport: CGFloat) -> Double {
@@ -1926,6 +1931,23 @@ private struct ReactionFlowLayout: Layout {
 }
 
 #if os(iOS)
+/// Parity tests only. Since iOS 26 the UI test runner is not authorized to
+/// read a pasteboard item another app wrote (PBErrorDomain code 13), so the app
+/// that wrote it reads its own pasteboard back and exposes the exact string.
+private struct ParityPasteboardProbe: View {
+    @State private var copied = ""
+
+    var body: some View {
+        Color.clear.frame(width: 1, height: 1)
+            .accessibilityElement()
+            .accessibilityLabel(copied)
+            .accessibilityIdentifier("parity-pasteboard")
+            .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in
+                copied = UIPasteboard.general.string ?? ""
+            }
+    }
+}
+
 private struct MessageActionsSheet: View {
     @Environment(\.dismiss) private var dismiss
     let message: ChatMessage
@@ -1983,6 +2005,9 @@ private struct MessageActionsSheet: View {
                 }
                 .padding(16)
                 .font(CaperTheme.font(15))
+                // Contain, so the sheet's identifier does not replace each
+                // action's own (iOS 27 applies it to every child button).
+                .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("message-actions-sheet")
             }
         }
@@ -2566,7 +2591,7 @@ private struct ChannelEditor: View {
                         }
                     }
                 }.padding(22)
-            }
+            }.accessibilityIdentifier("channel-settings-scroll")
             if channel != nil {
                 // Reserve the save bar while clean so toggling privacy cannot resize the sheet.
                 let saveBar = HStack {

@@ -10,9 +10,13 @@ export function emojiCode(emoji: string) {
   return Array.from(emoji, (point) => point.codePointAt(0)!.toString(16)).join("-");
 }
 
-let imagePreload: Promise<void> | undefined;
-export function preloadEmojiImages() {
-  return imagePreload ??= fetch("/emoji/twemoji-15/preload.json").then(async (response) => {
+const imagePreloads = new Map<string, Promise<void>>();
+export function preloadEmojiImages(category = "smileys_people") {
+  const cached = imagePreloads.get(category);
+  if (cached) return cached;
+  // Keep the existing immutable opening-grid manifest unchanged.
+  const manifest = category === "smileys_people" ? "preload" : `preload-${category}`;
+  const preload = fetch(`/emoji/twemoji-15/${manifest}.json`).then(async (response) => {
     if (!response.ok) throw new Error("Emoji preload unavailable.");
     const unified: string[] = await response.json();
     await Promise.all(unified.map((code) => {
@@ -20,5 +24,7 @@ export function preloadEmojiImages() {
       image.src = emojiAsset(code);
       return image.decode();
     }));
-  }).catch(() => { imagePreload = undefined; });
+  }).catch(() => { imagePreloads.delete(category); });
+  imagePreloads.set(category, preload);
+  return preload;
 }

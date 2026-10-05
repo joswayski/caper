@@ -1,18 +1,15 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 
 const manifestPath = new URL("../apps/native/android/app/src/main/AndroidManifest.xml", import.meta.url);
 const manifest = readFileSync(manifestPath, "utf8");
 const start = "        <!-- BEGIN generated launcher aliases; run scripts/generate-android-launcher-aliases.mjs -->";
 const end = "        <!-- END generated launcher aliases -->";
 
-for (let index = 0; index < 800; index += 1) {
-  const resource = new URL(`../apps/native/android/app/src/main/res/drawable/caper_avatar_${index}.xml`, import.meta.url);
-  if (!existsSync(resource)) throw new Error(`Missing Android avatar resource ${index}`);
-}
-
+// Retain old component names so enabled aliases and pinned shortcuts survive upgrades.
+// Every entry uses the original mascot; the app no longer switches components.
 const aliases = [
   `        <activity-alias
             android:name="chat.caper.android.launcher.Default"
@@ -30,7 +27,7 @@ const aliases = [
             android:name="chat.caper.android.launcher.Avatar${index}"
             android:enabled="false"
             android:exported="true"
-            android:icon="@drawable/caper_avatar_${index}"
+            android:icon="@drawable/ic_caper_app"
             android:label="Caper (Development)"
             android:targetActivity="chat.caper.android.MainActivity">
             <intent-filter>
@@ -46,4 +43,4 @@ if (!pattern.test(manifest)) throw new Error("Generated launcher alias markers a
 const generated = manifest.replace(pattern, replacement);
 if (process.argv.includes("--check")) assert.equal(manifest, generated, "Android launcher alias drift");
 else writeFileSync(manifestPath, generated);
-console.log(`${process.argv.includes("--check") ? "Verified" : "Exported"} 800 Android avatar launcher aliases and the original default mascot.`);
+console.log(`${process.argv.includes("--check") ? "Verified" : "Exported"} the original mascot for the default launcher and all 800 legacy aliases.`);

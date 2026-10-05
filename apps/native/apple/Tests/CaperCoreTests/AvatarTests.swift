@@ -22,7 +22,7 @@ final class AvatarTests: XCTestCase {
         XCTAssertEqual(CaperDailyIcon.utcDay(containing: Date(timeIntervalSince1970: 86_400)), "1970-01-02")
     }
 
-    func testWordmarkAndDockReuseThePersistedChoiceAcrossRollover() throws {
+    func testWordmarkReusesThePersistedChoiceAcrossRollover() throws {
         let suite = "caper-daily-icon-test-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -81,77 +81,6 @@ final class AvatarTests: XCTestCase {
             XCTAssertTrue(stride(from: 3, to: pixels.count, by: 4).contains { pixels[$0] == 255 }, "Branding \(index) cannot be blank")
         }
     }
-
-    #if os(macOS)
-    @MainActor
-    func testDockCharactersHaveNoTileAndFillTheCanvasWithoutClipping() throws {
-        for index in [0, 22, 46, 80, 537, 799] {
-            let image = try XCTUnwrap(CaperDailyIcon.dockImage(for: index))
-            XCTAssertFalse(image.isTemplate)
-            let bitmap = try XCTUnwrap(NSBitmapImageRep(data: XCTUnwrap(image.tiffRepresentation)))
-            XCTAssertEqual(bitmap.pixelsWide, 512)
-            XCTAssertEqual(bitmap.pixelsHigh, 512)
-            var left = 512, top = 512, right = -1, bottom = -1
-            for y in 0..<512 {
-                for x in 0..<512 where try XCTUnwrap(bitmap.colorAt(x: x, y: y)).alphaComponent > 0 {
-                    left = min(left, x); right = max(right, x)
-                    top = min(top, y); bottom = max(bottom, y)
-                }
-            }
-            // Raw branding leaves a large canvas margin; avatar tiles fill it.
-            // The fitted character instead fills 480px with a 16px clear edge.
-            XCTAssertLessThanOrEqual(abs(max(right - left + 1, bottom - top + 1) - 480), 2, "Bad fit for \(index)")
-            XCTAssertLessThanOrEqual(abs(left + right - 511), 2, "Off-center X for \(index)")
-            XCTAssertLessThanOrEqual(abs(top + bottom - 511), 2, "Off-center Y for \(index)")
-            XCTAssertGreaterThanOrEqual(left, 15)
-            XCTAssertGreaterThanOrEqual(top, 15)
-            XCTAssertLessThanOrEqual(right, 496)
-            XCTAssertLessThanOrEqual(bottom, 496)
-            for (x, y) in [(0, 0), (511, 511), (256, 4), (4, 256), (507, 256), (256, 507)] {
-                XCTAssertEqual(try XCTUnwrap(bitmap.colorAt(x: x, y: y)).alphaComponent, 0)
-            }
-            if index == 0 {
-                // This point is outside the beanie, but inside the old avatar tile.
-                XCTAssertEqual(try XCTUnwrap(bitmap.colorAt(x: 440, y: 144)).alphaComponent, 0)
-            }
-        }
-        for index in [-1, 800] { XCTAssertNil(CaperDailyIcon.dockImage(for: index)) }
-    }
-
-    @MainActor
-    func testDockFittingPreservesAspectColorsAndOrientationOfOffCenterArtwork() throws {
-        let sRGB = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
-        let context = try XCTUnwrap(CGContext(data: nil, width: 512, height: 512,
-            bitsPerComponent: 8, bytesPerRow: 512 * 4, space: sRGB,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
-        XCTAssertNil(CaperDailyIcon.fittedDockImage(NSImage(cgImage: try XCTUnwrap(context.makeImage()),
-            size: NSSize(width: 512, height: 512))))
-        // A deliberately off-center 120x60 rectangle with unequal color regions.
-        context.setFillColor(try XCTUnwrap(CGColor(colorSpace: sRGB, components: [0, 1, 0, 1])))
-        context.fill(CGRect(x: 287, y: 41, width: 40, height: 60))
-        context.setFillColor(try XCTUnwrap(CGColor(colorSpace: sRGB, components: [1, 0, 0, 1])))
-        context.fill(CGRect(x: 327, y: 41, width: 80, height: 60))
-        context.setFillColor(try XCTUnwrap(CGColor(colorSpace: sRGB, components: [0, 0, 1, 1])))
-        context.fill(CGRect(x: 327, y: 81, width: 80, height: 20))
-        let source = NSImage(cgImage: try XCTUnwrap(context.makeImage()), size: NSSize(width: 512, height: 512))
-        let fitted = try XCTUnwrap(CaperDailyIcon.fittedDockImage(source))
-        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: XCTUnwrap(fitted.tiffRepresentation)))
-        // Independent geometry: 120x60 scales by 4 into 480x240, centered at 256.
-        XCTAssertEqual(try XCTUnwrap(bitmap.colorAt(x: 15, y: 256)).alphaComponent, 0)
-        XCTAssertEqual(try XCTUnwrap(bitmap.colorAt(x: 496, y: 256)).alphaComponent, 0)
-        XCTAssertEqual(try XCTUnwrap(bitmap.colorAt(x: 256, y: 135)).alphaComponent, 0)
-        XCTAssertEqual(try XCTUnwrap(bitmap.colorAt(x: 256, y: 376)).alphaComponent, 0)
-        let green = try XCTUnwrap(bitmap.colorAt(x: 56, y: 256)?.usingColorSpace(.sRGB))
-        let red = try XCTUnwrap(bitmap.colorAt(x: 455, y: 335)?.usingColorSpace(.sRGB))
-        let blue = try XCTUnwrap(bitmap.colorAt(x: 455, y: 175)?.usingColorSpace(.sRGB))
-        XCTAssertEqual(green.greenComponent, 1, accuracy: 0.01)
-        XCTAssertEqual(red.redComponent, 1, accuracy: 0.01)
-        XCTAssertEqual(blue.blueComponent, 1, accuracy: 0.01)
-        XCTAssertEqual(green.alphaComponent, 1)
-        XCTAssertEqual(red.alphaComponent, 1)
-        XCTAssertEqual(blue.alphaComponent, 1)
-    }
-    #endif
 
     @MainActor
     func testAvatarsRenderColoredPixelsRatherThanBlankOrTemplateImages() throws {

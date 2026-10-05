@@ -8,10 +8,6 @@ description = "Native Caper desktop client"
 
 [workspace]
 members = ["voice-spike/vendor/libwebrtc", "voice-spike/vendor/webrtc-sys", "voice-spike/vendor/webrtc-sys/build"]
-exclude = ["vendor/egui-winit"]
-
-[patch.crates-io]
-egui-winit = { path = "vendor/egui-winit" }
 
 [workspace.package]
 edition = "2021"
@@ -49,7 +45,6 @@ serde_json = "1.0"
 tokio = { version = "1.47", features = ["rt-multi-thread", "time", "sync"] }
 tungstenite = { version = "0.27", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
 url = "2.5"
-usvg = { version = "=0.45.1", default-features = false }
 uuid = { version = "1.18", features = ["v4"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

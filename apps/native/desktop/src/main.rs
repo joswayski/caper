@@ -1,7 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod api;
-mod app_icon;
 mod avatar_images;
 mod credentials;
 mod daily_icon;
@@ -200,7 +199,6 @@ fn projected_reactions(
 
 struct CaperApp {
     daily_icon: Option<daily_icon::DailyIcon>,
-    applied_icon: Option<usize>,
     worker: Worker,
     voice: Voice,
     effects: Effects,
@@ -312,7 +310,6 @@ impl CaperApp {
         let now = Instant::now();
         let mut app = Self {
             daily_icon: None,
-            applied_icon: None,
             worker,
             voice,
             effects: Effects::new(fixture.is_none()),
@@ -2756,12 +2753,6 @@ impl eframe::App for CaperApp {
         if let Some(icon) = &mut self.daily_icon {
             context.request_repaint_after(Duration::from_secs(60));
             icon.refresh(chrono::Utc::now());
-            // Apply during the first update, after eframe's startup icon helper,
-            // which otherwise overwrites Windows' first dynamic taskbar icon.
-            if self.applied_icon != Some(icon.index) {
-                app_icon::apply(context, icon.index);
-                self.applied_icon = Some(icon.index);
-            }
         }
         if context.input(|input| !input.events.is_empty()) {
             self.worker.send(Command::Activity);
@@ -8245,8 +8236,7 @@ fn main() -> eframe::Result {
             width,
             height,
         });
-    // Wayland resolves launcher artwork through caper.desktop. Linux storage
-    // already lowercases "Caper" to "caper"; other platforms keep their paths.
+    // Match caper.desktop so Wayland can resolve the packaged icon.
     #[cfg(target_os = "linux")]
     let viewport = viewport.with_app_id("caper");
     eframe::run_native(
