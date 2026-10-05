@@ -12,9 +12,9 @@ import "./chat.css";
 // Virtuoso's prepend index is local bookkeeping, never the bigint server cursor.
 const INITIAL_ITEM_INDEX = 1_000_000_000;
 
-function timeLabel(value: string) {
+function timeLabel(value: string, formatter: Intl.DateTimeFormat) {
   const date = new Date(value);
-  return Number.isNaN(date.valueOf()) ? "" : new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(date);
+  return Number.isNaN(date.valueOf()) ? "" : formatter.format(date);
 }
 
 interface HistoryContext {
@@ -207,8 +207,10 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   }, [state.author, onAuthorChange]);
 
   useEffect(() => {
-    if (followLatest.current) listRef.current?.scrollToIndex({ index: "LAST", align: "end" });
-  }, [state.pendingSend?.clientMessageId, latestMessage?.clientMessageId]);
+    // Only local sends override the reader's position. Virtuoso follows incoming
+    // messages using its immediate bottom state; atBottomStateChange is delayed.
+    if (state.pendingSend) listRef.current?.scrollToIndex({ index: "LAST", align: "end" });
+  }, [state.pendingSend?.clientMessageId]);
 
   const loadOlder = () => { void clientRef.current?.loadOlder(); };
 
@@ -246,6 +248,8 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     }
   };
 
+  // Share the formatter across visible rows, but refresh locale/timezone on render.
+  const timeFormatter = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
   const renderMessage = (index: number, message: (typeof messages)[number]) => {
     const pending = !("content" in message);
     const author = message.author;
@@ -278,7 +282,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
         tabIndex={pending ? undefined : -1}>
       <div className="chat-avatar"><Avatar avatarId={author?.avatarId} name={author?.name ?? name} /></div>
       <div>
-        <header><strong>{author?.name ?? name}</strong>{author?.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt) : ""}</time></header>
+        <header><strong>{author?.name ?? name}</strong>{author?.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt, timeFormatter) : ""}</time></header>
         <p>{"content" in message ? message.content.text : message.text}</p>
         {"content" in message && <>
           <button type="button" className="chat-message-actions-trigger sr-only" aria-haspopup="dialog" onClick={(event) => openActions(message.id, event.currentTarget)}>Message actions for {message.author.name}</button>
