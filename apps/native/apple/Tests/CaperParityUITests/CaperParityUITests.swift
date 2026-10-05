@@ -213,6 +213,18 @@ final class CaperParityUITests: XCTestCase {
     private func hold(_ row: XCUIElement) {
         row.staticTexts.firstMatch.press(forDuration: 0.8)
     }
+
+    /// Since iOS 26 this runner may not read a pasteboard item the app wrote
+    /// (PBErrorDomain code 13, "Operation not authorized"), so the app reads
+    /// its own pasteboard back into a parity-only accessibility element.
+    private func assertCopied(_ expected: String, in app: XCUIApplication,
+                              file: StaticString = #filePath, line: UInt = #line) {
+        let pasteboard = app.descendants(matching: .any)["parity-pasteboard"]
+        let copied = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", expected), object: pasteboard)
+        let result = XCTWaiter.wait(for: [copied], timeout: 5)
+        XCTAssertEqual(result, .completed, "Pasteboard holds \(pasteboard.exists ? pasteboard.label : "nothing"), expected \(expected)",
+                       file: file, line: line)
+    }
     #endif
 
     private func openReactionPicker(for messageID: String, in app: XCUIApplication) throws {
@@ -251,13 +263,13 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["message-actions-sheet"].waitForExistence(timeout: 5))
         capture("message-actions-drawer-fixture", app: app)
         app.buttons["Copy text"].tap()
-        XCTAssertEqual(UIPasteboard.general.string, "TEST FIXTURE — local sample data, not a live conversation.")
+        assertCopied("TEST FIXTURE — local sample data, not a live conversation.", in: app)
         var dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.descendants(matching: .any)["message-actions-sheet"])
         XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed)
         hold(row)
         XCTAssertTrue(app.descendants(matching: .any)["message-actions-sheet"].waitForExistence(timeout: 5))
         app.buttons["Copy message ID"].tap()
-        XCTAssertEqual(UIPasteboard.general.string, targetID)
+        assertCopied(targetID, in: app)
         dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.descendants(matching: .any)["message-actions-sheet"])
         XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed)
         #endif
