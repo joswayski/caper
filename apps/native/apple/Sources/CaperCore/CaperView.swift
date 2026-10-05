@@ -1662,17 +1662,15 @@ private struct ChatView: View {
             .sheet(item: $reactionMessage) { message in
                 #if os(iOS)
                 MessageActionsSheet(message: message, showingEmojiPicker: $showingEmojiPicker,
-                                    canReact: !chat.isPreview && chat.currentAuthor != nil && !chat.reactionSaving.contains(message.id),
+                                    canReact: !chat.isPreview && chat.currentAuthor != nil,
                                     quickReaction: { emoji in
                                         guard !chat.isPreview, let author = chat.currentAuthor,
-                                              !chat.reactionSaving.contains(message.id),
                                               let current = chat.messages.first(where: { $0.id == message.id }) else { return }
                                         let own = current.reactions?.first(where: { $0.emoji == emoji })?.authorIds.contains(author.id) == true
                                         reactionMessage = nil
                                         Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: !own) }
                                     }, selectReaction: { emoji in
-                                        guard !chat.isPreview, chat.currentAuthor != nil,
-                                              !chat.reactionSaving.contains(message.id) else { return }
+                                        guard !chat.isPreview, chat.currentAuthor != nil else { return }
                                         reactionMessage = nil
                                         Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) }
                                     })
@@ -1858,13 +1856,10 @@ private struct ReactionRow: View {
             .buttonStyle(.plain)
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
             .modifier(ControlHover())
-            .disabled(chat.isPreview || chat.reactionSaving.contains(message.id) || chat.currentAuthor == nil)
+            .disabled(chat.isPreview || chat.currentAuthor == nil)
             .accessibilityLabel("Add reaction")
             .accessibilityIdentifier("add-reaction-\(message.id)")
             #endif
-            if chat.reactionSaving.contains(message.id) {
-                ProgressView().controlSize(.small).accessibilityLabel("Saving reaction")
-            }
         }
         // Without .contain this identifier replaces add-reaction-<id> on the
         // button inside the row.
@@ -1896,7 +1891,7 @@ private struct ReactionChip: View {
         }
         .buttonStyle(.plain)
         .modifier(ControlHover())
-        .disabled(chat.isPreview || chat.reactionSaving.contains(messageID) || chat.currentAuthor == nil)
+        .disabled(chat.isPreview || chat.currentAuthor == nil)
         .accessibilityLabel("\(reaction.emoji) reaction, \(reaction.authorIds.count), \(own ? "selected by you" : "not selected by you")")
         .accessibilityAddTraits(own ? .isSelected : [])
     }

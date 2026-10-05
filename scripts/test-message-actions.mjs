@@ -52,6 +52,20 @@ async function history() {
   return (await fetch(`${api}/api/chat/channels/chan00000001/messages`, { headers: { authorization: 'Bearer fixture-owner-token' } })).json();
 }
 
+function holdReactions() {
+  // Hold before fixture delivery: server pushes cannot make a pessimistic
+  // client pass the immediate-render checks.
+  evaluate(`(() => {
+    const original = window.fetch.bind(window);
+    window.heldReactions = [];
+    window.holdReactions = true;
+    window.fetch = (input, init) => window.holdReactions && String(input).endsWith('/reactions')
+      ? new Promise(resolve => window.heldReactions.push(status => resolve(status
+        ? Response.json({ error: 'TEST FIXTURE: reaction failed' }, { status }) : original(input, init))))
+      : original(input, init);
+  })()`);
+}
+
 let socket;
 try {
   assert.equal((await (await fetch(`${api}/health`)).json()).fixture, true);
@@ -178,16 +192,41 @@ try {
   wait('!document.querySelector(".chat-message-actions")');
   assert.equal(browser('clipboard', 'read').text, message.id);
 
+  holdReactions();
   await openTarget();
   action('React with 👍');
   wait(`document.querySelector(${JSON.stringify(row + ' .chat-reaction')})?.getAttribute('aria-pressed') === 'true' && !document.querySelector(${JSON.stringify(row + ' .chat-reaction')}).disabled`);
-  assert.deepEqual((await history()).messages.at(-1).reactions, [{ emoji: '👍', authorIds: ['owner0000001'] }]);
+  assert.deepEqual((await history()).messages.at(-1).reactions ?? [], [], 'Own chip must appear before the server sees the write');
+  assert.equal(evaluate('document.body.textContent.includes("Saving reaction")'), false);
+  browser('scrollintoview', row + ' .chat-reaction');
+  screenshot('reaction-mobile-optimistic');
   await openTarget();
-  assert.deepEqual((await history()).messages.at(-1).reactions, [{ emoji: '👍', authorIds: ['owner0000001'] }], 'Opening the drawer must preserve the existing reaction snapshot');
   assert.equal(evaluate('document.querySelector(".chat-quick-reactions button").getAttribute("aria-pressed")'), 'true');
   action('React with 👍');
   wait(`!document.querySelector(${JSON.stringify(row + ' .chat-reaction')})`);
+  assert.equal(evaluate('window.heldReactions.length'), 1, 'Rapid toggles serialize writes while updating instantly');
+  evaluate('window.heldReactions[0]()');
+  wait('window.heldReactions.length === 2');
+  assert.equal(evaluate(`!!document.querySelector(${JSON.stringify(row + ' .chat-reaction')})`), false, 'The older add acknowledgement must not flash the removed chip');
+  evaluate('window.heldReactions[1]()');
+  for (let attempt = 0; attempt < 100 && (await history()).messages.at(-1).reactions?.length; attempt++) await delay(50);
   assert.deepEqual((await history()).messages.at(-1).reactions, []);
+
+  await openTarget();
+  action('React with 👍');
+  wait('window.heldReactions.length === 3');
+  evaluate('window.heldReactions[2](503)');
+  wait(`!!document.querySelector(${JSON.stringify(row + ' [role="alert"]')}) && !document.querySelector(${JSON.stringify(row + ' .chat-reaction')})`);
+  browser('scrollintoview', row + ' .chat-send-error');
+  screenshot('reaction-mobile-error');
+  browser('click', row + ' .chat-send-error button:first-of-type');
+  wait(`window.heldReactions.length === 4 && !document.querySelector(${JSON.stringify(row + ' [role="alert"]')}) && !!document.querySelector(${JSON.stringify(row + ' .chat-reaction[aria-pressed="true"]')})`);
+  evaluate('window.holdReactions = false; window.heldReactions[3]()');
+  for (let attempt = 0; attempt < 100 && !(await history()).messages.at(-1).reactions?.length; attempt++) await delay(50);
+  assert.deepEqual((await history()).messages.at(-1).reactions, [{ emoji: '👍', authorIds: ['owner0000001'] }]);
+  browser('scrollintoview', row + ' .chat-reaction');
+  browser('click', row + ' .chat-reaction');
+  for (let attempt = 0; attempt < 100 && (await history()).messages.at(-1).reactions?.length; attempt++) await delay(50);
 
   await openTarget();
   action('Add reaction');
@@ -282,7 +321,18 @@ try {
   wait(`${visibleEmojiImages}.length >= 24 && ${visibleEmojiImages}.every(image => image.complete && image.naturalWidth > 0)`);
   screenshot('emoji-desktop-reopened');
   browser('press', 'Escape');
+  holdReactions();
+  browser('find', 'first', '.chat-add-reaction:not(:disabled)', 'click');
+  wait('!!document.querySelector(".chat-reaction-picker input")');
+  browser('fill', '.chat-reaction-picker input', 'rocket');
+  wait(`!!document.querySelector('.chat-reaction-picker button[data-unified="1f680"]')`);
+  browser('click', '.chat-reaction-picker button[data-unified="1f680"]');
+  wait(`!!document.querySelector('.chat-reaction[aria-pressed="true"]:not(:disabled)')`);
+  assert.equal(evaluate('document.body.textContent.includes("Saving reaction")'), false);
+  screenshot('reaction-desktop-optimistic');
+  evaluate('window.holdReactions = false; window.heldReactions.at(-1)()');
   console.log('PASS: Chromium touch gestures (tap/scroll/cancel/hold), hidden inline emoji controls, modal focus/dismissal, exact clipboard text/ID, quick toggles, picker code warmup without artwork fetches, hover/focus image preload without opening or duplicate requests, eager virtualized category jumps/reopen, underline/no click ring, keyboard tabs, search/live-target retention, clipboard failure, read-only copying, desktop picker.');
+  console.log('PASS: optimistic mobile/desktop reactions before request delivery, enabled chips, no saving status, rapid add/remove without stale-ack flicker, error rollback and immediate retry.');
 } catch (error) {
   browser('screenshot', '/tmp/message-actions-failure.png');
   throw error;

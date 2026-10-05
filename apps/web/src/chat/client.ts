@@ -110,6 +110,8 @@ export class ChatClient {
   private readonly channelId?: string;
   private sounds: boolean;
   private spaceId?: string;
+  private readonly reactionIntents = new Map<string, Map<string, { active: boolean; authorId: string; generation: number }>>();
+  private readonly reactionRequests = new Map<string, Promise<void>>();
 
   constructor(changed: (state: ChatViewState) => void, channelId?: string, options: { sounds?: boolean } = {}) {
     this.changed = changed;
@@ -302,24 +304,50 @@ export class ChatClient {
     const channelId = this.state.channelId;
     const session = this.session;
     if (this.controller.signal.aborted || !channelId || !session) throw new Error("Your chat session is unavailable. Retry the session, then react again.");
-    const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/reactions`, {
-      method: "PUT", headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
-      body: JSON.stringify({ emoji, active }),
-      signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
-    });
-    if (this.controller.signal.aborted || generation !== this.generation || session !== this.session) return;
-    if (!response.ok) {
-      if (response.status === 401 || response.status === 403) {
-        this.session = undefined;
-        void this.createSession();
-      }
-      throw await apiError(response, "Reaction could not be saved. Try again.");
-    }
-    const event: unknown = await response.json();
-    if (!isChatReactionEvent(event) || event.channelId !== channelId || event.messageId !== messageId) throw new Error("The chat service returned an invalid reaction.");
-    if (this.controller.signal.aborted || generation !== this.generation || session !== this.session) return;
-    this.timeline.mergeReactions(event);
+    const intents = this.reactionIntents.get(messageId) ?? new Map();
+    const intent = { active, authorId: session.author.id, generation };
+    intents.set(emoji, intent);
+    this.reactionIntents.set(messageId, intents);
     this.update({ messages: this.timeline.messages });
+    const current = () => !this.controller.signal.aborted && generation === this.generation && session === this.session;
+    const save = async () => {
+      try {
+        if (!current() || intents.get(emoji) !== intent) return;
+        const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/reactions`, {
+          method: "PUT", headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
+          body: JSON.stringify({ emoji, active }),
+          signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
+        });
+        if (!current()) return;
+        if (!response.ok) {
+          const error = await apiError(response, "Reaction could not be saved. Try again.");
+          if (response.status === 401 || response.status === 403) {
+            this.session = undefined;
+            void this.createSession();
+          }
+          throw error;
+        }
+        const event: unknown = await response.json();
+        if (!isChatReactionEvent(event) || event.channelId !== channelId || event.messageId !== messageId) throw new Error("The chat service returned an invalid reaction.");
+        if (!current()) return;
+        this.timeline.mergeReactions(event);
+      } catch (error) {
+        // An older failed toggle must not report failure for a newer intent.
+        if (!this.controller.signal.aborted && generation === this.generation && intents.get(emoji) === intent) throw error;
+      } finally {
+        if (intents.get(emoji) === intent) {
+          intents.delete(emoji);
+          if (!intents.size) this.reactionIntents.delete(messageId);
+        }
+        if (!this.controller.signal.aborted && generation === this.generation) this.update({ messages: this.timeline.messages });
+      }
+    };
+    // Keep full-message acknowledgements ordered; taps still project immediately.
+    const previous = this.reactionRequests.get(messageId);
+    const request = previous ? previous.catch(() => {}).then(save) : save();
+    this.reactionRequests.set(messageId, request);
+    try { await request; }
+    finally { if (this.reactionRequests.get(messageId) === request) this.reactionRequests.delete(messageId); }
   }
 
   private receiveEvent(event: ChatMessage | ChatReactionEvent) {
@@ -429,6 +457,21 @@ export class ChatClient {
   }
 
   private update(change: Partial<ChatViewState>) {
+    if (change.messages && this.reactionIntents.size) {
+      change = { ...change, messages: change.messages.map((message) => {
+        const intents = this.reactionIntents.get(message.id);
+        if (!intents) return message;
+        const reactions = new Map((message.reactions ?? []).map((reaction) => [reaction.emoji, reaction]));
+        for (const [emoji, intent] of intents) {
+          if (intent.generation !== this.generation || intent.authorId !== this.session?.author.id) continue;
+          const authorIds = reactions.get(emoji)?.authorIds.filter((id) => id !== intent.authorId) ?? [];
+          if (intent.active) authorIds.push(intent.authorId);
+          if (authorIds.length) reactions.set(emoji, { emoji, authorIds });
+          else reactions.delete(emoji);
+        }
+        return { ...message, reactions: [...reactions.values()] };
+      }) };
+    }
     this.state = { ...this.state, ...change };
     if (change.author) {
       this.typers.delete(change.author.id);
