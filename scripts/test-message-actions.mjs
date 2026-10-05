@@ -291,7 +291,7 @@ try {
   screenshot('message-actions-mobile-read-only');
   action('Copy message ID');
   wait('!document.querySelector(".chat-message-actions")');
-  assert.ok(browser('clipboard', 'read').text.startsWith('message-chan00000002-'));
+  assert.ok(browser('clipboard', 'read').text.startsWith('chan00000002m'));
 
   await cdp('Emulation.setTouchEmulationEnabled', { enabled: false }, sessionId);
   browser('set', 'viewport', '1280', '900', '2');

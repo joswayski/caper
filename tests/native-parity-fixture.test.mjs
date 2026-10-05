@@ -263,3 +263,18 @@ test('DM reaction fixture advances stream and read heads without changing messag
   await request('/__fixture/control', { method: 'POST', body: { incomingMessage: { channelId: ids.direct, text: 'After reactions' } } });
   assert.equal((await request(root, { auth: true })).value.messages.at(-1).seq, '4');
 });
+
+test('message IDs match the API shape native clients accept for reaction paths', async (t) => {
+  const { request } = await setup(t);
+  const root = `/api/chat/channels/${ids.general}/messages`;
+  const session = await request('/api/chat/session', { auth: true, method: 'POST', body: { name: 'Fixture Owner' } });
+  await request(root, { auth: true, method: 'POST', headers: { 'x-caper-chat-token': session.value.token }, body: { clientMessageId: randomUUID(), text: 'TEST FIXTURE — sent' } });
+  await request('/__fixture/control', { method: 'POST', body: { incomingMessage: { channelId: ids.general, text: 'live' } } });
+  const { messages } = (await request(root, { auth: true })).value;
+  assert.equal(messages.length, 6);
+  for (const message of messages) assert.match(message.id, /^[A-Za-z0-9]{15}$/, `${message.id} must be a 15-character alphanumeric ID`);
+  const target = messages[0].id;
+  const reacted = await request(`${root}/${target}/reactions`, { auth: true, method: 'PUT', headers: { 'x-caper-chat-token': session.value.token }, body: { emoji: '🚀', active: true } });
+  assert.deepEqual(reacted.value.reactions, [{ emoji: '🚀', authorIds: [ids.owner] }]);
+  assert.deepEqual((await request(root, { auth: true })).value.messages.find(message => message.id === target).reactions, [{ emoji: '🚀', authorIds: [ids.owner] }]);
+});

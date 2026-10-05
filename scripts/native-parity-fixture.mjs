@@ -38,7 +38,9 @@ function initialState() {
     ['Keep the space rail, channel list, and audio controls in their usual places.', members[1]],
     ['Agreed. Let’s check the narrow layout and the management dialogs too.', members[2]],
   ].map(([text, member], index) => ({
-    id: `message-${channel.id}-${index + 1}`, channelId: channel.id, seq: String(index + 1),
+    // Same shape as the API's message IDs (15 ASCII alphanumerics); native
+    // clients refuse to build reaction paths for anything else.
+    id: `${channel.id}m${String(index + 1).padStart(2, '0')}`, channelId: channel.id, seq: String(index + 1),
     author: author(member), content: { version: 1, type: 'text', text },
     clientMessageId: `00000000-0000-4000-8000-00000000000${index + 1}`,
     createdAt: `2026-09-23T09:${40 + index}:00.000Z`,
@@ -293,7 +295,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           const previous = state.sendKeys.get(key);
           if (previous) return previous.token === request.headers['x-caper-chat-token'] && previous.text === body.text
             ? json(response, 200, previous.message) : reject(response, 409, 'Message ID already used.');
-          const message = { id: randomUUID(), channelId: channel.id, seq: String(BigInt(channelHead(channel.id)) + 1n), author: who,
+          const message = { id: randomUUID().replaceAll('-', '').slice(0, 15), channelId: channel.id, seq: String(BigInt(channelHead(channel.id)) + 1n), author: who,
             content: { version: 1, type: 'text', text: body.text }, createdAt: new Date().toISOString(), clientMessageId };
           messages.push(message); state.messages.set(channel.id, messages);
           state.sendKeys.set(key, { token: request.headers['x-caper-chat-token'], text: body.text, message });

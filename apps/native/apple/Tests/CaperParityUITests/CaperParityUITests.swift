@@ -225,7 +225,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label == %@", "Add reaction")).count, 0, "iPhone must not show an add-reaction button under each message")
         #endif
         capture("reaction-chips-wrapped-fixture", app: app)
-        let targetID = "message-chan00000001-1"
+        let targetID = "chan00000001m01"
         #if os(iOS)
         let row = app.descendants(matching: .any)["message-row-\(targetID)"]
         XCTAssertTrue(row.waitForExistence(timeout: 5)); row.press(forDuration: 0.8)
@@ -274,7 +274,7 @@ final class CaperParityUITests: XCTestCase {
         addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
 
         let app = launch()
-        let targetID = "message-chan00000001-1"
+        let targetID = "chan00000001m01"
         let row = try require(app.descendants(matching: .any)["message-row-\(targetID)"], timeout: 30,
                               "Missing message-row-\(targetID)")
         try openReactionPicker(for: targetID, in: app)
