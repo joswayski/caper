@@ -10,6 +10,16 @@ final class CaperParityUITests: XCTestCase {
 
     private static func configuredApp(fixture: String? = nil, signedIn: Bool = true) -> XCUIApplication {
         let app = XCUIApplication()
+        // Audio preferences persist in the app's own defaults, and the audio
+        // tests move them (e.g. speaker volume to ~150%, voice processing to
+        // 100%). A persistent runner keeps that domain between runs, so start
+        // every launch from the app's defaults through the argument domain,
+        // which outranks stored values and is never written back.
+        app.launchArguments += [
+            "-caper.voice.outputGain", "100",
+            "-caper.voice.inputGain", "100",
+            "-caper.voice.processingStrength", "25",
+        ]
         app.launchEnvironment["CAPER_TEST_MODE"] = "parity"
         app.launchEnvironment["CAPER_API_BASE_URL"] = "http://127.0.0.1:3001"
         if signedIn {
@@ -196,11 +206,20 @@ final class CaperParityUITests: XCTestCase {
         return element
     }
 
+    #if os(iOS)
+    /// Holds a message the way a person does: on its header text. The row's
+    /// centre can fall on a reaction chip, and since iOS 26 holding a chip
+    /// activates that button instead of the row's long press.
+    private func hold(_ row: XCUIElement) {
+        row.staticTexts.firstMatch.press(forDuration: 0.8)
+    }
+    #endif
+
     private func openReactionPicker(for messageID: String, in app: XCUIApplication) throws {
         #if os(iOS)
         let row = try require(app.descendants(matching: .any)["message-row-\(messageID)"], timeout: 10,
                               "Missing message-row-\(messageID)")
-        row.press(forDuration: 0.8)
+        hold(row)
         let add = try require(app.buttons["message-action-add-reaction"], timeout: 5,
                               "Holding \(messageID) did not offer Add reaction")
         #else
@@ -228,14 +247,14 @@ final class CaperParityUITests: XCTestCase {
         let targetID = "chan00000001m01"
         #if os(iOS)
         let row = app.descendants(matching: .any)["message-row-\(targetID)"]
-        XCTAssertTrue(row.waitForExistence(timeout: 5)); row.press(forDuration: 0.8)
+        XCTAssertTrue(row.waitForExistence(timeout: 5)); hold(row)
         XCTAssertTrue(app.descendants(matching: .any)["message-actions-sheet"].waitForExistence(timeout: 5))
         capture("message-actions-drawer-fixture", app: app)
         app.buttons["Copy text"].tap()
         XCTAssertEqual(UIPasteboard.general.string, "TEST FIXTURE — local sample data, not a live conversation.")
         var dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.descendants(matching: .any)["message-actions-sheet"])
         XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed)
-        row.press(forDuration: 0.8)
+        hold(row)
         XCTAssertTrue(app.descendants(matching: .any)["message-actions-sheet"].waitForExistence(timeout: 5))
         app.buttons["Copy message ID"].tap()
         XCTAssertEqual(UIPasteboard.general.string, targetID)
@@ -449,7 +468,7 @@ final class CaperParityUITests: XCTestCase {
         assertStaticText("Leave #design?", in: app, timeout: 3)
         app.buttons["Cancel"].tap()
         #if os(iOS)
-        app.buttons["Chat"].tap()
+        app.buttons["Close navigation"].tap()
         #endif
         assertElement("selected-channel-name", label: "# general", in: app)
         XCTAssertFalse(app.buttons["Leave channel"].exists)
@@ -774,6 +793,12 @@ final class CaperParityUITests: XCTestCase {
         let app = launch(fixture: "manage-channel")
         let delete = app.buttons["Delete channel"]
         XCTAssertTrue(delete.waitForExistence(timeout: 10))
+        #if os(macOS)
+        // As with Delete space: in a window shorter than the dialog's 680-point
+        // cap, Delete sits at the fold, and a Mac click is not scrolled into view.
+        app.scrollViews["channel-settings-scroll"].scroll(byDeltaX: 0, deltaY: -600)
+        XCTAssertTrue(delete.isHittable, "Delete channel must be reachable by scrolling the dialog")
+        #endif
         delete.tap()
         let confirm = app.buttons["confirm-destructive-action"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 5))
@@ -954,7 +979,11 @@ final class CaperParityUITests: XCTestCase {
         settings.tap()
         #else
         XCTAssertFalse(app.descendants(matching: .any)["launch-at-login"].exists, "Startup is desktop-only")
-        XCTAssertTrue(app.descendants(matching: .any)["sound-effects"].waitForExistence(timeout: 2), "Web keeps Caper sound effects in the settings menu")
+        // iOS 26 builds menu items from UIKit actions, which may expose the
+        // toggle by its title rather than its SwiftUI identifier.
+        let soundEffects = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier == %@ OR label == %@", "sound-effects", "Caper sound effects")).firstMatch
+        XCTAssertTrue(soundEffects.waitForExistence(timeout: 5), "Web keeps Caper sound effects in the settings menu")
         #endif
         let preferences = app.descendants(matching: .any)["Audio test"]
         XCTAssertTrue(preferences.waitForExistence(timeout: 2))

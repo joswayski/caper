@@ -2566,7 +2566,7 @@ private struct ChannelEditor: View {
                         }
                     }
                 }.padding(22)
-            }
+            }.accessibilityIdentifier("channel-settings-scroll")
             if channel != nil {
                 // Reserve the save bar while clean so toggling privacy cannot resize the sheet.
                 let saveBar = HStack {

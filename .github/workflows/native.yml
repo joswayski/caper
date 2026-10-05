@@ -269,6 +269,15 @@ jobs:
           fi
           sleep 3
           system_profiler SPDisplaysDataType
+      - name: Clear macOS notices off the self-hosted VM's screen
+        # Starting the runner's launchd service posts an "App Background Activity"
+        # notice that sits over the top-right of the screen, where UI tests click
+        # dialog close buttons, and clicking it opens System Settings.
+        if: runner.environment == 'self-hosted' && matrix.platform == 'macos'
+        run: |
+          osascript -e 'quit app "System Settings"' 2>/dev/null || true
+          killall NotificationCenter 2>/dev/null || true
+          sleep 2
       - name: Exercise native UI against the loopback parity fixture
         env:
           PLATFORM: ${{ matrix.platform }}
