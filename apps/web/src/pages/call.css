@@ -180,12 +180,15 @@
 .profile-dialog { width: min(440px, calc(100vw - 32px)); }
 .profile-dialog { height: min(640px, calc(100dvh - 32px)); }
 .call-page :is(button, a, summary, .voice-action-group, .device-options label), .device-menu .call-settings-trigger svg { transition: background-color 150ms ease-in-out, border-color 150ms ease-in-out, color 150ms ease-in-out, opacity 150ms ease-in-out, transform 150ms ease-in-out; }
+.call-settings-panel:popover-open, .audio-dialog[open] { animation: audio-panel-in 140ms ease-out; }
+@keyframes audio-panel-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 @media (min-width: 761px) {
   .call-room { height: calc(100vh - 104px); }
   .stage { min-height: 0; overflow-y: auto; }
 }
 @media (prefers-reduced-motion: reduce) {
   .call-page *, .call-page *::before, .call-page *::after { transition: none !important; }
+  .call-settings-panel:popover-open, .audio-dialog[open] { animation: none; }
   .recording-clock i { animation: none; }
   .mic-comparison article.latest { animation: none; }
 }

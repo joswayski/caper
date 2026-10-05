@@ -5618,16 +5618,23 @@ impl CaperApp {
                     }
                     // Web's history header: older-page status above the messages.
                     self.history_header(ui);
-                    let messages: Vec<_> = self.timeline.messages().cloned().collect();
+                    // `message` needs mutable access to the app for reaction
+                    // controls, so iterating through `self.timeline` directly
+                    // would borrow `self` twice. Move it out only while drawing
+                    // rows instead of deep-cloning every loaded message (including
+                    // content and reactions) on every frame. Restore it before
+                    // pending/empty state and paging can inspect the timeline.
+                    let timeline = std::mem::take(&mut self.timeline);
                     let mut last_date = None;
-                    for message in messages {
+                    for message in timeline.messages() {
                         if let Some(date) = display_date(&message.created_at)
                             && take_date_divider(&mut last_date, &date.key)
                         {
                             date_divider(ui, &date.label);
                         }
-                        self.message(ui, &message);
+                        self.message(ui, message);
                     }
+                    self.timeline = timeline;
                     if let Some(pending) = self.pending.clone() {
                         if let Some(pending_date) = display_date(&pending.created_at)
                             && take_date_divider(&mut last_date, &pending_date.key)
@@ -8468,6 +8475,38 @@ mod tests {
             },
             |context| app.page(context),
         )
+    }
+
+    #[test]
+    fn rendering_history_restores_messages_reactions_and_cursor_after_each_frame() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-reactions"),
+        );
+        let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+        messages[1].content.text = "Wrapped history must remain authoritative. ".repeat(12)
+            + "\nA second line has different geometry.";
+        let cursor = app.timeline.cursor();
+        app.timeline.reset(messages.clone(), &cursor).unwrap();
+        for width in [1440.0, 840.0, 390.0, 1440.0] {
+            let _ = context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 900.0),
+                    )),
+                    ..Default::default()
+                },
+                |context| app.page(context),
+            );
+            assert_eq!(app.timeline.cursor(), cursor);
+            assert_eq!(
+                app.timeline.messages().cloned().collect::<Vec<_>>(),
+                messages
+            );
+        }
     }
 
     #[test]
