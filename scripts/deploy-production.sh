@@ -46,6 +46,16 @@ deployed_sha() { # environment -> SHA of the newest successful deployment
   done
 }
 
+building_up_to() { # workflow sha -> true while a main build of sha or an older commit is unfinished
+  local run_sha
+  for run_sha in $(gh api "repos/$repo/actions/workflows/$1/runs?branch=main&per_page=30" \
+    --jq '.workflow_runs[] | select(.status != "completed") | .head_sha'); do
+    [[ "$run_sha" == "$2" ]] && return 0
+    [[ "$(gh api "repos/$repo/compare/$run_sha...$2" --jq .status)" == ahead ]] && return 0
+  done
+  return 1
+}
+
 is_newer() { # base head -> true when head is strictly ahead of base on main
   [[ -z "$1" ]] && return 0
   [[ "$(gh api "repos/$repo/compare/$1...$2" --jq .status)" == ahead ]]
@@ -103,10 +113,21 @@ wait_for_run() { # token repository workflow sha since -> conclusion
   done
 }
 
+earlier_builds=() # build workflows of the components already handled
 for entry in "${components[@]}"; do
   IFS="|" read -r _ build environment target display <<<"$entry"
   desired="$(newest_build "$build")"
-  [[ -n "$desired" ]] || { echo "$display: no successful build yet."; continue; }
+  [[ -n "$desired" ]] || { echo "$display: no successful build yet."; earlier_builds+=("$build"); continue; }
+  # Order holds whichever build finishes first: while an earlier component is
+  # still building this commit (or an older one), stop here; that build's
+  # completion runs this again and continues the chain.
+  for earlier in "${earlier_builds[@]}"; do
+    if [[ "$earlier" != "$build" ]] && building_up_to "$earlier" "$desired"; then
+      echo "$display: waiting for $earlier to finish building before deploying $desired."
+      exit 0
+    fi
+  done
+  earlier_builds+=("$build")
   current="$(deployed_sha "$environment" || true)"
   if ! is_newer "$current" "$desired"; then
     echo "$display: $current is current."
