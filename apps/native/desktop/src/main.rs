@@ -8235,19 +8235,23 @@ fn main() -> eframe::Result {
         .expect("bundled Caper icon is valid PNG")
         .to_rgba8();
     let (width, height) = icon.dimensions();
+    let viewport = egui::ViewportBuilder::default()
+        .with_inner_size(viewport_size)
+        .with_min_inner_size([320.0, 560.0])
+        .with_icon(egui::IconData {
+            rgba: icon.into_raw(),
+            width,
+            height,
+        });
+    // Match caper.desktop so Wayland can resolve the packaged icon.
+    #[cfg(target_os = "linux")]
+    let viewport = viewport.with_app_id("caper");
     eframe::run_native(
         "Caper",
         eframe::NativeOptions {
             renderer: eframe::Renderer::Wgpu,
             persist_window: fixture.is_none(),
-            viewport: egui::ViewportBuilder::default()
-                .with_inner_size(viewport_size)
-                .with_min_inner_size([320.0, 560.0])
-                .with_icon(egui::IconData {
-                    rgba: icon.into_raw(),
-                    width,
-                    height,
-                }),
+            viewport,
             ..Default::default()
         },
         Box::new(move |creation| {

@@ -67,3 +67,16 @@ test('Windows ICO frames and Linux window PNG share the exact macOS raster expor
   assert.equal(offset, ico.length, 'No truncated or unused payloads');
   assert.deepEqual(read(`${desktop}caper-icon.png`), read(`${mac}icon-128.png`));
 });
+
+test('native desktop icons remain packaged while daily characters stay in-app', () => {
+  const main = read('apps/native/desktop/src/main.rs').toString();
+  assert.match(main, /image::load_from_memory\(include_bytes!\("\.\.\/resources\/caper-icon\.png"\)\)/);
+  assert.match(main, /daily_icon::DailyIcon::load\(creation\.storage\)/);
+  assert.doesNotMatch(main, /ViewportCommand::Icon|app_icon::apply/);
+  assert.doesNotMatch(read('apps/native/apple/Sources/CaperMacOS/CaperMacOSApp.swift').toString(), /applicationIconImage|DailyDockIcon/);
+});
+
+test('Wayland application ID matches the installed desktop entry and themed icon name', () => {
+  assert.match(read(`${desktop}caper.desktop`).toString(), /^Icon=caper$/m);
+  assert.match(read('apps/native/desktop/src/main.rs').toString(), /#\[cfg\(target_os = "linux"\)\]\s+let viewport = viewport\.with_app_id\("caper"\);/);
+});
