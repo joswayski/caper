@@ -181,8 +181,14 @@
 .sim-section-toggle .section-count { margin-left: 0; }
 .sim-section-actions { display: flex; gap: 8px; color: var(--text-muted); }
 .sim-sidebar .sim-channel-list { flex: 1; min-height: 0; align-content: start; overflow-y: auto; }
+/* The six-person demo has no reserved voice action, so every preview fits. */
+.sim-sidebar .voice-stack-faces { display: flex; }
+.sim-sidebar .voice-stack-avatar + .voice-stack-avatar { display: grid; }
 .sim-demo :is(.channel-select, .channel-manage, .voice-stack, .channel-join, .browse-channels, .voice-dock-channel, .voice-hangup, .account-profile, .voice-icon-button, .call-settings-trigger, .member-list-toggle, .chat-reaction) { cursor: inherit; }
 .sim-demo :is(.voice-stack-avatar, .direct-avatar, .account-avatar, .member-presence-avatar) > .sim-avatar { width: 100%; height: 100%; }
+/* Leave idle SVGs unframed; speaking rings follow their circular artwork. */
+.sim-demo :is(.voice-stack-avatar, .sim-voice-avatar) { border-radius: 50%; }
+.sim-demo .voice-stack-avatar:not(.speaking) { border-color: transparent; }
 /* Match the single-line composer, including its outer bottom inset. */
 .sim-voice-panel { margin-bottom: 11px; }
 .sim-voice-avatar > .sim-avatar { width: 100%; height: 100%; }
