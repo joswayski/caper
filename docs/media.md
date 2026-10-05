@@ -3123,6 +3123,7 @@ not URLs, cookies, or persistent storage. Possession authorizes that call sessio
 | Method | Public endpoint | Purpose |
 | --- | --- | --- |
 | GET | `/health`, `/api/health` | Unauthenticated health checks |
+| GET | `/api/updates/native` | Unauthenticated cached, signed desktop update metadata |
 | POST | `/api/auth/email/request` | Request a 6-digit, 10-minute email code; returns a challenge ID |
 | POST | `/api/auth/email/verify` | Consume a challenge and create a 30-day session |
 | POST | `/api/auth/logout` | Revoke the current session |
@@ -3153,6 +3154,37 @@ revealing signup order or the internal sequence. Stored as `external_id` for
 integrations and external references, the API returns this value as `id`, alongside
 `username` and `displayName`. Usernames are globally unique, changeable handles;
 changing a username or email does not change either account ID.
+
+### Desktop update metadata cache
+
+`GET https://caper.chat/api/updates/native` returns an envelope with `manifest`
+(base64 of the exact `latest.json` bytes) and `signature` (the detached base64
+Ed25519 signature). It only fetches the fixed GitHub `native-latest` release;
+request parameters cannot select an upstream URL. No account, new secret, database
+migration, gateway change, or CDN rule is needed.
+
+The Rust API keeps one in-memory entry for 60 seconds **per API process**. It
+coalesces concurrent misses, bounds each upstream request to five seconds, and
+limits the manifest to 64 KiB and signature to 1 KiB. Successful responses send
+`Cache-Control: public, max-age=60` and `Age`; this cache works even if Cloudflare
+bypasses `/api/*`. These headers permit HTTP caching but do not establish that an
+edge or desktop client caches responses. Restarting a process empties its cache.
+After a failed refresh, the API returns `502` with `no-store` and waits 60 seconds
+before retrying. It does not serve expired metadata indefinitely.
+
+Desktop release builds check about 20 seconds after launch and every hour. They
+verify the envelope's signature against their compiled-in public key before
+using any metadata, and fall back to GitHub's manifest/signature on site errors,
+malformed data, or signature mismatch (including a rolling-release upload race).
+Archive downloads and checksum verification remain unchanged. Android and iOS
+distribution is unchanged. Existing desktop builds keep their old check schedule
+until they install a new native release.
+
+Deploy the API before publishing the native release to use the cache immediately;
+either component can roll back independently because GitHub remains a fallback.
+Verify the deployed endpoint returns `200`, the documented cache headers, and a
+verifiable envelope; then test **Check for Updates…** on a packaged Mac build and
+the automatic check on Windows/Linux. Merging does not deploy or release them.
 
 ### Native distribution and acceptance
 

@@ -3,7 +3,7 @@ import Foundation
 
 /// Self-updates through `caper-updater` (apps/native/updater), which release
 /// builds carry in Contents/MacOS. It checks the signed release manifest shortly
-/// after launch and every six hours; when the user accepts, the updater waits
+/// after launch and every hour; when the user accepts, the updater waits
 /// for Caper to quit, swaps in the new notarized app and reopens it.
 ///
 /// Prompts are AppKit alerts rather than SwiftUI `.alert` modifiers, so they
@@ -46,7 +46,7 @@ import Foundation
             try? await Task.sleep(for: .seconds(20))
             self?.check(manual: false)
         }
-        timer = Timer.scheduledTimer(withTimeInterval: 6 * 60 * 60, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 60 * 60, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.check(manual: false) }
         }
     }
