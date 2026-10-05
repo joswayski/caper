@@ -1,24 +1,7 @@
 name: Native development builds
 
+# Runs on main only; pull requests get no CI. Use "Run workflow" to test a branch.
 on:
-  pull_request:
-    paths:
-      - apps/native/**
-      - apps/api/src/**
-      - apps/web/public/caper-face.svg
-      - scripts/generate-favicons.mjs
-      - tests/desktop-icons.test.mjs
-      - shared/design.css
-      - shared/emoji/**
-      - scripts/native-emoji.mjs
-      - shared/fonts/**
-      - scripts/native_fonts.py
-      - scripts/native-parity-fixture.mjs
-      - tests/native-parity-fixture.test.mjs
-      - scripts/native_artifacts.py
-      - tests/test_native_artifacts.py
-      - tests/test_apple_release_signing.py
-      - .github/workflows/native.yml
   push:
     branches: [main]
     paths:
@@ -40,17 +23,17 @@ on:
       - .github/workflows/native.yml
   workflow_dispatch:
 
-# PRs never receive signing credentials. No release, store upload, or deploy.
+# No signing credentials, release, store upload, or deploy.
 permissions:
   contents: read
   actions: write
 
-# PRs cancel superseded runs. On main, the running build always finishes and
-# only the newest waiting push runs next (GitHub replaces older pending runs in
-# the group), so fast pushes neither starve main of finished builds nor pile up.
+# The running build always finishes and only the newest waiting push runs next
+# (GitHub replaces older pending runs in the group), so fast pushes neither
+# starve main of finished builds nor pile up.
 concurrency:
   group: native-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 jobs:
   route:
@@ -330,7 +313,7 @@ jobs:
           distribution: temurin
           java-version: '17'
       # Caches the Gradle user home (wrapper, dependencies). Writes only from
-      # main; pull requests restore read-only.
+      # main; manual runs on other branches restore read-only.
       - uses: gradle/actions/setup-gradle@v4
       - uses: android-actions/setup-android@v3
         with:
