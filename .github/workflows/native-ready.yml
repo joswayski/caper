@@ -17,7 +17,9 @@ permissions:
 jobs:
   notify:
     name: Notify deployment webhook
+    # Manual Deploy button; with AUTO_DEPLOY=on, deploy-production.yml releases instead.
     if: >-
+      vars.AUTO_DEPLOY != 'on' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main'

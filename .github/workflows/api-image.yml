@@ -97,7 +97,8 @@ jobs:
           printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
           printf '### Published API image\n\n`%s:api-%s@%s`\n' "$ECR" "$GITHUB_SHA" "$digest" >> "$GITHUB_STEP_SUMMARY"
       - name: Notify deployment webhook
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        # Manual Deploy buttons; with AUTO_DEPLOY=on, deploy-production.yml deploys instead.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AUTO_DEPLOY != 'on'
         env:
           COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
           DEPLOY_NOTIFICATION_WEBHOOK_URL: ${{ secrets.DEPLOY_NOTIFICATION_WEBHOOK_URL }}

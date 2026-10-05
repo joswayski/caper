@@ -1,0 +1,61 @@
+name: Production deploy
+
+# Rolls Caper forward automatically after each image or native build on main:
+# API, then chat gateway, then web, then the native apps, each to its newest
+# successful build (scripts/deploy-production.sh). Every step posts a Discord
+# status message that the deploy or release workflow edits with its result.
+#
+# Off unless the repository variable AUTO_DEPLOY is "on"; until then the image
+# and native workflows post their manual Deploy buttons as before. Needs the
+# deploy GitHub App's DEPLOY_APP_CLIENT_ID and DEPLOY_APP_PRIVATE_KEY secrets
+# (the App Godis uses) to start joswayski/infrastructure's deploy workflows.
+on:
+  workflow_run:
+    workflows: [API image, AWS image, Native development builds]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: Record each component's newest build as deployed without deploying (when turning this on).
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: write
+  deployments: write
+
+# One deploy at a time; a newer request replaces a waiting one, and each run
+# deploys everything that is behind, so nothing is skipped.
+concurrency:
+  group: caper-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy API, gateway, web and apps
+    if: >-
+      vars.AUTO_DEPLOY == 'on' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Token for joswayski/infrastructure deploy workflows
+        id: infra
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.DEPLOY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DEPLOY_APP_PRIVATE_KEY }}
+          owner: joswayski
+          repositories: infrastructure
+          permission-actions: write
+      - name: Deploy what is behind
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INFRA_TOKEN: ${{ steps.infra.outputs.token }}
+          DEPLOY_NOTIFICATION_WEBHOOK_URL: ${{ secrets.DEPLOY_NOTIFICATION_WEBHOOK_URL }}
+          SEED: ${{ inputs.seed && '1' || '0' }}
+        run: bash scripts/deploy-production.sh

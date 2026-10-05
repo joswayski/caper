@@ -118,6 +118,8 @@ jobs:
           printf 'digest=%s\n' "$DIGEST" >> "$GITHUB_OUTPUT"
           printf '### Published image\n\n`%s/%s:%s@%s`\n' "$ECR_REGISTRY" "$ECR_REPOSITORY" "$GITHUB_SHA" "$DIGEST" >> "$GITHUB_STEP_SUMMARY"
       - name: Notify deployment webhook
+        # Manual Deploy button; with AUTO_DEPLOY=on, deploy-production.yml deploys instead.
+        if: vars.AUTO_DEPLOY != 'on'
         env:
           COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
           DEPLOY_NOTIFICATION_WEBHOOK_URL: ${{ secrets.DEPLOY_NOTIFICATION_WEBHOOK_URL }}
