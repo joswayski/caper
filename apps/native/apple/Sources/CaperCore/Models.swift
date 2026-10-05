@@ -389,14 +389,15 @@ enum ReactionEvent {
 /// channel delivery cursor. This lets delayed HTTP acknowledgements and older
 /// history pages fill missing messages without reverting a newer replay.
 struct ReactionSnapshots: Sendable {
-    private var values: [String: (seq: String, reactions: [MessageReaction])] = [:]
+    private var values: [String: (seq: String?, reactions: [MessageReaction])] = [:]
     private var knownMessageIDs: Set<String> = []
     private(set) var unseenOverflowed = false
     static let maximumUnseen = 256
 
     mutating func apply(messageID: String, seq: String?, reactions: [MessageReaction]) -> Bool {
         guard let seq, (try? Sequence.compare(seq, "0")) != nil else { return false }
-        if let current = values[messageID], (try? Sequence.compare(seq, current.seq)) != .orderedDescending { return false }
+        if let current = values[messageID], let currentSeq = current.seq,
+           (try? Sequence.compare(seq, currentSeq)) != .orderedDescending { return false }
         let unseenCount = values.keys.filter { !knownMessageIDs.contains($0) }.count
         guard knownMessageIDs.contains(messageID) || values[messageID] != nil || unseenCount < Self.maximumUnseen else {
             unseenOverflowed = true
@@ -408,7 +409,13 @@ struct ReactionSnapshots: Sendable {
 
     mutating func seed(_ messages: [ChatMessage]) {
         knownMessageIDs.formUnion(messages.map(\.id))
-        for message in messages { _ = apply(messageID: message.id, seq: message.reactionSeq, reactions: message.reactions ?? []) }
+        for message in messages {
+            if message.reactionSeq == nil, values[message.id] == nil {
+                values[message.id] = (nil, message.reactions ?? [])
+            } else {
+                _ = apply(messageID: message.id, seq: message.reactionSeq, reactions: message.reactions ?? [])
+            }
+        }
     }
 
     func overlay(_ message: ChatMessage) -> ChatMessage {

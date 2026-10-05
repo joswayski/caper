@@ -14,9 +14,7 @@
 .voice-dock-channel > span { min-width: 0; flex: 1; display: grid; gap: 1px; }
 .voice-dock-channel strong { overflow: hidden; font-size: .78rem; text-overflow: ellipsis; white-space: nowrap; }
 .voice-dock-channel small { overflow: hidden; color: var(--text-muted); font-size: .68rem; text-overflow: ellipsis; white-space: nowrap; }
-.voice-dock-channel { height: 100%; min-width: 0; flex: 1; display: flex; align-items: center; gap: 8px; padding: 0 4px 0 0; border: 0; border-radius: 6px; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
-.voice-dock-channel:hover { background: var(--surface-composer); }
-.voice-dock-channel:hover small { text-decoration: underline; text-underline-offset: 2px; }
+.voice-dock-channel { height: 100%; min-width: 0; flex: 1; display: flex; align-items: center; gap: 8px; padding: 0 4px 0 0; color: var(--text); text-align: left; cursor: default; }
 .connected-channel[data-phase="connected"] .voice-dock-channel :is(svg, strong) { color: #8cb262; }
 .connected-channel:not([data-phase="connected"]) .voice-dock-channel :is(svg, strong) { color: #d9ab5c; }
 .voice-hangup { width: 34px; height: 32px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; border: 0; border-radius: 6px; color: var(--text-muted); background: var(--surface-composer); cursor: pointer; }
@@ -251,7 +249,7 @@
 .voice-stack > svg { flex: none; width: 10px; height: 10px; transition: transform .2s ease; }
 .voice-stack[aria-expanded="false"] > svg { transform: rotate(-90deg); }
 .voice-stack:focus-visible { outline: 2px solid var(--terracotta-bright); outline-offset: 1px; }
-.voice-stack-avatar { width: 20px; height: 20px; display: grid; place-items: center; border: 2px solid var(--surface-sidebar); border-radius: var(--radius-avatar); color: #fff; font-size: .55rem; font-weight: 900; }
+.voice-stack-avatar { width: 20px; height: 20px; display: grid; place-items: center; border: 2px solid transparent; border-radius: var(--radius-avatar); color: #fff; font-size: .55rem; font-weight: 900; }
 .voice-stack-avatar + .voice-stack-avatar { margin-left: -6px; }
 .voice-stack-avatar.speaking { border-color: var(--caper); box-shadow: 0 0 0 1px var(--caper); }
 .voice-stack-faces small { margin-left: 4px; font-size: .7rem; font-weight: 750; font-variant-numeric: tabular-nums; }

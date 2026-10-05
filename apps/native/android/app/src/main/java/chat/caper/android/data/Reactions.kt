@@ -1,8 +1,28 @@
 package chat.caper.android.data
 
 import chat.caper.android.model.ChatMessage
+import chat.caper.android.model.MessageReaction
+import chat.caper.android.model.ReactionSaveUi
 import chat.caper.android.model.ReactionUpdate
 import java.math.BigInteger
+
+/** Projects local desired membership without changing the authoritative revision. */
+internal fun projectReactionIntents(
+    message: ChatMessage, authorId: String, intents: Collection<ReactionSaveUi>,
+): ChatMessage {
+    if (intents.isEmpty()) return message
+    val reactions = message.reactions.associateByTo(linkedMapOf()) { it.emoji }
+    intents.forEach { intent ->
+        if (intent.error != null) return@forEach
+        val authors = reactions[intent.emoji]?.authorIds.orEmpty().toMutableList()
+        if (intent.active) {
+            if (authorId !in authors) authors += authorId
+        } else authors.removeAll { it == authorId }
+        if (authors.isEmpty()) reactions.remove(intent.emoji)
+        else reactions[intent.emoji] = MessageReaction(intent.emoji, authors)
+    }
+    return message.copy(reactions = reactions.values.toList())
+}
 
 /** HTTP acknowledgements are snapshots, not proof that preceding stream events were applied. */
 internal fun replayCursorAfterReaction(current: String?, update: ReactionUpdate, sequenced: Boolean): String? =

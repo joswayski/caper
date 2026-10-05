@@ -19,6 +19,9 @@ function fixture() {
   const missingAvatar = new URLSearchParams(location.search).has('missing-avatar-test');
   const account = { id: 'owner1234567', username: 'fixture_owner', displayName: 'Alex', avatarId: 0 };
   const members = [account, ...[31, 32, 799, missingAvatar ? null : 143].map((avatarId, i) => ({ id: `member00000${i}`, username: `member_${i}`, displayName: ['Maya', 'June', 'Theo', missingAvatar ? 'Missing avatar (test)' : 'Avery'][i], avatarId }))].map((m, i) => ({ ...m, owner: i === 0 }));
+  const conversations = ['Maya', 'June', 'Theo', 'Avery', 'Renée', 'Jules', 'Priya', 'Morgan', 'Leo', 'Isabella with a deliberately long fixture name', 'Sam', 'Taylor'].map((displayName, i) => ({
+    id: `dmfixture${String(i).padStart(4, '0')}`, peer: { id: `peerfixture${i}`, username: `fixture_peer_${i}`, displayName }, lastSeq: i === 2 ? '4' : '0', readSeq: '0',
+  }));
   const space = { id: 'space1234567', name: 'Avatar test fixture', ownerId: account.id };
   const channel = { id: 'channel12345', spaceId: space.id, name: 'general', private: false };
   const messages = members.map((m, i) => ({ id: `message${i}`, clientMessageId: `client${i}`, channelId: channel.id, seq: String(i + 1), author: { id: m.id, name: m.displayName, isGuest: false, avatarId: m.avatarId }, content: { version: 1, type: 'text', text: ['Explicit test fixture — these are not real accounts or messages.', 'The same saved avatar appears beside my name everywhere.', 'Tile 32 starts the second row of the collection.', 'Tile 799 is the final avatar in the collection.', missingAvatar ? 'Deliberately incomplete response to test the initials fallback.' : 'Existing accounts get a saved default profile picture too.'][i] }, createdAt: '2026-09-30T12:00:00Z' }));
@@ -32,6 +35,7 @@ function fixture() {
     if (!path.startsWith('/api/')) return original(input, options);
     if (path === '/api/account/me') return Response.json(account);
     if (path === '/api/account/profile') { Object.assign(account, JSON.parse(options.body)); return Response.json(account); }
+    if (path === '/api/dms') return Response.json({ conversations });
     if (path === '/api/spaces') return Response.json({ spaces: [space], limits: { ownedSpaces: 5, totalSpaces: 10, channelsPerSpace: 25 } });
     if (path.endsWith('/members')) return Response.json({ members });
     if (path === '/api/spaces/' + space.id) return Response.json({ space, channels: [channel], members });
@@ -62,23 +66,78 @@ const session = `avatars-${process.pid}`;
 const browser = (...args) => execFileSync('agent-browser', ['--session', session, '--init-script', init, ...args], { encoding: 'utf8', timeout: 40000 });
 const evaluate = code => JSON.parse(browser('eval', code));
 const wait = condition => browser('wait', '--fn', condition);
+const checkDirectDensity = (rowHeight) => {
+  const geometry = evaluate(`(() => {
+    const rows = [...document.querySelectorAll('.direct-select')];
+    const heading = document.querySelector('.direct-section .channel-section-heading').getBoundingClientRect();
+    const title = document.querySelector('.direct-section-title');
+    const range = document.createRange(); range.selectNodeContents(title.lastChild);
+    const nameColumn = range.getBoundingClientRect().left;
+    const icon = title.querySelector('svg').getBoundingClientRect();
+    return {
+      rows: rows.map(row => {
+        const r = row.getBoundingClientRect(), a = row.querySelector('.direct-avatar').getBoundingClientRect();
+        return { height: r.height, width: a.width, avatarHeight: a.height, centerOffset: a.top + a.height / 2 - (r.top + r.height / 2), iconOffset: a.left + a.width / 2 - (icon.left + icon.width / 2), nameOffset: row.children[1].getBoundingClientRect().left - nameColumn };
+      }),
+      rowGap: rows[1].getBoundingClientRect().top - rows[0].getBoundingClientRect().bottom,
+      headingGap: rows[0].getBoundingClientRect().top - heading.bottom,
+      topPadding: parseFloat(getComputedStyle(document.querySelector('.direct-section')).paddingTop),
+      dockAvatar: document.querySelector('.account-avatar').getBoundingClientRect().width,
+      dockNameOffset: document.querySelector('.account-name').getBoundingClientRect().left - nameColumn,
+      narrow: matchMedia('(max-width: 760px)').matches,
+    };
+  })()`);
+  assert.equal(geometry.rows.length, 13, 'Exercise a crowded list, not just the self row');
+  for (const row of geometry.rows) {
+    assert.equal(row.width, 20, 'DM avatars are the size of the name line, not the account dock');
+    assert.equal(row.avatarHeight, 20);
+    assert.equal(row.height, rowHeight, 'Compact desktop rows retain larger narrow/touch targets');
+    assert.ok(Math.abs(row.centerOffset) < 0.5, 'Smaller avatars stay vertically centered');
+    assert.ok(Math.abs(row.iconOffset) < 0.5, 'Smaller artwork retains the heading icon centerline');
+    assert.ok(Math.abs(row.nameOffset) < 0.5, 'Self/peer names still align with the DM heading');
+  }
+  // Narrow Browse intentionally puts the dock across the full screen below the rail.
+  if (!geometry.narrow) assert.ok(Math.abs(geometry.dockNameOffset) < 0.5, 'The desktop account dock retains the same name column');
+  assert.equal(geometry.rowGap, 2);
+  assert.equal(geometry.headingGap, 2);
+  assert.equal(geometry.topPadding, 6);
+  assert.equal(geometry.dockAvatar, 30, 'Do not shrink the account dock avatar');
+};
 try {
   browser('open', `${origin}spaces?space=space1234567&channel=channel12345`);
   browser('set', 'viewport', '1280', '900', '2');
   wait('!document.querySelector(".chat-initial-messages") && document.querySelectorAll(".chat-avatar [data-avatar-id]").length === 5 && document.querySelectorAll(".participant-avatar [data-avatar-id]").length === 3');
   assert.deepEqual(evaluate('[...document.querySelectorAll(".chat-avatar [data-avatar-id]")].map(e => Number(e.dataset.avatarId))'), [0, 31, 32, 799, 143]);
   assert.deepEqual(evaluate('[...document.querySelectorAll(".member-presence-avatar [data-avatar-id]")].map(e => Number(e.dataset.avatarId))'), [0, 31, 32, 799, 143]);
-  assert.deepEqual(evaluate('[...document.querySelectorAll(".voice-stack-avatar [data-avatar-id]")].map(e => Number(e.dataset.avatarId))'), [0, 31, 32]);
+  assert.deepEqual(evaluate('[...document.querySelectorAll(".voice-stack-avatar [data-avatar-id]")].map(e => Number(e.dataset.avatarId))'), [0, 31]);
+  assert.equal(evaluate('document.querySelector(".direct-self .direct-avatar [data-avatar-id]").dataset.avatarId'), '0');
   assert.equal(evaluate('document.querySelector(".account-avatar [data-avatar-id]").dataset.avatarId'), '0');
   assert.equal(evaluate('[...document.querySelectorAll(".chat-avatar")].every(e => e.querySelector("[data-avatar-id]"))'), true, 'Every account has a saved profile picture');
   assert.equal(evaluate('document.querySelector(".account-avatar .presence-dot").getAttribute("aria-label")'), 'Online');
+  wait('document.querySelectorAll(".direct-select").length === 13');
+  checkDirectDensity(evaluate('matchMedia("(hover: hover) and (pointer: fine)").matches') ? 28 : 44);
   assert.equal(evaluate('[...document.querySelectorAll("[data-avatar-id]")].every(e => getComputedStyle(e).backgroundColor === "rgba(0, 0, 0, 0)" && getComputedStyle(e.parentElement).backgroundColor === "rgba(0, 0, 0, 0)")'), true, 'Image avatars and their containers must have transparent backing');
+  assert.equal(evaluate('[...document.querySelectorAll(".avatar, .voice-stack-avatar")].every(e => getComputedStyle(e).borderTopColor === "rgba(0, 0, 0, 0)" && getComputedStyle(e).boxShadow === "none")'), true, 'Idle voice avatars must not have a painted border or halo');
   assert.equal(evaluate('[...document.querySelectorAll("[data-avatar-id]")].every(e => getComputedStyle(e).backgroundImage.endsWith(`/images/avatars/v3/${e.dataset.avatarId}.svg")`))'), true);
   browser('eval', 'Promise.all([0,31,32,799,143].map(id => new Promise((resolve,reject) => { const image = new Image(); image.onload=()=>resolve(true); image.onerror=reject; image.src=`/images/avatars/v3/${id}.svg`; })))');
   wait('document.querySelector(".chat-reaction[aria-pressed=true]") && !document.querySelector(".chat-add-reaction").disabled');
   assert.deepEqual(evaluate('[...document.querySelectorAll(".chat-reaction")].map(e => [e.getAttribute("aria-pressed"), e.textContent])'), [['true', '2'], ['false', '1']]);
   assert.equal(evaluate('document.querySelector(".chat-reaction").closest(".chat-message").querySelector("[data-avatar-id]").dataset.avatarId'), '0');
   if (artifacts) browser('screenshot', join(artifacts, 'avatars-desktop.png'));
+  browser('scroll', 'down', '1000', '--selector', '.direct-section > ul');
+  wait('document.querySelector(".direct-section > ul").scrollTop > 0');
+  assert.equal(evaluate('(() => { const list = document.querySelector(".direct-section > ul").getBoundingClientRect(); const last = [...document.querySelectorAll(".direct-select")].at(-1).getBoundingClientRect(); return last.top >= list.top && last.bottom <= list.bottom + 1 && document.querySelector(".direct-action").getBoundingClientRect().top >= list.bottom; })()'), true, 'Crowded DMs scroll to the final name without covering Invite people');
+  if (artifacts) browser('screenshot', join(artifacts, 'avatars-dms-scrolled.png'));
+  browser('scroll', 'up', '1000', '--selector', '.direct-section > ul');
+  wait('document.querySelector(".direct-section > ul").scrollTop === 0');
+  // Explicit style-state mock: no microphone, transport, or live speaking detection.
+  browser('click', '.voice-stack');
+  wait('document.querySelector(".voice-occupants[data-open]") && !document.querySelector(".voice-occupants[data-open]").getAnimations({ subtree: true }).some(a => a.playState === "running")');
+  browser('eval', '[...document.querySelectorAll(".avatar, .voice-stack-avatar")].forEach(e => e.classList.add("speaking"))');
+  assert.equal(evaluate('[...document.querySelectorAll(".avatar, .voice-stack-avatar")].every(e => getComputedStyle(e).borderTopColor === "rgb(99, 122, 67)" && getComputedStyle(e).boxShadow !== "none")'), true, 'Speaking avatars retain their green border and halo');
+  if (artifacts) browser('screenshot', join(artifacts, 'avatars-speaking-style-mock.png'));
+  browser('eval', '[...document.querySelectorAll(".avatar, .voice-stack-avatar")].forEach(e => e.classList.remove("speaking"))');
+  browser('click', '.voice-stack');
   browser('find', 'first', '.chat-add-reaction', 'click');
   wait('!!document.querySelector(".chat-reaction-picker input")');
   if (artifacts) browser('screenshot', join(artifacts, 'avatars-reaction-picker.png'));
@@ -98,13 +157,25 @@ try {
   browser('eval', 'new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
   assert.deepEqual(evaluate('[...document.querySelectorAll(".chat-avatar [data-avatar-id]")].map(e => Number(e.dataset.avatarId))'), [0, 31, 32, 799, 143]);
   assert.equal(evaluate('[...document.querySelectorAll("[data-avatar-id]")].every(e => getComputedStyle(e.parentElement).backgroundColor === "rgba(0, 0, 0, 0)")'), true);
+  assert.equal(evaluate('[...document.querySelectorAll(".avatar, .voice-stack-avatar")].every(e => getComputedStyle(e).borderTopColor === "rgba(0, 0, 0, 0)" && getComputedStyle(e).boxShadow === "none")'), true, 'Narrow idle voice avatars stay unframed');
   if (artifacts) browser('screenshot', join(artifacts, 'avatars-narrow-members.png'));
+  browser('click', '.navigation-toggle');
+  wait('document.querySelector(".call-room").classList.contains("navigation-open")');
+  checkDirectDensity(44);
+  assert.equal(evaluate('getComputedStyle(document.querySelector(".direct-self .direct-avatar")).backgroundColor'), 'rgba(0, 0, 0, 0)', 'Narrow Browse self avatar has no backdrop');
+  if (artifacts) browser('screenshot', join(artifacts, 'avatars-narrow-browse.png'));
+  browser('click', '[aria-label="Close navigation"]');
+  wait('!document.querySelector(".call-room").classList.contains("navigation-open")');
   browser('click', '.member-list-toggle');
   wait('!document.querySelector(".space-member-presence")');
   browser('scroll', 'up', '1000', '--selector', '.chat-scroller');
   wait('document.querySelector(".chat-scroller").scrollTop === 0');
   if (artifacts) browser('screenshot', join(artifacts, 'avatars-narrow.png'));
-  browser('find', 'first', '.chat-add-reaction', 'click');
+  // Narrow layouts hide the hover button; use the keyboard message-actions entry.
+  browser('focus', '[data-message-key="client0"] .chat-message-actions-trigger');
+  browser('press', 'Enter');
+  wait('!!document.querySelector(".chat-message-actions")');
+  browser('click', '.chat-message-actions [aria-label="Add reaction"]');
   wait('!!document.querySelector(".chat-reaction-picker input")');
   assert.equal(evaluate('(() => { const r=document.querySelector(".chat-reaction-picker").getBoundingClientRect(); return r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight; })()'), true);
   if (artifacts) browser('screenshot', join(artifacts, 'avatars-reaction-picker-narrow.png'));

@@ -164,6 +164,38 @@ enum SelfDirectTarget {
 struct PendingReaction {
     desired: bool,
     sent: bool,
+    visible: bool,
+    superseded: bool,
+}
+
+fn projected_reactions(
+    reactions: &[model::Reaction],
+    message: &str,
+    author: Option<&str>,
+    pending: &BTreeMap<(String, String), PendingReaction>,
+) -> Vec<model::Reaction> {
+    let mut projected = reactions.to_vec();
+    let Some(author) = author else {
+        return projected;
+    };
+    for ((pending_message, emoji), intent) in pending {
+        if pending_message != message || !intent.visible {
+            continue;
+        }
+        if let Some(reaction) = projected.iter_mut().find(|item| item.emoji == *emoji) {
+            reaction.author_ids.retain(|id| id != author);
+            if intent.desired {
+                reaction.author_ids.push(author.to_owned());
+            }
+        } else if intent.desired {
+            projected.push(model::Reaction {
+                emoji: emoji.clone(),
+                author_ids: vec![author.to_owned()],
+            });
+        }
+    }
+    projected.retain(|reaction| !reaction.author_ids.is_empty());
+    projected
 }
 
 struct CaperApp {
@@ -1176,15 +1208,16 @@ impl CaperApp {
                             if self.timeline.merge_reaction_ack(update).is_err() {
                                 self.reload_channel();
                             }
-                            self.reaction_errors.remove(&message);
-                            let desired = self
+                            if self
                                 .pending_reactions
                                 .get(&key)
-                                .map_or(active, |pending| pending.desired);
-                            self.pending_reactions.remove(&key);
-                            if desired != active {
-                                self.set_reaction(&message, &emoji, desired);
+                                .is_some_and(|pending| pending.desired == active)
+                            {
+                                self.pending_reactions.remove(&key);
+                            } else if let Some(pending) = self.pending_reactions.get_mut(&key) {
+                                pending.sent = false;
                             }
+                            self.send_next_reaction(&message);
                         }
                         Ok(_) => self.reload_channel(),
                         Err(error) if matches!(error.status, Some(401 | 403 | 404)) => {
@@ -1194,8 +1227,12 @@ impl CaperApp {
                         Err(error) => {
                             if let Some(pending) = self.pending_reactions.get_mut(&key) {
                                 pending.sent = false;
+                                if !pending.superseded {
+                                    pending.visible = false;
+                                    self.reaction_errors.insert(message.clone(), error.message);
+                                }
                             }
-                            self.reaction_errors.insert(message, error.message);
+                            self.send_next_reaction(&message);
                         }
                     }
                 }
@@ -3549,15 +3586,16 @@ impl CaperApp {
                         .iter()
                         .filter(|direct| Some(direct.peer.id.as_str()) != account_id)
                         .count();
-                    let height = (60.0 + (other_directs + 2) as f32 * 41.0)
+                    let height = (40.0 + (other_directs + 2) as f32 * 30.0)
                         .min(ui.available_height() * 0.45);
                     egui::TopBottomPanel::bottom("native-directs")
                         .exact_height(height)
                         .show_separator_line(false)
                         .frame(egui::Frame::NONE)
                         .show_inside(ui, |ui| {
+                            ui.spacing_mut().interact_size.y = 28.0;
                             full_bleed_separator(ui, ui.min_rect().top());
-                            ui.add_space(10.0);
+                            ui.add_space(6.0);
                             ui.horizontal(|ui| {
                                 let heading_hovered = ui.rect_contains_pointer(ui.max_rect());
                                 ui.label(bold("Direct messages").size(12.0).color(MUTED));
@@ -3587,7 +3625,7 @@ impl CaperApp {
                                 ui.horizontal(|ui| {
                                     let display_name = account.display_name.as_deref().or(account.username.as_deref()).unwrap_or("You");
                                     let name = format!("{display_name} you");
-                                    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width() - 18.0, 32.0), egui::Sense::click());
+                                    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width() - 18.0, 28.0), egui::Sense::click());
                                     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, ui.is_enabled(), self_active, &name));
                                     if self_active || response.hovered() || response.has_focus() {
                                         ui.painter().rect_filled(rect, 6.0, if self_active { Color32::from_rgba_unmultiplied(182, 77, 50, 40) } else { RAISED });
@@ -3595,7 +3633,7 @@ impl CaperApp {
                                     if response.has_focus() {
                                         ui.painter().rect_stroke(rect, 6.0, Stroke::new(1.0, TERRACOTTA_BRIGHT), egui::StrokeKind::Inside);
                                     }
-                                    paint_avatar(ui, egui::Rect::from_center_size(egui::pos2(rect.left() + 17.5, rect.center().y), egui::vec2(24.0, 24.0)), display_name, account.avatar_id);
+                                    paint_avatar(ui, egui::Rect::from_center_size(egui::pos2(rect.left() + 17.5, rect.center().y), egui::vec2(20.0, 20.0)), display_name, account.avatar_id);
                                     let mut label = egui::text::LayoutJob::default();
                                     label.append(display_name, 0.0, egui::TextFormat {
                                         font_id: egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into())),
@@ -3610,7 +3648,7 @@ impl CaperApp {
                                     if self_unread { ui.label(RichText::new("●").size(9.0).color(TERRACOTTA_BRIGHT)); }
                                     if response.clicked() { self.select_or_create_self_direct(); }
                                 });
-                                ui.add_space(3.0);
+                                ui.add_space(2.0);
                                 let directs = self.directs.clone();
                                 for direct in directs {
                                     if direct.peer.id == account.id { continue; }
@@ -3619,16 +3657,16 @@ impl CaperApp {
                                         > model::sequence(&direct.read_seq).unwrap_or(0);
                                     ui.horizontal(|ui| {
                                         let (response, _, _) = channel_button(
-                                            ui, ui.available_width() - 18.0,
+                                            ui, egui::vec2(ui.available_width() - 18.0, 28.0),
                                             &direct.peer.display_name, NavIcon::Speech, active, None, None,
                                         );
                                         if unread { ui.label(RichText::new("●").size(9.0).color(TERRACOTTA_BRIGHT)); }
                                         if response.clicked() { self.select_direct(direct.clone()); }
                                     });
-                                    ui.add_space(3.0);
+                                    ui.add_space(2.0);
                                 }
                                 let action = if self.owner() { "Invite people" } else { "New message" };
-                                let (response, _, _) = channel_button(ui, ui.available_width(), action, NavIcon::Plus, false, None, None);
+                                let (response, _, _) = channel_button(ui, egui::vec2(ui.available_width(), 28.0), action, NavIcon::Plus, false, None, None);
                                 if response.clicked() { self.open_direct_action(); }
                             });
                         });
@@ -3906,7 +3944,7 @@ impl CaperApp {
                                 });
                                 let (response, settings, leave) = channel_button(
                                     ui,
-                                    ui.available_width(),
+                                    egui::vec2(ui.available_width(), 32.0),
                                     &name,
                                     if private { NavIcon::Lock } else { NavIcon::Hash },
                                     active,
@@ -4059,7 +4097,6 @@ impl CaperApp {
                         person.muted
                     };
                     let speaking = own && self.voice.speaking(&person.id, muted, now);
-                    ui.painter().circle_filled(center, 11.0, SURFACE);
                     paint_avatar(
                         ui,
                         egui::Rect::from_center_size(center, egui::vec2(20.0, 20.0)),
@@ -4070,9 +4107,6 @@ impl CaperApp {
                         // Web: caper border plus a 1px caper ring.
                         ui.painter()
                             .circle_stroke(center, 11.0, Stroke::new(2.5, CAPER));
-                    } else {
-                        ui.painter()
-                            .circle_stroke(center, 11.0, Stroke::new(1.0, BORDER));
                     }
                 }
                 let count_x = rect.left()
@@ -5813,6 +5847,12 @@ impl CaperApp {
             .session
             .as_ref()
             .map(|session| session.author.id.clone());
+        let reactions = projected_reactions(
+            &message.reactions,
+            &message.id,
+            author.as_deref(),
+            &self.pending_reactions,
+        );
         let can_react = self.selected_is_joined() && self.session.is_some();
         egui::Frame::new()
             .inner_margin(egui::Margin {
@@ -5823,11 +5863,7 @@ impl CaperApp {
             })
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    let saving = self
-                        .pending_reactions
-                        .iter()
-                        .any(|((id, _), pending)| id == &message.id && pending.sent);
-                    for reaction in &message.reactions {
+                    for reaction in &reactions {
                         let owned = author
                             .as_ref()
                             .is_some_and(|id| reaction.author_ids.iter().any(|entry| entry == id));
@@ -5847,7 +5883,7 @@ impl CaperApp {
                             if owned { ", including you" } else { "" }
                         );
                         let response = ui.add_enabled(
-                            can_react && !saving,
+                            can_react,
                             egui::Button::image_and_text(
                                 image,
                                 RichText::new(reaction.author_ids.len().to_string()).size(11.0),
@@ -5866,7 +5902,7 @@ impl CaperApp {
                         response.widget_info(|| {
                             egui::WidgetInfo::labeled(
                                 egui::WidgetType::Button,
-                                can_react && !saving,
+                                can_react,
                                 label.clone(),
                             )
                         });
@@ -5877,12 +5913,12 @@ impl CaperApp {
                     if can_react && let Some(entry) = emoji::find("🙂") {
                         let image = self.reaction_textures.image(ui, entry, 18.0);
                         let add = ui
-                            .add_enabled(!saving, egui::Button::image(image).small())
+                            .add(egui::Button::image(image).small())
                             .on_hover_text("Add reaction");
                         add.widget_info(|| {
                             egui::WidgetInfo::labeled(
                                 egui::WidgetType::Button,
-                                !saving,
+                                true,
                                 "Add reaction",
                             )
                         });
@@ -5891,9 +5927,6 @@ impl CaperApp {
                             self.reaction_search.clear();
                             self.reaction_search_focus = true;
                         }
-                    }
-                    if saving {
-                        ui.label(RichText::new("Saving reaction…").size(11.0).color(MUTED));
                     }
                 });
                 if let Some(error) = self.reaction_errors.get(&message.id).cloned() {
@@ -5904,7 +5937,7 @@ impl CaperApp {
                             && let Some(((message, emoji), pending)) = self
                                 .pending_reactions
                                 .iter()
-                                .find(|((id, _), pending)| id == &message.id && !pending.sent)
+                                .find(|((id, _), pending)| id == &message.id && !pending.visible)
                                 .map(|(key, value)| (key.clone(), value.clone()))
                         {
                             self.set_reaction(&message, &emoji, pending.desired);
@@ -5912,7 +5945,7 @@ impl CaperApp {
                         if ui.small_button("Dismiss").clicked() {
                             self.reaction_errors.remove(&message.id);
                             self.pending_reactions
-                                .retain(|(id, _), _| id != &message.id);
+                                .retain(|(id, _), pending| id != &message.id || pending.visible);
                         }
                     });
                 }
@@ -5923,32 +5956,58 @@ impl CaperApp {
         if !self.selected_is_joined() {
             return;
         }
+        if self.session.is_none() || self.selected_channel.is_none() {
+            return;
+        }
+        let key = (message.to_owned(), emoji.to_owned());
+        self.reaction_errors.remove(message);
+        if let Some(pending) = self.pending_reactions.get_mut(&key) {
+            pending.desired = active;
+            pending.visible = true;
+            pending.superseded = pending.sent;
+        } else {
+            self.pending_reactions.insert(
+                key,
+                PendingReaction {
+                    desired: active,
+                    sent: false,
+                    visible: true,
+                    superseded: false,
+                },
+            );
+        }
+        self.send_next_reaction(message);
+    }
+
+    fn send_next_reaction(&mut self, message: &str) {
+        if self
+            .pending_reactions
+            .iter()
+            .any(|((id, _), pending)| id == message && pending.sent)
+        {
+            return;
+        }
+        let Some((key, active)) = self.pending_reactions.iter().find_map(|(key, pending)| {
+            (key.0 == message && pending.visible && !pending.sent)
+                .then(|| (key.clone(), pending.desired))
+        }) else {
+            return;
+        };
         let (Some(session), Some(channel)) = (&self.session, &self.selected_channel) else {
             return;
         };
         let chat_token = session.token.clone();
         let channel = channel.clone();
-        let key = (message.to_owned(), emoji.to_owned());
-        if let Some(pending) = self.pending_reactions.get_mut(&key) {
-            pending.desired = active;
-            if pending.sent {
-                return;
-            }
-        }
-        self.pending_reactions.insert(
-            key,
-            PendingReaction {
-                desired: active,
-                sent: true,
-            },
-        );
+        let pending = self.pending_reactions.get_mut(&key).unwrap();
+        pending.sent = true;
+        pending.superseded = false;
         self.worker.send(Command::React {
             generation: self.generation,
             token: self.token.clone(),
             chat_token,
             channel,
-            message: message.to_owned(),
-            emoji: emoji.to_owned(),
+            message: key.0,
+            emoji: key.1,
             active,
         });
     }
@@ -7276,14 +7335,14 @@ fn voice_session_duration(started_at: u64, now: u64) -> String {
 
 fn channel_button(
     ui: &mut egui::Ui,
-    width: f32,
+    size: egui::Vec2,
     name: &str,
     icon: NavIcon,
     active: bool,
     manageable: Option<bool>,
     duration: Option<&str>,
 ) -> (egui::Response, bool, bool) {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 32.0), egui::Sense::click());
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
     response.widget_info(|| {
         egui::WidgetInfo::selected(
             egui::WidgetType::SelectableLabel,
@@ -8216,7 +8275,7 @@ mod tests {
     use super::{
         CaperApp, ConnectionReport, Dialog, GatewayEvent, NavigationTarget, PendingReaction,
         PendingSend, Phase, SelfDirectTarget, endpoint, media, member_page_ids, normalize_channel,
-        permanent_send_rejection, take_date_divider, timestamp_parts, voice,
+        permanent_send_rejection, projected_reactions, take_date_divider, timestamp_parts, voice,
     };
     use crate::navigation;
     use std::time::{Duration, Instant};
@@ -8239,6 +8298,170 @@ mod tests {
         self, Account, Author, ChatSession, Content, History, HistoryPlace, Member, Message, Space,
         SpaceDetail, Spaces,
     };
+
+    #[test]
+    fn pending_reactions_project_own_membership_over_latest_authoritative_counts() {
+        let mut pending = std::collections::BTreeMap::new();
+        pending.insert(
+            ("message".into(), "👍".into()),
+            PendingReaction {
+                desired: false,
+                sent: true,
+                visible: true,
+                superseded: false,
+            },
+        );
+        pending.insert(
+            ("message".into(), "🎉".into()),
+            PendingReaction {
+                desired: true,
+                sent: false,
+                visible: true,
+                superseded: false,
+            },
+        );
+        let authoritative = vec![
+            model::Reaction {
+                emoji: "👍".into(),
+                author_ids: vec!["me".into(), "other".into(), "gateway".into()],
+            },
+            model::Reaction {
+                emoji: "🎉".into(),
+                author_ids: vec!["other".into()],
+            },
+        ];
+
+        let projected = projected_reactions(&authoritative, "message", Some("me"), &pending);
+
+        assert_eq!(
+            authoritative[0].author_ids.len(),
+            3,
+            "source stays authoritative"
+        );
+        assert_eq!(projected[0].author_ids, ["other", "gateway"]);
+        assert_eq!(projected[1].author_ids, ["other", "me"]);
+
+        let only_me = vec![model::Reaction {
+            emoji: "👍".into(),
+            author_ids: vec!["me".into()],
+        }];
+        assert!(
+            projected_reactions(&only_me, "message", Some("me"), &pending)
+                .iter()
+                .all(|reaction| reaction.emoji != "👍")
+        );
+    }
+
+    #[test]
+    fn failed_reaction_overlay_rolls_back_without_hiding_other_authors() {
+        let pending = std::collections::BTreeMap::from([(
+            ("message".into(), "👍".into()),
+            PendingReaction {
+                desired: false,
+                sent: false,
+                visible: false,
+                superseded: false,
+            },
+        )]);
+        let authoritative = vec![model::Reaction {
+            emoji: "👍".into(),
+            author_ids: vec!["me".into(), "other".into()],
+        }];
+        assert_eq!(
+            projected_reactions(&authoritative, "message", Some("me"), &pending),
+            authoritative
+        );
+    }
+
+    #[test]
+    fn rapid_reaction_failure_retries_latest_intent_and_keeps_other_emoji_moving() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-reactions"),
+        );
+        let (events, receiver) = std::sync::mpsc::channel();
+        app.worker.events = receiver;
+        let message = app.timeline.messages().nth(1).unwrap().clone();
+        let channel = app.selected_channel.clone().unwrap();
+        let key = (message.id.clone(), "👀".to_owned());
+        app.set_reaction(&message.id, "👀", true);
+        app.set_reaction(&message.id, "👀", false);
+        app.set_reaction(&message.id, "👀", true);
+        assert!(app.pending_reactions[&key].superseded);
+        let fail = || crate::worker::Event::Reacted {
+            generation: app.generation,
+            channel: channel.clone(),
+            message: message.id.clone(),
+            emoji: "👀".into(),
+            active: true,
+            result: Err(crate::worker::SendFailure {
+                status: Some(503),
+                message: "failed".into(),
+            }),
+        };
+        events.send(fail()).unwrap();
+        app.receive();
+        assert!(
+            app.pending_reactions[&key].sent,
+            "latest intent automatically follows superseded failure"
+        );
+        assert!(app.pending_reactions[&key].visible);
+        assert!(!app.pending_reactions[&key].superseded);
+        assert!(!app.reaction_errors.contains_key(&message.id));
+
+        app.set_reaction(&message.id, "🎉", true);
+        events
+            .send(crate::worker::Event::Reacted {
+                generation: app.generation,
+                channel: channel.clone(),
+                message: message.id.clone(),
+                emoji: "👀".into(),
+                active: true,
+                result: Err(crate::worker::SendFailure {
+                    status: Some(503),
+                    message: "failed".into(),
+                }),
+            })
+            .unwrap();
+        app.receive();
+        assert!(
+            !app.pending_reactions[&key].visible,
+            "current failure rolls back"
+        );
+        assert!(
+            app.pending_reactions[&(message.id.clone(), "🎉".into())].sent,
+            "failure cannot block another emoji"
+        );
+        assert!(app.reaction_errors.contains_key(&message.id));
+        events
+            .send(crate::worker::Event::Reacted {
+                generation: app.generation,
+                channel,
+                message: message.id.clone(),
+                emoji: "🎉".into(),
+                active: true,
+                result: Ok(model::ReactionUpdate {
+                    kind: "message.reactions".into(),
+                    schema_version: 1,
+                    channel_id: message.channel_id.clone(),
+                    message_id: message.id.clone(),
+                    seq: "5".into(),
+                    reactions: message.reactions.clone(),
+                }),
+            })
+            .unwrap();
+        app.receive();
+        assert!(
+            app.reaction_errors.contains_key(&message.id),
+            "another emoji's success cannot hide the failure"
+        );
+        let output = render(&mut app, &context, vec![]);
+        assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::epaint::Shape::Text(text) if text.galley.job.text.contains("Saving reaction"))));
+    }
+
     use crate::worker::LoadError;
     use chrono::FixedOffset;
     use eframe::egui;
@@ -8524,7 +8747,7 @@ mod tests {
             sidebar_text(&output, "Maya").is_none(),
             "rosters start collapsed"
         );
-        assert!(sidebar_text(&output, "2 in voice").is_some());
+        let count = sidebar_text(&output, "2 in voice").expect("voice count is visible");
         // The saved avatar is an image now, not the old clickable "M" initial.
         let stack = output
             .shapes
@@ -8534,7 +8757,8 @@ mod tests {
                     if rect.brush.as_ref().is_some_and(|brush| {
                         brush.uv == egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0))
                     }) && rect.rect.width() == 20.0
-                        && rect.rect.center().x < 340.0 =>
+                        && rect.rect.center().x < 340.0
+                        && (rect.rect.center().y - count.y).abs() < 14.0 =>
                 {
                     Some(rect.rect.center())
                 }
@@ -8877,6 +9101,8 @@ mod tests {
             PendingReaction {
                 desired: true,
                 sent: true,
+                visible: true,
+                superseded: false,
             },
         );
         app.reaction_errors
@@ -9136,6 +9362,8 @@ mod tests {
             PendingReaction {
                 desired: true,
                 sent: false,
+                visible: true,
+                superseded: false,
             },
         );
         app.reaction_errors
@@ -10792,6 +11020,79 @@ mod tests {
             node.label()
                 .is_some_and(|label| label == "Fixture Owner you")
         }));
+    }
+
+    #[test]
+    fn direct_rows_are_compact_without_shrinking_channels_or_the_dock() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-direct"),
+        );
+        let mut second = app.directs[0].clone();
+        second.id = "second-direct".into();
+        second.peer.id = "second-peer".into();
+        second.peer.display_name = "Second fixture peer".into();
+        second.last_seq = "7".into();
+        app.directs.push(second);
+        render(&mut app, &context, vec![]);
+        let started = std::time::Instant::now();
+        while context.has_pending_images() {
+            assert!(started.elapsed() < std::time::Duration::from_secs(30));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            render(&mut app, &context, vec![]);
+        }
+        render(&mut app, &context, vec![]);
+        context.enable_accesskit();
+        let output = render(&mut app, &context, vec![]);
+        let nodes = &output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes;
+        let bounds = |label: &str| {
+            nodes
+                .iter()
+                .find_map(|(_, node)| {
+                    (node.label() == Some(label))
+                        .then(|| node.bounds())
+                        .flatten()
+                })
+                .unwrap_or_else(|| panic!("missing bounds for {label}"))
+        };
+        let self_row = bounds("Fixture Owner you");
+        let peer = bounds("TEST FIXTURE Maya");
+        let second_peer = bounds("Second fixture peer");
+        for row in [self_row, peer, second_peer, bounds("Invite people")] {
+            assert_eq!(row.height(), 28.0);
+        }
+        assert_eq!(peer.y0 - self_row.y1, 2.0);
+        assert_eq!(second_peer.y0 - peer.y1, 2.0);
+        assert_eq!(bounds("general").height(), 32.0);
+        let images: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect) if rect.brush.is_some() => Some(rect.rect),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            images.iter().any(|rect| (rect.width() - 20.0).abs() < 0.01
+                && (rect.height() - 20.0).abs() < 0.01
+                && (rect.center().y as f64 - (self_row.y0 + self_row.y1) / 2.0).abs() < 0.5),
+            "DM artwork stays small and vertically centered in {self_row:?}: {images:?}"
+        );
+        let microphone = bounds("Mute microphone");
+        assert!(
+            images.iter().any(|rect| (rect.width() - 30.0).abs() < 0.01
+                && (rect.height() - 30.0).abs() < 0.01
+                && rect.left() as f64 >= self_row.x0
+                && (rect.center().y as f64 - (microphone.y0 + microphone.y1) / 2.0).abs() < 0.5),
+            "the account dock keeps its larger avatar"
+        );
     }
 
     #[test]

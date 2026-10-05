@@ -617,6 +617,11 @@ private struct ChannelSidebar: View {
                 }.padding(.horizontal, 16)
             }
             if model.account != nil {
+                #if os(macOS)
+                let directRowHeight: CGFloat = 28
+                #else
+                let directRowHeight: CGFloat = 44
+                #endif
                 VStack(spacing: 0) {
                     HStack {
                         Text("Direct messages").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
@@ -628,18 +633,18 @@ private struct ChannelSidebar: View {
                             .opacity(directHeadingHovered || directActionFocused ? 1 : 0)
                             .allowsHitTesting(directHeadingHovered || directActionFocused)
                             #endif
-                    }.padding(.horizontal, 16).frame(height: 44)
+                    }.padding(.horizontal, 16).frame(height: directRowHeight)
                         #if os(macOS)
                         .contentShape(Rectangle())
                         .onHover { directHeadingHovered = $0 }
                         #endif
                     ScrollView {
-                        VStack(spacing: 3) {
+                        VStack(spacing: 2) {
                             if let account = model.account {
                                 let selfConversation = model.directMessages.first { $0.peer.id == account.id }
                                 Button { Task { await model.openSelfDirectMessage() } } label: {
                                     HStack(spacing: 9) {
-                                        Avatar(name: account.displayName ?? account.username ?? "You", size: 24, avatarID: account.avatarId)
+                                        Avatar(name: account.displayName ?? account.username ?? "You", size: 20, avatarID: account.avatarId).frame(width: 24, height: 20)
                                         Text(account.displayName ?? account.username ?? "You").lineLimit(1)
                                         Text("you").font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.muted)
                                             .fixedSize(horizontal: true, vertical: false)
@@ -647,7 +652,7 @@ private struct ChannelSidebar: View {
                                         if selfConversation?.unread == true { Circle().fill(CaperTheme.terracottaBright).frame(width: 8, height: 8).accessibilityLabel("Unread") }
                                     }.font(CaperTheme.font(13, weight: .medium))
                                         .foregroundStyle(selfConversation.map { model.selectedDirectMessageID == $0.id } == true ? CaperTheme.text : CaperTheme.muted)
-                                        .padding(.horizontal, 9).frame(height: 44)
+                                        .padding(.horizontal, 9).frame(height: directRowHeight)
                                         .background(selfConversation.map { model.selectedDirectMessageID == $0.id } == true ? CaperTheme.terracotta.opacity(0.16) : Color.clear)
                                         .clipShape(RoundedRectangle(cornerRadius: 6))
                                         .contentShape(Rectangle())
@@ -657,13 +662,13 @@ private struct ChannelSidebar: View {
                             ForEach(model.directMessages.filter { $0.peer.id != model.account?.id }) { conversation in
                                 Button { Task { await model.select(directMessage: conversation) } } label: {
                                     HStack(spacing: 9) {
-                                        CaperIcon(name: "speech", size: 17)
+                                        CaperIcon(name: "speech", size: 17).frame(width: 24)
                                         Text(conversation.peer.displayName).lineLimit(1)
                                         Spacer()
                                         if conversation.unread { Circle().fill(CaperTheme.terracottaBright).frame(width: 8, height: 8).accessibilityLabel("Unread") }
                                     }.font(CaperTheme.font(13, weight: .medium))
                                         .foregroundStyle(model.selectedDirectMessageID == conversation.id ? CaperTheme.text : CaperTheme.muted)
-                                        .padding(.horizontal, 9).frame(height: 44)
+                                        .padding(.horizontal, 9).frame(height: directRowHeight)
                                         .background(model.selectedDirectMessageID == conversation.id ? CaperTheme.terracotta.opacity(0.16) : Color.clear)
                                         .clipShape(RoundedRectangle(cornerRadius: 6))
                                 }.buttonStyle(.plain).accessibilityIdentifier("dm-\(conversation.id)")
@@ -671,18 +676,18 @@ private struct ChannelSidebar: View {
                                     .accessibilityValue(model.selectedDirectMessageID == conversation.id ? "Selected" : conversation.unread ? "Unread" : "")
                             }
                         }.padding(.horizontal, 16)
-                    }.frame(height: min(180, max(47, CGFloat(model.directMessages.filter { $0.peer.id != model.account?.id }.count + 1) * 47)))
+                    }.frame(height: min(180, CGFloat(model.directMessages.filter { $0.peer.id != model.account?.id }.count + 1) * (directRowHeight + 2) - 2)).padding(.top, 2)
                     Button {
                         if model.isOwner, model.detail?.space.demo == false { sheet = .manageSpace }
                         else { sheet = .newDirectMessage }
                     } label: {
                         HStack(spacing: 9) {
-                            CaperIcon(name: "plus", size: 17)
+                            CaperIcon(name: "plus", size: 17).frame(width: 24)
                             Text(model.isOwner && model.detail?.space.demo == false ? "Invite people" : "New message")
                             Spacer()
                         }
                         .font(CaperTheme.font(13, weight: .medium)).foregroundStyle(CaperTheme.muted)
-                        .padding(.horizontal, 9).frame(minHeight: 44)
+                        .padding(.horizontal, 9).frame(minHeight: directRowHeight)
                         .contentShape(Rectangle())
                     }.buttonStyle(.plain).modifier(ControlHover()).padding(.horizontal, 16)
                         .accessibilityIdentifier(model.isOwner && model.detail?.space.demo == false ? "invite-people" : "new-message")
@@ -1657,17 +1662,15 @@ private struct ChatView: View {
             .sheet(item: $reactionMessage) { message in
                 #if os(iOS)
                 MessageActionsSheet(message: message, showingEmojiPicker: $showingEmojiPicker,
-                                    canReact: !chat.isPreview && chat.currentAuthor != nil && !chat.reactionSaving.contains(message.id),
+                                    canReact: !chat.isPreview && chat.currentAuthor != nil,
                                     quickReaction: { emoji in
                                         guard !chat.isPreview, let author = chat.currentAuthor,
-                                              !chat.reactionSaving.contains(message.id),
                                               let current = chat.messages.first(where: { $0.id == message.id }) else { return }
                                         let own = current.reactions?.first(where: { $0.emoji == emoji })?.authorIds.contains(author.id) == true
                                         reactionMessage = nil
                                         Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: !own) }
                                     }, selectReaction: { emoji in
-                                        guard !chat.isPreview, chat.currentAuthor != nil,
-                                              !chat.reactionSaving.contains(message.id) else { return }
+                                        guard !chat.isPreview, chat.currentAuthor != nil else { return }
                                         reactionMessage = nil
                                         Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) }
                                     })
@@ -1853,13 +1856,10 @@ private struct ReactionRow: View {
             .buttonStyle(.plain)
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
             .modifier(ControlHover())
-            .disabled(chat.isPreview || chat.reactionSaving.contains(message.id) || chat.currentAuthor == nil)
+            .disabled(chat.isPreview || chat.currentAuthor == nil)
             .accessibilityLabel("Add reaction")
             .accessibilityIdentifier("add-reaction-\(message.id)")
             #endif
-            if chat.reactionSaving.contains(message.id) {
-                ProgressView().controlSize(.small).accessibilityLabel("Saving reaction")
-            }
         }
         // Without .contain this identifier replaces add-reaction-<id> on the
         // button inside the row.
@@ -1891,7 +1891,7 @@ private struct ReactionChip: View {
         }
         .buttonStyle(.plain)
         .modifier(ControlHover())
-        .disabled(chat.isPreview || chat.reactionSaving.contains(messageID) || chat.currentAuthor == nil)
+        .disabled(chat.isPreview || chat.currentAuthor == nil)
         .accessibilityLabel("\(reaction.emoji) reaction, \(reaction.authorIds.count), \(own ? "selected by you" : "not selected by you")")
         .accessibilityAddTraits(own ? .isSelected : [])
     }
