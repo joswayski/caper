@@ -870,7 +870,13 @@ it does not mount the picker or fetch the artwork catalog. Hovering or focusing
 **Add reaction** also warms the code and preloads/decodes the first 128 Emoji 15.0
 smileys/people images, generated from the picker catalog at build time. This
 covers the opening grid, not the full catalog, and does not open the picker.
-Preloads are shared across message buttons; failures allow the next intent to retry.
+Hovering or keyboard-focusing a category tab preloads/decodes its first 128
+Emoji 15.0 images (or the full category when smaller), without selecting it or
+scrolling the grid. Category manifests are also generated at build time.
+Preloads are shared per category across message buttons and picker reopenings;
+failures evict only that category so the next intent can retry. Images beyond
+the prefetched window still load on demand; immediate clicks on a cold network
+can still precede completion.
 The virtualized grid loads its mounted image window eagerly, including after
 category jumps. Versioned
 `/emoji/twemoji-15/**` artwork is served with a one-year immutable browser cache;
@@ -879,7 +885,8 @@ on hover/selection, and underline the selected category in terracotta. Pointer
 clicks have no circular ring; keyboard focus retains a separate outline.
 `node scripts/test-message-actions.mjs` checks warmup without artwork requests,
 hover/focus preloading without opening or duplicate image requests,
-populated category jumps/reopening, eager loading with virtualization, selected
+all seven non-opening category preloads without selection/scrolling, cache reuse
+across reopening, populated category jumps, eager loading with virtualization, selected
 tab styling, and keyboard navigation on desktop and Chromium touch-emulated web.
 Native picker loading/styling is intentionally unchanged: those independent
 clients use bundled sprite sheets, not browser image loading or this library.
