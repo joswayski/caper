@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, dirname, join } from "node:path";
 import { emojiAsset } from "../src/chat/emoji.ts";
+import catalog from "../../../shared/emoji/catalog.json" with { type: "json" };
 
 // Serve licensed artwork ourselves: no third-party CDN requests from chat.
 const require = createRequire(import.meta.url);
@@ -10,6 +11,9 @@ const source = dirname(require.resolve("@twemoji/svg/package.json"));
 const target = new URL("../public/emoji/twemoji-15/", import.meta.url);
 await mkdir(target, { recursive: true });
 await cp(source, target, { recursive: true, filter: (path) => path === source || path.endsWith(".svg") || path === join(source, "license") });
+// All composers use the native catalog's names/order, without its sprite metadata.
+await writeFile(new URL("autocomplete.json", target), JSON.stringify(catalog.filter((entry) => entry.selectable)
+  .map(({ id, emoji, name, keywords }) => ({ id, emoji, name, keywords }))));
 // Some artwork files use an unqualified sequence while the picker supplies
 // presentation selectors. Alias those filenames and verify every offered asset.
 const data = require("emoji-picker-react/dist/data/emojis-en").default;

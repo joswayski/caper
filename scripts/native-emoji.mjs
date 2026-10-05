@@ -17,20 +17,22 @@ const offered = new Map();
 for (const [category, entries] of Object.entries(data.emojis)) {
   for (const entry of entries.filter((item) => Number(item.a) <= 15)) {
     const id = basename(emojiAsset(entry.u), ".svg");
-    offered.set(id, { name: entry.n.at(-1), keywords: entry.n.join(" "), category });
+    offered.set(id, { emoji: String.fromCodePoint(...entry.u.split("-").map((point) => parseInt(point, 16))), name: entry.n.at(-1), keywords: entry.n.join(" "), category });
   }
 }
 const files = (await readdir(source)).filter((name) => name.endsWith(".svg")).sort();
 const entries = files.map((file, index) => {
   const id = basename(file, ".svg");
   return {
-    id, emoji: String.fromCodePoint(...id.split("-").map((point) => parseInt(point, 16))),
+    // Artwork IDs omit some selectors; composer insertion must preserve them.
+    id, emoji: offered.get(id)?.emoji ?? String.fromCodePoint(...id.split("-").map((point) => parseInt(point, 16))),
     name: offered.get(id)?.name ?? id, keywords: offered.get(id)?.keywords ?? "",
     category: offered.get(id)?.category ?? "", selectable: offered.has(id),
     sheet: Math.floor(index / 256), x: (index % 16) * 64, y: Math.floor((index % 256) / 16) * 64,
   };
 });
-for (let index = 0; index < files.length; index += 256) {
+// Metadata-only updates need not rerasterize unchanged licensed artwork.
+for (let index = 0; !process.argv.includes("--catalog-only") && index < files.length; index += 256) {
   const output = join(target, `sheet-${index / 256}.png`);
   execFileSync("magick", ["montage", "-background", "none", ...files.slice(index, index + 256).map((file) => join(source, file)),
     "-geometry", "64x64+0+0", "-tile", "16x16", `PNG32:${output}`], { stdio: "inherit" });

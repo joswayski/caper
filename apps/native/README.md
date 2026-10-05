@@ -31,6 +31,15 @@ All native clients provide searchable emoji reactions, counted chips, and
 own-reaction highlighting. Channel previews display reactions without allowing
 mutations until the user joins.
 
+Message composers on web, Android, iOS/macOS and Rust desktop also offer emoji
+suggestions after `:` at the cursor. Search by name or keyword (`:tomato`,
+`:thumbs_up`, `:+1`); selecting replaces that token without sending or changing
+the surrounding draft. Hardware keyboards support arrows, Enter/Tab and Escape;
+touch users select a row, and iPhone users still send with the Send button.
+These use the existing Emoji 15 catalog, not custom uploaded emoji. Android/Apple
+builds and physical keyboard/IME checks require their platform toolchains/devices;
+browser coverage is not native acceptance.
+
 First launch without a valid session opens email sign-in, not a Guest workspace.
 New accounts finish their profile, then name their first space. Existing accounts
 restore their saved session and open their spaces; logging out returns to sign-in.
