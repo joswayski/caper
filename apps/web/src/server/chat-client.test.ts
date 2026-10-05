@@ -250,8 +250,11 @@ test("reaction HTTP snapshots and sequenced delivery agree without skipping mess
   });
   const adding = f.client.setReaction(target.id, "👍", true);
   const added = { type: "message.reactions" as const, schemaVersion: 1 as const, channelId: "general", messageId: target.id, seq: "2", reactions: [{ emoji: "👍", authorIds: ["guest"] }] };
+  assert.deepEqual(f.state.messages[0].reactions, added.reactions, "reaction appears before any server response");
+  assert.equal(f.client.snapshotHistory()?.messages[0].reactions, undefined, "cached history stays authoritative");
   f.sockets[0].frame(added);
   f.sockets[0].frame({ ...added, seq: "3", reactions: [] });
+  assert.deepEqual(f.state.messages[0].reactions, added.reactions, "pending own intent stays projected over live snapshots");
   finish(Response.json(added));
   await adding;
   assert.deepEqual(f.state.messages[0].reactions, [], "late HTTP cannot undo a newer removal");
@@ -268,6 +271,48 @@ test("reaction HTTP snapshots and sequenced delivery agree without skipping mess
   await retry;
   assert.deepEqual(f.state.messages[0].reactions, added.reactions);
   assert.equal(f.client.snapshotHistory()?.cursor, "4", "HTTP acknowledgement alone does not advance replay");
+});
+
+test("rapid reaction intents stay visible, serialize writes and roll back only the failed membership", async (t) => {
+  const f = await sendingFixture(t);
+  const target = { ...committed({ clientMessageId: "target", text: "React here" }, "1"),
+    reactionSeq: "1", reactions: [{ emoji: "👍", authorIds: ["other"] }] };
+  f.sockets[0].message(target);
+  const requests: { body: { emoji: string; active: boolean }; finish: (response: Response) => void }[] = [];
+  t.mock.method(globalThis, "fetch", (_input: unknown, init?: RequestInit) => new Promise<Response>((finish) => {
+    requests.push({ body: JSON.parse(String(init?.body)), finish });
+  }));
+  const add = f.client.setReaction(target.id, "👍", true);
+  assert.deepEqual(f.state.messages[0].reactions, [{ emoji: "👍", authorIds: ["other", "guest"] }]);
+  const remove = f.client.setReaction(target.id, "👍", false);
+  const celebrate = f.client.setReaction(target.id, "🎉", true);
+  assert.equal(requests.length, 1, "one in-flight request per message");
+  assert.deepEqual(f.state.messages[0].reactions, [
+    { emoji: "👍", authorIds: ["other"] }, { emoji: "🎉", authorIds: ["guest"] },
+  ]);
+  requests[0].finish(Response.json({ error: "superseded add failed" }, { status: 503 }));
+  await add;
+  await tick();
+  assert.deepEqual(requests[1].body, { emoji: "👍", active: false });
+  const update = { type: "message.reactions" as const, schemaVersion: 1 as const, channelId: "general", messageId: target.id, seq: "2",
+    reactions: [{ emoji: "👍", authorIds: ["other", "new-person"] }] };
+  f.sockets[0].frame(update);
+  requests[1].finish(Response.json(update));
+  await remove; await tick();
+  assert.deepEqual(requests[2].body, { emoji: "🎉", active: true });
+  assert.deepEqual(f.state.messages[0].reactions, [...update.reactions, { emoji: "🎉", authorIds: ["guest"] }]);
+  requests[2].finish(Response.json({ error: "celebration failed" }, { status: 503 }));
+  await assert.rejects(celebrate, /celebration failed/);
+  assert.deepEqual(f.state.messages[0].reactions, update.reactions, "rollback retains the latest other-person count");
+
+  const last = f.client.setReaction(target.id, "🎉", true);
+  requests[3].finish(Response.json({ ...update, seq: "3", reactions: [...update.reactions, { emoji: "🎉", authorIds: ["guest"] }] }));
+  await last;
+  const removingLast = f.client.setReaction(target.id, "🎉", false);
+  assert.deepEqual(f.state.messages[0].reactions, update.reactions, "the last membership disappears before acknowledgement");
+  requests[4].finish(Response.json({ ...update, seq: "4" }));
+  await removingLast;
+  assert.deepEqual(f.state.messages[0].reactions, update.reactions);
 });
 
 test("a late reaction rejection after stopping cannot recreate a chat session", async (t) => {

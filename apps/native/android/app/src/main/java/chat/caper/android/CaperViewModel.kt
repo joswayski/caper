@@ -40,6 +40,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var voiceAuthorizationRequest = 0L
     private val pendingSends = PendingSendTracker()
     private val unloadedReactions = mutableMapOf<String, ReactionUpdate>()
+    private data class ReactionIntent(val emoji: String, val active: Boolean, val version: Long)
+    private val reactionIntents = mutableMapOf<String, LinkedHashMap<String, ReactionIntent>>()
+    private val reactionWorkers = mutableMapOf<String, Job>()
+    private val authoritativeReactionMessages = mutableMapOf<String, ChatMessage>()
+    private var reactionIntentVersion = 0L
     private var directRefresh: Job? = null
     private var pendingDirectIntent: String? = null
     private var foreground = false
@@ -358,9 +363,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val history = api.history(accountToken, channel.id, before)
                 if (request != generation) return@launch
-                val newer = mutable.value.messages
+                val newer = authoritativeMessages()
                 mutable.value = mutable.value.copy(
-                    messages = mergeMessages(newer, history.messages, unloadedReactions), hasMoreMessages = history.hasMore,
+                    messages = projectMessages(mergeMessages(newer, history.messages, unloadedReactions)), hasMoreMessages = history.hasMore,
                     loadingOlder = false,
                 )
             } catch (error: Throwable) {
@@ -427,28 +432,75 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setReaction(messageId: String, emoji: String, active: Boolean) {
         val channel = mutable.value.selectedChannel?.takeIf { it.joined } ?: return
+        val key = "$messageId:$emoji"
+        val target = mutable.value.messages.firstOrNull { it.id == messageId } ?: return
+        val own = mutable.value.chatAuthorId ?: mutable.value.account?.id ?: return
+        authoritativeReactionMessages.putIfAbsent(messageId, target)
+        reactionIntents.getOrPut(messageId) { linkedMapOf() }[emoji] = ReactionIntent(emoji, active, ++reactionIntentVersion)
+        mutable.value = mutable.value.copy(reactionSaves = mutable.value.reactionSaves + (key to ReactionSaveUi(emoji, active)))
+        projectPendingReaction(messageId, own)
+        if (reactionWorkers[messageId]?.isActive == true) return
         val request = generation
         val requestAccountGeneration = accountGeneration
         val token = accountToken
-        val key = "$messageId:$emoji"
-        if (mutable.value.reactionSaves.any { (saveKey, save) -> save.saving && saveKey.startsWith("$messageId:") }) return
-        mutable.value = mutable.value.copy(reactionSaves = mutable.value.reactionSaves + (key to ReactionSaveUi(emoji, active)))
-        viewModelScope.launch {
-            try {
-                val capability = chatToken ?: createChatSession(requestAccountGeneration) ?: throw IllegalStateException("Chat session is unavailable.")
-                if (requestAccountGeneration != accountGeneration || token != accountToken || request != generation ||
-                    mutable.value.selectedChannel?.let { it.id == channel.id && it.joined } != true) return@launch
-                val update = api.setReaction(token, capability, channel.id, messageId, emoji, active)
-                if (request != generation || mutable.value.selectedChannel?.id != channel.id) return@launch
-                receiveReaction(update, sequenced = false)
-                mutable.value = mutable.value.copy(reactionSaves = mutable.value.reactionSaves - key)
-            } catch (error: Throwable) {
-                if (request == generation) {
-                    if (error is ApiException && error.status in listOf(401, 403, 404)) revokeChannel()
-                    else mutable.value = mutable.value.copy(reactionSaves = mutable.value.reactionSaves + (key to ReactionSaveUi(emoji, active, false, message(error))))
+        reactionWorkers[messageId] = viewModelScope.launch {
+            while (true) {
+                val intent = reactionIntents[messageId]?.values?.firstOrNull() ?: break
+                try {
+                    val capability = chatToken ?: createChatSession(requestAccountGeneration) ?: throw IllegalStateException("Chat session is unavailable.")
+                    if (requestAccountGeneration != accountGeneration || token != accountToken || request != generation ||
+                        mutable.value.selectedChannel?.let { it.id == channel.id && it.joined } != true) break
+                    val update = api.setReaction(token, capability, channel.id, messageId, intent.emoji, intent.active)
+                    if (request != generation || mutable.value.selectedChannel?.id != channel.id) break
+                    receiveReaction(update, sequenced = false)
+                    val current = reactionIntents[messageId]?.get(intent.emoji)
+                    if (current?.version == intent.version) {
+                        reactionIntents[messageId]?.remove(intent.emoji)
+                        mutable.value = mutable.value.copy(reactionSaves = mutable.value.reactionSaves - "$messageId:${intent.emoji}")
+                    }
+                    projectPendingReaction(messageId, own)
+                } catch (error: Throwable) {
+                    if (error is kotlinx.coroutines.CancellationException) throw error
+                    if (request == generation) {
+                        if (error is ApiException && error.status in listOf(401, 403, 404)) revokeChannel()
+                        else {
+                            val current = reactionIntents[messageId]?.get(intent.emoji)
+                            if (current?.version == intent.version) {
+                                reactionIntents[messageId]?.remove(intent.emoji)
+                                mutable.value = mutable.value.copy(reactionSaves = mutable.value.reactionSaves +
+                                    ("$messageId:${intent.emoji}" to ReactionSaveUi(intent.emoji, intent.active, false, message(error))))
+                                projectPendingReaction(messageId, own)
+                            }
+                        }
+                    }
                 }
             }
+            if (request == generation) {
+                reactionIntents[messageId]?.takeIf { it.isEmpty() }?.let { reactionIntents.remove(messageId) }
+                reactionWorkers.remove(messageId)
+            }
         }
+    }
+
+    private fun authoritativeMessages(): List<ChatMessage> = mutable.value.messages.map {
+        authoritativeReactionMessages[it.id] ?: it
+    }
+
+    private fun projectMessages(messages: List<ChatMessage>): List<ChatMessage> {
+        val own = mutable.value.chatAuthorId ?: mutable.value.account?.id
+        return messages.map { message ->
+            if (message.id in authoritativeReactionMessages) authoritativeReactionMessages[message.id] = message
+            val intents = reactionIntents[message.id]?.values.orEmpty().map { ReactionSaveUi(it.emoji, it.active) }
+            if (own == null) message else projectReactionIntents(message, own, intents)
+        }
+    }
+
+    private fun projectPendingReaction(messageId: String, own: String) {
+        val authoritative = authoritativeReactionMessages[messageId] ?: return
+        val intents = reactionIntents[messageId]?.values.orEmpty().map { ReactionSaveUi(it.emoji, it.active) }
+        mutable.value = mutable.value.copy(messages = mutable.value.messages.map {
+            if (it.id == messageId) projectReactionIntents(authoritative, own, intents) else it
+        })
     }
 
     fun retryReaction(messageId: String, emoji: String) {
@@ -654,9 +706,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun addMessage(message: ChatMessage) {
         if (message.channelId != mutable.value.selectedChannel?.id) return
-        val messages = mutable.value.messages
+        val messages = authoritativeMessages()
         val isNew = messages.none { it.id == message.id }
-        mutable.value = mutable.value.copy(messages = mergeMessages(messages, listOf(message), unloadedReactions))
+        mutable.value = mutable.value.copy(messages = projectMessages(mergeMessages(messages, listOf(message), unloadedReactions)))
         if (isNew) {
             // Web chimes for someone else's new message in the open conversation.
             if (message.author.id != chatAuthor?.id) chat.caper.android.ui.CaperEffects.play(chat.caper.android.ui.CaperEffects.Effect.Message)
@@ -677,7 +729,15 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             }
             return
         }
-        mutable.value = mutable.value.copy(messages = mutable.value.messages.map { mergeReaction(it, update) })
+        val current = authoritativeReactionMessages[update.messageId]
+            ?: mutable.value.messages.first { it.id == update.messageId }
+        val authoritative = mergeReaction(current, update)
+        authoritativeReactionMessages[update.messageId] = authoritative
+        val own = mutable.value.chatAuthorId ?: mutable.value.account?.id
+        val intents = reactionIntents[update.messageId]?.values.orEmpty().map { ReactionSaveUi(it.emoji, it.active) }
+        mutable.value = mutable.value.copy(messages = mutable.value.messages.map {
+            if (it.id == update.messageId && own != null) projectReactionIntents(authoritative, own, intents) else mergeReaction(it, update)
+        })
     }
 
     private fun confirmPending(message: ChatMessage) {
@@ -692,7 +752,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val previousCursor = durableReplayCursor ?: return
         val request = ++generation
         unloadedReactions.clear()
-        val previous = mutable.value
+        val previous = mutable.value.copy(messages = authoritativeMessages())
         closeChannel(clearPending = false)
         // closeChannel normally discards channel replay state; a failed refresh must remain retryable.
         durableReplayCursor = previousCursor
@@ -708,9 +768,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 val history = api.history(accountToken, channel.id)
                 if (generation != request || mutable.value.selectedChannel?.id != channel.id) return@launch
                 history.messages.forEach(::confirmPending)
-                val recovered = recoverHistory(mutable.value.messages, previous.hasMoreMessages, previousCursor, history)
+                val recovered = recoverHistory(authoritativeMessages(), previous.hasMoreMessages, previousCursor, history)
                 mutable.value = mutable.value.copy(
-                    messages = recovered.messages, hasMoreMessages = recovered.hasMore, busy = false,
+                    messages = projectMessages(recovered.messages), hasMoreMessages = recovered.hasMore, busy = false,
                 )
                 openGateway(channel.id, history.cursor, request, channel.joined)
                 if (channel.direct) markDirectRead(channel.id, history.cursor)
@@ -932,6 +992,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         typingExpiry?.cancel(); typingExpiry = null; typers.clear()
         unloadedReactions.clear()
         if (clearPending) pendingSends.clear()
+        reactionWorkers.values.forEach { it.cancel() }
+        reactionWorkers.clear(); reactionIntents.clear(); authoritativeReactionMessages.clear()
         mutable.value = mutable.value.copy(
             selectedChannel = null, selectedDirectId = null, messages = emptyList(), typingAuthors = emptyList(), presence = emptyMap(),
             loadingOlder = false, olderError = null, messagesLoading = false, messagesError = null, refreshError = null,

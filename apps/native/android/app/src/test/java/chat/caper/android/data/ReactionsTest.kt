@@ -36,6 +36,37 @@ class ReactionsTest {
         assertEquals(listOf("new"), mergeMessages(listOf(newer), listOf(stale), mutableMapOf()).single().reactions.single().authorIds)
     }
 
+    @Test fun `pending add is immediate and preserves other authors`() {
+        val base = mergeReaction(message, update("8", listOf("other")))
+        val shown = projectReactionIntents(base, "me", listOf(ReactionSaveUi("👍", true)))
+        assertEquals(listOf("other", "me"), shown.reactions.single().authorIds)
+        assertEquals("8", shown.reactionSeq)
+    }
+
+    @Test fun `pending remove omits zero count chips`() {
+        val base = mergeReaction(message, update("8", listOf("me")))
+        assertTrue(projectReactionIntents(base, "me", listOf(ReactionSaveUi("👍", false))).reactions.isEmpty())
+    }
+
+    @Test fun `latest intents overlay authoritative updates and rollback reveals authority`() {
+        val pending = listOf(ReactionSaveUi("👍", false), ReactionSaveUi("❤️", true))
+        val gateway = mergeReaction(message, update("9", listOf("other", "me", "new-person")))
+        val shown = projectReactionIntents(gateway, "me", pending)
+        assertEquals(listOf("other", "new-person"), shown.reactions.first { it.emoji == "👍" }.authorIds)
+        assertEquals(listOf("me"), shown.reactions.first { it.emoji == "❤️" }.authorIds)
+        assertEquals(gateway, projectReactionIntents(gateway, "me", emptyList()))
+    }
+
+    @Test fun `repeated additions cannot double count and final removal preserves others`() {
+        val base = mergeReaction(message, update("8", listOf("other", "me")))
+        val added = projectReactionIntents(base, "me", listOf(ReactionSaveUi("👍", true)))
+        assertEquals(listOf("other", "me"), added.reactions.single().authorIds)
+        val shown = projectReactionIntents(base, "me", listOf(ReactionSaveUi("👍", true), ReactionSaveUi("👍", false)))
+        assertFalse("me" in shown.reactions.single().authorIds)
+        assertEquals(listOf("other"), shown.reactions.single().authorIds)
+        assertEquals("8", shown.reactionSeq)
+    }
+
     @Test fun `unseen cache requests resync beyond boundary without dropping cached updates`() {
         val unseen = mutableMapOf<String, ReactionUpdate>()
         repeat(256) { assertTrue(cacheUnseenReaction(unseen, update((it + 1).toString(), listOf("a"), "message$it"))) }

@@ -1438,6 +1438,97 @@ final class APIClientTests: XCTestCase {
     }
 
     @MainActor
+    func testReactionIsOptimisticAndGatewaySnapshotsPreservePendingOwnIntent() async throws {
+        let channel = "chan00000001"
+        let messageID = "Message00000001"
+        let requestStarted = expectation(description: "reaction request started")
+        var held: MockURLProtocol?
+        MockURLProtocol.deferred = { request, urlRequest in
+            guard urlRequest.url?.path.hasSuffix("/reactions") == true else { return false }
+            held = request; requestStarted.fulfill(); return true
+        }
+        MockURLProtocol.handler = { request in
+            guard request.url?.path == "/api/chat/session" else { throw URLError(.badURL) }
+            return (200, Data(#"{"token":"chat-secret","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+        }
+        let message = ChatMessage(id: messageID, channelId: channel, seq: "1",
+                                  author: ChatAuthor(id: "other", name: "Other", isGuest: false),
+                                  content: ChatContent(version: 1, type: "text", text: "Hello"), createdAt: "now",
+                                  clientMessageId: "client", reactions: [], reactionSeq: "1")
+        let history = ChatHistory(space: HistoryIdentity(id: "space0000001", name: "Space"),
+                                  channel: HistoryIdentity(id: channel, name: "general"), messages: [message], cursor: "1", hasMore: false)
+        let chat = ChatModel(api: client())
+        await chat.open(history: history, displayName: "Me")
+
+        let saving = Task { await chat.setReaction(messageID: messageID, emoji: "👍", active: true) }
+        await fulfillment(of: [requestStarted], timeout: 2)
+        XCTAssertEqual(chat.messages[0].reactions, [MessageReaction(emoji: "👍", authorIds: ["self"])], "own reaction must appear before acknowledgement")
+        XCTAssertEqual(chat.currentSnapshot()?.messages[0].reactions, [], "cached history must not retain optimistic membership")
+
+        chat.receive(["type": "message.reactions", "schemaVersion": 1, "channelId": channel, "seq": "2",
+                      "messageId": messageID, "reactions": [["emoji": "🎉", "authorIds": ["other"]]]],
+                     generation: 1, channelID: channel)
+        XCTAssertEqual(chat.messages[0].reactions, [MessageReaction(emoji: "🎉", authorIds: ["other"]),
+                                                    MessageReaction(emoji: "👍", authorIds: ["self"])])
+        held?.respond(status: 200, data: Data("""
+        {"type":"message.reactions","schemaVersion":1,"channelId":"\(channel)","seq":"3","messageId":"\(messageID)","reactions":[{"emoji":"🎉","authorIds":["other"]},{"emoji":"👍","authorIds":["self"]}]}
+        """.utf8))
+        await saving.value
+        XCTAssertNil(chat.reactionErrors[messageID])
+        await chat.stop()
+    }
+
+    @MainActor
+    func testReactionFailureRollsBackAndRapidSupersedingIntentWins() async throws {
+        let channel = "chan00000001"
+        let messageID = "Message00000001"
+        var held: [MockURLProtocol] = []
+        MockURLProtocol.deferred = { request, urlRequest in
+            guard urlRequest.url?.path.hasSuffix("/reactions") == true else { return false }
+            held.append(request); return true
+        }
+        MockURLProtocol.handler = { request in
+            guard request.url?.path == "/api/chat/session" else { throw URLError(.badURL) }
+            return (200, Data(#"{"token":"chat-secret","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+        }
+        let message = ChatMessage(id: messageID, channelId: channel, seq: "1",
+                                  author: ChatAuthor(id: "other", name: "Other", isGuest: false),
+                                  content: ChatContent(version: 1, type: "text", text: "Hello"), createdAt: "now",
+                                  clientMessageId: "client", reactions: [], reactionSeq: "1")
+        let history = ChatHistory(space: HistoryIdentity(id: "space0000001", name: "Space"),
+                                  channel: HistoryIdentity(id: channel, name: "general"), messages: [message], cursor: "1", hasMore: false)
+        let chat = ChatModel(api: client())
+        await chat.open(history: history, displayName: "Me")
+
+        let add = Task { await chat.setReaction(messageID: messageID, emoji: "👍", active: true) }
+        await waitUntil { held.count == 1 }
+        let remove = Task { await chat.setReaction(messageID: messageID, emoji: "👍", active: false) }
+        await waitUntil { chat.messages[0].reactions?.isEmpty == true }
+        XCTAssertTrue(chat.messages[0].reactions?.isEmpty == true, "latest remove must be visible while add is in flight")
+        held[0].respond(status: 500)
+        await waitUntil { held.count == 2 }
+        XCTAssertNil(chat.reactionErrors[messageID], "superseded failure must not surface")
+        chat.receive(["type": "message.reactions", "schemaVersion": 1, "channelId": channel, "seq": "2",
+                      "messageId": messageID, "reactions": [["emoji": "👍", "authorIds": ["other", "self"]]]],
+                     generation: 1, channelID: channel)
+        XCTAssertEqual(chat.messages[0].reactions, [MessageReaction(emoji: "👍", authorIds: ["other"])])
+        held[1].respond(status: 500)
+        await add.value; await remove.value
+        XCTAssertEqual(chat.messages[0].reactions, [MessageReaction(emoji: "👍", authorIds: ["other", "self"])], "failed removal restores the latest server state")
+        XCTAssertEqual(chat.reactionErrors[messageID], "Couldn’t save reaction. Retry.")
+
+        let retry = Task { await chat.retryReaction(messageID: messageID) }
+        await waitUntil { held.count == 3 }
+        XCTAssertNil(chat.reactionErrors[messageID], "a new attempt clears the previous error immediately")
+        XCTAssertEqual(chat.messages[0].reactions, [MessageReaction(emoji: "👍", authorIds: ["other"])])
+        held[2].respond(status: 200, data: Data("""
+        {"type":"message.reactions","schemaVersion":1,"channelId":"\(channel)","seq":"3","messageId":"\(messageID)","reactions":[{"emoji":"👍","authorIds":["other"]}]}
+        """.utf8))
+        await retry.value
+        await chat.stop()
+    }
+
+    @MainActor
     func testJoinedConversationBecomesReadOnlyPreviewWithoutRetainingSession() async throws {
         let channel = "chan00000001"
         var sessionRequests = 0
