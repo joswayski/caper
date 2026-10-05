@@ -53,10 +53,11 @@ public enum CaperDailyIcon {
     @MainActor
     static func fittedDockImage(_ character: NSImage) -> NSImage? {
         let side = 512
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
         var pixels = [UInt8](repeating: 0, count: side * side * 4)
         let cropped: CGImage? = pixels.withUnsafeMutableBytes { bytes in
             guard let context = CGContext(data: bytes.baseAddress, width: side, height: side,
-                bitsPerComponent: 8, bytesPerRow: side * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitsPerComponent: 8, bytesPerRow: side * 4, space: colorSpace,
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else { return nil }
             NSGraphicsContext.saveGraphicsState()
             defer { NSGraphicsContext.restoreGraphicsState() }
@@ -76,7 +77,7 @@ public enum CaperDailyIcon {
         }
         guard let cropped,
               let context = CGContext(data: nil, width: side, height: side,
-                bitsPerComponent: 8, bytesPerRow: side * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitsPerComponent: 8, bytesPerRow: side * 4, space: colorSpace,
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else { return nil }
         let scale = 480 / CGFloat(max(cropped.width, cropped.height))
         let width = CGFloat(cropped.width) * scale, height = CGFloat(cropped.height) * scale

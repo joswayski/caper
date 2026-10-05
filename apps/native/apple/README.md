@@ -64,21 +64,18 @@ transparent character rather than the account-avatar tile. Its visible bounds
 are fitted proportionally into 480px of a 512px canvas, leaving a 16px transparent
 edge instead of the original artwork's large margins.
 
-After launch and each daily change, Finder sync is best-effort for the running
-`.app` copy through `NSWorkspace.setIcon`, on a serial background queue. It checks
-the app's strict, nested-code, all-architecture signature before and after the
-write; rejected custom-icon metadata is removed. It never rewrites signed
-`Contents`, re-signs, requests admin access or updates another installed copy.
-Read-only/translocated or invalidly signed copies keep their static Finder icon;
-the Dock still rotates. A new download has the original icon until first launch,
-and a closed app does not rotate. An update reapplies the saved ID on launch.
+Finder, Applications and downloaded packages retain the original packaged icon.
+Do not use `NSWorkspace.setIcon` on the installed `.app`: its resource-fork/Finder
+metadata causes `codesign --verify --deep --strict` to reject otherwise valid
+signed apps. Runtime Dock rotation never modifies the bundle, requests admin
+access or re-signs. A closed app does not rotate; relaunch/update reapplies the
+saved daily ID to the Dock.
 
-Apple tests cover fitted alpha bounds/asymmetric artwork and a disposable signed
-app's Finder icon, unchanged sealed resources, read-only/invalid copies and
-post-write rejection. They require Xcode; Linux SVG renders are asset previews,
-not Dock/Finder or signing acceptance. Before releasing, validate the actual
-notarized app on macOS: launch, compare Dock/app switcher/Finder, quit/relaunch,
-exercise a UTC rollover and update, and check both before and after rotation:
+Apple tests cover fitted alpha bounds and asymmetric color/orientation/aspect
+preservation. They require Xcode; Linux SVG renders are asset previews, not Dock
+or signing acceptance. Before releasing, validate the actual notarized app on
+macOS: compare Dock/app switcher, confirm Finder stays original, quit/relaunch,
+exercise a UTC rollover and update, and check before and after rotation:
 
 ```sh
 APP=/Applications/Caper.app
@@ -86,9 +83,9 @@ codesign --verify --deep --strict "$APP"
 spctl --assess --type execute --verbose=2 "$APP"
 ```
 
-Finder/Dock caches and macOS-version-specific custom-icon behavior still need
-real-device validation. iOS and the independent Rust/Android icon paths are
-unchanged by this macOS-specific correction.
+Dock caching still needs real-device validation. iOS and Android icon behavior
+is unchanged; the independent Rust desktop client documents its Windows/Linux
+behavior in its own README.
 
 ## Deterministic parity captures
 

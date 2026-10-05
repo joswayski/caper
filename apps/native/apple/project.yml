@@ -271,7 +271,6 @@ targets:
     sources:
       - Tests/CaperCoreTests
       - Sources/CaperMacOS/AppUpdater.swift
-      - Sources/CaperMacOS/DailyDockIcon.swift
     dependencies:
       - target: CaperCoreMacOS
       - target: CaperRTCBridge

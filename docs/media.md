@@ -3451,7 +3451,9 @@ Supported icon surfaces choose one of the 800 bundled v3 avatars per UTC day,
 remember it locally, and exclude the preceding choice. This cosmetic choice does
 not change account avatars. Rotation runs on launch/resume or while the client is
 running; it is not an exact midnight job while closed, suspended or throttled.
-There are no alarms, background services, icon-change prompts or new dependencies.
+There are no alarms, background services or icon-change prompts. Rust desktop
+uses the SVG parser already in its renderer's dependency graph to fit vectors,
+and patches egui-winit 0.33.3 locally to update both Windows icon sizes safely.
 
 In-app wordmarks keep the original lettering and replace its plain dot with the
 same installation-local daily character. Web shares one React selection with the
@@ -3470,8 +3472,8 @@ explains their eight hues; it does not add mascot reactions to the chat protocol
 | Website home-screen shortcuts | Dedicated original-mascot Apple touch and manifest PNGs at 180/192/512px. Explicit standalone launches skip favicon rotation. Browsers/OSes cache installed icons; no reliable scheduled refresh is available. The manifest uses `display: browser`; no offline service worker or background capability is added. Existing shortcuts may need re-adding, and browser-specific icon selection needs device validation. |
 | Native iOS | Original packaged dark-green icon; no alternate-icon calls or alerts. No iOS icon behavior is changed. |
 | Native Android | Switches bundled launcher aliases on resume and every 15 minutes while foregrounded. Android 13+ switches atomically; older supported versions enable the new entry before disabling the old one. The original default alias and application icon remain available. Generation checks all 800 resources; Kotlin tests and APK/physical-launcher checks are pending because this orb has no Java/Android SDK. OEM icon caches, duplicate-entry transitions and upgrades require device acceptance. |
-| Native macOS | The running Dock icon rotates through `NSApplication.applicationIconImage`, checking activation and every 15 minutes. It uses transparent branding artwork, fitted by visible bounds into a 512px canvas with a 16px clear edge. The running `.app` copy gets the same Finder custom icon when writable and strictly signature-valid before/after the change; rejected metadata is removed. Signed `Contents` and the downloaded package's original icon stay unchanged. Read-only/translocated copies keep the static Finder icon. No rotation while closed; first launch/update reapplies the persisted ID. CPU raster and disposable signed-bundle tests require Apple CI/Xcode. Actual Dock/app-switcher/Finder caches, notarized Gatekeeper assessment, rollover and updates need real macOS acceptance; Linux asset previews do not verify them. See [Apple validation commands](../apps/native/apple/README.md#build). |
-| Rust desktop | Runtime window icons rotate, with a 60-second check and eframe persistence. Windows/taskbar and Linux X11 surfaces depend on the shell honoring runtime icons; installer, pinned-shortcut and Wayland package identities remain original. Rust tests cover rollover, all IDs, nonrepeat and straight-alpha pixels. An actual X11/Openbox window published the expected 256px saved-avatar icon and retained it across a same-day restart. Windows/Wayland remain unverified. |
+| Native macOS | The running Dock icon rotates through `NSApplication.applicationIconImage`, checking activation and every 15 minutes. Transparent branding artwork is fitted proportionally into 480px of a 512px canvas with a 16px clear edge. Finder/Applications/downloaded packages keep the original icon: Finder custom-icon metadata was rejected by strict codesign validation in Apple CI and is not written. No bundle mutation, admin prompt, re-signing or rotation while closed; launch/update reapplies the persisted ID to the Dock. CPU alpha/asymmetric raster tests require Apple CI/Xcode. Actual Dock/app-switcher caching, notarized Gatekeeper assessment, rollover and updates need real macOS acceptance; Linux previews do not verify them. See [Apple validation commands](../apps/native/apple/README.md#build). |
+| Rust desktop | Transparent branding vectors fit proportionally into 480px of a 512px canvas, with a 60-second day check and unchanged eframe persistence. Windows applies the first daily icon after eframe's startup helper and updates window/title-bar plus taskbar/Alt-Tab icons through winit; Explorer/installer/pinned shortcuts retain the original executable artwork. X11 publishes matching RGBA through `_NET_WM_ICON`. Linux atomically publishes a matching per-user hicolor SVG, leaving package files and existing user-supplied icons alone; `app_id=caper` matches `caper.desktop`. Wayland relies on launcher/theme lookup, with shell-dependent caching, not the no-op window-icon API. Rust tests cover all 800 transparent fits, asymmetric geometry, straight-alpha colors, UTC rollover and per-user writes. Windows/Wayland runtime acceptance remains separate from X11 checks. See [desktop icon behavior and reset commands](../apps/native/desktop/README.md#daily-desktop-icons). |
 
 Deterministic native parity/Android fixture runs retain the original icon. The web
 test uses a labelled clock/storage fixture, not a physical home-screen test:
@@ -3486,6 +3488,19 @@ Docker is unavailable; web production
 build stages and the Rust desktop build were checked directly. Application-only
 desktop Clippy passes with `--no-deps`; full native-workspace Clippy still fails on
 existing vendored WebRTC safety-documentation warnings.
+
+The desktop transparency correction needs only native client releases; web,
+Android and iOS behavior is unchanged. Require exact-head Apple/Windows/Linux
+builds and platform icon acceptance before the normal native release. An
+authorized operator sets `MERGED_SHA` to the approved full merge SHA and runs:
+```sh
+gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
+```
+Merging does not release clients. No infrastructure, secret/configuration,
+database, API/gateway/SFU or web rollout is required for this correction. Clients
+can roll out independently. Rollback uses the previous known-good native artifact
+(self-update publication needs a newer build number); quit Caper and remove only
+its marked Linux per-user override using the desktop README's reset commands.
 
 #### Rotating-icon deployment order
 

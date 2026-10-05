@@ -121,6 +121,51 @@ Run the unpacked binary directly, or install the Debian package with
 `https://caper.chat`; development may use `--api-url http://localhost:PORT` or
 `CAPER_API_URL`. Plain HTTP is rejected for non-loopback hosts.
 
+## Daily desktop icons
+
+The runtime icon shares the wordmark's persisted daily character. It uses the
+transparent branding vector, fitted proportionally into 480px of a 512px canvas
+with a 16px clear edge, rather than the circular account-avatar tile. Selection
+checks every minute while running and catches up on launch; there is no closed-app
+midnight job. Deterministic fixtures keep the original packaged icon.
+
+- **Windows:** updates the window/title-bar and taskbar/Alt-Tab icons together.
+  `vendor/egui-winit` patches the existing 0.33.3 dependency to use winit's safe
+  taskbar setter; the persisted icon is applied after eframe's startup helper.
+  Explorer, installers and pinned/Start/desktop shortcuts keep the original
+  executable icon. No binary/resource rewriting or shortcut replacement occurs;
+  taskbar grouping and pin caches still require Windows acceptance.
+- **Linux X11:** publishes the same transparent RGBA icon through `_NET_WM_ICON`.
+- **Linux launchers/Wayland:** writes the same fitted SVG atomically to
+  `$XDG_DATA_HOME/icons/hicolor/scalable/apps/caper.svg` (normally
+  `$HOME/.local/share/icons/hicolor/scalable/apps/caper.svg`). `app_id=caper`
+  matches the installed `caper.desktop` and its `Icon=caper`. No system package
+  files are changed, existing user-supplied icons are left alone, and no root
+  access is needed. The per-user override persists while closed; theme overrides
+  and shell caches can prevent/delay refresh.
+  Wayland ignores the window-icon API, so actual GNOME/KDE launcher behavior
+  needs separate acceptance. Portable archives without a desktop entry do not
+  gain an application-menu entry automatically. A failed write leaves the prior
+  launcher icon intact and does not block X11/window rotation.
+
+Rust tests cover all 800 fits, off-center geometry, orientation, transparent
+edges, straight-alpha colors, UTC rollover and atomic per-user writes. Windows
+and Wayland runtime checks are separate from Linux X11 evidence. To restore the
+packaged Linux launcher icon after quitting Caper or rolling back/uninstalling:
+
+```sh
+ICON_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor"
+ICON="$ICON_HOME/scalable/apps/caper.svg"
+if [ "$(head -n 1 "$ICON" 2>/dev/null)" = '<!-- Caper daily launcher icon -->' ]; then
+  rm -- "$ICON"
+  touch "$ICON_HOME"
+fi
+```
+
+Reopen the launcher or sign out/in if the desktop shell retains a cached icon.
+Do not remove an icon you supplied yourself. The app recreates its override on
+the next normal launch; installed static icons remain the original mascot.
+
 ## Windows microphone access and firewall prompts
 
 Windows capture uses WebRTC's WASAPI **shared mode**. A Discord call does not

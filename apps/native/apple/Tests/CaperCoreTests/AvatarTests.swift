@@ -110,25 +110,28 @@ final class AvatarTests: XCTestCase {
             for (x, y) in [(0, 0), (511, 511), (256, 4), (4, 256), (507, 256), (256, 507)] {
                 XCTAssertEqual(try XCTUnwrap(bitmap.colorAt(x: x, y: y)).alphaComponent, 0)
             }
-            XCTAssertLessThan(try XCTUnwrap(bitmap.colorAt(x: 24, y: 24)).alphaComponent, 0.01,
-                "No circular tile behind character \(index)")
+            if index == 0 {
+                // This point is outside the beanie, but inside the old avatar tile.
+                XCTAssertEqual(try XCTUnwrap(bitmap.colorAt(x: 440, y: 144)).alphaComponent, 0)
+            }
         }
         for index in [-1, 800] { XCTAssertNil(CaperDailyIcon.dockImage(for: index)) }
     }
 
     @MainActor
     func testDockFittingPreservesAspectColorsAndOrientationOfOffCenterArtwork() throws {
+        let sRGB = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
         let context = try XCTUnwrap(CGContext(data: nil, width: 512, height: 512,
-            bitsPerComponent: 8, bytesPerRow: 512 * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitsPerComponent: 8, bytesPerRow: 512 * 4, space: sRGB,
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
         XCTAssertNil(CaperDailyIcon.fittedDockImage(NSImage(cgImage: try XCTUnwrap(context.makeImage()),
             size: NSSize(width: 512, height: 512))))
         // A deliberately off-center 120x60 rectangle with unequal color regions.
-        context.setFillColor(CGColor(red: 0, green: 1, blue: 0, alpha: 1))
+        context.setFillColor(try XCTUnwrap(CGColor(colorSpace: sRGB, components: [0, 1, 0, 1])))
         context.fill(CGRect(x: 287, y: 41, width: 40, height: 60))
-        context.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+        context.setFillColor(try XCTUnwrap(CGColor(colorSpace: sRGB, components: [1, 0, 0, 1])))
         context.fill(CGRect(x: 327, y: 41, width: 80, height: 60))
-        context.setFillColor(CGColor(red: 0, green: 0, blue: 1, alpha: 1))
+        context.setFillColor(try XCTUnwrap(CGColor(colorSpace: sRGB, components: [0, 0, 1, 1])))
         context.fill(CGRect(x: 327, y: 81, width: 80, height: 20))
         let source = NSImage(cgImage: try XCTUnwrap(context.makeImage()), size: NSSize(width: 512, height: 512))
         let fitted = try XCTUnwrap(CaperDailyIcon.fittedDockImage(source))
@@ -138,9 +141,9 @@ final class AvatarTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(bitmap.colorAt(x: 496, y: 256)).alphaComponent, 0)
         XCTAssertEqual(try XCTUnwrap(bitmap.colorAt(x: 256, y: 135)).alphaComponent, 0)
         XCTAssertEqual(try XCTUnwrap(bitmap.colorAt(x: 256, y: 376)).alphaComponent, 0)
-        let green = try XCTUnwrap(bitmap.colorAt(x: 56, y: 256)?.usingColorSpace(.deviceRGB))
-        let red = try XCTUnwrap(bitmap.colorAt(x: 455, y: 335)?.usingColorSpace(.deviceRGB))
-        let blue = try XCTUnwrap(bitmap.colorAt(x: 455, y: 175)?.usingColorSpace(.deviceRGB))
+        let green = try XCTUnwrap(bitmap.colorAt(x: 56, y: 256)?.usingColorSpace(.sRGB))
+        let red = try XCTUnwrap(bitmap.colorAt(x: 455, y: 335)?.usingColorSpace(.sRGB))
+        let blue = try XCTUnwrap(bitmap.colorAt(x: 455, y: 175)?.usingColorSpace(.sRGB))
         XCTAssertEqual(green.greenComponent, 1, accuracy: 0.01)
         XCTAssertEqual(red.redComponent, 1, accuracy: 0.01)
         XCTAssertEqual(blue.blueComponent, 1, accuracy: 0.01)

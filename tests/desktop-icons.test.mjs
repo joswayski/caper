@@ -52,3 +52,26 @@ test('Windows ICO frames and Linux window PNG share the exact macOS raster expor
   assert.equal(offset, ico.length, 'No truncated or unused payloads');
   assert.deepEqual(read(`${desktop}caper-icon.png`), read(`${mac}icon-128.png`));
 });
+
+test('desktop build uses the Windows small/big icon patch and ships its license', () => {
+  const native = 'apps/native/desktop/';
+  assert.match(read(`${native}Cargo.toml`).toString(), /\[patch\.crates-io\]\s+egui-winit = \{ path = "vendor\/egui-winit" \}/);
+  const lock = read(`${native}Cargo.lock`).toString().split('[[package]]')
+    .find(entry => entry.includes('name = "egui-winit"'));
+  assert.ok(lock);
+  assert.match(lock, /version = "0\.33\.3"/);
+  assert.doesNotMatch(lock, /source = "registry/);
+  const source = read(`${native}vendor/egui-winit/src/lib.rs`).toString();
+  const iconArm = source.split('ViewportCommand::Icon(icon) => {')[1].split('ViewportCommand::IMERect')[0];
+  assert.match(iconArm, /#\[cfg\(target_os = "windows"\)\]\s+winit::platform::windows::WindowExtWindows::set_taskbar_icon\(window, winit_icon\.clone\(\)\);/);
+  assert.match(iconArm, /window\.set_window_icon\(winit_icon\);/);
+  assert.ok(read(`${native}THIRD-PARTY-NOTICES.md`).toString()
+    .includes(read(`${native}vendor/egui-winit/LICENSE-MIT`).toString().trim()));
+});
+
+test('Wayland application ID matches the installed desktop entry and themed icon name', () => {
+  const entry = read(`${desktop}caper.desktop`).toString();
+  assert.match(entry, /^Icon=caper$/m);
+  assert.match(read('apps/native/desktop/src/main.rs').toString(), /#\[cfg\(target_os = "linux"\)\]\s+let viewport = viewport\.with_app_id\("caper"\);/);
+  assert.match(read('apps/native/desktop/src/app_icon.rs').toString(), /directory\.join\("caper\.svg"\)/);
+});
