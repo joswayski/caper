@@ -5620,16 +5620,23 @@ impl CaperApp {
                     }
                     // Web's history header: older-page status above the messages.
                     self.history_header(ui);
-                    let messages: Vec<_> = self.timeline.messages().cloned().collect();
+                    // `message` needs mutable access to the app for reaction
+                    // controls, so iterating through `self.timeline` directly
+                    // would borrow `self` twice. Move it out only while drawing
+                    // rows instead of deep-cloning every loaded message (including
+                    // content and reactions) on every frame. Restore it before
+                    // pending/empty state and paging can inspect the timeline.
+                    let timeline = std::mem::take(&mut self.timeline);
                     let mut last_date = None;
-                    for message in messages {
+                    for message in timeline.messages() {
                         if let Some(date) = display_date(&message.created_at)
                             && take_date_divider(&mut last_date, &date.key)
                         {
                             date_divider(ui, &date.label);
                         }
-                        self.message(ui, &message);
+                        self.message(ui, message);
                     }
+                    self.timeline = timeline;
                     if let Some(pending) = self.pending.clone() {
                         if let Some(pending_date) = display_date(&pending.created_at)
                             && take_date_divider(&mut last_date, &pending_date.key)
