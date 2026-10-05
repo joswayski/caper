@@ -3463,19 +3463,21 @@ Run the focused browser regression against local Vite with
 The native parity fixture now supplies saved avatar IDs in account, member, chat
 and voice responses rather than testing only initials.
 
-### Rotating site and runtime app icons
+### Fixed app icons and rotating site characters
 
-Supported icon surfaces choose one of the 800 bundled v3 avatars per UTC day,
-remember it locally, and exclude the preceding choice. This cosmetic choice does
-not change account avatars. Rotation runs on launch/resume or while the client is
-running; it is not an exact midnight job while closed, suspended or throttled.
-There are no alarms, background services, icon-change prompts or new dependencies.
+Clickable app identities (Dock, launcher, taskbar/window, installed shortcuts and
+package icons) use the original plain green Caper. Browser favicons and in-app
+wordmarks still choose one of the 800 bundled v3 characters per UTC day, remember
+it locally, and exclude the preceding choice. This does not change account
+avatars. Rotation runs on launch/resume or while the client is running; it is not
+an exact midnight job while closed, suspended or throttled. There are no alarms,
+background services, icon-change prompts or new dependencies.
 
 In-app wordmarks keep the original lettering and replace its plain dot with the
 same installation-local daily character. Web shares one React selection with the
-favicon (including blocked storage); Rust desktop reuses its runtime-icon state;
-macOS shares persisted state with the Dock; Android uses the applied launcher
-choice. iOS and standalone web rotate only the in-app character, leaving their
+favicon (including blocked storage). Native clients retain their existing local
+selection keys for in-app branding only; those keys no longer replace app icons.
+iOS and standalone web also rotate only the in-app character, leaving their
 packaged/installed icons original. Different installations may choose different
 characters. Native test fixtures use design 0 for deterministic wordmarks.
 The [character catalog](../assets/avatars/README.md) names all 100 designs and
@@ -3487,16 +3489,16 @@ explains their eight hues; it does not add mascot reactions to the chat protocol
 | Desktop/mobile browser tabs | SVG plus generated 32/192px PNG favicons; localStorage persists the daily choice across reloads and tabs. Checks every minute and on focus/visibility/storage events. Clock-controlled Chromium tests cover UTC rollover, timer refresh, same-day reload/SPA navigation, shared-tab assignment, PNG/SVG pixels and desktop/narrow asset inspection. Safari/Firefox and physical mobile browsers remain unverified. |
 | Website home-screen shortcuts | Dedicated original-mascot Apple touch and manifest PNGs at 180/192/512px. Explicit standalone launches skip favicon rotation. Browsers/OSes cache installed icons; no reliable scheduled refresh is available. The manifest uses `display: browser`; no offline service worker or background capability is added. Existing shortcuts may need re-adding, and browser-specific icon selection needs device validation. |
 | Native iOS | Original packaged dark-green icon; no alternate-icon calls or alerts. No iOS icon behavior is changed. |
-| Native Android | Switches bundled launcher aliases on resume and every 15 minutes while foregrounded. Android 13+ switches atomically; older supported versions enable the new entry before disabling the old one. The original default alias and application icon remain available. Generation checks all 800 resources; Kotlin tests and APK/physical-launcher checks are pending because this orb has no Java/Android SDK. OEM icon caches, duplicate-entry transitions and upgrades require device acceptance. |
-| Native macOS | The running Dock icon rotates through `NSApplication.applicationIconImage`, checking activation and every 15 minutes. Finder/package icons remain original. Swift tests are added but require Apple CI/Xcode and a real Dock check; neither is available in this Linux orb. |
-| Rust desktop | Runtime window icons rotate, with a 60-second check and eframe persistence. Windows/taskbar and Linux X11 surfaces depend on the shell honoring runtime icons; installer, pinned-shortcut and Wayland package identities remain original. Rust tests cover rollover, all IDs, nonrepeat and straight-alpha pixels. An actual X11/Openbox window published the expected 256px saved-avatar icon and retained it across a same-day restart. Windows/Wayland remain unverified. |
+| Native Android | Application/default launcher and all 800 legacy aliases use the original green mascot. Keep alias component names and enabled state for existing entries and pinned shortcuts; the app no longer switches launcher components. An instrumented fixture test covers a same-day upgrade state and next-day branding-only rotation without changing the enabled entry; it requires Android CI/device execution. Signed upgrade/rollback and OEM icon caches remain device acceptance gates. |
+| Native macOS | Dock/Finder/package icons use the original AppIcon; no runtime `applicationIconImage` replacement. Swift daily-choice tests cover only in-app branding. Bundle compilation and a real Dock check require Apple CI/Xcode/macOS, unavailable in a Linux orb. |
+| Rust desktop | Runtime window icons retain the bundled original-mascot PNG; installer, pinned-shortcut and Wayland package identities also stay original. Daily selection/persistence affects only in-app wordmarks. An actual X11/Openbox window's 128px RGBA icon exactly matched the original PNG on fresh launch and restart with saved character 799; its in-app choice remained 799. Inspected the rendered window and icon on light/dark backgrounds. Windows taskbar/Wayland shell caching need platform acceptance. |
 
 Deterministic native parity/Android fixture runs retain the original icon. The web
 test uses a labelled clock/storage fixture, not a physical home-screen test:
 `node scripts/test-favicons.mjs http://localhost:31095 .amp/in/artifacts`.
 Static fallback exports use `node scripts/generate-favicons.mjs` (ImageMagick 7 and
 librsvg); launcher declarations use
-`node scripts/generate-android-launcher-aliases.mjs --check`. Native clients reuse
+`node scripts/generate-android-launcher-aliases.mjs --check`. Native wordmarks reuse
 their already-bundled vector resources. `node scripts/generate-wordmark.mjs`
 exports dot-free lettering to web/Rust, Apple and Android without changing the
 original full-logo source; `--check` runs in web tests to detect drift.
@@ -3505,32 +3507,34 @@ build stages and the Rust desktop build were checked directly. Application-only
 desktop Clippy passes with `--no-deps`; full native-workspace Clippy still fails on
 existing vendored WebRTC safety-documentation warnings.
 
-#### Rotating-icon deployment order
+#### Fixed-app-icon rollout order
 
 1. No infrastructure, secrets/configuration, database migration, API/gateway or
-   SFU deployment is needed. Saved avatar assignments and vector artwork stay
-   unchanged. Orb renderer/X11 packages are development-only prerequisites.
-2. After merge and the merged commit's immutable web image is available, deploy
-   web explicitly; merging does not deploy it:
+   SFU deployment is needed. No web deployment or iOS release is needed for this
+   revert: web favicons, installed website icons and the iOS AppIcon are unchanged.
+   Saved profile avatars and vector artwork stay unchanged.
+2. Require native platform builds/tests before release. Run the Android fixture
+   launcher regression on API 33+ and a supported older version. Test a signed
+   upgrade from a rotating build with an enabled avatar alias, including an
+   existing pinned shortcut; check that one clickable original-mascot entry
+   remains. Verify the running macOS Dock and Windows/Linux window/taskbar icons,
+   including an installation with an existing daily-character preference.
+3. Release Android, macOS and Rust desktop through the existing native process.
+   Platforms can roll out independently; merging does not publish a release.
+   After approval, use the Discord release button or run:
    ```sh
    MERGED_SHA=REPLACE_WITH_FULL_40_CHARACTER_MERGE_SHA
-   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
-   # Wait for the workflow to succeed, then:
-   kubectl -n default rollout status deployment/caper-web --timeout=15m
-   curl -I https://caper.chat/site.webmanifest
-   curl -I https://caper.chat/icons/caper-main-v3-180.png
-   curl -I https://caper.chat/images/avatars/v3/799.svg
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
    ```
-   Expect HTTP 200 and correct MIME types. Verify a tab keeps its avatar on
-   reload, and newly added iOS/Android shortcuts use the original mascot.
-3. Release Android, macOS and Rust desktop independently through the normal
-   native workflows only after platform build/device checks. No iOS release is
-   required for icon behavior; its shared tests may run with the Apple build.
-   Native rotation does not depend on web deploying first.
-4. Roll back only the affected web image or native release if needed. Re-run the
-   web workflow with the previous known-good SHA and wait for rollout; there is
-   no database/configuration rollback. Icon caches can outlive a rollout. Test
-   Android upgrade/rollback from an enabled avatar alias before releasing.
+   The workflow packages all native targets; unchanged iOS needs no icon-specific
+   distribution. Install/update each affected client through its normal channel,
+   quit/reopen, and verify the plain green icon while in-app characters still
+   rotate. Shell caches may require refreshing the shortcut or signing out/in.
+4. Roll back only the affected native release using the same approved workflow
+   with the prior known-good revision and a newer build number. No service,
+   database or configuration rollback is needed. Test Android enabled aliases
+   and pinned shortcuts across rollback; returning to a rotating build restores
+   its old icon behavior. No deployment or release command was run for this revert.
 
 ### Saved default avatars
 

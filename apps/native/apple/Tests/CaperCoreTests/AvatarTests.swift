@@ -22,7 +22,7 @@ final class AvatarTests: XCTestCase {
         XCTAssertEqual(CaperDailyIcon.utcDay(containing: Date(timeIntervalSince1970: 86_400)), "1970-01-02")
     }
 
-    func testWordmarkAndDockReuseThePersistedChoiceAcrossRollover() throws {
+    func testWordmarkReusesThePersistedChoiceAcrossRollover() throws {
         let suite = "caper-daily-icon-test-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
