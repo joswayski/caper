@@ -3463,6 +3463,44 @@ Run the focused browser regression against local Vite with
 The native parity fixture now supplies saved avatar IDs in account, member, chat
 and voice responses rather than testing only initials.
 
+### Client performance and motion validation (October 5, 2026)
+
+Windows/Linux chat no longer deep-clones every loaded message, author, text and
+reaction on each UI frame. It retains the same variable-height rendering and
+paging anchors; layout work still grows with loaded history. This is an allocation
+reduction, not full timeline virtualization or a measured FPS/battery claim.
+
+Web speaking indicators allocate no sampling loop for missing/muted streams or
+failed analyser setup. Visible indicators sample every 32 ms rather than wake on
+every display frame. Hidden tabs stop UI sampling and clear speaking rings without
+stopping capture/playback; visibility restores sampling. The RMS threshold and
+180 ms release are unchanged. Chat timestamps share one formatter per render,
+retaining locale/timezone refresh. Audio popovers/profile dialogs have a 140 ms
+opacity/4px entrance, disabled by reduced motion; typing labels fade/translate
+without a blur filter. Incoming messages no longer consult a delayed bottom-state
+callback to force scrolling; Virtuoso owns append-follow, while local sends still
+reveal the pending message.
+
+| Platform/check | Coverage for this pass |
+| --- | --- |
+| Web | Production build and 340 tests passed. The 3,000-message browser regression passed rapid/settled incoming delivery, prepend anchors, retry, narrow layout, own sends and empty history, with nine rows mounted at latest. Other Chromium fixture checks covered desktop/narrow popover bounds, dialog focus, normal/reduced motion, typing appearance/removal, and synthetic-audio indicator cleanup. Inspected 1440×900 and 390×844 captures; narrow emulation is not physical touch or Safari evidence. |
+| Windows/Linux desktop | Linux: 192 tests passed, nine opt-in tests ignored; format and Clippy passed. The added render regression retains authoritative messages/reactions/cursor across 1440/840/390px widths. No Windows execution or live SFU/hardware-audio validation. |
+| Apple/Android | Source audit only; no changes in this pass. Apple still forcibly follows incoming messages, and Android lacks explicit latest-message scroll ownership. Safe reader anchoring, tall/pending rows and platform UI tests remain follow-up work. |
+
+An orb Chromium microbenchmark of 100 renders × 30 timestamps took 514 ms with
+one formatter per message versus 23 ms with one per render; four rendered fixture
+timestamps matched independently formatted expectations. These numbers describe
+only formatting work, not end-to-end app speed. Desktop history virtualization,
+native reader-aware scrolling, and physical-device resource/voice checks remain
+separate work. No server, migration, infrastructure, or secret changes are needed;
+web and Windows/Linux client releases can deploy independently. Roll back their
+respective image/client build if needed.
+
+With local Vite running, repeat the long-history check using
+`CHAT_TEST_WEB_URL=http://localhost:5174/spaces node scripts/test-chat-history.mjs`
+(substitute the configured port). Its account/history/gateway are explicit test
+mocks; no production data or SFU is used.
+
 ### Rotating site and runtime app icons
 
 Supported icon surfaces choose one of the 800 bundled v3 avatars per UTC day,

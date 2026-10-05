@@ -8527,6 +8527,38 @@ mod tests {
     }
 
     #[test]
+    fn rendering_history_restores_messages_reactions_and_cursor_after_each_frame() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-reactions"),
+        );
+        let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+        messages[1].content.text = "Wrapped history must remain authoritative. ".repeat(12)
+            + "\nA second line has different geometry.";
+        let cursor = app.timeline.cursor();
+        app.timeline.reset(messages.clone(), &cursor).unwrap();
+        for width in [1440.0, 840.0, 390.0, 1440.0] {
+            let _ = context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 900.0),
+                    )),
+                    ..Default::default()
+                },
+                |context| app.page(context),
+            );
+            assert_eq!(app.timeline.cursor(), cursor);
+            assert_eq!(
+                app.timeline.messages().cloned().collect::<Vec<_>>(),
+                messages
+            );
+        }
+    }
+
+    #[test]
     fn update_download_button_opens_the_platform_installer() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
