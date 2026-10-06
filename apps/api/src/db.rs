@@ -155,8 +155,9 @@ async fn grant_runtime_access(pool: &PgPool, runtime_role: &str) -> Result<(), S
         format!(
             "GRANT SELECT, INSERT, UPDATE ON public.spaces, public.channels, public.chat_sessions, public.messages, public.channel_events TO {role}"
         ),
+        format!("GRANT SELECT, INSERT ON public.message_versions TO {role}"),
         format!(
-            "GRANT SELECT, INSERT, UPDATE, DELETE ON public.message_reactions, public.message_reaction_activity TO {role}"
+            "GRANT SELECT, INSERT, UPDATE, DELETE ON public.message_reactions, public.message_reaction_activity, public.message_pin_activity TO {role}"
         ),
         format!(
             "GRANT SELECT, INSERT, UPDATE, DELETE ON public.space_members, public.channel_members, public.channel_joins TO {role}"
@@ -171,7 +172,7 @@ async fn grant_runtime_access(pool: &PgPool, runtime_role: &str) -> Result<(), S
             "GRANT USAGE ON SEQUENCE public.push_devices_id_seq, public.push_notifications_id_seq TO {role}"
         ),
         format!(
-            "GRANT USAGE ON SEQUENCE public.spaces_id_seq, public.channels_id_seq, public.chat_sessions_id_seq, public.messages_id_seq, public.message_reaction_activity_id_seq, public.message_reactions_id_seq, public.space_members_id_seq, public.channel_members_id_seq, public.channel_joins_id_seq TO {role}"
+            "GRANT USAGE ON SEQUENCE public.spaces_id_seq, public.channels_id_seq, public.chat_sessions_id_seq, public.messages_id_seq, public.message_reaction_activity_id_seq, public.message_reactions_id_seq, public.space_members_id_seq, public.channel_members_id_seq, public.channel_joins_id_seq, public.message_pin_activity_id_seq TO {role}"
         ),
     ] {
         sqlx::query(&statement)
@@ -398,6 +399,8 @@ mod tests {
             ("public.space_members", "UPDATE"),
             ("public.channel_joins", "UPDATE"),
             ("public.message_reactions", "UPDATE"),
+            ("public.message_versions", "SELECT"),
+            ("public.message_versions", "INSERT"),
         ] {
             assert!(
                 sqlx::query_scalar::<_, bool>("SELECT has_table_privilege($1, $2, $3)")
@@ -408,6 +411,18 @@ mod tests {
                     .await
                     .unwrap(),
                 "{runtime_role} lacks {privilege} on {object}"
+            );
+        }
+        for privilege in ["UPDATE", "DELETE"] {
+            assert!(
+                !sqlx::query_scalar::<_, bool>("SELECT has_table_privilege($1, $2, $3)")
+                    .bind(&runtime_role)
+                    .bind("public.message_versions")
+                    .bind(privilege)
+                    .fetch_one(&verify)
+                    .await
+                    .unwrap(),
+                "retained message versions must be append-only for {runtime_role}"
             );
         }
         assert!(

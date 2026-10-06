@@ -31,6 +31,14 @@ All native clients provide searchable emoji reactions, counted chips, and
 own-reaction highlighting. Channel previews display reactions without allowing
 mutations until the user joins.
 
+Android, iOS/macOS and Rust desktop implement shared message pins: one-action
+Pin/Unpin, inline “Pinned by …” attribution, and a Pins button in the conversation
+header. Apple uses its platform sheet for the pins list; Android and Rust desktop
+switch the central conversation view. All lists include pins outside loaded
+history and offer Unpin without confirmation. Preview readers cannot mutate pins.
+See [pin validation and rollout](../../docs/media.md#message-pins); implementation
+does not establish native build, device, or production acceptance.
+
 Message composers on web, Android, iOS/macOS and Rust desktop also offer emoji
 suggestions after `:` at the cursor. Search by name or keyword (`:tomato`,
 `:thumbs_up`, `:+1`); selecting replaces that token without sending or changing

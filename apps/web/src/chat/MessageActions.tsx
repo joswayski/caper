@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ComponentType } from "react";
 import { autoUpdate, flip, FloatingFocusManager, FloatingOverlay, FloatingPortal, offset, shift, useDismiss, useFloating, useInteractions, useRole } from "@floating-ui/react";
-import { Copy, Hash, SmilePlus, Users, X } from "lucide-react";
+import { Copy, Hash, History, MessageSquare, Pencil, Pin, PinOff, SmilePlus, Users, X } from "lucide-react";
 import type { ChatMessage } from "./types.ts";
 import { emojiAsset, emojiCode, preloadEmojiImages } from "./emoji.ts";
 
@@ -19,15 +19,22 @@ export function preloadReactionPicker() {
   void preloadEmojiImages();
 }
 
-export default function MessageActions({ message, target, authorId, canReact, onReact, onClose, onCopied, onViewReactions }: {
+export default function MessageActions({ message, target, authorId, canReact, canPin, canEdit, pinning, onReact, onPin, onClose, onCopied, onViewReactions, onReply, onEdit, onHistory }: {
   message: ChatMessage;
   target: MessageActionTarget;
   authorId?: string;
   canReact: boolean;
+  canPin: boolean;
+  canEdit: boolean;
+  pinning: boolean;
   onReact: (messageId: string, emoji: string, active: boolean) => Promise<void>;
+  onPin: (messageId: string, active: boolean) => Promise<void>;
   onClose: () => void;
   onCopied: (status: string) => void;
   onViewReactions: (emoji: string) => void;
+  onReply: () => void;
+  onEdit: () => void;
+  onHistory: () => void;
 }) {
   const [mode, setMode] = useState(target.mode);
   const [Picker, setPicker] = useState<ComponentType<{ onSelect: (emoji: string) => void }>>();
@@ -70,28 +77,34 @@ export default function MessageActions({ message, target, authorId, canReact, on
   };
 
   const panel = <FloatingFocusManager context={context} returnFocus={returnFocus}>
-    <div className={mode === "actions" ? "chat-message-actions" : `chat-reaction-picker${target.drawer ? " chat-reaction-picker-drawer" : ""}`}
+    <div className={mode === "actions" ? `chat-message-actions${target.drawer ? " chat-message-actions-drawer" : ""}` : `chat-reaction-picker${target.drawer ? " chat-reaction-picker-drawer" : ""}`}
       ref={refs.setFloating} style={target.drawer ? undefined : floatingStyles} aria-label={mode === "actions" ? "Message actions" : "Choose a reaction"} {...getFloatingProps()}>
       {target.drawer && <div className="chat-drawer-handle" aria-hidden="true" />}
       <div className="chat-reaction-picker-heading"><strong>{mode === "actions" ? "Message actions" : "Add a reaction"}</strong>
-        <button type="button" aria-label={mode === "actions" ? "Close message actions" : "Close emoji picker"} onClick={onClose}><X size={18} /></button>
+        <button type="button" aria-label={mode === "actions" ? "Close message actions" : "Close emoji picker"} onClick={onClose}><X size={16} /></button>
       </div>
       {mode === "actions" ? <div className="chat-message-actions-body">
         {canReact && <div className="chat-quick-reactions" aria-label="Quick reactions">
           {quickReactions.map((emoji) => {
             const mine = !!authorId && !!message.reactions?.some((reaction) => reaction.emoji === emoji && reaction.authorIds.includes(authorId));
             return <button type="button" key={emoji} aria-label={`React with ${emoji}`} aria-pressed={mine} onClick={() => react(emoji, !mine)}>
-              <img src={emojiAsset(emojiCode(emoji))} width={28} height={28} alt="" />
+              <img src={emojiAsset(emojiCode(emoji))} width={20} height={20} alt="" />
             </button>;
           })}
           <button type="button" aria-label="Add reaction" onMouseEnter={preloadReactionPicker} onFocus={preloadReactionPicker}
-            onClick={() => setMode("emoji")}><SmilePlus size={24} aria-hidden="true" /></button>
+            onClick={() => setMode("emoji")}><SmilePlus size={16} aria-hidden="true" /></button>
         </div>}
         <div className="chat-copy-actions">
+          <button type="button" onClick={onReply}><MessageSquare size={20} aria-hidden="true" />Reply in thread</button>
+          {canEdit && <button type="button" onClick={onEdit}><Pencil size={16} aria-hidden="true" />Edit message</button>}
+          {(message.revision ?? 1) > 1 && <button type="button" onClick={onHistory}><History size={16} aria-hidden="true" />Message history</button>}
           {!!message.reactions?.length && <button type="button" onClick={() => onViewReactions(message.reactions![0].emoji)}>
-            <Users size={20} aria-hidden="true" />View reactions</button>}
-          <button type="button" onClick={() => void copy(message.content.text, "Text")}><Copy size={20} aria-hidden="true" />Copy text</button>
-          <button type="button" onClick={() => void copy(message.id, "Message ID")}><Hash size={20} aria-hidden="true" />Copy message ID</button>
+            <Users size={16} aria-hidden="true" />View reactions</button>}
+          {canPin && <button type="button" disabled={pinning} onClick={() => { onClose(); void onPin(message.id, !message.pin); }}>
+            {message.pin ? <PinOff size={16} aria-hidden="true" /> : <Pin size={16} aria-hidden="true" />}{pinning ? "Saving…" : message.pin ? "Unpin message" : "Pin message"}
+          </button>}
+          <button type="button" onClick={() => void copy(message.content.text, "Text")}><Copy size={16} aria-hidden="true" />Copy text</button>
+          <button type="button" onClick={() => void copy(message.id, "Message ID")}><Hash size={16} aria-hidden="true" />Copy message ID</button>
         </div>
         {copyError && <p className="chat-action-error" role="alert">{copyError}</p>}
       </div> : <div className="chat-reaction-picker-body">

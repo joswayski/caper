@@ -22,6 +22,12 @@ final class CaperParityUITests: XCTestCase {
             "-caper.voice.inputGain", "100",
             "-caper.voice.processingStrength", "25",
         ]
+        #if os(macOS)
+        // A persistent runner can restore closed or Settings-only windows from
+        // an earlier launch. Ignore AppKit's saved window state for this test
+        // process without deleting user preferences or changing normal launches.
+        app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+        #endif
         app.launchEnvironment["CAPER_TEST_MODE"] = "parity"
         app.launchEnvironment["CAPER_API_BASE_URL"] = "http://127.0.0.1:3001"
         if signedIn {
@@ -238,11 +244,24 @@ final class CaperParityUITests: XCTestCase {
         let add = try require(app.buttons["message-action-add-reaction"], timeout: 5,
                               "Holding \(messageID) did not offer Add reaction")
         #else
+        let row = try require(app.descendants(matching: .any)["message-row-\(messageID)"], timeout: 10,
+                              "Missing message-row-\(messageID)")
+        row.hover()
         let add = try require(app.buttons["add-reaction-\(messageID)"], timeout: 10,
-                              "Missing add-reaction-\(messageID)")
+                              "Hovering \(messageID) did not reveal Add reaction")
         #endif
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: add)
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
+        #if os(macOS)
+        // Keep the action's declared size and trailing placement, and verify
+        // moving the pointer into its overlay does not hide the click target.
+        XCTAssertEqual(add.frame.width, 24, accuracy: 1)
+        XCTAssertEqual(add.frame.height, 24, accuracy: 1)
+        XCTAssertGreaterThan(add.frame.minX, row.frame.midX, "Message actions must stay at the trailing edge")
+        XCTAssertTrue(add.isHittable)
+        add.hover()
+        XCTAssertTrue(add.isHittable, "Moving from the row onto Add reaction must not hide its click target")
+        #endif
         add.tap()
     }
 
@@ -298,7 +317,11 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(other.exists)
         XCTAssertGreaterThanOrEqual(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "reaction,")).count, 20)
         #if os(macOS)
-        XCTAssertGreaterThanOrEqual(app.buttons.matching(NSPredicate(format: "label == %@", "Add reaction")).count, 2, "fixture includes long and empty reaction rows")
+        let hoverTargetID = "chan00000001m01"
+        let target = app.descendants(matching: .any)["message-row-\(hoverTargetID)"]
+        XCTAssertTrue(target.waitForExistence(timeout: 5))
+        target.hover()
+        XCTAssertTrue(app.buttons["add-reaction-\(hoverTargetID)"].waitForExistence(timeout: 2), "Message controls appear on hover")
         #else
         XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label == %@", "Add reaction")).count, 0, "iPhone must not show an add-reaction button under each message")
         #endif
@@ -346,12 +369,16 @@ final class CaperParityUITests: XCTestCase {
         let grid = try require(app.scrollViews["reaction-picker-grid"], timeout: 5, "The catalog must scroll inside the picker")
         XCTAssertLessThan(grid.frame.height, size.height)
         XCTAssertTrue(grid.buttons.firstMatch.isHittable)
+        XCTAssertTrue(try require(picker.buttons["Cancel"], timeout: 5, "Cancel must be inside the popover").isHittable)
+        capture("reaction-picker-compact-catalog-fixture", app: app)
         search.tap()
         XCTAssertTrue(hasKeyboardFocus(search))
         search.typeText("definitely-no-such-emoji")
         try require(app.descendants(matching: .any)["reaction-picker-empty"], timeout: 5, "Missing empty search state")
         XCTAssertEqual(picker.frame.width, size.width, accuracy: 1)
         XCTAssertEqual(picker.frame.height, size.height, accuracy: 1)
+        XCTAssertTrue(picker.buttons["Cancel"].isHittable, "Empty results must leave Cancel available")
+        capture("reaction-picker-compact-empty-fixture", app: app)
 
         // Click a real control outside, rather than cancelling the sheet.
         let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 5, "Missing composer")
@@ -378,8 +405,6 @@ final class CaperParityUITests: XCTestCase {
                               timeout: 5, "Missing selected fixture chip")
         let other = try require(reactions.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "❤️ reaction")).firstMatch,
                                 timeout: 5, "Missing unselected fixture chip")
-        let unrelatedAdd = try require(app.buttons["add-reaction-chan00000001m02"], timeout: 5,
-                                       "Missing another message's add-reaction button")
         XCTAssertTrue(own.label.hasSuffix(", selected by you"))
         XCTAssertTrue(other.label.hasSuffix(", not selected by you"))
         try openReactionPicker(for: targetID, in: app)
@@ -387,6 +412,11 @@ final class CaperParityUITests: XCTestCase {
         let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),
                                                object: app.descendants(matching: .any)["reaction-picker"])
         XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
+        let unrelatedRow = try require(app.descendants(matching: .any)["message-row-chan00000001m02"], timeout: 5,
+                                       "Missing unrelated hover target")
+        unrelatedRow.hover()
+        let unrelatedAdd = try require(app.buttons["add-reaction-chan00000001m02"], timeout: 5,
+                                       "Hovering another message did not reveal Add reaction")
 
         // Accessibility focus alone cannot detect the bug: the old modifier
         // painted inherited timeline focus around every otherwise valid button.

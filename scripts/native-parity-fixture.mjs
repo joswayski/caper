@@ -48,7 +48,10 @@ function initialState() {
   }))]));
   return {
     spaces: [{ space, channels, members: clone(members) }], messages, directs: [],
+    createdEvents: new Map([...messages].map(([channelId, rows]) => [channelId, rows.map(message => ({ type: 'message.created', channelId, seq: message.seq, message: clone(message) }))])),
     reactionEvents: new Map(),
+    pinEvents: new Map(),
+    editEvents: new Map(), versions: new Map(),
     invitations: new Map(),
     channelInvitations: new Map(),
     joins: new Map(channels.map(channel => [channel.id, channel.private ? [ids.owner, ids.member] : members.map(member => member.id)])),
@@ -118,10 +121,33 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
     }
   };
   const channelEvents = (channelId) => [
-    ...(state.messages.get(channelId) ?? []).map(message => ({ type: 'message.created', channelId, seq: message.seq, message })),
+    ...(state.createdEvents.get(channelId) ?? []),
     ...(state.reactionEvents.get(channelId) ?? []),
+    ...(state.pinEvents.get(channelId) ?? []),
+    ...(state.editEvents.get(channelId) ?? []),
   ].sort((a, b) => BigInt(a.seq) < BigInt(b.seq) ? -1 : 1);
   const channelHead = (channelId) => channelEvents(channelId).at(-1)?.seq ?? '0';
+  const created = (message) => {
+    const event = { type: 'message.created', channelId: message.channelId, seq: message.seq, message: clone(message) };
+    state.createdEvents.set(message.channelId, [...(state.createdEvents.get(message.channelId) ?? []), event]);
+    broadcast('chat', message.channelId, event);
+  };
+  const edit = (message, text) => {
+    if (message.content.text === text) return message;
+    const versions = state.versions.get(message.id) ?? [{ revision: 1, content: clone(message.content), createdAt: message.createdAt }];
+    message.editSeq = String(BigInt(channelHead(message.channelId)) + 1n);
+    message.revision = (message.revision ?? 1) + 1;
+    message.editedAt = new Date().toISOString();
+    // Edits re-resolve @mentions like chat::editing.
+    const mentions = mentionsFor(channelFor(message.channelId), text);
+    message.content = { version: 1, type: 'text', text, ...(mentions.length ? { mentions } : {}) };
+    versions.push({ revision: message.revision, content: clone(message.content), createdAt: message.editedAt });
+    state.versions.set(message.id, versions);
+    const event = { type: 'message.edited', schemaVersion: 1, channelId: message.channelId, seq: message.editSeq, message: clone(message) };
+    state.editEvents.set(message.channelId, [...(state.editEvents.get(message.channelId) ?? []), event]);
+    broadcast('chat', message.channelId, event);
+    return message;
+  };
   const react = (channelId, message, emoji, userId, active) => {
     const reactions = message.reactions ?? [];
     const own = reactions.find(reaction => reaction.emoji === emoji)?.authorIds.includes(userId) ?? false;
@@ -136,6 +162,16 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       broadcast('chat', channelId, event);
     }
     return { type: 'message.reactions', schemaVersion: 1, channelId, seq: message.reactionSeq ?? '0', messageId: message.id, reactions: message.reactions ?? [] };
+  };
+  const pin = (channelId, message, who, active) => {
+    if (!!message.pin !== active) {
+      message.pinSeq = String(BigInt(channelHead(channelId)) + 1n);
+      message.pin = active ? { author: clone(who), createdAt: new Date().toISOString() } : null;
+      const event = { type: 'message.pin', schemaVersion: 1, channelId, seq: message.pinSeq, message: clone(message) };
+      state.pinEvents.set(channelId, [...(state.pinEvents.get(channelId) ?? []), event]);
+      broadcast('chat', channelId, event);
+    }
+    return { type: 'message.pin', schemaVersion: 1, channelId, seq: message.pinSeq ?? '0', message: { ...message, pinSeq: message.pinSeq ?? '0' } };
   };
   const json = (response, status, body, headers = {}) => {
     response.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', ...headers });
@@ -177,7 +213,13 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             clientMessageId: randomUUID(), createdAt: new Date().toISOString(),
           };
           messages.push(message); state.messages.set(channelId, messages);
-          broadcast('chat', channelId, { type: 'message.created', channelId, seq: message.seq, message });
+          created(message);
+        }
+        if (body.incomingEdit) {
+          const { channelId, messageId, text } = body.incomingEdit;
+          const message = state.messages.get(channelId)?.find(message => message.id === messageId);
+          if (!message || typeof text !== 'string') return reject(response, 400, 'Invalid fixture edit.');
+          edit(message, text);
         }
         if (body.incomingReaction) {
           const { channelId, messageId, emoji, active = true, userId = ids.other } = body.incomingReaction;
@@ -185,6 +227,12 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           if (!message) return reject(response, 404, 'Fixture message not found.');
           if (!accounts.some(account => account.id === userId)) return reject(response, 400, 'Unknown fixture account.');
           react(channelId, message, emoji, userId, active);
+        }
+        if (body.incomingPin) {
+          const { channelId, messageId, active = true } = body.incomingPin;
+          const message = state.messages.get(channelId)?.find(message => message.id === messageId);
+          if (!message) return reject(response, 404, 'Fixture message not found.');
+          pin(channelId, message, author(members[2]), active);
         }
         if (body.media) {
           const channelId = body.media.channelId ?? ids.demo;
@@ -294,9 +342,9 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       if (path === '/api/chat/session' && method === 'POST') {
         const token = `fixture-chat-${randomUUID()}`;
         const requestedName = typeof body.name === 'string' ? body.name.trim() : '';
-        const name = user ? state.account.displayName : requestedName;
+        const name = user ? user.displayName : requestedName;
         if (!name || [...name].length > 64 || /[\p{Cc}]/u.test(name)) return reject(response, 400, 'invalid name');
-        const who = user ? author(state.account) : { id: randomUUID().replaceAll('-', '').slice(0, 12), name, isGuest: true };
+        const who = user ? author(user) : { id: randomUUID().replaceAll('-', '').slice(0, 12), name, isGuest: true };
         state.chatSessions.set(token, who);
         return json(response, 200, { token, author: who });
       }
@@ -304,6 +352,35 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       if (mediaChannel && !canParticipate(channelFor(mediaChannel[1]), user)) return reject(response, 404, 'resource not found');
       if (/^\/api\/(?:channels\/[^/]+\/)?media\/status$/.test(path)) return json(response, 200, { enabled: true });
       if (/^\/api\/(?:channels\/[^/]+\/)?media\//.test(path)) return reject(response, 503, 'TEST FIXTURE: no real media engine or SFU is connected.');
+      const editing = /^\/api\/chat\/channels\/([^/]+)\/messages\/([^/]+)(\/versions)?$/.exec(path);
+      if (editing && (method === 'GET' || method === 'PUT' && !editing[3])) {
+        const channel = channelFor(editing[1]);
+        if (!user || !channel || !canRead(channel, user) || method === 'PUT' && !canParticipate(channel, user)) return reject(response, 404, 'resource not found');
+        const message = state.messages.get(channel.id)?.find(message => message.id === editing[2]);
+        if (!message) return reject(response, 404, 'Message not found.');
+        if (method === 'PUT') {
+          const who = state.chatSessions.get(request.headers['x-caper-chat-token']);
+          if (!who || who.isGuest || who.id !== user.id) return reject(response, 401, 'Messaging session required.');
+          if (message.author.id !== who.id) return reject(response, 403, 'only the author can edit this message');
+          if (Object.keys(body).length !== 2 || !Number.isSafeInteger(body.expectedRevision) || body.expectedRevision < 1
+            || typeof body.text !== 'string' || !body.text.trim() || [...body.text].length > 4000 || /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/u.test(body.text)) return reject(response, 400, 'Invalid message edit.');
+          const revision = message.revision ?? 1;
+          if (body.expectedRevision !== revision) return revision === body.expectedRevision + 1 && message.content.text === body.text
+            ? json(response, 200, message) : reject(response, 409, 'message changed; reload it before editing again');
+          if (message.content.text !== body.text) {
+            const recent = (state.messages.get(channel.id) ?? []).filter(row => row.author.id === who.id)
+              .flatMap(row => state.versions.get(row.id) ?? []).filter(version => version.revision > 1 && Date.parse(version.createdAt) > Date.now() - 60_000).length;
+            if (recent >= 30) return reject(response, 429, 'editing too quickly; try again shortly');
+          }
+          return json(response, 200, edit(message, body.text));
+        }
+        if (!editing[3]) return json(response, 200, message);
+        const before = url.searchParams.get('before');
+        if (before !== null && (!/^[1-9]\d*$/.test(before) || !Number.isSafeInteger(Number(before)))) return reject(response, 400, 'invalid message revision');
+        const versions = (state.versions.get(message.id) ?? [{ revision: 1, content: message.content, createdAt: message.createdAt }])
+          .filter(version => before === null || version.revision < Number(before)).toReversed();
+        return json(response, 200, { messageId: message.id, versions: versions.slice(0, 50), hasMore: versions.length > 50 });
+      }
       const reaction = /^\/api\/chat\/channels\/([^/]+)\/messages\/([^/]+)\/reactions$/.exec(path);
       if (reaction && method === 'PUT') {
         const channel = channelFor(reaction[1]);
@@ -329,6 +406,31 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           })) })),
         });
       }
+      const pinPath = /^\/api\/chat\/channels\/([^/]+)\/messages\/([^/]+)\/pin$/.exec(path);
+      if (pinPath && method === 'PUT') {
+        const channel = channelFor(pinPath[1]);
+        if (!channel || !canParticipate(channel, user)) return reject(response, 404, 'resource not found');
+        const who = state.chatSessions.get(request.headers['x-caper-chat-token']);
+        if (!who || who.isGuest) return reject(response, 401, 'Messaging session required.');
+        if (typeof body.active !== 'boolean' || Object.keys(body).length !== 1) return reject(response, 400, 'Invalid fixture pin.');
+        const message = state.messages.get(channel.id)?.find(message => message.id === pinPath[2]);
+        if (!message) return reject(response, 404, 'Message not found.');
+        if (body.active && !message.pin && (state.messages.get(channel.id) ?? []).filter(message => message.pin).length >= 100)
+          return reject(response, 409, 'Channel pin limit reached (100).');
+        return json(response, 200, pin(channel.id, message, who, body.active));
+      }
+      const thread = /^\/api\/chat\/channels\/([^/]+)\/messages\/([^/]+)\/thread$/.exec(path);
+      if (thread && method === 'GET') {
+        const channel = channelFor(thread[1]);
+        if (!canRead(channel, user)) return reject(response, user ? 404 : 401, 'resource not found');
+        const messages = state.messages.get(thread[1]) ?? [];
+        const root = messages.find(message => message.id === thread[2] && !message.threadRootId);
+        if (!root) return reject(response, 404, 'Thread not found.');
+        const before = url.searchParams.get('before');
+        if (before !== null && !/^(0|[1-9]\d*)$/.test(before)) return reject(response, 400, 'invalid cursor');
+        const replies = messages.filter(message => message.threadRootId === root.id && (before === null || BigInt(message.seq) < BigInt(before)));
+        return json(response, 200, { root, messages: replies.slice(-50), hasMore: replies.length > 50, cursor: channelHead(channel.id) });
+      }
       const chat = /^\/api\/chat\/channels\/([^/]+)\/messages$/.exec(path);
       if (path === '/api/chat/general' || chat) {
         const channel = channelFor(chat?.[1] ?? ids.demo);
@@ -347,19 +449,32 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           const key = `${channel.id}:${clientMessageId}`;
           const previous = state.sendKeys.get(key);
           if (previous) return previous.token === request.headers['x-caper-chat-token'] && previous.text === body.text
+            && previous.message.threadRootId === body.threadRootId && (previous.message.broadcast ?? false) === (body.broadcast ?? false)
             ? json(response, 200, previous.message) : reject(response, 409, 'Message ID already used.');
+          const root = body.threadRootId ? messages.find(message => message.id === body.threadRootId && !message.threadRootId) : undefined;
+          if (body.threadRootId && !root) return reject(response, 404, 'Thread not found.');
+          if (body.broadcast && !root) return reject(response, 400, 'Only replies can broadcast.');
           const mentions = mentionsFor(channel, body.text);
           const message = { id: randomUUID().replaceAll('-', '').slice(0, 15), channelId: channel.id, seq: String(BigInt(channelHead(channel.id)) + 1n), author: who,
             content: { version: 1, type: 'text', text: body.text, ...(mentions.length ? { mentions } : {}) }, createdAt: new Date().toISOString(), clientMessageId };
+          if (root) {
+            const participants = [...(root.thread?.participants ?? [])];
+            const index = participants.findIndex(person => person.id === who.id);
+            if (index >= 0) participants[index] = who;
+            else if (participants.length < 5) participants.push(who);
+            root.thread = { replyCount: (root.thread?.replyCount ?? 0) + 1, participants, seq: message.seq };
+            Object.assign(message, { threadRootId: root.id, broadcast: body.broadcast ?? false, thread: clone(root.thread) });
+          }
           messages.push(message); state.messages.set(channel.id, messages);
           state.sendKeys.set(key, { token: request.headers['x-caper-chat-token'], text: body.text, message });
-          broadcast('chat', channel.id, { type: 'message.created', channelId: channel.id, seq: message.seq, message });
+          created(message);
           return json(response, 200, message);
         }
         const before = url.searchParams.get('before');
         if (before !== null && !/^(0|[1-9]\d*)$/.test(before)) return reject(response, 400, 'invalid cursor');
-        const available = before !== null ? messages.filter((message) => BigInt(message.seq) < BigInt(before)) : messages;
-        return json(response, 200, { space: spaceFor(channel.spaceId), channel, messages: available.slice(-50), cursor: channelHead(channel.id), hasMore: available.length > 50 });
+        const available = messages.filter(message => (!message.threadRootId || message.broadcast) && (before === null || BigInt(message.seq) < BigInt(before)));
+        const pinnedMessages = messages.filter(message => message.pin).sort((a, b) => BigInt(a.pinSeq) > BigInt(b.pinSeq) ? -1 : 1);
+        return json(response, 200, { space: spaceFor(channel.spaceId), channel, messages: available.slice(-50), pinnedMessages, cursor: channelHead(channel.id), hasMore: available.length > 50 });
       }
       const spacePath = /^\/api\/spaces(?:\/([^/]+))?(?:\/channels\/([^/]+))?(?:\/(channels|members|invitations|invitation|membership)(?:\/([^/]+))?)?$/.exec(path);
       if (spacePath) {

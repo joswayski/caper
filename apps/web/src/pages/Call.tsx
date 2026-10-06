@@ -422,17 +422,16 @@ export default function Call({ channel, onReadCursor, channelActions, voiceChann
   }, [signedIn, settingsOpen]);
 
   useEffect(() => {
-    if (!channelJoined) return;
-    let current = true;
-    if (channel?.direct) return;
-    fetch(`${mediaRoot}/status`, { credentials: "same-origin", signal: AbortSignal.timeout(10_000) })
+    if (!channelJoined || channel?.direct) return;
+    const controller = new AbortController();
+    fetch(`${mediaRoot}/status`, { credentials: "same-origin", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]) })
       .then(async (response) => response.ok ? response.json() as Promise<{ enabled: boolean }> : { enabled: false })
       .then((result) => {
-        if (!current) return;
+        if (controller.signal.aborted) return;
         setAvailability((previous) => ({ ...previous, [mediaRoot]: result.enabled }));
       })
-      .catch(() => { if (current) setAvailability((previous) => ({ ...previous, [mediaRoot]: false })); });
-    return () => { current = false; };
+      .catch(() => { if (!controller.signal.aborted) setAvailability((previous) => ({ ...previous, [mediaRoot]: false })); });
+    return () => controller.abort();
   }, [mediaRoot, channelJoined, channel?.direct]);
 
   useEffect(() => {

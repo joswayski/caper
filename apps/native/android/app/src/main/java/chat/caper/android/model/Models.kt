@@ -69,12 +69,29 @@ object MentionListSerializer : JsonTransformingSerializer<List<MessageMention>>(
 
     private fun JsonObject.string(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
 }
+@Serializable data class MessageVersion(val revision: Int, val content: ChatContent, val createdAt: String)
+@Serializable data class MessageVersions(val messageId: String, val versions: List<MessageVersion>, val hasMore: Boolean)
 @Serializable data class MessageReaction(val emoji: String, val authorIds: List<String>)
 /** One person who reacted; `id` matches the snapshot's `authorIds`. */
 @Serializable data class Reactor(val id: String, val username: String? = null, val displayName: String? = null, val avatarId: Int? = null)
 @Serializable data class ReactorGroup(val emoji: String, val authors: List<Reactor>)
 /** Who reacted to a message, per emoji in snapshot order and people in reaction order. */
 @Serializable data class ReactorList(val messageId: String, val reactionSeq: String, val reactions: List<ReactorGroup>)
+@Serializable data class MessagePin(val author: ChatAuthor, val createdAt: String)
+@Serializable data class EditUpdate(
+    val type: String,
+    val schemaVersion: Int,
+    val channelId: String,
+    val seq: String,
+    val message: ChatMessage,
+)
+@Serializable data class PinUpdate(
+    val type: String,
+    val schemaVersion: Int,
+    val channelId: String,
+    val seq: String,
+    val message: ChatMessage,
+)
 @Serializable data class ReactionUpdate(
     val type: String,
     val schemaVersion: Int,
@@ -93,11 +110,23 @@ object MentionListSerializer : JsonTransformingSerializer<List<MessageMention>>(
     val clientMessageId: String,
     val reactions: List<MessageReaction> = emptyList(),
     val reactionSeq: String? = null,
+    val pin: MessagePin? = null,
+    val pinSeq: String? = null,
+    val threadRootId: String? = null,
+    val broadcast: Boolean = false,
+    val thread: ThreadSummary? = null,
+    val revision: Int = 1,
+    val editedAt: String? = null,
+    val editSeq: String? = null,
 )
+@Serializable data class ThreadSummary(val replyCount: Int, val participants: List<ChatAuthor>, val seq: String)
+@Serializable data class ThreadHistory(val root: ChatMessage, val messages: List<ChatMessage>, val cursor: String, val hasMore: Boolean)
+data class ThreadUi(val rootId: String, val loading: Boolean = true, val hasMore: Boolean = false, val before: String? = null, val error: String? = null)
 @Serializable data class ChatHistory(
     val messages: List<ChatMessage>,
     val cursor: String,
     val hasMore: Boolean,
+    val pinnedMessages: List<ChatMessage> = emptyList(),
     val space: ChatRoom? = null,
     val channel: ChatRoom? = null,
 )
@@ -194,6 +223,8 @@ data class AppUiState(
     val people: List<Person>? = null,
     val selectedDirectId: String? = null,
     val messages: List<ChatMessage> = emptyList(),
+    val thread: ThreadUi? = null,
+    val threadOnlyRows: Set<String> = emptySet(),
     val hasMoreMessages: Boolean = false,
     val loadingOlder: Boolean = false,
     val olderError: String? = null,
@@ -220,6 +251,8 @@ data class AppUiState(
     val pendingMessage: PendingMessageUi? = null,
     val gateway: GatewayStatus = GatewayStatus.DISCONNECTED,
     val reactionSaves: Map<String, ReactionSaveUi> = emptyMap(),
+    val pinnedMessages: List<ChatMessage> = emptyList(),
+    val pinSaves: Map<String, PinSaveUi> = emptyMap(),
     val chatAuthorId: String? = null,
     val busy: Boolean = false,
     val error: String? = null,
@@ -238,6 +271,9 @@ data class PendingMessageUi(
     val createdAt: String,
     val error: String? = null,
     val rejected: Boolean = false,
+    val threadRootId: String? = null,
+    val broadcast: Boolean = false,
 )
 
 data class ReactionSaveUi(val emoji: String, val active: Boolean, val saving: Boolean = true, val error: String? = null)
+data class PinSaveUi(val active: Boolean, val saving: Boolean = true, val error: String? = null)

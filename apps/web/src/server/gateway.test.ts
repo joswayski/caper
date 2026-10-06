@@ -499,3 +499,25 @@ test("public watchPresence delivers scoped member states", (t) => {
   f.sockets[0].frame({ type: "subscribed", id });
   assert.deepEqual(received, [[{ userId: "one", status: "idle" }]]);
 });
+
+test("edited messages advance gateway handoff positions independently of original message sequence", (t) => {
+  const f = setup(t);
+  let cursor = "4";
+  const subscription = f.gateway.subscribe({ kind: "chat", channelId: "room", after: cursor }, {
+    cursor: () => cursor,
+    event: (event) => { const seq = (event as { seq?: string }).seq; if (seq && BigInt(seq) > BigInt(cursor)) cursor = seq; },
+  });
+  t.after(() => subscription.unsubscribe());
+  f.hello(0); const id = f.subscribe(0).id;
+  f.sockets[0].frame({ type: "event", id, event: { type: "ready", cursor } });
+  f.sockets[0].frame({ type: "subscribed", id });
+  f.sockets[0].frame({ type: "migrating" }); f.hello(1);
+  const edit = { type: "message.edited", channelId: "room", seq: "5", message: { seq: "1", editSeq: "5" } };
+  f.sockets[0].frame({ type: "event", id, event: edit });
+  f.sockets[1].frame({ type: "event", id, event: edit });
+  f.sockets[1].frame({ type: "event", id, event: { type: "ready", cursor: "5" } });
+  f.sockets[1].frame({ type: "subscribed", id });
+  assert.equal(f.sockets[1].closed, false, "ready checkpoint accounts for the edit event");
+  assert.equal(f.sockets[0].closed, true, "caught-up candidate replaces the original socket");
+  assert.equal(cursor, "5");
+});
