@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { ArrowLeft, MoreHorizontal, Pin } from "lucide-react";
 import { Virtuoso, type VirtuosoHandle, type ListProps, type ContextProp } from "react-virtuoso";
 import { ChatClient, initialChatView } from "./client.ts";
 import MessageReactions, { type ReactionSave } from "./MessageReactions.tsx";
@@ -59,6 +60,9 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   const [reactorsTarget, setReactorsTarget] = useState<ReactorsTarget>();
   const [actionStatus, setActionStatus] = useState("");
   const [reactionSaves, setReactionSaves] = useState<Record<string, ReactionSave | undefined>>({});
+  const [showPins, setShowPins] = useState(false);
+  const [pinning, setPinning] = useState<Set<string>>(() => new Set());
+  const [pinError, setPinError] = useState<{ messageId: string; active: boolean; text: string }>();
   const press = useRef<{ timer: ReturnType<typeof setTimeout>; x: number; y: number; pointerId: number }>(undefined);
   const suppressClick = useRef(false);
   const cancelPress = () => { clearTimeout(press.current?.timer); press.current = undefined; };
@@ -67,6 +71,9 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     setReactorsTarget(undefined);
     setActionStatus("");
     setReactionSaves({});
+    setShowPins(false);
+    setPinning(new Set());
+    setPinError(undefined);
     // The drawer can appear under the held finger. Its release click must not
     // activate a newly rendered action, even though that action is in a portal.
     const resetClick = () => { suppressClick.current = false; };
@@ -92,7 +99,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   }, [channelId]);
   useEffect(() => { setActionTarget(undefined); setReactorsTarget(undefined); }, [state.author?.id]);
   const isTouchLayout = () => window.matchMedia("(max-width: 760px), (pointer: coarse)").matches;
-  const openActions = (messageId: string, anchor: HTMLElement) => setActionTarget({ messageId, anchor, mode: "actions", drawer: true });
+  const openActions = (messageId: string, anchor: HTMLElement) => setActionTarget({ messageId, anchor, mode: "actions", drawer: isTouchLayout() });
   const showReactors = (messageId: string, emoji: string, anchor: HTMLElement) => {
     const drawer = isTouchLayout();
     // Like the actions drawer, the sheet can open under a held finger.
@@ -113,6 +120,19 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   };
   const actionMessage = state.messages.find((message) => message.id === actionTarget?.messageId);
   const reactorsMessage = state.messages.find((message) => message.id === reactorsTarget?.messageId);
+  const pin = async (messageId: string, active: boolean) => {
+    const client = clientRef.current;
+    if (!client || readOnly) return;
+    setPinning((current) => new Set(current).add(messageId)); setPinError(undefined);
+    try { await client.setPin(messageId, active); if (clientRef.current === client) setActionStatus(active ? "Message pinned." : "Message unpinned."); }
+    catch (error) {
+      if (clientRef.current === client) {
+        const message = error instanceof Error ? error.message : "Pin could not be saved.";
+        setPinError({ messageId, active, text: message }); setActionStatus(message);
+      }
+    }
+    finally { if (clientRef.current === client) setPinning((current) => { const next = new Set(current); next.delete(messageId); return next; }); }
+  };
   const listRef = useRef<VirtuosoHandle>(null);
   const initialListRef = useRef<HTMLDivElement>(null);
   const [listReady, setListReady] = useState(false);
@@ -305,6 +325,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
 
   // Share the formatter across visible rows, but refresh locale/timezone on render.
   const timeFormatter = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+  const pinTimeFormatter = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
   const renderMessage = (index: number, message: (typeof messages)[number]) => {
     const pending = !("content" in message);
     const author = message.author;
@@ -339,8 +360,9 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       <div>
         <header><strong>{author?.name ?? name}</strong>{author?.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt, timeFormatter) : ""}</time></header>
         <p>{"content" in message ? message.content.text : message.text}</p>
+        {"content" in message && message.pin && <div className="chat-pin-marker"><Pin size={13} aria-hidden="true" />Pinned by {message.pin.author.name}</div>}
         {"content" in message && <>
-          <button type="button" className="chat-message-actions-trigger sr-only" aria-haspopup="dialog" onClick={(event) => openActions(message.id, event.currentTarget)}>Message actions for {message.author.name}</button>
+          <button type="button" className="chat-message-actions-trigger" aria-label={`Message actions for ${message.author.name}`} aria-haspopup="dialog" aria-expanded={actionTarget?.messageId === message.id && actionTarget.mode === "actions"} onClick={(event) => openActions(message.id, event.currentTarget)}><MoreHorizontal size={18} aria-hidden="true" /></button>
           <MessageReactions message={message} channelId={state.channelId} authorId={state.author?.id} readOnly={readOnly} save={reactionSaves[message.id]} onReact={react}
             onShowReactors={(emoji, anchor) => showReactors(message.id, emoji, anchor)}
             pickerOpen={actionTarget?.messageId === message.id && actionTarget.mode === "emoji"}
@@ -364,12 +386,26 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   return <section className="chat-panel" aria-labelledby="chat-heading">
     <header className="chat-heading">
       <h2 id="chat-heading" className={showTitle ? "chat-channel-title" : "sr-only"}>{direct ? "" : "# "}{channelName}</h2>
+      {state.phase === "ready" && (showPins ? <button type="button" className="chat-pins-toggle" onClick={() => setShowPins(false)}><ArrowLeft size={16} aria-hidden="true" />Messages</button>
+        : <button type="button" className="chat-pins-toggle" onClick={() => setShowPins(true)} aria-label={`Pins, ${state.pinnedMessages.length}`}><Pin size={16} aria-hidden="true" />Pins{state.pinnedMessages.length ? ` ${state.pinnedMessages.length}` : ""}</button>)}
       {headerActions}
       {!state.online && showConnectionStatus && <span className="chat-offline" role="status">{state.phase === "error" ? "Offline" : "Connecting…"}</span>}
       {state.phase === "ready" && state.error && <div className="chat-refresh-error" role="alert">{state.error} <button type="button" onClick={() => clientRef.current?.retryLoad()}>Retry</button></div>}
+      {pinError && <div className="chat-refresh-error" role="alert">{pinError.text} <button type="button" disabled={pinning.has(pinError.messageId)} onClick={() => void pin(pinError.messageId, pinError.active)}>Retry</button> <button type="button" onClick={() => setPinError(undefined)}>Dismiss</button></div>}
     </header>
 
     <div className="chat-messages" aria-busy={state.phase === "loading"}>
+      {showPins && state.phase === "ready" && <div className="chat-pins" role="region" aria-label={`Pinned messages in ${channelName}`}>
+        <h3>Pinned messages</h3>
+        {!state.pinnedMessages.length ? <p className="chat-state">No pinned messages.</p> : state.pinnedMessages.map((message) => <article className="chat-pinned-message" key={message.id}>
+          <div className="chat-avatar chat-pinned-avatar"><Avatar avatarId={message.author.avatarId} name={message.author.name} /></div>
+          <header><strong>{message.author.name}</strong><time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt, pinTimeFormatter) : ""}</time></header>
+          <p>{message.content.text}</p>
+          {message.pin && <small><Pin size={12} aria-hidden="true" />Pinned by {message.pin.author.name}</small>}
+          {!readOnly && !!state.author && <button type="button" disabled={pinning.has(message.id)} onClick={() => void pin(message.id, false)}>{pinning.has(message.id) ? "Unpinning…" : "Unpin"}</button>}
+        </article>)}
+      </div>}
+      {!showPins && <>
       {state.phase === "loading" && <p className="chat-state" role="status">Loading messages…</p>}
       {state.phase === "error" && <div className="chat-state" role="alert"><p>{state.error}</p><button type="button" onClick={() => clientRef.current?.retryLoad()}>Try again</button></div>}
       {state.phase === "ready" && !messages.length && <div className="chat-state"><p>No messages yet.</p><small>{direct ? `Only you and ${channelName} can read this conversation.` : `Start the conversation in #${channelName}.`}</small></div>}
@@ -408,10 +444,12 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       </div>}
       <p className="sr-only" aria-live="polite" aria-atomic="true">{state.phase === "ready" && latestMessage && `${latestMessage.author.name}: ${latestMessage.content.text}`}</p>
       <p className="sr-only" role="status">{actionStatus}</p>
+      </>}
     </div>
 
     {actionTarget && actionMessage && <MessageActions key={actionMessage.id} message={actionMessage} target={actionTarget} authorId={state.author?.id}
-      canReact={!readOnly && !!state.author} onReact={react} onClose={() => setActionTarget(undefined)} onCopied={setActionStatus}
+      canReact={!readOnly && !!state.author} canPin={!readOnly && !!state.author} pinning={pinning.has(actionMessage.id)} onReact={react} onPin={pin}
+      onClose={() => setActionTarget(undefined)} onCopied={setActionStatus}
       onViewReactions={(emoji) => showReactors(actionMessage.id, emoji, actionTarget.anchor)} />}
     {reactorsTarget && reactorsMessage && state.channelId && <ReactorsPanel key={reactorsMessage.id} channelId={state.channelId}
       message={reactorsMessage} target={reactorsTarget} onClose={closeReactors} />}

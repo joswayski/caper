@@ -184,6 +184,27 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(snapshots.overlay(old).reactions?.first?.authorIds, ["self", "other"], "an older page must retain an unseen newer reaction")
     }
 
+    func testPinProtocolAndSnapshotsKeepUnpinNewerThanStaleHistory() throws {
+        let author = ChatAuthor(id: "other", name: "Other", isGuest: false)
+        let oldPin = MessagePin(author: author, createdAt: "2026-10-01T00:00:00Z")
+        var old = ChatMessage(id: "Message00000001", channelId: "Channel12345", seq: "1", author: author,
+                              content: ChatContent(version: 1, type: "text", text: "old"), createdAt: "now",
+                              clientMessageId: "client", pin: oldPin, pinSeq: "4")
+        var unpinned = old; unpinned.pin = nil; unpinned.pinSeq = "8"
+        var snapshots = PinSnapshots()
+        XCTAssertTrue(snapshots.apply(unpinned))
+        XCTAssertFalse(snapshots.apply(old), "an older page must not resurrect a newer unpin")
+        XCTAssertNil(snapshots.overlay(old).pin)
+        XCTAssertEqual(snapshots.overlay(old).pinSeq, "8")
+
+        let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(unpinned)) as! [String: Any]
+        let event: [String: Any] = ["type": "message.pin", "schemaVersion": 1, "channelId": old.channelId,
+                                    "seq": "8", "message": encoded]
+        XCTAssertEqual(PinEvent.sequence(event, channelID: old.channelId), "8")
+        var mismatch = event; mismatch["seq"] = "9"
+        XCTAssertNil(PinEvent.sequence(mismatch, channelID: old.channelId), "event sequence must equal message.pinSeq")
+    }
+
     func testBundledEmojiCatalogHasCanonicalSelectableArtwork() {
         XCTAssertEqual(EmojiArtwork.choices.count, 1_870)
         XCTAssertEqual(EmojiArtwork.id(for: "❤️"), "2764")

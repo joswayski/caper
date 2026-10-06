@@ -188,6 +188,29 @@ final class APIClientTests: XCTestCase {
         XCTAssertNil(chat.requestReactors(messageID: messageID), "a stopped chat has no message to load")
     }
 
+    func testPinPUTUsesChatTokenAndDecodesMessagePayload() async throws {
+        let channel = "Channel12345", message = "Message00000001"
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "PUT")
+            XCTAssertEqual(request.url?.path, "/api/chat/channels/\(channel)/messages/\(message)/pin")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "x-caper-chat-token"), "chat-secret")
+            let body = try XCTUnwrap(try requestBodyData(request))
+            XCTAssertEqual((try JSONSerialization.jsonObject(with: body) as? [String: Bool])?["active"], true)
+            return (200, Data("""
+            {"type":"message.pin","schemaVersion":1,"channelId":"\(channel)","seq":"9","message":{"id":"\(message)","channelId":"\(channel)","seq":"2","author":{"id":"u","name":"User","isGuest":false},"content":{"version":1,"type":"text","text":"old row"},"createdAt":"now","clientMessageId":"c2","pin":{"author":{"id":"p","name":"Pinner","isGuest":false},"createdAt":"now"},"pinSeq":"9"}}
+            """.utf8))
+        }
+        let event = try await client().setPin(channelID: channel, messageID: message, sessionToken: "chat-secret", active: true)
+        XCTAssertEqual(event.message.seq, "2", "pinning retains original creation sequence")
+        XCTAssertEqual(event.message.pinSeq, event.seq)
+        XCTAssertEqual(event.message.pin?.author.name, "Pinner")
+    }
+
+    func testHistoryDefaultsMissingPinnedMessagesToEmpty() throws {
+        let history = try JSONDecoder().decode(ChatHistory.self, from: chatHistory("Channel12345", sequences: [1], cursor: 1, hasMore: false))
+        XCTAssertEqual(history.pinnedMessages.count, 0)
+    }
+
     @MainActor
     private func waitUntil(_ predicate: @escaping @MainActor () -> Bool) async {
         for _ in 0..<100 where !predicate() { try? await Task.sleep(for: .milliseconds(10)) }

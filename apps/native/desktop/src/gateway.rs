@@ -1,5 +1,5 @@
 use crate::media_gateway::{CATCHUP_DEADLINE, Connection, ConnectionAttempt, Failure};
-use crate::model::{Author, Message, Presence, ReactionUpdate, VoiceOccupant, sequence};
+use crate::model::{Author, Message, PinUpdate, Presence, ReactionUpdate, VoiceOccupant, sequence};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
@@ -41,6 +41,11 @@ pub enum GatewayEvent {
         generation: u64,
         channel: String,
         update: ReactionUpdate,
+    },
+    Pin {
+        generation: u64,
+        channel: String,
+        update: Box<PinUpdate>,
     },
     Typing {
         generation: u64,
@@ -469,6 +474,44 @@ fn receive_frame(
                         generation,
                         channel: channel.into(),
                         update,
+                    });
+                }
+                Some("message.pin") => {
+                    let update: PinUpdate =
+                        serde_json::from_value(event.clone()).map_err(|_| {
+                            Failure::Retry("The gateway returned an invalid pin.".into())
+                        })?;
+                    if update.channel_id != channel
+                        || update.message.channel_id != channel
+                        || update.message.pin_seq.as_deref() != Some(update.seq.as_str())
+                    {
+                        return Err(Failure::Retry(
+                            "The gateway returned an invalid pin.".into(),
+                        ));
+                    }
+                    let previous = sequence(cursor).map_err(Failure::Retry)?;
+                    let next = sequence(&update.seq).map_err(Failure::Retry)?;
+                    let position = sequence(&stream.cursor).map_err(Failure::Retry)?;
+                    if next > position.saturating_add(1) || next > previous.saturating_add(1) {
+                        if !replacement {
+                            let _ = events.send(GatewayEvent::Resync {
+                                generation,
+                                channel: channel.into(),
+                            });
+                        }
+                        return Err(Failure::Retry("Non-contiguous gateway replay.".into()));
+                    }
+                    if next > position {
+                        stream.cursor = update.seq.clone();
+                    }
+                    if next <= previous {
+                        return Ok(false);
+                    }
+                    *cursor = update.seq.clone();
+                    let _ = events.send(GatewayEvent::Pin {
+                        generation,
+                        channel: channel.into(),
+                        update: Box::new(update),
                     });
                 }
                 Some("resync_required") => {

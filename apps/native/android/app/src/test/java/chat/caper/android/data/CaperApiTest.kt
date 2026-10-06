@@ -128,6 +128,16 @@ class CaperApiTest {
         assertEquals(3, server.requestCount)
     }
 
+    @Test fun `pin PUT sends active and returns full message event`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"type":"message.pin","schemaVersion":1,"channelId":"channel00001","seq":"9","message":{"id":"message00000001","channelId":"channel00001","seq":"3","author":{"id":"author","name":"A","isGuest":false},"content":{"version":1,"type":"text","text":"hello"},"createdAt":"2026-10-01T00:00:00Z","clientMessageId":"00000000-0000-4000-8000-000000000001","pin":{"author":{"id":"author","name":"A","isGuest":false},"createdAt":"2026-10-02T00:00:00Z"},"pinSeq":"9"}}"""))
+        CaperApi(baseUrl = server.url("/").toString()).setPin("account-secret", "chat-secret", "channel00001", "message00000001", true)
+        val request = server.takeRequest()
+        assertEquals("PUT", request.method)
+        assertEquals("/api/chat/channels/channel00001/messages/message00000001/pin", request.path)
+        assertEquals("chat-secret", request.headers["x-caper-chat-token"])
+        assertEquals("""{"active":true}""", request.body.readUtf8())
+    }
+
     @Test fun `space list defaults invitations for old APIs`() {
         val response = Json.decodeFromString<SpaceList>(
             """{"spaces":[],"limits":{"ownedSpaces":20,"totalSpaces":100,"channelsPerSpace":100}}""",

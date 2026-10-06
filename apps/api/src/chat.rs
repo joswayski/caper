@@ -95,6 +95,10 @@ pub(crate) fn routes() -> Router<AppState> {
             "/api/chat/channels/{channel}/messages/{message}/reactions",
             get(reactors).put(set_reaction),
         )
+        .route(
+            "/api/chat/channels/{channel}/messages/{message}/pin",
+            put(set_pin),
+        )
         .route("/api/chat/channels/{channel}/typing", post(typing))
 }
 
@@ -196,12 +200,20 @@ async fn history_page(
         .into_iter()
         .map(|(payload, avatar)| enrich_author(payload, avatar))
         .collect();
+    // All pins are returned independently of the history page. The shared
+    // channel lock also makes their revisions consistent with this cursor.
+    let pins: Vec<(Value, Option<i16>)> = sqlx::query_as("SELECT m.payload,u.avatar_id FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.channel_id=$1 AND jsonb_typeof(m.payload->'pin')='object' ORDER BY (m.payload->>'pinSeq')::bigint DESC LIMIT 100")
+        .bind(channel_id).fetch_all(&mut *tx).await.map_err(database_error)?;
+    let pins: Vec<Value> = pins
+        .into_iter()
+        .map(|(payload, avatar)| enrich_author(payload, avatar))
+        .collect();
     let mut channel_identity = json!({"id":channel,"name":channel_name});
     if space_id.is_none() {
         channel_identity["direct"] = json!(true);
     }
     Ok(
-        json!({"messages":rows,"cursor":head.to_string(),"hasMore":more,
+        json!({"messages":rows,"pinnedMessages":pins,"cursor":head.to_string(),"hasMore":more,
         "space":{"id":space,"name":space_name},"channel":channel_identity}),
     )
 }
@@ -361,6 +373,31 @@ async fn reactor_list(
     Ok(
         json!({"messageId":message,"reactionSeq":reaction_seq.unwrap_or_else(|| "0".into()),"reactions":reactions}),
     )
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PinInput {
+    active: bool,
+}
+
+async fn set_pin(
+    State(state): State<AppState>,
+    Path((channel, message)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(input): Json<PinInput>,
+) -> Result<Json<Value>, ApiError> {
+    let chat = enabled(&state)?;
+    let event = persist_pin(
+        &chat.pool,
+        &channel,
+        &message,
+        sender_token(&headers)?,
+        input.active,
+    )
+    .await?;
+    chat.wake.notify_one();
+    Ok(Json(event))
 }
 
 /// Single pre-publication boundary. Future replacement rules run here before
@@ -730,6 +767,122 @@ async fn persist_reaction(
     Ok(event)
 }
 
+async fn persist_pin(
+    pool: &PgPool,
+    channel: &str,
+    message: &str,
+    token: &str,
+    active: bool,
+) -> Result<Value, ApiError> {
+    let mut tx = pool.begin().await.map_err(database_error)?;
+    let (_, author_id, name, user_id, avatar_id) = authorize_sender(&mut tx, token).await?;
+    // Match the space -> channel lock order of membership edits/reactions.
+    // Read permissions after waiting, never from a pre-revocation snapshot.
+    let space_id: Option<i64> =
+        sqlx::query_scalar("SELECT space_id FROM public.channels WHERE external_id=$1")
+            .bind(channel)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(database_error)?
+            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
+    if let Some(space_id) = space_id {
+        sqlx::query("SELECT id FROM public.spaces WHERE id=$1 FOR UPDATE")
+            .bind(space_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(database_error)?
+            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
+    }
+    let access: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT c.id,c.last_seq FROM public.channels c LEFT JOIN public.spaces s ON s.id=c.space_id
+         WHERE c.external_id=$1 AND c.deleted_at IS NULL AND $2::bigint IS NOT NULL
+           AND ((s.deleted_at IS NULL AND NOT s.demo
+                 AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=$2)
+                 AND (s.owner_id=$2 OR NOT c.private OR EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=c.id AND cm.user_id=$2))
+                 AND EXISTS(SELECT 1 FROM public.channel_joins cj WHERE cj.channel_id=c.id AND cj.user_id=$2))
+                OR (c.space_id IS NULL AND EXISTS(SELECT 1 FROM public.direct_conversations d
+                    JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
+                    WHERE d.channel_id=c.id AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL)))
+         FOR UPDATE OF c")
+        .bind(channel).bind(user_id).fetch_optional(&mut *tx).await.map_err(database_error)?;
+    let (channel_id, head) =
+        access.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
+    let row: Option<(i64, Value, Option<i16>)> = sqlx::query_as(
+        "SELECT m.id,m.payload,u.avatar_id FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.channel_id=$1 AND m.external_id=$2 FOR UPDATE OF m")
+        .bind(channel_id).bind(message).fetch_optional(&mut *tx).await.map_err(database_error)?;
+    let (message_id, mut payload, message_avatar) =
+        row.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "message not found"))?;
+    let pinned = payload.get("pin").is_some_and(Value::is_object);
+    let changed = pinned != active;
+    let seq = if changed {
+        head + 1
+    } else {
+        payload
+            .get("pinSeq")
+            .and_then(Value::as_str)
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    };
+    if changed {
+        sqlx::query("DELETE FROM public.message_pin_activity WHERE user_id=$1 AND created_at <= now()-interval '1 minute'")
+            .bind(user_id).execute(&mut *tx).await.map_err(database_error)?;
+        let recent: i64 = sqlx::query_scalar("SELECT count(*) FROM public.message_pin_activity a JOIN public.messages m ON m.id=a.message_id WHERE m.channel_id=$1 AND a.user_id=$2 AND a.created_at > now()-interval '1 minute'")
+            .bind(channel_id).bind(user_id).fetch_one(&mut *tx).await.map_err(database_error)?;
+        if recent >= 60 {
+            return Err(ApiError::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "pin updates too frequent",
+            ));
+        }
+        if active {
+            let count: i64 = sqlx::query_scalar("SELECT count(*) FROM public.messages WHERE channel_id=$1 AND jsonb_typeof(payload->'pin')='object'")
+                .bind(channel_id).fetch_one(&mut *tx).await.map_err(database_error)?;
+            if count >= 100 {
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    "channel pin limit reached (100)",
+                ));
+            }
+        }
+        payload["pin"] = if active {
+            json!({"author":{"id":author_id,"name":name,"isGuest":false,"avatarId":avatar_id},"createdAt":Utc::now().to_rfc3339()})
+        } else {
+            Value::Null
+        };
+        sqlx::query("INSERT INTO public.message_pin_activity(message_id,user_id) VALUES($1,$2)")
+            .bind(message_id)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
+    }
+    payload["pinSeq"] = json!(seq.to_string());
+    let event = json!({"type":"message.pin","schemaVersion":1,"channelId":channel,"seq":seq.to_string(),"message":enrich_author(payload.clone(),message_avatar)});
+    if changed {
+        sqlx::query("UPDATE public.messages SET payload=$2 WHERE id=$1")
+            .bind(message_id)
+            .bind(payload)
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
+        sqlx::query("INSERT INTO public.channel_events(channel_id,seq,payload) VALUES($1,$2,$3)")
+            .bind(channel_id)
+            .bind(seq)
+            .bind(&event)
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
+        sqlx::query("UPDATE public.channels SET last_seq=$2 WHERE id=$1")
+            .bind(channel_id)
+            .bind(seq)
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
+    }
+    tx.commit().await.map_err(database_error)?;
+    Ok(event)
+}
+
 /// API replicas claim disjoint outbox batches. Broker arrival order is not an
 /// ordering authority: gateways merge/replay the committed channel sequences.
 pub(crate) fn spawn_publisher(chat: Chat) {
@@ -749,7 +902,7 @@ pub(crate) fn spawn_publisher(chat: Chat) {
 }
 async fn publish_pending(chat: &Chat) -> Result<bool, ()> {
     let mut tx = chat.pool.begin().await.map_err(|_| ())?;
-    let rows: Vec<(i64, i64, Value, Option<i16>)> = sqlx::query_as("SELECT e.channel_id,e.seq,e.payload,u.avatar_id FROM public.channel_events e LEFT JOIN public.messages m ON m.channel_id=e.channel_id AND m.channel_seq=e.seq LEFT JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE e.published_at IS NULL ORDER BY e.channel_id,e.seq LIMIT 64 FOR UPDATE OF e SKIP LOCKED")
+    let rows: Vec<(i64, i64, Value, Option<i16>)> = sqlx::query_as("SELECT e.channel_id,e.seq,e.payload,u.avatar_id FROM public.channel_events e LEFT JOIN public.messages m ON m.channel_id=e.channel_id AND m.external_id=e.payload->'message'->>'id' LEFT JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE e.published_at IS NULL ORDER BY e.channel_id,e.seq LIMIT 64 FOR UPDATE OF e SKIP LOCKED")
         .fetch_all(&mut *tx).await.map_err(|_| ())?;
     if rows.is_empty() {
         return Ok(false);

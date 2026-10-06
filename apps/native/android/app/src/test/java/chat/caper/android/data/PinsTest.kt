@@ -1,0 +1,27 @@
+package chat.caper.android.data
+
+import chat.caper.android.model.*
+import org.junit.Assert.*
+import org.junit.Test
+
+class PinsTest {
+    private val author = ChatAuthor("author", "Author", false)
+    private fun message(pinSeq: String, pinned: Boolean) = ChatMessage(
+        "message00000001", "channel00001", "3", author, ChatContent(1, "text", "old message"),
+        "2026-10-01T00:00:00Z", "00000000-0000-4000-8000-000000000001",
+        pin = if (pinned) MessagePin(author, "2026-10-02T00:00:00Z") else null, pinSeq = pinSeq,
+    )
+
+    @Test fun `stale pinned snapshot cannot resurrect newer unpin`() {
+        val unpinned = message("9", false)
+        val stale = message("7", true)
+        assertNull(mergePin(unpinned, stale).pin)
+        assertTrue(mergePinned(listOf(unpinned), listOf(stale)).isEmpty())
+    }
+
+    @Test fun `pin acknowledgement does not advance replay cursor`() {
+        val update = PinUpdate("message.pin", 1, "channel00001", "9", message("9", true))
+        assertEquals("5", replayCursorAfterPin("5", update, false))
+        assertEquals("9", replayCursorAfterPin("5", update, true))
+    }
+}

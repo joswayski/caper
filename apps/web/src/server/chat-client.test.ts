@@ -236,6 +236,47 @@ async function sendingFixture(t: TestContext) {
   };
 }
 
+test("pin PUTs share live state without advancing HTTP replay or restoring a later unpin", async (t) => {
+  const f = await sendingFixture(t);
+  const original = committed({ clientMessageId: "pin-target", text: "Shared pin" }, "1");
+  f.sockets[0].message(original);
+  const pinned = { ...original, pinSeq: "3", pin: { author: original.author, createdAt: original.createdAt } };
+  const event = { type: "message.pin" as const, schemaVersion: 1 as const, channelId: "general", seq: "3", message: pinned };
+  let finish!: (response: Response) => void;
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    assert.equal(String(input), "/api/chat/channels/general/messages/message-1/pin");
+    assert.equal(init?.method, "PUT");
+    assert.equal(new Headers(init?.headers).get("x-caper-chat-token"), "opaque");
+    assert.deepEqual(JSON.parse(String(init?.body)), { active: true });
+    return new Promise<Response>((resolve) => { finish = resolve; });
+  });
+  const saving = f.client.setPin(original.id, true);
+  f.sockets[0].message(committed({ clientMessageId: "between", text: "Between pin updates" }, "2"));
+  f.sockets[0].frame(event);
+  assert.equal(f.state.pinnedMessages[0].id, original.id);
+  f.sockets[0].frame({ ...event, seq: "4", message: { ...pinned, pin: null, pinSeq: "4" } });
+  finish(Response.json(event));
+  await saving;
+  assert.equal(f.client.snapshotHistory()?.cursor, "4");
+  assert.equal(f.state.pinnedMessages.length, 0);
+  assert.equal(f.state.messages[0].pin, null, "a late pin HTTP acknowledgement cannot revert a later shared unpin");
+  t.mock.method(globalThis, "fetch", async () => Response.json({ error: "Pins temporarily unavailable" }, { status: 503 }));
+  await assert.rejects(f.client.setPin(original.id, true), /Pins temporarily unavailable/);
+  assert.equal(f.state.pinnedMessages.length, 0);
+});
+
+test("HTTP-only pin acknowledgement updates the collection but not its durable cursor", async (t) => {
+  const f = await sendingFixture(t);
+  const original = committed({ clientMessageId: "pin-target", text: "Old pin outside the page" }, "1");
+  const event = { type: "message.pin", schemaVersion: 1, channelId: "general", seq: "2",
+    message: { ...original, pinSeq: "2", pin: { author: original.author, createdAt: original.createdAt } } };
+  t.mock.method(globalThis, "fetch", async () => Response.json(event));
+  await f.client.setPin(original.id, true);
+  assert.equal(f.client.snapshotHistory()?.cursor, "0");
+  assert.equal(f.state.messages.length, 0, "pins stay independent of pagination");
+  assert.equal(f.state.pinnedMessages[0].id, original.id);
+});
+
 for (const lifecycle of ["stopped", "denied"] as const) {
   test(`a late send acknowledgement cannot restore a ${lifecycle} chat`, async (t) => {
     const f = await sendingFixture(t);

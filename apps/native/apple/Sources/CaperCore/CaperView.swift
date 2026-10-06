@@ -1480,6 +1480,7 @@ private struct ChatView: View {
         }
     }
     @StateObject private var emojiComposer = EmojiComposerController()
+    @State private var showingPins = false
 
     /// Defer the scroll request; content geometry repeats it when the timeline
     /// finishes measuring, including history above the unsent message.
@@ -1513,6 +1514,11 @@ private struct ChatView: View {
                     .accessibilityLabel(model.selectedDirectMessageID == nil ? "# \(chat.channelName.lowercased())" : "Direct message with \(chat.channelName)")
                     .accessibilityIdentifier("selected-channel-name")
                 Spacer()
+                Button { showingPins = true } label: {
+                    Label(chat.pinnedMessages.isEmpty ? "Pins" : "Pins \(chat.pinnedMessages.count)", systemImage: "pin").font(CaperTheme.font(11, weight: .bold))
+                }
+                .buttonStyle(.plain).foregroundStyle(CaperTheme.muted).frame(minHeight: 44)
+                .accessibilityIdentifier("channel-pins")
                 if chat.liveState != .connected && showConnectionStatus {
                     Text(chat.liveState == .disconnected ? "Offline" : "Connecting…").font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.muted)
                         .accessibilityIdentifier("chat-connection-status")
@@ -1716,6 +1722,11 @@ private struct ChatView: View {
                 #if os(iOS)
                 MessageActionsSheet(message: message, showingEmojiPicker: $showingEmojiPicker,
                                     canReact: !chat.isPreview && chat.currentAuthor != nil,
+                                    canPin: !chat.isPreview && chat.currentAuthor != nil && !chat.pendingPins.contains(message.id),
+                                    togglePin: {
+                                        reactionMessage = nil
+                                        Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
+                                    },
                                     quickReaction: { emoji in
                                         guard !chat.isPreview, let author = chat.currentAuthor,
                                               let current = chat.messages.first(where: { $0.id == message.id }) else { return }
@@ -1734,12 +1745,19 @@ private struct ChatView: View {
                 }
                 #endif
             }
+            .sheet(isPresented: $showingPins) {
+                PinnedMessagesView(chat: chat, close: { showingPins = false })
+            }
             .onChange(of: chat.isPreview) { _, preview in
                 if preview { reactionMessage = nil; showingEmojiPicker = false }
             }
             .onChange(of: chat.currentAuthor?.id) { _, _ in reactionMessage = nil; showingEmojiPicker = false }
-            .onChange(of: model.selectedChannelID) { _, _ in reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil }
-            .onChange(of: model.selectedDirectMessageID) { _, _ in reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil }
+            .onChange(of: model.selectedChannelID) { _, _ in
+                reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil; showingPins = false
+            }
+            .onChange(of: model.selectedDirectMessageID) { _, _ in
+                reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil; showingPins = false
+            }
             .task(id: chat.liveState) {
                 showConnectionStatus = false
                 guard chat.liveState != .connected else { return }
@@ -1858,7 +1876,19 @@ private struct MessageRow: View {
                     #if os(macOS)
                     .textSelection(.enabled)
                     #endif
+                if let pin = message.pin {
+                    Label("Pinned by \(pin.author.name)", systemImage: "pin.fill")
+                        .font(CaperTheme.font(10, weight: .medium)).foregroundStyle(CaperTheme.muted)
+                        .accessibilityIdentifier("pinned-by-\(message.id)")
+                }
                 ReactionRow(message: message, chat: chat, reactors: reactors, showPicker: showReactionPicker)
+                if let error = chat.pinErrors[message.id] {
+                    HStack(spacing: 8) {
+                        Text(error)
+                        Button("Retry") { Task { await chat.retryPin(messageID: message.id) } }
+                            .disabled(chat.isPreview || chat.currentAuthor == nil || chat.pendingPins.contains(message.id))
+                    }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.terracottaBright)
+                }
                 if let error = chat.reactionErrors[message.id] {
                     HStack(spacing: 8) {
                         Text(error)
@@ -1878,7 +1908,12 @@ private struct MessageRow: View {
             .onLongPressGesture(perform: showReactionPicker)
             .accessibilityAction(named: Text("Message actions")) { showReactionPicker() }
         #else
-        row
+        row.contextMenu {
+            Button(message.pin == nil ? "Pin message" : "Unpin message") {
+                Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
+            }
+            .disabled(chat.isPreview || chat.currentAuthor == nil || chat.pendingPins.contains(message.id))
+        }
         #endif
     }
     private func timeLabel(_ value: String) -> String {
@@ -2249,6 +2284,8 @@ private struct MessageActionsSheet: View {
     let message: ChatMessage
     @Binding var showingEmojiPicker: Bool
     let canReact: Bool
+    let canPin: Bool
+    let togglePin: () -> Void
     let quickReaction: (String) -> Void
     let selectReaction: (String) -> Void
 
@@ -2281,6 +2318,11 @@ private struct MessageActionsSheet: View {
                     }
 
                     VStack(spacing: 0) {
+                        Button(action: togglePin) {
+                            Label(message.pin == nil ? "Pin message" : "Unpin message", systemImage: message.pin == nil ? "pin" : "pin.slash")
+                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        }.disabled(!canPin)
+                        Divider()
                         Button {
                             UIPasteboard.general.string = message.content.text
                             dismiss()
@@ -2308,11 +2350,70 @@ private struct MessageActionsSheet: View {
             }
         }
         .presentationBackground(CaperTheme.raised)
-        .presentationDetents(showingEmojiPicker ? [.medium, .large] : [.height(220)])
+        .presentationDetents(showingEmojiPicker ? [.medium, .large] : [.height(280)])
         .presentationDragIndicator(.visible)
     }
 }
 #endif
+
+private struct PinnedMessagesView: View {
+    @Bindable var chat: ChatModel
+    let close: () -> Void
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button("Messages", systemImage: "chevron.left", action: close).buttonStyle(.plain)
+                Spacer()
+                Text("Pins").font(CaperTheme.font(15, weight: .bold))
+                Spacer()
+                Button("Close", action: close).buttonStyle(.plain).opacity(0)
+            }.padding(.horizontal, 18).frame(height: 50)
+                .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+            if chat.pinnedMessages.isEmpty {
+                ContentUnavailableView("No pinned messages", systemImage: "pin", description: Text("Pinned messages in this channel will appear here."))
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(chat.pinnedMessages) { message in
+                            HStack(alignment: .top, spacing: 10) {
+                                Avatar(name: message.author.name, size: 34, avatarID: message.author.avatarId)
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(message.author.name).font(CaperTheme.font(13, weight: .bold))
+                                    if let date = ChatDateDivider.date(message.createdAt) {
+                                        Text(date.formatted(date: .abbreviated, time: .shortened))
+                                            .font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
+                                    }
+                                    Text(message.content.text).font(CaperTheme.font(14))
+                                    if let pin = message.pin {
+                                        Label("Pinned by \(pin.author.name)", systemImage: "pin.fill")
+                                            .font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
+                                    }
+                                    if let error = chat.pinErrors[message.id] {
+                                        HStack {
+                                            Text(error)
+                                            Button("Retry") { Task { await chat.retryPin(messageID: message.id) } }
+                                                .disabled(chat.pendingPins.contains(message.id))
+                                        }.font(CaperTheme.font(11)).foregroundStyle(CaperTheme.terracottaBright)
+                                    }
+                                }.frame(maxWidth: .infinity, alignment: .leading)
+                                if !chat.isPreview && chat.currentAuthor != nil {
+                                    Button(chat.pendingPins.contains(message.id) ? "Unpinning…" : "Unpin") {
+                                        Task { await chat.setPin(messageID: message.id, active: false) }
+                                    }.buttonStyle(.plain).font(CaperTheme.font(11, weight: .medium))
+                                        .disabled(chat.pendingPins.contains(message.id))
+                                        .frame(minHeight: 44)
+                                }
+                            }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 18).padding(.vertical, 12)
+                                .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+                                .accessibilityIdentifier("pinned-message-\(message.id)")
+                        }
+                    }
+                }
+            }
+        }.background(CaperTheme.conversation)
+            .accessibilityIdentifier("pinned-messages")
+    }
+}
 
 private struct ReactionPicker: View {
     @Environment(\.dismiss) private var dismiss

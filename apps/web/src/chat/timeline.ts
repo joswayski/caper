@@ -1,12 +1,14 @@
-import { sequence, type ChatMessage, type ChatReactionEvent } from "./types.ts";
+import { sequence, type ChatMessage, type ChatPinEvent, type ChatReactionEvent } from "./types.ts";
 
 const MAX_PENDING_EVENTS = 256;
 
 export class ChatTimeline {
   private cursorValue = 0n;
   private readonly byId = new Map<string, ChatMessage>();
-  private readonly eventBuffer = new Map<bigint, ChatMessage | ChatReactionEvent>();
+  private readonly eventBuffer = new Map<bigint, ChatMessage | ChatReactionEvent | ChatPinEvent>();
   private readonly unseenReactions = new Map<string, ChatReactionEvent>();
+  private readonly pinUpdates = new Map<string, ChatMessage>();
+  private pinnedById = new Map<string, ChatMessage>();
   private sortedMessages?: ChatMessage[];
 
   get cursor() { return this.cursorValue.toString(); }
@@ -18,13 +20,23 @@ export class ChatTimeline {
     });
   }
 
-  reset(messages: ChatMessage[], cursor: string) {
+  get pinnedMessages() { return [...this.pinnedById.values()].sort((a, b) => sequence(b.pinSeq ?? "0") > sequence(a.pinSeq ?? "0") ? 1 : -1); }
+
+  reset(messages: ChatMessage[], cursor: string, pinnedMessages: ChatMessage[] = []) {
     this.cursorValue = sequence(cursor);
+    // A complete history snapshot supersedes every pin update through its
+    // cursor, including pins removed while offline. Only newer HTTP acks survive.
+    for (const [id, message] of this.pinUpdates) {
+      if (this.cursorValue === 0n || sequence(message.pinSeq ?? "0") < this.cursorValue) this.pinUpdates.delete(id);
+    }
     this.byId.clear();
     this.eventBuffer.clear();
     this.unseenReactions.clear();
     this.sortedMessages = undefined;
+    this.pinnedById = new Map();
     for (const message of messages) this.merge(message);
+    for (const message of pinnedMessages) this.mergePinMessage(message);
+    for (const message of this.pinUpdates.values()) this.mergePinMessage(message);
   }
 
   prepend(messages: ChatMessage[]) {
@@ -35,7 +47,7 @@ export class ChatTimeline {
     this.merge(message);
   }
 
-  applyEvent(message: ChatMessage | ChatReactionEvent): "applied" | "buffered" | "duplicate" | "overflow" {
+  applyEvent(message: ChatMessage | ChatReactionEvent | ChatPinEvent): "applied" | "buffered" | "duplicate" | "overflow" {
     const next = sequence(message.seq);
     if (next <= this.cursorValue) {
       this.merge(message);
@@ -51,7 +63,7 @@ export class ChatTimeline {
     return "applied";
   }
 
-  private applyContiguous(next: bigint, message: ChatMessage | ChatReactionEvent) {
+  private applyContiguous(next: bigint, message: ChatMessage | ChatReactionEvent | ChatPinEvent) {
     this.merge(message);
     this.cursorValue = next;
     while (true) {
@@ -78,8 +90,25 @@ export class ChatTimeline {
     }
   }
 
-  private merge(message: ChatMessage | ChatReactionEvent) {
-    if ("type" in message) { this.mergeReactions(message); return; }
+  mergePin(event: ChatPinEvent) {
+    this.mergePinMessage(event.message);
+  }
+
+  private mergePinMessage(message: ChatMessage) {
+    const previous = this.pinUpdates.get(message.id);
+    const snapshot = previous && sequence(previous.pinSeq ?? "0") > sequence(message.pinSeq ?? "0") ? previous : message;
+    if (snapshot.pinSeq !== undefined) this.pinUpdates.set(snapshot.id, snapshot);
+    if (snapshot.pin) this.pinnedById.set(snapshot.id, snapshot);
+    else this.pinnedById.delete(snapshot.id);
+    const visible = this.byId.get(snapshot.id);
+    if (visible && sequence(snapshot.pinSeq ?? "0") > sequence(visible.pinSeq ?? "0")) {
+      this.byId.set(visible.id, { ...visible, pin: snapshot.pin, pinSeq: snapshot.pinSeq });
+      this.sortedMessages = undefined;
+    }
+  }
+
+  private merge(message: ChatMessage | ChatReactionEvent | ChatPinEvent) {
+    if ("type" in message) { message.type === "message.pin" ? this.mergePin(message) : this.mergeReactions(message); return; }
     const existing = this.byId.get(message.id);
     if (!existing) {
       this.byId.set(message.id, message);
@@ -92,5 +121,6 @@ export class ChatTimeline {
     }
     const unseen = this.unseenReactions.get(message.id);
     if (unseen) { this.mergeReactions(unseen); this.unseenReactions.delete(message.id); }
+    this.mergePinMessage(message);
   }
 }

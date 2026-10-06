@@ -43,6 +43,14 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 @Serializable data class ReactorGroup(val emoji: String, val authors: List<Reactor>)
 /** Who reacted to a message, per emoji in snapshot order and people in reaction order. */
 @Serializable data class ReactorList(val messageId: String, val reactionSeq: String, val reactions: List<ReactorGroup>)
+@Serializable data class MessagePin(val author: ChatAuthor, val createdAt: String)
+@Serializable data class PinUpdate(
+    val type: String,
+    val schemaVersion: Int,
+    val channelId: String,
+    val seq: String,
+    val message: ChatMessage,
+)
 @Serializable data class ReactionUpdate(
     val type: String,
     val schemaVersion: Int,
@@ -61,11 +69,14 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val clientMessageId: String,
     val reactions: List<MessageReaction> = emptyList(),
     val reactionSeq: String? = null,
+    val pin: MessagePin? = null,
+    val pinSeq: String? = null,
 )
 @Serializable data class ChatHistory(
     val messages: List<ChatMessage>,
     val cursor: String,
     val hasMore: Boolean,
+    val pinnedMessages: List<ChatMessage> = emptyList(),
     val space: ChatRoom? = null,
     val channel: ChatRoom? = null,
 )
@@ -186,6 +197,8 @@ data class AppUiState(
     val pendingMessage: PendingMessageUi? = null,
     val gateway: GatewayStatus = GatewayStatus.DISCONNECTED,
     val reactionSaves: Map<String, ReactionSaveUi> = emptyMap(),
+    val pinnedMessages: List<ChatMessage> = emptyList(),
+    val pinSaves: Map<String, PinSaveUi> = emptyMap(),
     val chatAuthorId: String? = null,
     val busy: Boolean = false,
     val error: String? = null,
@@ -207,3 +220,4 @@ data class PendingMessageUi(
 )
 
 data class ReactionSaveUi(val emoji: String, val active: Boolean, val saving: Boolean = true, val error: String? = null)
+data class PinSaveUi(val active: Boolean, val saving: Boolean = true, val error: String? = null)

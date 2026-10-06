@@ -49,6 +49,381 @@ fn external_ids_match_existing_alphabet_and_lengths() {
 
 #[tokio::test]
 #[ignore = "requires disposable loopback CHAT_TEST_DATABASE_URL"]
+async fn pins_are_shared_idempotent_authorized_and_transactional() {
+    let options =
+        PgConnectOptions::from_str(&std::env::var("CHAT_TEST_DATABASE_URL").unwrap()).unwrap();
+    assert!(matches!(options.get_host(), "127.0.0.1" | "localhost"));
+    let mut admin = sqlx::PgConnection::connect_with(&options).await.unwrap();
+    let database = format!("pins_test_{}", Uuid::new_v4().simple());
+    admin
+        .execute(format!("CREATE DATABASE {database}").as_str())
+        .await
+        .unwrap();
+    let pool = PgPoolOptions::new()
+        .max_connections(8)
+        .connect_with(options.database(&database))
+        .await
+        .unwrap();
+    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+    let mut actors = Vec::new();
+    for token in ["pin-owner", "pin-member"] {
+        let id: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name,avatar_id) VALUES($1,$1,$1,255) RETURNING id")
+            .bind(token).fetch_one(&pool).await.unwrap();
+        let hash = Sha256::digest(token.as_bytes()).to_vec();
+        sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 day')")
+            .bind(&hash).bind(id).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO public.chat_sessions(external_id,token_hash,name,user_id,account_session_hash) VALUES($1,$2,$1,$3,$2)")
+            .bind(token).bind(&hash).bind(id).execute(&pool).await.unwrap();
+        actors.push(id);
+    }
+    let owner = actors[0];
+    let member = actors[1];
+    let space: i64 = sqlx::query_scalar("INSERT INTO public.spaces(external_id,name,owner_id) VALUES('pin-space','Pins',$1) RETURNING id")
+        .bind(owner).fetch_one(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO public.space_members(space_id,user_id) SELECT $1,id FROM public.users",
+    )
+    .bind(space)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let channel = "pin-channel";
+    let channel_id: i64 = sqlx::query_scalar(
+        "INSERT INTO public.channels(external_id,space_id,name) VALUES($1,$2,'pins') RETURNING id",
+    )
+    .bind(channel)
+    .bind(space)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO public.channel_joins(channel_id,user_id) SELECT $1,id FROM public.users",
+    )
+    .bind(channel_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let original = persist(
+        &pool,
+        channel,
+        "pin-owner",
+        Uuid::new_v4(),
+        "An old shared pin",
+    )
+    .await
+    .unwrap();
+    let message = original["id"].as_str().unwrap();
+    let pin = persist_pin(&pool, channel, message, "pin-member", true)
+        .await
+        .unwrap();
+    assert_eq!(pin["seq"], "2");
+    assert_eq!(pin["message"]["seq"], "1");
+    assert_eq!(pin["message"]["pinSeq"], "2");
+    assert_eq!(pin["message"]["pin"]["author"]["id"], "pin-member");
+    assert_eq!(pin["message"]["author"]["avatarId"], 255);
+    let (one, two) = tokio::join!(
+        persist_pin(&pool, channel, message, "pin-owner", true),
+        persist_pin(&pool, channel, message, "pin-member", true)
+    );
+    assert_eq!(one.unwrap(), pin);
+    assert_eq!(two.unwrap(), pin);
+    persist_reaction(&pool, channel, message, "pin-owner", "🚀", true)
+        .await
+        .unwrap();
+    let history = history_page(&pool, channel, None, Some(owner))
+        .await
+        .unwrap();
+    assert_eq!(history["cursor"], "3");
+    assert_eq!(history["pinnedMessages"][0]["reactionSeq"], "3");
+    assert_eq!(history["messages"][0]["pin"], pin["message"]["pin"]);
+    let unpin = persist_pin(&pool, channel, message, "pin-owner", false)
+        .await
+        .unwrap();
+    assert_eq!(unpin["seq"], "4");
+    assert!(unpin["message"]["pin"].is_null());
+    assert_eq!(unpin["message"]["reactionSeq"], "3");
+    pool.execute("ALTER TABLE public.channel_events ADD CONSTRAINT reject_pin CHECK (seq < 5)")
+        .await
+        .unwrap();
+    assert!(
+        persist_pin(&pool, channel, message, "pin-owner", true)
+            .await
+            .is_err()
+    );
+    let rolled_back = history_page(&pool, channel, None, Some(owner))
+        .await
+        .unwrap();
+    assert_eq!(rolled_back["cursor"], "4");
+    assert_eq!(rolled_back["pinnedMessages"], json!([]));
+    let activity: i64 = sqlx::query_scalar("SELECT count(*) FROM public.message_pin_activity")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(activity, 2);
+    pool.execute("ALTER TABLE public.channel_events DROP CONSTRAINT reject_pin")
+        .await
+        .unwrap();
+
+    let broker_url = std::env::var("CHAT_TEST_VALKEY_URL").unwrap();
+    assert!(
+        broker_url.starts_with("redis://127.0.0.1:")
+            || broker_url.starts_with("redis://localhost:")
+    );
+    let chat = Chat {
+        pool: pool.clone(),
+        broker: redis::Client::open(broker_url).unwrap(),
+        wake: Arc::new(Notify::new()),
+    };
+    let mut state = AppState::new(
+        crate::Config::test(false),
+        Arc::new(crate::Cloudflare::new()),
+    );
+    state.chat = Some(chat.clone());
+    let app = crate::app(state);
+    for (token, body, expected) in [
+        (None, json!({"active":true}), StatusCode::UNAUTHORIZED),
+        (
+            Some("pin-owner"),
+            json!({"active":"true"}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            Some("pin-owner"),
+            json!({"active":true,"authorId":"spoofed"}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (Some("pin-owner"), json!({"active":false}), StatusCode::OK),
+    ] {
+        let mut request = axum::http::Request::builder()
+            .method("PUT")
+            .uri(format!(
+                "/api/chat/channels/{channel}/messages/{message}/pin"
+            ))
+            .header("content-type", "application/json");
+        if let Some(token) = token {
+            request = request.header("x-caper-chat-token", token);
+        }
+        assert_eq!(
+            app.clone()
+                .oneshot(
+                    request
+                        .body(axum::body::Body::from(body.to_string()))
+                        .unwrap()
+                )
+                .await
+                .unwrap()
+                .status(),
+            expected
+        );
+    }
+    // Two authenticated readers see the exact shared mutation and replay it.
+    let gateway = crate::gateway::Gateway::new(chat.clone());
+    gateway.start();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server =
+        tokio::spawn(axum::serve(listener, crate::gateway::router(gateway.clone())).into_future());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while reqwest::get(format!("http://{address}/readyz"))
+            .await
+            .unwrap()
+            .status()
+            != StatusCode::NO_CONTENT
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let mut readers = Vec::new();
+    for token in ["pin-owner", "pin-member"] {
+        let (mut reader, _) = tokio_tungstenite::connect_async(account_socket(
+            format!("ws://{address}/api/chat/events?channelId={channel}&after=3"),
+            token,
+        ))
+        .await
+        .unwrap();
+        let replayed = event(&mut reader).await;
+        assert_eq!(replayed["type"], "message.pin");
+        assert_eq!(replayed["message"]["author"]["avatarId"], 255);
+        assert!(replayed["message"]["pin"].is_null());
+        assert_eq!(event(&mut reader).await["cursor"], "4");
+        readers.push(reader);
+    }
+    let shared = persist_pin(&pool, channel, message, "pin-member", true)
+        .await
+        .unwrap();
+    publish_pending(&chat).await.unwrap();
+    for reader in &mut readers {
+        assert_eq!(event(reader).await, shared);
+    }
+    persist_pin(&pool, channel, message, "pin-owner", false)
+        .await
+        .unwrap();
+    for mut reader in readers {
+        reader.close(None).await.unwrap();
+    }
+    gateway.begin_shutdown();
+    server.abort();
+
+    // Readable previews do not grant mutations; private grants gate reads too.
+    sqlx::query("DELETE FROM public.channel_joins WHERE channel_id=$1 AND user_id=$2")
+        .bind(channel_id)
+        .bind(member)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        history_page(&pool, channel, None, Some(member))
+            .await
+            .is_ok()
+    );
+    for active in [true, false] {
+        assert_eq!(
+            persist_pin(&pool, channel, message, "pin-member", active)
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+    pool.execute("UPDATE public.channels SET private=true")
+        .await
+        .unwrap();
+    assert_eq!(
+        history_page(&pool, channel, None, Some(member))
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        persist_pin(&pool, channel, message, "wrong-token", true)
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        persist_pin(&pool, channel, "missing-message", "pin-owner", true)
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::NOT_FOUND
+    );
+
+    // Disposable SQL fixtures bypass send rate limits, not production behavior.
+    sqlx::query("INSERT INTO public.messages(external_id,channel_id,session_id,client_message_id,request_hash,channel_seq,payload) SELECT 'pinfixture'||lpad(n::text,5,'0'),m.channel_id,m.session_id,md5(n::text)::uuid,m.request_hash,n,m.payload || jsonb_build_object('id','pinfixture'||lpad(n::text,5,'0'),'seq',n::text,'clientMessageId',md5(n::text)::uuid) FROM public.messages m CROSS JOIN generate_series(5,106) n WHERE m.external_id=$1")
+        .bind(message).execute(&pool).await.unwrap();
+    pool.execute("UPDATE public.channels SET last_seq=106")
+        .await
+        .unwrap();
+    let repin = persist_pin(&pool, channel, message, "pin-owner", true)
+        .await
+        .unwrap();
+    let page = history_page(&pool, channel, None, Some(member)).await;
+    assert!(page.is_err());
+    let page = history_page(&pool, channel, None, Some(owner))
+        .await
+        .unwrap();
+    assert_eq!(page["messages"].as_array().unwrap().len(), 50);
+    assert!(
+        page["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["id"] != message)
+    );
+    assert_eq!(page["pinnedMessages"][0]["id"], message);
+    assert_eq!(page["pinnedMessages"][0]["pinSeq"], "107");
+    assert_eq!(page["cursor"], "107");
+    sqlx::query("UPDATE public.messages SET payload=payload || jsonb_build_object('pin',$1::jsonb,'pinSeq',channel_seq::text) WHERE channel_seq BETWEEN 5 AND 103")
+        .bind(&repin["message"]["pin"]).execute(&pool).await.unwrap();
+    assert_eq!(
+        persist_pin(&pool, channel, "pinfixture00106", "pin-owner", true)
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::CONFLICT
+    );
+    persist_pin(&pool, channel, message, "pin-owner", false)
+        .await
+        .unwrap();
+    let new_pin = persist_pin(&pool, channel, "pinfixture00106", "pin-owner", true)
+        .await
+        .unwrap();
+    let page = history_page(&pool, channel, None, Some(owner))
+        .await
+        .unwrap();
+    assert_eq!(page["pinnedMessages"].as_array().unwrap().len(), 100);
+    assert_eq!(page["pinnedMessages"][0]["id"], "pinfixture00106");
+
+    // No-op retries remain free at the rate boundary; real toggles do not.
+    sqlx::query("INSERT INTO public.message_pin_activity(message_id,user_id) SELECT m.id,$1 FROM public.messages m CROSS JOIN generate_series(1,60) WHERE m.external_id=$2")
+        .bind(owner).bind(message).execute(&pool).await.unwrap();
+    assert_eq!(
+        persist_pin(&pool, channel, "pinfixture00106", "pin-owner", true)
+            .await
+            .unwrap(),
+        new_pin
+    );
+    assert_eq!(
+        persist_pin(&pool, channel, "pinfixture00106", "pin-owner", false)
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    pool.execute("UPDATE public.message_pin_activity SET created_at=now()-interval '2 minutes'")
+        .await
+        .unwrap();
+    persist_pin(&pool, channel, "pinfixture00106", "pin-owner", false)
+        .await
+        .unwrap();
+
+    // A revocation that wins the space lock must beat a waiting mutation.
+    pool.execute("UPDATE public.channels SET private=false")
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) VALUES($1,$2)")
+        .bind(channel_id)
+        .bind(member)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut revocation = pool.begin().await.unwrap();
+    sqlx::query("SELECT id FROM public.spaces WHERE id=$1 FOR UPDATE")
+        .bind(space)
+        .execute(&mut *revocation)
+        .await
+        .unwrap();
+    let pending_pool = pool.clone();
+    let pending_message = message.to_owned();
+    let pending = tokio::spawn(async move {
+        persist_pin(&pending_pool, channel, &pending_message, "pin-member", true).await
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!pending.is_finished());
+    sqlx::query("DELETE FROM public.space_members WHERE space_id=$1 AND user_id=$2")
+        .bind(space)
+        .bind(member)
+        .execute(&mut *revocation)
+        .await
+        .unwrap();
+    revocation.commit().await.unwrap();
+    assert_eq!(
+        pending.await.unwrap().unwrap_err().status,
+        StatusCode::NOT_FOUND
+    );
+    pool.close().await;
+    admin
+        .execute(format!("DROP DATABASE {database} WITH (FORCE)").as_str())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires disposable loopback CHAT_TEST_DATABASE_URL"]
 async fn reactions_are_durable_idempotent_authorized_and_transactional() {
     let options =
         PgConnectOptions::from_str(&std::env::var("CHAT_TEST_DATABASE_URL").unwrap()).unwrap();

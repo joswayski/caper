@@ -2,7 +2,7 @@ import { ChatConnection } from "./connection.ts";
 import { ChatTimeline } from "./timeline.ts";
 import { playSound } from "../audio/effects.ts";
 import { appGateway } from "../gateway/client.ts";
-import { isChatMessage, isChatReactionEvent, sequence, type ChatAuthor, type ChatHistory, type ChatMessage, type ChatReactionEvent, type ChatSession, type ChatTypingEvent, type GeneralChatHistory } from "./types.ts";
+import { isChatMessage, isChatPinEvent, isChatReactionEvent, sequence, type ChatAuthor, type ChatHistory, type ChatMessage, type ChatPinEvent, type ChatReactionEvent, type ChatSession, type ChatTypingEvent, type GeneralChatHistory } from "./types.ts";
 
 const SESSION_KEY = "caper.chat.session";
 
@@ -20,6 +20,7 @@ export interface ChatViewState {
   channelId?: string;
   channelName: string;
   messages: ChatMessage[];
+  pinnedMessages: ChatMessage[];
   typingAuthors: ChatAuthor[];
   hasMore: boolean;
   loadingOlder: boolean;
@@ -34,7 +35,7 @@ export interface ChatViewState {
 
 const initialState: ChatViewState = {
   phase: "loading", online: false, spaceName: "Caper", channelName: "general",
-  messages: [], typingAuthors: [], hasMore: false, loadingOlder: false,
+  messages: [], pinnedMessages: [], typingAuthors: [], hasMore: false, loadingOlder: false,
 };
 
 export function initialChatView(history?: GeneralChatHistory, error?: string): ChatViewState {
@@ -42,7 +43,7 @@ export function initialChatView(history?: GeneralChatHistory, error?: string): C
   return history ? {
     ...initialState, phase: "ready", spaceName: history.space.name,
     channelId: history.channel.id, channelName: history.channel.name,
-    messages: history.messages, hasMore: history.hasMore,
+    messages: history.messages, pinnedMessages: history.pinnedMessages ?? [], hasMore: history.hasMore,
   } : initialState;
 }
 
@@ -57,7 +58,9 @@ function validHistory(value: unknown, general: boolean): value is ChatHistory | 
   if (!value || typeof value !== "object") return false;
   const history = value as Partial<GeneralChatHistory>;
   try { if (typeof history.cursor !== "string") return false; sequence(history.cursor); } catch { return false; }
-  return Array.isArray(history.messages) && history.messages.every(isChatMessage) && typeof history.hasMore === "boolean"
+  return Array.isArray(history.messages) && history.messages.every(isChatMessage)
+    && (history.pinnedMessages === undefined || (Array.isArray(history.pinnedMessages) && history.pinnedMessages.length <= 100 && history.pinnedMessages.every(isChatMessage)))
+    && typeof history.hasMore === "boolean"
     && (!general || (!!history.space && typeof history.space.id === "string" && typeof history.space.name === "string"
       && !!history.channel && typeof history.channel.id === "string" && typeof history.channel.name === "string"));
 }
@@ -75,6 +78,7 @@ export async function loadChatHistory(channelId?: string, signal?: AbortSignal):
   if (!validHistory(history, true)) throw new Error("The chat service returned invalid history.");
   if (channelId && history.channel.id !== channelId) throw new Error("The chat service returned the wrong channel.");
   if (history.messages.some((message) => message.channelId !== history.channel.id)) throw new Error("The chat service returned messages from another channel.");
+  if (history.pinnedMessages?.some((message) => message.channelId !== history.channel.id)) throw new Error("The chat service returned pins from another channel.");
   return history;
 }
 
@@ -130,10 +134,12 @@ export class ChatClient {
 
   snapshotHistory(): GeneralChatHistory | undefined {
     if (this.state.phase !== "ready" || this.spaceId === undefined || !this.channel) return;
+    const pinnedMessages = this.timeline.pinnedMessages;
     return {
       space: { id: this.spaceId, name: this.state.spaceName },
       channel: this.channel,
       messages: this.timeline.messages, cursor: this.timeline.cursor, hasMore: this.state.hasMore,
+      ...(pinnedMessages.length ? { pinnedMessages } : {}),
     };
   }
 
@@ -356,7 +362,24 @@ export class ChatClient {
     finally { if (this.reactionRequests.get(messageId) === request) this.reactionRequests.delete(messageId); }
   }
 
-  private receiveEvent(event: ChatMessage | ChatReactionEvent) {
+  async setPin(messageId: string, active: boolean): Promise<void> {
+    const generation = this.generation;
+    const channelId = this.state.channelId;
+    const session = this.session;
+    if (this.controller.signal.aborted || !channelId || !session) throw new Error("Your chat session is unavailable. Retry the session, then try again.");
+    const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/pin`, {
+      method: "PUT", headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
+      body: JSON.stringify({ active }), signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
+    });
+    if (!response.ok) throw await apiError(response, active ? "Message could not be pinned." : "Message could not be unpinned.");
+    const event: unknown = await response.json();
+    if (!isChatPinEvent(event) || event.channelId !== channelId || event.message.id !== messageId) throw new Error("The chat service returned an invalid pin.");
+    if (generation !== this.generation || this.controller.signal.aborted) return;
+    this.timeline.mergePin(event);
+    this.update({ messages: this.timeline.messages, pinnedMessages: this.timeline.pinnedMessages });
+  }
+
+  private receiveEvent(event: ChatMessage | ChatReactionEvent | ChatPinEvent) {
     const visible = new Set(this.timeline.messages.map((item) => item.id));
     const result = this.timeline.applyEvent(event);
     if (!("type" in event)) {
@@ -365,7 +388,7 @@ export class ChatClient {
     }
     if (result !== "buffered" && result !== "overflow") {
       const messages = this.timeline.messages;
-      this.update({ messages });
+      this.update({ messages, pinnedMessages: this.timeline.pinnedMessages });
       const ownAuthorId = this.session?.author.id ?? this.state.author?.id;
       if (this.sounds && result === "applied" && messages.some((item) => !visible.has(item.id) && item.author.id !== ownAuthorId)) playSound("new-message");
     }
@@ -389,6 +412,7 @@ export class ChatClient {
       if (!validHistory(history, true)) throw new Error("The chat service returned invalid history.");
       if (this.channelId && history.channel.id !== this.channelId) throw new Error("The chat service returned the wrong channel.");
       if (history.messages.some((message) => message.channelId !== history.channel.id)) throw new Error("The chat service returned messages from another channel.");
+      if (history.pinnedMessages?.some((message) => message.channelId !== history.channel.id)) throw new Error("The chat service returned pins from another channel.");
       if (generation !== this.generation) return;
       this.spaceId = history.space.id;
       this.channel = history.channel;
@@ -411,15 +435,16 @@ export class ChatClient {
       // Even across a gap, preserve newer HTTP reaction revisions on fresh rows.
       const freshIds = new Set(history.messages.map((message) => message.id));
       const retained = this.timeline.messages.filter((message) => contiguous || freshIds.has(message.id));
-      this.timeline.reset([...history.messages, ...retained], history.cursor);
+      this.timeline.reset([...history.messages, ...retained], history.cursor, history.pinnedMessages ?? []);
       this.update({
         phase: "ready", spaceName: history.space.name, channelId: history.channel.id,
-        channelName: history.channel.name, messages: this.timeline.messages, hasMore: retainedOlder ? previous.hasMore : history.hasMore,
+        channelName: history.channel.name, messages: this.timeline.messages, pinnedMessages: this.timeline.pinnedMessages, hasMore: retainedOlder ? previous.hasMore : history.hasMore,
       });
       this.connection = new ChatConnection(history.channel.id, {
         cursor: () => this.timeline.cursor,
         message: (message) => this.receiveEvent(message),
         reactions: (event) => this.receiveEvent(event),
+        pin: (event) => this.receiveEvent(event),
         status: (online) => {
           if (!online) { this.typers.clear(); this.refreshTypers(); }
           this.update({ online });
@@ -434,7 +459,7 @@ export class ChatClient {
         if (denied) { this.timeline.reset([], "0"); this.spaceId = undefined; }
         this.update({
           phase: previous && !denied ? "ready" : "error", online: false,
-          ...(denied ? { messages: [], channelId: undefined } : {}),
+          ...(denied ? { messages: [], pinnedMessages: [], channelId: undefined } : {}),
           error: error instanceof Error ? error.message : "Messages are unavailable.",
         });
       }

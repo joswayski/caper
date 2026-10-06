@@ -294,6 +294,9 @@ struct CaperApp {
     reaction_errors: BTreeMap<String, String>,
     /// Who reacted, by message ID, for reaction chip hover cards.
     reactors: BTreeMap<String, ReactorCache>,
+    pending_pins: BTreeSet<String>,
+    pin_errors: BTreeMap<String, (bool, String)>,
+    showing_pins: bool,
     typers: BTreeMap<String, Typer>,
     typing_sent: bool,
     typing_edited: Instant,
@@ -405,6 +408,9 @@ impl CaperApp {
             pending_reactions: BTreeMap::new(),
             reaction_errors: BTreeMap::new(),
             reactors: BTreeMap::new(),
+            pending_pins: BTreeSet::new(),
+            pin_errors: BTreeMap::new(),
+            showing_pins: false,
             typers: BTreeMap::new(),
             typing_sent: false,
             typing_edited: now,
@@ -945,6 +951,8 @@ impl CaperApp {
                 },
                 reactions: Vec::new(),
                 reaction_seq: None,
+                pin: None,
+                pin_seq: None,
             })
             .collect();
         self.timeline.reset(messages, "4").expect("valid fixture");
@@ -1302,6 +1310,38 @@ impl CaperApp {
                         };
                     }
                 }
+                Event::Pinned {
+                    generation,
+                    channel,
+                    message,
+                    active,
+                    result,
+                } if current(
+                    generation,
+                    self.generation,
+                    Some(&channel),
+                    self.selected_channel.as_deref(),
+                ) =>
+                {
+                    self.pending_pins.remove(&message);
+                    match result {
+                        Ok(update)
+                            if update.channel_id == channel && update.message.id == message =>
+                        {
+                            if self.timeline.merge_pin_ack(update).is_err() {
+                                self.reload_channel();
+                            }
+                            self.pin_errors.remove(&message);
+                        }
+                        Ok(_) => self.reload_channel(),
+                        Err(error) if matches!(error.status, Some(401 | 403 | 404)) => {
+                            self.clear_channel(&error.message)
+                        }
+                        Err(error) => {
+                            self.pin_errors.insert(message, (active, error.message));
+                        }
+                    }
+                }
                 Event::Admin { generation, result } if generation == self.generation => {
                     self.loading = false;
                     match result {
@@ -1472,7 +1512,7 @@ impl CaperApp {
 
     fn accept_channel(
         &mut self,
-        history: model::History,
+        mut history: model::History,
         session: crate::worker::SessionResult,
         general: bool,
         requested_channel: &str,
@@ -1525,8 +1565,15 @@ impl CaperApp {
             .filter(|message| contiguous || fresh_ids.contains(&message.id))
             .cloned()
             .collect();
-        messages.extend(history.messages);
+        messages.extend(std::mem::take(&mut history.messages));
         if let Err(error) = self.timeline.reset(messages, &history.cursor) {
+            self.clear_channel(&error);
+            return;
+        }
+        if let Err(error) = self
+            .timeline
+            .reset_pins(std::mem::take(&mut history.pinned_messages))
+        {
             self.clear_channel(&error);
             return;
         }
@@ -1782,6 +1829,7 @@ impl CaperApp {
             },
             model::History {
                 messages: self.timeline.messages().cloned().collect(),
+                pinned_messages: self.timeline.pinned_messages().cloned().collect(),
                 cursor: self.timeline.cursor(),
                 has_more: self.has_more,
                 space: model::HistoryPlace {
@@ -2186,6 +2234,25 @@ impl CaperApp {
                     _ => {}
                 }
             }
+            GatewayEvent::Pin {
+                generation,
+                channel,
+                update,
+            } if current(
+                generation,
+                self.generation,
+                Some(&channel),
+                self.selected_channel.as_deref(),
+            ) =>
+            {
+                self.pending_pins.remove(&update.message.id);
+                self.pin_errors.remove(&update.message.id);
+                match self.timeline.apply_pin(*update) {
+                    Ok(model::Apply::Applied) => self.mark_selected_direct_read(),
+                    Ok(model::Apply::Resync) | Err(_) => self.reload_channel(),
+                    _ => {}
+                }
+            }
             GatewayEvent::Typing {
                 generation,
                 channel,
@@ -2392,6 +2459,9 @@ impl CaperApp {
         self.pending_reactions.clear();
         self.reaction_errors.clear();
         self.reactors.clear();
+        self.pending_pins.clear();
+        self.pin_errors.clear();
+        self.showing_pins = false;
         self.draft.clear();
         self.typers.clear();
         self.live = "Offline".into();
@@ -5452,6 +5522,9 @@ impl CaperApp {
                                 Some(item) => item.peer.display_name.clone(),
                                 None => format!("# {}", self.channel_name()),
                             }).size(13.76));
+                            if self.showing_pins {
+                                ui.label(RichText::new("Pinned messages").size(12.0).color(MUTED));
+                            }
                             // Web: a failed refresh keeps the conversation and offers Retry in the header.
                             if let Some(error) = self.load_error.clone().filter(|_| self.timeline.messages().next().is_some()) {
                                 ui.add(egui::Label::new(RichText::new(error).size(11.2).color(ERROR)).truncate());
@@ -5462,6 +5535,12 @@ impl CaperApp {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
+                                    let pin_count = self.timeline.pinned_messages().count();
+                                    if self.showing_pins {
+                                        if ui.button("Messages").clicked() { self.showing_pins = false; }
+                                    } else if ui.button(format!("Pins ({pin_count})")).clicked() {
+                                        self.showing_pins = true;
+                                    }
                                     if self.selected_direct.is_none() {
                                         if let (Some(space), Some(channel)) = (self.selected_space.clone(), self.selected_channel.clone())
                                             && let Some(entry) = self.detail.as_ref().and_then(|detail| detail.channels.iter().find(|item| item.id == channel)).cloned()
@@ -5746,6 +5825,15 @@ impl CaperApp {
                 history = history.vertical_scroll_offset(f32::MAX);
             }
             let history = history.show(ui, |ui| {
+                    if self.showing_pins {
+                        let pins: Vec<_> = self.timeline.pinned_messages().cloned().collect();
+                        if pins.is_empty() {
+                            chat_state(ui, 2, |ui| { ui.label(RichText::new("No pinned messages.").color(MUTED)); });
+                        } else {
+                            for message in &pins { self.message(ui, message); }
+                        }
+                        return;
+                    }
                     if let Some(error) = self.load_error.clone().filter(|_| empty) {
                         chat_state(ui, 2, |ui| {
                             ui.label(RichText::new(error).color(MUTED));
@@ -5980,7 +6068,18 @@ impl CaperApp {
     }
 
     fn message(&mut self, ui: &mut egui::Ui, message: &model::Message) {
-        let time = display_time(&message.created_at);
+        let time = if self.showing_pins {
+            DateTime::parse_from_rfc3339(&message.created_at).map_or_else(
+                |_| message.created_at.clone(),
+                |date| {
+                    date.with_timezone(&Local)
+                        .format("%b %-d, %Y · %-I:%M %p")
+                        .to_string()
+                },
+            )
+        } else {
+            display_time(&message.created_at)
+        };
         message_row(
             ui,
             &message.author.name,
@@ -5990,6 +6089,22 @@ impl CaperApp {
             message.author.is_guest,
             false,
         );
+        if let Some(pin) = &message.pin {
+            egui::Frame::new()
+                .inner_margin(egui::Margin {
+                    left: 62,
+                    right: 18,
+                    top: 0,
+                    bottom: 2,
+                })
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new(format!("Pinned by {}", pin.author.name))
+                            .size(11.0)
+                            .color(MUTED),
+                    );
+                });
+        }
         let author = self
             .session
             .as_ref()
@@ -6076,7 +6191,30 @@ impl CaperApp {
                             self.reaction_search_focus = true;
                         }
                     }
+                    if can_react {
+                        let active = message.pin.is_some();
+                        if ui
+                            .add_enabled(
+                                !self.pending_pins.contains(&message.id),
+                                egui::Button::new(if active { "Unpin" } else { "Pin" }).small(),
+                            )
+                            .clicked()
+                        {
+                            self.set_pin(&message.id, !active);
+                        }
+                    }
                 });
+                if let Some((active, error)) = self.pin_errors.get(&message.id).cloned() {
+                    ui.horizontal(|ui| {
+                        ui.colored_label(ERROR, error);
+                        if can_react && ui.small_button("Retry").clicked() {
+                            self.set_pin(&message.id, active);
+                        }
+                        if ui.small_button("Dismiss").clicked() {
+                            self.pin_errors.remove(&message.id);
+                        }
+                    });
+                }
                 if let Some(error) = self.reaction_errors.get(&message.id).cloned() {
                     ui.horizontal(|ui| {
                         ui.colored_label(ERROR, error);
@@ -6268,6 +6406,25 @@ impl CaperApp {
             );
         }
         self.send_next_reaction(message);
+    }
+
+    fn set_pin(&mut self, message: &str, active: bool) {
+        if !self.selected_is_joined() || self.pending_pins.contains(message) {
+            return;
+        }
+        let (Some(session), Some(channel)) = (&self.session, &self.selected_channel) else {
+            return;
+        };
+        self.pin_errors.remove(message);
+        self.pending_pins.insert(message.to_owned());
+        self.worker.send(Command::Pin {
+            generation: self.generation,
+            token: self.token.clone(),
+            chat_token: session.token.clone(),
+            channel: channel.clone(),
+            message: message.to_owned(),
+            active,
+        });
     }
 
     fn send_next_reaction(&mut self, message: &str) {
@@ -11163,6 +11320,7 @@ mod tests {
                 name: "general".into(),
             },
             messages: app.timeline.messages().cloned().collect(),
+            pinned_messages: Vec::new(),
             cursor: "0".into(),
             has_more: false,
         };
@@ -11633,6 +11791,7 @@ mod tests {
     fn history(channel: &str) -> History {
         History {
             messages: Vec::new(),
+            pinned_messages: Vec::new(),
             cursor: "0".into(),
             has_more: false,
             space: HistoryPlace {
@@ -12645,6 +12804,8 @@ mod tests {
             },
             reactions: Vec::new(),
             reaction_seq: None,
+            pin: None,
+            pin_seq: None,
         };
         assert!(pending.confirmed_by(&message, "author"));
         assert!(!pending.confirmed_by(&message, "another-author"));
@@ -12722,6 +12883,8 @@ mod tests {
                 },
                 reactions: Vec::new(),
                 reaction_seq: None,
+                pin: None,
+                pin_seq: None,
             }),
         });
         assert!(!app.typers.get("other").unwrap().typing);

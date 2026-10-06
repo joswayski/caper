@@ -511,7 +511,7 @@ async fn replay(
     while *after < access.last_seq {
         identity.check(state).await?;
         channel_access(&state.chat.pool, channel, identity.user).await?;
-        let rows: Vec<(i64, Value, Option<i16>)> = sqlx::query_as("SELECT e.seq,e.payload,u.avatar_id FROM public.channel_events e LEFT JOIN public.messages m ON m.channel_id=e.channel_id AND m.channel_seq=e.seq LEFT JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE e.channel_id=$1 AND e.seq>$2 AND e.seq<=$3 ORDER BY e.seq LIMIT 128")
+        let rows: Vec<(i64, Value, Option<i16>)> = sqlx::query_as("SELECT e.seq,e.payload,u.avatar_id FROM public.channel_events e LEFT JOIN public.messages m ON m.channel_id=e.channel_id AND m.external_id=e.payload->'message'->>'id' LEFT JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE e.channel_id=$1 AND e.seq>$2 AND e.seq<=$3 ORDER BY e.seq LIMIT 128")
             .bind(access.id).bind(*after).bind(access.last_seq).fetch_all(&state.chat.pool).await.map_err(|_| chat::unavailable())?;
         if rows.is_empty() {
             return Err(chat::unavailable());

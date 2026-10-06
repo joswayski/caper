@@ -48,6 +48,7 @@ function initialState() {
   return {
     spaces: [{ space, channels, members: clone(members) }], messages, directs: [],
     reactionEvents: new Map(),
+    pinEvents: new Map(),
     invitations: new Map(),
     channelInvitations: new Map(),
     joins: new Map(channels.map(channel => [channel.id, channel.private ? [ids.owner, ids.member] : members.map(member => member.id)])),
@@ -95,6 +96,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
   const channelEvents = (channelId) => [
     ...(state.messages.get(channelId) ?? []).map(message => ({ type: 'message.created', channelId, seq: message.seq, message })),
     ...(state.reactionEvents.get(channelId) ?? []),
+    ...(state.pinEvents.get(channelId) ?? []),
   ].sort((a, b) => BigInt(a.seq) < BigInt(b.seq) ? -1 : 1);
   const channelHead = (channelId) => channelEvents(channelId).at(-1)?.seq ?? '0';
   const react = (channelId, message, emoji, userId, active) => {
@@ -111,6 +113,16 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       broadcast('chat', channelId, event);
     }
     return { type: 'message.reactions', schemaVersion: 1, channelId, seq: message.reactionSeq ?? '0', messageId: message.id, reactions: message.reactions ?? [] };
+  };
+  const pin = (channelId, message, who, active) => {
+    if (!!message.pin !== active) {
+      message.pinSeq = String(BigInt(channelHead(channelId)) + 1n);
+      message.pin = active ? { author: clone(who), createdAt: new Date().toISOString() } : null;
+      const event = { type: 'message.pin', schemaVersion: 1, channelId, seq: message.pinSeq, message: clone(message) };
+      state.pinEvents.set(channelId, [...(state.pinEvents.get(channelId) ?? []), event]);
+      broadcast('chat', channelId, event);
+    }
+    return { type: 'message.pin', schemaVersion: 1, channelId, seq: message.pinSeq ?? '0', message: { ...message, pinSeq: message.pinSeq ?? '0' } };
   };
   const json = (response, status, body, headers = {}) => {
     response.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', ...headers });
@@ -160,6 +172,12 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           if (!message) return reject(response, 404, 'Fixture message not found.');
           if (!accounts.some(account => account.id === userId)) return reject(response, 400, 'Unknown fixture account.');
           react(channelId, message, emoji, userId, active);
+        }
+        if (body.incomingPin) {
+          const { channelId, messageId, active = true } = body.incomingPin;
+          const message = state.messages.get(channelId)?.find(message => message.id === messageId);
+          if (!message) return reject(response, 404, 'Fixture message not found.');
+          pin(channelId, message, author(members[2]), active);
         }
         if (body.media) {
           const channelId = body.media.channelId ?? ids.demo;
@@ -291,6 +309,19 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           })) })),
         });
       }
+      const pinPath = /^\/api\/chat\/channels\/([^/]+)\/messages\/([^/]+)\/pin$/.exec(path);
+      if (pinPath && method === 'PUT') {
+        const channel = channelFor(pinPath[1]);
+        if (!channel || !canParticipate(channel, user)) return reject(response, 404, 'resource not found');
+        const who = state.chatSessions.get(request.headers['x-caper-chat-token']);
+        if (!who || who.isGuest) return reject(response, 401, 'Messaging session required.');
+        if (typeof body.active !== 'boolean' || Object.keys(body).length !== 1) return reject(response, 400, 'Invalid fixture pin.');
+        const message = state.messages.get(channel.id)?.find(message => message.id === pinPath[2]);
+        if (!message) return reject(response, 404, 'Message not found.');
+        if (body.active && !message.pin && (state.messages.get(channel.id) ?? []).filter(message => message.pin).length >= 100)
+          return reject(response, 409, 'Channel pin limit reached (100).');
+        return json(response, 200, pin(channel.id, message, who, body.active));
+      }
       const chat = /^\/api\/chat\/channels\/([^/]+)\/messages$/.exec(path);
       if (path === '/api/chat/general' || chat) {
         const channel = channelFor(chat?.[1] ?? ids.demo);
@@ -320,7 +351,8 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         const before = url.searchParams.get('before');
         if (before !== null && !/^(0|[1-9]\d*)$/.test(before)) return reject(response, 400, 'invalid cursor');
         const available = before !== null ? messages.filter((message) => BigInt(message.seq) < BigInt(before)) : messages;
-        return json(response, 200, { space: spaceFor(channel.spaceId), channel, messages: available.slice(-50), cursor: channelHead(channel.id), hasMore: available.length > 50 });
+        const pinnedMessages = messages.filter(message => message.pin).sort((a, b) => BigInt(a.pinSeq) > BigInt(b.pinSeq) ? -1 : 1);
+        return json(response, 200, { space: spaceFor(channel.spaceId), channel, messages: available.slice(-50), pinnedMessages, cursor: channelHead(channel.id), hasMore: available.length > 50 });
       }
       const spacePath = /^\/api\/spaces(?:\/([^/]+))?(?:\/channels\/([^/]+))?(?:\/(channels|members|invitations|invitation|membership)(?:\/([^/]+))?)?$/.exec(path);
       if (spacePath) {

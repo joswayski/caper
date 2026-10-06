@@ -19,6 +19,14 @@ export interface ChatReactionEvent {
   reactions: ChatReaction[];
 }
 
+export interface ChatPinEvent {
+  type: "message.pin";
+  schemaVersion: 1;
+  channelId: string;
+  seq: string;
+  message: ChatMessage;
+}
+
 export interface ChatMessage {
   id: string;
   channelId: string;
@@ -29,12 +37,15 @@ export interface ChatMessage {
   clientMessageId: string;
   reactions?: ChatReaction[];
   reactionSeq?: string;
+  pin?: { author: ChatAuthor; createdAt: string } | null;
+  pinSeq?: string;
 }
 
 export interface ChatHistory {
   messages: ChatMessage[];
   cursor: string;
   hasMore: boolean;
+  pinnedMessages?: ChatMessage[];
 }
 
 export interface GeneralChatHistory extends ChatHistory {
@@ -58,6 +69,7 @@ export interface ChatTypingEvent {
 export type ChatEvent =
   | ChatTypingEvent
   | ChatReactionEvent
+  | ChatPinEvent
   | { type: "message.created"; channelId: string; seq: string; message: ChatMessage }
   | { type: "ready"; cursor: string }
   | { type: "migrating" }
@@ -82,8 +94,18 @@ export function isChatMessage(value: unknown): value is ChatMessage {
     && typeof message.createdAt === "string" && typeof message.clientMessageId === "string"
     && (message.reactions === undefined || isChatReactions(message.reactions))
     && (message.reactionSeq === undefined || (typeof message.reactionSeq === "string" && /^(0|[1-9]\d*)$/.test(message.reactionSeq)))
+    && (message.pinSeq === undefined || (typeof message.pinSeq === "string" && /^(0|[1-9]\d*)$/.test(message.pinSeq)))
+    && (message.pin === undefined || message.pin === null || (typeof message.pin === "object" && isChatAuthor(message.pin.author) && typeof message.pin.createdAt === "string"))
     && isChatAuthor(message.author) && !!message.content
     && message.content.version === 1 && message.content.type === "text" && typeof message.content.text === "string";
+}
+
+export function isChatPinEvent(value: unknown): value is ChatPinEvent {
+  if (!value || typeof value !== "object") return false;
+  const event = value as Partial<ChatPinEvent>;
+  return event.type === "message.pin" && event.schemaVersion === 1 && typeof event.channelId === "string"
+    && typeof event.seq === "string" && /^(0|[1-9]\d*)$/.test(event.seq) && isChatMessage(event.message)
+    && event.message.channelId === event.channelId && event.message.pinSeq === event.seq;
 }
 
 export function isChatReactions(value: unknown): value is ChatReaction[] {
