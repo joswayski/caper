@@ -81,6 +81,20 @@ try {
   browser('pins-check', 'click', '.chat-pins-toggle');
   wait('pins-check', `!!document.querySelector('${row}')`);
 
+  // Pins and the existing reaction-details action share the same menu.
+  await control({ incomingReaction: { channelId: 'chan00000001', messageId: message.id, emoji: '🚀' } });
+  wait('pins-check', `!!document.querySelector('${row} .chat-reaction')`);
+  menu();
+  assert.equal(evaluate('pins-check', '[...document.querySelectorAll(".chat-message-actions button")].some(b => b.textContent === "Pin message")'), true);
+  action('pins-check', 'View reactions');
+  wait('pins-check', 'document.querySelector(".chat-reactors-list")?.textContent.includes("@alex")');
+  assert.equal(evaluate('pins-check', '!!document.querySelector(".chat-message-actions")'), false);
+  assert.equal((await history()).pinnedMessages.length, 0, 'Viewing reactions must not mutate pins');
+  browser('pins-check', 'press', 'Escape');
+  wait('pins-check', '!document.querySelector(".chat-reactors")');
+  await control({ incomingReaction: { channelId: 'chan00000001', messageId: message.id, emoji: '🚀', active: false } });
+  wait('pins-check', `!document.querySelector('${row} .chat-reaction')`);
+
   // Hold/fail a real action before it reaches the server, then retry its intent.
   evaluate('pins-check', `(() => {
     const original = window.fetch.bind(window);
@@ -163,7 +177,7 @@ try {
   wait('pins-check', 'document.querySelector("#chat-heading")?.textContent === "# design"');
   assert.equal(evaluate('pins-check', '!!document.querySelector(".chat-pins")'), false, 'Channel changes must leave the previous pin view');
   assert.equal(evaluate('pins-check', 'document.querySelector(".chat-pins-toggle").getAttribute("aria-label")'), 'Pins, 0');
-  console.log('PASS: one-action pin/unpin, two-tab fanout, remote attribution, full pin history, pending/error/retry, touch drawer, narrow layout and channel isolation.');
+  console.log('PASS: one-action pin/unpin, two-tab fanout, remote attribution, full pin history, reaction-details coexistence, pending/error/retry, touch drawer, narrow layout and channel isolation.');
 } catch (error) {
   console.error(browser('pins-check', 'snapshot', '-i').snapshot);
   browser('pins-check', 'screenshot', '/tmp/caper-pins-test-failure.png');
