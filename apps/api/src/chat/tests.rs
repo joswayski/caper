@@ -647,6 +647,129 @@ async fn reactions_are_durable_idempotent_authorized_and_transactional() {
 
 #[sqlx::test(migrations = "./migrations")]
 #[ignore = "requires disposable loopback DATABASE_URL"]
+async fn reactor_lists_name_people_in_reaction_order_for_readers_only(pool: PgPool) {
+    let mut users = Vec::new();
+    for (token, username, name) in [
+        ("alice", "alice", "Alice A"),
+        ("bob", "bob", "Bob B"),
+        ("carol", "carol", "Carol C"),
+        ("outsider", "outsider", "Outsider"),
+    ] {
+        let user: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name,avatar_id) VALUES($1,$2,$3,$4) RETURNING id")
+            .bind(token).bind(username).bind(name).bind(100 + users.len() as i16).fetch_one(&pool).await.unwrap();
+        let hash = Sha256::digest(token.as_bytes()).to_vec();
+        sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 day')")
+            .bind(&hash).bind(user).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO public.chat_sessions(external_id,token_hash,name,user_id,account_session_hash) VALUES($1,$2,$3,$4,$2)")
+            .bind(token).bind(hash).bind(name).bind(user).execute(&pool).await.unwrap();
+        users.push(user);
+    }
+    let space: i64 = sqlx::query_scalar("INSERT INTO public.spaces(external_id,name,owner_id) VALUES('reactor-space','Reactors',$1) RETURNING id")
+        .bind(users[0]).fetch_one(&pool).await.unwrap();
+    for user in &users[..3] {
+        sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+            .bind(space)
+            .bind(user)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let channel = "reactor-channel".to_owned();
+    let channel_id: i64 = sqlx::query_scalar("INSERT INTO public.channels(external_id,space_id,name) VALUES($1,$2,'general') RETURNING id")
+        .bind(&channel).bind(space).fetch_one(&pool).await.unwrap();
+    // Carol is a member who has not joined: she may read, and so see who reacted.
+    for user in &users[..2] {
+        sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) VALUES($1,$2)")
+            .bind(channel_id)
+            .bind(user)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let message = persist(&pool, &channel, "alice", Uuid::new_v4(), "react to me")
+        .await
+        .unwrap();
+    let message = message["id"].as_str().unwrap();
+    persist_reaction(&pool, &channel, message, "bob", "👍", true)
+        .await
+        .unwrap();
+    persist_reaction(&pool, &channel, message, "alice", "👍", true)
+        .await
+        .unwrap();
+    let snapshot = persist_reaction(&pool, &channel, message, "alice", "🎉", true)
+        .await
+        .unwrap();
+
+    let list = reactor_list(&pool, &channel, message, Some(users[2]))
+        .await
+        .unwrap();
+    assert_eq!(list["messageId"], message);
+    assert_eq!(list["reactionSeq"], snapshot["seq"]);
+    let emoji = |value: &Value| -> Vec<Value> {
+        value
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["emoji"].clone())
+            .collect()
+    };
+    assert_eq!(emoji(&list["reactions"]), emoji(&snapshot["reactions"]));
+    let alice = json!({"id":"alice","username":"alice","displayName":"Alice A","avatarId":100});
+    let bob = json!({"id":"bob","username":"bob","displayName":"Bob B","avatarId":101});
+    let authors = |list: &Value, wanted: &str| -> Value {
+        list["reactions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["emoji"] == wanted)
+            .map(|r| r["authors"].clone())
+            .unwrap_or(Value::Null)
+    };
+    assert_eq!(
+        authors(&list, "👍"),
+        json!([bob, alice]),
+        "first reactor first"
+    );
+    assert_eq!(authors(&list, "🎉"), json!([alice]));
+
+    // Removed reactions stay stored but are no longer listed.
+    persist_reaction(&pool, &channel, message, "bob", "👍", false)
+        .await
+        .unwrap();
+    let list = reactor_list(&pool, &channel, message, Some(users[1]))
+        .await
+        .unwrap();
+    assert_eq!(authors(&list, "👍"), json!([alice]));
+
+    for reader in [Some(users[3]), None] {
+        assert_eq!(
+            reactor_list(&pool, &channel, message, reader)
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+    let other = "reactor-other".to_owned();
+    sqlx::query("INSERT INTO public.channels(external_id,space_id,name) VALUES($1,$2,'other')")
+        .bind(&other)
+        .bind(space)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for (channel, message) in [(channel.as_str(), "absent"), (other.as_str(), message)] {
+        assert_eq!(
+            reactor_list(&pool, channel, message, Some(users[0]))
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL"]
 async fn direct_reactions_require_participants_and_preserve_history_sequences(pool: PgPool) {
     let mut users = Vec::new();
     for name in ["alice", "bob", "outsider"] {

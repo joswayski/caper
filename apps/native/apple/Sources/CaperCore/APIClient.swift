@@ -260,6 +260,18 @@ public actor APIClient {
         return event
     }
 
+    /// Who reacted to a message. Same account authorization as history, so
+    /// read-only previews and DMs work; no chat session token is needed.
+    public func reactors(channelID: String, messageID: String) async throws -> ReactorList {
+        let list: ReactorList = try await request(
+            "api/chat/channels/\(try pathID(channelID))/messages/\(try messagePathID(messageID))/reactions"
+        )
+        guard list.isValid(messageID: messageID) else {
+            throw APIError(status: 502, message: "The chat service returned invalid reactions.")
+        }
+        return list
+    }
+
     public func media<T: Decodable, B: Encodable>(channelID: String?, operation: String, token mediaToken: String? = nil, body: B) async throws -> T {
         let root = channelID.map { "api/channels/\($0)/media" } ?? "api/media"
         return try await request("\(root)/\(operation)", method: "POST", body: body, extraHeaders: mediaToken.map { ["x-caper-media-token": $0] } ?? [:])

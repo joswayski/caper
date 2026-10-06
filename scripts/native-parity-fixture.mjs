@@ -180,10 +180,11 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           broadcast('chat', channelId, { type: 'message.created', channelId, seq: message.seq, message });
         }
         if (body.incomingReaction) {
-          const { channelId, messageId, emoji, active = true } = body.incomingReaction;
+          const { channelId, messageId, emoji, active = true, userId = ids.other } = body.incomingReaction;
           const message = state.messages.get(channelId)?.find(message => message.id === messageId);
           if (!message) return reject(response, 404, 'Fixture message not found.');
-          react(channelId, message, emoji, ids.other, active);
+          if (!accounts.some(account => account.id === userId)) return reject(response, 400, 'Unknown fixture account.');
+          react(channelId, message, emoji, userId, active);
         }
         if (body.media) {
           const channelId = body.media.channelId ?? ids.demo;
@@ -300,6 +301,20 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         const message = state.messages.get(channel.id)?.find(message => message.id === reaction[2]);
         if (!message) return reject(response, 404, 'Message not found.');
         return json(response, 200, react(channel.id, message, body.emoji, who.id, body.active));
+      }
+      if (reaction && method === 'GET') {
+        // Who reacted: same read access as history, people in reaction order.
+        const channel = channelFor(reaction[1]);
+        if (!channel || !canRead(channel, user)) return reject(response, 404, 'resource not found');
+        const message = state.messages.get(channel.id)?.find(message => message.id === reaction[2]);
+        if (!message) return reject(response, 404, 'Message not found.');
+        const person = id => (id === state.account.id ? state.account : accounts.find(account => account.id === id));
+        return json(response, 200, {
+          messageId: message.id, reactionSeq: message.reactionSeq ?? '0',
+          reactions: (message.reactions ?? []).map(({ emoji, authorIds }) => ({ emoji, authors: authorIds.map(id => ({
+            id, username: person(id)?.username ?? null, displayName: person(id)?.displayName ?? null, avatarId: person(id)?.avatarId ?? null,
+          })) })),
+        });
       }
       const chat = /^\/api\/chat\/channels\/([^/]+)\/messages$/.exec(path);
       if (path === '/api/chat/general' || chat) {

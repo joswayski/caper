@@ -67,6 +67,11 @@ object MentionListSerializer : JsonTransformingSerializer<List<MessageMention>>(
     private fun JsonObject.string(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
 }
 @Serializable data class MessageReaction(val emoji: String, val authorIds: List<String>)
+/** One person who reacted; `id` matches the snapshot's `authorIds`. */
+@Serializable data class Reactor(val id: String, val username: String? = null, val displayName: String? = null, val avatarId: Int? = null)
+@Serializable data class ReactorGroup(val emoji: String, val authors: List<Reactor>)
+/** Who reacted to a message, per emoji in snapshot order and people in reaction order. */
+@Serializable data class ReactorList(val messageId: String, val reactionSeq: String, val reactions: List<ReactorGroup>)
 @Serializable data class ReactionUpdate(
     val type: String,
     val schemaVersion: Int,

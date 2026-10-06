@@ -1017,6 +1017,41 @@ mutations per actor/channel/minute. No-op retries do not consume that budget.
 Expired rate records are removed when that actor next mutates. Reactions,
 message snapshots, sequence allocation, and outbox commit together.
 
+### Who reacted
+
+Snapshots and events carry only public reactor IDs. Names load on demand from
+`GET /api/chat/channels/{channel}/messages/{message}/reactions`, authorized like
+history (account cookie or bearer; read-only previews and DMs included). The
+response lists each emoji in snapshot order, with its active reactors in reaction
+order (`id`, `username`, `displayName`, `avatarId`) and the message's
+`reactionSeq`; clients cache per message and refetch when `reactionSeq` changes.
+Removed (soft-deleted) reactions are not listed.
+
+Every client uses the same wording: "You, Alex, Maya and 2 others reacted with
+:thumbs-up:" (you first, up to three names, then a count; the dash-separated
+catalog name, or the glyph when none exists). Until names load, a count is shown
+from the snapshot. Pointer platforms (web, macOS, Rust desktop) show this in a
+tooltip with a large emoji on hover or keyboard focus. Touch platforms (iOS,
+Android, web on touch) open a Reactions sheet on press-and-hold: one tab per
+emoji with its count, then each person's avatar, name and @username. On web,
+right-click opens the same panel as a popover, and message actions include
+**View reactions**. A tap or click still toggles your own reaction.
+
+The parity fixture serves this endpoint, and its `incomingReaction` control
+accepts an optional `userId` so tests can react as any fixture account. Desktop
+also has `--fixture parity-reactions`, and the Apple parity fixture builds its
+lists in the app.
+
+| Platform | Who-reacted validation |
+| --- | --- |
+| API | Disposable-Postgres test: reaction order, names/avatars, preview readers allowed, removed reactions hidden, outsiders/guests/other channels 404 |
+| Web | Unit tests for wording, parsing and emoji names; Chromium with the fixture at 1280px (hover tooltip, right-click popover, tabs, click toggle) and 390px touch emulation (hold sheet without toggling, tap toggles, **View reactions**); screenshots inspected |
+| Rust desktop | 202 tests, Clippy and fmt; Linux build rendered under Xvfb at 1440px and 420px with the fixture. Tooltip delay is egui's app-wide 0.5 s; keyboard-focus display not checked |
+| Android | 131 JVM tests, lint and androidTest compilation; the new emulator UI test and on-screen sheet are unverified until native CI runs (on `main`, or a dispatched branch build — pull requests get no CI) |
+| iOS/macOS | Swift parsed and core logic run on Linux only; SwiftUI views are first compiled, and UI tests first run, by native CI (on `main`, or a dispatched branch build). macOS shows the card on hover, not on keyboard focus |
+
+None of this is physical-device, TalkBack/VoiceOver or live-server acceptance.
+
 ### Deployment order for reactions
 
 1. **Prerequisites/infrastructure/secrets:** no infrastructure apply, new service,

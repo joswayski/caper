@@ -46,7 +46,7 @@ export function initialChatView(history?: GeneralChatHistory, error?: string): C
   } : initialState;
 }
 
-function apiError(response: Response, fallback: string) {
+export function apiError(response: Response, fallback: string) {
   return response.json().catch(() => undefined).then((body: { error?: unknown } | undefined) =>
     new Error(typeof body?.error === "string" ? body.error : fallback));
 }

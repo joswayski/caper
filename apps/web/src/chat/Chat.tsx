@@ -1,8 +1,9 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle, type ListProps, type ContextProp } from "react-virtuoso";
 import { ChatClient, initialChatView } from "./client.ts";
 import MessageReactions, { type ReactionSave } from "./MessageReactions.tsx";
 import MessageActions, { type MessageActionTarget } from "./MessageActions.tsx";
+import ReactorsPanel, { type ReactorsTarget } from "./ReactorsPanel.tsx";
 import { dateDivider } from "./dates.ts";
 import type { ChatAuthor, GeneralChatHistory } from "./types.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
@@ -56,6 +57,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   const [validationError, setValidationError] = useState<string>();
   const clientRef = useRef<ChatClient | undefined>(undefined);
   const [actionTarget, setActionTarget] = useState<MessageActionTarget>();
+  const [reactorsTarget, setReactorsTarget] = useState<ReactorsTarget>();
   const [actionStatus, setActionStatus] = useState("");
   const [reactionSaves, setReactionSaves] = useState<Record<string, ReactionSave | undefined>>({});
   const press = useRef<{ timer: ReturnType<typeof setTimeout>; x: number; y: number; pointerId: number }>(undefined);
@@ -63,6 +65,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   const cancelPress = () => { clearTimeout(press.current?.timer); press.current = undefined; };
   useEffect(() => {
     setActionTarget(undefined);
+    setReactorsTarget(undefined);
     setActionStatus("");
     setReactionSaves({});
     // The drawer can appear under the held finger. Its release click must not
@@ -88,9 +91,17 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       window.removeEventListener("scroll", cancelPress, true);
     };
   }, [channelId]);
-  useEffect(() => { setActionTarget(undefined); }, [state.author?.id]);
+  useEffect(() => { setActionTarget(undefined); setReactorsTarget(undefined); }, [state.author?.id]);
   const isTouchLayout = () => window.matchMedia("(max-width: 760px), (pointer: coarse)").matches;
   const openActions = (messageId: string, anchor: HTMLElement) => setActionTarget({ messageId, anchor, mode: "actions", drawer: true });
+  const showReactors = (messageId: string, emoji: string, anchor: HTMLElement) => {
+    const drawer = isTouchLayout();
+    // Like the actions drawer, the sheet can open under a held finger.
+    if (drawer) suppressClick.current = true;
+    setActionTarget(undefined);
+    setReactorsTarget({ messageId, emoji, anchor, drawer });
+  };
+  const closeReactors = useCallback(() => setReactorsTarget(undefined), []);
   const react = async (messageId: string, emoji: string, active: boolean) => {
     const client = clientRef.current;
     if (readOnly || !state.author || !client) return;
@@ -102,6 +113,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     }
   };
   const actionMessage = state.messages.find((message) => message.id === actionTarget?.messageId);
+  const reactorsMessage = state.messages.find((message) => message.id === reactorsTarget?.messageId);
   const listRef = useRef<VirtuosoHandle>(null);
   const initialListRef = useRef<HTMLDivElement>(null);
   const [listReady, setListReady] = useState(false);
@@ -343,7 +355,8 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
           : message.text}</p>
         {"content" in message && <>
           <button type="button" className="chat-message-actions-trigger sr-only" aria-haspopup="dialog" onClick={(event) => openActions(message.id, event.currentTarget)}>Message actions for {message.author.name}</button>
-          <MessageReactions message={message} authorId={state.author?.id} readOnly={readOnly} save={reactionSaves[message.id]} onReact={react}
+          <MessageReactions message={message} channelId={state.channelId} authorId={state.author?.id} readOnly={readOnly} save={reactionSaves[message.id]} onReact={react}
+            onShowReactors={(emoji, anchor) => showReactors(message.id, emoji, anchor)}
             pickerOpen={actionTarget?.messageId === message.id && actionTarget.mode === "emoji"}
             onOpenPicker={(anchor) => setActionTarget({ messageId: message.id, anchor, anchorRect: anchor.getBoundingClientRect(), mode: "emoji", drawer: isTouchLayout() })}
             onDismissError={() => setReactionSaves((current) => ({ ...current, [message.id]: undefined }))} />
@@ -412,7 +425,10 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     </div>
 
     {actionTarget && actionMessage && <MessageActions key={actionMessage.id} message={actionMessage} target={actionTarget} authorId={state.author?.id}
-      canReact={!readOnly && !!state.author} onReact={react} onClose={() => setActionTarget(undefined)} onCopied={setActionStatus} />}
+      canReact={!readOnly && !!state.author} onReact={react} onClose={() => setActionTarget(undefined)} onCopied={setActionStatus}
+      onViewReactions={(emoji) => showReactors(actionMessage.id, emoji, actionTarget.anchor)} />}
+    {reactorsTarget && reactorsMessage && state.channelId && <ReactorsPanel key={reactorsMessage.id} channelId={state.channelId}
+      message={reactorsMessage} target={reactorsTarget} onClose={closeReactors} />}
 
     <p className="chat-typing" role="status" aria-atomic="true">
       <span className="chat-typing-content" data-visible={!!typingLabel} aria-hidden={!typingLabel}>

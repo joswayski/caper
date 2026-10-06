@@ -186,6 +186,104 @@ pub struct Reaction {
     pub author_ids: Vec<String>,
 }
 
+/// One person in a "who reacted" list. `id` is the public user ID used in
+/// snapshot `authorIds`; either name may be missing.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Reactor {
+    pub id: String,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub avatar_id: Option<i32>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct ReactorGroup {
+    pub emoji: String,
+    /// In reaction order: the first person to react comes first.
+    pub authors: Vec<Reactor>,
+}
+
+/// `GET /api/chat/channels/{channel}/messages/{message}/reactions`.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Reactors {
+    pub message_id: String,
+    pub reaction_seq: String,
+    pub reactions: Vec<ReactorGroup>,
+}
+
+/// Who reacted, worded identically on every Caper client: names in reaction
+/// order with you first as "You", at most three names before "and N others".
+pub fn reactor_summary(
+    authors: &[Reactor],
+    self_id: Option<&str>,
+    emoji_name: Option<&str>,
+    emoji: &str,
+) -> String {
+    let named = |value: &Option<String>| {
+        value
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+    let mut you = false;
+    let mut names = Vec::new();
+    for author in authors {
+        if self_id == Some(author.id.as_str()) {
+            you = true;
+        } else {
+            names.push(
+                named(&author.display_name)
+                    .or_else(|| named(&author.username))
+                    .unwrap_or_else(|| "Someone".into()),
+            );
+        }
+    }
+    if you {
+        names.insert(0, "You".into());
+    }
+    let people = match names.as_slice() {
+        [] => "No one".to_owned(),
+        [only] => only.clone(),
+        [first, second] => format!("{first} and {second}"),
+        [first, second, third] => format!("{first}, {second} and {third}"),
+        [first, second, third, rest @ ..] => format!(
+            "{first}, {second}, {third} and {} {}",
+            rest.len(),
+            if rest.len() == 1 { "other" } else { "others" }
+        ),
+    };
+    format!("{people}{}", reacted_with(emoji_name, emoji))
+}
+
+/// The summary from the message snapshot alone, before names load or when
+/// loading them fails.
+pub fn reactor_fallback(
+    author_ids: &[String],
+    self_id: Option<&str>,
+    emoji_name: Option<&str>,
+    emoji: &str,
+) -> String {
+    let people = match author_ids {
+        [only] if self_id == Some(only.as_str()) => "You".to_owned(),
+        [_] => "1 person".to_owned(),
+        _ => format!("{} people", author_ids.len()),
+    };
+    format!("{people}{}", reacted_with(emoji_name, emoji))
+}
+
+fn reacted_with(emoji_name: Option<&str>, emoji: &str) -> String {
+    match emoji_name {
+        Some(name) => format!(" reacted with :{name}:"),
+        None => format!(" reacted with {emoji}"),
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ReactionUpdate {
@@ -786,6 +884,151 @@ mod tests {
         );
         timeline.prepend(vec![message("message-1", 1)]).unwrap();
         assert!(timeline.messages().next().unwrap().reactions.is_empty());
+    }
+
+    fn reactor(id: &str, display_name: Option<&str>, username: Option<&str>) -> Reactor {
+        Reactor {
+            id: id.into(),
+            username: username.map(str::to_owned),
+            display_name: display_name.map(str::to_owned),
+            avatar_id: None,
+        }
+    }
+
+    #[test]
+    fn reactor_summary_matches_shared_wording() {
+        let me = reactor("me", Some("Me Myself"), Some("me"));
+        let alice = reactor("alice", Some("Alice A"), Some("alice"));
+        let bob = reactor("bob", Some("Bob B"), Some("bob"));
+        let carol = reactor("carol", Some("Carol C"), Some("carol"));
+        let dave = reactor("dave", Some("Dave D"), Some("dave"));
+        let erin = reactor("erin", Some("Erin E"), Some("erin"));
+        let summary = |authors: &[Reactor], name: Option<&str>, emoji: &str| {
+            reactor_summary(authors, Some("me"), name, emoji)
+        };
+        assert_eq!(
+            summary(std::slice::from_ref(&me), Some("thumbs-up"), "👍"),
+            "You reacted with :thumbs-up:"
+        );
+        assert_eq!(
+            summary(&[bob.clone(), me.clone()], Some("thumbs-up"), "👍"),
+            "You and Bob B reacted with :thumbs-up:",
+            "you move to the front"
+        );
+        assert_eq!(
+            summary(
+                &[alice.clone(), bob.clone(), carol.clone()],
+                Some("party-popper"),
+                "🎉"
+            ),
+            "Alice A, Bob B and Carol C reacted with :party-popper:"
+        );
+        assert_eq!(
+            summary(
+                &[
+                    alice.clone(),
+                    bob.clone(),
+                    me.clone(),
+                    carol.clone(),
+                    dave.clone()
+                ],
+                Some("thumbs-up"),
+                "👍"
+            ),
+            "You, Alice A, Bob B and 2 others reacted with :thumbs-up:"
+        );
+        assert_eq!(
+            summary(
+                &[alice.clone(), bob.clone(), carol.clone(), dave],
+                Some("thumbs-up"),
+                "👍"
+            ),
+            "Alice A, Bob B, Carol C and 1 other reacted with :thumbs-up:"
+        );
+        assert_eq!(
+            summary(&[alice.clone(), erin], None, "🫨"),
+            "Alice A and Erin E reacted with 🫨",
+            "unknown emoji names fall back to the glyph"
+        );
+        assert_eq!(
+            reactor_summary(&[me, alice], None, Some("red-heart"), "❤️"),
+            "Me Myself and Alice A reacted with :red-heart:",
+            "signed-out readers see every name"
+        );
+    }
+
+    #[test]
+    fn reactor_names_fall_back_to_username_then_someone() {
+        let authors = [
+            reactor("one", None, Some("only_username")),
+            reactor("two", Some("  "), None),
+            reactor("three", None, None),
+        ];
+        assert_eq!(
+            reactor_summary(&authors, None, Some("looking"), "👀"),
+            "only_username, Someone and Someone reacted with :looking:"
+        );
+    }
+
+    #[test]
+    fn reactor_fallback_counts_people_from_the_snapshot() {
+        let ids = |ids: &[&str]| ids.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            reactor_fallback(&ids(&["me"]), Some("me"), Some("thumbs-up"), "👍"),
+            "You reacted with :thumbs-up:"
+        );
+        assert_eq!(
+            reactor_fallback(&ids(&["bob"]), Some("me"), Some("thumbs-up"), "👍"),
+            "1 person reacted with :thumbs-up:"
+        );
+        assert_eq!(
+            reactor_fallback(&ids(&["me", "a", "b"]), Some("me"), None, "🫨"),
+            "3 people reacted with 🫨"
+        );
+        assert_eq!(
+            reactor_fallback(&ids(&["me"]), None, Some("thumbs-up"), "👍"),
+            "1 person reacted with :thumbs-up:"
+        );
+    }
+
+    #[test]
+    fn reactor_list_contract_decodes_server_json() {
+        let payload = r#"{
+            "messageId": "abc123",
+            "reactionSeq": "12",
+            "reactions": [
+                {"emoji": "👍", "authors": [
+                    {"id": "bob", "username": "bob", "displayName": "Bob B", "avatarId": 101},
+                    {"id": "alice", "username": null, "displayName": null, "avatarId": 100}
+                ]},
+                {"emoji": "🎉", "authors": [{"id": "alice"}]}
+            ]
+        }"#;
+        let list: Reactors = serde_json::from_str(payload).unwrap();
+        assert_eq!(list.message_id, "abc123");
+        assert_eq!(sequence(&list.reaction_seq), Ok(12));
+        assert_eq!(list.reactions[0].emoji, "👍");
+        assert_eq!(
+            list.reactions[0].authors[0],
+            reactor("bob", Some("Bob B"), Some("bob")).with_avatar(101)
+        );
+        assert_eq!(
+            list.reactions[0].authors[1],
+            reactor("alice", None, None).with_avatar(100),
+            "null names stay missing"
+        );
+        assert_eq!(list.reactions[1].authors, [reactor("alice", None, None)]);
+        assert!(
+            serde_json::from_str::<Reactors>(r#"{"messageId":"m","reactions":[]}"#).is_err(),
+            "a list without its revision cannot be cached"
+        );
+    }
+
+    impl Reactor {
+        fn with_avatar(mut self, avatar_id: i32) -> Self {
+            self.avatar_id = Some(avatar_id);
+            self
+        }
     }
 
     #[test]

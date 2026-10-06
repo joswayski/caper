@@ -40,6 +40,9 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   resolved in `content.mentions` render as pills: egui background spans with
   square corners rather than 4px rounded ones. Messages that mention you get a
   terracotta tint with a 2px leading edge. Mentions do not notify anyone.
+- Message reactions. Hovering or keyboard-focusing a reaction chip shows who
+  reacted (large emoji plus the shared summary wording); names load on demand
+  with history's read access and are cached per message reaction revision.
 - Experimental native voice: raw Google libwebrtc with platform audio devices,
   Caper SFU offer/answer publication and subscription, voice roster, lease
   snapshots, TURN refresh and replay-safe ICE restart/ACK. Browsing leaves the
@@ -250,6 +253,8 @@ exact-username dialog without a live account or notification provider.
 mention you; type `@` in its composer for space suggestions.
 `parity-direct-no-spaces` previews the first-space page's Direct messages entry
 and the global list without any space membership.
+`parity-reactions` adds reaction chips whose hover cards name the labelled
+fixture members locally instead of requesting who reacted.
 `parity-opening`, `parity-opening-narrow`, and `parity-opening-error` preview
 pending navigation and its retry state with retained conversation chrome and a
 labelled fixture draft; `parity-loading` previews the initial history skeleton.

@@ -74,7 +74,7 @@ The scripts launch only the explicit loopback fixture; fixture data can never be
 ./apps/native/apple/parity-screenshots.sh ios
 ```
 
-The macOS suite captures populated, members-hidden, login, actionable login error, Manage space, and private Channel overview states. The iOS suite adds narrow conversation and Browse-open states on an `iPhone 16` simulator. Screenshots are exported from the XCTest result into ignored `apps/native/apple/parity-artifacts/`. Tests also assert fixture content and required controls before capture.
+The macOS suite captures populated, members-hidden, login, actionable login error, Manage space, and private Channel overview states. The iOS suite adds narrow conversation and Browse-open states on an `iPhone 16` simulator. The `reaction-chips` fixture also captures who reacted: the hover card on macOS and the press-and-hold sheet on iOS. Its chips have local-only authors, so the app serves those reactor lists itself instead of calling the fixture server. Screenshots are exported from the XCTest result into ignored `apps/native/apple/parity-artifacts/`. Tests also assert fixture content and required controls before capture.
 
 ## Voice in development builds
 

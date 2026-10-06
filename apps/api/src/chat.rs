@@ -12,7 +12,7 @@ use axum::{
     Json, Router,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
-    routing::{get, post, put},
+    routing::{get, post},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::Utc;
@@ -94,7 +94,7 @@ pub(crate) fn routes() -> Router<AppState> {
         )
         .route(
             "/api/chat/channels/{channel}/messages/{message}/reactions",
-            put(set_reaction),
+            get(reactors).put(set_reaction),
         )
         .route("/api/chat/channels/{channel}/typing", post(typing))
 }
@@ -302,6 +302,66 @@ async fn set_reaction(
     .await?;
     chat.wake.notify_one();
     Ok(Json(event))
+}
+
+async fn reactors(
+    State(state): State<AppState>,
+    Path((channel, message)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let chat = enabled(&state)?;
+    let user = request_user(&chat.pool, &headers).await?;
+    Ok(Json(
+        reactor_list(&chat.pool, &channel, &message, user).await?,
+    ))
+}
+
+/// Emoji, then the reactor's public ID, username, display name and avatar.
+type ReactorRow = (String, String, Option<String>, Option<String>, i16);
+
+/// Who reacted, for hover text and long-press sheets. Snapshots carry only
+/// public IDs; names and avatars load on demand with the same read access as
+/// history. Emoji keep snapshot order; people are listed in reaction order.
+async fn reactor_list(
+    pool: &PgPool,
+    channel: &str,
+    message: &str,
+    user: Option<i64>,
+) -> Result<Value, ApiError> {
+    let access = crate::spaces::channel_access(pool, channel, user).await?;
+    let (message_id, reaction_seq): (i64, Option<String>) = sqlx::query_as(
+        "SELECT id,payload->>'reactionSeq' FROM public.messages WHERE channel_id=$1 AND external_id=$2",
+    )
+    .bind(access.id)
+    .bind(message)
+    .fetch_optional(pool)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "message not found"))?;
+    let rows: Vec<ReactorRow> = sqlx::query_as(
+        "SELECT r.emoji,u.external_id,u.username,u.display_name,u.avatar_id
+         FROM public.message_reactions r JOIN public.users u ON u.id=r.user_id
+         WHERE r.message_id=$1 AND r.deleted_at IS NULL ORDER BY r.emoji,r.created_at,r.id",
+    )
+    .bind(message_id)
+    .fetch_all(pool)
+    .await
+    .map_err(database_error)?;
+    let mut reactions: Vec<Value> = Vec::new();
+    for (emoji, id, username, display_name, avatar_id) in rows {
+        let author =
+            json!({"id":id,"username":username,"displayName":display_name,"avatarId":avatar_id});
+        match reactions.last_mut() {
+            Some(last) if last["emoji"] == emoji.as_str() => last["authors"]
+                .as_array_mut()
+                .expect("authors")
+                .push(author),
+            _ => reactions.push(json!({"emoji":emoji,"authors":[author]})),
+        }
+    }
+    Ok(
+        json!({"messageId":message,"reactionSeq":reaction_seq.unwrap_or_else(|| "0".into()),"reactions":reactions}),
+    )
 }
 
 /// Single pre-publication boundary. Future replacement rules run here before

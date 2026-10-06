@@ -334,6 +334,53 @@ final class CaperParityUITests: XCTestCase {
         capture("reaction-picker-empty-fixture", app: app)
     }
 
+    private func waitForLabel(_ element: XCUIElement, _ text: String, _ message: String,
+                              timeout: TimeInterval = 5, line: UInt = #line) {
+        let named = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@ OR value == %@", text, text), object: element)
+        XCTAssertEqual(XCTWaiter.wait(for: [named], timeout: timeout), .completed,
+                       "\(message); found \(element.exists ? element.label : "nothing")", line: line)
+    }
+
+    /// Who reacted, from the reaction-chips fixture's locally served lists
+    /// (its chips carry local-only authors the fixture server cannot name):
+    /// hovering a chip on macOS, holding one on iPhone.
+    func testWhoReactedTooltipAndSheetFixture() throws {
+        let app = launch(fixture: "reaction-chips")
+        let targetID = "chan00000001m01"
+        // Scope to this message's reactions: a macOS Touch Bar can repeat controls.
+        let reactions = try require(app.descendants(matching: .any)["reaction-row-\(targetID)"], timeout: 10,
+                                    "Missing reaction-row-\(targetID)")
+        let chip = try require(reactions.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "👍 reaction")).firstMatch,
+                               timeout: 10, "Missing the 👍 chip on \(targetID)")
+        XCTAssertTrue(chip.label.hasSuffix(", selected by you"), "The fixture's 👍 includes your own reaction")
+        #if os(macOS)
+        chip.hover()
+        let tooltip = try require(app.descendants(matching: .any)["reaction-tooltip"], timeout: 5,
+                                  "Hovering a reaction chip did not show who reacted")
+        waitForLabel(tooltip, "You and TEST FIXTURE Other reacted with :thumbs-up:", "The tooltip must name who reacted")
+        capture("reaction-tooltip-fixture", app: app)
+        #else
+        chip.press(forDuration: 0.8)
+        let sheet = try require(app.descendants(matching: .any)["reactors-sheet"], timeout: 5,
+                                "Holding a reaction chip did not open who reacted")
+        XCTAssertFalse(app.descendants(matching: .any)["message-actions-sheet"].exists, "Holding a chip must not open message actions")
+        try require(sheet.descendants(matching: .any)["reactor-row-fixture-other"], timeout: 5, "The sheet did not list TEST FIXTURE Other")
+        XCTAssertTrue(sheet.descendants(matching: .any)["reactor-row-owner0000001"].exists, "The sheet must list your own reaction")
+        let emojiName = sheet.descendants(matching: .any)["reactors-emoji-name"]
+        waitForLabel(emojiName, ":thumbs-up:", "The held emoji's tab must be selected")
+        capture("reactors-sheet-fixture", app: app)
+        try require(sheet.descendants(matching: .any)["reactors-tab-😂"], timeout: 2, "Missing the 😂 tab").tap()
+        waitForLabel(emojiName, ":face-with-tears-of-joy:", "Choosing a tab must show its people")
+        let ownGone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),
+                                                object: sheet.descendants(matching: .any)["reactor-row-owner0000001"])
+        XCTAssertEqual(XCTWaiter.wait(for: [ownGone], timeout: 5), .completed, "Only TEST FIXTURE Other reacted with 😂")
+        try require(app.navigationBars.buttons["Done"].firstMatch, timeout: 2, "The sheet has no Done button").tap()
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: sheet)
+        XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
+        XCTAssertTrue(chip.label.hasSuffix(", selected by you"), "Holding a chip must not toggle the reaction")
+        #endif
+    }
+
     private nonisolated static func fixtureControl(_ body: [String: Any]) async throws {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:3001/__fixture/control")!)
         request.httpMethod = "POST"

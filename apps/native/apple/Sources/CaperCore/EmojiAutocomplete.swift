@@ -339,13 +339,15 @@ struct NativeMessageComposer: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: NativeMessageComposer; weak var view: ComposerTextView?; var dismissed = false
         init(_ parent: NativeMessageComposer) { self.parent = parent }
-        func textDidChange(_ notification: Notification) { guard let view else { return }; parent.text = view.string; dismissed = false; refresh(view) }
-        func textViewDidChangeSelection(_ notification: Notification) { guard let view else { return }; dismissed = false; refresh(view) }
-        func refresh(_ view: ComposerTextView) {
+        // Older macOS SDKs (15.x) don't mark NSTextViewDelegate main-actor, so these delegate
+        // calls are nonisolated there. AppKit still delivers them on the main thread.
+        func textDidChange(_ notification: Notification) { MainActor.assumeIsolated { guard let view else { return }; parent.text = view.string; dismissed = false; refresh(view) } }
+        func textViewDidChangeSelection(_ notification: Notification) { MainActor.assumeIsolated { guard let view else { return }; dismissed = false; refresh(view) } }
+        @MainActor func refresh(_ view: ComposerTextView) {
             let match = dismissed || view.window?.firstResponder !== view ? nil : ComposerAutocomplete.match(text: view.string, selection: view.selectedRange(), markedText: view.hasMarkedText(), mentions: parent.mentions)
             parent.controller.update(match); parent.controller.acceptAction = { [weak self] in self?.accept($0) }
         }
-        func handle(_ event: NSEvent) -> Bool {
+        @MainActor func handle(_ event: NSEvent) -> Bool {
             guard let view, !view.hasMarkedText() else { return false }
             let key = event.keyCode
             if parent.controller.match != nil {
@@ -356,7 +358,7 @@ struct NativeMessageComposer: NSViewRepresentable {
             if key == 36 && !event.modifierFlags.contains(.shift) { parent.submit(); return true }
             return false
         }
-        func accept(_ index: Int) {
+        @MainActor func accept(_ index: Int) {
             guard let view, let match = parent.controller.match,
                   let result = ComposerAutocomplete.inserting(choice: index, in: view.string, match: match) else { return }
             view.string = result.text; view.setSelectedRange(result.selection); parent.text = result.text
