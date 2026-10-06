@@ -954,6 +954,29 @@ mutations per actor/channel/minute. No-op retries do not consume that budget.
 Expired rate records are removed when that actor next mutates. Reactions,
 message snapshots, sequence allocation, and outbox commit together.
 
+### Who reacted
+
+Snapshots and events carry only public reactor IDs. Names load on demand from
+`GET /api/chat/channels/{channel}/messages/{message}/reactions`, authorized like
+history (account cookie or bearer; read-only previews and DMs included). The
+response lists each emoji in snapshot order, with its active reactors in reaction
+order (`id`, `username`, `displayName`, `avatarId`) and the message's
+`reactionSeq`; clients cache per message and refetch when `reactionSeq` changes.
+Removed (soft-deleted) reactions are not listed.
+
+Every client uses the same wording: "You, Alex, Maya and 2 others reacted with
+:thumbs-up:" (you first, up to three names, then a count; the dash-separated
+catalog name, or the glyph when none exists). Until names load, a count is shown
+from the snapshot. Pointer platforms (web, macOS, Rust desktop) show this in a
+tooltip with a large emoji on hover or keyboard focus. Touch platforms (iOS,
+Android, web on touch) open a Reactions sheet on press-and-hold: one tab per
+emoji with its count, then each person's avatar, name and @username. On web,
+right-click opens the same panel as a popover, and message actions include
+**View reactions**. A tap or click still toggles your own reaction.
+
+The parity fixture serves this endpoint, and its `incomingReaction` control
+accepts an optional `userId` so tests can react as any fixture account.
+
 ### Deployment order for reactions
 
 1. **Prerequisites/infrastructure/secrets:** no infrastructure apply, new service,
