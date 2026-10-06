@@ -7,6 +7,18 @@ hidden (see [media.md](media.md#push-is-deferred-future-delivery-uses-direct-apn
 This document records the research done on October 6, 2026 and proposes a
 phased design for review.
 
+**Owner decisions (October 6, 2026)**
+
+- **Content.** Notifications show the sender and a message preview, as Slack and
+  Discord do. See [payload content](#payload-content).
+- **Levels.** Three levels: *All messages* (the default: every channel message
+  plus DMs), *Mentions & DMs*, and *Off*. Spaces, channels and DMs can also be
+  turned off or muted individually.
+- **Order.** Build @mentions before push, so *Mentions & DMs* is a real option
+  from the start.
+- **Cleanup.** Drop the unused SNS-era `push_*` tables in the first push
+  migration.
+
 ## Recommendation in one screen
 
 - **Talk directly to Apple and Google; do not use Amazon SNS or a push vendor.**
@@ -24,7 +36,7 @@ phased design for review.
   - FCM (Android);
   - Web Push (browsers, including installed iPhone web apps).
 - **Preferences copied from Discord/Slack.** There are three levels: *All
-  messages*, *Only mentions* and *Nothing*. Mute can be timed. Settings cascade
+  messages*, *Mentions & DMs* and *Off*. Mute can be timed. Settings cascade
   from account to space to channel or DM, so any space, channel or DM can be
   turned off.
 - **Mobile first.** Phase 1 is iOS and Android push for DMs and channel messages.
@@ -66,7 +78,7 @@ unpackaged Windows/Linux app, so Caper desktop should do the same.
 
 | Client | Mechanism | Works when the app is closed? | Credentials we hold |
 | --- | --- | --- | --- |
-| iPhone/iPad app | APNs, with a Notification Service Extension | Yes | APNs auth key (`.p8`), key ID, team ID |
+| iPhone/iPad app | APNs | Yes | APNs auth key (`.p8`), key ID, team ID |
 | Android app | FCM HTTP v1, data messages | Yes (not after a force-stop) | Firebase project + service account (or keyless federation, see below) |
 | Web: Chrome/Edge/Firefox, Safari on macOS | Web Push (service worker + VAPID) | Yes, while the browser runs | VAPID key pair we generate ourselves |
 | Web on iPhone/iPad | Web Push | Only when added to the Home Screen | Same VAPID key |
@@ -186,7 +198,7 @@ Android notification channels and iOS thread identifiers map from the category.
 | `direct.message` | Direct messages | Someone messages you 1:1 | Phase 1 |
 | `channel.message` | Channel messages | New message where your level is *All* | Phase 1 |
 | `space.invitation`, `channel.invitation` | Invitations | You were invited to a space or private channel | Phase 2 |
-| `mention.user`, `mention.everyone` | Mentions | Mentions exist (not implemented yet) | With mentions |
+| `mention.user`, `mention.everyone` | Mentions | You are @mentioned, or `@everyone`/`@here` is used | Mentions first, then phase 1 |
 | `message.reply`, `thread.reply` | Replies | Replies/threads exist (not implemented yet) | With replies |
 | `message.reaction` | Reactions | Opt-in: *All / DMs only / Never* | Later |
 | `call.incoming` | Calls | DM ringing; needs iOS PushKit/CallKit and an Android full-screen intent | With DM calls |
@@ -202,22 +214,24 @@ require a forced app update.
 
 | Setting | Scopes | Values |
 | --- | --- | --- |
-| `level` | account default, space, channel | `all`, `mentions`, `nothing`, or `null` (inherit) |
+| `level` (account) | account | `all` (default; every channel message + DMs), `mentions` (*Mentions & DMs*), `nothing` (*Off*: no notifications at all) |
+| `level` (override) | space, channel | `all`, `mentions`, `nothing`, or `null` (inherit) |
 | `mutedUntil` | space, channel, DM | timestamp, `forever`, or `null` |
 | `pausedUntil` (DND) | account | timestamp or `null` |
 | `mobile` | account | `always` or `whenInactive` (default). `whenInactive` holds phone push while you are active on desktop/web. |
-| `preview` | account | `full`, `senderOnly` or `none`. It controls what the notification shows on the device, not what Apple/Google see (see [privacy](#payload-privacy)). |
+| `preview` (later) | account | `full` (default), `senderOnly` or `none`. Lower settings make the server send less text (see [payload content](#payload-content)). |
 | Space default level (owner setting) | space | `all` or `mentions`. Used only when a member has set nothing. |
-| `suppressEveryone` | space | Meaningful once mentions exist |
+| `suppressEveryone` (later) | space | Ignore `@everyone`/`@here` in this space |
 
 DMs are rows in `channels`, so a DM uses the channel scope. DMs offer only on or
-off plus mute, as in Slack and Discord.
+off plus mute, as in Slack and Discord. DMs notify under both `all` and
+`mentions`; only account-level *Off* or a DM mute silences them.
 
-### Mute versus "Nothing"
+### Mute versus *Off*
 
 | | Notifications | Unread indicators |
 | --- | --- | --- |
-| *Nothing* | None | Still shown |
+| *Off* (`nothing`) | None | Still shown |
 | Muted | None | Hidden; only direct mentions still badge |
 
 Muting a space mutes all of its channels; a channel override cannot unmute a
@@ -227,18 +241,19 @@ muted space. Mute durations: 15 min, 1 h, 8 h, 24 h, until tomorrow, or forever.
 
 1. The recipient can still read the conversation: space member, private-channel
    grant, or DM participant. The author is never notified.
-2. Account paused (DND) → no alert. Badges and unread state still update.
+2. Account level *Off*, or account paused (DND) → no alert. Badges and unread
+   state still update.
 3. Channel/DM muted, or its space muted → no alert, unless it is a direct
-   mention once mentions exist.
+   @mention (which also still badges).
 4. Effective level is the first non-null of:
    1. channel override;
    2. member's space setting;
    3. space owner default;
    4. account default;
-   5. product default (DMs `all`; channels `all` until mentions exist, then
-      `mentions` for large spaces).
-5. Compare the event with the level: DM → `all`; channel message → `all`;
-   mention → `all` or `mentions`.
+   5. product default `all`. A large-space default of `mentions`, like Discord
+      uses, can come later.
+5. Compare the event with the level: DM → `all` or `mentions`; channel
+   message → `all`; mention → `all` or `mentions`.
 6. Delivery:
    - Publish the live notification to the user's gateway feed. Each client decides
      whether to show an OS notification; it does not if that conversation is
@@ -303,7 +318,7 @@ flowchart LR
   session-bound and delivery rechecks the session, so logout stops pushes
   immediately. Clients also call `DELETE /api/push/devices` as they already do.
 
-### Proposed schema (new migration; legacy `push_*` tables stay untouched)
+### Proposed schema (new migration that also drops the legacy `push_*` tables)
 
 ```sql
 -- One row per signed-in device that opted in. Raw tokens are required for direct delivery.
@@ -315,7 +330,6 @@ CREATE TABLE notification_devices (
     app_id text NOT NULL,                 -- bundle ID / package / web origin
     address text NOT NULL,                -- APNs token, FCM token/FID, or Web Push endpoint (opaque)
     web_push_p256dh bytea, web_push_auth bytea,
-    payload_key bytea,                    -- per-device key for encrypted previews (option C)
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     revoked_at timestamptz,
@@ -354,6 +368,18 @@ Data-retention rules follow `AGENTS.md`:
 
 New tables need runtime grants in `db::grant_runtime_access`.
 
+**Legacy cleanup.**
+- The same migration drops `push_deliveries`, `push_notifications` and
+  `push_devices`. They are unused, and their data cannot be reused: they hold
+  token *hashes*, while direct delivery needs raw tokens, plus ARNs for an SNS
+  app that no longer exists.
+- The applied `202610030002_push.sql` stays unedited.
+- The same change removes their grants from `db::grant_runtime_access` and the
+  tests that reference them.
+- **Rollback caveat:** current API images grant access to those tables at
+  startup. Once they are dropped, rolling the API back to an older image fails at
+  startup, so roll forward instead.
+
 ### Proposed API (camelCase, external IDs only)
 
 **Existing routes**
@@ -362,7 +388,7 @@ New tables need runtime grants in `db::grant_runtime_access`.
   compatible.
 - `POST /api/push/devices` and `DELETE /api/push/devices` take `{platform, token}`.
   This is the exact contract the dormant clients already call. The body is
-  extended with optional `appId`, `payloadKey` and `webPush {endpoint, p256dh, auth}`.
+  extended with optional `appId` and `webPush {endpoint, p256dh, auth}`.
 
 **New routes**
 - `GET /api/notifications/settings` → account settings plus every override, so
@@ -399,14 +425,16 @@ New tables need runtime grants in `db::grant_runtime_access`.
   so the `http2` feature is needed. Alternatively use `apns-h2`, Threema's
   maintained fork of the stale `a2` crate. Hand-rolling (reqwest plus a JWT
   cached for about 40 minutes) is also small.
-- **New Notification Service Extension target.** With `mutable-content: 1`, iOS
-  runs our extension for up to about 30 s before showing the banner. It fills in
-  the sender name, avatar and preview (see [privacy](#payload-privacy)). If it
-  fails, the generic text shows.
+- **Alert content.** The alert carries the title, body and conversation ID
+  directly (see [payload content](#payload-content)). `thread-id` groups
+  notifications by conversation. No extension is needed for phase 1.
+- **Optional later: a Notification Service Extension.** With
+  `mutable-content: 1`, iOS runs it for up to about 30 s before showing the
+  banner.
+  - It enables Communication Notifications (`INSendMessageIntent`), which show
+    the sender's Caper avatar like iMessage does.
   - It needs an app group or shared keychain group with the main app; neither
     exists today.
-  - Communication Notifications (`INSendMessageIntent`) show the sender's avatar
-    like iMessage does. Nice to have.
 - **Remaining iOS work.**
   - The App ID's Push Notifications capability is already implied: release
     entitlements already set `aps-environment=production`.
@@ -427,8 +455,11 @@ New tables need runtime grants in `db::grant_runtime_access`.
 - **Sending.** `POST https://fcm.googleapis.com/v1/projects/<project>/messages:send`
   with an OAuth2 token for scope `https://www.googleapis.com/auth/firebase.messaging`.
   - Send **data-only** messages with `android.priority: HIGH`, a TTL and a
-    per-conversation `collapse_key`. The app builds the notification itself;
-    `CaperMessagingService` already does this for DMs.
+    per-conversation `collapse_key`. The data carries the conversation ID,
+    message ID, title and preview text.
+  - The app builds the notification itself, using `MessagingStyle` grouped per
+    conversation. `CaperMessagingService` already does this for DMs, but shows
+    fixed text today.
   - `UNREGISTERED`/`404` (or `INVALID_ARGUMENT` for the token) → revoke the
     device. On `429`/`503`, back off and honour `Retry-After`.
   - A high-priority data message must always end in a visible notification.
@@ -442,11 +473,11 @@ New tables need runtime grants in `db::grant_runtime_access`.
     ships.
   - No maintained FCM crate stands out. Hand-roll one JSON POST, with
     `google-cloud-auth` or `gcp_auth` for the OAuth token.
-- **Keyless credentials (recommended).** The cluster already runs an OIDC
-  issuer for AWS workload identity. Google Cloud Workload Identity Federation
-  can trust that same issuer, so the API pod can get FCM tokens with **no
-  long-lived Google key**. A service-account JSON key in Secrets Manager is the
-  simpler fallback.
+- **Credentials.** Phase 1 uses a service-account JSON key in Secrets Manager.
+  Later hardening: the cluster already runs an OIDC issuer for AWS workload
+  identity, and Google Cloud Workload Identity Federation can trust that same
+  issuer. The API pod could then get FCM tokens with **no long-lived Google
+  key**. Verify that end to end with FCM before relying on it.
 - **Client work.**
   - CI must write `google-services.json`. Builds currently compile Firebase but
     disable it without that file.
@@ -508,24 +539,45 @@ Provider sources:
   [RFC 8292](https://www.rfc-editor.org/rfc/rfc8292),
   [Safari Web Push](https://developer.apple.com/documentation/usernotifications/sending-web-push-notifications-in-web-apps-and-browsers).
 
-## Payload privacy
+## Payload content
 
-APNs and FCM payloads travel over TLS but are readable by Apple and Google.
-[media.md](media.md#push-is-deferred-future-delivery-uses-direct-apnsfcm-integrations)
-currently forbids sending sender names or message text to providers. The choice
-is between three options:
+**Decided: send the sender and a preview, as Slack and Discord do.**
 
-| Option | What Apple/Google see | Experience | Effort |
-| --- | --- | --- | --- |
-| **A. Plain content** (what Slack and Discord do) | Sender name and preview | Best and simplest | Lowest |
-| **B. Opaque IDs, client fetches** (Signal-like) | IDs only | Good; needs a network round-trip in the iOS extension or Android service, with a generic fallback | Medium. The extension needs the session token via a shared keychain. |
-| **C. Encrypted preview (recommended)** | IDs + ciphertext | Good, and no extra round-trip | Medium. Each device sends a random 32-byte key at registration; the server encrypts `{sender, preview}` with AES-GCM; the iOS extension or Android service decrypts locally. |
+| Kind | Title | Body |
+| --- | --- | --- |
+| DM | sender display name | message text |
+| Channel | `sender · #channel (Space)` | message text |
+| Mention | same as channel | message text |
 
-Option C keeps the existing privacy rule and works offline or on poor networks.
-Web Push already has this property built in.
+- Truncate the text to about 180 characters. Payloads stay well under the
+  4 KB limit.
+- Also include the conversation ID, message ID and kind, for tap navigation and
+  grouping.
+- Apple and Google can read APNs/FCM payloads in transit. Web Push payloads are
+  encrypted end to end to the browser.
+- A future account setting `preview: none` can replace the title and body with
+  "New message" for people who prefer that. iOS also has its own *Show Previews:
+  When Unlocked* setting.
+
+Rejected alternatives, for the record:
+- **Opaque IDs with the app fetching content.** This is Signal's approach. It
+  needs the iOS extension to hold a session token and make a network request
+  per notification.
+- **Per-device encrypted previews.** This is Matrix-like. It keeps content
+  from Apple and Google, but needs the extension and key management.
+
+Either can be added later without changing the preference model.
 
 ## Phases
 
+0. **@mentions (prerequisite, no external setup).**
+   - `@username` autocomplete in the composer on all four clients, reusing the
+     `:` emoji autocomplete pattern.
+   - Highlighted mentions in messages.
+   - The server resolves mentions to accounts that can see the channel and
+     stores them, so push can target them.
+   - `@everyone` / `@here` for space owners.
+   - This can be built while the Apple and Firebase setup below happens.
 1. **Mobile push for DMs and channels, with per-space/channel/DM controls.**
    - **Server:**
      - new migration;
@@ -535,9 +587,10 @@ Web Push already has this property built in.
      - session-bound delivery;
      - presence-based mobile hold while active on another client;
      - `push/config` advertising platforms behind a flag.
-   - **iOS:** Notification Service Extension, app group, and a decrypt or fetch
-     path.
-   - **Android:** `google-services.json` in CI, and notification channels.
+   - **iOS:** enable the dormant registration, title/body alerts and tap
+     navigation for channels as well as DMs.
+   - **Android:** `google-services.json` in CI, notification channels, and
+     `MessagingStyle` notifications showing sender and text.
    - **Every client** (web, Android, Apple, desktop): *Notifications* and *Mute*
      items in the existing space and channel menus, plus a new DM row menu. These
      controls are real from day one because they govern mobile push.
@@ -555,8 +608,7 @@ Web Push already has this property built in.
      cancellation, web `getNotifications()`.
    - DND/pause.
 4. **With future features:**
-   - mentions (then *Only mentions* becomes meaningful, plus suppress
-     `@everyone`);
+   - per-space *suppress `@everyone`*;
    - replies and threads;
    - reactions;
    - DM calls (PushKit/CallKit, Android full-screen intent);
@@ -566,31 +618,76 @@ Each phase is its own PR with the deployment order `AGENTS.md` requires. Each
 platform stays hidden from `GET /api/push/config` until it has been validated on
 real devices.
 
-## What the owner needs to provide
+## Account setup: Apple and Firebase
 
-**Before phase 1**
+Nothing here is needed until phase 1 is built; it can happen while mentions are
+built.
 
-1. **APNs keys.** At developer.apple.com: Certificates, IDs & Profiles → Keys → **+**
-   → enable **Apple Push Notifications service (APNs)** → download the `.p8` once.
-   - Create two keys: a **Production** key for TestFlight/App Store builds and
-     production, and a **Sandbox** key for Xcode builds and staging.
-   - Note each **Key ID**.
-   - These are different from the App Store Connect API key used for TestFlight.
-   - Confirm the `chat.caper.ios` App ID shows Push Notifications enabled.
-   - **Request the Notification Filtering entitlement now**, because Apple's
-     approval takes time. Also enable the Communication Notifications
-     capability.
-2. **Firebase project** for `chat.caper.android` and `chat.caper.android.debug`.
-   - Download `google-services.json`.
-   - Either allow Workload Identity Federation (keyless) or create a service
-     account with the *Firebase Cloud Messaging API Admin* role.
-3. **Secrets.** Add the APNs and FCM values to `production/apps/caper` and
-   `staging/apps/caper`. The existing `caper-api-account` ExternalSecret already
-   projects that whole record, so no new manifest is needed. The VAPID key pair
-   can be generated by a script in phase 3.
+- **Keep the downloaded files** (`.p8` files and Firebase JSON) in your password
+  manager. Each can only be downloaded once or must be regenerated.
+- **Phase 1 adds a one-command script** that stores them in AWS Secrets Manager
+  (`production/apps/caper` and `staging/apps/caper`) without touching the
+  other values. Don't paste them anywhere else.
 
-**Decisions**
+### Apple (APNs)
 
-- Payload privacy: A, B or C.
-- Default for space channels before mentions exist: *All messages*, or DMs only.
-- Whether desktop should gain "keep running in the tray".
+You need the Account Holder or Admin role at
+[developer.apple.com/account](https://developer.apple.com/account).
+
+1. **Check the App ID.** In Certificates, IDs & Profiles → **Identifiers**, open
+   `chat.caper.ios` and confirm **Push Notifications** is ticked. If it isn't,
+   tick it and save.
+2. **Create the production key.** Under **Keys**, click **+**.
+   1. Name it `Caper APNs Production`.
+   2. Tick **Apple Push Notification service**, then **Configure**.
+   3. Set **Environment** to *Production* and **Key type** to *Team Scoped*.
+   4. Continue, then **Confirm**, then **Download**.
+   5. Note the 10-character **Key ID** shown on the key page.
+3. **Create the sandbox key.** Repeat step 2 with the name `Caper APNs Sandbox`
+   and **Environment** set to *Sandbox*. It is for Xcode builds and staging.
+4. The **Team ID** is already stored with the release-signing secrets; nothing
+   new is needed.
+
+These keys are separate from the App Store Connect API key that uploads
+TestFlight builds. No certificate, provisioning profile or app rebuild is needed
+for the keys themselves. iOS release builds already carry the push
+entitlement.
+
+### Firebase (FCM, Android)
+
+1. **Create the project.** At [console.firebase.google.com](https://console.firebase.google.com),
+   click **Create a project**, name it `Caper`, and turn off Google Analytics
+   (not needed). If you prefer, you can attach the Google Cloud project that
+   already holds the Google Play upload service account.
+2. **Register the Android apps.** In **Project settings → General → Your apps**,
+   add an Android app with package `chat.caper.android`. Add a second one for
+   debug builds: `chat.caper.android.debug`. Skip the SDK steps; the app
+   already includes them.
+3. **Download `google-services.json`** after both apps are added, so it covers
+   both. Phase 1 makes CI write it into Android builds.
+4. **Create the server credential.**
+   1. In **Project settings → Service accounts → Manage service account
+      permissions** (opens Google Cloud), create a service account named
+      `caper-push`.
+   2. Give it only the role **Firebase Cloud Messaging API Admin**.
+   3. Under **Keys → Add key → JSON**, download the key.
+
+   The default `firebase-adminsdk` key also works, but it can administer the
+   whole Firebase project.
+5. **Confirm the API is enabled.** **Project settings → Cloud Messaging** should
+   show *Firebase Cloud Messaging API (V1): Enabled*.
+
+A later hardening step can replace the JSON key with keyless Workload Identity
+Federation (see [Android](#android-fcm-http-v1)).
+
+### Not needed yet
+
+- **Web Push.** Phase 3 generates its own VAPID keys.
+- **Notification Filtering entitlement.** Apple must approve it; it is needed
+  only for phase 3's "dismiss on read elsewhere".
+- **macOS push.** Not planned yet.
+
+**Open decisions**
+
+- Whether the Windows/Linux desktop app should gain "keep running in the tray".
+- `@everyone` / `@here` limited to space owners (proposed) or open to everyone.

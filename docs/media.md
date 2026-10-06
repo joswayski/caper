@@ -4070,17 +4070,19 @@ Browser Web Push, macOS push and Rust desktop OS notifications are not implement
 
 Future work must include explicit opt-in, session-bound device ownership, token
 rotation/invalidation, logout/account switching, durable enqueue/retry/deduplication,
-and authenticated notification-tap navigation. Keep payloads limited to opaque
-conversation/message IDs and generic copy; do not send sender names or message
-text to providers. Provider acceptance does not prove device receipt, and already
+and authenticated notification-tap navigation. On October 6, 2026 the owner decided
+payloads may include the sender name and a truncated message preview, as Slack and
+Discord do; see [notifications.md](notifications.md#payload-content). Provider acceptance does not prove device receipt, and already
 submitted notifications cannot be recalled. Validate direct delivery on physical
 Android and signed iOS devices before advertising supported platforms.
 
 `202610030002_push.sql` and its tables remain only for published migration-history
 compatibility. The API no longer uses them to register devices or queue/deliver
-notifications, including previously queued rows. Do not edit applied migrations,
-drop existing data or reuse the legacy `endpoint_arn` column as a direct-provider
-token contract. Future direct delivery needs its own reviewed schema migration.
+notifications, including previously queued rows. Do not edit applied migrations or
+reuse the legacy `endpoint_arn` column as a direct-provider token contract. The
+owner approved dropping these unused tables in the future direct-delivery
+migration, together with their runtime grants. That migration needs the rollback
+caveat in [notifications.md](notifications.md#proposed-schema-new-migration-that-also-drops-the-legacy-push_-tables).
 
 ### Deployment order
 
