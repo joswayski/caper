@@ -46,12 +46,14 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private val authoritativeReactionMessages = mutableMapOf<String, ChatMessage>()
     private val reactorCache = ReactorCache()
     private val pinSnapshots = mutableMapOf<String, ChatMessage>()
+    private val editSnapshots = mutableMapOf<String, ChatMessage>()
     private var pinSnapshotCursor: String? = null
     private val pinWorkers = mutableMapOf<String, Job>()
     private var reactionIntentVersion = 0L
     private var directRefresh: Job? = null
     private var pendingDirectIntent: String? = null
     private var foreground = false
+    private var threadRequest = 0L
 
     init { loadHome() }
 
@@ -362,7 +364,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     fun loadOlder() {
         val channel = mutable.value.selectedChannel ?: return
-        val before = mutable.value.messages.firstOrNull()?.seq ?: return
+        val before = mutable.value.messages.firstOrNull { (it.threadRootId == null || it.broadcast) && it.id !in mutable.value.threadOnlyRows }?.seq ?: return
         val request = generation
         if (refreshingHistory || !mutable.value.hasMoreMessages || mutable.value.loadingOlder) return
         mutable.value = mutable.value.copy(loadingOlder = true, olderError = null)
@@ -373,6 +375,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 val newer = authoritativeMessages()
                 mutable.value = mutable.value.copy(
                     messages = projectMessages(mergeTimelinePins(mergeMessages(newer, history.messages, unloadedReactions))), hasMoreMessages = history.hasMore,
+                    threadOnlyRows = mutable.value.threadOnlyRows - history.messages.map { it.id }.toSet(),
                     loadingOlder = false,
                 )
             } catch (error: Throwable) {
@@ -594,8 +597,41 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun send(text: String, confirmed: () -> Unit = {}) {
+    fun closeThread() { ++threadRequest; mutable.value = mutable.value.copy(thread = null) }
+
+    fun openThread(root: String) {
+        mutable.value = mutable.value.copy(thread = ThreadUi(root))
+        loadThread()
+    }
+
+    fun loadThread(older: Boolean = false) {
+        val thread = mutable.value.thread ?: return
+        val channel = mutable.value.selectedChannel?.id ?: return
+        val request = ++threadRequest
+        val channelRequest = generation
+        mutable.value = mutable.value.copy(thread = thread.copy(loading = true, error = null))
+        viewModelScope.launch {
+            try {
+                val page = api.thread(accountToken, channel, thread.rootId, if (older) thread.before else null)
+                if (request != threadRequest || channelRequest != generation || mutable.value.thread?.rootId != thread.rootId) return@launch
+                val rows = listOf(page.root) + page.messages
+                val loaded = mutable.value.messages.map { it.id }.toSet()
+                mutable.value = mutable.value.copy(
+                    messages = projectMessages(mergeTimelinePins(mergeMessages(authoritativeMessages(), rows, unloadedReactions))),
+                    threadOnlyRows = mutable.value.threadOnlyRows + rows.filter { it.id !in loaded && (it.threadRootId == null || it.broadcast) }.map { it.id },
+                    thread = thread.copy(loading = false, hasMore = page.hasMore, before = page.messages.firstOrNull()?.seq ?: thread.before),
+                )
+            } catch (error: Throwable) {
+                if (request != threadRequest || channelRequest != generation) return@launch
+                if (error is ApiException && error.status in listOf(401, 403, 404)) { closeThread(); resyncChannel(channel) }
+                else mutable.value = mutable.value.copy(thread = thread.copy(loading = false, error = message(error)))
+            }
+        }
+    }
+
+    fun send(text: String, confirmed: () -> Unit = {}, threadRootId: String? = null, broadcast: Boolean = false) {
         if (text.isBlank()) return
+        if (mutable.value.pendingMessage?.let { it.threadRootId != threadRootId } == true) return
         val channel = mutable.value.selectedChannel?.takeIf { it.joined } ?: return
         val author = chatAuthor ?: run {
             // The session is still being created (or failed earlier): create
@@ -605,21 +641,22 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             viewModelScope.launch {
                 val session = createChatSession(accountRequest)
                 if (request != generation || accountRequest != accountGeneration || mutable.value.selectedChannel?.id != channel.id) return@launch
-                if (session != null && chatAuthor != null) send(text, confirmed)
+                if (session != null && chatAuthor != null) send(text, confirmed, threadRootId, broadcast)
                 else fail(IllegalStateException("Chat session is unavailable."))
             }
             return
         }
         val request = generation
-        val operation = pendingSends.begin(channel.id, author, text, confirmed)
+        val operation = pendingSends.begin(channel.id, author, text, threadRootId, broadcast, confirmed)
         mutable.value = mutable.value.copy(pendingMessage = PendingMessageUi(
             operation.id.toString(), operation.text, author, Instant.now().toString(),
+            threadRootId = operation.threadRootId, broadcast = operation.broadcast,
         ))
         viewModelScope.launch {
             try {
                 val capability = chatToken ?: createChatSession(accountGeneration) ?: return@launch
                 val message = retryUnknownSend {
-                    api.sendMessage(accountToken, capability, channel.id, author, operation.id, operation.text)
+                    api.sendMessage(accountToken, capability, channel.id, author, operation.id, operation.text, operation.threadRootId, operation.broadcast)
                 }
                 if (request == generation && mutable.value.selectedChannel?.id == channel.id) {
                     addMessage(message)
@@ -685,6 +722,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             } },
             onReaction = { value -> viewModelScope.launch { if (generation == request) receiveReaction(value) } },
             onPin = { value -> viewModelScope.launch { if (generation == request) receivePin(value) } },
+            onEdit = { value -> viewModelScope.launch { if (generation == request) receiveEdit(value) } },
             onTyping = { author, active, revision -> viewModelScope.launch { if (participating && generation == request) receiveTyping(author, active, revision) } },
             onPresence = { snapshot -> viewModelScope.launch {
                 if (participating && generation == request) mutable.value = mutable.value.copy(presence = snapshot.members.associate { it.userId to it.status })
@@ -789,17 +827,68 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         })
     }
 
+    private fun receiveEdit(update: EditUpdate) {
+        if (update.channelId != mutable.value.selectedChannel?.id) return
+        durableReplayCursor = update.seq
+        if (mutable.value.selectedDirectId == update.channelId) markDirectRead(update.channelId, update.seq)
+        applyEditSnapshot(update.message)
+    }
+
+    // HTTP confirmations update content only; they are not delivery/read cursors.
+    private fun applyEditSnapshot(message: ChatMessage) {
+        val loadedIds = (mutable.value.messages + mutable.value.pinnedMessages).map { it.id }.toSet()
+        if (!cacheEditSnapshot(editSnapshots, message, loadedIds)) {
+            resyncChannel(message.channelId)
+            return
+        }
+        authoritativeReactionMessages[message.id]?.let { authoritativeReactionMessages[message.id] = mergeEdit(it, message) }
+        pinSnapshots[message.id]?.let { pinSnapshots[message.id] = mergeEdit(it, message) }
+        mutable.value = mutable.value.copy(
+            messages = mutable.value.messages.map { mergeEdit(it, message) },
+            pinnedMessages = mutable.value.pinnedMessages.map { mergeEdit(it, message) },
+        )
+    }
+
+    fun canEdit(message: ChatMessage): Boolean = mutable.value.selectedChannel?.let { it.id == message.channelId && it.joined } == true &&
+        chatAuthor?.let { !it.isGuest && it.id == message.author.id } == true
+
+    suspend fun editMessage(message: ChatMessage, text: String): Unit {
+        check(canEdit(message)) { "Only the author can edit while participating." }
+        val request = generation
+        val authorId = requireNotNull(chatAuthor).id
+        val result = api.editMessage(accountToken, requireNotNull(chatToken), message.channelId, message.id, text, message.revision)
+        if (request != generation || !canEdit(message)) throw kotlinx.coroutines.CancellationException()
+        require(result.author.id == authorId) { "Message author mismatch." }
+        applyEditSnapshot(result)
+    }
+
+    suspend fun reloadMessage(message: ChatMessage): ChatMessage {
+        val request = generation
+        val result = api.loadMessage(accountToken, message.channelId, message.id)
+        if (request != generation || mutable.value.selectedChannel?.id != message.channelId) throw kotlinx.coroutines.CancellationException()
+        applyEditSnapshot(result)
+        return result
+    }
+
+    suspend fun messageVersions(message: ChatMessage, before: Int? = null): MessageVersions {
+        val request = generation
+        val result = api.messageVersions(accountToken, message.channelId, message.id, before)
+        if (request != generation || mutable.value.selectedChannel?.id != message.channelId) throw kotlinx.coroutines.CancellationException()
+        return result
+    }
+
     private fun receivePin(update: PinUpdate, sequenced: Boolean = true) {
         if (update.channelId != mutable.value.selectedChannel?.id) return
         durableReplayCursor = replayCursorAfterPin(durableReplayCursor, update, sequenced)
         if (sequenced && mutable.value.selectedDirectId == update.channelId) markDirectRead(update.channelId, update.seq)
         if (pinSnapshotCursor?.let { update.seq.toBigInteger() <= it.toBigInteger() } == true) return
         val old = pinSnapshots[update.message.id]
-        val merged = if (old == null) update.message else mergePin(old, update.message)
+        val candidate = overlayEdit(update.message)
+        val merged = if (old == null) candidate else mergeEdit(mergePin(old, candidate), candidate)
         pinSnapshots[update.message.id] = merged
-        authoritativeReactionMessages[merged.id]?.let { authoritativeReactionMessages[merged.id] = mergePin(it, merged) }
+        authoritativeReactionMessages[merged.id]?.let { authoritativeReactionMessages[merged.id] = mergeEdit(mergePin(it, merged), merged) }
         mutable.value = mutable.value.copy(
-            messages = mutable.value.messages.map { if (it.id == merged.id) mergePin(it, merged) else it },
+            messages = mutable.value.messages.map { if (it.id == merged.id) mergeEdit(mergePin(it, merged), merged) else it },
             pinnedMessages = pinSnapshots.values.filter { it.pin != null }.sortedByDescending { it.pinSeq?.toBigIntegerOrNull() },
         )
     }
@@ -816,12 +905,21 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 pinSnapshots[current.id] = current.copy(pin = null, pinSeq = history.cursor)
             }
         }
-        listed.forEach { (id, message) -> pinSnapshots[id] = pinSnapshots[id]?.let { mergePin(it, message) } ?: message }
+        listed.forEach { (id, message) ->
+            val candidate = overlayEdit(message)
+            pinSnapshots[id] = pinSnapshots[id]?.let { mergeEdit(mergePin(it, candidate), candidate) } ?: candidate
+        }
         mutable.value = mutable.value.copy(pinnedMessages = pinSnapshots.values.filter { it.pin != null }.sortedByDescending { it.pinSeq?.toBigIntegerOrNull() })
     }
 
+    private fun overlayEdit(message: ChatMessage): ChatMessage {
+        val loaded = mutable.value.messages.find { it.id == message.id }
+        val current = loaded?.let { mergeEdit(message, it) } ?: message
+        return editSnapshots[message.id]?.let { mergeEdit(current, it) } ?: current
+    }
+
     private fun mergeTimelinePins(messages: List<ChatMessage>) = messages.map { message ->
-        overlayPin(message, pinSnapshots[message.id], pinSnapshotCursor)
+        overlayEdit(overlayPin(message, pinSnapshots[message.id], pinSnapshotCursor))
     }
 
     private fun confirmPending(message: ChatMessage) {
@@ -845,6 +943,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value = mutable.value.copy(
             selectedChannel = channel, selectedDirectId = previous.selectedDirectId,
             messages = previous.messages, hasMoreMessages = previous.hasMoreMessages,
+            thread = previous.thread, threadOnlyRows = previous.threadOnlyRows,
             gateway = GatewayStatus.CONNECTING, busy = true, error = null,
         )
         viewModelScope.launch {
@@ -852,12 +951,14 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 val history = api.history(accountToken, channel.id)
                 if (generation != request || mutable.value.selectedChannel?.id != channel.id) return@launch
                 history.messages.forEach(::confirmPending)
-                val recovered = recoverHistory(authoritativeMessages(), previous.hasMoreMessages, previousCursor, history)
+                val recovered = recoverHistory(authoritativeMessages().filter { (it.threadRootId == null || it.broadcast) && it.id !in previous.threadOnlyRows }, previous.hasMoreMessages, previousCursor, history)
                 installHistoryPins(history)
                 mutable.value = mutable.value.copy(
                     messages = projectMessages(mergeTimelinePins(recovered.messages)), hasMoreMessages = recovered.hasMore, busy = false,
+                    threadOnlyRows = emptySet(),
                 )
                 openGateway(channel.id, history.cursor, request, channel.joined)
+                if (mutable.value.thread != null) loadThread()
                 if (channel.direct) markDirectRead(channel.id, history.cursor)
             } catch (error: Throwable) {
                 if (generation == request) {
@@ -1081,9 +1182,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         reactionWorkers.clear(); reactionIntents.clear(); authoritativeReactionMessages.clear()
         reactorCache.clear()
         pinWorkers.values.forEach { it.cancel() }; pinWorkers.clear(); pinSnapshots.clear()
+        editSnapshots.clear()
         pinSnapshotCursor = null
         mutable.value = mutable.value.copy(
             selectedChannel = null, selectedDirectId = null, messages = emptyList(), typingAuthors = emptyList(), presence = emptyMap(),
+            thread = null, threadOnlyRows = emptySet(),
             loadingOlder = false, olderError = null, messagesLoading = false, messagesError = null, refreshError = null,
             voiceRosters = emptyMap(),
             voiceSessionStartedAt = emptyMap(),

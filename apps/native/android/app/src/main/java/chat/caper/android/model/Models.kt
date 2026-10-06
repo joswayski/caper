@@ -37,6 +37,8 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 )
 @Serializable data class ChatAuthor(val id: String, val name: String, val isGuest: Boolean, val avatarId: Int? = null)
 @Serializable data class ChatContent(val version: Int, val type: String, val text: String)
+@Serializable data class MessageVersion(val revision: Int, val content: ChatContent, val createdAt: String)
+@Serializable data class MessageVersions(val messageId: String, val versions: List<MessageVersion>, val hasMore: Boolean)
 @Serializable data class MessageReaction(val emoji: String, val authorIds: List<String>)
 /** One person who reacted; `id` matches the snapshot's `authorIds`. */
 @Serializable data class Reactor(val id: String, val username: String? = null, val displayName: String? = null, val avatarId: Int? = null)
@@ -44,6 +46,13 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 /** Who reacted to a message, per emoji in snapshot order and people in reaction order. */
 @Serializable data class ReactorList(val messageId: String, val reactionSeq: String, val reactions: List<ReactorGroup>)
 @Serializable data class MessagePin(val author: ChatAuthor, val createdAt: String)
+@Serializable data class EditUpdate(
+    val type: String,
+    val schemaVersion: Int,
+    val channelId: String,
+    val seq: String,
+    val message: ChatMessage,
+)
 @Serializable data class PinUpdate(
     val type: String,
     val schemaVersion: Int,
@@ -71,7 +80,16 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val reactionSeq: String? = null,
     val pin: MessagePin? = null,
     val pinSeq: String? = null,
+    val threadRootId: String? = null,
+    val broadcast: Boolean = false,
+    val thread: ThreadSummary? = null,
+    val revision: Int = 1,
+    val editedAt: String? = null,
+    val editSeq: String? = null,
 )
+@Serializable data class ThreadSummary(val replyCount: Int, val participants: List<ChatAuthor>, val seq: String)
+@Serializable data class ThreadHistory(val root: ChatMessage, val messages: List<ChatMessage>, val cursor: String, val hasMore: Boolean)
+data class ThreadUi(val rootId: String, val loading: Boolean = true, val hasMore: Boolean = false, val before: String? = null, val error: String? = null)
 @Serializable data class ChatHistory(
     val messages: List<ChatMessage>,
     val cursor: String,
@@ -171,6 +189,8 @@ data class AppUiState(
     val directConversations: List<DirectConversation> = emptyList(),
     val selectedDirectId: String? = null,
     val messages: List<ChatMessage> = emptyList(),
+    val thread: ThreadUi? = null,
+    val threadOnlyRows: Set<String> = emptySet(),
     val hasMoreMessages: Boolean = false,
     val loadingOlder: Boolean = false,
     val olderError: String? = null,
@@ -217,6 +237,8 @@ data class PendingMessageUi(
     val createdAt: String,
     val error: String? = null,
     val rejected: Boolean = false,
+    val threadRootId: String? = null,
+    val broadcast: Boolean = false,
 )
 
 data class ReactionSaveUi(val emoji: String, val active: Boolean, val saving: Boolean = true, val error: String? = null)
