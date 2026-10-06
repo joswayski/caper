@@ -15,6 +15,9 @@ const POLL: Duration = Duration::from_millis(200);
 const HEARTBEAT: Duration = Duration::from_secs(10);
 const WATCHDOG: Duration = Duration::from_secs(30);
 const CONNECT_DEADLINE: Duration = Duration::from_secs(5);
+// Longest a handshake read or write blocks before stop and the deadline are
+// checked again.
+const HANDSHAKE_SLICE: Duration = Duration::from_millis(50);
 pub(crate) const CATCHUP_DEADLINE: Duration = Duration::from_secs(15);
 
 #[derive(Debug)]
@@ -98,7 +101,7 @@ pub(crate) enum Failure {
 // Shared by the desktop chat and voice streams. Replacement handshakes run on
 // another thread so DNS/TLS/upgrade cannot stop delivery on the draining socket.
 pub(crate) struct Connection {
-    pub socket: tungstenite::WebSocket<MaybeTlsStream<std::net::TcpStream>>,
+    pub socket: tungstenite::WebSocket<MaybeTlsStream<HandshakeStream>>,
     pub hello: bool,
     pub opened: Instant,
     last_server: Instant,
@@ -429,7 +432,7 @@ fn connect_bounded(
     stop: &Arc<AtomicBool>,
 ) -> Result<
     (
-        tungstenite::WebSocket<MaybeTlsStream<std::net::TcpStream>>,
+        tungstenite::WebSocket<MaybeTlsStream<HandshakeStream>>,
         tungstenite::handshake::client::Response,
     ),
     Box<tungstenite::Error>,
@@ -482,36 +485,16 @@ fn connect_bounded(
             POLL.min(deadline.saturating_duration_since(Instant::now())),
         ) {
             Ok(stream) => {
-                // The watchdog below enforces the deadline and cancellation, so
-                // a slow peer may pause between bytes for up to the time left.
-                // A 200 ms per-read limit failed real slow networks (and loaded
-                // CI) mid-handshake. The caller restores POLL afterwards.
-                let remaining = deadline
-                    .saturating_duration_since(Instant::now())
-                    .max(Duration::from_millis(1));
-                stream
-                    .set_read_timeout(Some(remaining))
-                    .map_err(tungstenite::Error::Io)?;
-                stream
-                    .set_write_timeout(Some(remaining))
-                    .map_err(tungstenite::Error::Io)?;
-                // A per-read timeout alone cannot bound a peer that trickles
-                // TLS or upgrade bytes indefinitely. Shutdown of a clone
-                // interrupts the original socket even inside the synchronous
-                // TLS handshake, enforcing the original end-to-end deadline.
-                let interrupt = stream.try_clone().map_err(tungstenite::Error::Io)?;
-                let stopped = Arc::clone(stop);
-                let completed = Arc::new(AtomicBool::new(false));
-                let finished = Arc::clone(&completed);
-                let watchdog = thread::spawn(move || {
-                    while !finished.load(Ordering::Acquire) {
-                        if stopped.load(Ordering::Relaxed) || Instant::now() >= deadline {
-                            let _ = interrupt.shutdown(std::net::Shutdown::Both);
-                            return;
-                        }
-                        thread::sleep(Duration::from_millis(20));
-                    }
-                });
+                // Blocking reads and writes are cut into short slices, and stop
+                // and the total deadline are checked between them. A shutdown
+                // from another thread is not enough: Windows does not reliably
+                // wake a recv that is already blocked, so a trickling peer could
+                // hold the cancelled handshake until its read timeout. A slow
+                // peer may still pause between bytes for up to the time left.
+                let stream = HandshakeStream {
+                    stream,
+                    guard: Some((Arc::clone(stop), deadline)),
+                };
                 // One handshake attempt; redirects are never followed.
                 let result = tungstenite::client_tls_with_config(request, stream, None, None)
                     .map_err(|error| match error {
@@ -520,8 +503,6 @@ fn connect_bounded(
                             std::io::Error::new(std::io::ErrorKind::TimedOut, "upgrade timed out"),
                         ),
                     });
-                completed.store(true, Ordering::Release);
-                let _ = watchdog.join();
                 if stop.load(Ordering::Relaxed) || Instant::now() >= deadline {
                     return Err(Box::new(tungstenite::Error::Io(std::io::Error::new(
                         std::io::ErrorKind::TimedOut,
@@ -543,22 +524,79 @@ fn connect_bounded(
     ))))
 }
 
+// The TCP stream under a gateway WebSocket. While `guard` is set (during the
+// handshake), timeouts are retried in HANDSHAKE_SLICE steps until stop or the
+// deadline; afterwards I/O passes straight through with the caller's timeouts.
+#[derive(Debug)]
+pub(crate) struct HandshakeStream {
+    stream: std::net::TcpStream,
+    guard: Option<(Arc<AtomicBool>, Instant)>,
+}
+
+impl HandshakeStream {
+    fn sliced<T>(
+        &mut self,
+        set_timeout: fn(&std::net::TcpStream, Option<Duration>) -> std::io::Result<()>,
+        mut io: impl FnMut(&mut std::net::TcpStream) -> std::io::Result<T>,
+    ) -> std::io::Result<T> {
+        let Some((stop, deadline)) = &self.guard else {
+            return io(&mut self.stream);
+        };
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if stop.load(Ordering::Relaxed) || left.is_zero() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "voice connection cancelled or timed out",
+                ));
+            }
+            set_timeout(&self.stream, Some(left.min(HANDSHAKE_SLICE)))?;
+            match io(&mut self.stream) {
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) => {}
+                result => return result,
+            }
+        }
+    }
+}
+
+impl std::io::Read for HandshakeStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.sliced(std::net::TcpStream::set_read_timeout, |stream| {
+            std::io::Read::read(stream, buf)
+        })
+    }
+}
+
+impl std::io::Write for HandshakeStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.sliced(std::net::TcpStream::set_write_timeout, |stream| {
+            std::io::Write::write(stream, buf)
+        })
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        std::io::Write::flush(&mut self.stream)
+    }
+}
+
+// Ends the handshake guard and applies the steady-state I/O timeout.
 #[cfg(any(unix, windows))]
 fn set_timeout(
-    stream: &mut MaybeTlsStream<std::net::TcpStream>,
+    stream: &mut MaybeTlsStream<HandshakeStream>,
     timeout: Duration,
 ) -> std::io::Result<()> {
-    match stream {
-        MaybeTlsStream::Plain(stream) => {
-            stream.set_read_timeout(Some(timeout))?;
-            stream.set_write_timeout(Some(timeout))
-        }
-        MaybeTlsStream::Rustls(stream) => {
-            stream.get_mut().set_read_timeout(Some(timeout))?;
-            stream.get_mut().set_write_timeout(Some(timeout))
-        }
-        _ => Ok(()),
-    }
+    let stream = match stream {
+        MaybeTlsStream::Plain(stream) => stream,
+        MaybeTlsStream::Rustls(stream) => stream.get_mut(),
+        _ => return Ok(()),
+    };
+    stream.guard = None;
+    stream.stream.set_read_timeout(Some(timeout))?;
+    stream.stream.set_write_timeout(Some(timeout))
 }
 
 #[cfg(test)]

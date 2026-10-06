@@ -67,6 +67,7 @@ mod notifications;
 mod presence;
 mod push;
 mod spaces;
+mod updates;
 use media_store::Timestamp;
 
 pub use db::{connect_database, connect_runtime_database, migrate_database};
@@ -744,6 +745,7 @@ pub struct AppState {
     debug_users: accounts::DebugUsers,
     reserved_usernames: accounts::ReservedUsernames,
     notifications_webhook: notifications::NotificationsWebhook,
+    updates: Arc<updates::Updates>,
 }
 impl AppState {
     pub fn new(config: Config, provider: Arc<dyn Provider>) -> Self {
@@ -788,6 +790,7 @@ impl AppState {
             notifications_webhook: notifications::NotificationsWebhook::from_env(
                 &RuntimeEnvironment::default(),
             ),
+            updates: Arc::new(updates::Updates::new()),
         }
     }
 
@@ -838,6 +841,9 @@ struct Registry {
     cleanup: VecDeque<CleanupJob>,
     reservations: HashMap<Uuid, JoinReservation>,
     revision: u64,
+    /// The continuous occupied voice session; monitors never start one.
+    #[serde(default)]
+    session_started_at: Option<Timestamp>,
     /// Provider sessions and TURN created shortly before a signed-in member joins.
     #[serde(default)]
     prepared: Vec<PreparedJoin>,
@@ -1095,6 +1101,7 @@ fn app_router(state: AppState, test_only_routes: Router<AppState>) -> Router {
         .route("/readyz", get(ready))
         .route("/api/health", get(|| async { StatusCode::NO_CONTENT }))
         .merge(account_login)
+        .merge(updates::routes())
         .merge(protected)
         .merge(channel_media::routes())
         .merge(chat::routes())
@@ -1126,6 +1133,10 @@ fn app_router(state: AppState, test_only_routes: Router<AppState>) -> Router {
         )
         .layer(axum::middleware::from_fn(
             |request: axum::extract::Request, next: axum::middleware::Next| async move {
+                let update_metadata = request
+                    .extensions()
+                    .get::<axum::extract::MatchedPath>()
+                    .is_some_and(|path| path.as_str() == "/api/updates/native");
                 let mut response = if request
                     .headers()
                     .get("sec-fetch-site")
@@ -1135,10 +1146,14 @@ fn app_router(state: AppState, test_only_routes: Router<AppState>) -> Router {
                 } else {
                     next.run(request).await
                 };
-                response.headers_mut().insert(
-                    "cache-control",
-                    axum::http::HeaderValue::from_static("no-store"),
-                );
+                // Account/media responses (including SSE's default no-cache)
+                // must remain no-store. Only public update metadata opts in.
+                if !update_metadata || !response.status().is_success() {
+                    response.headers_mut().insert(
+                        "cache-control",
+                        axum::http::HeaderValue::from_static("no-store"),
+                    );
+                }
                 response
             },
         ))
@@ -1343,7 +1358,9 @@ async fn account_profile(
     {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid profile"));
     }
-    if state.reserved_usernames.contains(&username) {
+    if principal.user.username.as_deref() != Some(username.as_str())
+        && state.reserved_usernames.contains(&username)
+    {
         return Err(ApiError::new(StatusCode::CONFLICT, "username unavailable"));
     }
     let pool = state.database.as_ref().ok_or_else(|| {
@@ -1692,6 +1709,10 @@ struct Join {
     muted: bool,
     #[serde(default)]
     deafened: bool,
+    /// Join-click time, shared with spectators once admission succeeds. Bound
+    /// client clock skew/backdating to the same 30 s window as reservations.
+    #[serde(default, rename = "joinStartedAt")]
+    join_started_at: Option<Timestamp>,
     /// The browser's first microphone offer. Publishing it inside join saves a
     /// signaling round trip; the same handler state machine runs either way.
     #[serde(default)]
@@ -1718,6 +1739,11 @@ async fn join(
     headers: HeaderMap,
     Json(input): Json<Join>,
 ) -> Result<Json<Value>, ApiError> {
+    let now = Timestamp::now();
+    let joined_at = input
+        .join_started_at
+        .unwrap_or(now)
+        .clamp(now - Duration::from_secs(30), now);
     ensure_enabled(&s)?;
     let submitted_name = input.name.as_deref().unwrap_or_default().trim();
     let account = if let Some(token) = account_token(&headers) {
@@ -1981,7 +2007,7 @@ async fn join(
         deafened: input.deafened,
         state_sequence: 0,
         lease: Timestamp::now(),
-        joined: Timestamp::now(),
+        joined: joined_at,
         tracks: HashMap::new(),
         subscriptions: HashMap::new(),
         pending_offer: false,
@@ -2826,6 +2852,16 @@ struct TrackView {
     id: Uuid,
     kind: Kind,
 }
+fn voice_session_started_at(r: &Registry) -> Option<Timestamp> {
+    // Older stored rooms have no session timestamp. Seed them from the oldest
+    // real participant, then persist it before membership changes.
+    r.participants
+        .values()
+        .filter(|p| p.monitor.is_none())
+        .map(|p| p.joined)
+        .min()
+        .map(|first| r.session_started_at.unwrap_or(first))
+}
 fn public_snapshot(r: &Registry) -> Value {
     let mut participants: Vec<_> = r
         .participants
@@ -2855,7 +2891,7 @@ fn public_snapshot(r: &Registry) -> Value {
             }
         })
         .collect();
-    json!({"participants":participants,"revision":r.revision})
+    json!({"participants":participants,"revision":r.revision,"sessionStartedAt":voice_session_started_at(r)})
 }
 #[derive(Serialize)]
 struct PresenceView<'a> {
@@ -2884,7 +2920,7 @@ fn presence_snapshot(r: &Registry) -> Value {
         })
         .collect();
     participants.sort_by_key(|p| p.id);
-    json!({"participants":participants,"revision":r.revision})
+    json!({"participants":participants,"revision":r.revision,"sessionStartedAt":voice_session_started_at(r)})
 }
 async fn snapshot(
     State(s): State<AppState>,

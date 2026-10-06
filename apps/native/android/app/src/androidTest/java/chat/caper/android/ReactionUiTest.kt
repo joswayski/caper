@@ -1,6 +1,8 @@
 package chat.caper.android
 
+import android.content.ClipboardManager
 import android.graphics.Bitmap
+import android.view.KeyEvent
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
@@ -25,7 +27,7 @@ import org.junit.runner.RunWith
 class ReactionUiTest {
     @get:Rule val compose = createComposeRule()
 
-    @Test fun ownershipPickerSearchAndSavingStates() {
+    @Test fun longPressQuickReactionsClipboardAndRestrictions() {
         val joined = Channel("channel00001", "space0000001", "general", private = false, joined = true)
         val state = mutableStateOf(AppUiState(chatAuthorId = "self", selectedChannel = joined))
         val message = ChatMessage(
@@ -37,14 +39,26 @@ class ReactionUiTest {
             "2",
         )
         var submitted: Triple<String, String, Boolean>? = null
+        val target = mutableStateOf<ChatMessage?>(null)
+        val picker = mutableStateOf(false)
         compose.setContent {
             CaperTheme {
                 Scaffold(containerColor = Blackout) { padding ->
                     Column(Modifier.padding(padding)) {
                         Text("Reaction UI test fixture")
                         ReactionMessageRow(message, state.value,
-                            { id, emoji, active -> submitted = Triple(id, emoji, active) }, { _, _ -> }, { _, _ -> })
+                            { id, emoji, active -> submitted = Triple(id, emoji, active) }, { _, _ -> }, { _, _ -> },
+                            { target.value = it })
                     }
+                }
+                target.value?.let {
+                    MessageActionsSheet(it, state.value, { target.value = null },
+                        { id, emoji, active -> submitted = Triple(id, emoji, active) },
+                        { target.value = null; picker.value = true })
+                }
+                if (picker.value) EmojiPicker({ picker.value = false }) { emoji ->
+                    picker.value = false
+                    submitted = Triple(message.id, emoji, true)
                 }
             }
         }
@@ -53,6 +67,12 @@ class ReactionUiTest {
         compose.onNodeWithContentDescription("❤️ reaction, 1").assertIsNotSelected().performClick()
         compose.runOnIdle { assertEquals(Triple(message.id, "❤️", true), submitted) }
         capture("reaction-chips-test-fixture.png", compose.onRoot())
+        compose.onNodeWithText(message.content.text).performTouchInput { longClick() }
+        compose.onNodeWithText("Message actions").assertIsDisplayed()
+        compose.onNodeWithContentDescription("👍 quick reaction").assertIsSelected().performClick()
+        compose.runOnIdle { assertEquals(Triple(message.id, "👍", false), submitted) }
+
+        compose.onNodeWithText(message.content.text).performTouchInput { longClick() }
         compose.onNodeWithContentDescription("Add reaction").performClick()
         capture("reaction-picker-test-fixture.png", compose.onNode(isDialog()))
         compose.onNode(hasSetTextAction()).performTextInput("definitely-no-such-emoji")
@@ -63,8 +83,15 @@ class ReactionUiTest {
         compose.runOnIdle { assertEquals(Triple(message.id, "🚀", true), submitted) }
         compose.onNodeWithText("Search emoji").assertDoesNotExist()
         compose.runOnIdle { state.value = state.value.copy(reactionSaves = mapOf("${message.id}:🚀" to ReactionSaveUi("🚀", true))) }
-        compose.onNodeWithContentDescription("Add reaction").assertIsNotEnabled()
-        compose.onNodeWithContentDescription("👍 reaction, 2").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("👍 reaction, 2").assertIsEnabled()
+        compose.onNodeWithText(message.content.text).performTouchInput { longClick() }
+        compose.onNodeWithContentDescription("👍 quick reaction").assertIsEnabled()
+        compose.onNodeWithContentDescription("Add reaction").assertIsEnabled()
+        compose.onNodeWithText("Copy text").assertIsEnabled()
+        // The sheet holds window focus; Espresso.pressBack targets the unfocused activity root.
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        compose.waitForIdle()
+        compose.onNodeWithText("Message actions").assertDoesNotExist()
         compose.runOnIdle {
             state.value = state.value.copy(reactionSaves = mapOf("${message.id}:🚀" to ReactionSaveUi("🚀", true, false, "Simulated save failure")))
         }
@@ -73,17 +100,34 @@ class ReactionUiTest {
         compose.onNodeWithText("Dismiss").assertIsEnabled()
         capture("reaction-error-test-fixture.png", compose.onRoot())
 
-        // Public previews retain chat identity so incoming reaction ownership and
-        // counts remain readable, but no reaction mutation may be initiated.
-        compose.onNodeWithContentDescription("Add reaction").performClick()
-        compose.onNode(isDialog()).assertExists()
+        // Public previews retain readable reaction ownership, but only expose copy actions.
         compose.runOnIdle { state.value = state.value.copy(selectedChannel = joined.copy(joined = false)) }
-        compose.onNode(isDialog()).assertDoesNotExist()
         compose.onNodeWithContentDescription("👍 reaction, 2").assertIsSelected().assertIsNotEnabled()
         compose.onNodeWithText("2").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Add reaction").assertIsNotEnabled()
         compose.onNodeWithText("Retry").assertIsNotEnabled()
         compose.onNodeWithText("Dismiss").assertIsEnabled()
+
+        compose.onNodeWithText(message.content.text).performTouchInput { longClick() }
+        compose.onNodeWithContentDescription("Add reaction").assertDoesNotExist()
+        compose.onNodeWithContentDescription("👍 quick reaction").assertDoesNotExist()
+        compose.onNodeWithText("Copy text").performClick()
+        assertClipboard(message.content.text)
+        compose.onNodeWithText(message.content.text).performTouchInput { longClick() }
+        compose.onNodeWithText("Copy message ID").performClick()
+        assertClipboard(message.id)
+
+        compose.onNodeWithText(message.content.text).performTouchInput { longClick() }
+        compose.onNodeWithText("Message actions").assertIsDisplayed()
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        compose.onNodeWithText("Message actions").assertDoesNotExist()
+    }
+
+    private fun assertClipboard(expected: String) {
+        compose.runOnIdle {
+            val context = InstrumentationRegistry.getInstrumentation().targetContext
+            val clipboard = context.getSystemService(ClipboardManager::class.java)
+            assertEquals(expected, clipboard.primaryClip?.getItemAt(0)?.text?.toString())
+        }
     }
 
     private fun capture(name: String, node: SemanticsNodeInteraction) {

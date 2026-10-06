@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="256dp" android:height="256dp" android:viewportWidth="256" android:viewportHeight="256"><group>
+<group android:translateX="0" android:translateY="0"><path android:pathData="M73 67L61 20C61 9 101 18 122 46Z" android:fillColor="#9B4C98"/></group>
+<group android:translateX="0" android:translateY="0"><path android:pathData="M38 166C25 182 24 207 29 212C39 211 54 194 66 195L215 177C235 179 243 183 235 171L217 147Z" android:fillColor="#AB56A9"/></group>
+<group android:translateX="0" android:translateY="0"><path android:pathData="M38 148C34 92 69 51 116 40C163 27 204 47 219 84C234 116 221 168 199 193C173 221 106 227 68 202C49 189 40 170 38 148Z" android:fillColor="#B762B7"/></group>
+<group android:translateX="0" android:translateY="0"><path android:pathData="M61 141C65 104 96 79 137 77C182 74 216 99 223 136C232 182 195 227 146 231C98 238 58 201 61 141Z" android:fillColor="#D4989A"/></group>
+<group android:translateX="0" android:translateY="0"><path android:pathData="M61 141C70 104 97 79 137 77C178 74 204 90 216 111L198 101L185 108L176 93L162 103L150 85L138 101L120 88L115 105L97 101L95 119L79 117L78 135Z" android:fillColor="#EBF4E9"/></group>
+<group android:translateX="0" android:translateY="0"><path android:pathData="M72 85a7 7 0 1 0 14 0a7 7 0 1 0-14 0M175 57a7 7 0 1 0 14 0a7 7 0 1 0-14 0M102 156a8 8 0 1 0 16 0a8 8 0 1 0-16 0M175 138a8 8 0 1 0 16 0a8 8 0 1 0-16 0" android:fillColor="#170D0F"/></group>
+<group android:translateX="0" android:translateY="0"><path android:pathData="M136 166C143 169 150 164 155 159C158 156 161 160 158 164C152 172 144 175 135 172C131 170 132 165 136 166ZM179 201C193 193 202 182 207 171C209 167 213 170 211 174C205 188 195 199 182 207C178 209 175 204 179 201Z" android:fillColor="#170D0F"/></group>
+</group></vector>

@@ -59,6 +59,7 @@ wgpu = { version = "27.0", default-features = false, features = ["std", "wgsl", 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
 wgpu = { version = "27.0", default-features = false, features = ["std", "wgsl", "dx12"] }
+winreg = "0.55"
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
 winresource = "0.1"

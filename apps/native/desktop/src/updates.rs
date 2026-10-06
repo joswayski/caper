@@ -1,8 +1,8 @@
 //! Self-updates through `caper-updater` (apps/native/updater), which ships
 //! beside the app in release packages.
 //!
-//! A background thread asks the updater shortly after launch and every few
-//! hours whether a newer signed release exists. When the user accepts, the app
+//! A background thread asks the updater shortly after launch and every hour
+//! whether a newer signed release exists. When the user accepts, the app
 //! starts `caper-updater apply` and quits; the updater swaps the new version in
 //! and reopens Caper. Development builds carry no build number and never check.
 
@@ -20,7 +20,7 @@ pub const DOWNLOAD_URL: &str = if cfg!(windows) {
     "https://github.com/joswayski/caper/releases/download/native-latest/Caper-Linux-x64.deb"
 };
 const FIRST_CHECK: Duration = Duration::from_secs(20);
-const CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+const CHECK_EVERY: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Available {

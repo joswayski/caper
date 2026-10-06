@@ -1,12 +1,5 @@
 name: API image
 on:
-  pull_request:
-    paths:
-      - apps/api/**
-      - Cargo.toml
-      - Cargo.lock
-      - .github/workflows/api-image.yml
-      - tests/api-image-notifications.sh
   push:
     branches: [main]
     paths:
@@ -17,9 +10,15 @@ on:
       - tests/api-image-notifications.sh
 permissions:
   contents: read
+# Runs on main only. Each push gets a unique group (the run id), so publishing
+# is never cancelled or queued.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.run_id }}
+  cancel-in-progress: false
 jobs:
   api:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
     permissions:
       contents: read
       id-token: write
@@ -38,7 +37,9 @@ jobs:
           load: true
           tags: caper-api:test
           cache-from: type=gha,scope=api
-          cache-to: type=gha,scope=api,mode=max
+          # Only main exports the layer cache (mode=max uploads take up to a
+          # minute).
+          cache-to: ${{ github.event_name == 'push' && 'type=gha,scope=api,mode=max' || '' }}
       - name: Verify public health, protected accounts, and retired demo routes
         run: |
           set -euo pipefail

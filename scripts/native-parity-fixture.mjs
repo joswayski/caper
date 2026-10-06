@@ -8,7 +8,7 @@ export const fixtureIDs = {
   invitee: 'invitee00001',
   space: 'space0000001', general: 'chan00000001', design: 'chan00000002', private: 'chan00000003',
   demoSpace: 'demo00000001', demo: 'demo00000002',
-  direct: 'dm0000000001',
+  direct: 'dm0000000001', selfDirect: 'dm0000000002',
 };
 const ids = fixtureIDs;
 const limits = { ownedSpaces: 20, totalSpaces: 100, channelsPerSpace: 100 };
@@ -38,7 +38,9 @@ function initialState() {
     ['Keep the space rail, channel list, and audio controls in their usual places.', members[1]],
     ['Agreed. Let’s check the narrow layout and the management dialogs too.', members[2]],
   ].map(([text, member], index) => ({
-    id: `message-${channel.id}-${index + 1}`, channelId: channel.id, seq: String(index + 1),
+    // Same shape as the API's message IDs (15 ASCII alphanumerics); native
+    // clients refuse to build reaction paths for anything else.
+    id: `${channel.id}m${String(index + 1).padStart(2, '0')}`, channelId: channel.id, seq: String(index + 1),
     author: author(member), content: { version: 1, type: 'text', text },
     clientMessageId: `00000000-0000-4000-8000-00000000000${index + 1}`,
     createdAt: `2026-09-23T09:${40 + index}:00.000Z`,
@@ -51,7 +53,7 @@ function initialState() {
     joins: new Map(channels.map(channel => [channel.id, channel.private ? [ids.owner, ids.member] : members.map(member => member.id)])),
     grants: new Map([[ids.private, [ids.owner, ids.member]]]), failures: [], challenges: new Map(),
     account, chatSessions: new Map(), sendKeys: new Map(), typingRevision: 0,
-    media: new Map([[ids.design, { type: 'snapshot', revision: 1, participants: [
+    media: new Map([[ids.design, { type: 'snapshot', revision: 1, sessionStartedAt: Date.now() - 1_701_000, participants: [
       { id: 'fixture-voice-maya', name: 'TEST FIXTURE Maya', muted: false, deafened: false, avatarId: 31 },
       { id: 'fixture-voice-alex', name: 'TEST FIXTURE Alex', muted: true, deafened: false, avatarId: 799 },
     ] }]]),
@@ -75,7 +77,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
     || /(?:^|;\s*)caper_fixture=owner(?:;|$)/.test(request.headers.cookie ?? '') ? state.account
     : request.headers.authorization === 'Bearer fixture-member-token' ? members[1] : undefined;
   const channelFor = (id) => id === ids.demo ? demoChannel
-    : state.directs.some((conversation) => conversation.id === id) ? { id, spaceId: '', name: 'TEST FIXTURE Alex', private: true, direct: true }
+    : state.directs.some((conversation) => conversation.id === id) ? { id, spaceId: '', name: state.directs.find(conversation => conversation.id === id).peer.displayName, private: true, direct: true }
     : state.spaces.flatMap((detail) => detail.channels).find((channel) => channel.id === id);
   const spaceFor = (id) => id === '' ? { id: '', name: 'Direct messages' } : id === ids.demoSpace ? demoSpace : state.spaces.find((detail) => detail.space.id === id)?.space;
   const canRead = (channel, user) => channel?.id === ids.demo || !!user && (channel?.direct
@@ -161,7 +163,10 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         if (body.media) {
           const channelId = body.media.channelId ?? ids.demo;
           if (!channelFor(channelId) || !Array.isArray(body.media.participants)) return reject(response, 400, 'invalid media fixture');
+          const previous = state.media.get(channelId);
           const snapshot = { type: 'snapshot', revision: (state.media.get(channelId)?.revision ?? 0) + 1,
+            sessionStartedAt: body.media.participants.length
+              ? body.media.sessionStartedAt ?? previous?.sessionStartedAt ?? Date.now() : null,
             participants: body.media.participants.map(({ id, name, muted, deafened }) => ({ id, name, muted, deafened })) };
           state.media.set(channelId, snapshot);
           broadcast('media', channelId, snapshot);
@@ -192,14 +197,19 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       if (path === '/api/dms') {
         if (!user) return reject(response, 401, 'Sign in required.');
         if (method === 'POST') {
-          if (!['fixture_alex', 'alex'].includes(String(body.username).trim().replace(/^@/, '').toLowerCase())) return reject(response, 404, 'Account not found.');
-          if (!state.directs.length) {
-            state.directs.push({ id: ids.direct, peer: { id: ids.other, username: 'fixture_alex', displayName: 'TEST FIXTURE Alex' }, lastSeq: '0', readSeq: '0' });
-            state.messages.set(ids.direct, []);
+          const username = String(body.username).trim().replace(/^@/, '').toLowerCase();
+          const self = username === state.account.username;
+          if (!self && !['fixture_alex', 'alex'].includes(username)) return reject(response, 404, 'Account not found.');
+          const id = self ? ids.selfDirect : ids.direct;
+          if (!state.directs.some(conversation => conversation.id === id)) {
+            const peer = self ? { id: state.account.id, username: state.account.username, displayName: state.account.displayName }
+              : { id: ids.other, username: 'fixture_alex', displayName: 'TEST FIXTURE Alex' };
+            state.directs.push({ id, peer, lastSeq: '0', readSeq: '0' });
+            state.messages.set(id, []);
           }
-          return json(response, 200, state.directs[0]);
+          return json(response, 200, state.directs.find(conversation => conversation.id === id));
         }
-        return json(response, 200, { conversations: state.directs.map((conversation) => ({ ...conversation, lastSeq: channelHead(conversation.id) })) });
+        return json(response, 200, { conversations: user.id === state.account.id ? state.directs.map((conversation) => ({ ...conversation, lastSeq: channelHead(conversation.id) })) : [] });
       }
       const directRead = /^\/api\/dms\/([^/]+)\/read$/.exec(path);
       if (directRead && method === 'POST') {
@@ -285,7 +295,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           const previous = state.sendKeys.get(key);
           if (previous) return previous.token === request.headers['x-caper-chat-token'] && previous.text === body.text
             ? json(response, 200, previous.message) : reject(response, 409, 'Message ID already used.');
-          const message = { id: randomUUID(), channelId: channel.id, seq: String(BigInt(channelHead(channel.id)) + 1n), author: who,
+          const message = { id: randomUUID().replaceAll('-', '').slice(0, 15), channelId: channel.id, seq: String(BigInt(channelHead(channel.id)) + 1n), author: who,
             content: { version: 1, type: 'text', text: body.text }, createdAt: new Date().toISOString(), clientMessageId };
           messages.push(message); state.messages.set(channel.id, messages);
           state.sendKeys.set(key, { token: request.headers['x-caper-chat-token'], text: body.text, message });

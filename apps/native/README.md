@@ -35,6 +35,31 @@ First launch without a valid session opens email sign-in, not a Guest workspace.
 New accounts finish their profile, then name their first space. Existing accounts
 restore their saved session and open their spaces; logging out returns to sign-in.
 
+## Launch at login (desktop only)
+
+**Account gear → Settings… → Startup → Launch at login** opts in to opening Caper when you sign in to
+your computer. It is off by default and opens the normal window, not a hidden
+background service. Startup and sound preferences use switches in a dedicated
+Settings view, separate from quick audio actions, and save immediately. macOS
+also exposes **Caper → Settings…** (⌘,) while signed out.
+Web, iOS and Android have no startup option.
+
+macOS uses `SMAppService.mainApp`; if approval is required, Settings says so and
+links to Login Items in System Settings. Windows registers the current executable
+in the current user's `Run` registry key; Task Manager or system policy can still
+block startup. The Windows uninstaller removes this install's startup entry.
+Linux writes `chat.caper.desktop` under `$XDG_CONFIG_HOME/autostart` (normally
+`~/.config/autostart`); an XDG-compatible graphical session is required. Remove
+that file before uninstalling a Linux package or deleting a portable copy.
+
+Switching the option off removes the registration immediately. No account or
+server setting changes, and restoring app preferences never re-enables startup.
+Portable Windows/Linux copies must stay at the registered path; toggle off/on
+after moving them. Startup does not retain development command-line overrides.
+Fixture previews disable this option and never modify real startup registrations.
+Linux registration and UI checks run locally; Windows/macOS builds and real
+logout/login acceptance require their respective OS runners/devices.
+
 ## Build and download
 
 The **Native development builds** GitHub Actions workflow uses macOS, Windows, and
@@ -131,8 +156,12 @@ TestFlight public link get new builds automatically.
 
 **Desktop self-updates.** Release builds of the Mac, Windows and Linux apps carry
 `caper-updater` (`apps/native/updater`) and the run number as their build number.
-About 20 seconds after launch and every six hours they read `latest.json` from
-`native-latest`. That file is signed with the Ed25519 key in
+About 20 seconds after launch and every hour they check
+`https://caper.chat/api/updates/native`. The Rust API caches GitHub's
+`native-latest/latest.json` and its signature together for 60 seconds per process;
+simultaneous refresh requests share one upstream fetch. The updater falls back
+to GitHub directly if the site is unavailable or its response fails verification.
+Downloads still come from GitHub. That manifest is signed with the Ed25519 key in
 the `caper_update` section of `production/signing/release`, and each app only trusts the public key compiled
 into it. When a newer build exists, the Mac app shows an alert (and has
 **Caper › Check for Updates…**), and the Windows and Linux app shows a banner.

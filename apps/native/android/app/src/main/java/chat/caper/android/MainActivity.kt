@@ -1,6 +1,8 @@
 package chat.caper.android
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
@@ -56,6 +58,7 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -88,14 +91,15 @@ import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val viewModel: CaperViewModel by viewModels()
-    private val launcherAvatar by lazy { LauncherAvatarRotator(applicationContext) }
-    private var launcherAvatarJob: Job? = null
+    private val dailyBranding by lazy { DailyBrandingAvatar(applicationContext) }
+    private var brandingJob: Job? = null
+    private var brandingAvatar by mutableStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         CaperEffects.init(applicationContext)
         viewModel.openDirectFromNotification(intent.getStringExtra("conversationId"))
-        setContent { CaperTheme { CaperApp(viewModel) } }
+        setContent { CompositionLocalProvider(LocalBrandAvatar provides brandingAvatar) { CaperTheme { CaperApp(viewModel) } } }
     }
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); viewModel.openDirectFromNotification(intent.getStringExtra("conversationId")) }
 
@@ -103,10 +107,10 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         viewModel.setForeground(true)
         if (BuildConfig.FIXTURE_MODE) return
-        launcherAvatarJob?.cancel()
-        launcherAvatarJob = lifecycleScope.launch {
+        brandingJob?.cancel()
+        brandingJob = lifecycleScope.launch {
             while (isActive) {
-                launcherAvatar.update()
+                brandingAvatar = dailyBranding.update()
                 delay(15 * 60 * 1000L)
             }
         }
@@ -114,8 +118,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onPause() {
         viewModel.setForeground(false)
-        launcherAvatarJob?.cancel()
-        launcherAvatarJob = null
+        brandingJob?.cancel()
+        brandingJob = null
         super.onPause()
     }
 }
@@ -144,6 +148,7 @@ internal data class VoiceJoinIntent(
     val accountEpoch: Long,
     val demo: Boolean,
     val controlEpoch: Long,
+    val joinStartedAt: Long = System.currentTimeMillis(),
 ) {
     fun isCurrent(state: AppUiState, currentAccountEpoch: Long, freshChannelIds: Set<String>? = null): Boolean =
         state.screen == SessionScreen.Home &&
@@ -226,11 +231,17 @@ internal data class VoiceJoinIntent(
     }
 }
 
-@Composable private fun Wordmark(modifier: Modifier = Modifier) = Image(
-    painter = painterResource(R.drawable.caper_wordmark),
-    contentDescription = "Caper",
-    modifier = modifier.size(width = 132.dp, height = 35.dp),
-)
+private val LocalBrandAvatar = compositionLocalOf { 0 }
+
+@Composable private fun Wordmark(modifier: Modifier = Modifier) = Box(
+    modifier.size(width = 132.dp, height = 35.dp).clearAndSetSemantics { contentDescription = "Caper" },
+) {
+    Image(painterResource(R.drawable.caper_wordmark_letters), null, Modifier.matchParentSize())
+    // Same dot slot as web/Rust/Apple; keep the two images decorative to accessibility.
+    Image(painterResource(caperBrandingResources[LocalBrandAvatar.current]), null,
+        Modifier.offset(x = (132f * 904 / 1042).dp, y = (35f * 91 / 276).dp)
+            .size((132f * 132 / 1042).dp))
+}
 
 @Composable private fun HomeScreen(
     state: AppUiState,
@@ -253,7 +264,8 @@ internal data class VoiceJoinIntent(
                 voicePermissionError = null
                 viewModel.authorizeVoiceJoin(requested, {
                     VoiceCallService.start(context, requested.channelId, requested.spaceId, requested.channelName,
-                        requested.spaceName, requested.displayName, requested.demo, requested.controlEpoch)
+                        requested.spaceName, requested.displayName, requested.demo, requested.controlEpoch,
+                        requested.joinStartedAt, latestState.voiceSessionStartedAt[if (requested.demo) "" else requested.channelId])
                     if (pendingVoiceJoin == requested) pendingVoiceJoin = null
                 }, {
                     if (pendingVoiceJoin == requested) pendingVoiceJoin = null
@@ -304,7 +316,7 @@ internal data class VoiceJoinIntent(
                             SpaceRail(state, viewModel, show, Modifier.width(60.dp))
                             ChannelSidebar(state, voice, viewModel, show,
                                 Modifier.weight(1f).padding(top = 8.dp, end = 8.dp).clip(RoundedCornerShape(16.dp)),
-                                channelsExpanded, { channelsExpanded = it }, joinVoice, pendingVoiceJoin?.channelId, voicePermissionError,
+                                channelsExpanded, { channelsExpanded = it }, joinVoice, pendingVoiceJoin, voicePermissionError,
                                 { voicePermissionError = null }, showAccountBar = false) { setNavigationOpen(false) }
                         }
                         AccountBar(state, voice, viewModel, show)
@@ -321,7 +333,7 @@ internal data class VoiceJoinIntent(
                     }
                 } else Row {
                     SpaceRail(state, viewModel, show, Modifier.width(60.dp))
-                    ChannelSidebar(state, voice, viewModel, show, Modifier.width(280.dp), channelsExpanded, { channelsExpanded = it }, joinVoice, pendingVoiceJoin?.channelId, voicePermissionError, { voicePermissionError = null })
+                    ChannelSidebar(state, voice, viewModel, show, Modifier.width(280.dp), channelsExpanded, { channelsExpanded = it }, joinVoice, pendingVoiceJoin, voicePermissionError, { voicePermissionError = null })
                     if (medium) Box(Modifier.weight(1f).fillMaxHeight()) {
                         Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, voicePermissionError, Modifier.fillMaxSize()) { setNavigationOpen(true) }
                         if (membersVisible && state.selectedChannel?.joined == true && state.selectedDirectId == null) MemberPresencePanel(state, viewModel, Modifier.padding(top = 54.dp).width(220.dp).fillMaxHeight().align(Alignment.CenterEnd))
@@ -381,7 +393,7 @@ internal data class VoiceJoinIntent(
     channelsExpanded: Boolean,
     setChannelsExpanded: (Boolean) -> Unit,
     joinVoice: (Channel) -> Unit,
-    pendingVoiceChannelId: String?,
+    pendingVoiceJoin: VoiceJoinIntent?,
     voicePermissionError: String?,
     dismissVoicePermissionError: () -> Unit,
     showAccountBar: Boolean = true,
@@ -486,6 +498,12 @@ internal data class VoiceJoinIntent(
             }?.forEach { channel ->
                 val selected = channel.id == state.selectedChannel?.id
                 val people = if (activeChannel == channel.id) voice.participants else state.voiceRosters[if (detail.space.demo) "" else channel.id].orEmpty()
+                val voiceRoot = if (detail.space.demo) "" else channel.id
+                val sessionStartedAt = (if (activeChannel == channel.id) {
+                    if (voice.phase == VoiceState.Phase.CONNECTING) state.voiceSessionStartedAt[voiceRoot] ?: voice.sessionStartedAt
+                    else voice.sessionStartedAt
+                } else state.voiceSessionStartedAt[voiceRoot])
+                    ?: pendingVoiceJoin?.takeIf { it.channelId == channel.id }?.joinStartedAt
                 var rosterOpen by remember(channel.id) { mutableStateOf(false) }
                 var channelMenuOpen by remember(channel.id) { mutableStateOf(false) }
                 val available = state.voiceAvailable(channel)
@@ -493,10 +511,10 @@ internal data class VoiceJoinIntent(
                     if (channel.joined && BuildConfig.ENABLE_NATIVE_VOICE && available == null) viewModel.checkVoiceAvailability(channel)
                 }
                 val activeHere = activeChannel == channel.id
-                val joiningHere = (activeHere && (voice.phase == VoiceState.Phase.CONNECTING || voice.phase == VoiceState.Phase.RECONNECTING)) || pendingVoiceChannelId == channel.id
+                val joiningHere = (activeHere && (voice.phase == VoiceState.Phase.CONNECTING || voice.phase == VoiceState.Phase.RECONNECTING)) || pendingVoiceJoin?.channelId == channel.id
                 val switching = activeChannel != null && !activeHere
                 val denied = channel.id in state.deniedVoiceChannels
-                val actionEnabled = pendingVoiceChannelId == null && voice.phase != VoiceState.Phase.CONNECTING && voice.phase != VoiceState.Phase.RECONNECTING &&
+                val actionEnabled = pendingVoiceJoin == null && voice.phase != VoiceState.Phase.CONNECTING && voice.phase != VoiceState.Phase.RECONNECTING &&
                     !denied && available == true
                 val actionLabel = if (joiningHere) "Joining…" else if (switching) "Switch here" else "Join voice"
                 val actionDescription = if (joiningHere) {
@@ -512,6 +530,7 @@ internal data class VoiceJoinIntent(
                         Row(Modifier.weight(1f).fillMaxHeight().clickable { viewModel.selectChannel(channel); closeNavigation?.invoke() }, verticalAlignment = Alignment.CenterVertically) {
                             Icon(if (channel.private) painterResource(R.drawable.lucide_lock_keyhole) else painterResource(R.drawable.lucide_hash), null, Modifier.size(17.dp), tint = if (selected) TerracottaBright else TextMuted)
                             Spacer(Modifier.width(9.dp)); Text(channel.name, Modifier.weight(1f), color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            sessionStartedAt?.let { VoiceSessionTimer(it) }
                         }
                         if (owner || (channel.joined && !detail.space.demo)) Box {
                             IconButton({ channelMenuOpen = true }, Modifier.size(48.dp)) { Icon(painterResource(R.drawable.lucide_ellipsis), "${channel.name} channel menu", Modifier.size(18.dp), tint = TextMuted) }
@@ -581,22 +600,37 @@ internal data class VoiceJoinIntent(
                 }
             }
         }
-        Column(Modifier.fillMaxWidth().heightIn(max = 280.dp).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
+        Column(Modifier.fillMaxWidth().heightIn(max = 340.dp).verticalScroll(rememberScrollState())) {
             if (state.account != null) {
-                HorizontalDivider(Modifier.padding(top = 12.dp), color = Border)
-                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+                HorizontalDivider(color = Border)
+                val invitePeople = owner && detail?.space?.demo == false
+                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("Direct messages", Modifier.weight(1f), color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     IconButton({ show(Overlay.StartDirect) }) { Icon(painterResource(R.drawable.lucide_plus), "Start direct message", tint = TextMuted) }
                 }
-                if (state.directConversations.isEmpty()) Text("No direct messages yet.", color = TextMuted, fontSize = 11.sp)
-                state.directConversations.forEach { direct ->
+                val selfDirect = state.directConversations.firstOrNull { it.peer.id == state.account.id }
+                val selfSelected = selfDirect != null && selfDirect.id == state.selectedDirectId
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
+                    .background(if (selfSelected) TerracottaWash else Color.Transparent)
+                    .clickable(enabled = !state.busy) { viewModel.openSelfDirect(); closeNavigation?.invoke() }.padding(horizontal = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Avatar(state.account.displayName ?: state.account.username ?: "You", 20.dp, modifier = Modifier.padding(horizontal = 3.dp), avatarId = state.account.avatarId)
+                    Spacer(Modifier.width(9.dp))
+                    Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                        Text(state.account.displayName ?: state.account.username ?: "You", Modifier.weight(1f, fill = false), color = if (selfSelected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Spacer(Modifier.width(6.dp)); Text("you", color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    }
+                    if (selfDirect?.let { runCatching { java.math.BigInteger(it.lastSeq) > java.math.BigInteger(it.readSeq) }.getOrDefault(false) } == true)
+                        Box(Modifier.size(8.dp).background(TerracottaBright, CircleShape).semantics { contentDescription = "Unread" })
+                }
+                state.directConversations.filter { it.peer.id != state.account.id }.forEach { direct ->
                     val selected = state.selectedDirectId == direct.id
                     val unread = runCatching { java.math.BigInteger(direct.lastSeq) > java.math.BigInteger(direct.readSeq) }.getOrDefault(false)
-                    Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
                         .background(if (selected) TerracottaWash else Color.Transparent)
                         .clickable { viewModel.selectDirect(direct); closeNavigation?.invoke() }.padding(horizontal = 9.dp),
                         verticalAlignment = Alignment.CenterVertically) {
-                        Avatar(direct.peer.displayName, 26.dp)
+                        Avatar(direct.peer.displayName, 20.dp, modifier = Modifier.padding(horizontal = 3.dp))
                         Spacer(Modifier.width(9.dp))
                         Column(Modifier.weight(1f)) {
                             Text(direct.peer.displayName, color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -604,6 +638,13 @@ internal data class VoiceJoinIntent(
                         }
                         if (unread) Box(Modifier.size(8.dp).background(TerracottaBright, CircleShape).semantics { contentDescription = "Unread" })
                     }
+                }
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).heightIn(min = 48.dp).clip(MaterialTheme.shapes.small).clickable {
+                    show(if (invitePeople) Overlay.ManageSpace else Overlay.StartDirect)
+                }.padding(horizontal = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(painterResource(R.drawable.lucide_plus), null, Modifier.size(17.dp), tint = TextMuted)
+                    Spacer(Modifier.width(9.dp))
+                    Text(if (invitePeople) "Invite people" else "New message", Modifier.weight(1f), color = TextMuted, fontSize = 13.sp)
                 }
                 if (pushAvailable) {
                     TextButton({
@@ -613,16 +654,18 @@ internal data class VoiceJoinIntent(
                             pushRequestEpoch = viewModel.accountEpoch
                             pushPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                         } else enablePush()
-                    }) { Text(if (pushEnabled) "Disable DM notifications" else "Enable DM notifications", fontSize = 11.sp) }
-                    pushError?.let { Text(it, color = ErrorText, fontSize = 11.sp) }
+                    }, Modifier.padding(horizontal = 16.dp)) { Text(if (pushEnabled) "Disable DM notifications" else "Enable DM notifications", fontSize = 11.sp) }
+                    pushError?.let { Text(it, Modifier.padding(horizontal = 16.dp), color = ErrorText, fontSize = 11.sp) }
                 }
             }
         }
-        if (voice.phase != VoiceState.Phase.IDLE && voice.phase != VoiceState.Phase.FAILED)
+        if (voice.phase != VoiceState.Phase.IDLE && voice.phase != VoiceState.Phase.FAILED) {
+            HorizontalDivider(color = Border)
             ConnectedVoiceContext(voice, { viewModel.openVoiceChannel(voice) { closeNavigation?.invoke() } }, {
                 if (voice.phase == VoiceState.Phase.CONNECTED) CaperEffects.play(CaperEffects.Effect.Disconnect)
                 VoiceCallService.stop(context)
             })
+        }
         // Web shows voice errors in the dock with a dismiss button.
         (voicePermissionError ?: voice.error)?.let { error ->
             Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), color = SurfaceRaised, border = BorderStroke(1.dp, Border), shape = MaterialTheme.shapes.small) {
@@ -634,6 +677,37 @@ internal data class VoiceJoinIntent(
         }
         if (showAccountBar) AccountBar(state, voice, viewModel, show)
     }
+}
+
+internal fun formatVoiceSessionDuration(startedAt: Long, now: Long): String {
+    val seconds = ((now - startedAt).coerceAtLeast(0L) / 1_000L)
+    val hours = seconds / 3_600
+    val minutes = (seconds % 3_600) / 60
+    val remainder = seconds % 60
+    return if (hours == 0L) "%02d:%02d".format(Locale.ROOT, minutes, remainder)
+    else "%d:%02d:%02d".format(Locale.ROOT, hours, minutes, remainder)
+}
+
+@Composable private fun VoiceSessionTimer(startedAt: Long) {
+    var now by remember(startedAt) { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(startedAt) {
+        while (isActive) {
+            now = System.currentTimeMillis()
+            delay(1_000L - now.mod(1_000L))
+        }
+    }
+    val duration = formatVoiceSessionDuration(startedAt, now)
+    Text(
+        duration,
+        Modifier.padding(horizontal = 7.dp).clearAndSetSemantics {
+            contentDescription = "Voice session duration"
+            stateDescription = duration
+        },
+        color = VoiceSessionGreen,
+        fontFamily = FontFamily.Monospace,
+        fontSize = 11.sp,
+        maxLines = 1,
+    )
 }
 
 @Composable internal fun VoiceRoster(voice: VoiceState) {
@@ -965,6 +1039,12 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 }
 
 @Composable private fun MessageTimeline(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, pendingStatus: @Composable () -> Unit = {}) {
+    var actionTarget by remember { mutableStateOf<ChatMessage?>(null) }
+    var pickerTarget by remember { mutableStateOf<ChatMessage?>(null) }
+    LaunchedEffect(state.account?.id, state.selectedSpace?.space?.id, state.selectedChannel?.id, state.selectedDirectId) {
+        actionTarget = null
+        pickerTarget = null
+    }
     // Web's chat phases: loading, failed first load, then the conversation.
     if (state.messagesLoading) return Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Text("Loading messages…", color = TextMuted, fontSize = 13.sp)
@@ -997,7 +1077,10 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             if (index == 0 || !sameLocalDay(state.messages[index - 1].createdAt, message.createdAt)) {
                 DateDivider(message.createdAt)
             }
-            ReactionMessageRow(message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError, viewModel::reportAttachmentFailure)
+            ReactionMessageRow(
+                message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
+                { actionTarget = message }, viewModel::reportAttachmentFailure,
+            )
         }
         state.pendingMessage?.let { pending -> item("pending:${pending.clientMessageId}") {
             Column {
@@ -1014,6 +1097,22 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 Text("Start the conversation in #${state.selectedChannel?.name.orEmpty()}.", color = TextMuted, fontSize = 12.sp)
             }
         } }
+    }
+    actionTarget?.let { target ->
+        val presented = state.messages.firstOrNull { it.id == target.id } ?: target
+        MessageActionsSheet(
+            presented, state,
+            onDismiss = { actionTarget = null },
+            setReaction = viewModel::setReaction,
+            openPicker = { actionTarget = null; pickerTarget = presented },
+        )
+    }
+    pickerTarget?.let { target ->
+        val canReact = state.selectedChannel?.joined == true && (state.chatAuthorId ?: state.account?.id) != null
+        if (canReact) EmojiPicker(onDismiss = { pickerTarget = null }) { emoji ->
+            pickerTarget = null
+            viewModel.setReaction(target.id, emoji, true)
+        } else LaunchedEffect(Unit) { pickerTarget = null }
     }
 }
 
@@ -1037,24 +1136,28 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     setReaction: (String, String, Boolean) -> Unit,
     retryReaction: (String, String) -> Unit,
     dismissReactionError: (String, String) -> Unit,
+    openActions: (ChatMessage) -> Unit,
     onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> },
 ) {
-    var picker by remember { mutableStateOf(false) }
     val own = state.chatAuthorId ?: state.account?.id
-    val canReact = state.selectedChannel?.joined == true
-    LaunchedEffect(canReact) { if (!canReact) picker = false }
+    val canReact = state.selectedChannel?.joined == true && own != null
     val saves = state.reactionSaves.filterKeys { it.startsWith("${message.id}:") }.values
-    val saving = saves.firstOrNull { it.saving }
     Column {
-        MessageRow(
-            message.author.name, message.author.isGuest, message.createdAt, message.content.text, false, message.author.avatarId,
-            message.content.attachments.map { it.withFreshUrls(state.freshAttachmentUrls[it.id]) }, onAttachmentFailed,
-        )
+        Box(Modifier.combinedClickable(
+            onClick = {},
+            onLongClick = { openActions(message) },
+            onLongClickLabel = "Message actions for ${message.author.name}",
+        )) {
+            MessageRow(
+                message.author.name, message.author.isGuest, message.createdAt, message.content.text, false, message.author.avatarId,
+                message.content.attachments.map { it.withFreshUrls(state.freshAttachmentUrls[it.id]) }, onAttachmentFailed,
+            )
+        }
         FlowRow(Modifier.padding(start = 62.dp, end = 18.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             message.reactions.forEach { reaction ->
                 val selected = own != null && own in reaction.authorIds
                 OutlinedButton(
-                    onClick = { setReaction(message.id, reaction.emoji, !selected) }, enabled = canReact && saving == null,
+                    onClick = { setReaction(message.id, reaction.emoji, !selected) }, enabled = canReact,
                     shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, if (selected) Terracotta else Border),
                     colors = ButtonDefaults.outlinedButtonColors(containerColor = if (selected) Terracotta.copy(alpha = .18f) else Color.Transparent),
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
@@ -1064,11 +1167,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     },
                 ) { EmojiImage(reaction.emoji, null, Modifier.size(19.dp)); Spacer(Modifier.width(5.dp)); Text(reaction.authorIds.size.toString()) }
             }
-            OutlinedButton({ picker = true }, enabled = canReact && saving == null, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border), contentPadding = PaddingValues(6.dp), modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).semantics { contentDescription = "Add reaction" }) {
-                EmojiImage("🙂", null, Modifier.size(19.dp))
-            }
         }
-        if (saving != null) Text("Saving ${saving.emoji} reaction…", Modifier.padding(start = 62.dp, top = 4.dp), color = TextMuted, fontSize = 11.sp)
         saves.filter { it.error != null }.forEach { save ->
             Column(Modifier.padding(start = 62.dp, end = 18.dp, top = 4.dp)) {
                 Text(save.error ?: "Reaction could not be saved.", color = Terracotta, fontSize = 11.sp)
@@ -1079,13 +1178,59 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             }
         }
     }
-    if (picker && canReact) EmojiPicker(onDismiss = { picker = false }) { emoji ->
-        picker = false
-        setReaction(message.id, emoji, true)
+}
+
+private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable internal fun MessageActionsSheet(
+    message: ChatMessage,
+    state: AppUiState,
+    onDismiss: () -> Unit,
+    setReaction: (String, String, Boolean) -> Unit,
+    openPicker: () -> Unit,
+) {
+    val context = LocalContext.current
+    val clipboard = context.getSystemService(ClipboardManager::class.java)
+    val own = state.chatAuthorId ?: state.account?.id
+    val canReact = state.selectedChannel?.joined == true && own != null
+    fun copy(label: String, value: String) {
+        clipboard.setPrimaryClip(ClipData.newPlainText(label, value))
+        onDismiss()
+    }
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = SurfaceRaised, contentColor = Text) {
+        Column(Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Message actions", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            if (canReact) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    quickReactions.forEach { emoji ->
+                        val selected = message.reactions.firstOrNull { it.emoji == emoji }?.authorIds?.contains(own) == true
+                        IconButton(
+                            onClick = { setReaction(message.id, emoji, !selected); onDismiss() },
+                            enabled = canReact,
+                            modifier = Modifier.weight(1f).heightIn(min = 48.dp).background(if (selected) TerracottaWash else Color.Transparent, MaterialTheme.shapes.small).semantics {
+                                this.selected = selected
+                                contentDescription = "$emoji quick reaction"
+                            },
+                        ) { EmojiImage(emoji, null, Modifier.size(28.dp)) }
+                    }
+                    IconButton(openPicker, enabled = canReact, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
+                        Icon(painterResource(R.drawable.lucide_plus), "Add reaction", Modifier.size(24.dp), tint = TextMuted)
+                    }
+                }
+            }
+            Surface(shape = MaterialTheme.shapes.small, color = Surface) {
+                Column {
+                    TextButton({ copy("Message text", message.content.text) }, Modifier.fillMaxWidth().heightIn(min = 48.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) { Text("Copy text", Modifier.fillMaxWidth()) }
+                    HorizontalDivider(color = Border)
+                    TextButton({ copy("Message ID", message.id) }, Modifier.fillMaxWidth().heightIn(min = 48.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) { Text("Copy message ID", Modifier.fillMaxWidth()) }
+                }
+            }
+        }
     }
 }
 
-@Composable private fun EmojiPicker(onDismiss: () -> Unit, select: (String) -> Unit) {
+@Composable internal fun EmojiPicker(onDismiss: () -> Unit, select: (String) -> Unit) {
     val context = LocalContext.current
     val catalog = remember { EmojiArtwork.catalog(context).filter { it.selectable } }
     var query by rememberSaveable { mutableStateOf("") }
@@ -1338,7 +1483,7 @@ internal fun counterTone(count: Int): Color = when {
     var username by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     CaperDialog("New direct message", close) {
-        Text("Enter the exact username of the person you want to message.", color = TextMuted, fontSize = 12.sp)
+        Text("Enter an account’s exact username.", color = TextMuted, fontSize = 12.sp)
         OutlinedTextField(username, { username = normalizeUsername(it); error = null }, label = { Text("Username") }, placeholder = { Text("username") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         DialogActions(close, "Start conversation", busy) {

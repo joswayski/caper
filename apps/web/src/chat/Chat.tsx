@@ -2,7 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNo
 import { Paperclip } from "lucide-react";
 import { Virtuoso, type VirtuosoHandle, type ListProps, type ContextProp } from "react-virtuoso";
 import { ChatClient, initialChatView } from "./client.ts";
-import MessageReactions from "./MessageReactions.tsx";
+import MessageReactions, { type ReactionSave } from "./MessageReactions.tsx";
+import MessageActions, { type MessageActionTarget } from "./MessageActions.tsx";
 import { dateDivider } from "./dates.ts";
 import { attachmentsOf, type ChatAttachment, type ChatAuthor, type GeneralChatHistory } from "./types.ts";
 import { DraftAttachments, MessageAttachments, type DraftAttachment } from "./Attachments.tsx";
@@ -14,9 +15,9 @@ import "./chat.css";
 // Virtuoso's prepend index is local bookkeeping, never the bigint server cursor.
 const INITIAL_ITEM_INDEX = 1_000_000_000;
 
-function timeLabel(value: string) {
+function timeLabel(value: string, formatter: Intl.DateTimeFormat) {
   const date = new Date(value);
-  return Number.isNaN(date.valueOf()) ? "" : new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(date);
+  return Number.isNaN(date.valueOf()) ? "" : formatter.format(date);
 }
 
 interface HistoryContext {
@@ -54,12 +55,66 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   const [draft, setDraft] = useState("");
   const [validationError, setValidationError] = useState<string>();
   const clientRef = useRef<ChatClient | undefined>(undefined);
+  const [actionTarget, setActionTarget] = useState<MessageActionTarget>();
+  const [actionStatus, setActionStatus] = useState("");
+  const [reactionSaves, setReactionSaves] = useState<Record<string, ReactionSave | undefined>>({});
+  const press = useRef<{ timer: ReturnType<typeof setTimeout>; x: number; y: number; pointerId: number }>(undefined);
+  const suppressClick = useRef(false);
+  const cancelPress = () => { clearTimeout(press.current?.timer); press.current = undefined; };
+  useEffect(() => {
+    setActionTarget(undefined);
+    setActionStatus("");
+    setReactionSaves({});
+    // The drawer can appear under the held finger. Its release click must not
+    // activate a newly rendered action, even though that action is in a portal.
+    const resetClick = () => { suppressClick.current = false; };
+    const suppressReleaseClick = (event: MouseEvent) => {
+      if (!suppressClick.current) return;
+      suppressClick.current = false;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    document.addEventListener("pointerdown", resetClick, true);
+    document.addEventListener("keydown", resetClick, true);
+    document.addEventListener("click", suppressReleaseClick, true);
+    window.addEventListener("blur", cancelPress);
+    window.addEventListener("scroll", cancelPress, true);
+    return () => {
+      cancelPress();
+      document.removeEventListener("pointerdown", resetClick, true);
+      document.removeEventListener("keydown", resetClick, true);
+      document.removeEventListener("click", suppressReleaseClick, true);
+      window.removeEventListener("blur", cancelPress);
+      window.removeEventListener("scroll", cancelPress, true);
+    };
+  }, [channelId]);
+  useEffect(() => { setActionTarget(undefined); }, [state.author?.id]);
+  const isTouchLayout = () => window.matchMedia("(max-width: 760px), (pointer: coarse)").matches;
+  const openActions = (messageId: string, anchor: HTMLElement) => setActionTarget({ messageId, anchor, mode: "actions", drawer: true });
+  const react = async (messageId: string, emoji: string, active: boolean) => {
+    const client = clientRef.current;
+    if (readOnly || !state.author || !client) return;
+    setReactionSaves((current) => ({ ...current, [messageId]: undefined }));
+    try {
+      await client.setReaction(messageId, emoji, active);
+    } catch (error) {
+      if (clientRef.current === client) setReactionSaves((current) => ({ ...current, [messageId]: { emoji, active, error: error instanceof Error ? error.message : "Reaction could not be saved." } }));
+    }
+  };
+  const actionMessage = state.messages.find((message) => message.id === actionTarget?.messageId);
   const listRef = useRef<VirtuosoHandle>(null);
   const initialListRef = useRef<HTMLDivElement>(null);
   const [listReady, setListReady] = useState(false);
   // Virtuoso needs browser APIs; the server and first client render use the plain list.
   const [hydrated, setHydrated] = useState(false);
   useEffect(() => setHydrated(true), []);
+  useEffect(() => {
+    if (!state.author || readOnly) return;
+    // Warm the code/data after chat settles, without mounting the picker or
+    // fetching the image catalog. Opening still handles a failed import.
+    const timer = setTimeout(() => { void import("./ReactionPicker.tsx").catch(() => {}); }, 1_000);
+    return () => clearTimeout(timer);
+  }, [state.author?.id, readOnly]);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [drafts, setDrafts] = useState<DraftAttachment[]>([]);
@@ -223,8 +278,10 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   }, [state.author, onAuthorChange]);
 
   useEffect(() => {
-    if (followLatest.current) listRef.current?.scrollToIndex({ index: "LAST", align: "end" });
-  }, [state.pendingSend?.clientMessageId, latestMessage?.clientMessageId]);
+    // Only local sends override the reader's position. Virtuoso follows incoming
+    // messages using its immediate bottom state; atBottomStateChange is delayed.
+    if (state.pendingSend) listRef.current?.scrollToIndex({ index: "LAST", align: "end" });
+  }, [state.pendingSend?.clientMessageId]);
 
   const loadOlder = () => { void clientRef.current?.loadOlder(); };
 
@@ -269,24 +326,50 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     }
   };
 
+  // Share the formatter across visible rows, but refresh locale/timezone on render.
+  const timeFormatter = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
   const renderMessage = (index: number, message: (typeof messages)[number]) => {
     const pending = !("content" in message);
     const author = message.author;
     const divider = hydrated ? dateDivider(message.createdAt, messages[index - 1]?.createdAt) : undefined;
     return <div key={message.clientMessageId}>
       {divider && <div className="chat-date-divider"><time dateTime={message.createdAt}>{divider}</time></div>}
-      <article className={`chat-message${pending ? " chat-message-pending" : ""}`} data-message-key={message.clientMessageId}>
+      <article className={`chat-message${pending ? " chat-message-pending" : ""}`} data-message-key={message.clientMessageId}
+        onPointerDown={(event) => {
+          cancelPress();
+          if (!("content" in message) || event.pointerType === "mouse" || !event.isPrimary || (event.target as HTMLElement).closest("button, a")) return;
+          const anchor = event.currentTarget;
+          press.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId, timer: setTimeout(() => {
+            suppressClick.current = true;
+            window.getSelection()?.removeAllRanges();
+            openActions(message.id, anchor);
+          }, 500) };
+        }}
+        onPointerMove={(event) => {
+          const current = press.current;
+          if (current && (event.pointerId !== current.pointerId || Math.hypot(event.clientX - current.x, event.clientY - current.y) > 10)) cancelPress();
+        }}
+        onPointerUp={cancelPress} onPointerCancel={cancelPress}
+        onContextMenu={(event) => {
+          if (!("content" in message) || !isTouchLayout() || (event.target as HTMLElement).closest("button, a")) return;
+          event.preventDefault();
+          cancelPress();
+          suppressClick.current = true;
+          openActions(message.id, event.currentTarget);
+        }}
+        tabIndex={pending ? undefined : -1}>
       <div className="chat-avatar"><Avatar avatarId={author?.avatarId} name={author?.name ?? name} /></div>
       <div>
-        <header><strong>{author?.name ?? name}</strong>{author?.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt) : ""}</time></header>
+        <header><strong>{author?.name ?? name}</strong>{author?.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt, timeFormatter) : ""}</time></header>
         {("content" in message ? message.content.text : message.text) && <p>{"content" in message ? message.content.text : message.text}</p>}
         <MessageAttachments attachments={"content" in message ? withFreshUrls(attachmentsOf(message)) : message.attachments ?? []} onExpired={pending ? undefined : refreshUrls} />
-        {"content" in message && <MessageReactions message={message} authorId={state.author?.id} readOnly={readOnly}
-          onReact={async (messageId, emoji, active) => {
-            if (readOnly) throw new Error("Join this channel to react.");
-            if (!clientRef.current) throw new Error("Chat is not ready yet.");
-            await clientRef.current.setReaction(messageId, emoji, active);
-          }} />}
+        {"content" in message && <>
+          <button type="button" className="chat-message-actions-trigger sr-only" aria-haspopup="dialog" onClick={(event) => openActions(message.id, event.currentTarget)}>Message actions for {message.author.name}</button>
+          <MessageReactions message={message} authorId={state.author?.id} readOnly={readOnly} save={reactionSaves[message.id]} onReact={react}
+            pickerOpen={actionTarget?.messageId === message.id && actionTarget.mode === "emoji"}
+            onOpenPicker={(anchor) => setActionTarget({ messageId: message.id, anchor, anchorRect: anchor.getBoundingClientRect(), mode: "emoji", drawer: isTouchLayout() })}
+            onDismissError={() => setReactionSaves((current) => ({ ...current, [message.id]: undefined }))} />
+        </>}
         {pending && state.sendError && <div className="chat-send-status chat-send-error" role="alert">
           <span>{state.sendRejected ? "Not sent." : "Not confirmed yet."} {state.sendError}</span>
           {state.sendRejected ? <>
@@ -350,7 +433,11 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
         {messages.slice(previewStart).map((message, index) => renderMessage(previewStart + index, message))}
       </div>}
       <p className="sr-only" aria-live="polite" aria-atomic="true">{state.phase === "ready" && latestMessage && `${latestMessage.author.name}: ${latestMessage.content.text || `sent ${attachmentsOf(latestMessage).length === 1 ? "a file" : `${attachmentsOf(latestMessage).length} files`}`}`}</p>
+      <p className="sr-only" role="status">{actionStatus}</p>
     </div>
+
+    {actionTarget && actionMessage && <MessageActions key={actionMessage.id} message={actionMessage} target={actionTarget} authorId={state.author?.id}
+      canReact={!readOnly && !!state.author} onReact={react} onClose={() => setActionTarget(undefined)} onCopied={setActionStatus} />}
 
     <p className="chat-typing" role="status" aria-atomic="true">
       <span className="chat-typing-content" data-visible={!!typingLabel} aria-hidden={!typingLabel}>

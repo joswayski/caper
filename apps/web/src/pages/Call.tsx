@@ -18,6 +18,7 @@ import { acquireAudioContext, releaseAudioContext, setPlaybackBlocked } from "..
 import { PublicCallClient, prepareVoiceJoin } from "../media/client";
 import { hasWarmVoice, keepVoiceWarm, stopVoiceWarm } from "../media/warm";
 import { watchPresence } from "../media/presence";
+import { sessionDuration } from "../media/session-duration";
 import type { CallViewState, Participant } from "../media/types";
 import { DEFAULT_VOICE_PROCESSING_STRENGTH } from "../media/voice-processing";
 import MicPlayback, { SpeakerTest } from "./MicPlayback";
@@ -27,8 +28,20 @@ import ChannelSidebar from "./ChannelSidebar";
 import "./call.css";
 
 const initialState: CallViewState = { phase: "idle", muted: false, deafened: false, inputVolume: 100, voiceProcessingStrength: DEFAULT_VOICE_PROCESSING_STRENGTH, monitoring: false, participants: [], remoteMedia: [] };
-type PublicPresence = { participants: Array<Omit<Participant, "tracks">> };
+type PublicPresence = { participants: Array<Omit<Participant, "tracks">>; sessionStartedAt?: number | null };
 const MAX_WATCHED_CHANNELS = 24;
+
+function VoiceSessionTimer({ startedAt }: { startedAt: number }) {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const tick = () => setNow(Date.now());
+    tick();
+    const timer = window.setInterval(tick, 1_000);
+    document.addEventListener("visibilitychange", tick);
+    return () => { window.clearInterval(timer); document.removeEventListener("visibilitychange", tick); };
+  }, [startedAt]);
+  return <span className="voice-session-timer" role="timer" aria-live="off" aria-label="Voice session duration" title="How long this voice session has been active">{sessionDuration(startedAt, now)}</span>;
+}
 
 /** How close (px) the pointer must come to a Join button to start preparing the join. */
 const JOIN_PREPARE_RADIUS = 120;
@@ -207,14 +220,13 @@ function AudioOutput({ stream, muted, name, output, volume }: { stream: MediaStr
 }
 
 /** Voice occupants for one channel: a summary for its line and a list beneath it. */
-export interface VoiceSlot { summary: ReactNode; list: ReactNode }
+export interface VoiceSlot { timer: ReactNode; summary: ReactNode; list: ReactNode }
 
 interface CallProps {
   channel?: { id: string; name: string; spaceName: string; spaceId?: string; demo?: boolean; direct?: boolean; joined?: boolean };
   onReadCursor?: (seq: string) => void;
   channelActions?: ReactNode;
   membersPanel?: (onClose: () => void) => ReactNode;
-  onVoiceChannelOpen?: (channelId: string, spaceId?: string) => void;
   spaceRail?: ReactNode;
   /** Channels in the current space, whose voice rosters appear under them. */
   voiceChannels?: Array<{ id: string; name: string }>;
@@ -236,7 +248,7 @@ interface CallProps {
   onChatOnlineChange?: (online: boolean) => void;
 }
 
-export default function Call({ channel, onReadCursor, channelActions, voiceChannels, spaceRail, channelNavigation, membersPanel, onVoiceChannelOpen, navigationOpen = false, onNavigationToggle, initialAccount, initialHistory, initialHistoryError, onHistoryChange, embedded = false, engaged = true, onChatOnlineChange }: CallProps = {}) {
+export default function Call({ channel, onReadCursor, channelActions, voiceChannels, spaceRail, channelNavigation, membersPanel, navigationOpen = false, onNavigationToggle, initialAccount, initialHistory, initialHistoryError, onHistoryChange, embedded = false, engaged = true, onChatOnlineChange }: CallProps = {}) {
   const systemSounds = useSyncExternalStore(subscribeSystemSounds, getSystemSoundsEnabled, () => true);
   const [state, setState] = useState(initialState);
   const [name, setName] = useState(initialAccount?.displayName ?? "");
@@ -272,7 +284,7 @@ export default function Call({ channel, onReadCursor, channelActions, voiceChann
   const volumeMenuRef = useRef<HTMLLIElement>(null);
   const previousVoiceRoster = useRef<{ selfId: string; ids: Set<string> } | undefined>(undefined);
   const [expandedRosters, setExpandedRosters] = useState<ReadonlySet<string>>(() => new Set());
-  const [publicParticipants, setPublicParticipants] = useState<Record<string, PublicPresence["participants"]>>({});
+  const [publicParticipants, setPublicParticipants] = useState<Record<string, PublicPresence>>({});
   const [voiceChannel, setVoiceChannel] = useState(channel);
   const clientRef = useRef<PublicCallClient | undefined>(undefined);
   const mediaRoot = channel && !channel.demo ? `/api/channels/${encodeURIComponent(channel.id)}/media` : "/api/media";
@@ -294,7 +306,7 @@ export default function Call({ channel, onReadCursor, channelActions, voiceChann
   // Keep the public roster until our own call reports its participants, so
   // joining (or failing to join) never empties the list for a moment.
   const publicRoster = idle || (state.phase === "joining" && !state.participants.length);
-  const roster = publicRoster ? publicParticipants[mediaRoot] ?? [] : state.participants;
+  const roster = publicRoster ? publicParticipants[mediaRoot]?.participants ?? [] : state.participants;
   const identityName = account?.displayName || chatAuthor?.name || name;
   const accountPresence = !!account && !!channel?.spaceId && !channel.demo;
   const joined = useRef(false);
@@ -434,19 +446,20 @@ export default function Call({ channel, onReadCursor, channelActions, voiceChann
 
   useEffect(() => {
     if (!idle || available !== true) return;
-    return watchPresence((snapshot) => setPublicParticipants((previous) => ({ ...previous, [mediaRoot]: snapshot.participants })), () => undefined, mediaRoot);
+    return watchPresence((snapshot) => setPublicParticipants((previous) => ({ ...previous, [mediaRoot]: snapshot })),
+      (online) => { if (!online) setPublicParticipants((previous) => ({ ...previous, [mediaRoot]: { participants: [] } })); }, mediaRoot);
   }, [idle, available, mediaRoot]);
 
   // Who is in voice in each of the space's channels, so people can see where
   // others are and join them. One spectator subscription per channel, capped
   // to stay within the gateway's per-connection subscription limit.
-  const [channelRosters, setChannelRosters] = useState<Record<string, PublicPresence["participants"]>>({});
+  const [channelRosters, setChannelRosters] = useState<Record<string, PublicPresence>>({});
   const watchedChannels = channel?.demo ? "" : (voiceChannels ?? []).slice(0, MAX_WATCHED_CHANNELS).map((item) => item.id).join(",");
   useEffect(() => {
     if (!watchedChannels || available !== true) return;
     const stops = watchedChannels.split(",").map((id) => watchPresence(
-      (snapshot) => setChannelRosters((previous) => ({ ...previous, [id]: snapshot.participants })),
-      () => undefined,
+      (snapshot) => setChannelRosters((previous) => ({ ...previous, [id]: snapshot })),
+      (online) => { if (!online) setChannelRosters((previous) => ({ ...previous, [id]: { participants: [] } })); },
       `/api/channels/${encodeURIComponent(id)}/media`,
     ));
     return () => stops.forEach((stop) => stop());
@@ -533,7 +546,8 @@ export default function Call({ channel, onReadCursor, channelActions, voiceChann
       client.copyAudioPreferencesFrom(previous);
     }
     setVoiceChannel(target);
-    void clientRef.current!.join(identityName.trim(), deviceId);
+    const startedAt = (channelId ? channelRosters[channelId]?.sessionStartedAt : undefined) ?? publicParticipants[root]?.sessionStartedAt;
+    void clientRef.current!.join(identityName.trim(), deviceId, startedAt);
   };
   /** Signed-in members: create the provider session as the pointer or focus reaches Join. */
   const prepareChannel = (channelId?: string) => {
@@ -670,10 +684,14 @@ export default function Call({ channel, onReadCursor, channelActions, voiceChann
   const voiceChannelKey = (channelId?: string) => channelId ?? "general";
   /** Who is in voice in a channel; your own call's roster (with controls) when you are in it. */
   const rosterFor = (channelId?: string) => {
-    if (!publicRoster && voiceChannel?.id === channelId) return { people: state.participants, own: true };
     const watched = channelId ? channelRosters[channelId] : undefined;
-    if (channelId === channel?.id) return { people: watched ?? publicParticipants[mediaRoot] ?? [], own: false };
-    return { people: watched ?? [], own: false };
+    const snapshot = watched ?? (channelId === channel?.id ? publicParticipants[mediaRoot] : undefined);
+    if (!idle && voiceChannel?.id === channelId) return {
+      people: publicRoster ? snapshot?.participants ?? [] : state.participants,
+      startedAt: publicRoster ? snapshot?.sessionStartedAt ?? state.sessionStartedAt : state.sessionStartedAt,
+      own: !publicRoster,
+    };
+    return { people: snapshot?.participants ?? [], startedAt: snapshot?.sessionStartedAt, own: false };
   };
   const channelLabel = (channelId?: string) => channelId === channel?.id || !channelId ? channel?.name ?? "general" : voiceChannels?.find((item) => item.id === channelId)?.name ?? "voice";
   // Every channel has a separate, stable voice row. The roster expands only
@@ -681,7 +699,7 @@ export default function Call({ channel, onReadCursor, channelActions, voiceChann
   let rosterPlaced = false;
   const voiceFor = (channelId?: string): VoiceSlot | null => {
     if (channel?.direct || (channelId === channel?.id && !channelJoined)) return null;
-    const { people, own } = rosterFor(channelId);
+    const { people, startedAt, own } = rosterFor(channelId);
     if (own) rosterPlaced = true;
     const key = voiceChannelKey(channelId);
     const label = channelLabel(channelId);
@@ -709,6 +727,7 @@ export default function Call({ channel, onReadCursor, channelActions, voiceChann
       <button ref={viewed && !activeHere ? viewedJoin : undefined} className="voice-button channel-join" type="button" data-channel={channelId ?? ""} data-connected={activeHere ? "" : undefined} aria-label={actionName} aria-disabled={blocked} aria-busy={joiningHere || leavingHere} onPointerEnter={() => { if (!activeHere) prepareChannel(channelId); }} onPointerDown={() => { if (!activeHere) prepareChannel(channelId); }} onFocus={(event) => { focusedJoin.current = event.currentTarget; if (!activeHere) prepareChannel(channelId); }} onClick={() => { if (!blocked) joinChannel(channelId); }}><Speech aria-hidden="true" /><span className="channel-join-label">{actionLabel}</span></button>
     </Tooltip>;
     return {
+      timer: startedAt != null && (people.length > 0 || joiningHere) ? <VoiceSessionTimer startedAt={startedAt} /> : null,
       summary: <span className="channel-voice">{stack}{join}</span>,
       list: people.length > 0 ? <div className="voice-occupants" id={listId} data-open={open ? "" : undefined}>
         <div className="voice-occupants-inner" inert={!open}>{renderRoster(people, own, label)}</div>
@@ -722,7 +741,7 @@ export default function Call({ channel, onReadCursor, channelActions, voiceChann
     const voice = voiceFor(undefined);
     navigation = <div className="channel-item">
       <div className="channel-row">
-        <a className="channel-link" href="#chat-heading" aria-current="location"><Hash aria-hidden="true" /><span>general</span></a>
+        <a className="channel-link" href="#chat-heading" aria-current="location"><Hash aria-hidden="true" /><span>general</span>{voice?.timer}</a>
         {voice?.summary}
       </div>
       {voice?.list}
@@ -747,16 +766,13 @@ export default function Call({ channel, onReadCursor, channelActions, voiceChann
           <div className="voice-panel">
           {((!idle && !pendingJoin) || (voiceError && !audioPanel)) && <div className="voice-dock">
             {!idle && !pendingJoin && <div className="connected-channel" data-phase={state.phase} role="status">
-              <button type="button" className="voice-dock-channel" onClick={() => {
-                if (voiceChannel && onVoiceChannelOpen) onVoiceChannelOpen(voiceChannel.id, voiceChannel.spaceId);
-                else setAudioPanel("connection");
-              }}>
+              <div className="voice-dock-channel">
                 <AudioLines aria-hidden="true" />
                 <span>
                   <strong>{connected ? "Voice connected" : state.phase === "joining" ? "Connecting…" : "Reconnecting…"}</strong>
                   <small>{voiceChannel?.name ?? initialHistory?.channel.name ?? "general"} / {voiceChannel?.spaceName ?? initialHistory?.space.name ?? "Public demo"}</small>
                 </span>
-              </button>
+              </div>
               <Tooltip content={connected ? "Disconnect" : "Cancel"}><button type="button" className="voice-hangup" aria-label={connected ? "Leave voice" : "Cancel joining voice"} onClick={leave}><PhoneOff aria-hidden="true" /></button></Tooltip>
             </div>}
             {voiceError && !audioPanel && <p className="voice-error" role="alert">

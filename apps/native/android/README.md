@@ -36,6 +36,14 @@ The build first invokes `scripts/native_fonts.py`, which downloads and verifies 
 
 The API defaults to `https://caper.chat`. Override it at build time with `-PcaperApiBaseUrl=https://host.example` (HTTPS is required by the manifest).
 
+Launcher icons always use the original green mascot. Legacy avatar aliases retain
+their component names for upgrade/shortcut compatibility, but also use that icon.
+The app no longer switches launcher components: fresh installs use the default,
+and upgrades retain the previously enabled entry. Daily characters rotate only
+in in-app wordmarks. Verify declarations with
+`node scripts/generate-android-launcher-aliases.mjs --check` from the repository root;
+OEM launcher caches and signed upgrades still require real-device validation.
+
 ### Deferred direct FCM notifications
 
 Mobile push is not currently available. When needed, the server will send directly

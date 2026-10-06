@@ -26,12 +26,14 @@ use std::{
     time::{Duration, Instant},
 };
 
+use base64::{Engine, engine::general_purpose::STANDARD};
 use ed25519_dalek::{SigningKey, pkcs8::DecodePrivateKey};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use install::Layout;
 use manifest::Manifest;
 
+const CACHED_MANIFEST_URL: &str = "https://caper.chat/api/updates/native";
 const MANIFEST_URL: &str =
     "https://github.com/joswayski/caper/releases/download/native-latest/latest.json";
 const PUBLIC_KEY: Option<&str> = option_env!("CAPER_UPDATE_PUBLIC_KEY");
@@ -187,7 +189,8 @@ fn apply(options: &Options, args: &[OsString]) -> Result<()> {
     // Windows cannot rename a folder while a program inside it runs, so run the
     // update from a copy outside the install.
     if !options.relocated && env::current_exe()?.starts_with(&install) {
-        return relocate(args);
+        relocate_command(args)?.spawn()?;
+        return Ok(());
     }
     log(&format!(
         "updating {} from build {current}",
@@ -224,7 +227,7 @@ fn apply(options: &Options, args: &[OsString]) -> Result<()> {
     relaunch(layout, &install)
 }
 
-fn relocate(args: &[OsString]) -> Result<()> {
+fn relocate_command(args: &[OsString]) -> Result<Command> {
     let source = env::current_exe()?;
     let name = source.file_name().ok_or("updater has no file name")?;
     let folder = env::temp_dir().join(format!("caper-updater-{}", std::process::id()));
@@ -232,6 +235,9 @@ fn relocate(args: &[OsString]) -> Result<()> {
     let copy = folder.join(name);
     fs::copy(&source, &copy)?;
     let mut command = Command::new(&copy);
+    // Windows also locks a process's working directory. Moving only the exe
+    // leaves an inherited install directory locked and prevents the swap.
+    command.current_dir(&folder);
     // The first updater starts hidden, but Windows does not inherit that flag
     // when it relocates itself outside the directory being replaced.
     #[cfg(windows)]
@@ -239,8 +245,8 @@ fn relocate(args: &[OsString]) -> Result<()> {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    command.args(args).arg(RELOCATED_FLAG).spawn()?;
-    Ok(())
+    command.args(args).arg(RELOCATED_FLAG);
+    Ok(command)
 }
 
 fn relaunch(layout: Layout, install: &Path) -> Result<()> {
@@ -264,22 +270,53 @@ fn http() -> Result<reqwest::blocking::Client> {
 
 fn fetch_manifest(public_key: &str) -> Result<Manifest> {
     let client = http()?;
-    let bytes = fetch_limited(&client, MANIFEST_URL, manifest::MAX_MANIFEST_BYTES as u64)?;
+    let key = manifest::decode_public_key(public_key)?;
+    fetch_manifest_from(&client, &key, CACHED_MANIFEST_URL, MANIFEST_URL)
+}
+
+#[derive(Deserialize)]
+struct CachedManifest {
+    manifest: String,
+    signature: String,
+}
+
+fn fetch_manifest_from(
+    client: &reqwest::blocking::Client,
+    key: &ed25519_dalek::VerifyingKey,
+    cached_url: &str,
+    github_url: &str,
+) -> Result<Manifest> {
+    // The site returns the signed bytes and signature together, so caches and
+    // replicas cannot mix separate responses. Never trust metadata before
+    // verifying it; an unavailable or invalid mirror falls back to GitHub.
+    let cached = (|| -> Result<Manifest> {
+        let envelope = fetch_limited(client, cached_url, 2 * manifest::MAX_MANIFEST_BYTES as u64)?;
+        let envelope: CachedManifest = serde_json::from_slice(&envelope)?;
+        let bytes = STANDARD.decode(&envelope.manifest)?;
+        Ok(manifest::verify(&bytes, &envelope.signature, key)?)
+    })();
+    if let Ok(manifest) = cached {
+        return Ok(manifest);
+    }
+    let bytes = fetch_limited(client, github_url, manifest::MAX_MANIFEST_BYTES as u64)?;
     let signature = fetch_limited(
-        &client,
-        &format!("{MANIFEST_URL}.sig"),
+        client,
+        &format!("{github_url}.sig"),
         manifest::MAX_MANIFEST_BYTES as u64,
     )?;
-    let key = manifest::decode_public_key(public_key)?;
     Ok(manifest::verify(
         &bytes,
         &String::from_utf8(signature)?,
-        &key,
+        key,
     )?)
 }
 
 fn fetch_limited(client: &reqwest::blocking::Client, url: &str, limit: u64) -> Result<Vec<u8>> {
-    let response = client.get(url).send()?.error_for_status()?;
+    let response = client
+        .get(url)
+        .timeout(Duration::from_secs(15))
+        .send()?
+        .error_for_status()?;
     let mut bytes = Vec::new();
     response.take(limit + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > limit {
@@ -393,6 +430,105 @@ fn log(message: &str) {
 mod tests {
     use super::*;
 
+    fn serve_metadata(
+        responses: Vec<(&'static str, u16, Vec<u8>)>,
+    ) -> (String, thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            for (path, status, body) in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                }
+                assert!(
+                    String::from_utf8(request)
+                        .unwrap()
+                        .starts_with(&format!("GET {path} HTTP/1.1\r\n"))
+                );
+                write!(
+                    stream,
+                    "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.write_all(&body).unwrap();
+            }
+        });
+        (url, server)
+    }
+
+    #[test]
+    fn cached_metadata_is_verified_and_invalid_site_responses_fall_back_to_github() {
+        let key = SigningKey::from_bytes(&[11; 32]);
+        // Keep whitespace/newline: signatures cover bytes, not reserialized JSON.
+        let bytes = b"{\n  \"schema\":1,\"build\":17,\"version\":\"0.1.17\",\"commit\":\"abc\",\"platforms\":{}\n}\n";
+        let signature = manifest::sign(bytes, &key);
+        let valid = serde_json::to_vec(&serde_json::json!({
+            "manifest": STANDARD.encode(bytes), "signature": signature,
+        }))
+        .unwrap();
+        let mixed = serde_json::to_vec(&serde_json::json!({
+            "manifest": STANDARD.encode(bytes),
+            "signature": manifest::sign(b"a different release", &key),
+        }))
+        .unwrap();
+        let oversized = vec![b'a'; 2 * manifest::MAX_MANIFEST_BYTES + 1];
+        let client = reqwest::blocking::Client::new();
+        for (status, cached, fallback) in [
+            (200, valid, false),
+            (502, b"unavailable".to_vec(), true),
+            (200, b"{}".to_vec(), true),
+            (200, mixed, true),
+            (200, oversized, true),
+        ] {
+            let mut responses = vec![("/cached", status, cached)];
+            if fallback {
+                responses.extend([
+                    ("/latest.json", 200, bytes.to_vec()),
+                    ("/latest.json.sig", 200, signature.as_bytes().to_vec()),
+                ]);
+            }
+            let (url, server) = serve_metadata(responses);
+            let manifest = fetch_manifest_from(
+                &client,
+                &key.verifying_key(),
+                &format!("{url}/cached"),
+                &format!("{url}/latest.json"),
+            )
+            .unwrap();
+            assert_eq!(manifest.build, 17);
+            assert_eq!(manifest.version, "0.1.17");
+            server.join().unwrap();
+        }
+        // Fallback is not permission to accept an unsigned or mismatched release.
+        let (url, server) = serve_metadata(vec![
+            ("/cached", 502, vec![]),
+            ("/latest.json", 200, bytes.to_vec()),
+            (
+                "/latest.json.sig",
+                200,
+                manifest::sign(b"tampered", &key).into_bytes(),
+            ),
+        ]);
+        assert!(
+            fetch_manifest_from(
+                &client,
+                &key.verifying_key(),
+                &format!("{url}/cached"),
+                &format!("{url}/latest.json")
+            )
+            .is_err()
+        );
+        server.join().unwrap();
+    }
+
     #[test]
     fn parses_flags_and_rejects_unknown_ones() {
         let args: Vec<OsString> = [
@@ -418,6 +554,54 @@ mod tests {
 
         assert!(Options::parse(&[OsString::from("--nope"), OsString::from("1")]).is_err());
         assert!(Options::parse(&[OsString::from("--current-build")]).is_err());
+    }
+
+    #[test]
+    fn relocated_updater_runs_from_its_temporary_folder() {
+        const REPORT: &str = "CAPER_TEST_RELOCATION_REPORT";
+        if let Some(report) = env::var_os(REPORT) {
+            assert!(env::args_os().any(|arg| arg == RELOCATED_FLAG));
+            fs::write(
+                report,
+                serde_json::to_vec(&env::current_dir().unwrap().canonicalize().unwrap()).unwrap(),
+            )
+            .unwrap();
+            return;
+        }
+
+        let report_folder = tempfile::tempdir().unwrap();
+        let report = report_folder.path().join("cwd.json");
+        // Run only this test in the copied executable. After `--`, libtest
+        // accepts the updater's --relocated flag as an additional test filter.
+        let args = [
+            "--exact",
+            "tests::relocated_updater_runs_from_its_temporary_folder",
+            "--",
+        ]
+        .map(OsString::from);
+        let mut command = relocate_command(&args).unwrap();
+        let relocated_folder = Path::new(command.get_program())
+            .parent()
+            .unwrap()
+            .canonicalize()
+            .unwrap();
+        let output = command.env(REPORT, &report).output().unwrap();
+        install::remove_if_present(&relocated_folder).unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let working_folder: PathBuf = serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
+        // Check the actual child process, not only Command's configuration.
+        assert_eq!(working_folder, relocated_folder);
+        let original_folder = env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .canonicalize()
+            .unwrap();
+        assert!(!working_folder.starts_with(original_folder));
     }
 
     #[test]

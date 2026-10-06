@@ -1,5 +1,8 @@
 import Foundation
 import XCTest
+#if os(iOS)
+import UIKit
+#endif
 
 @MainActor
 final class CaperParityUITests: XCTestCase {
@@ -7,6 +10,16 @@ final class CaperParityUITests: XCTestCase {
 
     private static func configuredApp(fixture: String? = nil, signedIn: Bool = true) -> XCUIApplication {
         let app = XCUIApplication()
+        // Audio preferences persist in the app's own defaults, and the audio
+        // tests move them (e.g. speaker volume to ~150%, voice processing to
+        // 100%). A persistent runner keeps that domain between runs, so start
+        // every launch from the app's defaults through the argument domain,
+        // which outranks stored values and is never written back.
+        app.launchArguments += [
+            "-caper.voice.outputGain", "100",
+            "-caper.voice.inputGain", "100",
+            "-caper.voice.processingStrength", "25",
+        ]
         app.launchEnvironment["CAPER_TEST_MODE"] = "parity"
         app.launchEnvironment["CAPER_API_BASE_URL"] = "http://127.0.0.1:3001"
         if signedIn {
@@ -41,7 +54,8 @@ final class CaperParityUITests: XCTestCase {
     #endif
 
     override func tearDown() {
-        if (testRun?.failureCount ?? 0) > 0, let app = launchedApp {
+        // A test that already terminated the app has no screen to capture.
+        if (testRun?.failureCount ?? 0) > 0, let app = launchedApp, app.state != .notRunning {
             let hierarchy = XCTAttachment(string: app.debugDescription)
             hierarchy.name = "accessibility-hierarchy-\(name)"
             hierarchy.lifetime = .keepAlways
@@ -110,9 +124,14 @@ final class CaperParityUITests: XCTestCase {
 
     private func capture(_ name: String, app: XCUIApplication) {
         #if os(macOS)
+        // Screenshot the frontmost window (the fixed-size Settings window when
+        // it is open), but hold the layout to the main app window: Settings is
+        // 500×380 by design and is not the desktop parity layout.
         let window = app.windows.firstMatch
         XCTAssertTrue(window.waitForExistence(timeout: 2))
-        let size = window.frame.size
+        let main = app.windows.matching(NSPredicate(format: "identifier != %@", "com_apple_SwiftUI_Settings_window")).firstMatch
+        XCTAssertTrue(main.exists, "The main app window must stay open behind any capture")
+        let size = main.frame.size
         #if arch(arm64)
         let desktop = size.width >= 1_400
         let layout = desktop ? "desktop" : "medium"
@@ -172,17 +191,90 @@ final class CaperParityUITests: XCTestCase {
         #endif
     }
 
-    func testReactionChipsPickerAndEmptySearchState() {
+    private struct MissingElement: Error, CustomStringConvertible { let description: String }
+
+    /// Waits for `element` and throws if it never appears. Tapping, typing into
+    /// or reading a missing element records an interrupting failure; an async
+    /// test cannot be unwound by it, so XCTest starts tearDown and the next
+    /// test while the abandoned test keeps driving the app, hanging the suite.
+    /// Throwing ends the test normally and lets its cleanup run.
+    @discardableResult
+    private func require(_ element: XCUIElement, timeout: TimeInterval, _ message: String,
+                         line: UInt = #line) throws -> XCUIElement {
+        guard element.waitForExistence(timeout: timeout) else {
+            throw MissingElement(description: "\(message) (line \(line))")
+        }
+        return element
+    }
+
+    #if os(iOS)
+    /// Holds a message the way a person does: on its header text. The row's
+    /// centre can fall on a reaction chip, and since iOS 26 holding a chip
+    /// activates that button instead of the row's long press.
+    private func hold(_ row: XCUIElement) {
+        row.staticTexts.firstMatch.press(forDuration: 0.8)
+    }
+
+    /// Since iOS 26 this runner may not read a pasteboard item the app wrote
+    /// (PBErrorDomain code 13, "Operation not authorized"), so the app reads
+    /// its own pasteboard back into a parity-only accessibility element.
+    private func assertCopied(_ expected: String, in app: XCUIApplication,
+                              file: StaticString = #filePath, line: UInt = #line) {
+        let pasteboard = app.descendants(matching: .any)["parity-pasteboard"]
+        let copied = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", expected), object: pasteboard)
+        let result = XCTWaiter.wait(for: [copied], timeout: 5)
+        XCTAssertEqual(result, .completed, "Pasteboard holds \(pasteboard.exists ? pasteboard.label : "nothing"), expected \(expected)",
+                       file: file, line: line)
+    }
+    #endif
+
+    private func openReactionPicker(for messageID: String, in app: XCUIApplication) throws {
+        #if os(iOS)
+        let row = try require(app.descendants(matching: .any)["message-row-\(messageID)"], timeout: 10,
+                              "Missing message-row-\(messageID)")
+        hold(row)
+        let add = try require(app.buttons["message-action-add-reaction"], timeout: 5,
+                              "Holding \(messageID) did not offer Add reaction")
+        #else
+        let add = try require(app.buttons["add-reaction-\(messageID)"], timeout: 10,
+                              "Missing add-reaction-\(messageID)")
+        #endif
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: add)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
+        add.tap()
+    }
+
+    func testReactionChipsPickerAndEmptySearchState() throws {
         let app = launch(fixture: "reaction-chips")
         let own = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "selected by you")).firstMatch
         XCTAssertTrue(own.waitForExistence(timeout: 10))
         let other = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "not selected by you")).firstMatch
         XCTAssertTrue(other.exists)
         XCTAssertGreaterThanOrEqual(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "reaction,")).count, 20)
+        #if os(macOS)
         XCTAssertGreaterThanOrEqual(app.buttons.matching(NSPredicate(format: "label == %@", "Add reaction")).count, 2, "fixture includes long and empty reaction rows")
+        #else
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label == %@", "Add reaction")).count, 0, "iPhone must not show an add-reaction button under each message")
+        #endif
         capture("reaction-chips-wrapped-fixture", app: app)
-        let add = app.buttons.matching(NSPredicate(format: "label == %@", "Add reaction")).firstMatch
-        XCTAssertTrue(add.exists); add.tap()
+        let targetID = "chan00000001m01"
+        #if os(iOS)
+        let row = app.descendants(matching: .any)["message-row-\(targetID)"]
+        XCTAssertTrue(row.waitForExistence(timeout: 5)); hold(row)
+        XCTAssertTrue(app.descendants(matching: .any)["message-actions-sheet"].waitForExistence(timeout: 5))
+        capture("message-actions-drawer-fixture", app: app)
+        app.buttons["Copy text"].tap()
+        assertCopied("TEST FIXTURE — local sample data, not a live conversation.", in: app)
+        var dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.descendants(matching: .any)["message-actions-sheet"])
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed)
+        hold(row)
+        XCTAssertTrue(app.descendants(matching: .any)["message-actions-sheet"].waitForExistence(timeout: 5))
+        app.buttons["Copy message ID"].tap()
+        assertCopied(targetID, in: app)
+        dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.descendants(matching: .any)["message-actions-sheet"])
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed)
+        #endif
+        try openReactionPicker(for: targetID, in: app)
         #if os(iOS)
         let search = app.textFields["reaction-picker-search"]
         #else
@@ -190,9 +282,102 @@ final class CaperParityUITests: XCTestCase {
         #endif
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         capture("reaction-picker-open-fixture", app: app)
-        type("definitely-no-such-emoji", into: search)
+        // Retapping until focus succeeds can hide a dismiss/re-present loop.
+        search.tap()
+        XCTAssertTrue(hasKeyboardFocus(search), "Emoji search must keep focus after one tap")
+        search.typeText("definitely-no-such-emoji")
         XCTAssertTrue(app.descendants(matching: .any)["reaction-picker-empty"].waitForExistence(timeout: 5))
         capture("reaction-picker-empty-fixture", app: app)
+    }
+
+    private nonisolated static func fixtureControl(_ body: [String: Any]) async throws {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:3001/__fixture/control")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (_, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+    }
+
+    func testReactionPickerRetainsSearchAndTargetDuringLiveScroll() async throws {
+        try await Self.fixtureControl(["reset": true])
+        // Runs however this test ends, so its live messages and reaction never
+        // leak into later tests.
+        addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+
+        let app = launch()
+        let targetID = "chan00000001m01"
+        let row = try require(app.descendants(matching: .any)["message-row-\(targetID)"], timeout: 30,
+                              "Missing message-row-\(targetID)")
+        try openReactionPicker(for: targetID, in: app)
+        #if os(iOS)
+        let search = app.textFields["reaction-picker-search"]
+        #else
+        let search = app.searchFields.firstMatch
+        #endif
+        try require(search, timeout: 5, "The reaction picker search field never appeared")
+        search.tap()
+        XCTAssertTrue(hasKeyboardFocus(search), "One tap must focus search without reopening the sheet")
+        search.typeText("rocket")
+        // Scope to the picker grid: on macOS a Touch Bar item also titled
+        // "rockets" appears while searching, so app.buttons["rockets"] matches
+        // twice and tapping it fails.
+        let rockets = try require(app.scrollViews["reaction-picker-grid"].buttons["rockets"], timeout: 5,
+                                  "Searching rocket never showed the rockets emoji")
+
+        // Push the presenting row out of the lazy timeline's viewport
+        // while the picker is open and its keyboard has focus.
+        var lastText = ""
+        for index in 0..<12 {
+            lastText = "Picker live scroll \(index)\n" + String(repeating: "TEST FIXTURE timeline layout change.\n", count: 8)
+            try await Self.fixtureControl(["incomingMessage": ["channelId": "chan00000001", "text": lastText]])
+            try require(search, timeout: 2, "Live delivery must not dismiss the reaction picker")
+            XCTAssertEqual(search.value as? String, "rocket", "Live delivery must not reset the search")
+            XCTAssertTrue(hasKeyboardFocus(search), "Live scrolling must not replace the sheet")
+        }
+        capture("reaction-picker-focused-after-live-scroll-fixture", app: app)
+        try require(rockets, timeout: 2, "Live delivery must not drop the rockets search result")
+        rockets.tap()
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: search)
+        XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
+        assertStaticText("TEST FIXTURE — \(lastText)", in: app)
+        // A lazy timeline may drop the off-screen row entirely; that also
+        // means it is not visible.
+        XCTAssertFalse(row.exists && row.isHittable, "The original presenter must have left the visible timeline")
+
+        // Check persistence on the original target, not only picker closure
+        // or an optimistic chip on whichever message is now visible.
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:3001/api/chat/channels/chan00000001/messages")!,
+                                 cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 5)
+        request.setValue("Bearer fixture-owner-token", forHTTPHeaderField: "authorization")
+        var messages: [[String: Any]] = []
+        var saved = false
+        for _ in 0..<50 {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+            let history = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            messages = try XCTUnwrap(history["messages"] as? [[String: Any]])
+            let target = try XCTUnwrap(messages.first { $0["id"] as? String == targetID })
+            saved = (target["reactions"] as? [[String: Any]])?.contains {
+                $0["emoji"] as? String == "🚀" && $0["authorIds"] as? [String] == ["owner0000001"]
+            } == true
+            if saved { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertTrue(saved, "The reaction must be stored on the original message")
+        let latest = try XCTUnwrap(messages.last)
+        XCTAssertTrue((latest["reactions"] as? [[String: Any]] ?? []).isEmpty)
+        let latestID = try XCTUnwrap(latest["id"] as? String)
+        try openReactionPicker(for: latestID, in: app)
+        try require(search, timeout: 5, "The reopened reaction picker has no search field")
+        // An empty field reports its placeholder as its value on iOS 27.
+        let query = search.value as? String
+        XCTAssertTrue(query == "" || query == search.placeholderValue,
+                      "A newly opened picker starts with a fresh query, got \(query ?? "nil")")
+        try require(app.buttons["Cancel"], timeout: 2, "The reaction picker has no Cancel button").tap()
+        let cancelled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: search)
+        XCTAssertEqual(XCTWaiter.wait(for: [cancelled], timeout: 5), .completed)
+        app.terminate()
     }
 
     private func assertStaticText(_ text: String, in app: XCUIApplication, timeout: TimeInterval = 10) {
@@ -281,6 +466,29 @@ final class CaperParityUITests: XCTestCase {
         assertStaticText("Overview", in: app, timeout: 3)
         XCTAssertEqual(app.textFields["project-updates"].value as? String, "general", "The menu opens its own channel's editor")
         capture("channel-settings-from-menu", app: app)
+    }
+
+    func testLeaveChannelLivesInItsOwnOptionsMenu() {
+        let app = launch()
+        assertElement("selected-channel-name", label: "# general", in: app)
+        XCTAssertFalse(app.buttons["Leave channel"].exists, "Leave must not appear in the chat header")
+        #if os(iOS)
+        app.buttons["Browse"].tap()
+        #endif
+        let options = app.descendants(matching: .any)["channel-options-chan00000002"]
+        XCTAssertTrue(options.waitForExistence(timeout: 10))
+        options.tap()
+        let leave = app.descendants(matching: .any)["Leave channel"].firstMatch
+        XCTAssertTrue(leave.waitForExistence(timeout: 3))
+        leave.tap()
+        assertStaticText("Leave #design?", in: app, timeout: 3)
+        app.buttons["Cancel"].tap()
+        #if os(iOS)
+        app.buttons["Close navigation"].tap()
+        #endif
+        assertElement("selected-channel-name", label: "# general", in: app)
+        XCTAssertFalse(app.buttons["Leave channel"].exists)
+        capture("channel-leave-from-menu", app: app)
     }
 
     func testSpectatorRosterCollapsesAndVoiceTargetDoesNotChangeChat() async throws {
@@ -512,6 +720,33 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Copy connection details"].exists)
         capture("audio-statistics-test-fixture", app: app)
     }
+
+    /// AppKit reports a switch's value as a number (0 or 1), not a string.
+    private func switchState(_ toggle: XCUIElement) -> Bool? {
+        if let number = toggle.value as? NSNumber { return number.boolValue }
+        return (toggle.value as? String).flatMap { ["1": true, "0": false][$0] }
+    }
+
+    func testSettingsShortcutWorksWhileSignedOut() {
+        let app = launch(signedIn: false)
+        assertStaticText("Welcome to Caper", in: app)
+        app.typeKey(",", modifierFlags: .command)
+        let startup = app.descendants(matching: .any)["launch-at-login"]
+        XCTAssertTrue(startup.waitForExistence(timeout: 5))
+        XCTAssertFalse(startup.isEnabled, "Parity mode must never change real Login Items")
+        let sounds = app.descendants(matching: .any)["sound-effects"]
+        let original = switchState(sounds)
+        XCTAssertNotNil(original)
+        sounds.tap()
+        XCTAssertNotEqual(switchState(sounds), original)
+        app.typeKey("w", modifierFlags: .command)
+        app.typeKey(",", modifierFlags: .command)
+        XCTAssertTrue(startup.waitForExistence(timeout: 3))
+        XCTAssertNotEqual(switchState(sounds), original, "Settings saves without an Apply button")
+        sounds.tap()
+        XCTAssertEqual(switchState(sounds), original)
+        capture("settings-signed-out", app: app)
+    }
     #endif
 
     func testLogin() {
@@ -574,6 +809,12 @@ final class CaperParityUITests: XCTestCase {
         let app = launch(fixture: "manage-channel")
         let delete = app.buttons["Delete channel"]
         XCTAssertTrue(delete.waitForExistence(timeout: 10))
+        #if os(macOS)
+        // As with Delete space: in a window shorter than the dialog's 680-point
+        // cap, Delete sits at the fold, and a Mac click is not scrolled into view.
+        app.scrollViews["channel-settings-scroll"].scroll(byDeltaX: 0, deltaY: -600)
+        XCTAssertTrue(delete.isHittable, "Delete channel must be reachable by scrolling the dialog")
+        #endif
         delete.tap()
         let confirm = app.buttons["confirm-destructive-action"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 5))
@@ -739,7 +980,27 @@ final class CaperParityUITests: XCTestCase {
         #else
         settings.tap()
         #endif
-        XCTAssertTrue(app.descendants(matching: .any)["sound-effects"].waitForExistence(timeout: 2), "Web keeps Caper sound effects in the settings menu")
+        #if os(macOS)
+        XCTAssertFalse(app.descendants(matching: .any)["launch-at-login"].exists, "Startup must not appear in the quick menu")
+        XCTAssertFalse(app.descendants(matching: .any)["sound-effects"].exists, "Persistent preferences belong in Settings")
+        app.descendants(matching: .any)["open-settings"].tap()
+        let startup = app.descendants(matching: .any)["launch-at-login"]
+        XCTAssertTrue(startup.waitForExistence(timeout: 2))
+        XCTAssertFalse(startup.isEnabled, "Fixture previews must not change real Login Items")
+        XCTAssertTrue(app.descendants(matching: .any)["sound-effects"].exists)
+        capture("startup-settings", app: app)
+        app.typeKey("w", modifierFlags: .command)
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.descendants(matching: .any)["desktop-settings"])
+        XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 3), .completed)
+        settings.tap()
+        #else
+        XCTAssertFalse(app.descendants(matching: .any)["launch-at-login"].exists, "Startup is desktop-only")
+        // iOS 26 builds menu items from UIKit actions, which may expose the
+        // toggle by its title rather than its SwiftUI identifier.
+        let soundEffects = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier == %@ OR label == %@", "sound-effects", "Caper sound effects")).firstMatch
+        XCTAssertTrue(soundEffects.waitForExistence(timeout: 5), "Web keeps Caper sound effects in the settings menu")
+        #endif
         let preferences = app.descendants(matching: .any)["Audio test"]
         XCTAssertTrue(preferences.waitForExistence(timeout: 2))
         preferences.tap()

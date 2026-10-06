@@ -36,6 +36,7 @@ public final class AppModel {
     /// Voice availability by media root ("general" or a channel id); nil while unchecked.
     public private(set) var voiceAvailability: [String: Bool] = [:]
     public private(set) var pendingVoiceChannelID: String?
+    public private(set) var pendingVoiceStartedAt: Int64 = 0
     public var navigationError: String?
     public let api: APIClient
     public let chat: ChatModel
@@ -233,7 +234,8 @@ public final class AppModel {
            selectedDirectMessageID == nil, chat.isPreview == !channel.joined {
             // The displayed conversation remains usable while another target
             // opens. Clicking it cancels that transition, not the live chat.
-            if navigationTarget != nil {
+            // Notes creation keeps the current chat visible while `busy`.
+            if navigationTarget != nil || busy {
                 navigationGeneration += 1
                 navigationTarget = nil
                 openingSpaceID = nil; openingChannelID = nil
@@ -261,16 +263,31 @@ public final class AppModel {
 
     public func createDirectMessage(username: String) async -> Bool {
         let exact = username.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !exact.isEmpty, account != nil else { return false }
+        guard !exact.isEmpty, account != nil, !busy else { return false }
         let attempt = generation
+        navigationGeneration += 1
+        let navigation = navigationGeneration
+        busy = true; error = nil
+        defer { if generation == attempt { busy = false } }
         do {
             let conversation = try await api.createDirectMessage(username: exact)
             guard generation == attempt else { return false }
             if let index = directMessages.firstIndex(where: { $0.id == conversation.id }) { directMessages[index] = conversation }
             else { directMessages.append(conversation) }
-            await select(directMessage: conversation)
+            if navigationGeneration == navigation { await select(directMessage: conversation) }
             return generation == attempt
         } catch { if generation == attempt { self.error = error.localizedDescription }; return false }
+    }
+
+    /// Opens the account's notes conversation, creating it through the normal DM
+    /// endpoint only when the server has not returned one yet.
+    public func openSelfDirectMessage() async {
+        guard let account, let username = account.username else { return }
+        if let conversation = directMessages.first(where: { $0.peer.id == account.id }) {
+            await select(directMessage: conversation)
+        } else {
+            _ = await createDirectMessage(username: username)
+        }
     }
 
     public func select(directMessage conversation: DirectMessageConversation) async {
@@ -872,6 +889,8 @@ public final class AppModel {
               voice.context?.channelID != channel.id || voice.phase == .idle || voice.phase == .failed else { return }
         voiceJoinGeneration += 1
         let joinAttempt = voiceJoinGeneration
+        let clicked = Int64(Date().timeIntervalSince1970 * 1_000)
+        pendingVoiceStartedAt = clicked
         pendingVoiceChannelID = channel.id
         defer { if voiceJoinGeneration == joinAttempt { pendingVoiceChannelID = nil } }
         let accountGeneration = generation
@@ -899,7 +918,8 @@ public final class AppModel {
             await voice.join(channelID: space.demo == true ? nil : channel.id,
                              context: VoiceContext(channelID: channel.id, channelName: channel.name,
                                                    spaceID: space.id, spaceName: space.name),
-                             name: account?.displayName ?? "Guest")
+                             name: account?.displayName ?? "Guest", joinStartedAt: clicked,
+                             sessionStartedAt: voicePresence.sessionStartedAt(for: channel.id))
         } catch {
             guard voiceJoinGeneration == joinAttempt, generation == accountGeneration else { return }
             voicePresence.revoke(channelID: channel.id)
@@ -950,7 +970,6 @@ public final class ChatModel {
     public var error: String?
     public var hasMore = false
     public var typingNames: [String] = []
-    public var reactionSaving: Set<String> = []
     public var reactionErrors: [String: String] = [:]
     /// `GET /api/assets/usage` succeeded; otherwise the attach control stays hidden.
     public private(set) var uploadsEnabled = false
@@ -984,6 +1003,13 @@ public final class ChatModel {
     private var generation = 0
     private var delivery = ChatDeliveryState()
     private var reactionSnapshots = ReactionSnapshots()
+    private struct PendingReaction: Equatable {
+        let active: Bool
+        let intent: Int
+    }
+    private var pendingReactions: [String: [String: PendingReaction]] = [:]
+    private var reactionWorkers: Set<String> = []
+    private var nextReactionIntent = 0
     private var failedReactions: [String: (emoji: String, active: Bool)] = [:]
     private var typers: [String: (author: ChatAuthor, typing: Bool, revision: String, expires: Date)] = [:]
     private var typingActive = false
@@ -1030,7 +1056,7 @@ public final class ChatModel {
         return ChatHistory(
             space: HistoryIdentity(id: spaceID, name: spaceName),
             channel: HistoryIdentity(id: channelID, name: channelName),
-            messages: messages,
+            messages: messages.map { reactionSnapshots.overlay($0) },
             cursor: delivery.cursor,
             hasMore: hasMore
         )
@@ -1092,6 +1118,8 @@ public final class ChatModel {
         let preservedCursor = delivery.cursor
         let preservedHasMore = hasMore
         if preservingTimeline {
+            pendingReactions = [:]; reactionWorkers = []
+            renderReactions()
             typingTask?.cancel(); typingIdleTask?.cancel(); typingExpiryTask?.cancel()
             typingTask = nil; typingIdleTask = nil; typingExpiryTask = nil
             typers = [:]; typingNames = []; typingActive = false; typingSent = false
@@ -1306,24 +1334,16 @@ public final class ChatModel {
     }
 
     public func setReaction(messageID: String, emoji: String, active: Bool) async {
-        guard !isPreview, let channelID, let session, !reactionSaving.contains(messageID) else { return }
+        guard !isPreview, let channelID, session != nil else { return }
         let requestGeneration = generation
-        reactionSaving.insert(messageID)
-        defer { if generation == requestGeneration { reactionSaving.remove(messageID) } }
-        do {
-            let event = try await api.setReaction(channelID: channelID, messageID: messageID, sessionToken: session.token, emoji: emoji, active: active)
-            guard generation == requestGeneration, self.channelID == channelID else { return }
-            applyReactions(event, clearsOwnFailure: true)
-        } catch {
-            guard generation == requestGeneration, self.channelID == channelID else { return }
-            if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status) {
-                onAccessRevoked?(channelID)
-                await stop()
-                return
-            }
-            reactionErrors[messageID] = "Couldn’t save reaction. Retry."
-            failedReactions[messageID] = (emoji, active)
-        }
+        nextReactionIntent += 1
+        pendingReactions[messageID, default: [:]][emoji] = PendingReaction(active: active, intent: nextReactionIntent)
+        reactionErrors[messageID] = nil
+        failedReactions[messageID] = nil
+        renderReactions()
+        guard !reactionWorkers.contains(messageID) else { return }
+        reactionWorkers.insert(messageID)
+        await savePendingReactions(messageID: messageID, channelID: channelID, generation: requestGeneration)
     }
 
     public func retryReaction(messageID: String) async {
@@ -1449,7 +1469,7 @@ public final class ChatModel {
         typingTask = nil; typingIdleTask = nil; typingExpiryTask = nil
         typers = [:]; typingNames = []; typingActive = false; typingSent = false
         delivery.reset(preservingPending: preservingPending)
-        reactionSnapshots.reset(); reactionSaving = []; reactionErrors = [:]; failedReactions = [:]
+        reactionSnapshots.reset(); pendingReactions = [:]; reactionWorkers = []; reactionErrors = [:]; failedReactions = [:]
         if !preservingPending { discardAttachmentDrafts() }
         urlRefreshTask?.cancel(); urlRefreshTask = nil; urlRefreshQueue = []; urlRefreshAttempts = [:]
         isPreview = false
@@ -1465,15 +1485,66 @@ public final class ChatModel {
         incoming.forEach { byID[$0.id] = reactionSnapshots.overlay($0) }
         byID = byID.mapValues { reactionSnapshots.overlay($0) }
         messages = byID.values.sorted { (try? Sequence.compare($0.seq, $1.seq)) == .orderedAscending }
+        renderReactions()
     }
 
-    private func applyReactions(_ event: MessageReactionsEvent, clearsOwnFailure: Bool = false) {
-        if clearsOwnFailure {
-            reactionErrors[event.messageId] = nil
-            failedReactions[event.messageId] = nil
-        }
+    private func applyReactions(_ event: MessageReactionsEvent) {
         guard reactionSnapshots.apply(messageID: event.messageId, seq: event.seq, reactions: event.reactions) else { return }
-        messages = messages.map { reactionSnapshots.overlay($0) }
+        renderReactions()
+    }
+
+    private func renderReactions() {
+        let authorID = session?.author.id
+        messages = messages.map { message in
+            var result = reactionSnapshots.overlay(message)
+            guard let authorID, let pending = pendingReactions[message.id], !pending.isEmpty else { return result }
+            var reactions = result.reactions ?? []
+            for (emoji, intent) in pending {
+                if let index = reactions.firstIndex(where: { $0.emoji == emoji }) {
+                    var authors = reactions[index].authorIds.filter { $0 != authorID }
+                    if intent.active { authors.append(authorID) }
+                    if authors.isEmpty { reactions.remove(at: index) }
+                    else { reactions[index] = MessageReaction(emoji: emoji, authorIds: authors) }
+                } else if intent.active {
+                    reactions.append(MessageReaction(emoji: emoji, authorIds: [authorID]))
+                }
+            }
+            result.reactions = reactions
+            return result
+        }
+    }
+
+    private func savePendingReactions(messageID: String, channelID: String, generation requestGeneration: Int) async {
+        defer { if generation == requestGeneration { reactionWorkers.remove(messageID) } }
+        while generation == requestGeneration, self.channelID == channelID,
+              let session, let pending = pendingReactions[messageID],
+              let (emoji, desired) = pending.min(by: { $0.value.intent < $1.value.intent }) {
+            do {
+                let event = try await api.setReaction(channelID: channelID, messageID: messageID,
+                                                      sessionToken: session.token, emoji: emoji, active: desired.active)
+                guard generation == requestGeneration, self.channelID == channelID else { return }
+                _ = reactionSnapshots.apply(messageID: event.messageId, seq: event.seq, reactions: event.reactions)
+                if pendingReactions[messageID]?[emoji] == desired {
+                    pendingReactions[messageID]?[emoji] = nil
+                }
+                if pendingReactions[messageID]?.isEmpty == true { pendingReactions[messageID] = nil }
+                renderReactions()
+            } catch {
+                guard generation == requestGeneration, self.channelID == channelID else { return }
+                if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status) {
+                    onAccessRevoked?(channelID)
+                    await stop()
+                    return
+                }
+                if pendingReactions[messageID]?[emoji] == desired {
+                    pendingReactions[messageID]?[emoji] = nil
+                    if pendingReactions[messageID]?.isEmpty == true { pendingReactions[messageID] = nil }
+                    reactionErrors[messageID] = "Couldn’t save reaction. Retry."
+                    failedReactions[messageID] = (emoji, desired.active)
+                    renderReactions()
+                }
+            }
+        }
     }
 
     // MARK: Attachments

@@ -167,14 +167,22 @@ object IceUrlsSerializer : JsonTransformingSerializer<List<String>>(ListSerializ
     val tracks: List<MediaTrack>,
     val avatarId: Int? = null,
 )
-@Serializable data class MediaSnapshot(val participants: List<Participant>, val revision: Long? = null)
+@Serializable data class MediaSnapshot(
+    val participants: List<Participant>,
+    val revision: Long? = null,
+    val sessionStartedAt: Long? = null,
+)
 @Serializable data class SpectatorParticipant(
     val id: String, val name: String,
     val muted: Boolean, val deafened: Boolean, val avatarId: Int? = null,
 ) {
     fun asParticipant() = Participant(id, name, muted, deafened, emptyList(), avatarId)
 }
-@Serializable data class SpectatorSnapshot(val participants: List<SpectatorParticipant>, val revision: Long)
+@Serializable data class SpectatorSnapshot(
+    val participants: List<SpectatorParticipant>,
+    val revision: Long,
+    val sessionStartedAt: Long? = null,
+)
 @Serializable data class SessionDescription(val type: String, val sdp: String)
 @Serializable data class SignalResponse(
     val sessionDescription: SessionDescription? = null,
@@ -234,6 +242,7 @@ data class AppUiState(
     val typingAuthors: List<ChatAuthor> = emptyList(),
     val presence: Map<String, String> = emptyMap(),
     val voiceRosters: Map<String, List<Participant>> = emptyMap(),
+    val voiceSessionStartedAt: Map<String, Long> = emptyMap(),
     val deniedVoiceChannels: Set<String> = emptySet(),
     /** Voice availability by media root ("" is General's demo root); absent while checking. */
     val voiceAvailability: Map<String, Boolean> = emptyMap(),

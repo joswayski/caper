@@ -14,12 +14,13 @@ public struct VoiceSpectator: Decodable, Identifiable, Equatable, Sendable {
 @MainActor @Observable
 public final class VoicePresenceModel {
     public private(set) var rosters: [String: [VoiceSpectator]] = [:]
+    public private(set) var sessionStartedAt: [String: Double] = [:]
     public private(set) var unavailableChannels: Set<String> = []
     public private(set) var online = false
     private let api: APIClient
     @ObservationIgnored private lazy var gateway = Gateway(baseURL: api.baseURL, token: { [api] in await api.authorizationToken() }) { [weak self] state, _ in
         self?.online = state == .connected && self?.spaceID != nil
-        if state != .connected { self?.rosters = [:]; self?.revisions = [:] }
+        if state != .connected { self?.rosters = [:]; self?.sessionStartedAt = [:]; self?.revisions = [:] }
     }
     private var subscriptions: [String: String] = [:]
     private var watching: Set<String> = []
@@ -31,13 +32,15 @@ public final class VoicePresenceModel {
 
     public func roster(for channelID: String) -> [VoiceSpectator] { rosters[channelID] ?? [] }
 
+    public func sessionStartedAt(for channelID: String) -> Double? { sessionStartedAt[channelID] }
+
     public func watch(spaceID: String, channels: [Channel], demo: Bool) async {
         let wanted = Array(channels.prefix(demo ? 1 : 24)).map(\.id)
         if self.spaceID == spaceID, watching == Set(wanted) { return }
         generation += 1
         let attempt = generation
         let previous = subscriptions.values
-        subscriptions = [:]; watching = Set(wanted); rosters = [:]; revisions = [:]; online = false
+        subscriptions = [:]; watching = Set(wanted); rosters = [:]; sessionStartedAt = [:]; revisions = [:]; online = false
         unavailableChannels = []
         self.spaceID = spaceID
         for id in previous { await gateway.unsubscribe(id) }
@@ -57,7 +60,7 @@ public final class VoicePresenceModel {
     public func stop() async {
         generation += 1
         let previous = subscriptions.values
-        subscriptions = [:]; watching = []; rosters = [:]; revisions = [:]; spaceID = nil; online = false
+        subscriptions = [:]; watching = []; rosters = [:]; sessionStartedAt = [:]; revisions = [:]; spaceID = nil; online = false
         unavailableChannels = []
         for id in previous { await gateway.unsubscribe(id) }
     }
@@ -66,6 +69,7 @@ public final class VoicePresenceModel {
         unavailableChannels.insert(channelID)
         watching.remove(channelID)
         rosters.removeValue(forKey: channelID)
+        sessionStartedAt.removeValue(forKey: channelID)
         revisions.removeValue(forKey: channelID)
         if let id = subscriptions.removeValue(forKey: channelID) {
             Task { await gateway.unsubscribe(id) }
@@ -87,5 +91,10 @@ public final class VoicePresenceModel {
         guard revision.accept(event["revision"] as? Int) else { return }
         revisions[channelID] = revision
         rosters[channelID] = people
+        if let milliseconds = event["sessionStartedAt"] as? NSNumber {
+            sessionStartedAt[channelID] = milliseconds.doubleValue
+        } else {
+            sessionStartedAt.removeValue(forKey: channelID)
+        }
     }
 }

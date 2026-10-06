@@ -9,7 +9,7 @@ unified text/voice channels; history, live messages, presence and calls require
 membership. See [spaces and channel access](#spaces-and-channel-access).
 Participants use their account display name and saved Caper avatar. This is not an outgoing-call flow.
 No camera, screen sharing, or server-side voice recording.
-Web channel names and owner-only `⋯` actions have a separate row above voice
+Web channel names and `⋯` actions have a separate row above voice
 activity. Join, Joining and Switch here use one fixed-width action slot;
 connected channels reserve that space without an inline Leave action.
 Disconnect lives in the bottom voice dock beside the account.
@@ -18,8 +18,11 @@ status text. Only occupied channels show a voice count. Hover and connection/ros
 updates do not shift the action target. The Channels count stays beside its label
 in both owned and shared spaces. Selecting a channel
 opens text without switching voice. Participant lists start collapsed and expand
-from the voice count. Channel actions open the existing privacy/member settings;
-at the minimum sidebar width, counts take priority over avatars; narrow web
+from the voice count. Joined-channel menus offer Leave channel to members;
+owners also have the existing privacy/member settings. Leave channel requires
+confirmation and no longer appears in the chat header on web, Apple or Rust
+desktop; Android already uses its channel menu.
+At the minimum sidebar width, counts take priority over avatars; narrow web
 layouts retain 44px action targets.
 Run `VOICE_TEST_CHANNEL_ROWS=1 node scripts/test-voice-controls.mjs http://localhost:5174`
 against Vite for mocked desktop/narrow/minimum-width geometry, roster disclosure,
@@ -31,8 +34,11 @@ released separately; browser checks do not establish native rendering parity.
 Browser modals use viewport-bounded, stable-height shells with scrollable overflow;
 errors, pending states and member loading do not resize or recenter them. Channel
 settings reserve the hidden save bar, and profile forms reserve error space so
-retrying a save does not move its button. Channel and space settings dismiss on
-outside click/tap; nested delete confirmation dismissal leaves settings open.
+retrying a save does not move its button. Channel and space settings and new
+direct-message dialogs dismiss on outside click/tap; nested delete confirmation
+dismissal leaves settings open. Rust desktop also dismisses new direct messages
+on outside clicks; Apple keeps platform sheet dismissal, and Android keeps its
+existing outside-tap behavior.
 Run `MODALS_ONLY=1 SPACES_TEST_WEB_URL=http://localhost:5174/spaces node scripts/test-space-controls.mjs`
 against Vite for desktop, narrow and short-viewport geometry, overflow reachability
 and backdrop regression checks with mocked APIs. Android, Apple and Rust desktop
@@ -86,6 +92,48 @@ and deafen state, but never media track IDs, session tokens, or audio.
 The HTTP/SSE endpoints remain available for older clients and inspection, but the
 current browser uses neither SSE nor HTTP polling for live rosters. Spectators
 never renew call leases.
+
+Channel names show a shared voice-session timer to everyone authorized to view
+the channel's voice roster, including people not in the call. It starts from the
+first accepted participant's **Join click**, not completion of provider or audio
+setup, survives that participant leaving while others remain,
+and clears when the last participant leaves or their lease expires. Microphone
+test monitors do not start or extend a session. Authenticated and spectator
+snapshots carry nullable `sessionStartedAt` (UTC Unix milliseconds); clients
+render `MM:SS`, then `H:MM:SS`. Web, Android, Apple and Rust desktop show a local
+provisional timer during a pending join, preserve an occupied channel's existing
+start, and adopt the shared timestamp when admission completes. Cancelled/failed
+joins clear provisional time; they do not clear another participant's session.
+Spectators see only accepted membership, not another client's pending click.
+Join requests carry optional `joinStartedAt` (integer UTC Unix milliseconds).
+The API bounds it to the 30 seconds before request receipt, clamping future
+client clocks to receipt time; clients without it start at request receipt.
+Preparation/warm sessions never start timers. Older servers without the snapshot
+field hide the shared timer after pending joins finish.
+Valkey stores the start with room metadata. Existing occupied rooms initialize
+from their oldest remaining participant, since an earlier departed participant's
+join time cannot be recovered. Devices calculate elapsed time using their system
+clocks, so clock skew can offset the display; future starts clamp to `00:00`.
+The timer describes continuous channel occupancy, not each person's time in voice
+or guaranteed audio connectivity. Access permissions and roster limits do not change.
+
+Run `VOICE_TEST_TIMERS=1 node scripts/test-voice-controls.mjs http://localhost:5174`
+against Vite for delayed join, occupied-room/spectator time, cancellation and
+permission-failure checks at desktop and narrow widths. These use synthetic audio
+and mocked signaling/WebRTC. API tests cover pre-provisioning time, bounded clock
+skew, cross-member snapshots and cross-instance Valkey persistence/fanout.
+
+Web desktop/narrow and Linux desktop rendering are checked with explicitly labeled
+fixtures, not live SFU calls. Apple/iOS and Android implement the same timestamp
+and display contract but require their platform builds and rendered/device checks;
+browser validation does not establish native acceptance. Deploy the updated API
+and gateway before web/native releases; both server roles embed media handlers.
+No new infrastructure, secrets, Postgres migration or room-schema change is required
+for click-time starts. Native releases sending `joinStartedAt` require both updated
+server roles: old handlers reject unknown join fields. Web retains its legacy
+join fallback. Roll back clients before rolling back server support for the new
+request field; keep that support while updated native clients remain in use.
+Never delete shared room state to roll back a display feature.
 
 Browser → same-origin `/api/chat/events` WebSocket → Rust gateway → existing
 authorized media handlers → Cloudflare control API. Fifteen-second `media.snapshot`
@@ -972,30 +1020,110 @@ and physical devices are not yet validated.
   Transformer transcoding and playback, and uploads to live R2/CDN.
 ## Message reactions
 
-Desktop web exposes **Add reaction** on message hover or keyboard focus. On
-narrow/touch browser layouts it stays visible, and the searchable picker opens
-as a bottom sheet. Reactions appear below the message with counts; your own
+Desktop web exposes **Add reaction** on message hover or keyboard focus. Mobile
+web, Android and iPhone hide the per-message add button. Press and hold a
+committed message to open a bottom drawer with five fixed quick reactions
+(👍 ❤️ 😂 🎉 👀), the searchable emoji picker, **Copy text**, and
+**Copy message ID**. Copy uses the exact text or globally unique public message
+`id`, never the client retry UUID or channel-local sequence. Read-only previews
+allow copying but not reaction mutations. Message links and unsupported actions
+(reply, forward, threads, pins, bookmarks, reminders, delete) are not exposed.
+Web offers a keyboard/screen-reader message-actions button; iPhone provides a
+VoiceOver action and Android a labelled long-click action. Desktop Apple/Rust
+clients intentionally retain their existing reaction controls rather than
+adopting the mobile drawer.
+
+Reactions appear below the message with counts; your own
 chips have a terracotta tint and `aria-pressed=true`. Clicking a chip adds or
-removes your contribution. Choosing an emoji in the picker only adds it. Pending
-messages cannot be reacted to. Failed saves show an explicit retry of the same
-desired state rather than an ambiguous toggle.
+removes your contribution, as does a quick reaction. Choosing an emoji in the
+picker only adds it. Pending messages cannot be reacted to or have their
+unconfirmed IDs copied. Web (desktop/mobile), Android, iOS/macOS, and Rust desktop
+apply reaction additions/removals immediately, without a saving label, spinner,
+or disabled controls. Requests serialize per message while the newest local
+choice stays visible over incoming server snapshots. A failed current choice
+rolls back only your contribution to the latest server state and shows an explicit
+retry of that desired state. Superseded failures do not undo a newer choice.
+Cached history and replay cursors contain authoritative state, not optimistic
+counts; a full resync reconciles abandoned in-flight choices from server history.
 
 Android, iOS/macOS, and Rust desktop also provide searchable standard-emoji
 pickers, counted chips, own-contribution highlighting, add/remove, and save-error
-retry. Native/mobile actions remain visible without hover. Clients preserve
-per-message reaction revisions independently of the channel replay cursor.
+retry. Clients preserve per-message reaction revisions independently of the
+channel replay cursor.
+
+`node scripts/test-message-actions.mjs` uses the disposable
+`native-parity-fixture.mjs` server and Vite, with Chromium touch input and verified
+coarse-pointer emulation. It covers hold versus tap/scroll/cancel, clipboard
+content/ID, quick toggles, search, live-scroll target retention, focus/dismissal,
+clipboard errors, read-only previews and the desktop picker. It also holds
+reaction requests before fixture delivery to verify immediate selection/removal,
+enabled controls, no saving status, rapid-toggle ordering, failure rollback and
+retry. This is browser fixture evidence, not native or physical-device
+acceptance. The native reaction
+UI suites cover the new drawer but require Android instrumentation and Xcode;
+run them and inspect iPhone/Android drawers before releasing those clients.
+No API, gateway, migration, infrastructure or secret change is needed for this
+client-only update. Web, Android, Apple and Rust desktop can release independently;
+each needs an updated client to get optimistic reactions. Roll back web by restoring
+the previous image. For mobile, release a revert build with a higher build/version
+number instead of attempting an installed-app downgrade. No database rollback
+is needed.
+
+Optimistic reaction validation: web build and 336 unit tests passed; Chromium
+desktop and touch-emulated narrow layouts exercised held requests and failures,
+and captures were inspected. Rust desktop passed 189 tests (9 ignored), fmt,
+Clippy and a Linux build; its rendered fixture showed immediate removal and
+rollback after a delayed mock 503. Android and shared iOS/macOS tests were added
+but not executed in the Linux orb (no Java/Android SDK or Swift/Xcode). Run their
+unit/UI suites before release. Linux/browser fixtures do not establish Windows,
+native phone, macOS, multi-client production or physical-device acceptance.
 
 The picker offers standard Emoji 15.0 artwork, self-hosted from `@twemoji/svg`
 and attributed at `/emoji/NOTICE.txt` (Twemoji graphics, CC BY 4.0). The web
 build/dev preparation verifies artwork for every offered emoji. It makes no
-emoji-CDN requests and loads the picker code on demand. These are images, not
-the operating system's emoji font, so supported reactions look consistent across
-all clients. Native apps bundle raster sprite sheets generated from the same
+emoji-CDN requests. Writable web chat warms the code/data chunk after one second;
+it does not mount the picker or fetch the artwork catalog. Hovering or focusing
+**Add reaction** also warms the code and preloads/decodes the first 128 Emoji 15.0
+smileys/people images, generated from the picker catalog at build time. This
+covers the opening grid, not the full catalog, and does not open the picker.
+Hovering or keyboard-focusing a category tab preloads/decodes its first 128
+Emoji 15.0 images (or the full category when smaller), without selecting it or
+scrolling the grid. Category manifests are also generated at build time.
+Preloads are shared per category across message buttons and picker reopenings;
+failures evict only that category so the next intent can retry. Images beyond
+the prefetched window still load on demand; immediate clicks on a cold network
+can still precede completion.
+The virtualized grid loads its mounted image window eagerly, including after
+category jumps. Versioned
+`/emoji/twemoji-15/**` artwork is served with a one-year immutable browser cache;
+changed artwork must use a new path. Web category tabs sit above search, brighten
+on hover/selection, and underline the selected category in terracotta. Pointer
+clicks have no circular ring; keyboard focus retains a separate outline.
+`node scripts/test-message-actions.mjs` checks warmup without artwork requests,
+hover/focus preloading without opening or duplicate image requests,
+all seven non-opening category preloads without selection/scrolling, cache reuse
+across reopening, populated category jumps, eager loading with virtualization, selected
+tab styling, and keyboard navigation on desktop and Chromium touch-emulated web.
+Native picker loading/styling is intentionally unchanged: those independent
+clients use bundled sprite sheets, not browser image loading or this library.
+These are images, not the operating system's emoji font, so supported reactions
+look consistent across all clients. Native apps bundle raster sprite sheets from the same
 artwork with `node scripts/native-emoji.mjs` (requires npm dependencies and
 ImageMagick 7). Android and Rust read `shared/emoji`; SwiftPM requires a generated
 copy inside its target, checked byte-for-byte by CI, including licenses.
+Picker names use dashes (for example, `grinning-face`). Web and all native
+catalogs also include underscore and spaced search aliases (`grinning_face` and
+`grinning face`). Names are labels/search terms, not stored reaction identifiers:
+selecting any spelling still sends the same Unicode emoji. Existing reactions
+need no migration. The browser fixture checks all three search spellings,
+dash-separated accessible names/image alt text, and Unicode persistence.
 Message-body emoji are unchanged. Custom uploads, frequently used/top-five lists,
-and a skin-tone selector are deferred.
+and a skin-tone selector are deferred. Message text does not currently convert
+`:name:` shortcodes into emoji. Dashes are not a restriction on future custom
+emoji: the web picker supports named custom images, but uploads alone will not
+enable them. Custom reactions also need an authorized emoji catalog, stable asset
+IDs, API/protocol support alongside Unicode, and image rendering in every client;
+the current API deliberately accepts only standard Unicode emoji.
 
 `PUT /api/chat/channels/{channel}/messages/{message}/reactions` accepts
 `{emoji,active}` and `X-Caper-Chat-Token`. It checks the same channel/member/private
@@ -1682,7 +1810,7 @@ Keep this temporary test separate from any future production app/key.
 | `DATABASE_ALLOW_INSECURE` | Local development only. Set by Compose so the API may connect without TLS to the private `postgres` service. Hosted databases still default to verified TLS. |
 | `AUTH_SECRET` | API-only random secret of at least 32 bytes. Enables account login and HMAC-protects low-entropy codes/IP rate-limit keys. Keep stable across replicas and rotations deliberate. |
 | `DEBUG_USERS` | Optional API-only comma-separated username allowlist for authenticated client diagnostics. Exact case-insensitive matches after trimming; blank disables. Restart the API after changes; open tabs pick it up when refocused or when User Settings opens. |
-| `RESERVED_USERNAMES` | Optional API-only comma-separated additional usernames that cannot be assigned by `/api/account/profile`. `caper`, `capers`, `admin`, `admins`, `mod`, `mods`, `support`, `feedback`, `security`, `staff`, `jose`, `caperchat`, `aaron`, and `joswayski` are always reserved. Exact case-insensitive matches after trimming; restart all API replicas after changes. This does not create accounts or deliver chat mentions. |
+| `RESERVED_USERNAMES` | Optional API-only comma-separated additional usernames that cannot be newly assigned by `/api/account/profile`. `caper`, `capers`, `admin`, `admins`, `mod`, `mods`, `support`, `feedback`, `security`, `staff`, `jose`, `caperchat`, `aaron`, and `joswayski` are always reserved. Existing owners may keep their current reserved username while updating their profile; changing to another reserved username is still blocked. Exact case-insensitive matches after trimming; restart all API replicas after changes. This does not create accounts or deliver chat mentions. |
 | `AUTH_CODE_ATTEMPTS` | Attempts per code; default `3`, allowed `1`–`10` |
 | `AUTH_EMAIL_15M_LIMIT` | Code requests accepted per email in 15 minutes; default `3` |
 | `AUTH_EMAIL_DAILY_LIMIT` | Code requests accepted per email in 24 hours; default `5` |
@@ -3229,6 +3357,7 @@ not URLs, cookies, or persistent storage. Possession authorizes that call sessio
 | Method | Public endpoint | Purpose |
 | --- | --- | --- |
 | GET | `/health`, `/api/health` | Unauthenticated health checks |
+| GET | `/api/updates/native` | Unauthenticated cached, signed desktop update metadata |
 | POST | `/api/auth/email/request` | Request a 6-digit, 10-minute email code; returns a challenge ID |
 | POST | `/api/auth/email/verify` | Consume a challenge and create a 30-day session |
 | POST | `/api/auth/logout` | Revoke the current session |
@@ -3259,6 +3388,37 @@ revealing signup order or the internal sequence. Stored as `external_id` for
 integrations and external references, the API returns this value as `id`, alongside
 `username` and `displayName`. Usernames are globally unique, changeable handles;
 changing a username or email does not change either account ID.
+
+### Desktop update metadata cache
+
+`GET https://caper.chat/api/updates/native` returns an envelope with `manifest`
+(base64 of the exact `latest.json` bytes) and `signature` (the detached base64
+Ed25519 signature). It only fetches the fixed GitHub `native-latest` release;
+request parameters cannot select an upstream URL. No account, new secret, database
+migration, gateway change, or CDN rule is needed.
+
+The Rust API keeps one in-memory entry for 60 seconds **per API process**. It
+coalesces concurrent misses, bounds each upstream request to five seconds, and
+limits the manifest to 64 KiB and signature to 1 KiB. Successful responses send
+`Cache-Control: public, max-age=60` and `Age`; this cache works even if Cloudflare
+bypasses `/api/*`. These headers permit HTTP caching but do not establish that an
+edge or desktop client caches responses. Restarting a process empties its cache.
+After a failed refresh, the API returns `502` with `no-store` and waits 60 seconds
+before retrying. It does not serve expired metadata indefinitely.
+
+Desktop release builds check about 20 seconds after launch and every hour. They
+verify the envelope's signature against their compiled-in public key before
+using any metadata, and fall back to GitHub's manifest/signature on site errors,
+malformed data, or signature mismatch (including a rolling-release upload race).
+Archive downloads and checksum verification remain unchanged. Android and iOS
+distribution is unchanged. Existing desktop builds keep their old check schedule
+until they install a new native release.
+
+Deploy the API before publishing the native release to use the cache immediately;
+either component can roll back independently because GitHub remains a fallback.
+Verify the deployed endpoint returns `200`, the documented cache headers, and a
+verifiable envelope; then test **Check for Updates…** on a packaged Mac build and
+the automatic check on Windows/Linux. Merging does not deploy or release them.
 
 ### Native distribution and acceptance
 
@@ -3436,6 +3596,51 @@ The test is ignored by default and requires `CAPER_SPEECH_SFU_SMOKE=authorized-2
 and its exact private PulseAudio socket. Each public run needs explicit approval;
 do not run all ignored tests as a batch. Local roster/probe regressions run in CI.
 
+### Windows microphone access and firewall prompts
+
+Windows desktop capture uses the pinned WebRTC WASAPI implementation's
+**shared mode**. A Discord call does not normally prevent Caper from using the
+same microphone. Caper cannot bypass Windows microphone privacy settings or
+another application's exclusive access. If initialization/start fails, check
+**Settings → Privacy & security → Microphone → Microphone access / Let desktop
+apps access your microphone**, or select an available input in Caper. Disconnect
+from Discord temporarily to isolate a sharing/driver problem; muting Discord
+may leave capture open. The generic failure does not establish a Discord conflict.
+
+**System default** means the normal Windows input/output default, including at
+startup, replay, and fresh microphone reopen. WebRTC's implicit default is the
+communications default, which can be a different or unavailable device. An
+explicit saved device never falls back to another microphone. Failed capture
+startup closes the publication gate and reports whether initialization or start
+failed; retry must not be treated as an already-running microphone. A failed
+input switch restores the previous route's live/muted intent, while keeping old
+capture epochs fenced until the fresh peer is ready.
+
+Windows Firewall may ask to allow `caper-desktop` when voice or an audio test
+first gathers WebRTC ICE candidates. Both calls and the local test's private
+peer pair open network sockets. Test recordings stay on this machine and are
+never uploaded, but the test is not socket-free. Firewall permission is separate
+from microphone access and cannot fix a WASAPI capture failure. For a trusted
+home network, allow **Private networks**; leave **Public networks** unchecked
+unless voice is also needed on networks Windows classifies as public. Windows
+can classify a home connection as public, so check the active network profile.
+Cancelling can create a block rule; review Caper's existing rules in Windows
+Firewall if voice later cannot connect. Caper does not change firewall rules or
+disable security prompts automatically. The installer keeps a stable executable
+path across updates, but portable copies at new paths can prompt again.
+
+**Publisher: Unknown** reflects the unsigned Windows executable. Adding version
+metadata does not replace trusted Authenticode signing, and signing does not
+itself grant firewall or microphone access. See Microsoft's
+[application firewall rules](https://learn.microsoft.com/en-us/windows/security/operating-system-security/network-security/windows-firewall/rules#applications-rules).
+
+Windows acceptance still requires distinct normal/communications defaults,
+explicit input selection, mute/reopen, concurrent Discord capture, denied mic
+permission, and fresh firewall-rule checks on private/public profiles. Linux
+unit tests and virtual-device checks do not establish Windows behavior. Static
+`parity-voice-error` and `parity-audio-error` fixtures check error presentation
+without capturing audio or opening a transport.
+
 ### Account diagnostics visibility
 
 `DEBUG_USERS` is an optional, server-only comma-separated username allowlist for
@@ -3524,60 +3729,116 @@ Run the focused browser regression against local Vite with
 The native parity fixture now supplies saved avatar IDs in account, member, chat
 and voice responses rather than testing only initials.
 
-### Rotating site and runtime app icons
+### Client performance and motion validation (October 5, 2026)
 
-Supported icon surfaces choose one of the 800 bundled v3 avatars per UTC day,
-remember it locally, and exclude the preceding choice. This cosmetic choice does
-not change account avatars. Rotation runs on launch/resume or while the client is
-running; it is not an exact midnight job while closed, suspended or throttled.
-There are no alarms, background services, icon-change prompts or new dependencies.
+Windows/Linux chat no longer deep-clones every loaded message, author, text and
+reaction on each UI frame. It retains the same variable-height rendering and
+paging anchors; layout work still grows with loaded history. This is an allocation
+reduction, not full timeline virtualization or a measured FPS/battery claim.
+
+Web speaking indicators allocate no sampling loop for missing/muted streams or
+failed analyser setup. Visible indicators sample every 32 ms rather than wake on
+every display frame. Hidden tabs stop UI sampling and clear speaking rings without
+stopping capture/playback; visibility restores sampling. The RMS threshold and
+180 ms release are unchanged. Chat timestamps share one formatter per render,
+retaining locale/timezone refresh. Audio popovers/profile dialogs have a 140 ms
+opacity/4px entrance, disabled by reduced motion; typing labels fade/translate
+without a blur filter. Incoming messages no longer consult a delayed bottom-state
+callback to force scrolling; Virtuoso owns append-follow, while local sends still
+reveal the pending message.
+
+| Platform/check | Coverage for this pass |
+| --- | --- |
+| Web | Production build and 340 tests passed. The 3,000-message browser regression passed rapid/settled incoming delivery, prepend anchors, retry, narrow layout, own sends and empty history, with nine rows mounted at latest. Other Chromium fixture checks covered desktop/narrow popover bounds, dialog focus, normal/reduced motion, typing appearance/removal, and synthetic-audio indicator cleanup. Inspected 1440×900 and 390×844 captures; narrow emulation is not physical touch or Safari evidence. |
+| Windows/Linux desktop | Linux: 192 tests passed, nine opt-in tests ignored; format and Clippy passed. The added render regression retains authoritative messages/reactions/cursor across 1440/840/390px widths. No Windows execution or live SFU/hardware-audio validation. |
+| Apple/Android | Source audit only; no changes in this pass. Apple still forcibly follows incoming messages, and Android lacks explicit latest-message scroll ownership. Safe reader anchoring, tall/pending rows and platform UI tests remain follow-up work. |
+
+An orb Chromium microbenchmark of 100 renders × 30 timestamps took 514 ms with
+one formatter per message versus 23 ms with one per render; four rendered fixture
+timestamps matched independently formatted expectations. These numbers describe
+only formatting work, not end-to-end app speed. Desktop history virtualization,
+native reader-aware scrolling, and physical-device resource/voice checks remain
+separate work. No server, migration, infrastructure, or secret changes are needed;
+web and Windows/Linux client releases can deploy independently. Roll back their
+respective image/client build if needed.
+
+With local Vite running, repeat the long-history check using
+`CHAT_TEST_WEB_URL=http://localhost:5174/spaces node scripts/test-chat-history.mjs`
+(substitute the configured port). Its account/history/gateway are explicit test
+mocks; no production data or SFU is used.
+
+### Fixed app icons and rotating site characters
+
+Clickable app identities (Dock, launcher, taskbar/window, installed shortcuts and
+package icons) use the original plain green Caper. Browser favicons and in-app
+wordmarks still choose one of the 800 bundled v3 characters per UTC day, remember
+it locally, and exclude the preceding choice. This does not change account
+avatars. Rotation runs on launch/resume or while the client is running; it is not
+an exact midnight job while closed, suspended or throttled. There are no alarms,
+background services, icon-change prompts or new dependencies.
+
+In-app wordmarks keep the original lettering and replace its plain dot with the
+same installation-local daily character. Web shares one React selection with the
+favicon (including blocked storage). Native clients retain their existing local
+selection keys for in-app branding only; those keys no longer replace app icons.
+iOS and standalone web also rotate only the in-app character, leaving their
+packaged/installed icons original. Different installations may choose different
+characters. Native test fixtures use design 0 for deterministic wordmarks.
+The [character catalog](../assets/avatars/README.md) names all 100 designs and
+explains their eight hues; it does not add mascot reactions to the chat protocol.
 
 | Surface | Behavior and validation |
 | --- | --- |
+| In-app wordmarks | Web headers/forms, Rust desktop forms, and Apple/Android shared wordmarks compose dot-free lettering with a bundled v3 character. Clock-controlled Chromium checks cover matching favicon/wordmark selection, same-day navigation/reload, rollover, other tabs, unavailable storage, standalone branding, decorative images and desktop/narrow layouts. Rust desktop is checked separately on Linux X11. Apple/Android builds and rendering need native CI/device acceptance; browser checks do not verify them. |
 | Desktop/mobile browser tabs | SVG plus generated 32/192px PNG favicons; localStorage persists the daily choice across reloads and tabs. Checks every minute and on focus/visibility/storage events. Clock-controlled Chromium tests cover UTC rollover, timer refresh, same-day reload/SPA navigation, shared-tab assignment, PNG/SVG pixels and desktop/narrow asset inspection. Safari/Firefox and physical mobile browsers remain unverified. |
 | Website home-screen shortcuts | Dedicated original-mascot Apple touch and manifest PNGs at 180/192/512px. Explicit standalone launches skip favicon rotation. Browsers/OSes cache installed icons; no reliable scheduled refresh is available. The manifest uses `display: browser`; no offline service worker or background capability is added. Existing shortcuts may need re-adding, and browser-specific icon selection needs device validation. |
 | Native iOS | Original packaged dark-green icon; no alternate-icon calls or alerts. No iOS icon behavior is changed. |
-| Native Android | Switches bundled launcher aliases on resume and every 15 minutes while foregrounded. Android 13+ switches atomically; older supported versions enable the new entry before disabling the old one. The original default alias and application icon remain available. Generation checks all 800 resources; Kotlin tests and APK/physical-launcher checks are pending because this orb has no Java/Android SDK. OEM icon caches, duplicate-entry transitions and upgrades require device acceptance. |
-| Native macOS | The running Dock icon rotates through `NSApplication.applicationIconImage`, checking activation and every 15 minutes. Finder/package icons remain original. Swift tests are added but require Apple CI/Xcode and a real Dock check; neither is available in this Linux orb. |
-| Rust desktop | Runtime window icons rotate, with a 60-second check and eframe persistence. Windows/taskbar and Linux X11 surfaces depend on the shell honoring runtime icons; installer, pinned-shortcut and Wayland package identities remain original. Rust tests cover rollover, all IDs, nonrepeat and straight-alpha pixels. An actual X11/Openbox window published the expected 256px saved-avatar icon and retained it across a same-day restart. Windows/Wayland remain unverified. |
+| Native Android | Application/default launcher and all 800 legacy aliases use the original green mascot. Keep alias component names and enabled state for existing entries and pinned shortcuts; the app no longer switches launcher components. An instrumented fixture test covers a same-day upgrade state and next-day branding-only rotation without changing the enabled entry; it requires Android CI/device execution. Signed upgrade/rollback and OEM icon caches remain device acceptance gates. |
+| Native macOS | Dock/Finder/package icons use the original AppIcon; no runtime `applicationIconImage` replacement. Swift daily-choice tests cover only in-app branding. Bundle compilation and a real Dock check require Apple CI/Xcode/macOS, unavailable in a Linux orb. |
+| Rust desktop | Runtime window icons retain the bundled original-mascot PNG; installer, pinned-shortcut and Wayland package identities also stay original. Daily selection/persistence affects only in-app wordmarks. An actual X11/Openbox window's 128px RGBA icon exactly matched the original PNG on fresh launch and restart with saved character 799; its in-app choice remained 799. Inspected the rendered window and icon on light/dark backgrounds. Windows taskbar/Wayland shell caching need platform acceptance. |
 
 Deterministic native parity/Android fixture runs retain the original icon. The web
 test uses a labelled clock/storage fixture, not a physical home-screen test:
 `node scripts/test-favicons.mjs http://localhost:31095 .amp/in/artifacts`.
 Static fallback exports use `node scripts/generate-favicons.mjs` (ImageMagick 7 and
 librsvg); launcher declarations use
-`node scripts/generate-android-launcher-aliases.mjs --check`. Native clients reuse
-their already-bundled vector resources. Docker is unavailable; web production
+`node scripts/generate-android-launcher-aliases.mjs --check`. Native wordmarks reuse
+their already-bundled vector resources. `node scripts/generate-wordmark.mjs`
+exports dot-free lettering to web/Rust, Apple and Android without changing the
+original full-logo source; `--check` runs in web tests to detect drift.
+Docker is unavailable; web production
 build stages and the Rust desktop build were checked directly. Application-only
 desktop Clippy passes with `--no-deps`; full native-workspace Clippy still fails on
 existing vendored WebRTC safety-documentation warnings.
 
-#### Rotating-icon deployment order
+#### Fixed-app-icon rollout order
 
 1. No infrastructure, secrets/configuration, database migration, API/gateway or
-   SFU deployment is needed. Saved avatar assignments and vector artwork stay
-   unchanged. Orb renderer/X11 packages are development-only prerequisites.
-2. After merge and the merged commit's immutable web image is available, deploy
-   web explicitly; merging does not deploy it:
+   SFU deployment is needed. No web deployment or iOS release is needed for this
+   revert: web favicons, installed website icons and the iOS AppIcon are unchanged.
+   Saved profile avatars and vector artwork stay unchanged.
+2. Require native platform builds/tests before release. Run the Android fixture
+   launcher regression on API 33+ and a supported older version. Test a signed
+   upgrade from a rotating build with an enabled avatar alias, including an
+   existing pinned shortcut; check that one clickable original-mascot entry
+   remains. Verify the running macOS Dock and Windows/Linux window/taskbar icons,
+   including an installation with an existing daily-character preference.
+3. Release Android, macOS and Rust desktop through the existing native process.
+   Platforms can roll out independently; merging does not publish a release.
+   After approval, use the Discord release button or run:
    ```sh
    MERGED_SHA=REPLACE_WITH_FULL_40_CHARACTER_MERGE_SHA
-   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
-   # Wait for the workflow to succeed, then:
-   kubectl -n default rollout status deployment/caper-web --timeout=15m
-   curl -I https://caper.chat/site.webmanifest
-   curl -I https://caper.chat/icons/caper-main-v3-180.png
-   curl -I https://caper.chat/images/avatars/v3/799.svg
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
    ```
-   Expect HTTP 200 and correct MIME types. Verify a tab keeps its avatar on
-   reload, and newly added iOS/Android shortcuts use the original mascot.
-3. Release Android, macOS and Rust desktop independently through the normal
-   native workflows only after platform build/device checks. No iOS release is
-   required for icon behavior; its shared tests may run with the Apple build.
-   Native rotation does not depend on web deploying first.
-4. Roll back only the affected web image or native release if needed. Re-run the
-   web workflow with the previous known-good SHA and wait for rollout; there is
-   no database/configuration rollback. Icon caches can outlive a rollout. Test
-   Android upgrade/rollback from an enabled avatar alias before releasing.
+   The workflow packages all native targets; unchanged iOS needs no icon-specific
+   distribution. Install/update each affected client through its normal channel,
+   quit/reopen, and verify the plain green icon while in-app characters still
+   rotate. Shell caches may require refreshing the shortcut or signing out/in.
+4. Roll back only the affected native release using the same approved workflow
+   with the prior known-good revision and a newer build number. No service,
+   database or configuration rollback is needed. Test Android enabled aliases
+   and pinned shortcuts across rollback; returning to a rotating build restores
+   its old icon behavior. No deployment or release command was run for this revert.
 
 ### Saved default avatars
 
@@ -3719,6 +3980,50 @@ build stages were validated directly rather than building container images.
    assignments intact**. Old code ignores it. Do not drop/recreate the column or
    regenerate assignments. No shared migration or deployment was run during development.
 
+### Login email abuse protection
+
+The API rejects reserved `example.com`, `example.net`, `example.org`, `.example`,
+`.test`, `.invalid`, and `.localhost` email domains, including subdomains, before
+creating challenges or calling SES. This is not a mailbox-existence check: fake
+inboxes on real domains can still bounce. Login copy and web/native sign-in stay
+unchanged; no CAPTCHA or client exemption is required.
+
+Caper enforces durable email/IP/global limits before sending: defaults are three
+per email in 15 minutes, five per email per day, ten per source IP per hour, and
+500 globally per hour. These are application limits, not SES quotas. SES sending
+quotas limit capacity; they do not validate recipients or prevent every bounce.
+SES account-level suppression, not a Caper database list, handles suppressed
+recipients. A bounce alarm alone does not mean the SES account is under review.
+
+#### Deployment order for login abuse protection
+
+1. Merge and wait for the merged commit's immutable API image to publish. No new
+   infrastructure, secrets/configuration, or database migration is required.
+   Existing API settings and rate limits remain unchanged. Merging does not deploy.
+2. From an authenticated operator machine, deploy only the API. List runs and
+   select the exact run dispatched for this SHA, then wait for its success before
+   checking the Kubernetes rollout:
+   ```sh
+   MERGED_SHA=REPLACE_WITH_FULL_40_CHARACTER_MERGE_SHA
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   gh run list --repo joswayski/infrastructure --workflow deploy-caper-api.yml --event workflow_dispatch --limit 5
+   gh run watch REPLACE_WITH_DISPATCHED_RUN_ID --repo joswayski/infrastructure --exit-status
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
+   No gateway/web deployment or native release is required. The Android smoke
+   assertion changes affect CI only, not the shipped app.
+3. Verify a reserved-domain request returns 400, then verify ordinary sign-in to a
+   controlled inbox on web and native clients. Monitor SES bounce/reputation
+   metrics separately. No production email or infrastructure change was tested
+   during development.
+4. Rollback by redeploying the previous immutable API image through the same
+   workflow, waiting for that exact run and rollout as above:
+   ```sh
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha=REPLACE_WITH_PREVIOUS_API_IMAGE_SHA
+   ```
+   No configuration or database rollback is needed; the previous image restores
+   the previous email validation.
+
 ### Removed account lifecycle integration
 
 The provider lifecycle endpoint, signing secret, event receipt table, and delivery
@@ -3845,8 +4150,10 @@ not validate that integration.
 
 ## Account-global direct messages and deferred mobile push
 
-One-to-one DMs belong to two accounts, not to a space. Start by exact username;
-the canonical pair has one conversation even when both people start it at once.
+One-to-one DMs belong to two accounts, not to a space. Personal notes use the same
+private stream with your own account as both participants. Start by exact username;
+the canonical pair (including a self pair) has one conversation even when started
+concurrently.
 The list appears below channels in every space, including accounts with no spaces.
 Web pins it above the account controls; narrow web and mobile clients expose it in
 Browse navigation. Leaving or deleting a space does not delete DMs. Space owners
@@ -3855,10 +4162,22 @@ encryption. Group DMs, attachments, message deletion, blocking, and DM voice are
 not implemented. Existing text length, send limits, typing, history pagination,
 idempotent sends, outbox and gateway replay rules apply unchanged.
 
+The sidebar pins your real account name with a `you` label. Opening it lazily
+creates or reopens your notes; displaying the row does not write to the database.
+Other accounts cannot read, send, mark read, or subscribe to your notes. Space
+owners have an **Invite people** row that opens the existing space-management
+invitation form for exact usernames; members and accounts with no space get
+**New message** instead. The heading's plus still starts a DM; desktop web, Rust
+desktop and macOS reveal it on heading hover or keyboard focus. Non-hover web,
+iOS and Android keep it visible. Neither action adds invite links or grants DM
+access to owners. Self notes do not send push notifications; mobile push remains
+deferred for all conversations.
+
 API contracts (account authentication required):
 
 - `GET /api/dms` → `{conversations:[{id,peer:{id,username,displayName},lastSeq,readSeq}]}`.
-- `POST /api/dms` with `{username}` returns that pair's conversation.
+- `POST /api/dms` with `{username}` returns that pair's conversation. Your own
+  username returns personal notes with `peer.id` equal to your account ID.
 - `POST /api/dms/{id}/read` with `{seq}` monotonically advances the caller's read
   cursor, bounded to the durable channel head. Sequences are decimal strings.
 - Message history/send/typing and gateway chat subscriptions use the existing
@@ -3870,6 +4189,55 @@ messages. Unread means the durable head is beyond the account's read cursor.
 Read state is account-wide, not device-wide. New conversations are limited to
 20/minute and 1,000 per initiating account. Exact usernames are discoverable by
 starting a conversation; membership in a shared space is not required.
+
+### Deployment order for self notes and sidebar dividers
+
+1. Obtain the immutable merged revision as `MERGED_SHA`; wait for CI, API/web
+   images, and native artifacts. No new infrastructure, secret, configuration,
+   signing setup, permission grant, or provider setup is required. Keep existing
+   database, Valkey, and SFU configuration. The initial DM rollout below, including
+   its migrations/runtime grants and DM-capable gateway, must already be deployed;
+   otherwise complete it first. Merge does not deploy components. Back up the
+   database before rollout; never reset it.
+2. Deploy API first, including `202610040001_self_direct_messages.sql`. Normal API
+   startup applies the migration through the existing direct `MIGRATION_DATABASE_URL`;
+   do not edit an applied migration or run manual production SQL. It changes only
+   the pair check from `<` to `<=`; ordering, uniqueness, and existing DMs remain.
+
+   ```bash
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # Wait for that exact workflow run to succeed, then:
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
+
+   Complete API rollout before exposing the new clients. Gateway needs no rollout:
+   its existing membership and replay queries already accept a self pair. Keep
+   mobile push deferred. Do not reset Valkey/SFU state or restart healthy voice tracks.
+3. After API readiness, web and native can release independently:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # Wait for the web run to succeed, then:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   # After native CI and macOS/Windows/Android/iOS acceptance:
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
+   ```
+
+   The native workflow publishes every platform using existing signing credentials.
+   Reload web tabs and update native apps. The separate cursor/resize-highlight PR
+   can roll out independently; these changes do not depend on it.
+4. Verify edge-to-edge DM/voice dividers, the `you` row, owner invitations versus
+   member **New message**, notes send/reload/reopen across spaces and with no
+   spaces, existing peer DMs, cross-account denial, and no push enqueue. Browser
+   fixtures and Linux rendering do not prove Apple/Android or Windows execution;
+   physical native acceptance remains required before release.
+5. Roll back web to a known-good client revision with the same web deployment
+   command. Roll back native through a reverted main revision and a new release
+   with a higher build number. Keep the migrated schema and notes data; do not
+   restore `<` or delete notes. API rollback requires a reviewed build retaining
+   the applied migration and keeping push deferred; older images fail SQLx ledger
+   validation or reject self creation. Prefer a forward fix after notes exist.
+   No production migration, deploy, or release is performed by this PR.
 
 ### Push is deferred; future delivery uses direct APNs/FCM integrations
 
@@ -3980,7 +4348,21 @@ TEST_VALKEY_URL='redis://127.0.0.1:6379' \
 ```
 
 The loopback UI fixture provides `fixture_alex` / `TEST FIXTURE Alex`, not a real
-account or push provider. Browser checks do not prove native rendering or device
+account or push provider. For self notes, the disposable Postgres/Valkey tests
+cover concurrent canonical creation, send/history, cross-account denial, read
+cursors, authorized gateway replay, and no push enqueue. The browser DM suite
+covers lazy creation, failure/retry, send/reload/reopen, peer-history isolation,
+late-response navigation, invitation action, and desktop/narrow layout. Linux
+Rust desktop tests cover self selection, owner/member/no-space actions, DM-plus
+hover/focus and voice-dock padding/icon geometry; its explicit voice-connected
+fixture was rendered and inspected for divider/row layout. The Linux client was
+also signed into the disposable HTTP fixture:
+opening self notes, sending a reminder, switching to a channel and reopening
+notes retained one conversation and the message; **Invite people** opened the
+existing management form. These are fixture interactions, not live account/SFU
+validation. Swift model coverage was added but not run in the Linux orb. No local
+Apple/Android build, Windows runtime, or Docker-image validation is claimed.
+Browser checks do not prove native rendering or device
 push. Android/Apple compilation and physical device layouts remain native release
 acceptance requirements. APNs/FCM credential validation, physical-device delivery,
 offline behavior and registration lifecycle/pruning must be covered when direct

@@ -9,3 +9,33 @@ export function emojiAsset(unified: string) {
 export function emojiCode(emoji: string) {
   return Array.from(emoji, (point) => point.codePointAt(0)!.toString(16)).join("-");
 }
+
+// The picker displays the last alias. Prefer dashes, but accept all three
+// separator spellings in search across web and the generated native catalog.
+export function emojiNames(names: string[]) {
+  const preferred = names[names.length - 1].replace(/[\s_]+/g, "-");
+  const aliases = names.flatMap((name) => {
+    const dashed = name.replace(/[\s_]+/g, "-");
+    return [name, dashed.replaceAll("-", " "), dashed.replaceAll("-", "_"), dashed];
+  });
+  return [...new Set(aliases.filter((name) => name !== preferred)), preferred];
+}
+
+const imagePreloads = new Map<string, Promise<void>>();
+export function preloadEmojiImages(category = "smileys_people") {
+  const cached = imagePreloads.get(category);
+  if (cached) return cached;
+  // Keep the existing immutable opening-grid manifest unchanged.
+  const manifest = category === "smileys_people" ? "preload" : `preload-${category}`;
+  const preload = fetch(`/emoji/twemoji-15/${manifest}.json`).then(async (response) => {
+    if (!response.ok) throw new Error("Emoji preload unavailable.");
+    const unified: string[] = await response.json();
+    await Promise.all(unified.map((code) => {
+      const image = new Image();
+      image.src = emojiAsset(code);
+      return image.decode();
+    }));
+  }).catch(() => { imagePreloads.delete(category); });
+  imagePreloads.set(category, preload);
+  return preload;
+}

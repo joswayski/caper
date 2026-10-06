@@ -45,3 +45,4 @@ for available settings. Stop the stack with Ctrl-C.
 - [Configuration, deployment, and testing](docs/media.md)
 - [Native builds and platform status](apps/native/README.md)
 - [Brand and style guide](docs/brand)
+- [Caper character catalog](assets/avatars/README.md)
