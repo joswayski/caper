@@ -982,6 +982,24 @@ public final class ChatModel {
     public var reactionErrors: [String: String] = [:]
     public var pinErrors: [String: String] = [:]
     public var pendingPins: Set<String> = []
+    public var threadRootID: String?
+    public var threadLoading = false
+    public var threadHasMore = false
+    public var threadError: String?
+    private var threadBefore: String?
+    private var threadRequest = 0
+    private var threadOnlyRows: Set<String> = []
+    private var threadDrafts: [String: String] = [:]
+    private var threadBroadcasts: [String: Bool] = [:]
+    public var channelMessages: [ChatMessage] { messages.filter { $0.isChannelMessage && !threadOnlyRows.contains($0.id) } }
+    public var threadDraft: String {
+        get { threadRootID.flatMap { threadDrafts[$0] } ?? "" }
+        set { if let threadRootID { threadDrafts[threadRootID] = newValue } }
+    }
+    public var threadBroadcast: Bool {
+        get { threadRootID.flatMap { threadBroadcasts[$0] } ?? false }
+        set { if let threadRootID { threadBroadcasts[threadRootID] = newValue } }
+    }
     public var currentAuthor: ChatAuthor? { session?.author }
     public private(set) var isPreview = false
     /// Web's failed first load: no conversation to show, only the error.
@@ -1115,7 +1133,7 @@ public final class ChatModel {
         let oldSubscription = subscriptionID
         subscriptionID = nil
         let preservedDraft = draft
-        let preservedMessages = messages
+        let preservedMessages = channelMessages
         let preservedCursor = delivery.cursor
         let preservedHasMore = hasMore
         if preservingTimeline {
@@ -1176,6 +1194,8 @@ public final class ChatModel {
                 let candidates = Dictionary((pinnedMessages + history.pinnedMessages).map { ($0.id, $0) }, uniquingKeysWith: { _, next in next })
                 pinnedMessages = candidates.values.map { pinSnapshots.overlay($0) }.filter { $0.pin != nil }
                     .sorted { (try? Sequence.compare($0.pinSeq ?? "0", $1.pinSeq ?? "0")) == .orderedDescending }
+                messages = channelMessages
+                threadOnlyRows = []
                 if canRetain {
                     // Include HTTP confirmations received while refresh was pending.
                     merge(history.messages) // The refreshed representation wins overlapping IDs.
@@ -1223,6 +1243,7 @@ public final class ChatModel {
             }
             subscriptionID = newSubscription
             onReadCursor?()
+            if threadRootID != nil { await loadThread() }
             if CaperRuntime.isChatPreview("chat-rejected") {
                 let preview = delivery.begin(text: "Fixture message that was rejected")
                 delivery.reject(id: preview.id)
@@ -1272,13 +1293,14 @@ public final class ChatModel {
     }
 
     public func loadOlder() async {
-        guard !loading, !loadingOlder, hasMore, let channelID, let before = messages.first?.seq else { return }
+        guard !loading, !loadingOlder, hasMore, let channelID, let before = channelMessages.first?.seq else { return }
         let requestGeneration = generation
         loadingOlder = true; olderError = nil
         defer { if generation == requestGeneration { loadingOlder = false } }
         do {
             let page = try await api.history(channelID: channelID, before: before)
             guard generation == requestGeneration, self.channelID == channelID else { return }
+            threadOnlyRows.subtract(page.messages.map(\.id))
             merge(page.messages)
             hasMore = page.hasMore
         } catch {
@@ -1292,18 +1314,52 @@ public final class ChatModel {
         }
     }
 
-    public func send() async {
+    public func closeThread() { threadRequest += 1; threadRootID = nil; threadLoading = false }
+
+    public func openThread(_ rootID: String) async {
+        threadRootID = rootID; threadBefore = nil; threadHasMore = false
+        await loadThread()
+    }
+
+    public func loadThread(older: Bool = false) async {
+        guard let rootID = threadRootID, let channelID else { return }
+        threadRequest += 1
+        let request = threadRequest; let channelGeneration = generation
+        threadLoading = true; threadError = nil
+        do {
+            let page = try await api.thread(channelID: channelID, rootID: rootID, before: older ? threadBefore : nil)
+            guard request == threadRequest, generation == channelGeneration, threadRootID == rootID else { return }
+            let loaded = Set(messages.map(\.id))
+            let rows = [page.root] + page.messages
+            threadOnlyRows.formUnion(rows.filter { $0.isChannelMessage && !loaded.contains($0.id) }.map(\.id))
+            merge(rows)
+            threadHasMore = page.hasMore; threadBefore = page.messages.first?.seq ?? threadBefore
+        } catch {
+            guard request == threadRequest, generation == channelGeneration else { return }
+            if let denied = error as? APIError, [401, 403, 404].contains(denied.status) {
+                closeThread(); await retryLoad(); return
+            }
+            threadError = error.localizedDescription
+        }
+        if request == threadRequest { threadLoading = false }
+    }
+
+    public func send(inThread: Bool = false) async {
         guard !sending, !delivery.rejected else { return }
         guard let channelID, let session else { error = "Messaging session is unavailable."; return }
-        if delivery.pending == nil, let validation = MessageValidation.error(for: draft) { error = validation; return }
+        let rootID = inThread ? threadRootID : nil
+        guard !inThread || rootID != nil else { return }
+        if let pending = delivery.pending, pending.threadRootId != rootID { return }
+        let text = inThread ? threadDraft : draft
+        if delivery.pending == nil, let validation = MessageValidation.error(for: text) { error = validation; return }
         let newSubmission = delivery.pending == nil
-        let command = delivery.begin(text: draft)
-        if newSubmission { draft = "" }
+        let command = delivery.begin(text: text, threadRootId: rootID, broadcast: inThread && threadBroadcast)
+        if newSubmission { if inThread { threadDraft = "" } else { draft = "" } }
         let requestGeneration = generation
         sending = true; error = nil
         await gateway.reportActivity()
         do {
-            let message = try await api.send(channelID: channelID, sessionToken: session.token, clientMessageID: command.id, text: command.text)
+            let message = try await api.send(channelID: channelID, sessionToken: session.token, clientMessageID: command.id, text: command.text, threadRootId: command.threadRootId, broadcast: command.broadcast)
             guard self.channelID == channelID,
                   generation == requestGeneration || delivery.pending?.id == command.id else { return }
             guard MessageValidation.acceptsResponse(message, channelID: channelID, command: command, authorID: session.author.id) else {
@@ -1496,8 +1552,7 @@ public final class ChatModel {
         guard generation == eventGeneration, channelID == eventChannelID else { return }
         guard let type = event["type"] as? String else { return }
         if type == "subscription.error", let status = event["status"] as? Int, [401, 403, 404].contains(status) {
-            messages = []; session = nil; delivery.reset(); error = event["error"] as? String ?? "Channel access ended."
-            pinnedMessages = []; pinSnapshots.reset(); pendingPins = []; pinErrors = [:]; failedPinActions = [:]
+            clearLocal(); error = event["error"] as? String ?? "Channel access ended."
             onAccessRevoked?(eventChannelID)
             return
         }
@@ -1558,7 +1613,9 @@ public final class ChatModel {
                 merge([message])
                 onReadCursor?()
                 if newMessage, let author = session?.author, author.id != message.author.id { CaperEffects.shared.play(.message) }
-                if delivery.confirmGateway(clientMessageID: message.clientMessageId, authorID: message.author.id, ownAuthorID: session?.author.id) {
+                if message.threadRootId == delivery.pending?.threadRootId,
+                   (message.broadcast ?? false) == (delivery.pending?.broadcast ?? false),
+                   delivery.confirmGateway(clientMessageID: message.clientMessageId, authorID: message.author.id, ownAuthorID: session?.author.id) {
                     error = nil
                 }
                 if let subscriptionID {
@@ -1600,6 +1657,7 @@ public final class ChatModel {
         reactorCache = [:]; reactorRequests = [:]; reactorFailures = []
         pinSnapshots.reset(); pinnedMessages = []; pendingPins = []; pinErrors = [:]
         failedPinActions = [:]
+        closeThread(); threadOnlyRows = []; threadDrafts = [:]; threadBroadcasts = [:]
         isPreview = false
         session = nil; channelID = nil; spaceID = nil; messages = []; draft = ""; hasMore = false
         channelName = "general"; spaceName = "Caper"; error = nil
@@ -1611,8 +1669,18 @@ public final class ChatModel {
         reactionSnapshots.seed(incoming)
         pinSnapshots.seed(incoming)
         var byID = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) })
+        var summaries: [String: ThreadSummary] = [:]
+        for message in messages + incoming {
+            guard let summary = message.thread else { continue }
+            let root = message.threadRootId ?? message.id
+            if summaries[root] == nil || (try? Sequence.compare(summary.seq, summaries[root]!.seq)) == .orderedDescending { summaries[root] = summary }
+        }
         incoming.forEach { byID[$0.id] = pinSnapshots.overlay(reactionSnapshots.overlay($0)) }
-        byID = byID.mapValues { pinSnapshots.overlay(reactionSnapshots.overlay($0)) }
+        byID = byID.mapValues { message in
+            var updated = pinSnapshots.overlay(reactionSnapshots.overlay(message))
+            updated.thread = summaries[message.threadRootId ?? message.id] ?? message.thread
+            return updated
+        }
         messages = byID.values.sorted { (try? Sequence.compare($0.seq, $1.seq)) == .orderedAscending }
         renderReactions()
     }

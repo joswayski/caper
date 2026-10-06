@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ComponentType } from "react";
 import { autoUpdate, flip, FloatingFocusManager, FloatingOverlay, FloatingPortal, offset, shift, useDismiss, useFloating, useInteractions, useRole } from "@floating-ui/react";
-import { Copy, Hash, Pin, PinOff, SmilePlus, Users, X } from "lucide-react";
+import { Copy, Hash, MessageSquare, Pin, PinOff, SmilePlus, Users, X } from "lucide-react";
 import type { ChatMessage } from "./types.ts";
 import { emojiAsset, emojiCode, preloadEmojiImages } from "./emoji.ts";
 
@@ -19,7 +19,7 @@ export function preloadReactionPicker() {
   void preloadEmojiImages();
 }
 
-export default function MessageActions({ message, target, authorId, canReact, canPin, pinning, onReact, onPin, onClose, onCopied, onViewReactions }: {
+export default function MessageActions({ message, target, authorId, canReact, canPin, pinning, onReact, onPin, onClose, onCopied, onViewReactions, onReply }: {
   message: ChatMessage;
   target: MessageActionTarget;
   authorId?: string;
@@ -31,6 +31,7 @@ export default function MessageActions({ message, target, authorId, canReact, ca
   onClose: () => void;
   onCopied: (status: string) => void;
   onViewReactions: (emoji: string) => void;
+  onReply: () => void;
 }) {
   const [mode, setMode] = useState(target.mode);
   const [Picker, setPicker] = useState<ComponentType<{ onSelect: (emoji: string) => void }>>();
@@ -91,6 +92,7 @@ export default function MessageActions({ message, target, authorId, canReact, ca
             onClick={() => setMode("emoji")}><SmilePlus size={16} aria-hidden="true" /></button>
         </div>}
         <div className="chat-copy-actions">
+          <button type="button" onClick={onReply}><MessageSquare size={20} aria-hidden="true" />Reply in thread</button>
           {!!message.reactions?.length && <button type="button" onClick={() => onViewReactions(message.reactions![0].emoji)}>
             <Users size={16} aria-hidden="true" />View reactions</button>}
           {canPin && <button type="button" disabled={pinning} onClick={() => { onClose(); void onPin(message.id, !message.pin); }}>

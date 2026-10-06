@@ -27,6 +27,10 @@ internal fun ChatMessage.validated(
         require(pinSeq != null) { "Pinned message is missing its revision." }
     }
     require(runCatching { UUID.fromString(clientMessageId) }.isSuccess) { "Invalid client message ID." }
+    require(!broadcast || threadRootId != null) { "Invalid broadcast reply." }
+    thread?.let {
+        require(it.replyCount > 0 && it.participants.size <= 5 && it.participants.map { person -> person.id }.distinct().size == it.participants.size && sequencePattern.matches(it.seq)) { "Invalid thread summary." }
+    }
     if (expectedAuthor != null) {
         require(author.id == expectedAuthor.id && author.isGuest == expectedAuthor.isGuest) { "Message author mismatch." }
     }

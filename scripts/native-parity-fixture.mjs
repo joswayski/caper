@@ -322,6 +322,18 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           return reject(response, 409, 'Channel pin limit reached (100).');
         return json(response, 200, pin(channel.id, message, who, body.active));
       }
+      const thread = /^\/api\/chat\/channels\/([^/]+)\/messages\/([^/]+)\/thread$/.exec(path);
+      if (thread && method === 'GET') {
+        const channel = channelFor(thread[1]);
+        if (!canRead(channel, user)) return reject(response, user ? 404 : 401, 'resource not found');
+        const messages = state.messages.get(thread[1]) ?? [];
+        const root = messages.find(message => message.id === thread[2] && !message.threadRootId);
+        if (!root) return reject(response, 404, 'Thread not found.');
+        const before = url.searchParams.get('before');
+        if (before !== null && !/^(0|[1-9]\d*)$/.test(before)) return reject(response, 400, 'invalid cursor');
+        const replies = messages.filter(message => message.threadRootId === root.id && (before === null || BigInt(message.seq) < BigInt(before)));
+        return json(response, 200, { root, messages: replies.slice(-50), hasMore: replies.length > 50, cursor: channelHead(channel.id) });
+      }
       const chat = /^\/api\/chat\/channels\/([^/]+)\/messages$/.exec(path);
       if (path === '/api/chat/general' || chat) {
         const channel = channelFor(chat?.[1] ?? ids.demo);
@@ -340,9 +352,21 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           const key = `${channel.id}:${clientMessageId}`;
           const previous = state.sendKeys.get(key);
           if (previous) return previous.token === request.headers['x-caper-chat-token'] && previous.text === body.text
+            && previous.message.threadRootId === body.threadRootId && (previous.message.broadcast ?? false) === (body.broadcast ?? false)
             ? json(response, 200, previous.message) : reject(response, 409, 'Message ID already used.');
+          const root = body.threadRootId ? messages.find(message => message.id === body.threadRootId && !message.threadRootId) : undefined;
+          if (body.threadRootId && !root) return reject(response, 404, 'Thread not found.');
+          if (body.broadcast && !root) return reject(response, 400, 'Only replies can broadcast.');
           const message = { id: randomUUID().replaceAll('-', '').slice(0, 15), channelId: channel.id, seq: String(BigInt(channelHead(channel.id)) + 1n), author: who,
             content: { version: 1, type: 'text', text: body.text }, createdAt: new Date().toISOString(), clientMessageId };
+          if (root) {
+            const participants = [...(root.thread?.participants ?? [])];
+            const index = participants.findIndex(person => person.id === who.id);
+            if (index >= 0) participants[index] = who;
+            else if (participants.length < 5) participants.push(who);
+            root.thread = { replyCount: (root.thread?.replyCount ?? 0) + 1, participants, seq: message.seq };
+            Object.assign(message, { threadRootId: root.id, broadcast: body.broadcast ?? false, thread: clone(root.thread) });
+          }
           messages.push(message); state.messages.set(channel.id, messages);
           state.sendKeys.set(key, { token: request.headers['x-caper-chat-token'], text: body.text, message });
           broadcast('chat', channel.id, { type: 'message.created', channelId: channel.id, seq: message.seq, message });
@@ -350,7 +374,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         }
         const before = url.searchParams.get('before');
         if (before !== null && !/^(0|[1-9]\d*)$/.test(before)) return reject(response, 400, 'invalid cursor');
-        const available = before !== null ? messages.filter((message) => BigInt(message.seq) < BigInt(before)) : messages;
+        const available = messages.filter(message => (!message.threadRootId || message.broadcast) && (before === null || BigInt(message.seq) < BigInt(before)));
         const pinnedMessages = messages.filter(message => message.pin).sort((a, b) => BigInt(a.pinSeq) > BigInt(b.pinSeq) ? -1 : 1);
         return json(response, 200, { space: spaceFor(channel.spaceId), channel, messages: available.slice(-50), pinnedMessages, cursor: channelHead(channel.id), hasMore: available.length > 50 });
       }

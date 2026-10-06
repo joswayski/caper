@@ -338,3 +338,38 @@ test('who-reacted lists people in reaction order for readers only', async (t) =>
   const unknown = await request('/__fixture/control', { method: 'POST', body: { incomingReaction: { channelId: ids.general, messageId: target, emoji: '👍', userId: 'nobody' } } });
   assert.equal(unknown.response.status, 400);
 });
+
+test('threads isolate replies, broadcast one shared message and preserve retry identity', async (t) => {
+  const { request } = await setup(t);
+  const path = `/api/chat/channels/${ids.general}/messages`;
+  const session = (await request('/api/chat/session', { method: 'POST', auth: true, body: { name: 'ignored' } })).value;
+  const initial = (await request(path, { auth: true })).value;
+  const root = initial.messages[1];
+  const body = { clientMessageId: randomUUID(), text: 'TEST FIXTURE thread only', threadRootId: root.id, broadcast: false };
+  const send = body => request(path, { method: 'POST', auth: true, headers: { 'x-caper-chat-token': session.token }, body });
+  const first = (await send(body)).value;
+  assert.equal(first.threadRootId, root.id);
+  assert.equal(first.thread.replyCount, 1);
+  assert.deepEqual((await send(body)).value, first);
+  assert.equal((await send({ ...body, broadcast: true })).response.status, 409);
+  const broadcast = (await send({ ...body, clientMessageId: randomUUID(), text: 'TEST FIXTURE shared broadcast', broadcast: true })).value;
+  const channel = (await request(path, { auth: true })).value;
+  assert.equal(channel.messages.length, initial.messages.length + 1);
+  assert.ok(!channel.messages.some(message => message.id === first.id));
+  assert.equal(channel.messages.filter(message => message.id === broadcast.id).length, 1);
+  const threadPath = `${path}/${root.id}/thread`;
+  const thread = (await request(threadPath, { auth: true })).value;
+  assert.deepEqual(thread.messages.map(message => message.id), [first.id, broadcast.id]);
+  assert.equal(thread.root.thread.replyCount, 2);
+  assert.deepEqual(thread.root.thread.participants.map(person => person.id), [ids.owner]);
+  const older = (await request(`${threadPath}?before=${broadcast.seq}`, { auth: true })).value;
+  assert.deepEqual(older.messages.map(message => message.id), [first.id]);
+  assert.equal((await request(threadPath)).response.status, 401);
+  assert.equal((await request(`${path}/${first.id}/thread`, { auth: true })).response.status, 404);
+  assert.equal((await send({ ...body, clientMessageId: randomUUID(), threadRootId: first.id })).response.status, 404);
+  const reactions = (await request(`${path}/${broadcast.id}/reactions`, { method: 'PUT', auth: true,
+    headers: { 'x-caper-chat-token': session.token }, body: { emoji: '👍', active: true } })).value;
+  assert.equal(reactions.messageId, broadcast.id);
+  assert.deepEqual((await request(threadPath, { auth: true })).value.messages.at(-1).reactions,
+    (await request(path, { auth: true })).value.messages.at(-1).reactions);
+});

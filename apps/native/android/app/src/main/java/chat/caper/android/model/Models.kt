@@ -71,7 +71,13 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val reactionSeq: String? = null,
     val pin: MessagePin? = null,
     val pinSeq: String? = null,
+    val threadRootId: String? = null,
+    val broadcast: Boolean = false,
+    val thread: ThreadSummary? = null,
 )
+@Serializable data class ThreadSummary(val replyCount: Int, val participants: List<ChatAuthor>, val seq: String)
+@Serializable data class ThreadHistory(val root: ChatMessage, val messages: List<ChatMessage>, val cursor: String, val hasMore: Boolean)
+data class ThreadUi(val rootId: String, val loading: Boolean = true, val hasMore: Boolean = false, val before: String? = null, val error: String? = null)
 @Serializable data class ChatHistory(
     val messages: List<ChatMessage>,
     val cursor: String,
@@ -171,6 +177,8 @@ data class AppUiState(
     val directConversations: List<DirectConversation> = emptyList(),
     val selectedDirectId: String? = null,
     val messages: List<ChatMessage> = emptyList(),
+    val thread: ThreadUi? = null,
+    val threadOnlyRows: Set<String> = emptySet(),
     val hasMoreMessages: Boolean = false,
     val loadingOlder: Boolean = false,
     val olderError: String? = null,
@@ -217,6 +225,8 @@ data class PendingMessageUi(
     val createdAt: String,
     val error: String? = null,
     val rejected: Boolean = false,
+    val threadRootId: String? = null,
+    val broadcast: Boolean = false,
 )
 
 data class ReactionSaveUi(val emoji: String, val active: Boolean, val saving: Boolean = true, val error: String? = null)

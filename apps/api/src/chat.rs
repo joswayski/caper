@@ -99,6 +99,10 @@ pub(crate) fn routes() -> Router<AppState> {
             "/api/chat/channels/{channel}/messages/{message}/pin",
             put(set_pin),
         )
+        .route(
+            "/api/chat/channels/{channel}/messages/{message}/thread",
+            get(thread_history),
+        )
         .route("/api/chat/channels/{channel}/typing", post(typing))
 }
 
@@ -124,6 +128,20 @@ async fn history(
     ))
 }
 
+async fn thread_history(
+    State(state): State<AppState>,
+    Path((channel, root)): Path<(String, String)>,
+    Query(query): Query<HistoryQuery>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let chat = enabled(&state)?;
+    let before = query.before.as_deref().map(cursor).transpose()?;
+    let user = request_user(&chat.pool, &headers).await?;
+    Ok(Json(
+        conversation_page(&chat.pool, &channel, before, user, Some(&root)).await?,
+    ))
+}
+
 async fn request_user(pool: &PgPool, headers: &HeaderMap) -> Result<Option<i64>, ApiError> {
     match account_token(headers) {
         Some(token) => Ok(Some(
@@ -144,6 +162,16 @@ async fn history_page(
     channel: &str,
     before: Option<i64>,
     user: Option<i64>,
+) -> Result<Value, ApiError> {
+    conversation_page(pool, channel, before, user, None).await
+}
+
+async fn conversation_page(
+    pool: &PgPool,
+    channel: &str,
+    before: Option<i64>,
+    user: Option<i64>,
+    root: Option<&str>,
 ) -> Result<Value, ApiError> {
     // Hold a shared channel lock from captured head through payload reads. A
     // reaction commit takes the exclusive lock, so a page can never contain a
@@ -190,9 +218,16 @@ async fn history_page(
     .await
     .map_err(database_error)?
     .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
+    let thread_root: Option<(i64, Value, Option<i16>)> = if let Some(root) = root {
+        Some(sqlx::query_as("SELECT m.id,m.payload,u.avatar_id FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.channel_id=$1 AND m.external_id=$2 AND m.thread_root_id IS NULL")
+            .bind(channel_id).bind(root).fetch_optional(&mut *tx).await.map_err(database_error)?
+            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "thread not found"))?)
+    } else {
+        None
+    };
     // Bound by the captured committed head. Later commits are replayed by WS.
-    let mut rows: Vec<(Value, Option<i16>)> = sqlx::query_as("SELECT m.payload,u.avatar_id FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.channel_id = $1 AND m.channel_seq <= $2 AND ($3::bigint IS NULL OR m.channel_seq < $3) ORDER BY m.channel_seq DESC LIMIT $4")
-        .bind(channel_id).bind(head).bind(before).bind(PAGE + 1).fetch_all(&mut *tx).await.map_err(database_error)?;
+    let mut rows: Vec<(Value, Option<i16>)> = sqlx::query_as("SELECT m.payload,u.avatar_id FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.channel_id = $1 AND m.channel_seq <= $2 AND ($3::bigint IS NULL OR m.channel_seq < $3) AND (($5::bigint IS NULL AND (m.thread_root_id IS NULL OR m.broadcast)) OR m.thread_root_id=$5) ORDER BY m.channel_seq DESC LIMIT $4")
+        .bind(channel_id).bind(head).bind(before).bind(PAGE + 1).bind(thread_root.as_ref().map(|row| row.0)).fetch_all(&mut *tx).await.map_err(database_error)?;
     let more = rows.len() > PAGE as usize;
     rows.truncate(PAGE as usize);
     rows.reverse();
@@ -200,6 +235,11 @@ async fn history_page(
         .into_iter()
         .map(|(payload, avatar)| enrich_author(payload, avatar))
         .collect();
+    if let Some((_, root, avatar)) = thread_root {
+        return Ok(
+            json!({"root":enrich_author(root, avatar),"messages":rows,"cursor":head.to_string(),"hasMore":more}),
+        );
+    }
     // All pins are returned independently of the history page. The shared
     // channel lock also makes their revisions consistent with this cursor.
     let pins: Vec<(Value, Option<i16>)> = sqlx::query_as("SELECT m.payload,u.avatar_id FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.channel_id=$1 AND jsonb_typeof(m.payload->'pin')='object' ORDER BY (m.payload->>'pinSeq')::bigint DESC LIMIT 100")
@@ -273,6 +313,9 @@ async fn session(
 struct SendInput {
     client_message_id: Uuid,
     text: String,
+    thread_root_id: Option<String>,
+    #[serde(default)]
+    broadcast: bool,
 }
 
 #[derive(Deserialize)]
@@ -425,12 +468,14 @@ async fn send(
     Json(input): Json<SendInput>,
 ) -> Result<Json<Value>, ApiError> {
     let chat = enabled(&state)?;
-    let payload = persist(
+    let payload = persist_message(
         &chat.pool,
         &channel,
         sender_token(&headers)?,
         input.client_message_id,
         &input.text,
+        input.thread_root_id.as_deref(),
+        input.broadcast,
     )
     .await?;
     chat.wake.notify_one();
@@ -531,6 +576,7 @@ async fn publish_typing(
     Ok(())
 }
 
+#[cfg(test)]
 async fn persist(
     pool: &PgPool,
     channel: &str,
@@ -538,7 +584,25 @@ async fn persist(
     client_id: Uuid,
     text: &str,
 ) -> Result<Value, ApiError> {
+    persist_message(pool, channel, token, client_id, text, None, false).await
+}
+
+async fn persist_message(
+    pool: &PgPool,
+    channel: &str,
+    token: &str,
+    client_id: Uuid,
+    text: &str,
+    root: Option<&str>,
+    broadcast: bool,
+) -> Result<Value, ApiError> {
     let content = prepare_text(text)?;
+    if broadcast && root.is_none() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "only thread replies can also be sent to the channel",
+        ));
+    }
     let mut tx = pool.begin().await.map_err(database_error)?;
     let (session_id, author_id, name, user_id, avatar_id) =
         authorize_sender(&mut tx, token).await?;
@@ -579,19 +643,32 @@ async fn persist(
     .map_err(database_error)?;
     let (channel_id, head) =
         row.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
+    // Preserve existing normal-message retry hashes, but bind reply retries to
+    // their destination and broadcast choice as well as their text.
     let hash = Sha256::digest(text.as_bytes()).to_vec();
     let existing: Option<(i64, Vec<u8>, Value)> = sqlx::query_as("SELECT session_id, request_hash, payload FROM public.messages WHERE channel_id = $1 AND client_message_id = $2")
         .bind(channel_id).bind(client_id).fetch_optional(&mut *tx).await.map_err(database_error)?;
     if let Some((sender, original, payload)) = existing {
-        return if sender == session_id && original == hash {
+        return if sender == session_id
+            && original == hash
+            && payload.get("threadRootId").and_then(Value::as_str) == root
+            && payload["broadcast"].as_bool().unwrap_or(false) == broadcast
+        {
             Ok(enrich_author(payload, avatar_id))
         } else {
             Err(ApiError::new(
                 StatusCode::CONFLICT,
-                "retry key already used for different text",
+                "retry key already used for a different message",
             ))
         };
     }
+    let thread_root: Option<(i64, Value)> = if let Some(root) = root {
+        Some(sqlx::query_as("SELECT id,payload FROM public.messages WHERE channel_id=$1 AND external_id=$2 AND thread_root_id IS NULL")
+            .bind(channel_id).bind(root).fetch_optional(&mut *tx).await.map_err(database_error)?
+            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "thread not found"))?)
+    } else {
+        None
+    };
     let (global, personal): (i64, i64) = sqlx::query_as("SELECT count(*), count(*) FILTER (WHERE session_id = $2) FROM public.messages WHERE channel_id = $1 AND created_at > now() - interval '1 minute'")
         .bind(channel_id).bind(session_id).fetch_one(&mut *tx).await.map_err(database_error)?;
     if global >= 120 || personal >= 30 {
@@ -602,9 +679,38 @@ async fn persist(
     }
     let seq = head + 1;
     let id = random_id(15);
-    let payload = json!({"id":id,"channelId":channel,"seq":seq.to_string(),"author":{"id":author_id,"name":name,"isGuest":user_id.is_none(),"avatarId":avatar_id},"content":content,"createdAt":Utc::now().to_rfc3339(),"clientMessageId":client_id});
-    sqlx::query("INSERT INTO public.messages (external_id, channel_id, session_id, client_message_id, request_hash, channel_seq, payload) VALUES ($1,$2,$3,$4,$5,$6,$7)")
-        .bind(id).bind(channel_id).bind(session_id).bind(client_id).bind(hash).bind(seq).bind(&payload).execute(&mut *tx).await.map_err(database_error)?;
+    let mut payload = json!({"id":id,"channelId":channel,"seq":seq.to_string(),"author":{"id":author_id,"name":name,"isGuest":user_id.is_none(),"avatarId":avatar_id},"content":content,"createdAt":Utc::now().to_rfc3339(),"clientMessageId":client_id});
+    if let Some((root_id, original)) = &thread_root {
+        let mut participants = original["thread"]["participants"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if let Some(participant) = participants
+            .iter_mut()
+            .find(|person| person["id"] == author_id)
+        {
+            *participant = payload["author"].clone();
+        } else if participants.len() < 5 {
+            participants.push(payload["author"].clone());
+        }
+        let summary = json!({"replyCount":original["thread"]["replyCount"].as_u64().unwrap_or(0)+1,"participants":participants,"seq":seq.to_string()});
+        payload["threadRootId"] = json!(root);
+        payload["broadcast"] = json!(broadcast);
+        payload["thread"] = summary.clone();
+        // The summary and reply/outbox share the channel lock and transaction.
+        // Every reply carries this revision so replay can refresh its parent
+        // without a second event or a gap in the shared channel sequence.
+        sqlx::query(
+            "UPDATE public.messages SET payload=jsonb_set(payload,'{thread}',$2) WHERE id=$1",
+        )
+        .bind(root_id)
+        .bind(summary)
+        .execute(&mut *tx)
+        .await
+        .map_err(database_error)?;
+    }
+    sqlx::query("INSERT INTO public.messages (external_id, channel_id, session_id, client_message_id, request_hash, channel_seq, payload, thread_root_id, broadcast) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)")
+        .bind(id).bind(channel_id).bind(session_id).bind(client_id).bind(hash).bind(seq).bind(&payload).bind(thread_root.as_ref().map(|row| row.0)).bind(broadcast).execute(&mut *tx).await.map_err(database_error)?;
     if let Some(user) = user_id
         && space_id.is_none()
     {

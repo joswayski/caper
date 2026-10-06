@@ -5,6 +5,12 @@ export interface ChatAuthor {
   isGuest: boolean;
 }
 
+export interface ChatThreadSummary {
+  replyCount: number;
+  participants: ChatAuthor[];
+  seq: string;
+}
+
 export interface ChatReaction {
   emoji: string;
   authorIds: string[];
@@ -39,6 +45,9 @@ export interface ChatMessage {
   reactionSeq?: string;
   pin?: { author: ChatAuthor; createdAt: string } | null;
   pinSeq?: string;
+  threadRootId?: string;
+  broadcast?: boolean;
+  thread?: ChatThreadSummary;
 }
 
 export interface ChatHistory {
@@ -46,6 +55,10 @@ export interface ChatHistory {
   cursor: string;
   hasMore: boolean;
   pinnedMessages?: ChatMessage[];
+}
+
+export interface ChatThreadHistory extends ChatHistory {
+  root: ChatMessage;
 }
 
 export interface GeneralChatHistory extends ChatHistory {
@@ -92,6 +105,9 @@ export function isChatMessage(value: unknown): value is ChatMessage {
   return typeof message.id === "string" && typeof message.channelId === "string"
     && typeof message.seq === "string" && /^(0|[1-9]\d*)$/.test(message.seq)
     && typeof message.createdAt === "string" && typeof message.clientMessageId === "string"
+    && (message.threadRootId === undefined || (typeof message.threadRootId === "string" && !!message.threadRootId))
+    && (message.broadcast === undefined || (typeof message.broadcast === "boolean" && (!message.broadcast || !!message.threadRootId)))
+    && (message.thread === undefined || isChatThreadSummary(message.thread))
     && (message.reactions === undefined || isChatReactions(message.reactions))
     && (message.reactionSeq === undefined || (typeof message.reactionSeq === "string" && /^(0|[1-9]\d*)$/.test(message.reactionSeq)))
     && (message.pinSeq === undefined || (typeof message.pinSeq === "string" && /^(0|[1-9]\d*)$/.test(message.pinSeq)))
@@ -106,6 +122,20 @@ export function isChatPinEvent(value: unknown): value is ChatPinEvent {
   return event.type === "message.pin" && event.schemaVersion === 1 && typeof event.channelId === "string"
     && typeof event.seq === "string" && /^(0|[1-9]\d*)$/.test(event.seq) && isChatMessage(event.message)
     && event.message.channelId === event.channelId && event.message.pinSeq === event.seq;
+}
+
+export function isChatThreadSummary(value: unknown): value is ChatThreadSummary {
+  if (!value || typeof value !== "object") return false;
+  const summary = value as Partial<ChatThreadSummary>;
+  return Number.isSafeInteger(summary.replyCount) && summary.replyCount! > 0
+    && typeof summary.seq === "string" && /^(0|[1-9]\d*)$/.test(summary.seq)
+    && Array.isArray(summary.participants) && summary.participants.length <= 5
+    && summary.participants.every(isChatAuthor)
+    && new Set(summary.participants.map((author) => author.id)).size === summary.participants.length;
+}
+
+export function isChannelMessage(message: ChatMessage): boolean {
+  return !message.threadRootId || message.broadcast === true;
 }
 
 export function isChatReactions(value: unknown): value is ChatReaction[] {

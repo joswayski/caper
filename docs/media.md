@@ -849,7 +849,8 @@ committed message to open a bottom drawer with five fixed quick reactions
 **Copy message ID**. Copy uses the exact text or globally unique public message
 `id`, never the client retry UUID or channel-local sequence. Read-only previews
 allow copying but not reaction mutations. Message links and unsupported actions
-(reply, forward, threads, pins, bookmarks, reminders, delete) are not exposed.
+(forward, bookmarks, reminders, delete) are not exposed. Threads and pins are
+described below.
 Web offers a keyboard/screen-reader message-actions button; iPhone provides a
 VoiceOver action and Android a labelled long-click action. Desktop Apple/Rust
 clients intentionally retain their existing reaction controls rather than
@@ -1392,6 +1393,116 @@ Merging does not deploy. These are operator actions, not commands run by tests.
    rollback build must retain the migration and disable pin writes while keeping
    history/events readable. Keep additive tables/indexes and durable events;
    never drop message/pin data or migration records as rollback.
+
+## Message threads
+
+Reply in thread sits beside desktop message reactions and in message actions.
+Roots show a reply count and up to five distinct repliers' avatars (first-reply
+order). Desktop/wide clients use a right panel; narrow web, Android and iPhone
+take over the conversation screen. The selected root has a slightly stronger
+pin-gold wash; other messages are not dimmed. No nested threads: replying from a
+broadcast opens its original root. The same contracts also apply to DMs.
+
+The unchecked **Also send to channel** option publishes one reply in both places,
+not a copied root message. IDs, content and reactions are shared. Drafts and the
+checkbox choice are per-root for the current channel session; retry commands
+freeze the root and broadcast choice. Ordinary sends cannot retry a pending reply
+into the channel. Replies use the existing participation and read permissions;
+thread reads do not expose another channel's messages.
+
+`POST /api/chat/channels/{channel}/messages` adds optional `threadRootId` and
+default-false `broadcast`. The root must be a same-channel, top-level message.
+`GET /api/chat/channels/{channel}/messages/{root}/thread?before={seq}` returns
+`{root,messages,cursor,hasMore}`; pages contain 50 replies in ascending sequence
+order and `before` is exclusive. Channel history contains roots and broadcast
+replies only. The response's channel head must never advance a client's replay
+cursor: thread pagination is separate from channel pagination.
+
+Each reply's ordinary `message.created` event includes `threadRootId`, `broadcast`
+and `thread:{replyCount,participants,seq}`. The parent summary and reply/outbox
+commit atomically under the existing channel lock. `thread.seq` is a summary
+revision, **not a content revision**; original message `seq` and creation time do
+not change. Summary, reaction and pin revisions remain independent. Clients
+merge summaries monotonically, preserve one broadcast identity, and keep roots
+loaded through thread GET out of channel pagination until channel history loads
+them. Reconnect refetches the active thread and fences obsolete responses.
+
+### Thread validation boundary
+
+| Platform | Evidence and remaining gap |
+| --- | --- |
+| API | Workspace tests/Clippy and disposable Postgres integration cover isolation, participation/read access, invalid/nested/cross-channel roots, concurrent retries, broadcast identity, reactions, outbox rollback and the 50-reply paging boundary. No production writes |
+| Web | Production build, 374 unit tests and `scripts/test-message-threads.mjs`: empty/populated/loading/error states, selected root/count/avatars, shared broadcast reactions, drafts, retries, focus restoration, full-screen dialog, inert background and mobile Back. Inspected 2x Chromium desktop and touch-emulated narrow captures; `(pointer:coarse)` verified. Not Safari or a physical phone |
+| Rust desktop | `DOCS_RS=1 cargo check --manifest-path apps/native/desktop/Cargo.toml --tests` and package Clippy (`--no-deps`) pass after pin integration. This skips the libwebrtc C++ build/link; dependency-inclusive Clippy is blocked by existing missing-safety-doc errors in vendored `webrtc-sys`. No rendered desktop or native runtime acceptance in this orb |
+| Android | Compose full-screen/wide panel, models, gateway and retry regressions implemented. JDK/Gradle/Android SDK unavailable here; native compilation, rendering and physical-device checks remain required |
+| Apple | SwiftUI iPhone full-screen/wide panel, models, gateway and retry regressions implemented. Swift/Xcode unavailable here; iOS/macOS compilation, rendering and physical-device checks remain required |
+| Containers/live | No Docker daemon. Web/API build stages checked directly; no container-image, live multi-account cross-client, SFU or physical-device acceptance is inferred from fixtures |
+
+Web and Rust desktop thread composers accept Unicode emoji but do not yet reuse
+the main composer's colon-name autocomplete. Android/Apple use their existing
+native text entry. Native keyboard focus, accessibility, paging and IME behavior
+need platform validation before release.
+
+With the disposable fixture and Vite running:
+
+```sh
+node --test tests/native-parity-fixture.test.mjs
+MESSAGE_TEST_WEB_URL=http://127.0.0.1:5174 node scripts/test-message-threads.mjs
+DATABASE_URL=postgres://user@127.0.0.1:55432/postgres \
+  cargo test --locked -p caper-api threads_isolate -- --ignored
+```
+
+Set `MESSAGE_TEST_CHROME` to the fine-pointer Chromium wrapper documented under
+pins to also assert desktop hover/focus visibility and compact reply controls.
+
+### Deployment order for threads
+
+Merging does not deploy. These are post-merge operator actions, not development
+commands that have been run against shared systems.
+
+1. **Prerequisites/infrastructure/configuration:** no infrastructure apply, new
+   service, secret, configuration or SFU/Valkey reset is needed. Keep existing
+   `DATABASE_URL`, direct `MIGRATION_DATABASE_URL`, `VALKEY_URL` and chat config,
+   and one desired API replica. Set `MERGED_SHA` to the full merged revision and
+   wait for its backend/web images and native CI. Older installed clients may
+   display live thread replies inline because they do not yet filter roots.
+2. **Database/API first:** startup applies embedded migration
+   `202610060002_message_threads.sql` after pins, adding nullable root references,
+   default-false broadcast and timeline indexes. No manual data write/backfill
+   or separate migration dispatch is required. Wait for the exact dispatched
+   workflow and readiness; verify ordinary history/send before clients.
+   ```sh
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
+3. **Gateway:** deploy the same cumulative backend revision after API readiness.
+   The thread payload uses existing message-created delivery, without a new
+   gateway protocol or service. Do not change replica counts or close healthy
+   voice tracks.
+   ```sh
+   gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-chat-gateway --timeout=15m
+   ```
+4. **Clients:** after server readiness, web and native releases can deploy
+   independently. Validate/release native clients before testers create threads
+   if consistent filtering is required. Compilation and rendered platform checks
+   are prerequisites, not inferred from browser tests. Wait for exact workflow
+   outcomes before accepting a release.
+   ```sh
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+5. **Verify/rollback:** use two accounts on different updated clients. Reply,
+   broadcast, react from either surface, reload/reconnect, page over 50 replies,
+   switch roots/channels/DMs and use mobile Back. Confirm denied membership/grants
+   cannot read or reply and an unrelated voice call remains healthy. Client
+   rollback removes entry points but old clients may show replies inline. Prefer
+   a forward fix; do not roll backend images back across the migration because
+   SQLx validates applied history. A reviewed rollback build must retain the
+   migration and thread read/event filtering while disabling new replies. Keep
+   all messages, outbox records, columns and indexes; never delete conversation
+   data or migration records as rollback.
 
 ## Shared call state and rolling deployments
 

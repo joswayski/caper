@@ -202,6 +202,22 @@ public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
     public var reactionSeq: String? = nil
     public var pin: MessagePin? = nil
     public var pinSeq: String? = nil
+    public var threadRootId: String? = nil
+    public var broadcast: Bool? = nil
+    public var thread: ThreadSummary? = nil
+    public var isChannelMessage: Bool { threadRootId == nil || broadcast == true }
+}
+
+public struct ThreadSummary: Codable, Equatable, Sendable {
+    public let replyCount: Int
+    public let participants: [ChatAuthor]
+    public let seq: String
+}
+public struct ThreadHistory: Codable, Sendable {
+    public let root: ChatMessage
+    public let messages: [ChatMessage]
+    public let cursor: String
+    public let hasMore: Bool
 }
 
 public struct MessageReaction: Codable, Equatable, Sendable, Identifiable {
@@ -448,6 +464,8 @@ public enum MessageValidation {
             && message.content.version == 1
             && message.content.type == "text"
             && message.content.text == command.text
+            && message.threadRootId == command.threadRootId
+            && (message.broadcast ?? false) == command.broadcast
             && (try? Sequence.compare(message.seq, "0")) != nil
     }
 }
@@ -456,11 +474,15 @@ public struct PendingMessage: Equatable, Sendable {
     public let id: String
     public let text: String
     public let createdAt: String
+    public let threadRootId: String?
+    public let broadcast: Bool
 
-    public init(id: String, text: String, createdAt: String = ISO8601DateFormatter().string(from: Date())) {
+    public init(id: String, text: String, createdAt: String = ISO8601DateFormatter().string(from: Date()), threadRootId: String? = nil, broadcast: Bool = false) {
         self.id = id
         self.text = text
         self.createdAt = createdAt
+        self.threadRootId = threadRootId
+        self.broadcast = broadcast
     }
 }
 
@@ -474,10 +496,10 @@ public struct ChatDeliveryState: Sendable {
 
     public init(cursor: String = "0") { self.cursor = cursor }
 
-    public mutating func begin(text: String, makeID: () -> String = { UUID().uuidString }) -> PendingMessage {
+    public mutating func begin(text: String, threadRootId: String? = nil, broadcast: Bool = false, makeID: () -> String = { UUID().uuidString }) -> PendingMessage {
         if let pending { return pending }
         // Rust's UUID serialization returns lowercase in both HTTP and replay.
-        let command = PendingMessage(id: makeID().lowercased(), text: text)
+        let command = PendingMessage(id: makeID().lowercased(), text: text, threadRootId: threadRootId, broadcast: broadcast)
         pending = command
         return command
     }

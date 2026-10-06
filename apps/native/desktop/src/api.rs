@@ -422,14 +422,36 @@ impl Api {
         channel: &str,
         client_id: &str,
         text: &str,
+        thread: (Option<&str>, bool),
     ) -> Result<Message, ApiError> {
+        let mut body = json!({"clientMessageId":client_id,"text":text});
+        if let Some(root) = thread.0 {
+            body["threadRootId"] = json!(root);
+            body["broadcast"] = json!(thread.1);
+        }
         self.request(
             Method::POST,
             &format!("api/chat/channels/{channel}/messages"),
             token,
             Some(chat_token),
-            Some(json!({"clientMessageId":client_id,"text":text})),
+            Some(body),
         )
+    }
+
+    pub fn thread(
+        &self,
+        token: Option<&str>,
+        channel: &str,
+        root: &str,
+        before: Option<&str>,
+    ) -> Result<crate::model::ThreadHistory, ApiError> {
+        let path = format!(
+            "api/chat/channels/{channel}/messages/{root}/thread{}",
+            before
+                .map(|cursor| format!("?before={cursor}"))
+                .unwrap_or_default()
+        );
+        self.request(Method::GET, &path, token, None, None)
     }
 
     pub fn react(

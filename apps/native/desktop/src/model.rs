@@ -298,11 +298,56 @@ pub struct Message {
     pub pin: Option<Pin>,
     #[serde(default)]
     pub pin_seq: Option<String>,
+    #[serde(default)]
+    pub thread_root_id: Option<String>,
+    #[serde(default)]
+    pub broadcast: bool,
+    #[serde(default)]
+    pub thread: Option<ThreadSummary>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadSummary {
+    pub reply_count: u64,
+    pub participants: Vec<Author>,
+    pub seq: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadHistory {
+    pub root: Message,
+    pub messages: Vec<Message>,
+    pub cursor: String,
+    pub has_more: bool,
 }
 
 impl Message {
+    pub fn is_channel_message(&self) -> bool {
+        self.thread_root_id.is_none() || self.broadcast
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         sequence(&self.seq)?;
+        if self.broadcast && self.thread_root_id.is_none() {
+            return Err("invalid broadcast reply".into());
+        }
+        if let Some(summary) = &self.thread {
+            sequence(&summary.seq)?;
+            if summary.reply_count == 0
+                || summary.participants.len() > 5
+                || summary
+                    .participants
+                    .iter()
+                    .map(|person| &person.id)
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    != summary.participants.len()
+            {
+                return Err("invalid thread summary".into());
+            }
+        }
         if self.content.version != 1 || self.content.kind != "text" {
             return Err("unsupported message content".into());
         }
@@ -367,6 +412,7 @@ pub struct Timeline {
     unseen_reactions: BTreeMap<String, ReactionUpdate>,
     unseen_pins: BTreeMap<String, Message>,
     pinned: BTreeMap<u64, Message>,
+    thread_summaries: BTreeMap<String, ThreadSummary>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -387,6 +433,7 @@ impl Timeline {
         self.unseen_reactions.clear();
         self.unseen_pins.clear();
         self.pinned.clear();
+        self.thread_summaries.clear();
         for message in messages {
             self.merge(message)?;
         }
@@ -668,6 +715,32 @@ impl Timeline {
                 message.pin_seq = update.pin_seq;
             }
         }
+        let root = message
+            .thread_root_id
+            .as_ref()
+            .unwrap_or(&message.id)
+            .clone();
+        if let Some(summary) = &message.thread {
+            let previous = self
+                .thread_summaries
+                .get(&root)
+                .map(|old| sequence(&old.seq))
+                .transpose()?
+                .unwrap_or(0);
+            if sequence(&summary.seq)? > previous {
+                self.thread_summaries.insert(root.clone(), summary.clone());
+                for loaded in self
+                    .messages
+                    .values_mut()
+                    .filter(|loaded| loaded.id == root)
+                {
+                    loaded.thread = Some(summary.clone());
+                }
+            }
+        }
+        if let Some(summary) = self.thread_summaries.get(&root) {
+            message.thread = Some(summary.clone());
+        }
         if let Some(update) = self.unseen_reactions.remove(&message.id) {
             if update.channel_id != message.channel_id {
                 return Err("reaction update is for another channel".into());
@@ -830,6 +903,9 @@ mod tests {
             reaction_seq: None,
             pin: None,
             pin_seq: None,
+            thread_root_id: None,
+            broadcast: false,
+            thread: None,
         }
     }
 

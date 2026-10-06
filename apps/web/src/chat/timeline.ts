@@ -1,4 +1,4 @@
-import { sequence, type ChatMessage, type ChatPinEvent, type ChatReactionEvent } from "./types.ts";
+import { sequence, type ChatMessage, type ChatPinEvent, type ChatReactionEvent, type ChatThreadSummary } from "./types.ts";
 
 const MAX_PENDING_EVENTS = 256;
 
@@ -10,6 +10,7 @@ export class ChatTimeline {
   private readonly pinUpdates = new Map<string, ChatMessage>();
   private pinSnapshotCursor = 0n;
   private pinnedById = new Map<string, ChatMessage>();
+  private readonly threadSummaries = new Map<string, ChatThreadSummary>();
   private sortedMessages?: ChatMessage[];
 
   get cursor() { return this.cursorValue.toString(); }
@@ -33,6 +34,7 @@ export class ChatTimeline {
     this.byId.clear();
     this.eventBuffer.clear();
     this.unseenReactions.clear();
+    this.threadSummaries.clear();
     this.sortedMessages = undefined;
     this.pinSnapshotCursor = 0n;
     this.pinnedById = new Map();
@@ -124,15 +126,30 @@ export class ChatTimeline {
 
   private merge(message: ChatMessage | ChatReactionEvent | ChatPinEvent) {
     if ("type" in message) { message.type === "message.pin" ? this.mergePin(message) : this.mergeReactions(message); return; }
+    const rootId = message.threadRootId ?? message.id;
+    const previous = this.threadSummaries.get(rootId);
+    if (message.thread && (!previous || sequence(message.thread.seq) > sequence(previous.seq))) {
+      this.threadSummaries.set(rootId, message.thread);
+      const root = this.byId.get(rootId);
+      if (root) this.byId.set(rootId, { ...root, thread: message.thread });
+      this.sortedMessages = undefined;
+    }
+    const summary = this.threadSummaries.get(rootId);
+    if (summary) message = { ...message, thread: summary };
     const existing = this.byId.get(message.id);
     if (!existing) {
       this.byId.set(message.id, message);
       this.sortedMessages = undefined;
-    } else if (sequence(message.reactionSeq ?? "0") > sequence(existing.reactionSeq ?? "0")) {
+    } else {
       // reset puts fresh rows first; retain their author metadata even when a
       // cached row carries a more recent HTTP reaction snapshot.
-      this.byId.set(message.id, { ...existing, reactions: message.reactions, reactionSeq: message.reactionSeq });
-      this.sortedMessages = undefined;
+      const newerReactions = sequence(message.reactionSeq ?? "0") > sequence(existing.reactionSeq ?? "0");
+      if (newerReactions || (summary && summary !== existing.thread)) {
+        this.byId.set(message.id, { ...existing,
+          ...(newerReactions ? { reactions: message.reactions, reactionSeq: message.reactionSeq } : {}),
+          ...(summary ? { thread: summary } : {}) });
+        this.sortedMessages = undefined;
+      }
     }
     const unseen = this.unseenReactions.get(message.id);
     if (unseen) { this.mergeReactions(unseen); this.unseenReactions.delete(message.id); }

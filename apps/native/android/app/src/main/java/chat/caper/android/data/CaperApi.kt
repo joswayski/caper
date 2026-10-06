@@ -61,6 +61,14 @@ class CaperApi(
         )
         return validatedHistory(history, channel)
     }
+    suspend fun thread(token: String?, channel: String, root: String, before: String? = null): ThreadHistory {
+        require(messageId.matches(root)) { "Invalid message ID." }
+        val page: ThreadHistory = get("/api/chat/channels/${channel.pathId()}/messages/$root/thread" + (before?.let { "?before=$it" } ?: ""), token)
+        page.root.validated(channel)
+        require(page.root.id == root && page.root.threadRootId == null) { "Invalid thread parent." }
+        page.messages.forEach { it.validated(channel); require(it.threadRootId == root) { "Invalid thread reply." } }
+        return page
+    }
     private fun validatedHistory(history: ChatHistory, expectedChannel: String? = history.channel?.id): ChatHistory {
         require(Regex("^(0|[1-9][0-9]*)$").matches(history.cursor) && history.cursor.toLongOrNull() != null) { "Invalid history cursor." }
         val channel = requireNotNull(expectedChannel) { "History channel is missing." }
@@ -78,12 +86,18 @@ class CaperApi(
         author: ChatAuthor,
         clientMessageId: UUID,
         text: String,
+        threadRootId: String? = null,
+        broadcast: Boolean = false,
     ): ChatMessage {
         val message: ChatMessage = post(
             "/api/chat/channels/${channel.pathId()}/messages",
-            buildJsonObject { put("clientMessageId", clientMessageId.toString()); put("text", text) },
+            buildJsonObject {
+                put("clientMessageId", clientMessageId.toString()); put("text", text)
+                if (threadRootId != null) { put("threadRootId", threadRootId); put("broadcast", broadcast) }
+            },
             token, mapOf("x-caper-chat-token" to chatToken),
         )
+        require(message.threadRootId == threadRootId && message.broadcast == broadcast) { "Reply destination mismatch." }
         return message.validated(channel, author, clientMessageId, text)
     }
 

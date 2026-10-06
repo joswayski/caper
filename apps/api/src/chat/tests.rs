@@ -47,6 +47,318 @@ fn external_ids_match_existing_alphabet_and_lengths() {
     }
 }
 
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL"]
+async fn threads_isolate_replies_and_broadcast_once_with_transactional_summaries(pool: PgPool) {
+    let mut users = Vec::new();
+    for name in ["alice", "bob", "preview", "outsider"] {
+        let user: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name,avatar_id) VALUES($1,$1,$1,$2) RETURNING id")
+            .bind(name).bind(31 + users.len() as i16).fetch_one(&pool).await.unwrap();
+        let hash = Sha256::digest(name.as_bytes()).to_vec();
+        sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 day')")
+            .bind(&hash).bind(user).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO public.chat_sessions(external_id,token_hash,name,user_id,account_session_hash) VALUES($1,$2,$1,$3,$2)")
+            .bind(name).bind(hash).bind(user).execute(&pool).await.unwrap();
+        users.push(user);
+    }
+    let space: i64 = sqlx::query_scalar("INSERT INTO public.spaces(external_id,name,owner_id) VALUES('thread-space','Threads',$1) RETURNING id")
+        .bind(users[0]).fetch_one(&pool).await.unwrap();
+    for user in &users[..3] {
+        sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+            .bind(space)
+            .bind(user)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    for channel in ["thread-channel", "other-channel"] {
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO public.channels(external_id,space_id,name) VALUES($1,$2,$1) RETURNING id",
+        )
+        .bind(channel)
+        .bind(space)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        for user in &users[..2] {
+            sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) VALUES($1,$2)")
+                .bind(id)
+                .bind(user)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    }
+    let channel = "thread-channel";
+    let root = persist(&pool, channel, "alice", Uuid::new_v4(), "parent")
+        .await
+        .unwrap();
+    let root = root["id"].as_str().unwrap();
+    let other = persist(&pool, channel, "alice", Uuid::new_v4(), "different parent")
+        .await
+        .unwrap();
+    let other = other["id"].as_str().unwrap();
+    let empty = conversation_page(&pool, channel, None, Some(users[2]), Some(root))
+        .await
+        .unwrap();
+    assert_eq!(empty["messages"], json!([]));
+    assert_eq!(empty["root"]["id"], root);
+
+    let key = Uuid::new_v4();
+    let (one, retry) = tokio::join!(
+        persist_message(&pool, channel, "bob", key, "thread only", Some(root), false),
+        persist_message(&pool, channel, "bob", key, "thread only", Some(root), false)
+    );
+    let one = one.unwrap();
+    assert_eq!(one, retry.unwrap());
+    assert_eq!(one["seq"], "3");
+    assert_eq!(one["threadRootId"], root);
+    assert_eq!(one["thread"]["replyCount"], 1);
+    let two = persist_message(
+        &pool,
+        channel,
+        "alice",
+        Uuid::new_v4(),
+        "also in channel",
+        Some(root),
+        true,
+    )
+    .await
+    .unwrap();
+    let three = persist_message(
+        &pool,
+        channel,
+        "bob",
+        Uuid::new_v4(),
+        "another thread",
+        Some(other),
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(three["thread"]["replyCount"], 1);
+    let history = history_page(&pool, channel, None, Some(users[2]))
+        .await
+        .unwrap();
+    assert_eq!(
+        history["cursor"], "5",
+        "thread-only events still advance the shared replay head"
+    );
+    let ids: Vec<&str> = history["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|message| message["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, [root, other, two["id"].as_str().unwrap()]);
+    assert_eq!(history["messages"][0]["thread"]["replyCount"], 2);
+    assert_eq!(history["messages"][0]["thread"]["seq"], "4");
+    assert_eq!(
+        history["messages"][0]["thread"]["participants"],
+        json!([
+            {"id":"bob","name":"bob","isGuest":false,"avatarId":32},
+            {"id":"alice","name":"alice","isGuest":false,"avatarId":31}
+        ])
+    );
+    let thread = conversation_page(&pool, channel, None, Some(users[2]), Some(root))
+        .await
+        .unwrap();
+    assert_eq!(thread["messages"], json!([one, two]));
+    assert_eq!(thread["root"], history["messages"][0]);
+    assert_eq!(thread["hasMore"], false);
+    let before = conversation_page(&pool, channel, Some(4), Some(users[0]), Some(root))
+        .await
+        .unwrap();
+    assert_eq!(before["messages"], json!([one]));
+    let reaction = persist_reaction(
+        &pool,
+        channel,
+        one["id"].as_str().unwrap(),
+        "alice",
+        "👍",
+        true,
+    )
+    .await
+    .unwrap();
+    let reacted = conversation_page(&pool, channel, None, Some(users[0]), Some(root))
+        .await
+        .unwrap();
+    assert_eq!(reacted["messages"][0]["reactions"], reaction["reactions"]);
+
+    for (target, broadcast, text) in [
+        (root, true, "thread only"),
+        (other, false, "thread only"),
+        (root, false, "changed"),
+    ] {
+        assert_eq!(
+            persist_message(&pool, channel, "bob", key, text, Some(target), broadcast)
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::CONFLICT
+        );
+    }
+    assert_eq!(
+        persist(&pool, channel, "bob", key, "thread only")
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::CONFLICT
+    );
+    for (channel, target) in [
+        (channel, one["id"].as_str().unwrap()),
+        (channel, "absent"),
+        ("other-channel", root),
+    ] {
+        assert_eq!(
+            persist_message(
+                &pool,
+                channel,
+                "alice",
+                Uuid::new_v4(),
+                "invalid",
+                Some(target),
+                false
+            )
+            .await
+            .unwrap_err()
+            .status,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            conversation_page(&pool, channel, None, Some(users[0]), Some(target))
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+    for reader in [None, Some(users[3])] {
+        assert_eq!(
+            conversation_page(&pool, channel, None, reader, Some(root))
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+    for sender in ["preview", "outsider"] {
+        assert_eq!(
+            persist_message(
+                &pool,
+                channel,
+                sender,
+                Uuid::new_v4(),
+                "denied",
+                Some(root),
+                false
+            )
+            .await
+            .unwrap_err()
+            .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert_eq!(
+        persist_message(
+            &pool,
+            channel,
+            "alice",
+            Uuid::new_v4(),
+            "invalid broadcast",
+            None,
+            true
+        )
+        .await
+        .unwrap_err()
+        .status,
+        StatusCode::BAD_REQUEST
+    );
+    // Outbox failure must not increment the parent summary or leave a reply.
+    pool.execute("ALTER TABLE public.channel_events ADD CONSTRAINT thread_reject CHECK (seq < 7)")
+        .await
+        .unwrap();
+    assert!(
+        persist_message(
+            &pool,
+            channel,
+            "alice",
+            Uuid::new_v4(),
+            "rollback",
+            Some(root),
+            false
+        )
+        .await
+        .is_err()
+    );
+    let after = conversation_page(&pool, channel, None, Some(users[0]), Some(root))
+        .await
+        .unwrap();
+    assert_eq!(after, reacted);
+    pool.execute("ALTER TABLE public.channel_events DROP CONSTRAINT thread_reject")
+        .await
+        .unwrap();
+    let events: Vec<Value> =
+        sqlx::query_scalar("SELECT payload FROM public.channel_events ORDER BY seq")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(events[2]["message"], one);
+    assert_eq!(events[3]["message"], two);
+    assert_eq!(events.len(), 6);
+
+    // Cross the 50-reply boundary with alternating authors and an older root.
+    // The channel head includes replies, but the channel page must not include them.
+    for index in 0..51 {
+        let message = persist_message(
+            &pool,
+            channel,
+            if index % 2 == 0 { "alice" } else { "bob" },
+            Uuid::new_v4(),
+            &format!("paged reply {index}"),
+            Some(root),
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(message["seq"], (7 + index).to_string());
+    }
+    let latest = conversation_page(&pool, channel, None, Some(users[0]), Some(root))
+        .await
+        .unwrap();
+    assert_eq!(latest["hasMore"], true);
+    assert_eq!(latest["cursor"], "57");
+    assert_eq!(
+        latest["root"]["seq"], "1",
+        "summary revisions never revise root identity"
+    );
+    assert_eq!(latest["root"]["thread"]["replyCount"], 53);
+    let replies = latest["messages"].as_array().unwrap();
+    assert_eq!(replies.len(), 50);
+    assert_eq!(replies[0]["seq"], "8");
+    assert_eq!(replies[0]["content"]["text"], "paged reply 1");
+    assert_eq!(replies[49]["seq"], "57");
+    assert_eq!(replies[49]["content"]["text"], "paged reply 50");
+    let older = conversation_page(&pool, channel, Some(8), Some(users[0]), Some(root))
+        .await
+        .unwrap();
+    assert_eq!(older["hasMore"], false);
+    assert_eq!(
+        older["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|message| message["seq"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["3", "4", "7"]
+    );
+    let channel_page = history_page(&pool, channel, None, Some(users[0]))
+        .await
+        .unwrap();
+    assert_eq!(channel_page["messages"].as_array().unwrap().len(), 3);
+    assert_eq!(channel_page["cursor"], "57");
+}
+
 #[tokio::test]
 #[ignore = "requires disposable loopback CHAT_TEST_DATABASE_URL"]
 async fn pins_are_shared_idempotent_authorized_and_transactional() {

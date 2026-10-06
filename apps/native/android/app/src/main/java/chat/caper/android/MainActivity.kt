@@ -41,6 +41,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.zIndex
@@ -911,6 +912,70 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     modifier: Modifier = Modifier,
     openNavigation: () -> Unit,
 ) {
+    val threadDrafts = rememberSaveableStateHolder()
+    Row(modifier) {
+        ChannelConversation(state, voice, viewModel, show, narrow, membersVisible, toggleMembers, voicePermissionError, Modifier.weight(1f), openNavigation)
+        if (!narrow && state.thread != null) threadDrafts.SaveableStateProvider("${state.selectedChannel?.id}:${state.thread.rootId}") {
+            ThreadConversation(state, viewModel, Modifier.width(340.dp).fillMaxHeight())
+        }
+    }
+    if (narrow && state.thread != null) Dialog(onDismissRequest = viewModel::closeThread,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        threadDrafts.SaveableStateProvider("${state.selectedChannel?.id}:${state.thread.rootId}") {
+            ThreadConversation(state, viewModel, Modifier.fillMaxSize().systemBarsPadding().imePadding())
+        }
+    }
+}
+
+@Composable private fun ThreadConversation(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier) {
+    val thread = state.thread ?: return
+    var draft by rememberSaveable(state.selectedChannel?.id, thread.rootId) { mutableStateOf("") }
+    var broadcast by rememberSaveable(state.selectedChannel?.id, thread.rootId) { mutableStateOf(false) }
+    val pending = state.pendingMessage?.takeIf { it.threadRootId == thread.rootId }
+    BackHandler { viewModel.closeThread() }
+    fun send() {
+        if (state.pendingMessage != null && pending == null || pending?.rejected == true || pending != null && pending.error == null) return
+        if (pending != null) viewModel.send(pending.text, threadRootId = thread.rootId, broadcast = pending.broadcast)
+        else if (draft.isNotBlank()) { viewModel.send(draft, threadRootId = thread.rootId, broadcast = broadcast); draft = "" }
+    }
+    Column(modifier.background(SurfaceConversation).border(BorderStroke(1.dp, Border))) {
+        Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Thread · #${state.selectedChannel?.name}", Modifier.weight(1f), fontWeight = FontWeight.Bold)
+            TextButton(viewModel::closeThread) { Text("Back to channel") }
+        }
+        HorizontalDivider(color = Border)
+        if (thread.loading) Text("Loading thread…", Modifier.padding(18.dp), color = TextMuted)
+        thread.error?.let { Text(it, Modifier.padding(12.dp), color = ErrorText); TextButton({ viewModel.loadThread() }) { Text("Retry") } }
+        if (thread.hasMore) TextButton({ viewModel.loadThread(older = true) }, enabled = !thread.loading) { Text("Load older replies") }
+        val rows = state.messages.filter { it.id == thread.rootId || it.threadRootId == thread.rootId }
+        MessageTimeline(state.copy(messages = rows, pendingMessage = pending, messagesLoading = false, messagesError = null), viewModel, Modifier.weight(1f), inThread = true) {
+            pending?.error?.let { error ->
+                Text(error, color = ErrorText)
+                if (pending.rejected) Row {
+                    TextButton({ viewModel.discardPending()?.let { draft = it } }, enabled = draft.isEmpty()) { Text("Edit") }
+                    TextButton({ viewModel.discardPending() }) { Text("Dismiss") }
+                } else TextButton(::send) { Text("Retry send") }
+            }
+        }
+        if (!thread.loading && rows.none { it.threadRootId == thread.rootId }) Text("No replies yet. Start the thread.", Modifier.padding(18.dp), color = TextMuted)
+        if (state.selectedChannel?.joined == true) Column(Modifier.padding(12.dp)) {
+            OutlinedTextField(draft, { draft = it.codePointTake(4000) }, Modifier.fillMaxWidth(), placeholder = { Text("Reply to thread…") }, maxLines = 5,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = KeyboardActions(onSend = { send() }), enabled = !thread.loading)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(pending?.broadcast ?: broadcast, { broadcast = it }, enabled = pending == null)
+                Text("Also send to #${state.selectedChannel?.name}", Modifier.weight(1f), fontSize = 12.sp)
+                TextButton(::send, enabled = !thread.loading && state.chatAuthorId != null && state.pendingMessage == null && draft.isNotBlank()) { Text("Send reply") }
+            }
+            if (state.pendingMessage != null && pending == null) Text("Confirm or dismiss the pending channel message first.", color = TextMuted)
+        } else Text("Join the channel to reply.", Modifier.padding(18.dp), color = TextMuted)
+    }
+}
+
+@Composable private fun ChannelConversation(
+    state: AppUiState, voice: VoiceState, viewModel: CaperViewModel, show: (Overlay) -> Unit,
+    narrow: Boolean, membersVisible: Boolean, toggleMembers: () -> Unit, voicePermissionError: String?,
+    modifier: Modifier = Modifier, openNavigation: () -> Unit,
+) {
     val channel = state.selectedChannel
     if (channel == null) return EmptyChannel(state, narrow, show, openNavigation, modifier)
     var draft by remember(channel.id) { mutableStateOf(TextFieldValue("")) }
@@ -954,29 +1019,31 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             Text(error, Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), color = ErrorText, fontSize = 12.sp)
         }
         // Web shows a pending message's status inline, under the message itself.
+        val channelPending = state.pendingMessage?.takeIf { it.threadRootId == null }
         if (showingPins) PinnedMessages(state, viewModel, Modifier.weight(1f))
         else MessageTimeline(state, viewModel, Modifier.weight(1f)) {
-            state.pendingMessage?.error?.let { pending ->
-                val editable = canEditRejectedMessage(draft.text, state.pendingMessage.text)
+            channelPending?.error?.let { pending ->
+                val editable = canEditRejectedMessage(draft.text, channelPending.text)
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(if (state.pendingMessage.rejected) "Not sent. $pending" else "Not confirmed yet. $pending", Modifier.weight(1f), color = ErrorText, fontSize = 11.sp)
+                    Text(if (channelPending.rejected) "Not sent. $pending" else "Not confirmed yet. $pending", Modifier.weight(1f), color = ErrorText, fontSize = 11.sp)
                     TextButton({
-                        if (state.pendingMessage.rejected) {
+                        if (channelPending.rejected) {
                             if (editable) viewModel.discardPending()?.let { draft = TextFieldValue(it, TextRange(it.length)) }
-                        } else viewModel.send(state.pendingMessage.text)
-                    }, Modifier.semantics { if (state.pendingMessage.rejected && !editable) stateDescription = "Clear your current draft to edit this message." },
-                        enabled = !state.pendingMessage.rejected || editable) {
-                        Text(if (state.pendingMessage.rejected) "Edit" else "Retry send")
+                        } else viewModel.send(channelPending.text)
+                    }, Modifier.semantics { if (channelPending.rejected && !editable) stateDescription = "Clear your current draft to edit this message." },
+                        enabled = !channelPending.rejected || editable) {
+                        Text(if (channelPending.rejected) "Edit" else "Retry send")
                     }
-                    if (state.pendingMessage.rejected) TextButton({ viewModel.discardPending() }) { Text("Dismiss") }
+                    if (channelPending.rejected) TextButton({ viewModel.discardPending() }) { Text("Dismiss") }
                 }
-                if (state.pendingMessage.rejected && !editable)
+                if (channelPending.rejected && !editable)
                     Text("Clear your current draft to edit this message.", color = TextMuted, fontSize = 10.sp)
             }
         }
         if (joined) TypingLine(state.typingAuthors)
         if (joined) HorizontalDivider(color = Border)
         if (joined) Column(Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
+            state.pendingMessage?.threadRootId?.let { root -> TextButton({ viewModel.openThread(root) }) { Text("Pending reply · Open thread") } }
             state.sessionError?.let { error ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(error, Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
@@ -1047,7 +1114,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         val pending = state.pendingMessage
                         // Web: Enter retries an unconfirmed send; a rejected one waits for Edit or Dismiss.
                         if (state.chatAuthorId != null) {
-                            if (pending != null) { if (!pending.rejected && pending.error != null) viewModel.send(pending.text) }
+                            if (pending != null) { if (pending.threadRootId == null && !pending.rejected && pending.error != null) viewModel.send(pending.text) }
                             else if (draft.text.isNotBlank()) { val sent = draft.text; viewModel.setTyping(false); viewModel.send(sent); draft = TextFieldValue("") }
                         }
                     }),
@@ -1098,11 +1165,12 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     }
 }
 
-@Composable private fun MessageTimeline(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, pendingStatus: @Composable () -> Unit = {}) {
+@Composable private fun MessageTimeline(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, inThread: Boolean = false, pendingStatus: @Composable () -> Unit = {}) {
     var actionTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var pickerTarget by remember { mutableStateOf<ChatMessage?>(null) }
     // Message ID and the pressed chip's emoji.
     var reactorsTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
+    val messages = if (inThread) state.messages else state.messages.filter { (it.threadRootId == null || it.broadcast) && it.id !in state.threadOnlyRows }
     LaunchedEffect(state.account?.id, state.selectedSpace?.space?.id, state.selectedChannel?.id, state.selectedDirectId) {
         actionTarget = null
         pickerTarget = null
@@ -1120,7 +1188,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         }
     } }
     LazyColumn(modifier.fillMaxWidth(), reverseLayout = false, contentPadding = PaddingValues(vertical = 8.dp)) {
-        item {
+        if (!inThread) item {
             Row(Modifier.fillMaxWidth().height(44.dp).padding(horizontal = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalAlignment = Alignment.CenterVertically) {
                 val historyButton: @Composable (String, Boolean) -> Unit = { label, enabled ->
                     OutlinedButton(viewModel::loadOlder, enabled = enabled, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border),
@@ -1136,28 +1204,34 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             }
         }
         // Keep the message keys stable while inserting purely presentational day boundaries.
-        itemsIndexed(state.messages, key = { _, message -> message.id }) { index, message ->
-            if (index == 0 || !sameLocalDay(state.messages[index - 1].createdAt, message.createdAt)) {
+        itemsIndexed(messages, key = { _, message -> message.id }) { index, message ->
+            if (index == 0 || !sameLocalDay(messages[index - 1].createdAt, message.createdAt)) {
                 DateDivider(message.createdAt)
             }
-            ReactionMessageRow(
+            Column(Modifier.background(if (!inThread && state.thread?.rootId == message.id) Color(0xFFE4C76A).copy(alpha = 0.1f) else Color.Transparent)) {
+              ReactionMessageRow(
                 message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
                 openReactors = { target, emoji -> reactorsTarget = target.id to emoji },
                 openActions = { actionTarget = it },
                 retryPin = viewModel::retryPin,
                 dismissPinError = viewModel::dismissPinError,
             )
+              if (!inThread) Row(Modifier.padding(start = 62.dp), verticalAlignment = Alignment.CenterVertically) {
+                  message.thread?.takeIf { message.threadRootId == null }?.participants?.forEach { Avatar(it.name, 24.dp, avatarId = it.avatarId) }
+                  TextButton({ viewModel.openThread(message.threadRootId ?: message.id) }) { Text(message.thread?.takeIf { message.threadRootId == null }?.let { "${it.replyCount} replies · View thread" } ?: "Reply in thread") }
+              }
+            }
         }
-        state.pendingMessage?.let { pending -> item("pending:${pending.clientMessageId}") {
+        state.pendingMessage?.takeIf { inThread || it.threadRootId == null }?.let { pending -> item("pending:${pending.clientMessageId}") {
             Column {
-                if (state.messages.lastOrNull()?.createdAt?.let { sameLocalDay(it, pending.createdAt) } != true) {
+                if (messages.lastOrNull()?.createdAt?.let { sameLocalDay(it, pending.createdAt) } != true) {
                     DateDivider(pending.createdAt)
                 }
                 MessageRow(pending.author?.name ?: "You", pending.author?.isGuest == true, pending.createdAt, pending.text, true, pending.author?.avatarId)
                 Box(Modifier.padding(start = 62.dp, end = 18.dp)) { Column { pendingStatus() } }
             }
         } }
-        if (state.messages.isEmpty() && state.pendingMessage == null) item { Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
+        if (messages.isEmpty() && state.pendingMessage == null) item { Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(7.dp)) {
                 Text("No messages yet.", color = TextMuted)
                 Text("Start the conversation in #${state.selectedChannel?.name.orEmpty()}.", color = TextMuted, fontSize = 12.sp)
@@ -1172,6 +1246,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             setReaction = viewModel::setReaction,
             openPicker = { actionTarget = null; pickerTarget = presented },
             setPin = { id, active -> viewModel.setPin(id, active); actionTarget = null },
+            onReply = { actionTarget = null; viewModel.openThread(presented.threadRootId ?: presented.id) },
         )
     }
     reactorsTarget?.let { (messageId, emoji) ->
@@ -1266,6 +1341,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     setReaction: (String, String, Boolean) -> Unit,
     openPicker: () -> Unit,
     setPin: (String, Boolean) -> Unit = { _, _ -> },
+    onReply: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val clipboard = context.getSystemService(ClipboardManager::class.java)
@@ -1305,6 +1381,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                         }
                         HorizontalDivider(color = Border)
                     }
+                    onReply?.let { TextButton(it, Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("Reply in thread", Modifier.fillMaxWidth()) }; HorizontalDivider(color = Border) }
                     TextButton({ copy("Message text", message.content.text) }, Modifier.fillMaxWidth().heightIn(min = 48.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) { Text("Copy text", Modifier.fillMaxWidth()) }
                     HorizontalDivider(color = Border)
                     TextButton({ copy("Message ID", message.id) }, Modifier.fillMaxWidth().heightIn(min = 48.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) { Text("Copy message ID", Modifier.fillMaxWidth()) }

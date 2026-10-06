@@ -145,6 +145,24 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(delivery.cursor, "42")
     }
 
+    func testThreadRetryKeepsDestinationAndSharedBroadcastIdentity() {
+        var delivery = ChatDeliveryState(cursor: "41")
+        let command = delivery.begin(text: "original", threadRootId: "root", broadcast: true, makeID: { "stable" })
+        XCTAssertEqual(delivery.begin(text: "edited", threadRootId: "other", broadcast: false), command)
+        var reply = ChatMessage(id: "reply", channelId: "channel", seq: "42",
+            author: ChatAuthor(id: "author", name: "Author", isGuest: false),
+            content: ChatContent(version: 1, type: "text", text: "original"),
+            createdAt: "2026-10-06T00:00:00Z", clientMessageId: command.id,
+            threadRootId: "root", broadcast: true)
+        XCTAssertTrue(MessageValidation.acceptsResponse(reply, channelID: "channel", command: command, authorID: "author"))
+        reply.broadcast = false
+        XCTAssertFalse(MessageValidation.acceptsResponse(reply, channelID: "channel", command: command, authorID: "author"))
+        reply.broadcast = true; reply.threadRootId = "different"
+        XCTAssertFalse(MessageValidation.acceptsResponse(reply, channelID: "channel", command: command, authorID: "author"))
+        delivery.confirmHTTP(id: command.id)
+        XCTAssertEqual(delivery.cursor, "41")
+    }
+
     func testReactionProtocolAndInterleavedCursorBookkeeping() {
         func event(_ seq: String = "2", channel: String = "channel") -> [String: Any] {
             ["type": "message.reactions", "schemaVersion": 1, "channelId": channel, "seq": seq,

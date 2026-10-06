@@ -2,7 +2,7 @@ import { ChatConnection } from "./connection.ts";
 import { ChatTimeline } from "./timeline.ts";
 import { playSound } from "../audio/effects.ts";
 import { appGateway } from "../gateway/client.ts";
-import { isChatMessage, isChatPinEvent, isChatReactionEvent, sequence, type ChatAuthor, type ChatHistory, type ChatMessage, type ChatPinEvent, type ChatReactionEvent, type ChatSession, type ChatTypingEvent, type GeneralChatHistory } from "./types.ts";
+import { isChannelMessage, isChatMessage, isChatPinEvent, isChatReactionEvent, sequence, type ChatAuthor, type ChatHistory, type ChatMessage, type ChatPinEvent, type ChatReactionEvent, type ChatSession, type ChatThreadHistory, type ChatTypingEvent, type GeneralChatHistory } from "./types.ts";
 
 const SESSION_KEY = "caper.chat.session";
 
@@ -11,6 +11,17 @@ export interface PendingChatMessage {
   text: string;
   author?: ChatAuthor;
   createdAt: string;
+  threadRootId?: string;
+  broadcast?: boolean;
+}
+
+export interface ThreadViewState {
+  rootId: string;
+  loading: boolean;
+  loadingOlder: boolean;
+  hasMore: boolean;
+  before?: string;
+  error?: string;
 }
 
 export interface ChatViewState {
@@ -21,6 +32,7 @@ export interface ChatViewState {
   channelName: string;
   messages: ChatMessage[];
   pinnedMessages: ChatMessage[];
+  channelMessages?: ChatMessage[];
   typingAuthors: ChatAuthor[];
   hasMore: boolean;
   loadingOlder: boolean;
@@ -31,6 +43,7 @@ export interface ChatViewState {
   sendRejected?: boolean;
   pendingSend?: PendingChatMessage;
   error?: string;
+  thread?: ThreadViewState;
 }
 
 const initialState: ChatViewState = {
@@ -117,6 +130,10 @@ export class ChatClient {
   private channel?: GeneralChatHistory["channel"];
   private readonly reactionIntents = new Map<string, Map<string, { active: boolean; authorId: string; generation: number }>>();
   private readonly reactionRequests = new Map<string, Promise<void>>();
+  private threadRequest?: AbortController;
+  // Fetching a thread's older rows must not insert them into the channel page
+  // or move the channel's exclusive pagination boundary past a history gap.
+  private readonly threadOnlyRows = new Set<string>();
 
   constructor(changed: (state: ChatViewState) => void, channelId?: string, options: { sounds?: boolean } = {}) {
     this.changed = changed;
@@ -138,7 +155,7 @@ export class ChatClient {
     return {
       space: { id: this.spaceId, name: this.state.spaceName },
       channel: this.channel,
-      messages: this.timeline.messages, cursor: this.timeline.cursor, hasMore: this.state.hasMore,
+      messages: this.timeline.messages.filter((message) => isChannelMessage(message) && !this.threadOnlyRows.has(message.id)), cursor: this.timeline.cursor, hasMore: this.state.hasMore,
       ...(pinnedMessages.length ? { pinnedMessages } : {}),
     };
   }
@@ -214,6 +231,63 @@ export class ChatClient {
 
   retrySession() { void this.createSession(); }
 
+  closeThread() {
+    this.threadRequest?.abort();
+    this.update({ thread: undefined });
+  }
+
+  async openThread(rootId: string) {
+    this.threadRequest?.abort();
+    this.update({ thread: { rootId, loading: true, loadingOlder: false, hasMore: false } });
+    await this.loadThreadPage();
+  }
+
+  async loadOlderThread() {
+    if (this.state.thread?.hasMore && !this.state.thread.loading && !this.state.thread.loadingOlder) await this.loadThreadPage(true);
+  }
+
+  private async loadThreadPage(older = false) {
+    const thread = this.state.thread;
+    const channelId = this.state.channelId;
+    if (!thread || !channelId || this.controller.signal.aborted) return;
+    const controller = new AbortController();
+    this.threadRequest = controller;
+    const generation = this.generation;
+    const current = () => !controller.signal.aborted && !this.controller.signal.aborted
+      && generation === this.generation && this.state.thread?.rootId === thread.rootId;
+    this.update({ thread: { ...thread, error: undefined, loading: !older, loadingOlder: older } });
+    try {
+      const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(thread.rootId)}/thread${older && thread.before ? `?before=${thread.before}` : ""}`, {
+        cache: "no-store", signal: AbortSignal.any([controller.signal, this.controller.signal, AbortSignal.timeout(10_000)]),
+      });
+      if (!response.ok) {
+        const error = await apiError(response, "Thread could not be loaded.");
+        if (current() && [401, 403, 404].includes(response.status)) {
+          this.closeThread();
+          this.retryLoad();
+          return;
+        }
+        throw error;
+      }
+      const page: unknown = await response.json();
+      if (!current()) return;
+      const history = page as ChatThreadHistory;
+      if (!validHistory(page, false) || !isChatMessage(history.root) || history.root.id !== thread.rootId
+        || history.root.channelId !== channelId || history.root.threadRootId
+        || history.messages.some((message) => message.channelId !== channelId || message.threadRootId !== thread.rootId)) throw new Error("The chat service returned an invalid thread.");
+      // Merge instead of replacing: live replies/reactions may arrive during GET.
+      const loaded = new Set(this.timeline.messages.map((message) => message.id));
+      const rows = [history.root, ...history.messages];
+      for (const message of rows) if (isChannelMessage(message) && !loaded.has(message.id)) this.threadOnlyRows.add(message.id);
+      this.timeline.prepend(rows);
+      this.update({ messages: this.timeline.messages, thread: { rootId: thread.rootId, loading: false, loadingOlder: false,
+        hasMore: history.hasMore, before: history.messages[0]?.seq ?? thread.before } });
+    } catch (error) {
+      if (current()) this.update({ thread: { ...this.state.thread!, loading: false, loadingOlder: false,
+        error: error instanceof Error ? error.message : "Thread could not be loaded." } });
+    }
+  }
+
   discardRejected(): string | undefined {
     if (this.sending || !this.state.sendRejected) return;
     const text = this.state.pendingSend?.text;
@@ -227,7 +301,8 @@ export class ChatClient {
     const channelId = this.state.channelId;
     this.update({ loadingOlder: true, olderError: undefined });
     try {
-      const before = this.state.messages[0].seq;
+      const before = this.state.channelMessages?.[0]?.seq;
+      if (!before) { this.update({ loadingOlder: false }); return; }
       const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages?before=${encodeURIComponent(before)}`, {
         cache: "no-store", signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
       });
@@ -236,6 +311,7 @@ export class ChatClient {
       if (!validHistory(history, false)) throw new Error("The chat service returned invalid history.");
       if (generation !== this.generation) return;
       if (history.messages.some((message) => message.channelId !== channelId)) throw new Error("The chat service returned messages from another channel.");
+      for (const message of history.messages) this.threadOnlyRows.delete(message.id);
       this.timeline.prepend(history.messages);
       this.update({ messages: this.timeline.messages, hasMore: history.hasMore, loadingOlder: false });
     } catch (error) {
@@ -243,12 +319,13 @@ export class ChatClient {
     }
   }
 
-  async send(text: string): Promise<boolean> {
+  async send(text: string, options: { threadRootId?: string; broadcast?: boolean } = {}): Promise<boolean> {
     if (this.controller.signal.aborted || this.sending || this.state.sendRejected) return false;
+    if (this.state.pendingSend && this.state.pendingSend.threadRootId !== options.threadRootId) return false;
     // A timeout is an unknown outcome. Enter/Send must retry the same command,
     // just like the explicit retry button, before allowing a new command.
     const pending = {
-      ...(this.state.pendingSend ?? { clientMessageId: crypto.randomUUID(), text, createdAt: new Date().toISOString() }),
+      ...(this.state.pendingSend ?? { clientMessageId: crypto.randomUUID(), text, createdAt: new Date().toISOString(), ...options }),
       author: this.session?.author,
     };
     const count = Array.from(pending.text).length;
@@ -277,7 +354,8 @@ export class ChatClient {
         const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages`, {
           method: "POST",
           headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
-          body: JSON.stringify({ clientMessageId: pending.clientMessageId, text: pending.text }),
+          body: JSON.stringify({ clientMessageId: pending.clientMessageId, text: pending.text,
+            ...(pending.threadRootId ? { threadRootId: pending.threadRootId, broadcast: pending.broadcast ?? false } : {}) }),
           signal: AbortSignal.any([this.controller.signal, controller.signal, AbortSignal.timeout(10_000)]),
         });
         if (!response.ok) {
@@ -291,6 +369,7 @@ export class ChatClient {
         }
         const message: unknown = await response.json();
         if (!isChatMessage(message) || message.channelId !== channelId
+          || message.threadRootId !== pending.threadRootId || (message.broadcast ?? false) !== (pending.broadcast ?? false)
           || message.clientMessageId !== pending.clientMessageId || message.author.id !== session.author.id) throw new Error("The chat service returned an invalid message.");
         return message;
       })();
@@ -438,7 +517,8 @@ export class ChatClient {
       // reset deduplicates by first occurrence: fresh author metadata wins.
       // Even across a gap, preserve newer HTTP reaction revisions on fresh rows.
       const freshIds = new Set(history.messages.map((message) => message.id));
-      const retained = this.timeline.messages.filter((message) => contiguous || freshIds.has(message.id));
+      const retained = this.timeline.messages.filter((message) => (contiguous && isChannelMessage(message) && !this.threadOnlyRows.has(message.id)) || freshIds.has(message.id));
+      this.threadOnlyRows.clear();
       this.timeline.reset([...history.messages, ...retained], history.cursor, history.pinnedMessages ?? []);
       this.update({
         phase: "ready", spaceName: history.space.name, channelId: history.channel.id,
@@ -457,13 +537,14 @@ export class ChatClient {
         resync: () => { if (generation === this.generation) void this.loadInitial(); },
       });
       this.connection.start();
+      if (this.state.thread) void this.openThread(this.state.thread.rootId);
     } catch (error) {
       if (!this.controller.signal.aborted && generation === this.generation) {
         const denied = error instanceof ChatHistoryError && [401, 403, 404].includes(error.status);
         if (denied) { this.timeline.reset([], "0"); this.spaceId = undefined; }
         this.update({
           phase: previous && !denied ? "ready" : "error", online: false,
-          ...(denied ? { messages: [], pinnedMessages: [], channelId: undefined } : {}),
+          ...(denied ? { messages: [], pinnedMessages: [], channelId: undefined, thread: undefined } : {}),
           error: error instanceof Error ? error.message : "Messages are unavailable.",
         });
       }
@@ -510,6 +591,7 @@ export class ChatClient {
       }) };
     }
     this.state = { ...this.state, ...change };
+    if (change.messages) this.state.channelMessages = change.messages.filter((message) => isChannelMessage(message) && !this.threadOnlyRows.has(message.id));
     if (change.author) {
       this.typers.delete(change.author.id);
       this.state = { ...this.state, typingAuthors: this.state.typingAuthors.filter((author) => author.id !== change.author!.id) };
@@ -517,6 +599,7 @@ export class ChatClient {
     const pending = this.state.pendingSend;
     if (pending && change.messages) {
       const accepted = change.messages.find((message) => message.channelId === this.state.channelId
+        && message.threadRootId === pending.threadRootId && (message.broadcast ?? false) === (pending.broadcast ?? false)
         && message.clientMessageId === pending.clientMessageId && message.author.id === pending.author?.id);
       if (accepted) {
         this.confirmSend?.(accepted);

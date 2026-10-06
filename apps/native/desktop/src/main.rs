@@ -78,6 +78,8 @@ struct PendingSend {
     created_at: String,
     sending: bool,
     rejection: Option<String>,
+    thread_root_id: Option<String>,
+    broadcast: bool,
 }
 
 impl PendingSend {
@@ -89,6 +91,8 @@ impl PendingSend {
                 created_at: Local::now().to_rfc3339(),
                 sending: true,
                 rejection: None,
+                thread_root_id: None,
+                broadcast: false,
             },
             |pending| Self {
                 id: pending.id.clone(),
@@ -96,13 +100,26 @@ impl PendingSend {
                 created_at: pending.created_at.clone(),
                 sending: true,
                 rejection: None,
+                thread_root_id: pending.thread_root_id.clone(),
+                broadcast: pending.broadcast,
             },
         )
     }
 
     fn confirmed_by(&self, message: &model::Message, author: &str) -> bool {
-        self.id == message.client_message_id && message.author.id == author
+        self.id == message.client_message_id
+            && message.author.id == author
+            && self.thread_root_id == message.thread_root_id
+            && self.broadcast == message.broadcast
     }
+}
+
+struct ThreadView {
+    root: String,
+    loading: bool,
+    has_more: bool,
+    before: Option<String>,
+    error: Option<String>,
 }
 
 fn permanent_send_rejection(status: Option<u16>) -> bool {
@@ -286,6 +303,10 @@ struct CaperApp {
     emoji_dismissed: Option<(String, usize)>,
     emoji_composing: bool,
     pending: Option<PendingSend>,
+    thread_view: Option<ThreadView>,
+    thread_request: u64,
+    thread_drafts: BTreeMap<String, (String, bool)>,
+    thread_only_rows: BTreeSet<String>,
     reaction_picker: Option<String>,
     reaction_search: String,
     reaction_search_focus: bool,
@@ -401,6 +422,10 @@ impl CaperApp {
             emoji_dismissed: None,
             emoji_composing: false,
             pending: None,
+            thread_view: None,
+            thread_request: 0,
+            thread_drafts: BTreeMap::new(),
+            thread_only_rows: BTreeSet::new(),
             reaction_picker: None,
             reaction_search: String::new(),
             reaction_search_focus: false,
@@ -964,6 +989,9 @@ impl CaperApp {
                 reaction_seq: None,
                 pin: None,
                 pin_seq: None,
+                thread_root_id: None,
+                broadcast: false,
+                thread: None,
             })
             .collect();
         self.timeline.reset(messages, "4").expect("valid fixture");
@@ -1211,6 +1239,72 @@ impl CaperApp {
                 {
                     self.loading_older = false;
                     self.accept_older(&channel, result);
+                }
+                Event::ThreadLoaded {
+                    generation,
+                    request,
+                    channel,
+                    root,
+                    result,
+                } if generation == self.generation
+                    && request == self.thread_request
+                    && self.selected_channel.as_deref() == Some(&channel)
+                    && self
+                        .thread_view
+                        .as_ref()
+                        .is_some_and(|thread| thread.root == root) =>
+                {
+                    match result {
+                        Ok(page)
+                            if page.root.id == root
+                                && page.root.channel_id == channel
+                                && page.root.thread_root_id.is_none()
+                                && page.root.validate().is_ok()
+                                && page.messages.iter().all(|message| {
+                                    message.channel_id == channel
+                                        && message.thread_root_id.as_deref() == Some(&root)
+                                        && message.validate().is_ok()
+                                }) =>
+                        {
+                            let before = page.messages.first().map(|message| message.seq.clone());
+                            let loaded: BTreeSet<_> = self
+                                .timeline
+                                .messages()
+                                .map(|message| message.id.clone())
+                                .collect();
+                            let rows: Vec<_> =
+                                std::iter::once(page.root).chain(page.messages).collect();
+                            self.thread_only_rows.extend(
+                                rows.iter()
+                                    .filter(|message| {
+                                        message.is_channel_message()
+                                            && !loaded.contains(&message.id)
+                                    })
+                                    .map(|message| message.id.clone()),
+                            );
+                            if let Err(error) = self.timeline.prepend(rows) {
+                                self.error = Some(error);
+                            }
+                            if let Some(thread) = &mut self.thread_view {
+                                thread.loading = false;
+                                thread.has_more = page.has_more;
+                                thread.before = before.or(thread.before.take());
+                            }
+                        }
+                        Err(error) if error.access_denied => {
+                            self.thread_view = None;
+                            self.reload_channel();
+                        }
+                        result => {
+                            if let Some(thread) = &mut self.thread_view {
+                                thread.loading = false;
+                                thread.error =
+                                    Some(result.err().map(|error| error.message).unwrap_or_else(
+                                        || "Caper returned an invalid thread.".into(),
+                                    ));
+                            }
+                        }
+                    }
                 }
                 Event::MediaStatus {
                     generation,
@@ -1562,20 +1656,32 @@ impl CaperApp {
             })
             && model::sequence(&history.cursor) == Ok(accounted);
         let retained_older = contiguous
-            && self.timeline.messages().next().is_some_and(|oldest| {
-                history.messages.first().is_some_and(|first| {
-                    model::sequence(&oldest.seq).ok() < model::sequence(&first.seq).ok()
+            && self
+                .timeline
+                .messages()
+                .find(|message| {
+                    message.is_channel_message() && !self.thread_only_rows.contains(&message.id)
                 })
-            });
+                .is_some_and(|oldest| {
+                    history.messages.first().is_some_and(|first| {
+                        model::sequence(&oldest.seq).ok() < model::sequence(&first.seq).ok()
+                    })
+                });
         // Timeline::merge takes incoming metadata and the higher reaction revision.
         // Keep newer snapshots on overlapping rows even when older pages must reload.
         let fresh_ids: BTreeSet<_> = history.messages.iter().map(|message| &message.id).collect();
         let mut messages: Vec<_> = self
             .timeline
             .messages()
-            .filter(|message| contiguous || fresh_ids.contains(&message.id))
+            .filter(|message| {
+                (contiguous
+                    && message.is_channel_message()
+                    && !self.thread_only_rows.contains(&message.id))
+                    || fresh_ids.contains(&message.id)
+            })
             .cloned()
             .collect();
+        self.thread_only_rows.clear();
         messages.extend(std::mem::take(&mut history.messages));
         if let Err(error) = self.timeline.reset(messages, &history.cursor) {
             self.clear_channel(&error);
@@ -1621,6 +1727,9 @@ impl CaperApp {
         self.live = "Connecting…".into();
         self.connect_gateway();
         self.mark_selected_direct_read();
+        if self.thread_view.is_some() {
+            self.load_thread(false);
+        }
     }
 
     fn mark_selected_direct_read(&mut self) {
@@ -1839,7 +1948,14 @@ impl CaperApp {
                 },
             },
             model::History {
-                messages: self.timeline.messages().cloned().collect(),
+                messages: self
+                    .timeline
+                    .messages()
+                    .filter(|message| {
+                        message.is_channel_message() && !self.thread_only_rows.contains(&message.id)
+                    })
+                    .cloned()
+                    .collect(),
                 pinned_messages: self.timeline.pinned_messages().cloned().collect(),
                 cursor: self.timeline.cursor(),
                 has_more: self.has_more,
@@ -1972,6 +2088,10 @@ impl CaperApp {
         self.older_error = None;
         self.has_more = false;
         self.timeline = Timeline::default();
+        self.thread_view = None;
+        self.thread_request += 1;
+        self.thread_drafts.clear();
+        self.thread_only_rows.clear();
         self.older_armed = false;
         self.older_anchor = None;
         self.load_error = None;
@@ -2386,6 +2506,9 @@ impl CaperApp {
             let mut pending = self.pending.take();
             let draft = std::mem::take(&mut self.draft);
             let timeline = std::mem::take(&mut self.timeline);
+            let thread = self.thread_view.take();
+            let drafts = std::mem::take(&mut self.thread_drafts);
+            let rows = std::mem::take(&mut self.thread_only_rows);
             let has_more = self.has_more;
             if let Some(pending) = &mut pending {
                 pending.sending = false;
@@ -2394,6 +2517,9 @@ impl CaperApp {
             self.pending = pending;
             self.draft = draft;
             self.timeline = timeline;
+            self.thread_view = thread;
+            self.thread_drafts = drafts;
+            self.thread_only_rows = rows;
             self.has_more = has_more;
         }
     }
@@ -2428,6 +2554,9 @@ impl CaperApp {
             {
                 self.has_more = history.has_more;
                 self.older_anchor = Some(self.history_height);
+                for message in &history.messages {
+                    self.thread_only_rows.remove(&message.id);
+                }
                 if let Err(error) = self.timeline.prepend(history.messages) {
                     self.older_error = Some(error);
                 }
@@ -2512,6 +2641,45 @@ impl CaperApp {
     }
 
     fn send_message(&mut self) {
+        self.send_message_to(None, false);
+    }
+
+    fn open_thread(&mut self, root: String) {
+        self.thread_view = Some(ThreadView {
+            root,
+            loading: true,
+            has_more: false,
+            before: None,
+            error: None,
+        });
+        self.load_thread(false);
+    }
+
+    fn load_thread(&mut self, older: bool) {
+        let (Some(thread), Some(channel)) = (&mut self.thread_view, &self.selected_channel) else {
+            return;
+        };
+        thread.loading = true;
+        thread.error = None;
+        self.thread_request += 1;
+        self.worker.send(Command::LoadThread {
+            generation: self.generation,
+            request: self.thread_request,
+            token: self.token.clone(),
+            channel: channel.clone(),
+            root: thread.root.clone(),
+            before: if older { thread.before.clone() } else { None },
+        });
+    }
+
+    fn send_message_to(&mut self, root: Option<String>, broadcast: bool) {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.thread_root_id != root)
+        {
+            return;
+        }
         let Some(chat_token) = self.session.as_ref().map(|session| session.token.clone()) else {
             return;
         };
@@ -2525,10 +2693,20 @@ impl CaperApp {
         {
             return;
         }
-        let text = self
-            .pending
-            .as_ref()
-            .map_or_else(|| self.draft.clone(), |pending| pending.text.clone());
+        let text = self.pending.as_ref().map_or_else(
+            || {
+                root.as_ref()
+                    .map(|root| {
+                        self.thread_drafts
+                            .entry(root.clone())
+                            .or_default()
+                            .0
+                            .clone()
+                    })
+                    .unwrap_or_else(|| self.draft.clone())
+            },
+            |pending| pending.text.clone(),
+        );
         let count = text.chars().count();
         if text.trim().is_empty()
             || count > 4_000
@@ -2548,11 +2726,25 @@ impl CaperApp {
             );
             return;
         }
-        let pending = PendingSend::prepare(self.pending.as_ref(), &text);
-        let id = pending.id.clone();
-        if self.pending.is_none() && self.draft == text {
-            self.draft.clear();
+        let mut pending = PendingSend::prepare(self.pending.as_ref(), &text);
+        if self.pending.is_none() {
+            pending.thread_root_id = root.clone();
+            pending.broadcast = broadcast;
         }
+        let id = pending.id.clone();
+        if self.pending.is_none() {
+            if let Some(root) = &root {
+                self.thread_drafts
+                    .entry(root.clone())
+                    .or_default()
+                    .0
+                    .clear();
+            } else if self.draft == text {
+                self.draft.clear();
+            }
+        }
+        let thread_root_id = pending.thread_root_id.clone();
+        let broadcast = pending.broadcast;
         self.pending = Some(pending);
         self.error = None;
         self.set_typing(false);
@@ -2563,6 +2755,8 @@ impl CaperApp {
             channel,
             client_id: id,
             text,
+            thread_root_id,
+            broadcast,
         });
     }
 
@@ -2593,7 +2787,9 @@ impl CaperApp {
         let Some(before) = self
             .timeline
             .messages()
-            .next()
+            .find(|message| {
+                message.is_channel_message() && !self.thread_only_rows.contains(&message.id)
+            })
             .map(|message| message.seq.clone())
         else {
             return;
@@ -5604,6 +5800,115 @@ impl CaperApp {
     }
 
     fn conversation(&mut self, ui: &mut egui::Ui, narrow: bool) {
+        if self.thread_view.is_some() {
+            if narrow {
+                self.thread_panel(ui);
+                return;
+            }
+            egui::SidePanel::right("message-thread")
+                .default_width(340.0)
+                .min_width(300.0)
+                .max_width(480.0)
+                .show_inside(ui, |ui| self.thread_panel(ui));
+        }
+        self.channel_conversation(ui, narrow);
+    }
+
+    fn thread_panel(&mut self, ui: &mut egui::Ui) {
+        let Some(thread) = &self.thread_view else {
+            return;
+        };
+        let root = thread.root.clone();
+        let loading = thread.loading;
+        let has_more = thread.has_more;
+        let error = thread.error.clone();
+        let broadcast_label = format!("Also send to #{}", self.channel_name());
+        ui.set_min_height(ui.available_height());
+        ui.horizontal(|ui| {
+            ui.heading("Thread");
+            if ui.button("Back to channel").clicked() {
+                self.thread_view = None;
+                self.thread_request += 1;
+            }
+        });
+        ui.label(format!("in #{}", self.channel_name()));
+        ui.separator();
+        if self.selected_is_joined() {
+            egui::TopBottomPanel::bottom("thread-composer").show_inside(ui, |ui| {
+                let pending = self.pending.clone().filter(|pending| pending.thread_root_id.as_deref() == Some(&root));
+                if let Some(pending) = &pending {
+                    ui.label(&pending.text);
+                    if let Some(error) = &pending.rejection {
+                        ui.colored_label(ERROR, format!("Not sent. {error}"));
+                        ui.horizontal(|ui| {
+                            if ui.add_enabled(self.thread_drafts.entry(root.clone()).or_default().0.is_empty(), egui::Button::new("Edit")).clicked()
+                                && let Some(text) = self.discard_rejected() { self.thread_drafts.entry(root.clone()).or_default().0 = text; }
+                            if ui.button("Dismiss").clicked() { self.discard_rejected(); }
+                        });
+                    } else if !pending.sending && ui.button("Retry send").clicked() { self.send_message_to(Some(root.clone()), pending.broadcast); }
+                }
+                let blocked = self.pending.is_some();
+                if blocked && pending.is_none() { ui.label("Confirm or dismiss the pending message first."); }
+                let draft = self.thread_drafts.entry(root.clone()).or_default();
+                let output = ui.add_enabled(!loading, egui::TextEdit::multiline(&mut draft.0)
+                    .id_salt(("thread-draft", &root)).desired_rows(3).desired_width(f32::INFINITY).char_limit(4000)
+                    .hint_text("Reply to thread…").return_key(Some(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter))));
+                let enter = output.has_focus() && ui.input(|input| !input.events.iter().any(|event| matches!(event, egui::Event::Ime(_))) && input.events.iter().any(|event| matches!(event, egui::Event::Key { key: egui::Key::Enter, pressed: true, modifiers, .. } if !modifiers.shift)));
+                ui.add_enabled(!blocked, egui::Checkbox::new(&mut draft.1, &broadcast_label));
+                let draft = self.thread_drafts.get(&root).cloned().unwrap_or_default();
+                let send = ui.add_enabled(!blocked && !loading && !draft.0.trim().is_empty(), egui::Button::new("Send reply")).clicked();
+                if (enter || send) && !blocked && !loading { self.send_message_to(Some(root.clone()), draft.1); }
+            });
+        } else {
+            ui.label("Join the channel to reply.");
+        }
+        egui::ScrollArea::vertical()
+            .id_salt(("thread-history", &root))
+            .stick_to_bottom(true)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let rows: Vec<_> = self
+                    .timeline
+                    .messages()
+                    .filter(|message| {
+                        message.id == root || message.thread_root_id.as_deref() == Some(&root)
+                    })
+                    .cloned()
+                    .collect();
+                if let Some(parent) = rows.iter().find(|message| message.id == root) {
+                    self.message(ui, parent, true);
+                }
+                if loading {
+                    ui.label("Loading thread…");
+                }
+                if let Some(error) = error {
+                    ui.colored_label(ERROR, error);
+                    if ui.button("Retry").clicked() {
+                        self.load_thread(false);
+                    }
+                }
+                if has_more
+                    && ui
+                        .add_enabled(!loading, egui::Button::new("Load older replies"))
+                        .clicked()
+                {
+                    self.load_thread(true);
+                }
+                let replies: Vec<_> = rows
+                    .iter()
+                    .filter(|message| message.thread_root_id.is_some())
+                    .collect();
+                if replies.is_empty() && !loading {
+                    ui.label("No replies yet. Start the thread.");
+                }
+                for message in replies {
+                    self.message(ui, message, true);
+                }
+            });
+        self.emoji_picker(ui.ctx());
+    }
+
+    fn channel_conversation(&mut self, ui: &mut egui::Ui, narrow: bool) {
         if self.no_accessible_channels() {
             if self.opening || self.navigation_error.is_some() {
                 egui::Frame::new().fill(CONVERSATION).show(ui, |ui| {
@@ -5716,6 +6021,8 @@ impl CaperApp {
                         ui.colored_label(ERROR, error);
                     }
                     // Web: the conversation stays; only sending waits on a new session.
+                    if let Some(root) = self.pending.as_ref().and_then(|pending| pending.thread_root_id.clone())
+                        && ui.button("Pending reply · Open thread").clicked() { self.open_thread(root); }
                     if !joined {
                         ui.label(bold("Preview").size(12.0));
                         let format = egui::TextFormat {
@@ -5949,7 +6256,7 @@ impl CaperApp {
                         if pins.is_empty() {
                             chat_state(ui, 2, |ui| { ui.label(RichText::new("No pinned messages.").color(MUTED)); });
                         } else {
-                            for message in &pins { self.message(ui, message); }
+                            for message in &pins { self.message(ui, message, false); }
                         }
                         return;
                     }
@@ -5982,16 +6289,16 @@ impl CaperApp {
                     // pending/empty state and paging can inspect the timeline.
                     let timeline = std::mem::take(&mut self.timeline);
                     let mut last_date = None;
-                    for message in timeline.messages() {
+                    for message in timeline.messages().filter(|message| message.is_channel_message() && !self.thread_only_rows.contains(&message.id)).collect::<Vec<_>>() {
                         if let Some(date) = display_date(&message.created_at)
                             && take_date_divider(&mut last_date, &date.key)
                         {
                             date_divider(ui, &date.label);
                         }
-                        self.message(ui, message);
+                        self.message(ui, message, false);
                     }
                     self.timeline = timeline;
-                    if let Some(pending) = self.pending.clone() {
+                    if let Some(pending) = self.pending.clone().filter(|pending| pending.thread_root_id.is_none()) {
                         if let Some(pending_date) = display_date(&pending.created_at)
                             && take_date_divider(&mut last_date, &pending_date.key)
                         {
@@ -6186,7 +6493,7 @@ impl CaperApp {
         }
     }
 
-    fn message(&mut self, ui: &mut egui::Ui, message: &model::Message) {
+    fn message(&mut self, ui: &mut egui::Ui, message: &model::Message, in_thread: bool) {
         let time = if self.showing_pins {
             DateTime::parse_from_rfc3339(&message.created_at).map_or_else(
                 |_| message.created_at.clone(),
@@ -6201,11 +6508,20 @@ impl CaperApp {
         };
         let pinned = message.pin.as_ref();
         let message_rect = egui::Frame::new()
-            .fill(if pinned.is_some() {
-                Color32::from_rgba_unmultiplied(228, 199, 106, 15)
-            } else {
-                Color32::TRANSPARENT
-            })
+            .fill(
+                if !in_thread
+                    && self
+                        .thread_view
+                        .as_ref()
+                        .is_some_and(|thread| thread.root == message.id)
+                {
+                    Color32::from_rgba_unmultiplied(228, 199, 106, 26)
+                } else if pinned.is_some() {
+                    Color32::from_rgba_unmultiplied(228, 199, 106, 15)
+                } else {
+                    Color32::TRANSPARENT
+                },
+            )
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 if let Some(pin) = pinned {
@@ -6248,9 +6564,13 @@ impl CaperApp {
         );
         let can_react = self.selected_is_joined() && self.session.is_some();
         if can_react {
+            let action_width = if in_thread { 50.0 } else { 76.0 };
             let actions_rect = egui::Rect::from_min_size(
-                egui::pos2(message_rect.right() - 68.0, message_rect.top() + 4.0),
-                egui::vec2(50.0, 24.0),
+                egui::pos2(
+                    message_rect.right() - action_width - 18.0,
+                    message_rect.top() + 4.0,
+                ),
+                egui::vec2(action_width, 24.0),
             );
             // Overlay controls must not move the timeline cursor back into the message.
             let mut actions_ui = ui.new_child(
@@ -6260,6 +6580,16 @@ impl CaperApp {
             );
             actions_ui.spacing_mut().item_spacing.x = 2.0;
             actions_ui.horizontal(|ui| {
+                let reply = if in_thread {
+                    None
+                } else {
+                    let rect = ui.allocate_space(egui::vec2(24.0, 24.0)).1;
+                    Some(ui.interact(
+                        rect,
+                        ui.id().with((&message.id, "thread-action")),
+                        egui::Sense::click(),
+                    ))
+                };
                 let emoji_rect = ui.allocate_space(egui::vec2(24.0, 24.0)).1;
                 let emoji = ui.interact(
                     emoji_rect,
@@ -6272,15 +6602,33 @@ impl CaperApp {
                     ui.id().with((&message.id, "more-action")),
                     egui::Sense::click(),
                 );
-                let visible =
-                    ui.rect_contains_pointer(message_rect) || emoji.has_focus() || more.has_focus();
+                let visible = ui.rect_contains_pointer(message_rect)
+                    || emoji.has_focus()
+                    || more.has_focus()
+                    || reply.as_ref().is_some_and(|reply| reply.has_focus());
                 if visible {
+                    if let Some(reply) = &reply {
+                        paint_icon(ui.painter(), reply.rect.shrink(5.0), NavIcon::Speech, MUTED);
+                    }
                     if let Some(entry) = emoji::find("🙂") {
                         self.reaction_textures
                             .image(ui, entry, 14.0)
                             .paint_at(ui, emoji_rect.shrink(5.0));
                     }
                     paint_icon(ui.painter(), more_rect.shrink(5.0), NavIcon::More, MUTED);
+                }
+                if let Some(reply) = reply {
+                    reply.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Reply in thread")
+                    });
+                    if reply.on_hover_text("Reply in thread").clicked() {
+                        self.open_thread(
+                            message
+                                .thread_root_id
+                                .clone()
+                                .unwrap_or_else(|| message.id.clone()),
+                        );
+                    }
                 }
                 emoji.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Add reaction")
@@ -6376,6 +6724,14 @@ impl CaperApp {
                     {
                         self.set_pin(&message.id, false);
                     }
+                    if !in_thread && ui.small_button("Reply in thread").clicked() {
+                        self.open_thread(
+                            message
+                                .thread_root_id
+                                .clone()
+                                .unwrap_or_else(|| message.id.clone()),
+                        );
+                    }
                 });
                 if let Some((active, error)) = self.pin_errors.get(&message.id).cloned() {
                     ui.horizontal(|ui| {
@@ -6385,6 +6741,30 @@ impl CaperApp {
                         }
                         if ui.small_button("Dismiss").clicked() {
                             self.pin_errors.remove(&message.id);
+                        }
+                    });
+                }
+                if !in_thread
+                    && message.thread_root_id.is_none()
+                    && let Some(summary) = &message.thread
+                {
+                    ui.horizontal(|ui| {
+                        for author in &summary.participants {
+                            avatar(ui, &author.name, author.avatar_id, 24.0, false);
+                        }
+                        if ui
+                            .small_button(format!(
+                                "{} {} · View thread",
+                                summary.reply_count,
+                                if summary.reply_count == 1 {
+                                    "reply"
+                                } else {
+                                    "replies"
+                                }
+                            ))
+                            .clicked()
+                        {
+                            self.open_thread(message.id.clone());
                         }
                     });
                 }
@@ -13220,6 +13600,9 @@ mod tests {
             reaction_seq: None,
             pin: None,
             pin_seq: None,
+            thread_root_id: None,
+            broadcast: false,
+            thread: None,
         };
         assert!(pending.confirmed_by(&message, "author"));
         assert!(!pending.confirmed_by(&message, "another-author"));
@@ -13299,6 +13682,9 @@ mod tests {
                 reaction_seq: None,
                 pin: None,
                 pin_seq: None,
+                thread_root_id: None,
+                broadcast: false,
+                thread: None,
             }),
         });
         assert!(!app.typers.get("other").unwrap().typing);

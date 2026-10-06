@@ -14,6 +14,12 @@ Channel pins are shared with everyone who can read the channel. Joined members
 can pin or unpin in one action; the channel header opens the complete pins list.
 Native implementation and validation status are tracked in [the runbook](docs/media.md#message-pins).
 
+Channel messages support threads: replies stay with their parent, with reply counts
+and participant avatars in the channel. Desktop uses a right panel and mobile a
+full-screen view. **Also send to channel** shows the same reply in both places,
+sharing its reactions. Native release and validation gaps are tracked in
+[the runbook](docs/media.md#message-threads).
+
 Mac release downloads use a signed, notarized disk image: open it, drag Caper onto
 Applications, eject the image, then launch Caper from Applications. `~/Applications`
 also works without administrator access. Release copies outside these folders or
