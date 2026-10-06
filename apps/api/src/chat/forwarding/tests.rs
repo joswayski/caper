@@ -128,7 +128,7 @@ async fn live_forwards_are_destination_authorized_flattened_and_replayable(pool:
     )
     .await
     .unwrap();
-    persist_message(
+    let first_reply = persist_message(
         &pool,
         "source",
         "bob",
@@ -201,6 +201,21 @@ async fn live_forwards_are_destination_authorized_flattened_and_replayable(pool:
     let path = format!(
         "/api/chat/channels/destination/forwards/{}/thread",
         forward["id"].as_str().unwrap()
+    );
+    assert_eq!(
+        request(
+            &app,
+            "PUT",
+            &format!(
+                "/api/chat/channels/destination/messages/{}",
+                forward["id"].as_str().unwrap()
+            ),
+            "alice",
+            json!({"text":"Cannot edit even my own wrapper note", "expectedRevision":1})
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
     );
     let (status, view) = request(&app, "GET", &path, "carol", Value::Null).await;
     assert_eq!(status, StatusCode::OK, "{view}");
@@ -339,29 +354,54 @@ async fn live_forwards_are_destination_authorized_flattened_and_replayable(pool:
             .unwrap()["cursor"],
         "2"
     );
-    // Editing is a separate feature; exercise its published event contract here.
-    sqlx::query("UPDATE public.messages SET payload=jsonb_set(jsonb_set(payload,'{content,text}','\"Edited live original\"'),'{revision}', '2') WHERE external_id=$1")
-        .bind(original["id"].as_str()).execute(&pool).await.unwrap();
-    let edit_seq: i64 = sqlx::query_scalar(
-        "UPDATE public.channels SET last_seq=last_seq+1 WHERE id=$1 RETURNING last_seq",
+    // The real author-edit handler persists history and projects its outbox.
+    let edit_path = format!(
+        "/api/chat/channels/source/messages/{}",
+        original["id"].as_str().unwrap()
+    );
+    let (status, edited) = request(
+        &app,
+        "PUT",
+        &edit_path,
+        "alice",
+        json!({"text":"Edited live original", "expectedRevision":1}),
     )
-    .bind(channels[0])
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    let mut tx = pool.begin().await.unwrap();
-    project_events(
-        &mut tx,
-        &[(
-            channels[0],
-            edit_seq,
-            json!({"type":"message.edited","message":{"id":original["id"]}}),
-            None,
-        )],
+    .await;
+    assert_eq!(status, StatusCode::OK, "{edited}");
+    assert_eq!(edited["revision"], 2);
+    assert_eq!(edited["seq"], original["seq"]);
+    assert_eq!(edited["thread"], forward["forward"]["message"]["thread"]);
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            &format!("{edit_path}/versions"),
+            "carol",
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND,
+        "sharing current content does not grant source history"
+    );
+    let versions = request(
+        &app,
+        "GET",
+        &format!("{edit_path}/versions"),
+        "alice",
+        Value::Null,
     )
     .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    .1;
+    assert_eq!(
+        versions["versions"][0]["content"]["text"],
+        "Edited live original"
+    );
+    assert_eq!(
+        versions["versions"][1]["content"]["text"],
+        "The live original"
+    );
+    while publish_pending(&chat).await.unwrap() {}
     assert_eq!(
         history_page(&pool, "destination", None, Some(users[2]))
             .await
@@ -402,6 +442,40 @@ async fn live_forwards_are_destination_authorized_flattened_and_replayable(pool:
     assert_eq!(earlier["messages"].as_array().unwrap().len(), 4);
     assert_eq!(earlier["messages"][0]["content"]["text"], "First reply");
     assert_eq!(earlier["hasMore"], false);
+    let root_summary = page["root"]["thread"].clone();
+    let (status, edited_reply) = request(
+        &app,
+        "PUT",
+        &format!(
+            "/api/chat/channels/source/messages/{}",
+            first_reply["id"].as_str().unwrap()
+        ),
+        "bob",
+        json!({"text":"Edited first reply", "expectedRevision":1}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{edited_reply}");
+    assert_eq!(edited_reply["seq"], first_reply["seq"]);
+    let earlier = request(
+        &app,
+        "GET",
+        &format!(
+            "{path}?before={}",
+            page["messages"][0]["seq"].as_str().unwrap()
+        ),
+        "carol",
+        Value::Null,
+    )
+    .await
+    .1;
+    assert_eq!(
+        earlier["messages"][0]["content"]["text"],
+        "Edited first reply"
+    );
+    assert_eq!(
+        earlier["root"]["thread"], root_summary,
+        "content edits do not alter reply count/revision"
+    );
     // Exercise the real publisher and Valkey fanout, not just the projection.
     while publish_pending(&chat).await.unwrap() {}
     let mut subscriber = chat.broker.get_async_pubsub().await.unwrap();

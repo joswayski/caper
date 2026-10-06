@@ -21,11 +21,17 @@ sharing its reactions. Native release and validation gaps are tracked in
 [the runbook](docs/media.md#message-threads).
 
 **Forward message** shares a live, read-only conversation across spaces or into
-an existing DM, including reactions and future replies. Destination readers do
+an existing DM, including edits, reactions and future replies. Destination readers do
 not need source membership; their replies stay in a separate destination thread.
-Editing integration, native validation and rollout are tracked in
+Native validation and rollout are tracked in
 [the runbook](docs/media.md#live-message-forwarding). This change is not deployed
 by merging alone.
+
+Authors can edit messages on web, Android, Apple and Rust desktop, including
+thread roots/replies and DMs. The edited indicator opens retained history with
+the previous/current versions side by side and older changes selectable below;
+broadcast replies update in both places. See platform validation gaps and
+[editing and rollout details](docs/media.md#message-editing).
 
 Mac release downloads use a signed, notarized disk image: open it, drag Caper onto
 Applications, eject the image, then launch Caper from Applications. `~/Applications`

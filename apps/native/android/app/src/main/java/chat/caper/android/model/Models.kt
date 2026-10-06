@@ -37,6 +37,8 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 )
 @Serializable data class ChatAuthor(val id: String, val name: String, val isGuest: Boolean, val avatarId: Int? = null)
 @Serializable data class ChatContent(val version: Int, val type: String, val text: String)
+@Serializable data class MessageVersion(val revision: Int, val content: ChatContent, val createdAt: String)
+@Serializable data class MessageVersions(val messageId: String, val versions: List<MessageVersion>, val hasMore: Boolean)
 @Serializable data class MessageReaction(val emoji: String, val authorIds: List<String>)
 /** One person who reacted; `id` matches the snapshot's `authorIds`. */
 @Serializable data class Reactor(val id: String, val username: String? = null, val displayName: String? = null, val avatarId: Int? = null)
@@ -48,8 +50,14 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 @Serializable data class ForwardDestination(val id: String, val name: String, val spaceName: String, val direct: Boolean)
 @Serializable data class ForwardDestinations(val destinations: List<ForwardDestination>)
 @Serializable data class ForwardConversation(val root: ChatMessage?, val messages: List<ChatMessage>, val cursor: String, val hasMore: Boolean)
-@Serializable data class ThreadSummary(val replyCount: Int, val participants: List<ChatAuthor>, val seq: String)
 @Serializable data class ForwardUpdate(val type: String, val schemaVersion: Int, val channelId: String, val seq: String, val message: ChatMessage)
+@Serializable data class EditUpdate(
+    val type: String,
+    val schemaVersion: Int,
+    val channelId: String,
+    val seq: String,
+    val message: ChatMessage,
+)
 @Serializable data class PinUpdate(
     val type: String,
     val schemaVersion: Int,
@@ -82,8 +90,9 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val thread: ThreadSummary? = null,
     val forward: MessageForward? = null,
     val forwardSeq: String? = null,
-    val revision: Int? = null,
+    val revision: Int = 1,
     val editedAt: String? = null,
+    val editSeq: String? = null,
 )
 @Serializable data class ThreadSummary(val replyCount: Int, val participants: List<ChatAuthor>, val seq: String)
 @Serializable data class ThreadHistory(val root: ChatMessage, val messages: List<ChatMessage>, val cursor: String, val hasMore: Boolean)

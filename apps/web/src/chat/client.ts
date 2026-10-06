@@ -2,7 +2,7 @@ import { ChatConnection } from "./connection.ts";
 import { ChatTimeline } from "./timeline.ts";
 import { playSound } from "../audio/effects.ts";
 import { appGateway } from "../gateway/client.ts";
-import { isChannelMessage, isChatMessage, isChatPinEvent, isChatReactionEvent, sequence, type ChatAuthor, type ChatForwardEvent, type ChatHistory, type ChatMessage, type ChatPinEvent, type ChatReactionEvent, type ChatSession, type ChatThreadHistory, type ChatTypingEvent, type GeneralChatHistory } from "./types.ts";
+import { isChannelMessage, isChatMessage, isChatPinEvent, isChatReactionEvent, sequence, type ChatAuthor, type ChatEditEvent, type ChatForwardEvent, type ChatHistory, type ChatMessage, type ChatPinEvent, type ChatReactionEvent, type ChatSession, type ChatThreadHistory, type ChatTypingEvent, type GeneralChatHistory, type MessageVersion } from "./types.ts";
 
 const SESSION_KEY = "caper.chat.session";
 
@@ -93,6 +93,19 @@ export async function loadChatHistory(channelId?: string, signal?: AbortSignal):
   if (history.messages.some((message) => message.channelId !== history.channel.id)) throw new Error("The chat service returned messages from another channel.");
   if (history.pinnedMessages?.some((message) => message.channelId !== history.channel.id)) throw new Error("The chat service returned pins from another channel.");
   return history;
+}
+
+export async function loadMessageVersions(channelId: string, messageId: string, before?: number, signal?: AbortSignal): Promise<{ versions: MessageVersion[]; hasMore: boolean }> {
+  const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/versions${before ? `?before=${before}` : ""}`, {
+    cache: "no-store", signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(10_000)]),
+  });
+  if (!response.ok) throw await apiError(response, "Message history could not be loaded.");
+  const page = await response.json() as { messageId?: string; versions?: MessageVersion[]; hasMore?: boolean };
+  if (page.messageId !== messageId || typeof page.hasMore !== "boolean" || !Array.isArray(page.versions) || page.versions.length > 50
+    || !page.versions.every((version, index, all) => version && Number.isSafeInteger(version.revision) && version.revision >= 1
+      && (!before || version.revision < before) && (!index || version.revision < all[index - 1].revision)
+      && typeof version.createdAt === "string" && version.content?.version === 1 && version.content.type === "text" && typeof version.content.text === "string")) throw new Error("The chat service returned invalid message history.");
+  return { versions: page.versions, hasMore: page.hasMore };
 }
 
 function storedSession(): ChatSession | undefined {
@@ -481,7 +494,37 @@ export class ChatClient {
     return message;
   }
 
-  private receiveEvent(event: ChatMessage | ChatReactionEvent | ChatPinEvent | ChatForwardEvent) {
+  async editMessage(messageId: string, text: string, expectedRevision: number): Promise<void> {
+    const generation = this.generation, channelId = this.state.channelId, session = this.session;
+    if (this.controller.signal.aborted || !channelId || !session) throw new Error("Your chat session is unavailable. Retry the session, then edit again.");
+    const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}`, {
+      method: "PUT", headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
+      body: JSON.stringify({ text, expectedRevision }), signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
+    });
+    if (!response.ok) throw await apiError(response, "Edit could not be saved. Your draft is kept.");
+    const message: unknown = await response.json();
+    if (!isChatMessage(message) || message.channelId !== channelId || message.id !== messageId || message.author.id !== session.author.id) throw new Error("The chat service returned an invalid edit.");
+    if (generation !== this.generation || this.controller.signal.aborted || session !== this.session) throw new Error("The conversation changed. Reopen the message to edit it.");
+    this.timeline.mergeEdit(message);
+    this.update({ messages: this.timeline.messages, pinnedMessages: this.timeline.pinnedMessages });
+  }
+
+  async reloadMessage(messageId: string): Promise<ChatMessage> {
+    const generation = this.generation, channelId = this.state.channelId;
+    if (!channelId || this.controller.signal.aborted) throw new Error("The conversation is unavailable.");
+    const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}`, {
+      cache: "no-store", signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
+    });
+    if (!response.ok) throw await apiError(response, "The latest message could not be loaded.");
+    const message: unknown = await response.json();
+    if (!isChatMessage(message) || message.channelId !== channelId || message.id !== messageId) throw new Error("The chat service returned an invalid message.");
+    if (generation !== this.generation || this.controller.signal.aborted) throw new Error("The conversation changed. Reopen the message to edit it.");
+    this.timeline.mergeEdit(message);
+    this.update({ messages: this.timeline.messages, pinnedMessages: this.timeline.pinnedMessages });
+    return message;
+  }
+
+  private receiveEvent(event: ChatMessage | ChatReactionEvent | ChatPinEvent | ChatEditEvent | ChatForwardEvent) {
     const visible = new Set(this.timeline.messages.map((item) => item.id));
     const result = this.timeline.applyEvent(event);
     if (!("type" in event)) {
@@ -492,7 +535,7 @@ export class ChatClient {
       const messages = this.timeline.messages;
       this.update({ messages, pinnedMessages: this.timeline.pinnedMessages });
       const ownAuthorId = this.session?.author.id ?? this.state.author?.id;
-      if (this.sounds && result === "applied" && messages.some((item) => !visible.has(item.id) && item.author.id !== ownAuthorId)) playSound("new-message");
+      if (this.sounds && (!("type" in event) || event.type !== "message.edited") && result === "applied" && messages.some((item) => !visible.has(item.id) && item.author.id !== ownAuthorId)) playSound("new-message");
     }
     return result;
   }
@@ -549,6 +592,7 @@ export class ChatClient {
         reactions: (event) => this.receiveEvent(event),
         pin: (event) => this.receiveEvent(event),
         forward: (event) => this.receiveEvent(event),
+        edit: (event) => this.receiveEvent(event),
         status: (online) => {
           if (!online) { this.typers.clear(); this.refreshTypers(); }
           this.update({ online });

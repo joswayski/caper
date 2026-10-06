@@ -1005,6 +1005,8 @@ public final class ChatModel {
     public var forwardTarget: ChatMessage?
     public var forwardConversationTarget: ChatMessage?
     public private(set) var isPreview = false
+    /// Changes when account/channel access or its generation changes.
+    var editingContext: String { "\(generation):\(channelID ?? ""):\(currentAuthor?.id ?? ""):\(isPreview)" }
     /// Web's failed first load: no conversation to show, only the error.
     public private(set) var loadFailed = false
     /// Web's session error: history loaded but sending needs a new chat session.
@@ -1023,6 +1025,7 @@ public final class ChatModel {
     private var reactionSnapshots = ReactionSnapshots()
     private var pinSnapshots = PinSnapshots()
     private var forwardSnapshots = ForwardSnapshots()
+    private var editSnapshots = EditSnapshots()
     private var failedPinActions: [String: Bool] = [:]
     private struct PendingReaction: Equatable {
         let active: Bool
@@ -1050,6 +1053,44 @@ public final class ChatModel {
     }
 
     public init(api: APIClient) { self.api = api }
+
+    func canEdit(_ message: ChatMessage) -> Bool {
+        message.forward == nil && !isPreview && channelID == message.channelId && currentAuthor?.isGuest == false && currentAuthor?.id == message.author.id
+    }
+
+    func editMessage(_ message: ChatMessage, text: String) async throws {
+        guard canEdit(message), let session else { throw UserFacingError(message: "Only the author can edit while participating.") }
+        let request = generation
+        let result = try await api.editMessage(channelID: message.channelId, messageID: message.id, sessionToken: session.token, text: text, expectedRevision: message.revision ?? 1)
+        guard request == generation, canEdit(message) else { throw CancellationError() }
+        guard result.author.id == session.author.id else { throw UserFacingError(message: "Message author mismatch.") }
+        if !applyEditSnapshot(result) { requestResync(generation: request, channelID: message.channelId) }
+    }
+
+    func reloadMessage(_ message: ChatMessage) async throws -> ChatMessage {
+        let request = generation
+        let result = try await api.loadMessage(channelID: message.channelId, messageID: message.id)
+        guard request == generation, channelID == message.channelId else { throw CancellationError() }
+        if !applyEditSnapshot(result) { requestResync(generation: request, channelID: message.channelId) }
+        return result
+    }
+
+    func messageVersions(_ message: ChatMessage, before: Int? = nil) async throws -> MessageVersions {
+        let request = generation
+        let result = try await api.messageVersions(channelID: message.channelId, messageID: message.id, before: before)
+        guard request == generation, channelID == message.channelId else { throw CancellationError() }
+        return result
+    }
+
+    /// HTTP snapshots never advance delivery/read cursors, insert rows or chime.
+    private func applyEditSnapshot(_ message: ChatMessage) -> Bool {
+        editSnapshots.seed(messages + pinnedMessages)
+        editSnapshots.apply(message)
+        guard !editSnapshots.unseenOverflowed else { return false }
+        messages = messages.map { editSnapshots.overlay($0) }
+        pinnedMessages = pinnedMessages.map { editSnapshots.overlay($0) }
+        return true
+    }
 
     func receiveGatewayState(_ state: GatewayState, error: String?) {
         // Actor callbacks queued before unsubscribe must not revive stopped chat.
@@ -1107,8 +1148,9 @@ public final class ChatModel {
         reactionSnapshots.seed(history.messages)
         pinSnapshots.replace(history.messages + history.pinnedMessages, cursor: history.cursor)
         forwardSnapshots.seed(history.messages + history.pinnedMessages)
-        messages = history.messages.map { forwardSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0))) }
-        pinnedMessages = history.pinnedMessages.map { forwardSnapshots.overlay(pinSnapshots.overlay($0)) }
+        editSnapshots.seed(history.messages + history.pinnedMessages)
+        messages = history.messages.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) }
+        pinnedMessages = history.pinnedMessages.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay($0))) }
         delivery.reset(cursor: history.cursor); hasMore = history.hasMore
         channelName = history.channel?.name ?? "general"; spaceName = history.space?.name ?? "Caper"
         session = nil; loading = false; loadFailed = false; sessionError = nil
@@ -1162,8 +1204,9 @@ public final class ChatModel {
             reactionSnapshots.seed(prepared.messages)
             pinSnapshots.replace(prepared.messages + prepared.pinnedMessages, cursor: prepared.cursor)
             forwardSnapshots.seed(prepared.messages + prepared.pinnedMessages)
-            messages = prepared.messages.map { forwardSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0))) }
-            pinnedMessages = prepared.pinnedMessages.map { forwardSnapshots.overlay(pinSnapshots.overlay($0)) }
+            editSnapshots.seed(messages + pinnedMessages + prepared.messages + prepared.pinnedMessages)
+            messages = prepared.messages.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) }
+            pinnedMessages = prepared.pinnedMessages.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay($0))) }
             delivery.reset(cursor: prepared.cursor); hasMore = prepared.hasMore
             channelName = prepared.channel?.name ?? "general"
             spaceName = prepared.space?.name ?? "Caper"
@@ -1202,8 +1245,11 @@ public final class ChatModel {
                 // pin list. Older pagination responses are deliberately ignored.
                 pinSnapshots.replace(history.messages + history.pinnedMessages, cursor: history.cursor)
                 forwardSnapshots.seed(history.messages + history.pinnedMessages)
+                // Overflow requires fresh pages; never keep the resync flag latched.
+                if editSnapshots.unseenOverflowed { editSnapshots.reset() }
+                editSnapshots.seed(messages + pinnedMessages + history.messages + history.pinnedMessages)
                 let candidates = Dictionary((pinnedMessages + history.pinnedMessages).map { ($0.id, $0) }, uniquingKeysWith: { _, next in next })
-                pinnedMessages = candidates.values.map { forwardSnapshots.overlay(pinSnapshots.overlay($0)) }.filter { $0.pin != nil }
+                pinnedMessages = candidates.values.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay($0))) }.filter { $0.pin != nil }
                     .sorted { (try? Sequence.compare($0.pinSeq ?? "0", $1.pinSeq ?? "0")) == .orderedDescending }
                 messages = channelMessages
                 threadOnlyRows = []
@@ -1214,7 +1260,7 @@ public final class ChatModel {
                     // Preserve a newer reaction revision on overlapping rows, but
                     // discard snapshots for rows no longer in the fresh window.
                     reactionSnapshots.seed(history.messages)
-                    messages = history.messages.map { forwardSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0))) }
+                    messages = history.messages.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) }
                     reactionSnapshots.reset()
                     reactionSnapshots.seed(messages)
                 }
@@ -1620,6 +1666,21 @@ public final class ChatModel {
             }
             return
         }
+        if type == "message.edited" {
+            guard let message = EditEvent.message(event, channelID: eventChannelID),
+                  let seq = message.editSeq, delivery.receive(seq: seq) else {
+                requestResync(generation: eventGeneration, channelID: eventChannelID); return
+            }
+            if !applyEditSnapshot(message) {
+                requestResync(generation: eventGeneration, channelID: eventChannelID); return
+            }
+            onReadCursor?()
+            if let subscriptionID {
+                let cursor = delivery.cursor
+                Task { await gateway.updateCursor(subscription: subscriptionID, after: cursor) }
+            }
+            return
+        }
         if type == "message.pin" {
             guard let data = try? JSONSerialization.data(withJSONObject: event),
                   let pinEvent = try? JSONDecoder().decode(MessagePinEvent.self, from: data), pinEvent.isValid,
@@ -1707,6 +1768,7 @@ public final class ChatModel {
         pinSnapshots.reset(); pinnedMessages = []; pendingPins = []; pinErrors = [:]
         forwardSnapshots.reset()
         canForward = false; forwardTarget = nil; forwardConversationTarget = nil
+        editSnapshots.reset()
         failedPinActions = [:]
         closeThread(); threadOnlyRows = []; threadDrafts = [:]; threadBroadcasts = [:]
         isPreview = false
@@ -1720,6 +1782,7 @@ public final class ChatModel {
         reactionSnapshots.seed(incoming)
         pinSnapshots.seed(incoming)
         forwardSnapshots.seed(incoming)
+        editSnapshots.seed(messages + pinnedMessages + incoming)
         var byID = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) })
         var summaries: [String: ThreadSummary] = [:]
         for message in messages + incoming {
@@ -1727,9 +1790,9 @@ public final class ChatModel {
             let root = message.threadRootId ?? message.id
             if summaries[root] == nil || (try? Sequence.compare(summary.seq, summaries[root]!.seq)) == .orderedDescending { summaries[root] = summary }
         }
-        incoming.forEach { byID[$0.id] = forwardSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0))) }
+        incoming.forEach { byID[$0.id] = forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) }
         byID = byID.mapValues { message in
-            var updated = forwardSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay(message)))
+            var updated = forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay(message))))
             updated.thread = summaries[message.threadRootId ?? message.id] ?? message.thread
             return updated
         }
@@ -1738,10 +1801,11 @@ public final class ChatModel {
     }
 
     private func applyPin(_ message: ChatMessage) {
+        editSnapshots.seed(messages + pinnedMessages + [message])
         guard pinSnapshots.apply(message) else { return }
-        messages = messages.map { pinSnapshots.overlay($0) }
+        messages = messages.map { editSnapshots.overlay(pinSnapshots.overlay($0)) }
         pinnedMessages.removeAll { $0.id == message.id }
-        let updated = forwardSnapshots.overlay(pinSnapshots.overlay(message))
+        let updated = forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(message)))
         if updated.pin != nil {
             pinnedMessages.append(updated)
             pinnedMessages.sort { (try? Sequence.compare($0.pinSeq ?? "0", $1.pinSeq ?? "0")) == .orderedDescending }

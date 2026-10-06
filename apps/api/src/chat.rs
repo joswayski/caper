@@ -24,6 +24,7 @@ use std::{sync::Arc, time::Duration};
 use tokio::sync::Notify;
 use uuid::Uuid;
 
+mod editing;
 mod forwarding;
 
 pub(crate) const TOPIC: &str = "caper:chat:v1:events";
@@ -92,6 +93,14 @@ pub(crate) fn routes() -> Router<AppState> {
         .route(
             "/api/chat/channels/{channel}/messages",
             get(history).post(send),
+        )
+        .route(
+            "/api/chat/channels/{channel}/messages/{message}",
+            get(editing::message).put(editing::edit),
+        )
+        .route(
+            "/api/chat/channels/{channel}/messages/{message}/versions",
+            get(editing::versions),
         )
         .route(
             "/api/chat/channels/{channel}/messages/{message}/reactions",

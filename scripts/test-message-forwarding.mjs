@@ -22,9 +22,10 @@ const screenshot = name => {
   assert.equal(evaluate('devicePixelRatio'), 2);
   browser('screenshot', `${artifacts}/${name}.png`);
 };
-const request = async (path, body, who = 'owner') => {
-  const response = await fetch(api + path, { method: body ? 'POST' : 'GET', headers: {
+const request = async (path, body, who = 'owner', method = body ? 'POST' : 'GET', token) => {
+  const response = await fetch(api + path, { method, headers: {
     authorization: `Bearer fixture-${who}-token`, connection: 'close', ...(body ? { 'content-type': 'application/json' } : {}),
+    ...(token ? { 'x-caper-chat-token': token } : {}),
   }, ...(body ? { body: JSON.stringify(body) } : {}) });
   return { status: response.status, value: await response.json() };
 };
@@ -34,7 +35,7 @@ try {
   assert.equal((await request('/health')).value.fixture, true);
   assert.equal((await control({ reset: true })).status, 200);
   const source = (await request('/api/chat/channels/chan00000003/messages')).value.messages[0];
-  await control({ incomingEdit: { messageId: source.id, text: 'Live discussion from private planning.' } });
+  await control({ incomingEdit: { messageId: source.id, text: 'TEST FIXTURE — Live discussion from private planning.' } });
   await control({ incomingReply: { rootId: source.id, text: 'An existing reply before sharing.' } });
   browser('open', 'about:blank');
   browser('set', 'viewport', '1440', '900', '2');
@@ -46,6 +47,7 @@ try {
   wait(`!!document.querySelector('${sourceRow}') && !document.querySelector('.chat-initial-messages') && document.querySelector('#chat-heading')?.textContent.includes('planning')`);
   browser('focus', `${sourceRow} .chat-message-actions-trigger`);
   browser('press', 'Enter');
+  assert.equal(evaluate('Array.from(document.querySelectorAll(".chat-copy-actions button")).filter(button => button.textContent === "Edit message").length'), 1, 'Source author retains the edit action');
   browser('find', 'role', 'button', 'click', '--name', 'Forward message', '--exact');
   wait('document.querySelectorAll(".chat-forward-destinations input").length > 0');
   browser('click', '.chat-forward-destinations label:nth-child(2) input');
@@ -72,16 +74,29 @@ try {
   const wrapper = forwards[0];
   assert.equal(wrapper.forward.message.id, source.id);
   assert.equal(wrapper.forward.message.thread.replyCount, 1);
+  browser('find', 'role', 'button', 'click', '--name', 'general', '--exact');
+  wait('!!document.querySelector(".chat-forward-card") && !document.querySelector(".chat-initial-messages")');
+  const wrapperRow = `[data-message-key="${wrapper.clientMessageId}"]`;
+  browser('focus', `${wrapperRow} .chat-message-actions-trigger`);
+  browser('press', 'Enter');
+  assert.equal(evaluate('Array.from(document.querySelectorAll(".chat-copy-actions button")).filter(button => /Edit message|Message history/.test(button.textContent)).length'), 0, 'Even the wrapper author has no edit/history controls');
+  screenshot('forward-read-only-actions');
+  browser('press', 'Escape');
+  const session = (await request('/api/chat/session', { name: 'Fixture Owner' })).value;
+  assert.equal((await request(`/api/chat/channels/${wrapper.channelId}/messages/${wrapper.id}`, { text: 'Forbidden wrapper edit', expectedRevision: 1 }, 'owner', 'PUT', session.token)).status, 404);
   browser('cookies', 'set', 'caper_fixture', 'other', '--url', web, '--path', '/', '--sameSite', 'Lax');
   evaluate('localStorage.clear()');
   browser('open', `${web}/spaces`);
   wait('!!document.querySelector(".chat-forward-card") && !document.querySelector(".chat-initial-messages")');
   assert.equal((await request('/api/chat/channels/chan00000003/messages', undefined, 'other')).status, 404);
+  assert.equal((await request(`/api/chat/channels/${source.channelId}/messages/${source.id}/versions`, undefined, 'other')).status, 404);
   browser('click', '.chat-forward-card button');
   wait('document.querySelector(".chat-forward-body h3")?.textContent === "1 reply"');
   assert.equal(evaluate('document.querySelectorAll(".chat-forward-dialog input, .chat-forward-dialog textarea").length'), 0, 'Original conversation is read-only');
   assert.equal(evaluate('document.querySelectorAll(".chat-forward-dialog .chat-forward-original").length'), 2);
-  await control({ incomingEdit: { messageId: source.id, text: 'The original changed after sharing.' } });
+  const saved = await request(`/api/chat/channels/${source.channelId}/messages/${source.id}`, { text: 'TEST FIXTURE — The original changed after sharing.', expectedRevision: 2 }, 'owner', 'PUT', session.token);
+  assert.equal(saved.status, 200);
+  assert.equal(saved.value.revision, 3);
   await control({ incomingReaction: { channelId: source.channelId, messageId: source.id, emoji: '👀' } });
   await control({ incomingReply: { rootId: source.id, text: 'A future reply shared automatically.' } });
   wait('document.querySelector(".chat-forward-body h3")?.textContent === "2 replies" && document.querySelector(".chat-forward-body").textContent.includes("A future reply") && document.querySelector(".chat-forward-body").textContent.includes("The original changed") && !!document.querySelector(".chat-forward-reactions")');
@@ -92,7 +107,6 @@ try {
   browser('press', 'Escape');
   wait('!document.querySelector(".chat-forward-dialog")');
   if (evaluate('!!document.querySelector(".member-list-close")')) browser('click', '.member-list-close');
-  const wrapperRow = `[data-message-key="${wrapper.clientMessageId}"]`;
   browser('click', `${wrapperRow} .chat-reply-thread`);
   wait('!!document.querySelector("#chat-thread-reply")');
   browser('fill', '#chat-thread-reply', 'TEST FIXTURE — Replying only in the destination.');

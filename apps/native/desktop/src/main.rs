@@ -4,6 +4,7 @@ mod api;
 mod avatar_images;
 mod credentials;
 mod daily_icon;
+mod edits;
 mod effects;
 mod emoji;
 mod forwarding;
@@ -320,6 +321,9 @@ struct CaperApp {
     pending_pins: BTreeSet<String>,
     pin_errors: BTreeMap<String, (bool, String)>,
     showing_pins: bool,
+    message_editor: Option<edits::Editor>,
+    edit_history: Option<edits::History>,
+    edit_request: u64,
     typers: BTreeMap<String, Typer>,
     typing_sent: bool,
     typing_edited: Instant,
@@ -439,6 +443,9 @@ impl CaperApp {
             pending_pins: BTreeSet::new(),
             pin_errors: BTreeMap::new(),
             showing_pins: false,
+            message_editor: None,
+            edit_history: None,
+            edit_request: 0,
             typers: BTreeMap::new(),
             typing_sent: false,
             typing_edited: now,
@@ -539,6 +546,55 @@ impl CaperApp {
                     app.timeline
                         .reset(messages, "4")
                         .expect("valid reaction fixture");
+                } else if name.starts_with("parity-edits") {
+                    let mut message = app.timeline.messages().nth(1).unwrap().clone();
+                    let original = message.clone();
+                    message.content.text =
+                        "The same edited conversation should feel familiar on every platform."
+                            .into();
+                    message.revision = 2;
+                    message.edited_at = Some("2026-10-06T09:44:00Z".into());
+                    message.edit_seq = Some("5".into());
+                    app.timeline
+                        .apply_edit(model::EditUpdate {
+                            kind: "message.edited".into(),
+                            schema_version: 1,
+                            channel_id: message.channel_id.clone(),
+                            seq: "5".into(),
+                            message: message.clone(),
+                        })
+                        .expect("valid edit fixture");
+                    if name == "parity-edits-history" {
+                        app.edit_history = Some(edits::History {
+                            message: message.clone(),
+                            versions: vec![
+                                model::MessageVersion {
+                                    revision: 2,
+                                    content: message.content.clone(),
+                                    created_at: message.edited_at.clone().unwrap(),
+                                },
+                                model::MessageVersion {
+                                    revision: 1,
+                                    content: original.content.clone(),
+                                    created_at: original.created_at.clone(),
+                                },
+                            ],
+                            selected: None,
+                            loading: false,
+                            older: false,
+                            more: false,
+                            error: None,
+                            request: 0,
+                            requested_revision: 2,
+                        });
+                    }
+                    if name == "parity-edits-editor" {
+                        app.session = Some(ChatSession {
+                            token: "fixture-token".into(),
+                            author: message.author.clone(),
+                        });
+                        app.open_editor(&message);
+                    }
                 } else if matches!(
                     name,
                     "parity-direct" | "parity-direct-new" | "parity-direct-no-spaces"
@@ -997,7 +1053,9 @@ impl CaperApp {
                 thread: None,
                 forward: None,
                 forward_seq: None,
+                revision: 1,
                 edited_at: None,
+                edit_seq: None,
             })
             .collect();
         self.timeline.reset(messages, "4").expect("valid fixture");
@@ -1311,6 +1369,37 @@ impl CaperApp {
                             }
                         }
                     }
+                }
+                Event::EditSnapshot {
+                    generation,
+                    request,
+                    channel,
+                    message,
+                    reloaded,
+                    result,
+                } if current(
+                    generation,
+                    self.generation,
+                    Some(&channel),
+                    self.selected_channel.as_deref(),
+                ) =>
+                {
+                    self.accept_edit(request, &message, reloaded, result);
+                }
+                Event::MessageVersions {
+                    generation,
+                    request,
+                    channel,
+                    message,
+                    result,
+                } if current(
+                    generation,
+                    self.generation,
+                    Some(&channel),
+                    self.selected_channel.as_deref(),
+                ) =>
+                {
+                    self.accept_versions(request, &message, result);
                 }
                 Event::MediaStatus {
                     generation,
@@ -2418,6 +2507,23 @@ impl CaperApp {
                     _ => {}
                 }
             }
+            GatewayEvent::Edit {
+                generation,
+                channel,
+                update,
+            } if current(
+                generation,
+                self.generation,
+                Some(&channel),
+                self.selected_channel.as_deref(),
+            ) =>
+            {
+                match self.timeline.apply_edit(*update) {
+                    Ok(model::Apply::Applied) => self.mark_selected_direct_read(),
+                    Ok(model::Apply::Resync) | Err(_) => self.reload_channel(),
+                    _ => {}
+                }
+            }
             GatewayEvent::Typing {
                 generation,
                 channel,
@@ -2637,6 +2743,8 @@ impl CaperApp {
         self.pending_pins.clear();
         self.pin_errors.clear();
         self.showing_pins = false;
+        self.message_editor = None;
+        self.edit_history = None;
         self.draft.clear();
         self.typers.clear();
         self.live = "Offline".into();
@@ -3187,6 +3295,7 @@ impl CaperApp {
             let dialog_was_open = self.dialog.is_some();
             self.shell(context);
             self.dialogs(context, dialog_was_open);
+            self.message_edit_dialogs(context);
         }
         // egui's buttons and custom click targets do not set a hand cursor.
         // Only supply a fallback: text fields and resize handles keep theirs.
@@ -6555,6 +6664,11 @@ impl CaperApp {
         } else {
             display_time(&message.created_at)
         };
+        let time = if message.revision > 1 {
+            format!("{time} (edited)")
+        } else {
+            time
+        };
         let pinned = message.pin.as_ref();
         let message_rect = egui::Frame::new()
             .fill(
@@ -6589,7 +6703,7 @@ impl CaperApp {
                             );
                         });
                 }
-                message_row(
+                let timestamp = message_row(
                     ui,
                     &message.author.name,
                     message.author.avatar_id,
@@ -6598,6 +6712,23 @@ impl CaperApp {
                     message.author.is_guest,
                     false,
                 );
+                if message.forward.is_none() && message.revision > 1 {
+                    let marker = ui.interact(
+                        timestamp,
+                        ui.id().with(("edit-history", &message.id)),
+                        egui::Sense::click(),
+                    );
+                    marker.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            true,
+                            "View edit history",
+                        )
+                    });
+                    if marker.on_hover_text("View edit history").clicked() {
+                        self.open_edit_history(message);
+                    }
+                }
             })
             .response
             .rect;
@@ -6763,6 +6894,17 @@ impl CaperApp {
                             token,
                             message.clone(),
                         );
+                        ui.close();
+                    }
+                    if self.can_edit(message) && ui.button("Edit message").clicked() {
+                        self.open_editor(message);
+                        ui.close();
+                    }
+                    if message.forward.is_none()
+                        && message.revision > 1
+                        && ui.button("View edit history").clicked()
+                    {
+                        self.open_edit_history(message);
                         ui.close();
                     }
                     if ui
@@ -8687,7 +8829,7 @@ fn message_row(
     text: &str,
     guest: bool,
     pending: bool,
-) {
+) -> egui::Rect {
     egui::Frame::new()
         .inner_margin(egui::Margin::symmetric(18, 10))
         .show(ui, |ui| {
@@ -8695,21 +8837,27 @@ fn message_row(
             ui.horizontal_top(|ui| {
                 avatar(ui, author, avatar_id, 34.0, false);
                 ui.vertical(|ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(bold(author).size(13.0));
-                        if guest {
-                            ui.label(RichText::new("GUEST").size(9.0).color(MUTED));
-                        }
-                        ui.label(RichText::new(time).size(10.0).color(MUTED));
-                    });
+                    let timestamp = ui
+                        .horizontal_wrapped(|ui| {
+                            ui.label(bold(author).size(13.0));
+                            if guest {
+                                ui.label(RichText::new("GUEST").size(9.0).color(MUTED));
+                            }
+                            ui.label(RichText::new(time).size(10.0).color(MUTED)).rect
+                        })
+                        .inner;
                     ui.label(RichText::new(text).size(14.0).color(if pending {
                         MUTED
                     } else {
                         Color32::from_rgb(222, 223, 224)
                     }));
-                });
-            });
-        });
+                    timestamp
+                })
+                .inner
+            })
+            .inner
+        })
+        .inner
 }
 
 fn date_divider(ui: &mut egui::Ui, label: &str) {
@@ -13727,7 +13875,9 @@ mod tests {
             thread: None,
             forward: None,
             forward_seq: None,
+            revision: 1,
             edited_at: None,
+            edit_seq: None,
         };
         assert!(pending.confirmed_by(&message, "author"));
         assert!(!pending.confirmed_by(&message, "another-author"));
@@ -13812,7 +13962,9 @@ mod tests {
                 thread: None,
                 forward: None,
                 forward_seq: None,
+                revision: 1,
                 edited_at: None,
+                edit_seq: None,
             }),
         });
         assert!(!app.typers.get("other").unwrap().typing);
@@ -14559,5 +14711,143 @@ mod tests {
         );
         assert!(app.pending.is_none());
         assert!(app.draft.is_empty());
+    }
+
+    #[test]
+    fn message_editor_retains_conflicts_keeps_replay_cursor_and_ignores_obsolete_requests() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-edits-editor"),
+        );
+        let original = app.message_editor.as_ref().unwrap().original.clone();
+        let request = app.message_editor.as_ref().unwrap().request;
+        let cursor = app.timeline.cursor();
+        app.message_editor.as_mut().unwrap().draft = "Keep my unsaved draft".into();
+        app.accept_edit(
+            request,
+            &original.id,
+            false,
+            Err("This message changed. Load latest before retrying.".into()),
+        );
+        assert_eq!(
+            app.message_editor.as_ref().unwrap().draft,
+            "Keep my unsaved draft"
+        );
+        let mut latest = original.clone();
+        latest.content.text = "A correction made on another device".into();
+        latest.revision = 3;
+        latest.edit_seq = Some("7".into());
+        app.timeline.merge_edit_ack(latest.clone()).unwrap();
+        assert_eq!(
+            app.message_editor.as_ref().unwrap().original.revision,
+            2,
+            "Live updates must not silently rebase the draft"
+        );
+        assert_eq!(app.timeline.cursor(), cursor);
+        app.accept_edit(request, &original.id, true, Ok(Box::new(latest.clone())));
+        assert_eq!(
+            app.message_editor.as_ref().unwrap().draft,
+            "A correction made on another device"
+        );
+        assert_eq!(app.message_editor.as_ref().unwrap().original.revision, 3);
+        app.open_editor(&latest);
+        app.accept_edit(request, &original.id, false, Ok(Box::new(latest.clone())));
+        assert!(
+            app.message_editor.is_some(),
+            "A late response must not close a reopened editor"
+        );
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.contains("Save changes"))
+        }));
+        assert_eq!(app.timeline.cursor(), cursor);
+        app.session.as_mut().unwrap().author.id = "somebody-else".into();
+        app.open_editor(&latest);
+        render(&mut app, &context, vec![]);
+        assert!(
+            app.message_editor.is_none(),
+            "Author/account loss closes the obsolete editor"
+        );
+    }
+
+    #[test]
+    fn forwarded_wrapper_author_cannot_open_editor_or_source_history() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-edits-editor"),
+        );
+        let original = app.message_editor.take().unwrap().original;
+        assert!(
+            app.can_edit(&original),
+            "The actual source author retains editing"
+        );
+        let mut wrapper = original.clone();
+        wrapper.id = "forward-wrapper".into();
+        wrapper.forward = Some(Box::new(model::MessageForward {
+            message: Some(original),
+            seq: "7".into(),
+        }));
+        assert!(
+            !app.can_edit(&wrapper),
+            "Wrapper authors cannot edit the shared content or note"
+        );
+        app.open_editor(&wrapper);
+        app.open_edit_history(&wrapper);
+        assert!(app.message_editor.is_none());
+        assert!(app.edit_history.is_none());
+    }
+
+    #[test]
+    fn message_history_keeps_latest_pair_when_browsing_the_original() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-edits-history"),
+        );
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, vec![]);
+        app.edit_history.as_mut().unwrap().selected = Some(1);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        for label in [
+            "Previous version",
+            "Current version",
+            "View previous versions",
+            "Original version",
+        ] {
+            assert!(output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.contains(label))
+            }), "Missing {label}");
+        }
+        let heading_y = |label: &str| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| {
+                    if let egui::Shape::Text(text) = &shape.shape {
+                        (text.galley.job.text == label).then_some(text.pos.y)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| panic!("Missing exact heading {label}"))
+        };
+        assert!(
+            heading_y("Original version") > heading_y("View previous versions"),
+            "The selected original must be rendered below the selector, not only in the latest pair"
+        );
+        let history = app.edit_history.as_ref().unwrap();
+        assert_eq!(history.versions[0].revision, 2);
+        assert_eq!(history.selected, Some(1));
+        let request = history.request;
+        let id = history.message.id.clone();
+        app.accept_versions(request + 1, &id, Err("Obsolete request".into()));
+        assert!(app.edit_history.as_ref().unwrap().error.is_none());
     }
 }

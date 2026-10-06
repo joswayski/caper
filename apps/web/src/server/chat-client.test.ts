@@ -1221,3 +1221,34 @@ test("thread send retry freezes root and broadcast and confirms one shared reply
   assert.equal(f.state.messages.length, 1);
   assert.equal(f.client.snapshotHistory()?.cursor, "1");
 });
+
+test("edit PUTs keep expected revision, merge live updates and reject late abandoned acknowledgements", async (t) => {
+  const f = await sendingFixture(t);
+  const original = committed({ clientMessageId: "edit-root", text: "Friday" }, "1");
+  f.sockets[0].message(original);
+  const version2 = { ...original, revision: 2, editSeq: "2", editedAt: original.createdAt, content: { ...original.content, text: "Saturday" } };
+  const responses: Array<(response: Response) => void> = [];
+  t.mock.method(globalThis, "fetch", (input: unknown, init?: RequestInit) => {
+    assert.equal(String(input), "/api/chat/channels/general/messages/message-1");
+    assert.equal(new Headers(init?.headers).get("x-caper-chat-token"), "opaque");
+    assert.equal(init?.method, "PUT");
+    assert.deepEqual(Object.keys(JSON.parse(String(init?.body))).sort(), ["expectedRevision", "text"]);
+    return new Promise<Response>((resolve) => responses.push(resolve));
+  });
+  const save = f.client.editMessage(original.id, "Saturday", 1);
+  responses[0](Response.json(version2)); await save;
+  assert.equal(f.state.messages[0].content.text, "Saturday");
+  assert.equal(f.client.snapshotHistory()?.cursor, "1");
+  f.sockets[0].frame({ type: "message.edited", schemaVersion: 1, channelId: "general", seq: "2", message: version2 });
+  assert.equal(f.client.snapshotHistory()?.cursor, "2");
+  assert.equal(f.state.messages.length, 1);
+  const conflict = f.client.editMessage(original.id, "Old draft", 1);
+  responses[1](Response.json({ error: "message changed" }, { status: 409 }));
+  await assert.rejects(conflict, /message changed/);
+  assert.equal(f.state.messages[0].content.text, "Saturday");
+  const late = f.client.editMessage(original.id, "Sunday", 2);
+  const before = f.state; f.client.stop();
+  responses[2](Response.json({ ...version2, revision: 3, editSeq: "3", content: { ...version2.content, text: "Sunday" } }));
+  await assert.rejects(late, /conversation changed/);
+  assert.equal(f.state, before);
+});

@@ -142,6 +142,29 @@ pub enum Command {
         message: String,
         active: bool,
     },
+    EditMessage {
+        generation: u64,
+        request: u64,
+        token: Option<String>,
+        chat_token: String,
+        original: Box<Message>,
+        text: String,
+    },
+    ReloadMessage {
+        generation: u64,
+        request: u64,
+        token: Option<String>,
+        channel: String,
+        message: String,
+    },
+    MessageVersions {
+        generation: u64,
+        request: u64,
+        token: Option<String>,
+        channel: String,
+        message: String,
+        before: Option<u32>,
+    },
     Typing {
         token: Option<String>,
         chat_token: String,
@@ -394,6 +417,21 @@ pub enum Event {
         message: String,
         active: bool,
         result: Result<crate::model::PinUpdate, SendFailure>,
+    },
+    EditSnapshot {
+        generation: u64,
+        request: u64,
+        channel: String,
+        message: String,
+        reloaded: bool,
+        result: Result<Box<Message>, String>,
+    },
+    MessageVersions {
+        generation: u64,
+        request: u64,
+        channel: String,
+        message: String,
+        result: Result<crate::model::MessageVersions, String>,
     },
     Credential {
         generation: u64,
@@ -1051,6 +1089,57 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                     status: error.status.map(|status| status.as_u16()),
                     message: error.to_string(),
                 }),
+        },
+        Command::EditMessage {
+            generation,
+            request,
+            token,
+            chat_token,
+            original,
+            text,
+        } => Event::EditSnapshot {
+            generation,
+            request,
+            channel: original.channel_id.clone(),
+            message: original.id.clone(),
+            reloaded: false,
+            result: api
+                .edit_message(token.as_deref(), &chat_token, &original, &text)
+                .map(Box::new)
+                .map_err(|error| error.to_string()),
+        },
+        Command::ReloadMessage {
+            generation,
+            request,
+            token,
+            channel,
+            message,
+        } => Event::EditSnapshot {
+            generation,
+            request,
+            channel: channel.clone(),
+            message: message.clone(),
+            reloaded: true,
+            result: api
+                .load_message(token.as_deref(), &channel, &message)
+                .map(Box::new)
+                .map_err(|error| error.to_string()),
+        },
+        Command::MessageVersions {
+            generation,
+            request,
+            token,
+            channel,
+            message,
+            before,
+        } => Event::MessageVersions {
+            generation,
+            request,
+            channel: channel.clone(),
+            message: message.clone(),
+            result: api
+                .message_versions(token.as_deref(), &channel, &message, before)
+                .map_err(|error| error.to_string()),
         },
         Command::Admin {
             generation,

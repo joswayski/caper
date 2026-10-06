@@ -6,7 +6,7 @@ import { isChatForwardEvent, isChatMessage, type ChatForwardEvent, type ChatMess
 function forward(sourceSeq = "9007199254740993", destinationSeq = "2", id = "wrapper"): ChatMessage {
   const original: ChatMessage = { id: "original", channelId: "private-source", seq: "89", author: { id: "alice", name: "Alice", isGuest: false },
     content: { version: 1, type: "text", text: `source ${sourceSeq}` }, createdAt: "2026-10-06T10:00:00Z", clientMessageId: "source-key",
-    thread: { replyCount: 7, participants: [], seq: sourceSeq }, revision: 3, editedAt: "2026-10-06T11:00:00Z" };
+    thread: { replyCount: 7, participants: [], seq: sourceSeq }, revision: 3, editedAt: "2026-10-06T11:00:00Z", editSeq: "91" };
   return { id, channelId: "destination", seq: "1", author: { id: "bob", name: "Bob", isGuest: false },
     content: { version: 1, type: "text", text: "my note" }, createdAt: "2026-10-06T11:01:00Z", clientMessageId: `key-${id}`,
     forward: { message: original, seq: sourceSeq }, forwardSeq: destinationSeq };
@@ -70,4 +70,31 @@ test("forward wire validation rejects cross-channel and revision mismatches, mal
   assert.equal(isChatMessage({ ...valid.message, forward: { seq: "02", message: null } }), false);
   assert.equal(isChatMessage({ ...valid.message, forward: { seq: "2", message: { content: { text: "untrusted" } } } }), false);
   assert.equal(isChatMessage({ ...valid.message, forward: { seq: "2", message: forward() } }), false);
+});
+
+test("projected source edits and destination reply edits preserve independent thread, reaction and pin state", () => {
+  const wrapper = { ...forward("99", "1"), reactionSeq: "5", reactions: [{ emoji: "👀", authorIds: ["peer"] }],
+    pinSeq: "4", pin: { author: forward().author, createdAt: "2026-10-06T12:00:00Z" },
+    thread: { replyCount: 1, participants: [forward().author], seq: "3" } };
+  const reply: ChatMessage = { ...wrapper, id: "local-reply", seq: "2", clientMessageId: "reply-key", forward: undefined,
+    forwardSeq: undefined, pin: undefined, pinSeq: undefined, threadRootId: wrapper.id, content: { version: 1, type: "text", text: "My local reply" } };
+  const timeline = new ChatTimeline();
+  timeline.reset([wrapper, reply], "5", [wrapper]);
+  const projected = event("101", "6");
+  projected.message.forward!.message = { ...projected.message.forward!.message!, revision: 4, editSeq: "101",
+    content: { version: 1, type: "text", text: "Edited original" } };
+  timeline.applyEvent(projected);
+  timeline.applyEvent({ type: "message.edited", schemaVersion: 1, channelId: "destination", seq: "7",
+    message: { ...reply, revision: 2, editedAt: "2026-10-06T12:30:00Z", editSeq: "7", content: { version: 1, type: "text", text: "Edited local reply" } } });
+  timeline.mergeSent(wrapper);
+  assert.equal(timeline.cursor, "7");
+  const current = timeline.messages.find((message) => message.id === wrapper.id)!;
+  assert.equal(current.content.text, "my note");
+  assert.equal(current.forward?.message?.content.text, "Edited original");
+  assert.equal(current.forward?.message?.revision, 4);
+  assert.deepEqual(current.thread, wrapper.thread);
+  assert.deepEqual(current.reactions, wrapper.reactions);
+  assert.deepEqual(current.pin, wrapper.pin);
+  assert.equal(timeline.pinnedMessages[0].forward?.message?.content.text, "Edited original");
+  assert.equal(timeline.messages.find((message) => message.id === reply.id)!.content.text, "Edited local reply");
 });

@@ -117,6 +117,9 @@
 .chat-pinned-message .chat-pin-marker { margin-bottom: 6px; padding-right: 0; }
 .chat-pinned-message > button { position: absolute; top: 10px; right: 10px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text-muted); font: inherit; font-size: .68rem; cursor: pointer; }
 .chat-pinned-message > button:disabled { opacity: .55; cursor: wait; }
+.chat-pinned-edit-actions { grid-column: 2; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 4px; }
+.chat-pinned-edit-actions > button:not(.chat-edited) { padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text-muted); font: inherit; font-size: .68rem; cursor: pointer; }
+.chat-pinned-edit-actions > button:focus-visible { outline: 2px solid var(--terracotta); outline-offset: 2px; }
 .chat-message-pending p { color: var(--text-muted); }
 .chat-send-status { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin-top: 5px; color: var(--text-muted); font-size: .7rem; }
 .chat-send-error { color: #ff9b82; }
@@ -243,3 +246,32 @@
   .chat-forward-overlay { align-items: end; padding: 8px; }
   .chat-forward-dialog { max-height: calc(100dvh - 16px); padding-bottom: env(safe-area-inset-bottom); }
 }
+.chat-edited { padding: 0; border: 0; background: transparent; color: var(--text-muted); font: inherit; font-size: .68rem; cursor: pointer; }
+.chat-edited:hover { text-decoration: underline; }
+.chat-edit-dialog { width: min(560px, calc(100vw - 28px)); max-height: calc(100dvh - 28px); margin: auto; padding: 24px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; box-shadow: 0 20px 80px rgb(0 0 0 / 45%); }
+.chat-edit-dialog::backdrop { background: rgb(0 0 0 / 65%); }
+.chat-edit-dialog h2 { margin: 0; font-size: 1.15rem; }
+.chat-edit-dialog h3 { margin: 22px 0 8px; font-size: .85rem; }
+.chat-edit-notice { margin: 12px 0 20px; color: var(--text-muted); font-size: .8rem; line-height: 1.5; }
+.chat-edit-dialog label { display: block; margin: 0 0 8px; font-size: .82rem; font-weight: 700; }
+.chat-edit-dialog textarea, .chat-edit-dialog select { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--blackout); color: var(--text); font: inherit; font-size: .85rem; line-height: 1.5; }
+.chat-edit-dialog textarea { resize: vertical; min-height: 140px; max-height: 45dvh; }
+.chat-edit-dialog small { display: block; margin-top: 6px; color: var(--text-muted); font-size: .72rem; text-align: right; }
+.chat-edit-dialog button { padding: 8px 12px; min-height: 40px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text); font: inherit; font-size: .82rem; font-weight: 700; cursor: pointer; }
+.chat-edit-buttons { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
+.chat-edit-dialog .chat-edit-save { border-color: var(--terracotta); background: var(--terracotta); }
+.chat-edit-dialog button:disabled { opacity: .5; cursor: not-allowed; }
+.chat-edit-dialog :focus-visible, .chat-edited:focus-visible { outline: 2px solid var(--terracotta); outline-offset: 2px; }
+.chat-version-dialog > header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.chat-version-dialog > header button { display: grid; place-items: center; width: 40px; padding: 0; border: 0; }
+.chat-version-text { margin: 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .9rem; line-height: 1.6; }
+.chat-version-dialog { width: min(880px, calc(100vw - 28px)); }
+.chat-version-comparison { margin: 18px 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.chat-version-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.chat-version-columns > div { padding: 12px; background: var(--blackout); }
+.chat-version-columns > div + div { border-left: 1px solid var(--border); }
+.chat-version-columns h3 { margin: 0 0 6px; }
+.chat-version-columns p { margin: 0; font-size: .7rem; color: var(--text-muted); overflow-wrap: anywhere; }
+.chat-version-older { padding-top: 20px; border-top: 1px solid var(--border); }
+.chat-code-diff { --diffs-font-family: ui-monospace, monospace; --diffs-font-size: 13px; --diffs-line-height: 1.6; --diffs-deletion-color-override: #B64D32; --diffs-addition-color-override: #637A43; }
+@media (max-width: 760px) { .chat-edit-dialog { padding: 20px; } .chat-edit-dialog button { min-height: 44px; } }
