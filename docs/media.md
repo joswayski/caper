@@ -185,6 +185,18 @@ same space's member page/presence subscription. Rust desktop retains member
 statuses and pagination, but reconnects its combined chat/presence gateway on
 channel changes. Web keeps its unchanged member subscription mounted.
 
+Web direct-message history is loaded only by `ChatClient`; opening a conversation
+does not issue a second page-level read. Switching away aborts its in-flight
+history and the previous channel's voice-availability request. Loading failures
+remain visible with an explicit Retry; cancellation does not become a UI error.
+`scripts/test-direct-messages.mjs` checks request counts, rapid switches and
+failure/retry at desktop/390px using the disposable native parity fixture beside
+Vite. `scripts/test-channel-joining.mjs` checks voice-status cancellation with its
+own browser mocks; run it without the parity API/gateway listening. Native request
+lifetimes are independent implementations and are unchanged by these web-only
+fixes. No API, gateway, migration, infrastructure, secret or native release is
+required; deploy web independently through the existing web deployment workflow.
+
 Run `NAVIGATION_TEST_WEB_URL=http://localhost:5174/spaces node scripts/test-desktop-navigation.mjs`
 against Vite for mocked desktop/390px repeat-click, hover/click sharing, cancellation
 and stable presence checks. Web build/tests and Rust desktop tests/Clippy run in
@@ -500,6 +512,9 @@ matching its client UUID and sender, using the server's text, timestamp, and
 sequence. Provisional rows never advance the replay cursor. Ambiguous failures
 retain the exact command for retry; definitive rejections retain the text for
 Edit/Dismiss. A late HTTP failure cannot undo WebSocket confirmation.
+WebSocket/history confirmation aborts the now-redundant send POST immediately,
+without cancelling the chat client or the next command. This releases client
+request resources; it does not undo a server-side commit.
 
 Typing uses channel-scoped `caper:chat:v1:typing:{channelId}` Pub/Sub topics; it
 never enters the transactional outbox, history, or message sequence. Gateways

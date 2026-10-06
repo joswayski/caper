@@ -21,8 +21,7 @@ import {
 } from "lucide-react";
 import { getAccount, normalizeUsername, usernameError, type Account } from "../account/client";
 import { playSound, preloadSoundEffects } from "../audio/effects";
-import { ChatHistoryError, loadChatHistory } from "../chat/client";
-import type { GeneralChatHistory } from "../chat/types";
+import { ChatHistoryError } from "../chat/client";
 import Wordmark from "../components/Wordmark";
 import Avatar from "../components/Avatar";
 import Call, { type VoiceSlot } from "../pages/Call";
@@ -959,7 +958,7 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
   const [directs, setDirects] = useState<DirectConversation[]>([]);
   const [directError, setDirectError] = useState<string>();
   const [selfDirectPending, setSelfDirectPending] = useState(false);
-  const [directView, setDirectView] = useState<{ conversation: DirectConversation; history?: GeneralChatHistory; error?: string }>();
+  const [directView, setDirectView] = useState<{ conversation: DirectConversation }>();
   const detail = view?.detail ?? (!spaces.length ? { space: { id: "", name: "Direct messages", ownerId: "" }, channels: [], members: [] } : undefined);
   const navigation = useRef(createSpaceNavigation());
   const [selected, setSelected] = useState<{ spaceId?: string; channelId?: string; dmId?: string }>(() => embedded ? {} : selectedFromUrl());
@@ -1074,13 +1073,10 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
     if (loading || !selected.dmId) { setDirectView(undefined); return; }
     const conversation = directs.find((item) => item.id === selected.dmId);
     if (!conversation) { setDirectView(undefined); setDirectError("This conversation is not accessible."); return; }
-    let current = true;
+    // ChatClient owns the history read, its cancellation, and explicit retries.
+    // Mounting it while also fetching here issued two reads for every DM open.
     setDirectView({ conversation });
-    void loadChatHistory(conversation.id).then((history) => {
-      if (!history.channel.direct) throw new Error("Invalid direct-message history.");
-      if (current) { setDirectView({ conversation, history }); setNavigationOpen(false); }
-    }).catch((reason) => { if (current) setDirectView({ conversation, error: errorMessage(reason) }); });
-    return () => { current = false; };
+    setNavigationOpen(false);
   }, [selected.dmId, loading, directAccessible]);
 
   const readDirect = (seq: string) => {
@@ -1733,8 +1729,8 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
           {membershipError && <p role="alert">{membershipError}</p>}
         </div> : undefined}
         initialAccount={account}
-        initialHistory={directView ? directView.history : view?.history?.channel.id === channel.id ? view.history : undefined}
-        initialHistoryError={directView ? directView.error : view?.channelId === channel.id ? view.historyError : undefined}
+        initialHistory={!directView && view?.history?.channel.id === channel.id ? view.history : undefined}
+        initialHistoryError={!directView && view?.channelId === channel.id ? view.historyError : undefined}
         onReadCursor={directView ? readDirect : undefined}
         onHistoryChange={navigation.current.rememberHistory}
         spaceRail={rail}

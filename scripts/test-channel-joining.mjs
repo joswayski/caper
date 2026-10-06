@@ -22,7 +22,7 @@ function fixture() {
   const empty = new URL(location.href).searchParams.has('empty');
   let state = JSON.parse(sessionStorage.getItem('channel-test-state') ?? 'null') ?? { joined: empty ? [] : [general.id], invited: true, granted: false };
   const save = () => sessionStorage.setItem('channel-test-state', JSON.stringify(state));
-  const control = window.channelFixture = { requests: [], microphones: 0, fail: false, state };
+  const control = window.channelFixture = { requests: [], statusRequests: [], holdStatus: true, microphones: 0, fail: false, state };
   if (navigator.mediaDevices) navigator.mediaDevices.getUserMedia = async () => { control.microphones++; throw new Error('TEST FIXTURE: microphone disabled'); };
   const originalFetch = window.fetch.bind(window);
   window.fetch = async (input, options = {}) => {
@@ -62,7 +62,18 @@ function fixture() {
       return Response.json({ space, channel, cursor: '1', hasMore: false, messages: [{ id: `message-${channel.id}`, channelId: channel.id, seq: '1', clientMessageId: '00000000-0000-4000-8000-000000000001', createdAt: '2026-10-01T14:00:00Z', author: { id: 'owner1234567', name: 'TEST FIXTURE Owner', isGuest: false }, reactions: [{ emoji: '👍', authorIds: [account.id, 'owner1234567'] }], reactionSeq: '1', content: { version: 1, type: 'text', text: `TEST FIXTURE — ${channel.name} conversation. Previewing does not join this channel.` } }] });
     }
     if (path === '/api/chat/session') return Response.json({ token: 'fixture-only', author: { id: account.id, name: account.displayName, isGuest: false } });
-    if (path.endsWith('/media/status')) return Response.json({ enabled: false });
+    if (path.endsWith('/media/status')) {
+      if (control.holdStatus) await new Promise((resolve, reject) => {
+        const request = { path, release: resolve, aborted: false };
+        control.statusRequests.push(request);
+        options.signal?.addEventListener('abort', () => {
+          request.aborted = true;
+          request.reason = options.signal.reason.name;
+          reject(options.signal.reason);
+        }, { once: true });
+      });
+      return Response.json({ enabled: false });
+    }
     return error(503, 'TEST FIXTURE: disabled endpoint');
   };
 }
@@ -80,6 +91,7 @@ try {
   browser('set', 'viewport', '1280', '900', '2');
   browser('open', url);
   wait('!!document.querySelector(".space-menu summary")');
+  wait('channelFixture.statusRequests.length > 0');
   assert.equal(evaluate('document.querySelector("#space-channel-list").textContent.includes("design")'), false);
   browser('click', '.space-menu summary');
   browser('find', 'role', 'button', 'click', '--name', 'Browse channels', '--exact');
@@ -87,6 +99,11 @@ try {
   browser('fill', '.channel-directory input', 'des');
   browser('find', 'role', 'button', 'click', '--name', 'Preview #design', '--exact');
   wait('!!document.querySelector(".channel-preview")');
+  assert.equal(evaluate('channelFixture.statusRequests.at(-1).aborted'), true, 'Leaving a channel cancels its outstanding voice-status request');
+  assert.equal(evaluate('channelFixture.statusRequests.at(-1).reason'), 'AbortError', 'Cancellation must come from navigation, not the ten-second timeout');
+  evaluate('channelFixture.holdStatus = false; channelFixture.statusRequests.forEach(r => r.release())');
+  assert.equal(evaluate('document.querySelector(".chat-heading").textContent.includes("design")'), true, 'An abandoned status request cannot change the selected conversation');
+  console.log('PASS: channel navigation aborts obsolete voice-status reads without a timeout or visible error.');
   assert.equal(evaluate('document.querySelector("#chat-message") !== null'), false);
   assert.equal(evaluate('document.querySelector(".channel-preview span").previousElementSibling.textContent'), 'Preview');
   assert.equal(evaluate('document.querySelector(".channel-preview span").textContent'), 'Join #design to interact with people here');
@@ -176,6 +193,9 @@ try {
   assert.equal(evaluate('channelFixture.requests.some(r => r.path.includes("third1234567/messages"))'), false);
   assert.equal(evaluate('channelFixture.microphones'), 0);
   console.log('PASS: joined-only sidebar, search, read-only preview, explicit join, retry, reload persistence, focus reconciliation, public/private leave, private accept/decline privacy, no microphone; desktop + narrow Chromium.');
+} catch (error) {
+  console.error('Channel regression failed:', browser('snapshot'), evaluate('channelFixture.requests.slice(-20)'));
+  throw error;
 } finally {
   browser('close');
   rmSync(directory, { recursive: true, force: true });

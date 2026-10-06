@@ -211,7 +211,7 @@ function committed(body: SendBody, seq: string): ChatMessage {
 async function sendingFixture(t: TestContext) {
   const sockets = installBrowser(t);
   const history: ChatMessage[] = [];
-  const posts: { body: SendBody; resolve: (response: Response) => void; reject: (error: Error) => void }[] = [];
+  const posts: { body: SendBody; signal: AbortSignal; resolve: (response: Response) => void; reject: (error: Error) => void }[] = [];
   t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
     if (String(input) === "/api/chat/session") return Response.json({ token: "opaque", author: { id: "guest", name: "Test Guest", isGuest: true } });
     if (String(input) === "/api/chat/general") return Response.json({
@@ -221,7 +221,9 @@ async function sendingFixture(t: TestContext) {
     assert.equal(String(input), "/api/chat/channels/general/messages");
     const body = JSON.parse(String(init?.body)) as SendBody;
     assert.deepEqual(Object.keys(body).sort(), ["clientMessageId", "text"], "local metadata never enters the wire contract");
-    return new Promise<Response>((resolve, reject) => posts.push({ body, resolve, reject }));
+    assert.ok(init?.signal);
+    const signal = init.signal;
+    return new Promise<Response>((resolve, reject) => posts.push({ body, signal, resolve, reject }));
   });
   let state!: ChatViewState;
   const client = new ChatClient((next) => { state = next; });
@@ -530,6 +532,7 @@ test("WebSocket-first confirmation requires the sender and cannot be undone by a
   other.author = { id: "someone-else", name: "Test Guest", isGuest: true };
   f.sockets[0].message(other);
   assert.ok(f.state.pendingSend, "matching text, name and UUID from a different author is not our acknowledgement");
+  assert.equal(f.posts[0].signal.aborted, false, "another sender must not cancel the in-flight POST");
   const accepted = committed(f.posts[0].body, "2");
   f.sockets[0].message(accepted);
   assert.equal(await sending, true, "does not wait for HTTP once delivery is confirmed");
@@ -545,6 +548,37 @@ test("WebSocket-first confirmation requires the sender and cannot be undone by a
   assert.equal(await nextSend, true);
   assert.deepEqual(f.state.messages.map((message) => message.seq), ["1", "2", "3"]);
 });
+
+for (const transport of ["WebSocket", "history"] as const) {
+  test(`${transport} confirmation cancels the obsolete POST without cancelling the next send`, async (t) => {
+    const f = await sendingFixture(t);
+    const sending = f.client.send("confirmed without an HTTP response");
+    const post = f.posts[0];
+    let aborts = 0;
+    post.signal.addEventListener("abort", () => {
+      aborts++;
+      post.reject(post.signal.reason);
+    }, { once: true });
+    assert.equal(post.signal.aborted, false, "the POST stays alive until delivery is confirmed");
+    const accepted = committed(post.body, "1");
+    if (transport === "WebSocket") f.sockets[0].message(accepted);
+    else { f.history.push(accepted); f.client.retryLoad(); }
+    assert.equal(await sending, true);
+    assert.equal(aborts, 1, "release the outstanding request immediately, not at its timeout");
+    assert.deepEqual(f.state.messages, [accepted]);
+    assert.equal(f.state.pendingSend, undefined);
+    assert.equal(f.state.sendError, undefined);
+
+    const next = f.client.send("a separate command");
+    assert.equal(f.posts[1].signal.aborted, false, "cancellation is scoped to the completed command");
+    assert.notEqual(f.posts[1].body.clientMessageId, post.body.clientMessageId);
+    f.posts[1].resolve(Response.json(committed(f.posts[1].body, "2")));
+    assert.equal(await next, true);
+    await tick();
+    assert.equal(f.state.sendError, undefined, "the old request's abort cannot become a send error");
+    assert.deepEqual(f.state.messages.map((message) => message.seq), ["1", "2"]);
+  });
+}
 
 test("failed optimistic row retries its exact command and replay can confirm during that retry", async (t) => {
   const f = await sendingFixture(t);
