@@ -1080,7 +1080,18 @@ No user-facing message or file delete exists yet.
 
 ### Platform status and validation
 
-Being rebuilt for server-side processing; updated when each client lands.
+| Platform | Uploads and display | Validated |
+| --- | --- | --- |
+| API, CDN Worker | Presigned S3 uploads (session-token aware SigV4), worker routes, `message.attachments`/`attachment.progress`, quota settling, sweeper; gzip passthrough or decompression at the CDN | Unit tests (SigV4 against AWS's published vector), Postgres integration test of the whole flow (upload → send while processing → preview → progress → finish/fail → sweeper timeout → purge) against a fake S3, Worker tests |
+| Media worker | Rules in the table above; deadline-aware presets; idempotent callbacks | 49 unit tests and 15 pipeline tests with real ffmpeg/vips/avifenc/cwebp (Ubuntu 24.04 versions). Not run: the container image, arm64, Lambda/SQS/S3/R2/Secrets Manager, HEIC input |
+| Web | Uploads the original (XHR, exact signed headers, `complete` retried on 409, `maxUploadBytes` checked first); processing (preview or the sender's local copy, spinner, live percent), failed, animated (muted loop, reduced motion respected) | Unit tests; Chromium desktop and 390 px against a labelled mocked API/gateway fixture. Not run: live API/worker, Safari/Firefox, real H.264 playback |
+| Android | Streams the original from the content URI; same states; animated inline muted loops; AVIF native on API 31+, bundled libavif/dav1d (~0.9 MB per ABI) on API 26–30 with the WebP preview as fallback | 150 JVM tests (MockWebServer upload, gateway), `assembleDebug`, `lintDebug`. Not run on a device or emulator |
+| Apple (iOS 17 / macOS 14) | Uploads the original from disk (HEIC as is); same states; AVIF/WebP through ImageIO; animated loops via AVPlayerLooper, paused under Reduce Motion | Unit tests written but not compiled here (no Swift toolchain); macOS CI and device checks pending |
+| Rust desktop (Windows, Linux) | Streams the original; same states; inline images from the WebP preview (no in-app AVIF decode); AVIF/HEIC originals, video, audio and animated files open in the system browser | 222 tests, clippy, `parity-attachments` fixture under Xvfb. Not run on Windows or against live storage |
+
+Not yet validated anywhere: live S3/SQS/Lambda/R2, the deployed CDN Worker
+with gzip passthrough, physical phones, and long videos near Lambda's
+15-minute limit.
 
 ## Message reactions
 
