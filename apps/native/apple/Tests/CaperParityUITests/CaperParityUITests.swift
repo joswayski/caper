@@ -2,6 +2,8 @@ import Foundation
 import XCTest
 #if os(iOS)
 import UIKit
+#elseif os(macOS)
+import AppKit
 #endif
 
 @MainActor
@@ -301,11 +303,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed)
         #endif
         try openReactionPicker(for: targetID, in: app)
-        #if os(iOS)
         let search = app.textFields["reaction-picker-search"]
-        #else
-        let search = app.searchFields.firstMatch
-        #endif
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         capture("reaction-picker-open-fixture", app: app)
         // Retapping until focus succeeds can hide a dismiss/re-present loop.
@@ -315,6 +313,88 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["reaction-picker-empty"].waitForExistence(timeout: 5))
         capture("reaction-picker-empty-fixture", app: app)
     }
+
+    #if os(macOS)
+    func testReactionPickerIsCompactAndDismissesOutsideAndWithEscape() throws {
+        let app = launch(fixture: "reaction-chips")
+        let targetID = "chan00000001m01"
+        try openReactionPicker(for: targetID, in: app)
+        let picker = try require(app.descendants(matching: .any)["reaction-picker"], timeout: 5,
+                                 "The picker must expose its bounded content")
+        let search = try require(app.textFields["reaction-picker-search"], timeout: 5, "Missing emoji search")
+        let size = picker.frame.size
+        XCTAssertEqual(size.width, 352, accuracy: 1)
+        XCTAssertEqual(size.height, 420, accuracy: 1)
+        let grid = try require(app.scrollViews["reaction-picker-grid"], timeout: 5, "The catalog must scroll inside the picker")
+        XCTAssertLessThan(grid.frame.height, size.height)
+        XCTAssertTrue(grid.buttons.firstMatch.isHittable)
+        search.tap()
+        XCTAssertTrue(hasKeyboardFocus(search))
+        search.typeText("definitely-no-such-emoji")
+        try require(app.descendants(matching: .any)["reaction-picker-empty"], timeout: 5, "Missing empty search state")
+        XCTAssertEqual(picker.frame.width, size.width, accuracy: 1)
+        XCTAssertEqual(picker.frame.height, size.height, accuracy: 1)
+
+        // Click a real control outside, rather than cancelling the sheet.
+        let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 5, "Missing composer")
+        XCTAssertFalse(picker.frame.intersects(composer.frame), "The compact picker must leave the composer available")
+        composer.tap()
+        let outsideClosed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: picker)
+        XCTAssertEqual(XCTWaiter.wait(for: [outsideClosed], timeout: 5), .completed)
+        XCTAssertFalse(search.exists)
+
+        try openReactionPicker(for: targetID, in: app)
+        try require(search, timeout: 5, "Outside dismissal must allow reopening")
+        XCTAssertEqual(search.value as? String, "", "Reopening must clear the old query")
+        app.typeKey(.escape, modifierFlags: [])
+        let escapeClosed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: picker)
+        XCTAssertEqual(XCTWaiter.wait(for: [escapeClosed], timeout: 5), .completed)
+    }
+
+    func testReactionFocusDoesNotOutlineUnrelatedButtons() throws {
+        let app = launch(fixture: "reaction-chips")
+        let targetID = "chan00000001m01"
+        let reactions = try require(app.descendants(matching: .any)["reaction-row-\(targetID)"], timeout: 10,
+                                    "Missing fixture reactions")
+        let own = try require(reactions.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "👍 reaction")).firstMatch,
+                              timeout: 5, "Missing selected fixture chip")
+        let other = try require(reactions.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "❤️ reaction")).firstMatch,
+                                timeout: 5, "Missing unselected fixture chip")
+        let unrelatedAdd = try require(app.buttons["add-reaction-chan00000001m02"], timeout: 5,
+                                       "Missing another message's add-reaction button")
+        XCTAssertTrue(own.label.hasSuffix(", selected by you"))
+        XCTAssertTrue(other.label.hasSuffix(", not selected by you"))
+        try openReactionPicker(for: targetID, in: app)
+        try require(app.buttons["Cancel"], timeout: 5, "Missing picker Cancel").tap()
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),
+                                               object: app.descendants(matching: .any)["reaction-picker"])
+        XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
+
+        // Accessibility focus alone cannot detect the bug: the old modifier
+        // painted inherited timeline focus around every otherwise valid button.
+        let window = app.windows.firstMatch
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: window.screenshot().pngRepresentation))
+        let scaleX = CGFloat(bitmap.pixelsWide) / window.frame.width
+        let scaleY = CGFloat(bitmap.pixelsHigh) / window.frame.height
+        func hasTerracottaOutline(_ element: XCUIElement) throws -> Bool {
+            XCTAssertTrue(element.isHittable)
+            let x = Int((element.frame.midX - window.frame.minX) * scaleX)
+            // Sample only the straight top border, away from emoji artwork.
+            let y = Int((element.frame.minY - window.frame.minY) * scaleY)
+            for offset in -1...2 {
+                let color = try XCTUnwrap(bitmap.colorAt(x: x, y: y + offset)?.usingColorSpace(.sRGB))
+                if color.redComponent > 0.6 && color.redComponent - color.greenComponent > 0.25 {
+                    return true
+                }
+            }
+            return false
+        }
+        XCTAssertTrue(try hasTerracottaOutline(own), "Your selected reaction must keep its terracotta outline (also calibrates pixel coordinates)")
+        XCTAssertFalse(try hasTerracottaOutline(other), "An unselected chip must not inherit another control's focus ring")
+        XCTAssertFalse(try hasTerracottaOutline(unrelatedAdd), "Focusing one add-reaction button must not highlight another message's button")
+        capture("reaction-focus-isolated-fixture", app: app)
+    }
+    #endif
 
     private func waitForLabel(_ element: XCUIElement, _ text: String, _ message: String,
                               timeout: TimeInterval = 5, line: UInt = #line) {
@@ -383,11 +463,7 @@ final class CaperParityUITests: XCTestCase {
         let row = try require(app.descendants(matching: .any)["message-row-\(targetID)"], timeout: 30,
                               "Missing message-row-\(targetID)")
         try openReactionPicker(for: targetID, in: app)
-        #if os(iOS)
         let search = app.textFields["reaction-picker-search"]
-        #else
-        let search = app.searchFields.firstMatch
-        #endif
         try require(search, timeout: 5, "The reaction picker search field never appeared")
         search.tap()
         XCTAssertTrue(hasKeyboardFocus(search), "One tap must focus search without reopening the sheet")

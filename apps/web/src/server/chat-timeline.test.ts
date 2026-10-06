@@ -164,6 +164,30 @@ test("emoji names prefer dashes while retaining spaced and underscore search ali
   assert.equal(emojiNames(["face_with  big_eyes"]).at(-1), "face-with-big-eyes");
 });
 
+test("country flags prefer typeable country names and retain their original aliases", () => {
+  for (const [code, label, expected] of [
+    ["IL", "Israel", "israel"],
+    ["US", "United States", "united-states"],
+    ["BA", "Bosnia & Herzegovina", "bosnia-and-herzegovina"],
+    ["CI", "Côte d’Ivoire", "cote-divoire"],
+    ["UM", "U.S. Outlying Islands", "us-outlying-islands"],
+    ["MM", "Myanmar (Burma)", "myanmar-burma"],
+    ["TR", "Türkiye", "turkiye"],
+    ["GB", "England", "england"],
+  ]) {
+    const original = [code, "flag", `flag: ${label}`];
+    const aliases = emojiNames(original);
+    assert.equal(aliases.at(-1), expected);
+    for (const alias of [code, "flag", `flag: ${label}`, expected.replaceAll("-", "_"), expected.replaceAll("-", " ")]) {
+      assert.ok(aliases.includes(alias), alias);
+    }
+    assert.deepEqual(original, [code, "flag", `flag: ${label}`]);
+  }
+  for (const label of ["rainbow flag", "pirate flag", "chequered flag"]) {
+    assert.equal(emojiNames(["flag", label]).at(-1), label.replaceAll(" ", "-"));
+  }
+});
+
 test("bundled native emoji names and aliases match on Android, Apple and desktop", () => {
   const shared = readFileSync(new URL("../../../../shared/emoji/catalog.json", import.meta.url), "utf8");
   const apple = readFileSync(new URL("../../../native/apple/Sources/CaperCore/EmojiAssets/catalog.json", import.meta.url), "utf8");
@@ -174,6 +198,15 @@ test("bundled native emoji names and aliases match on Android, Apple and desktop
   assert.equal(grinning.name, "grinning-face");
   assert.equal(grinning.emoji, "😀");
   for (const query of ["grinning-face", "grinning_face", "grinning face"]) assert.ok(grinning.keywords.includes(query));
+  const flags = entries.filter((entry) => entry.selectable && entry.keywords.includes("flag:"));
+  assert.ok(flags.length > 250, "country and regional flags must be covered");
+  assert.ok(flags.every((entry) => /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(entry.name)), "every country name must be typeable in colon autocomplete");
+  for (const [id, emoji, name] of [["1f1ee-1f1f1", "🇮🇱", "israel"], ["1f1fa-1f1f8", "🇺🇸", "united-states"], ["1f1e8-1f1ee", "🇨🇮", "cote-divoire"]]) {
+    const flag = flags.find((entry) => entry.id === id)!;
+    assert.equal(flag.name, name);
+    assert.equal(flag.emoji, emoji);
+    assert.ok(flag.keywords.includes(name));
+  }
 });
 
 test("emoji preload shares decoding per category, retries failures, and stays warm across messages", async (t) => {

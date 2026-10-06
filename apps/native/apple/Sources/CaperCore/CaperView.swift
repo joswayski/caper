@@ -1466,7 +1466,7 @@ private struct ChatView: View {
     @State private var joining = false
     @State private var joinError: String?
     // A lazy message row can leave the viewport when the keyboard appears or
-    // live messages arrive. Keep the sheet's presenter and target outside it.
+    // live messages arrive. Keep the picker presenter and target outside it.
     @State private var reactionMessage: ChatMessage?
     @State private var showingEmojiPicker = false
     /// Who reacted: opened by holding a chip (iOS) or its VoiceOver action.
@@ -1720,8 +1720,8 @@ private struct ChatView: View {
             .sheet(item: $reactorsTarget) { target in
                 ReactorsSheet(chat: chat, messageID: target.messageID, emoji: target.emoji, viewerID: viewerID)
             }
+            #if os(iOS)
             .sheet(item: $reactionMessage) { message in
-                #if os(iOS)
                 MessageActionsSheet(message: message, showingEmojiPicker: $showingEmojiPicker,
                                     canReact: !chat.isPreview && chat.currentAuthor != nil,
                                     canPin: !chat.isPreview && chat.currentAuthor != nil && !chat.pendingPins.contains(message.id),
@@ -1740,13 +1740,17 @@ private struct ChatView: View {
                                         reactionMessage = nil
                                         Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) }
                                     })
-                #else
+            }
+            #else
+            // A native popover dismisses on outside clicks. Anchor it to the
+            // stable conversation, not a lazy row that live delivery can remove.
+            .popover(item: $reactionMessage, attachmentAnchor: .point(.center)) { message in
                 ReactionPicker { emoji in
                     reactionMessage = nil
                     Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) }
                 }
-                #endif
             }
+            #endif
             .sheet(isPresented: $showingPins) {
                 PinnedMessagesView(chat: chat, close: { showingPins = false })
             }
@@ -1875,6 +1879,9 @@ private struct MessageRow: View {
                 Label("Pinned by \(pin.author.name)", systemImage: "pin.fill")
                     .font(CaperTheme.font(10, weight: .medium)).foregroundStyle(CaperTheme.pinGold)
                     .padding(.leading, 44)
+                    #if os(macOS)
+                    .padding(.trailing, 56)
+                    #endif
                     .accessibilityIdentifier("pinned-by-\(message.id)")
             }
             HStack(alignment: .top, spacing: 10) {
@@ -1885,12 +1892,15 @@ private struct MessageRow: View {
                     if message.author.isGuest { Text("GUEST").font(CaperTheme.font(9, weight: .bold)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 5).overlay(RoundedRectangle(cornerRadius: 4).stroke(CaperTheme.border)) }
                     Text(timeLabel(message.createdAt)).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
                 }
+                #if os(macOS)
+                .padding(.trailing, 56)
+                #endif
                 Text(message.content.text).font(CaperTheme.font(14)).foregroundStyle(Color(red: 222/255, green: 223/255, blue: 224/255))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     #if os(macOS)
                     .textSelection(.enabled)
                     #endif
-                ReactionRow(message: message, chat: chat, reactors: reactors, showPicker: showReactionPicker)
+                ReactionRow(message: message, chat: chat, reactors: reactors)
                 if let error = chat.pinErrors[message.id] {
                     HStack(spacing: 8) {
                         Text(error)
@@ -1926,6 +1936,7 @@ private struct MessageRow: View {
                     Button(action: showReactionPicker) {
                         Image(systemName: "face.smiling").font(.system(size: 14, weight: .medium)).frame(width: 24, height: 24)
                     }.buttonStyle(.plain).focused($reactionFocused).accessibilityLabel("Add reaction")
+                        .modifier(ControlHover(isFocused: reactionFocused))
                         .disabled(chat.isPreview || chat.currentAuthor == nil)
                         .accessibilityIdentifier("add-reaction-\(message.id)")
                     Menu {
@@ -1967,7 +1978,6 @@ private struct ReactionRow: View {
     let message: ChatMessage
     @Bindable var chat: ChatModel
     let reactors: ReactorContext
-    let showPicker: () -> Void
 
     var body: some View {
         ReactionFlowLayout(spacing: 6) {
@@ -1975,8 +1985,7 @@ private struct ReactionRow: View {
                 ReactionChip(message: message, reaction: reaction, chat: chat, reactors: reactors)
             }
         }
-        // Without .contain this identifier replaces add-reaction-<id> on the
-        // button inside the row.
+        // Preserve individual reaction-chip identifiers inside the flow layout.
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("reaction-row-\(message.id)")
     }
@@ -1993,6 +2002,7 @@ private struct ReactionChip: View {
     #else
     @State private var hovering = false
     @State private var tooltipVisible = false
+    @FocusState private var focused: Bool
     #endif
     private var own: Bool { chat.currentAuthor.map { reaction.authorIds.contains($0.id) } ?? false }
 
@@ -2030,7 +2040,12 @@ private struct ReactionChip: View {
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(own ? CaperTheme.terracottaBright : CaperTheme.border))
         }
         .buttonStyle(.plain)
+        #if os(macOS)
+        .focused($focused)
+        .modifier(ControlHover(isFocused: focused))
+        #else
         .modifier(ControlHover())
+        #endif
         .disabled(chat.isPreview || chat.currentAuthor == nil)
         .accessibilityLabel("\(reaction.emoji) reaction, \(reaction.authorIds.count), \(own ? "selected by you" : "not selected by you")")
         .accessibilityAddTraits(own ? .isSelected : [])
@@ -2447,6 +2462,9 @@ private struct PinnedMessagesView: View {
 private struct ReactionPicker: View {
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
+    #if os(macOS)
+    @FocusState private var focusedEmoji: String?
+    #endif
     let select: (String) -> Void
     private var choices: [EmojiCatalogEntry] {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -2456,12 +2474,12 @@ private struct ReactionPicker: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                #if os(iOS)
+                // Keep search inside the picker, including when macOS presents
+                // it in a popover rather than a window with a search toolbar.
                 TextField("Search emoji", text: $query)
                     .textFieldStyle(.roundedBorder)
                     .accessibilityIdentifier("reaction-picker-search")
                     .padding(12)
-                #endif
                 if choices.isEmpty {
                     ContentUnavailableView("No emoji found", systemImage: "magnifyingglass", description: Text("Try another search."))
                         .accessibilityIdentifier("reaction-picker-empty")
@@ -2471,18 +2489,39 @@ private struct ReactionPicker: View {
                             ForEach(choices) { entry in
                                 Button { select(entry.emoji) } label: {
                                     EmojiArtworkView(emoji: entry.emoji, size: 30).frame(width: 42, height: 42)
-                                }.buttonStyle(.plain).modifier(ControlHover()).accessibilityLabel(entry.name)
+                                }
+                                .buttonStyle(.plain)
+                                #if os(macOS)
+                                .focused($focusedEmoji, equals: entry.id)
+                                .modifier(ControlHover(isFocused: focusedEmoji == entry.id))
+                                #else
+                                .modifier(ControlHover())
+                                #endif
+                                .accessibilityLabel(entry.name)
                             }
                         }.padding(12)
                     }.accessibilityIdentifier("reaction-picker-grid")
                 }
             }
             .navigationTitle("Add reaction")
-            #if os(macOS)
-            .searchable(text: $query, prompt: "Search emoji")
-            #endif
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
-        }.frame(minWidth: 320, minHeight: 420)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        #if os(macOS)
+                        .keyboardShortcut(.cancelAction)
+                        #endif
+                }
+            }
+        }
+        #if os(macOS)
+        // Bound the whole picker, not just the grid's minimum size: otherwise
+        // the NavigationStack can ask the sheet to grow with the full catalog.
+        .frame(width: 352, height: 420)
+        #else
+        .frame(minWidth: 320, minHeight: 420)
+        #endif
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("reaction-picker")
     }
 }
 
@@ -3121,11 +3160,14 @@ private struct ControlHover: ViewModifier {
     @Environment(\.isEnabled) private var enabled
     @Environment(\.isFocused) private var focused
     @State private var hovered = false
+    // Modifiers outside a button see its focusable ancestor (e.g. the whole
+    // timeline), not that button. Those controls bind their own focus instead.
+    var isFocused: Bool? = nil
     func body(content: Content) -> some View {
         content.overlay {
             RoundedRectangle(cornerRadius: 8)
                 .fill(Color.white.opacity(hovered && enabled ? 0.06 : 0))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.terracottaBright.opacity(focused && enabled ? 0.9 : 0), lineWidth: 2))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.terracottaBright.opacity((isFocused ?? focused) && enabled ? 0.9 : 0), lineWidth: 2))
                 .allowsHitTesting(false)
         }
         .onHover { inside in

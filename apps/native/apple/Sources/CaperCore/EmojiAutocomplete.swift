@@ -204,10 +204,15 @@ struct NativeMessageComposer: NSViewRepresentable {
         scroll.documentView = view; scroll.hasVerticalScroller = true; scroll.drawsBackground = false
         view.delegate = context.coordinator; view.drawsBackground = false; view.textColor = NSColor(CaperTheme.text)
         view.font = NSFont(name: "Satoshi-Regular", size: 14); view.textContainerInset = NSSize(width: 8, height: 10)
+        // AppKit sizes the text view: its width follows the scroll view and its height the text.
+        view.minSize = NSSize(width: 0, height: 42)
+        view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         view.isVerticallyResizable = true; view.isHorizontallyResizable = false; view.autoresizingMask = [.width]
+        view.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         view.textContainer?.widthTracksTextView = true
         view.isRichText = false
-        view.setAccessibilityIdentifier("message-composer"); view.setAccessibilityLabel(placeholder); context.coordinator.view = view
+        view.setAccessibilityIdentifier("message-composer"); view.setAccessibilityLabel(placeholder)
+        view.setAccessibilityHelp("Return sends. Shift-Return adds a new line."); context.coordinator.view = view
         view.handleKey = { [weak coordinator = context.coordinator] in coordinator?.handle($0) == true }
         view.focusChanged = { [weak coordinator = context.coordinator] focused in
             guard let coordinator, let view = coordinator.view else { return }
@@ -218,16 +223,22 @@ struct NativeMessageComposer: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let view = scroll.documentView as? ComposerTextView else { return }
+        // The text view reports its own text as its accessibility value; setting
+        // it would replace the text on every update.
         if view.string != text { view.string = text; context.coordinator.dismissed = false; context.coordinator.refresh(view) }
-        view.setAccessibilityValue(text); view.setAccessibilityHelp("Return sends. Shift-Return adds a new line.")
     }
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
         guard let width = proposal.width, let view = nsView.documentView as? NSTextView else { return nil }
-        view.setFrameSize(NSSize(width: width, height: view.frame.height))
-        view.textContainer?.containerSize = NSSize(width: width - 16, height: .greatestFiniteMagnitude)
-        view.layoutManager?.ensureLayout(for: view.textContainer!)
-        let height = (view.layoutManager?.usedRect(for: view.textContainer!).height ?? 20) + 20
-        view.setFrameSize(NSSize(width: width, height: max(42, height)))
+        // Measure on a scratch text system. Resizing the live text view here
+        // invalidates SwiftUI's layout, which measures again, without end.
+        var attributes: [NSAttributedString.Key: Any] = [:]
+        if let font = view.font { attributes[.font] = font }
+        let storage = NSTextStorage(string: view.string, attributes: attributes)
+        let layout = NSLayoutManager(); storage.addLayoutManager(layout)
+        let container = NSTextContainer(size: NSSize(width: width.isFinite ? max(40, width - 16) : CGFloat.greatestFiniteMagnitude,
+                                                     height: CGFloat.greatestFiniteMagnitude))
+        layout.addTextContainer(container); layout.ensureLayout(for: container)
+        let height = layout.usedRect(for: container).height + 20
         return CGSize(width: width, height: min(174, max(42, height)))
     }
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -235,7 +246,13 @@ struct NativeMessageComposer: NSViewRepresentable {
         init(_ parent: NativeMessageComposer) { self.parent = parent }
         // Older macOS SDKs (15.x) don't mark NSTextViewDelegate main-actor, so these delegate
         // calls are nonisolated there. AppKit still delivers them on the main thread.
-        func textDidChange(_ notification: Notification) { MainActor.assumeIsolated { guard let view else { return }; parent.text = view.string; dismissed = false; refresh(view) } }
+        func textDidChange(_ notification: Notification) {
+            MainActor.assumeIsolated {
+                guard let view else { return }
+                if parent.text != view.string { parent.text = view.string }
+                dismissed = false; refresh(view)
+            }
+        }
         func textViewDidChangeSelection(_ notification: Notification) { MainActor.assumeIsolated { guard let view else { return }; dismissed = false; refresh(view) } }
         @MainActor func refresh(_ view: ComposerTextView) {
             let match = dismissed || view.window?.firstResponder !== view ? nil : EmojiAutocomplete.match(text: view.string, selection: view.selectedRange(), markedText: view.hasMarkedText())
