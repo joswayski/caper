@@ -854,7 +854,7 @@ for tabs open longer than a URL's lifetime.
 
 ### Limits and quota
 
-- Per person, across every space: `ASSET_QUOTA_BYTES` (default 1 GiB) of stored
+- Per person, across every space: `ASSET_QUOTA_BYTES` (default 10 GiB) of stored
   bytes, original plus preview. No separate per-file limit; one file may use
   the whole allowance. Space owners are not charged for members' uploads.
 - Quota counts what is **stored** (after browser compression), and reservations
@@ -933,7 +933,7 @@ the owner's assets when that flow lands.
 | --- | --- | --- |
 | `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | API | Bucket-scoped R2 Object Read & Write key. All four or none; none leaves upload routes returning 503. |
 | `R2_ENDPOINT` | API, local only | Loopback S3-compatible fake (`http://127.0.0.1:…`). Rejected otherwise. |
-| `ASSET_QUOTA_BYTES` | API | Per-person stored bytes. Default `1073741824`. |
+| `ASSET_QUOTA_BYTES` | API | Per-person stored bytes. Default `10737418240` (10 GiB). |
 | `ASSET_IMAGE_QUALITY`, `ASSET_IMAGE_MAX_EDGE`, `ASSET_PALETTE_COLORS`, `ASSET_PREVIEW_EDGE`, `ASSET_VIDEO_MAX_HEIGHT`, `ASSET_VIDEO_BITRATE_KBPS`, `ASSET_AUDIO_BITRATE_KBPS` | API | Client compression settings above; invalid values stop startup. |
 | `ASSET_CDN_ORIGIN`, `ASSET_CDN_SIGNING_SECRET` | API **and** gateway | Worker origin and shared HMAC secret (≥ 32 characters). Without them messages carry attachment metadata but no URLs. |
 

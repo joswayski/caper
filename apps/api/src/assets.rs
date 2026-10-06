@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use std::{collections::HashMap, fmt::Write as _, sync::Arc, time::Duration};
 
-const DEFAULT_QUOTA_BYTES: i64 = 1024 * 1024 * 1024;
+const DEFAULT_QUOTA_BYTES: i64 = 10 * 1024 * 1024 * 1024;
 const PREVIEW_MAX_BYTES: i64 = 512 * 1024;
 const UPLOAD_URL_SECONDS: u64 = 15 * 60;
 const CREATES_PER_MINUTE: i64 = 30;
