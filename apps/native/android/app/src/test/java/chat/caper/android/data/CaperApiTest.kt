@@ -105,6 +105,29 @@ class CaperApiTest {
         assertThrows(IllegalArgumentException::class.java) { runBlocking { api.setReaction(null, "x", "channel00001", "short", "👍", true) } }
     }
 
+    @Test fun `reactor list uses the history credential and rejects another message's list`() = runTest {
+        val body = """{"messageId":"message00000001","reactionSeq":"12","reactions":[{"emoji":"👍","authors":[{"id":"bob","username":"bob","displayName":"Bob B","avatarId":101},{"id":"alice","username":"alice","displayName":"Alice A","avatarId":100}]}]}"""
+        server.enqueue(MockResponse().setBody(body))
+        server.enqueue(MockResponse().setBody(body))
+        server.enqueue(MockResponse().setResponseCode(404).setBody("""{"error":"message not found"}"""))
+        val api = CaperApi(baseUrl = server.url("/").toString())
+
+        val list = api.reactors("account-secret", "channel00001", "message00000001")
+        assertEquals(listOf("Bob B", "Alice A"), list.reactions.single().authors.map { it.displayName })
+        val request = server.takeRequest()
+        assertEquals("GET", request.method)
+        assertEquals("/api/chat/channels/channel00001/messages/message00000001/reactions", request.path)
+        assertEquals("Bearer account-secret", request.headers["Authorization"])
+        assertNull(request.headers["x-caper-chat-token"])
+
+        assertThrows(IllegalArgumentException::class.java) { runBlocking { api.reactors(null, "channel00001", "message00000002") } }
+        assertNull("public previews read without an account", server.takeRequest().headers["Authorization"])
+        val missing = runCatching { api.reactors(null, "channel00001", "message00000001") }.exceptionOrNull()
+        assertEquals(404, (missing as ApiException).status)
+        assertThrows(IllegalArgumentException::class.java) { runBlocking { api.reactors(null, "channel00001", "short") } }
+        assertEquals(3, server.requestCount)
+    }
+
     @Test fun `space list defaults invitations for old APIs`() {
         val response = Json.decodeFromString<SpaceList>(
             """{"spaces":[],"limits":{"ownedSpaces":20,"totalSpaces":100,"channelsPerSpace":100}}""",

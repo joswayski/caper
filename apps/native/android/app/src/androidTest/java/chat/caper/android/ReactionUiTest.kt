@@ -10,6 +10,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -18,6 +19,8 @@ import chat.caper.android.model.*
 import chat.caper.android.ui.Blackout
 import chat.caper.android.ui.CaperTheme
 import java.io.File
+import java.io.IOException
+import kotlinx.coroutines.CompletableDeferred
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -48,7 +51,7 @@ class ReactionUiTest {
                         Text("Reaction UI test fixture")
                         ReactionMessageRow(message, state.value,
                             { id, emoji, active -> submitted = Triple(id, emoji, active) }, { _, _ -> }, { _, _ -> },
-                            { target.value = it })
+                            openReactors = { _, _ -> }) { target.value = it }
                     }
                 }
                 target.value?.let {
@@ -102,7 +105,7 @@ class ReactionUiTest {
 
         // Public previews retain readable reaction ownership, but only expose copy actions.
         compose.runOnIdle { state.value = state.value.copy(selectedChannel = joined.copy(joined = false)) }
-        compose.onNodeWithContentDescription("👍 reaction, 2").assertIsSelected().assertIsNotEnabled()
+        compose.onNodeWithContentDescription("👍 reaction, 2").assertIsSelected().assertHasNoClickAction()
         compose.onNodeWithText("2").assertIsDisplayed()
         compose.onNodeWithText("Retry").assertIsNotEnabled()
         compose.onNodeWithText("Dismiss").assertIsEnabled()
@@ -122,6 +125,101 @@ class ReactionUiTest {
         compose.onNodeWithText("Message actions").assertDoesNotExist()
     }
 
+    @Test fun pressAndHoldShowsWhoReactedWithoutToggling() {
+        val joined = Channel("channel00001", "space0000001", "general", private = false, joined = true)
+        val state = mutableStateOf(AppUiState(chatAuthorId = "self", selectedChannel = joined))
+        val message = mutableStateOf(ChatMessage(
+            "message00000001", "channel00001", "1", ChatAuthor("other", "Fixture Author", false, avatarId = 719),
+            ChatContent(1, "text", "TEST FIXTURE — who reacted, not a live conversation."),
+            "2026-09-29T10:00:00Z", "fixture-client",
+            listOf(MessageReaction("👍", listOf("self", "other")), MessageReaction("❤️", listOf("other"))),
+            "2",
+        ))
+        val self = Reactor("self", "fixture_self", "Fixture Self", 12)
+        val reactor = Reactor("other", "fixture_reactor", "Fixture Reactor", 719)
+        val names = ReactorList(message.value.id, "2", listOf(ReactorGroup("👍", listOf(self, reactor)), ReactorGroup("❤️", listOf(reactor))))
+        val gate = CompletableDeferred<Unit>()
+        var failNext = false
+        var loads = 0
+        var submitted: Triple<String, String, Boolean>? = null
+        val target = mutableStateOf<String?>(null)
+        compose.setContent {
+            CaperTheme {
+                Scaffold(containerColor = Blackout) { padding ->
+                    Column(Modifier.padding(padding)) {
+                        Text("Who reacted UI test fixture")
+                        ReactionMessageRow(message.value, state.value,
+                            { id, emoji, active -> submitted = Triple(id, emoji, active) }, { _, _ -> }, { _, _ -> },
+                            openReactors = { _, emoji -> target.value = emoji }) {}
+                    }
+                }
+                target.value?.let { emoji ->
+                    ReactorsSheet(message.value, emoji, "self", { shown ->
+                        loads++
+                        gate.await()
+                        if (failNext) { failNext = false; throw IOException("Simulated reactor load failure") }
+                        names.copy(reactionSeq = shown.reactionSeq ?: "0")
+                    }) { target.value = null }
+                }
+            }
+        }
+
+        // Press and hold opens the sheet on the pressed emoji and never toggles it.
+        compose.onNodeWithContentDescription("❤️ reaction, 1").performTouchInput { longClick() }
+        compose.onNodeWithText("Reactions").assertIsDisplayed()
+        compose.runOnIdle { assertEquals(null, submitted) }
+        compose.onNodeWithContentDescription("❤️ 1").assertIsSelected()
+        compose.onNodeWithContentDescription("👍 2").assertIsNotSelected()
+        compose.onNodeWithText("Loading…").assertIsDisplayed()
+        compose.onNodeWithContentDescription("1 person reacted with :red-heart:").assertIsDisplayed()
+        compose.runOnIdle { gate.complete(Unit) }
+        compose.onNodeWithText("Fixture Reactor").assertIsDisplayed()
+        compose.onNodeWithText("@fixture_reactor").assertIsDisplayed()
+        compose.onNodeWithText(":red-heart:").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Fixture Reactor reacted with :red-heart:").assertIsDisplayed()
+
+        compose.onNodeWithContentDescription("👍 2").performClick().assertIsSelected()
+        compose.onNodeWithText(":thumbs-up:").assertIsDisplayed()
+        compose.onNodeWithText("Fixture Self").assertIsDisplayed()
+        compose.onNodeWithContentDescription("You and Fixture Reactor reacted with :thumbs-up:").assertIsDisplayed()
+        captureScreen("reaction-reactors-sheet-test-fixture.png")
+
+        // A changed snapshot refetches; a removed selected emoji falls back to the first one.
+        compose.runOnIdle {
+            failNext = true
+            message.value = message.value.copy(reactions = listOf(MessageReaction("❤️", listOf("other"))), reactionSeq = "3")
+        }
+        compose.onNodeWithContentDescription("❤️ 1").assertIsSelected()
+        compose.onNodeWithText("Couldn’t load reactions").assertIsDisplayed()
+        compose.onNodeWithText("Retry").performClick()
+        compose.onNodeWithText("Fixture Reactor").assertIsDisplayed()
+        compose.runOnIdle { assertEquals(3, loads) }
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        compose.waitForIdle()
+        compose.onNodeWithText("Reactions").assertDoesNotExist()
+
+        // TalkBack's custom action opens the same sheet; removing every reaction closes it.
+        val chip = compose.onNodeWithContentDescription("❤️ reaction, 1").fetchSemanticsNode()
+        compose.runOnIdle { chip.config[SemanticsActions.CustomActions].single { it.label == "Show who reacted" }.action() }
+        compose.onNodeWithText("Reactions").assertIsDisplayed()
+        compose.runOnIdle { message.value = message.value.copy(reactions = emptyList(), reactionSeq = "4") }
+        compose.waitForIdle()
+        compose.onNodeWithText("Reactions").assertDoesNotExist()
+
+        // Read-only previews cannot toggle, but can still see who reacted.
+        compose.runOnIdle {
+            message.value = message.value.copy(reactions = listOf(MessageReaction("👍", listOf("other"))), reactionSeq = "5")
+            state.value = state.value.copy(selectedChannel = joined.copy(joined = false))
+        }
+        compose.onNodeWithContentDescription("👍 reaction, 1").assertHasNoClickAction().performTouchInput { longClick() }
+        compose.onNodeWithText("Reactions").assertIsDisplayed()
+        compose.onNodeWithText("Fixture Reactor").assertIsDisplayed()
+        compose.runOnIdle { assertEquals(null, submitted) }
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        compose.waitForIdle()
+        compose.onNodeWithText("Reactions").assertDoesNotExist()
+    }
+
     private fun assertClipboard(expected: String) {
         compose.runOnIdle {
             val context = InstrumentationRegistry.getInstrumentation().targetContext
@@ -130,10 +228,17 @@ class ReactionUiTest {
         }
     }
 
-    private fun capture(name: String, node: SemanticsNodeInteraction) {
+    private fun capture(name: String, node: SemanticsNodeInteraction) = save(name, node.captureToImage().asAndroidBitmap())
+
+    /** The whole screen, including the bottom sheet's own window. */
+    private fun captureScreen(name: String) {
+        compose.waitForIdle()
+        save(name, checkNotNull(InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()) { "Screenshot failed." })
+    }
+
+    private fun save(name: String, screenshot: Bitmap) {
         val directory = File(requireNotNull(InstrumentationRegistry.getArguments().getString("additionalTestOutputDir")))
         check(directory.mkdirs() || directory.isDirectory)
-        val screenshot = node.captureToImage().asAndroidBitmap()
         try {
             File(directory, name).outputStream().use { check(screenshot.compress(Bitmap.CompressFormat.PNG, 100, it)) }
         } finally { screenshot.recycle() }

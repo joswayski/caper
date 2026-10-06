@@ -21,11 +21,18 @@ internal object EmojiArtwork {
     private val crops = LruCache<String, Bitmap>(192)
     private val pages = LruCache<Int, Bitmap>(4)
     private var catalog: List<EmojiEntry>? = null
+    private var names: Map<String, String>? = null
 
     fun catalog(context: Context): List<EmojiEntry> = synchronized(this) {
         catalog ?: context.assets.open("catalog.json").bufferedReader().use {
             Json { ignoreUnknownKeys = true }.decodeFromString<List<EmojiEntry>>(it.readText())
         }.also { catalog = it }
+    }
+
+    /** The catalog's dash-separated name ("thumbs-up"), or null when it has none. */
+    fun name(context: Context, emoji: String): String? {
+        val index = synchronized(this) { names ?: emojiNameIndex(catalog(context)).also { names = it } }
+        return emojiName(emoji, index)
     }
 
     fun id(emoji: String): String {
@@ -46,6 +53,24 @@ internal object EmojiArtwork {
         }
     }
 }
+
+/**
+ * Reactions are stored fully qualified ("❤️" is U+2764 U+FE0F) while the catalog
+ * keys some emoji without U+FE0F, so names are matched with it removed on both
+ * sides. Picker entries win over unqualified duplicates, and entries whose name
+ * is only their code-point ID have no name.
+ */
+internal fun emojiNameIndex(catalog: List<EmojiEntry>): Map<String, String> {
+    val index = HashMap<String, String>()
+    catalog.filter { it.name.isNotBlank() && it.name != it.id }
+        .sortedByDescending { it.selectable }
+        .forEach { index.putIfAbsent(withoutVariationSelectors(it.emoji), it.name) }
+    return index
+}
+
+internal fun emojiName(emoji: String, index: Map<String, String>): String? = index[withoutVariationSelectors(emoji)]
+
+private fun withoutVariationSelectors(emoji: String) = emoji.replace("\uFE0F", "")
 
 @Composable internal fun EmojiImage(emoji: String, description: String?, modifier: Modifier = Modifier) {
     val context = androidx.compose.ui.platform.LocalContext.current
