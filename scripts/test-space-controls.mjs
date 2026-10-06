@@ -130,6 +130,10 @@ function browser(...command) {
 const evaluate = source => browser('eval', source).result;
 const wait = expression => browser('wait', '--fn', expression);
 const screenshot = name => { if (artifacts) browser('screenshot', ...(name.startsWith('homepage-') ? [] : ['--full']), `${artifacts}/${name}.png`); };
+function toggleMembers() {
+  if (evaluate('!!document.querySelector(".chat-channel-menu")')) browser('click', '.chat-channel-menu summary');
+  browser('click', '.member-list-toggle');
+}
 const modal = '.delete-confirmation';
 const opens = () => evaluate('document.querySelectorAll(".space-dialog[open]").length');
 function openOverview() {
@@ -273,7 +277,7 @@ function testModalGeometry() {
     browser('press', 'Escape');
     if (width < 760) {
       browser('click', '.channel-select[aria-current="page"]');
-      browser('click', '.member-list-toggle');
+      toggleMembers();
       wait('!!document.querySelector(".member-list-close")');
       screenshot(`members-overlay-${width}-${height}`);
       const closeBounds = geometry('.member-list-close');
@@ -283,7 +287,7 @@ function testModalGeometry() {
       screenshot(`members-scrolled-${width}-${height}`);
       browser('click', '.member-list-close');
       assert.equal(evaluate('!!document.querySelector(".space-member-presence")'), false);
-      browser('click', '.member-list-toggle');
+      toggleMembers();
       dismissMemberBackdrop();
       assert.equal(evaluate('!!document.querySelector(".space-member-presence")'), false, 'Outside tap must close the member panel');
       assert.equal(evaluate('!!document.querySelector(".member-list-backdrop")'), false);
@@ -351,7 +355,7 @@ try {
   screenshot('members-narrow-open');
   browser('click', '.member-list-close');
   assert.equal(evaluate('!!document.querySelector(".space-member-presence")'), false);
-  browser('click', '.member-list-toggle');
+  toggleMembers();
   dismissMemberBackdrop();
   assert.equal(evaluate('!!document.querySelector(".space-member-presence")'), false, 'Outside tap must close the narrow member panel');
   assert.equal(evaluate('!!document.querySelector(".member-list-backdrop")'), false);

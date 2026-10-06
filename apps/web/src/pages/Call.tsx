@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
 import { animals, colors, uniqueNamesGenerator } from "unique-names-generator";
-import { AudioLines, ChevronDown, Hash, HeadphoneOff, Headphones, Menu, Mic, MicOff, PhoneOff, Settings, Speech, Users, VolumeX, X } from "lucide-react";
+import { ArrowLeft, AudioLines, ChevronDown, Hash, HeadphoneOff, Headphones, Mic, MicOff, PhoneOff, Settings, Speech, Users, VolumeX, X } from "lucide-react";
 import ProfileForm from "../account/ProfileForm";
 import { getAccount, logout, type Account } from "../account/client";
 import { routeOutput } from "../audio/output";
@@ -271,6 +271,20 @@ export default function Call({ channel, onReadCursor, channelActions, voiceChann
   const [outputSelectable, setOutputSelectable] = useState(false);
   useEffect(() => setOutputSelectable(typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype), []);
   const [membersVisible, setMembersVisible] = useState(!embedded);
+  const [narrow, setNarrow] = useState(false);
+  const navigationSwipe = useRef<{ id: number; x: number; y: number; time: number } | undefined>(undefined);
+  const suppressNavigationClick = useRef(false);
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 760px)");
+    const update = () => {
+      setNarrow(media.matches);
+      navigationSwipe.current = undefined;
+    };
+    if (media.matches) setMembersVisible(false);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
   const [selfPresence, setSelfPresence] = useState<PresenceStatus>();
   const [localPresence, setLocalPresence] = useState<PresenceStatus>("offline");
   const [presenceLive, setPresenceLive] = useState(false);
@@ -330,10 +344,6 @@ export default function Call({ channel, onReadCursor, channelActions, voiceChann
   }, [state.phase]);
   const pendingJoin = state.phase === "joining" && !joiningShown;
   const Root = embedded ? "div" : "main";
-
-  useEffect(() => {
-    if (window.matchMedia("(max-width: 760px)").matches) setMembersVisible(false);
-  }, []);
 
   useEffect(() => {
     if (engaged) void preloadSoundEffects();
@@ -752,7 +762,37 @@ export default function Call({ channel, onReadCursor, channelActions, voiceChann
       {!embedded && <header className="call-header">
         <Wordmark />
       </header>}
-      <section className={`call-room${channel ? " spaces-room" : ""}${navigationOpen ? " navigation-open" : ""}`} data-direct={channel?.direct ? "" : undefined}>
+      <section className={`call-room${channel ? " spaces-room" : ""}${navigationOpen ? " navigation-open" : ""}`} data-direct={channel?.direct ? "" : undefined}
+        onPointerDownCapture={(event) => {
+          suppressNavigationClick.current = false;
+          navigationSwipe.current = undefined;
+          if (!narrow || !onNavigationToggle || event.pointerType !== "touch" || !event.isPrimary || membersVisible ||
+            document.querySelector("dialog[open], details[open], [role=dialog], [popover]:popover-open") || window.getSelection()?.type === "Range" ||
+            (event.target as HTMLElement).closest("input, textarea, select, [contenteditable=true], [role=slider], a, summary, button:not(.channel-select):not(.direct-select)")) return;
+          navigationSwipe.current = { id: event.pointerId, x: event.clientX, y: event.clientY, time: event.timeStamp };
+        }}
+        onPointerMove={(event) => {
+          const start = navigationSwipe.current;
+          if (start && (event.pointerId !== start.id || Math.abs(event.clientY - start.y) > Math.max(12, Math.abs(event.clientX - start.x)))) navigationSwipe.current = undefined;
+        }}
+        onPointerCancel={() => { navigationSwipe.current = undefined; }}
+        onPointerUp={(event) => {
+          const start = navigationSwipe.current;
+          navigationSwipe.current = undefined;
+          if (!start || start.id !== event.pointerId || event.timeStamp - start.time > 600) return;
+          const dx = event.clientX - start.x, dy = event.clientY - start.y;
+          if (Math.abs(dx) < 64 || Math.abs(dx) < Math.abs(dy) * 2 || (navigationOpen ? dx >= 0 : dx <= 0) ||
+            document.querySelector("dialog[open], details[open], [role=dialog], [popover]:popover-open") || window.getSelection()?.type === "Range") return;
+          suppressNavigationClick.current = true;
+          onNavigationToggle?.();
+        }}
+        onKeyDownCapture={() => { suppressNavigationClick.current = false; }}
+        onClickCapture={(event) => {
+          if (!suppressNavigationClick.current) return;
+          suppressNavigationClick.current = false;
+          event.preventDefault();
+          event.stopPropagation();
+        }}>
         {spaceRail}
         <ChannelSidebar>
           <div className="sidebar-channels">
@@ -823,11 +863,13 @@ export default function Call({ channel, onReadCursor, channelActions, voiceChann
         </ChannelSidebar>
         <div className="stage">
           {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened || mutedParticipants.has(media.participantId)} output={output} volume={outputVolume * (participantVolumes[media.participantId] ?? 100) / 100} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
-          <Chat key={`${channel?.id ?? "general"}:${channelJoined}`} name={name} signedIn={!!account} identityReady={identityReady && engaged} direct={channel?.direct} onReadCursor={onReadCursor} readOnly={!channelJoined} composerNotice={channelActions} messageSounds={engaged && channelJoined} onOnlineChange={onChatOnlineChange} channelId={channel?.id} channelName={channel?.name} initialHistory={initialHistory} initialHistoryError={initialHistoryError} onHistoryChange={onHistoryChange} showTitle={!!channel || embedded} onAuthorChange={setChatAuthor} onLocalPresenceChange={accountPresence ? undefined : setLocalPresence} headerActions={<div className="voice-actions">
+          <Chat key={`${channel?.id ?? "general"}:${channelJoined}`} name={name} signedIn={!!account} identityReady={identityReady && engaged} direct={channel?.direct} onReadCursor={onReadCursor} readOnly={!channelJoined} composerNotice={channelActions} messageSounds={engaged && channelJoined} onOnlineChange={onChatOnlineChange} channelId={channel?.id} channelName={channel?.name} initialHistory={initialHistory} initialHistoryError={initialHistoryError} onHistoryChange={onHistoryChange} showTitle={!!channel || embedded} onAuthorChange={setChatAuthor} onLocalPresenceChange={accountPresence ? undefined : setLocalPresence}
+            headerLeading={onNavigationToggle && <button className="navigation-toggle" type="button" aria-label="Back to Browse" onClick={onNavigationToggle}><ArrowLeft aria-hidden="true" /></button>}
+            channelMenu={narrow ? <>{membersPanel && <button type="button" className="member-list-toggle" aria-expanded={membersVisible} aria-controls={membersVisible ? "space-member-list" : undefined} onClick={() => setMembersVisible(!membersVisible)}><Users aria-hidden="true" />{membersVisible ? "Hide member list" : "Members"}</button>}</> : undefined}
+            headerActions={<div className="voice-actions">
             {!audioPanel && actionError && <div className="room-error chat-refresh-error" role="alert">{actionError}</div>}
             {channelJoined && channelActions}
-            {onNavigationToggle && <button className="navigation-toggle" type="button" aria-expanded={navigationOpen} onClick={onNavigationToggle}><Menu aria-hidden="true" />Browse</button>}
-            {membersPanel && <Tooltip content={membersVisible ? "Hide member list" : "Show member list"}><button type="button" className="member-list-toggle" aria-label={membersVisible ? "Hide member list" : "Show member list"} aria-expanded={membersVisible} aria-controls={membersVisible ? "space-member-list" : undefined} onClick={() => setMembersVisible(!membersVisible)}><Users aria-hidden="true" /></button></Tooltip>}
+            {!narrow && membersPanel && <Tooltip content={membersVisible ? "Hide member list" : "Show member list"}><button type="button" className="member-list-toggle" aria-label={membersVisible ? "Hide member list" : "Show member list"} aria-expanded={membersVisible} aria-controls={membersVisible ? "space-member-list" : undefined} onClick={() => setMembersVisible(!membersVisible)}><Users aria-hidden="true" /></button></Tooltip>}
           </div>} />
         </div>
         {membersVisible && membersPanel && <>
