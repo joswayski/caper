@@ -321,12 +321,16 @@ final class CaperParityUITests: XCTestCase {
         let grid = try require(app.scrollViews["reaction-picker-grid"], timeout: 5, "The catalog must scroll inside the picker")
         XCTAssertLessThan(grid.frame.height, size.height)
         XCTAssertTrue(grid.buttons.firstMatch.isHittable)
+        XCTAssertTrue(try require(picker.buttons["Cancel"], timeout: 5, "Cancel must be inside the popover").isHittable)
+        capture("reaction-picker-compact-catalog-fixture", app: app)
         search.tap()
         XCTAssertTrue(hasKeyboardFocus(search))
         search.typeText("definitely-no-such-emoji")
         try require(app.descendants(matching: .any)["reaction-picker-empty"], timeout: 5, "Missing empty search state")
         XCTAssertEqual(picker.frame.width, size.width, accuracy: 1)
         XCTAssertEqual(picker.frame.height, size.height, accuracy: 1)
+        XCTAssertTrue(picker.buttons["Cancel"].isHittable, "Empty results must leave Cancel available")
+        capture("reaction-picker-compact-empty-fixture", app: app)
 
         // Click a real control outside, rather than cancelling the sheet.
         let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 5, "Missing composer")
