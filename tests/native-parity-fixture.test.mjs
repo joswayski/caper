@@ -338,3 +338,102 @@ test('who-reacted lists people in reaction order for readers only', async (t) =>
   const unknown = await request('/__fixture/control', { method: 'POST', body: { incomingReaction: { channelId: ids.general, messageId: target, emoji: '👍', userId: 'nobody' } } });
   assert.equal(unknown.response.status, 400);
 });
+
+test('threads isolate replies, broadcast one shared message and preserve retry identity', async (t) => {
+  const { request } = await setup(t);
+  const path = `/api/chat/channels/${ids.general}/messages`;
+  const session = (await request('/api/chat/session', { method: 'POST', auth: true, body: { name: 'ignored' } })).value;
+  const initial = (await request(path, { auth: true })).value;
+  const root = initial.messages[1];
+  const body = { clientMessageId: randomUUID(), text: 'TEST FIXTURE thread only', threadRootId: root.id, broadcast: false };
+  const send = body => request(path, { method: 'POST', auth: true, headers: { 'x-caper-chat-token': session.token }, body });
+  const first = (await send(body)).value;
+  assert.equal(first.threadRootId, root.id);
+  assert.equal(first.thread.replyCount, 1);
+  assert.deepEqual((await send(body)).value, first);
+  assert.equal((await send({ ...body, broadcast: true })).response.status, 409);
+  const broadcast = (await send({ ...body, clientMessageId: randomUUID(), text: 'TEST FIXTURE shared broadcast', broadcast: true })).value;
+  const channel = (await request(path, { auth: true })).value;
+  assert.equal(channel.messages.length, initial.messages.length + 1);
+  assert.ok(!channel.messages.some(message => message.id === first.id));
+  assert.equal(channel.messages.filter(message => message.id === broadcast.id).length, 1);
+  const threadPath = `${path}/${root.id}/thread`;
+  const thread = (await request(threadPath, { auth: true })).value;
+  assert.deepEqual(thread.messages.map(message => message.id), [first.id, broadcast.id]);
+  assert.equal(thread.root.thread.replyCount, 2);
+  assert.deepEqual(thread.root.thread.participants.map(person => person.id), [ids.owner]);
+  const older = (await request(`${threadPath}?before=${broadcast.seq}`, { auth: true })).value;
+  assert.deepEqual(older.messages.map(message => message.id), [first.id]);
+  assert.equal((await request(threadPath)).response.status, 401);
+  assert.equal((await request(`${path}/${first.id}/thread`, { auth: true })).response.status, 404);
+  assert.equal((await send({ ...body, clientMessageId: randomUUID(), threadRootId: first.id })).response.status, 404);
+  const reactions = (await request(`${path}/${broadcast.id}/reactions`, { method: 'PUT', auth: true,
+    headers: { 'x-caper-chat-token': session.token }, body: { emoji: '👍', active: true } })).value;
+  assert.equal(reactions.messageId, broadcast.id);
+  assert.deepEqual((await request(threadPath, { auth: true })).value.messages.at(-1).reactions,
+    (await request(path, { auth: true })).value.messages.at(-1).reactions);
+});
+
+test('editing retains versions, author ownership, thread identity and original send retries', async (t) => {
+  const { request } = await setup(t);
+  const path = `/api/chat/channels/${ids.general}/messages`;
+  const session = (await request('/api/chat/session', { method: 'POST', auth: true, body: { name: 'ignored' } })).value;
+  const mutation = { method: 'PUT', auth: true, headers: { 'x-caper-chat-token': session.token } };
+  const send = body => request(path, { ...mutation, method: 'POST', body });
+  const originalBody = { clientMessageId: randomUUID(), text: 'TEST FIXTURE Meet Friday 🙂' };
+  const original = (await send(originalBody)).value;
+  const target = `${path}/${original.id}`;
+  const hidden = (await send({ clientMessageId: randomUUID(), text: 'Hidden reply', threadRootId: original.id })).value;
+  const broadcast = (await send({ clientMessageId: randomUUID(), text: 'Broadcast reply', threadRootId: original.id, broadcast: true })).value;
+  const changed = (await request(target, { ...mutation, body: { text: 'TEST FIXTURE Meet Saturday 🚀', expectedRevision: 1 } })).value;
+  assert.equal(changed.revision, 2);
+  assert.equal(changed.seq, original.seq);
+  assert.equal(changed.createdAt, original.createdAt);
+  assert.equal(changed.thread.replyCount, 2);
+  assert.equal(changed.thread.seq, broadcast.seq);
+  assert.equal(changed.editSeq, '8');
+  assert.deepEqual((await send(originalBody)).value, changed);
+  assert.deepEqual((await request(target, { ...mutation, body: { text: changed.content.text, expectedRevision: 1 } })).value, changed);
+  assert.equal((await request(target, { ...mutation, body: { text: 'Stale draft', expectedRevision: 1 } })).response.status, 409);
+  for (const reply of [hidden, broadcast]) await request(`${path}/${reply.id}`, { ...mutation, body: { text: `${reply.content.text} corrected`, expectedRevision: 1 } });
+  const history = (await request(path, { auth: true })).value;
+  const thread = (await request(`${target}/thread`, { auth: true })).value;
+  assert.equal(history.cursor, '10');
+  assert.ok(!history.messages.some(row => row.id === hidden.id));
+  assert.equal(history.messages.find(row => row.id === broadcast.id).content.text, 'Broadcast reply corrected');
+  assert.equal(thread.messages.find(row => row.id === broadcast.id).content.text, 'Broadcast reply corrected');
+  assert.equal(thread.root.content.text, changed.content.text);
+  const versions = (await request(`${target}/versions`, { auth: true })).value;
+  assert.deepEqual(versions.versions.map(version => [version.revision, version.content.text]), [[2, changed.content.text], [1, original.content.text]]);
+  assert.equal((await request(`${target}/versions`)).response.status, 404);
+  const peer = history.messages.find(row => row.author.id === ids.member);
+  assert.equal((await request(`${path}/${peer.id}`, { ...mutation, body: { text: 'Owner override', expectedRevision: 1 } })).response.status, 403);
+  await request(`/api/spaces/${ids.space}/channels/${ids.general}/membership`, { auth: true, method: 'DELETE' });
+  assert.equal((await request(`${target}/versions`, { auth: true })).response.status, 200);
+  assert.equal((await request(target, { ...mutation, body: { text: 'Preview edit', expectedRevision: 2 } })).response.status, 404);
+});
+
+test('edit history is paginated and replay keeps the immutable original content', async (t) => {
+  const { request, fixture } = await setup(t);
+  const path = `/api/chat/channels/${ids.demo}/messages`;
+  const original = (await request(path)).value.messages[0];
+  for (let revision = 2; revision <= 53; revision++) await request('/__fixture/control', {
+    method: 'POST', body: { incomingEdit: { channelId: ids.demo, messageId: original.id, text: `Version ${revision} 🙂` } },
+  });
+  const history = (await request(`${path}/${original.id}/versions`, { auth: true })).value;
+  assert.equal(history.versions.length, 50); assert.equal(history.hasMore, true);
+  assert.equal(history.versions[0].revision, 53); assert.equal(history.versions.at(-1).revision, 4);
+  const older = (await request(`${path}/${original.id}/versions?before=4`, { auth: true })).value;
+  assert.deepEqual(older.versions.map(version => version.revision), [3, 2, 1]);
+  assert.equal(older.versions.at(-1).content.text, original.content.text);
+  const stream = socket(`ws://127.0.0.1:${fixture.gatewayPort}/api/chat/events`);
+  t.after(() => stream.ws.close()); await stream.opened; await stream.next();
+  stream.ws.send(JSON.stringify({ type: 'subscribe', id: 'edits', kind: 'chat', channelId: ids.demo, after: '0' }));
+  const events = [];
+  while (true) { const frame = await stream.next(); if (frame.event?.type === 'ready') break; if (frame.event) events.push(frame.event); }
+  assert.equal(events[0].message.content.text, original.content.text);
+  assert.deepEqual(events.map(event => event.seq), Array.from({ length: 56 }, (_, index) => String(index + 1)));
+  assert.equal(events.at(-1).type, 'message.edited');
+  assert.equal(events.at(-1).message.seq, '1');
+  assert.equal(events.at(-1).message.editSeq, '56');
+});

@@ -76,6 +76,14 @@ pub enum Command {
         channel: String,
         before: String,
     },
+    LoadThread {
+        generation: u64,
+        request: u64,
+        token: Option<String>,
+        channel: String,
+        root: String,
+        before: Option<String>,
+    },
     MediaStatus {
         generation: u64,
         root: String,
@@ -109,6 +117,8 @@ pub enum Command {
         channel: String,
         client_id: String,
         text: String,
+        thread_root_id: Option<String>,
+        broadcast: bool,
     },
     React {
         generation: u64,
@@ -126,6 +136,29 @@ pub enum Command {
         channel: String,
         message: String,
         active: bool,
+    },
+    EditMessage {
+        generation: u64,
+        request: u64,
+        token: Option<String>,
+        chat_token: String,
+        original: Box<Message>,
+        text: String,
+    },
+    ReloadMessage {
+        generation: u64,
+        request: u64,
+        token: Option<String>,
+        channel: String,
+        message: String,
+    },
+    MessageVersions {
+        generation: u64,
+        request: u64,
+        token: Option<String>,
+        channel: String,
+        message: String,
+        before: Option<u32>,
     },
     Typing {
         token: Option<String>,
@@ -328,6 +361,13 @@ pub enum Event {
         channel: String,
         result: Result<History, LoadError>,
     },
+    ThreadLoaded {
+        generation: u64,
+        request: u64,
+        channel: String,
+        root: String,
+        result: Result<crate::model::ThreadHistory, LoadError>,
+    },
     MediaStatus {
         generation: u64,
         root: String,
@@ -367,6 +407,21 @@ pub enum Event {
         message: String,
         active: bool,
         result: Result<crate::model::PinUpdate, SendFailure>,
+    },
+    EditSnapshot {
+        generation: u64,
+        request: u64,
+        channel: String,
+        message: String,
+        reloaded: bool,
+        result: Result<Box<Message>, String>,
+    },
+    MessageVersions {
+        generation: u64,
+        request: u64,
+        channel: String,
+        message: String,
+        result: Result<crate::model::MessageVersions, String>,
     },
     Credential {
         generation: u64,
@@ -902,6 +957,22 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                 .history(token.as_deref(), &channel, Some(&before))
                 .map_err(LoadError::from),
         },
+        Command::LoadThread {
+            generation,
+            request,
+            token,
+            channel,
+            root,
+            before,
+        } => Event::ThreadLoaded {
+            generation,
+            request,
+            channel: channel.clone(),
+            root: root.clone(),
+            result: api
+                .thread(token.as_deref(), &channel, &root, before.as_deref())
+                .map_err(LoadError::from),
+        },
         Command::Send {
             generation,
             token,
@@ -909,12 +980,21 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             channel,
             client_id,
             text,
+            thread_root_id,
+            broadcast,
         } => Event::Sent {
             generation,
             channel: channel.clone(),
             client_id: client_id.clone(),
             result: api
-                .send(token.as_deref(), &chat_token, &channel, &client_id, &text)
+                .send(
+                    token.as_deref(),
+                    &chat_token,
+                    &channel,
+                    &client_id,
+                    &text,
+                    (thread_root_id.as_deref(), broadcast),
+                )
                 .map_err(|error| SendFailure {
                     status: error.status.map(|status| status.as_u16()),
                     message: error.to_string(),
@@ -990,6 +1070,57 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                     status: error.status.map(|status| status.as_u16()),
                     message: error.to_string(),
                 }),
+        },
+        Command::EditMessage {
+            generation,
+            request,
+            token,
+            chat_token,
+            original,
+            text,
+        } => Event::EditSnapshot {
+            generation,
+            request,
+            channel: original.channel_id.clone(),
+            message: original.id.clone(),
+            reloaded: false,
+            result: api
+                .edit_message(token.as_deref(), &chat_token, &original, &text)
+                .map(Box::new)
+                .map_err(|error| error.to_string()),
+        },
+        Command::ReloadMessage {
+            generation,
+            request,
+            token,
+            channel,
+            message,
+        } => Event::EditSnapshot {
+            generation,
+            request,
+            channel: channel.clone(),
+            message: message.clone(),
+            reloaded: true,
+            result: api
+                .load_message(token.as_deref(), &channel, &message)
+                .map(Box::new)
+                .map_err(|error| error.to_string()),
+        },
+        Command::MessageVersions {
+            generation,
+            request,
+            token,
+            channel,
+            message,
+            before,
+        } => Event::MessageVersions {
+            generation,
+            request,
+            channel: channel.clone(),
+            message: message.clone(),
+            result: api
+                .message_versions(token.as_deref(), &channel, &message, before)
+                .map_err(|error| error.to_string()),
         },
         Command::Admin {
             generation,

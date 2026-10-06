@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { ChatTimeline } from "../chat/timeline.ts";
-import { isChatPinEvent, isChatReactionEvent, type ChatMessage, type ChatPinEvent, type ChatReactionEvent } from "../chat/types.ts";
+import { isChatMessage, isChannelMessage, isChatPinEvent, isChatReactionEvent, type ChatMessage, type ChatPinEvent, type ChatReactionEvent } from "../chat/types.ts";
 import { emojiAsset, emojiCode, emojiNames, preloadEmojiImages } from "../chat/emoji.ts";
 
 function message(seq: string, id = `message-${seq}`): ChatMessage {
@@ -370,4 +370,33 @@ test("fresh author metadata coexists with newer cached reaction revisions", () =
   assert.equal(timeline.messages[0].author.name, "Fresh name");
   assert.deepEqual(timeline.messages[0].reactions, reaction("3").reactions);
   assert.equal(timeline.cursor, "2");
+});
+
+test("thread summaries survive stale history, unloaded parents and duplicate broadcast replies", () => {
+  const timeline = new ChatTimeline();
+  const first = { replyCount: 1, participants: [message("1").author], seq: "12" };
+  const latest = { replyCount: 3, participants: [{ id: "other", name: "Other", isGuest: false }], seq: "15" };
+  timeline.reset([message("10")], "10");
+  const reply = { ...message("15"), threadRootId: "parent", broadcast: true, thread: latest };
+  timeline.mergeSent(reply);
+  assert.equal(timeline.cursor, "10");
+  timeline.prepend([{ ...message("1", "parent"), thread: first }]);
+  assert.deepEqual(timeline.messages[0].thread, latest, "a late parent page cannot lower the summary revision");
+  timeline.prepend([{ ...reply, thread: first, broadcast: true }]);
+  assert.equal(timeline.messages.filter((row) => row.id === reply.id).length, 1);
+  assert.deepEqual(timeline.messages[0].thread, latest);
+  assert.equal(isChannelMessage(reply), true);
+  assert.equal(isChannelMessage({ ...reply, broadcast: false }), false);
+  assert.equal(timeline.cursor, "10", "thread GET/HTTP ACK never advances channel replay");
+});
+
+test("thread metadata validators reject invalid roots, broadcasts and summary revisions", () => {
+  const root = message("1");
+  assert.ok(isChatMessage({ ...root, threadRootId: "root", broadcast: false }));
+  for (const invalid of [
+    { ...root, broadcast: true }, { ...root, threadRootId: "" },
+    { ...root, thread: { replyCount: 1, participants: [root.author], seq: "-1" } },
+    { ...root, thread: { replyCount: 0, participants: [root.author], seq: "2" } },
+    { ...root, thread: { replyCount: 2, participants: [root.author, root.author], seq: "2" } },
+  ]) assert.equal(isChatMessage(invalid), false);
 });
