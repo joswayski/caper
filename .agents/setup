@@ -44,6 +44,7 @@ packages=(
   libxkbcommon-x11-0
   libxrandr-dev
   lld-21
+  openjdk-17-jdk-headless
   pkg-config
   postgresql
   openbox

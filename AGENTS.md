@@ -13,7 +13,7 @@ Adapted from the conventions in `joswayski/captures`.
 ## Working conventions
 
 - Keep changes focused; reuse existing patterns before adding dependencies or abstractions.
-- Consider every applicable platform for product changes: web (desktop and mobile layouts), Android, Apple (iOS/macOS), and Rust desktop. Implement shared behavior across these clients when needed; explicitly document intentional differences and validation gaps rather than treating browser coverage as native coverage.
+- Implement every product behavior change across all applicable clients: web (desktop and mobile layouts), Android, Apple (iOS/macOS), and Rust desktop. Never leave a feature web-only or native-only unless the owner explicitly requests a platform-specific change. Missing toolchains, devices or CI are validation gaps, not reasons to omit an implementation: make the best possible cross-platform change and report what could not be verified. Platform-native presentation may differ, but capabilities must stay equivalent.
 - Other agents may work concurrently. Use an isolated worktree for new concurrent work; never stash, overwrite, or publish another agent's changes.
 - Treat native clients as independent implementations. Browser WebRTC success does not prove native capture or playback support.
 - Never expose provider secrets or log SDP, credentials, or raw media. No unrestricted Cloudflare API proxy.

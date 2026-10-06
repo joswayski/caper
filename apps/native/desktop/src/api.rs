@@ -422,14 +422,36 @@ impl Api {
         channel: &str,
         client_id: &str,
         text: &str,
+        thread: (Option<&str>, bool),
     ) -> Result<Message, ApiError> {
+        let mut body = json!({"clientMessageId":client_id,"text":text});
+        if let Some(root) = thread.0 {
+            body["threadRootId"] = json!(root);
+            body["broadcast"] = json!(thread.1);
+        }
         self.request(
             Method::POST,
             &format!("api/chat/channels/{channel}/messages"),
             token,
             Some(chat_token),
-            Some(json!({"clientMessageId":client_id,"text":text})),
+            Some(body),
         )
+    }
+
+    pub fn thread(
+        &self,
+        token: Option<&str>,
+        channel: &str,
+        root: &str,
+        before: Option<&str>,
+    ) -> Result<crate::model::ThreadHistory, ApiError> {
+        let path = format!(
+            "api/chat/channels/{channel}/messages/{root}/thread{}",
+            before
+                .map(|cursor| format!("?before={cursor}"))
+                .unwrap_or_default()
+        );
+        self.request(Method::GET, &path, token, None, None)
     }
 
     pub fn react(
@@ -450,6 +472,78 @@ impl Api {
         )
     }
 
+    pub fn edit_message(
+        &self,
+        token: Option<&str>,
+        chat_token: &str,
+        original: &Message,
+        text: &str,
+    ) -> Result<Message, ApiError> {
+        let message: Message = self.request(
+            Method::PUT,
+            &format!(
+                "api/chat/channels/{}/messages/{}",
+                original.channel_id, original.id
+            ),
+            token,
+            Some(chat_token),
+            Some(json!({"text":text,"expectedRevision":original.revision})),
+        )?;
+        Self::edit_snapshot(message, &original.channel_id, &original.id)
+    }
+
+    pub fn load_message(
+        &self,
+        token: Option<&str>,
+        channel: &str,
+        message: &str,
+    ) -> Result<Message, ApiError> {
+        let snapshot: Message = self.request(
+            Method::GET,
+            &format!("api/chat/channels/{channel}/messages/{message}"),
+            token,
+            None,
+            None,
+        )?;
+        Self::edit_snapshot(snapshot, channel, message)
+    }
+
+    fn edit_snapshot(message: Message, channel: &str, id: &str) -> Result<Message, ApiError> {
+        if message.id != id || message.channel_id != channel || message.validate().is_err() {
+            return Err(ApiError {
+                status: None,
+                message: "Caper returned an invalid message snapshot.".into(),
+                attempts_remaining: None,
+            });
+        }
+        Ok(message)
+    }
+
+    pub fn message_versions(
+        &self,
+        token: Option<&str>,
+        channel: &str,
+        message: &str,
+        before: Option<u32>,
+    ) -> Result<crate::model::MessageVersions, ApiError> {
+        let path = format!(
+            "api/chat/channels/{channel}/messages/{message}/versions{}",
+            before
+                .map(|revision| format!("?before={revision}"))
+                .unwrap_or_default()
+        );
+        let page: crate::model::MessageVersions =
+            self.request(Method::GET, &path, token, None, None)?;
+        if !page.valid(message, before) {
+            return Err(ApiError {
+                status: None,
+                message: "Caper returned invalid message history.".into(),
+                attempts_remaining: None,
+            });
+        }
+        Ok(page)
+    }
+
     /// Who reacted to one message, with the same read access (and account
     /// token) as `history`.
     pub fn reactors(
@@ -464,6 +558,23 @@ impl Api {
             token,
             None,
             None,
+        )
+    }
+
+    pub fn pin(
+        &self,
+        token: Option<&str>,
+        chat_token: &str,
+        channel: &str,
+        message: &str,
+        active: bool,
+    ) -> Result<crate::model::PinUpdate, ApiError> {
+        self.request(
+            Method::PUT,
+            &format!("api/chat/channels/{channel}/messages/{message}/pin"),
+            token,
+            Some(chat_token),
+            Some(json!({"active":active})),
         )
     }
 

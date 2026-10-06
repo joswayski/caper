@@ -75,7 +75,7 @@ try {
   browser('open', url);
   wait('!!document.querySelector(".space-menu")');
   browser('click', '.space-menu summary');
-  browser('click', '.space-menu .space-actions button');
+  browser('find', 'role', 'button', 'click', '--name', 'Space settings', '--exact');
   wait('!!document.querySelector(".member-add")');
   browser('fill', '#member-username', 'Fr IEND!!');
   assert.equal(evaluate('document.querySelector("#member-username").value'), 'friend');

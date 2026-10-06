@@ -185,6 +185,18 @@ same space's member page/presence subscription. Rust desktop retains member
 statuses and pagination, but reconnects its combined chat/presence gateway on
 channel changes. Web keeps its unchanged member subscription mounted.
 
+Web direct-message history is loaded only by `ChatClient`; opening a conversation
+does not issue a second page-level read. Switching away aborts its in-flight
+history and the previous channel's voice-availability request. Loading failures
+remain visible with an explicit Retry; cancellation does not become a UI error.
+`scripts/test-direct-messages.mjs` checks request counts, rapid switches and
+failure/retry at desktop/390px using the disposable native parity fixture beside
+Vite. `scripts/test-channel-joining.mjs` checks voice-status cancellation with its
+own browser mocks; run it without the parity API/gateway listening. Native request
+lifetimes are independent implementations and are unchanged by these web-only
+fixes. No API, gateway, migration, infrastructure, secret or native release is
+required; deploy web independently through the existing web deployment workflow.
+
 Run `NAVIGATION_TEST_WEB_URL=http://localhost:5174/spaces node scripts/test-desktop-navigation.mjs`
 against Vite for mocked desktop/390px repeat-click, hover/click sharing, cancellation
 and stable presence checks. Web build/tests and Rust desktop tests/Clippy run in
@@ -476,7 +488,8 @@ and broadcast, not by deleting and reposting. No example replacement is enabled.
 An eventual transformation feature must separately retain the submitted original
 in restricted audit storage while publishing only the transformed content. The
 current hash is not an audit copy. Stable message IDs and channel event sequences
-permit later same-ID updates; audit history, integrations and edits are not implemented.
+support same-ID edits and retained content versions (see [message editing](#message-editing)).
+Restricted transformation audit storage and integrations are not implemented.
 Message bodies, chat capabilities, and account credentials are never logged.
 Messages and author snapshots are saved in Postgres and visible to authorized
 channel members; there is no automatic retention purge. Browser tokens use local
@@ -500,6 +513,9 @@ matching its client UUID and sender, using the server's text, timestamp, and
 sequence. Provisional rows never advance the replay cursor. Ambiguous failures
 retain the exact command for retry; definitive rejections retain the text for
 Edit/Dismiss. A late HTTP failure cannot undo WebSocket confirmation.
+WebSocket/history confirmation aborts the now-redundant send POST immediately,
+without cancelling the chat client or the next command. This releases client
+request resources; it does not undo a server-side commit.
 
 Typing uses channel-scoped `caper:chat:v1:typing:{channelId}` Pub/Sub topics; it
 never enters the transactional outbox, history, or message sequence. Gateways
@@ -834,7 +850,8 @@ committed message to open a bottom drawer with five fixed quick reactions
 **Copy message ID**. Copy uses the exact text or globally unique public message
 `id`, never the client retry UUID or channel-local sequence. Read-only previews
 allow copying but not reaction mutations. Message links and unsupported actions
-(reply, forward, threads, pins, bookmarks, reminders, delete) are not exposed.
+(forward, bookmarks, reminders, delete) are not exposed. Threads and pins are
+described below.
 Web offers a keyboard/screen-reader message-actions button; iPhone provides a
 VoiceOver action and Android a labelled long-click action. Desktop Apple/Rust
 clients intentionally retain their existing reaction controls rather than
@@ -857,6 +874,16 @@ Android, iOS/macOS, and Rust desktop also provide searchable standard-emoji
 pickers, counted chips, own-contribution highlighting, add/remove, and save-error
 retry. Clients preserve per-message reaction revisions independently of the
 channel replay cursor.
+
+On macOS, the reaction picker is a 352 × 420-point native popover anchored to
+the fixed conversation header, not the scrolling timeline. Its Cancel button
+lives in the popover content; Escape and outside clicks also dismiss it. The
+Apple parity suite checks catalog/empty-result bounds, accessible Cancel,
+isolated focus styling, and preserving search and the original message target
+during live scrolling. iPhone retains its message-actions sheet and navigation
+toolbar. These are fixture-backed UI checks, not physical-device or live SFU
+validation. No server, schema, infrastructure, or configuration change is needed;
+macOS users receive the fix only after an updated native binary is released.
 
 `node scripts/test-message-actions.mjs` uses the disposable
 `native-parity-fixture.mjs` server and Vite, with Chromium touch input and verified
@@ -1255,6 +1282,358 @@ requirements, instead of a separate invitation/channel rollout.
    Prefer a forward fix. Client rollback is possible against the new services,
    with the limitations above; do not roll API/gateway back across the consent
    or participation boundary or drop membership/invitation tables as rollback.
+
+## Message pins
+
+Pins are channel-wide, not personal bookmarks. Any joined channel member can pin
+or unpin another member's message; the two participants can do the same in a DM.
+Private-channel grants and active space membership still apply. Preview readers
+can see pins but cannot change them, including no-op writes. Actions do not ask
+for confirmation. Inline “Pinned by …” attribution updates for other readers.
+Attribution appears above the author/message in warm gold with a subtle gold wash.
+Desktop message controls appear on hover or keyboard focus: two 14px glyphs in
+24px targets, separated by 2px. Touch clients retain long-press actions and large
+targets; narrow web reserves text space beside its 44px action target.
+Browse channels lives in the space-name menu, and the DM divider follows
+the channel list; the account/audio dock stays fixed.
+The central channel header has a Pins button with a count; web, Android and Rust
+desktop show pins in the central conversation area. Apple uses a platform sheet.
+Each list shows the original author, avatar, date/time, text, and shared attribution,
+and offers Unpin. These are independent native implementations, not web wrappers.
+
+`PUT /api/chat/channels/{channel}/messages/{message}/pin` accepts `{active:boolean}`
+and `X-Caper-Chat-Token`; clients cannot supply a pin author. The response and
+durable outbox event are
+`{type:"message.pin",schemaVersion:1,channelId,seq,message}`. The message snapshot
+contains nullable `pin:{author,createdAt}` and decimal-string `pinSeq`. The
+event's `seq` equals `message.pinSeq`; original message `seq`, content, and
+creation time remain unchanged. Pin/reaction revisions merge independently.
+HTTP acknowledgements do not advance replay/read cursors. Reconnect replays
+mutations, and authoritative history clears pins removed while offline; stale
+acknowledgements/pages must not restore an unpin.
+
+Every history page includes complete `pinnedMessages`, newest pin first, captured
+under the same channel lock as its cursor. The pins collection is separate from
+the 50-message timeline page: an old pin must not enter that page or skip the
+intervening history. There are at most 100 active pins per channel and 60 actual
+mutations per actor/channel/minute. Idempotent retries preserve the original
+attribution and consume neither an event nor the mutation budget. Pin snapshots,
+rate-limit activity, sequence allocation and outbox commit atomically. Unpinning
+retains messages and durable mutation events; only expired rate-limit records
+are pruned. Pins do not send system messages, play message sounds, or create push.
+
+### Pin validation boundary
+
+| Platform | Evidence and remaining gap |
+| --- | --- |
+| API/gateway | Disposable Postgres/Valkey tests cover two authenticated readers, live delivery/replay, persistence, concurrent no-ops, reactions, transaction rollback, old-message pins, limits and retained-but-revoked membership/grants. No production write or deployment |
+| Web | Build/unit tests plus `scripts/test-message-pins.mjs`: two tabs, gold top attribution, compact hover/focus controls, content-following/collapsed sidebar, space-menu Browse, one-action pin/unpin, original metadata, old pins, pending/error/retry, channel isolation and desktop/narrow/wrapping layouts. Chromium touch input with `(pointer:coarse)` verified; screenshots inspected. Not Safari or a physical phone |
+| Rust desktop | Linux build/tests/Clippy and disposable HTTP fixture rendering/interactions; regression tests cover gold attribution, compact hidden/hover controls, direct Unpin and owner/member Browse placement. Windows build/runtime and production cross-client checks remain release validation |
+| Android | Models, gateway, Compose actions/list and JVM regressions implemented. JDK/Android SDK unavailable in this orb; compilation, rendered states and physical-device checks require CI/a native runner |
+| Apple | Models, gateway, SwiftUI actions/list and protocol regressions implemented. Swift/Xcode unavailable in this Linux orb; macOS/iOS builds, rendered states and devices require CI/a native runner |
+| Containers/live | Docker has no running daemon. Validate web/API build stages directly; no container-image, live account/SFU or physical-device acceptance is inferred from fixtures |
+
+With the disposable fixture and Vite running, use:
+
+```sh
+node --test tests/native-parity-fixture.test.mjs
+MESSAGE_TEST_WEB_URL=http://127.0.0.1:5174 node scripts/test-message-pins.mjs
+CHAT_TEST_DATABASE_URL=postgres://user@127.0.0.1:55432/postgres \
+CHAT_TEST_VALKEY_URL=redis://127.0.0.1:6379 \
+  cargo test --locked -p caper-api pins_are_shared -- --ignored --nocapture
+```
+
+For desktop hover assertions, set `MESSAGE_TEST_CHROME` to a Chromium executable
+wrapper that adds
+`--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4`.
+Stock headless Chromium reports no hover device. The script verifies the fine
+pointer before checking hover and later switches to real Chromium touch input.
+
+### Deployment order for pins
+
+Merging does not deploy. These are operator actions, not commands run by tests.
+
+1. **Prerequisites/infrastructure/configuration:** no infrastructure apply, new
+   service, secret, feature flag, or Valkey/SFU reset is required. Keep existing
+   `DATABASE_URL`, direct `MIGRATION_DATABASE_URL`, `VALKEY_URL` and chat config.
+   Keep one desired API replica. Set `MERGED_SHA` to the full merged revision;
+   wait for its API/web images and native CI. Update native testers before
+   enabling pins: old clients do not display pins and may resync across new events.
+2. **Database/API first:** startup applies pending embedded migrations, including
+   `202610060001_message_pins.sql` (partial pin index and rate-limit table), and
+   runtime grants before readiness. No manual data writes/backfill are needed.
+   Watch the exact dispatched workflow and readiness, then verify history/send.
+   ```sh
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
+3. **Gateway next:** deploy the same backend revision before pinning clients.
+   Replay and publishing must preserve the original message author's avatar
+   when the mutation sequence differs from the message creation sequence.
+   Do not change replica counts or close healthy voice tracks.
+   ```sh
+   gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-chat-gateway --timeout=15m
+   ```
+4. **Client releases:** after server readiness, web and native releases are
+   technically independent. Release validated native builds first so testers
+   can consume pin events before exposing the web action. Wait for each exact
+   workflow run; platform compilation/rendering is a prerequisite for release.
+   ```sh
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+5. **Verify/rollback:** with two accounts on different clients, pin/unpin each
+   other's messages, confirm attribution/list updates, reload/reconnect, pin an
+   old message, and switch channels/DMs. Preview, removed membership and revoked
+   private grants must deny mutations. Confirm ordinary sends/reactions and an
+   unrelated voice call remain healthy. Prefer a forward fix; client rollback
+   removes entry points but leaves durable pins. Do not roll server images back
+   across this migration: SQLx validates applied migration history. A reviewed
+   rollback build must retain the migration and disable pin writes while keeping
+   history/events readable. Keep additive tables/indexes and durable events;
+   never drop message/pin data or migration records as rollback.
+
+## Message threads
+
+Reply in thread sits beside desktop message reactions and in message actions.
+Roots show a reply count and up to five distinct repliers' avatars (first-reply
+order). Desktop/wide clients use a right panel; narrow web, Android and iPhone
+take over the conversation screen. The selected root has a slightly stronger
+pin-gold wash; other messages are not dimmed. No nested threads: replying from a
+broadcast opens its original root. The same contracts also apply to DMs.
+
+The unchecked **Also send to channel** option publishes one reply in both places,
+not a copied root message. IDs, content and reactions are shared. Drafts and the
+checkbox choice are per-root for the current channel session; retry commands
+freeze the root and broadcast choice. Ordinary sends cannot retry a pending reply
+into the channel. Replies use the existing participation and read permissions;
+thread reads do not expose another channel's messages.
+
+`POST /api/chat/channels/{channel}/messages` adds optional `threadRootId` and
+default-false `broadcast`. The root must be a same-channel, top-level message.
+`GET /api/chat/channels/{channel}/messages/{root}/thread?before={seq}` returns
+`{root,messages,cursor,hasMore}`; pages contain 50 replies in ascending sequence
+order and `before` is exclusive. Channel history contains roots and broadcast
+replies only. The response's channel head must never advance a client's replay
+cursor: thread pagination is separate from channel pagination.
+
+Each reply's ordinary `message.created` event includes `threadRootId`, `broadcast`
+and `thread:{replyCount,participants,seq}`. The parent summary and reply/outbox
+commit atomically under the existing channel lock. `thread.seq` is a summary
+revision, **not a content revision**; original message `seq` and creation time do
+not change. Summary, reaction and pin revisions remain independent. Clients
+merge summaries monotonically, preserve one broadcast identity, and keep roots
+loaded through thread GET out of channel pagination until channel history loads
+them. Reconnect refetches the active thread and fences obsolete responses.
+
+### Thread validation boundary
+
+| Platform | Evidence and remaining gap |
+| --- | --- |
+| API | Workspace tests/Clippy and disposable Postgres integration cover isolation, participation/read access, invalid/nested/cross-channel roots, concurrent retries, broadcast identity, reactions, outbox rollback and the 50-reply paging boundary. No production writes |
+| Web | Production build, 374 unit tests and `scripts/test-message-threads.mjs`: empty/populated/loading/error states, selected root/count/avatars, shared broadcast reactions, drafts, retries, focus restoration, full-screen dialog, inert background and mobile Back. Inspected 2x Chromium desktop and touch-emulated narrow captures; `(pointer:coarse)` verified. Not Safari or a physical phone |
+| Rust desktop | `DOCS_RS=1 cargo check --manifest-path apps/native/desktop/Cargo.toml --tests` and package Clippy (`--no-deps`) pass after pin integration. This skips the libwebrtc C++ build/link; dependency-inclusive Clippy is blocked by existing missing-safety-doc errors in vendored `webrtc-sys`. No rendered desktop or native runtime acceptance in this orb |
+| Android | Compose full-screen/wide panel, models, gateway and retry regressions implemented. JDK/Gradle/Android SDK unavailable here; native compilation, rendering and physical-device checks remain required |
+| Apple | SwiftUI iPhone full-screen/wide panel, models, gateway and retry regressions implemented. Swift/Xcode unavailable here; iOS/macOS compilation, rendering and physical-device checks remain required |
+| Containers/live | No Docker daemon. Web/API build stages checked directly; no container-image, live multi-account cross-client, SFU or physical-device acceptance is inferred from fixtures |
+
+Web and Rust desktop thread composers accept Unicode emoji but do not yet reuse
+the main composer's colon-name autocomplete. Android/Apple use their existing
+native text entry. Native keyboard focus, accessibility, paging and IME behavior
+need platform validation before release.
+
+With the disposable fixture and Vite running:
+
+```sh
+node --test tests/native-parity-fixture.test.mjs
+MESSAGE_TEST_WEB_URL=http://127.0.0.1:5174 node scripts/test-message-threads.mjs
+DATABASE_URL=postgres://user@127.0.0.1:55432/postgres \
+  cargo test --locked -p caper-api threads_isolate -- --ignored
+```
+
+Set `MESSAGE_TEST_CHROME` to the fine-pointer Chromium wrapper documented under
+pins to also assert desktop hover/focus visibility and compact reply controls.
+
+### Deployment order for threads
+
+Merging does not deploy. These are post-merge operator actions, not development
+commands that have been run against shared systems.
+
+1. **Prerequisites/infrastructure/configuration:** no infrastructure apply, new
+   service, secret, configuration or SFU/Valkey reset is needed. Keep existing
+   `DATABASE_URL`, direct `MIGRATION_DATABASE_URL`, `VALKEY_URL` and chat config,
+   and one desired API replica. Set `MERGED_SHA` to the full merged revision and
+   wait for its backend/web images and native CI. Older installed clients may
+   display live thread replies inline because they do not yet filter roots.
+2. **Database/API first:** startup applies embedded migration
+   `202610060002_message_threads.sql` after pins, adding nullable root references,
+   default-false broadcast and timeline indexes. No manual data write/backfill
+   or separate migration dispatch is required. Wait for the exact dispatched
+   workflow and readiness; verify ordinary history/send before clients.
+   ```sh
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
+3. **Gateway:** deploy the same cumulative backend revision after API readiness.
+   The thread payload uses existing message-created delivery, without a new
+   gateway protocol or service. Do not change replica counts or close healthy
+   voice tracks.
+   ```sh
+   gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-chat-gateway --timeout=15m
+   ```
+4. **Clients:** after server readiness, web and native releases can deploy
+   independently. Validate/release native clients before testers create threads
+   if consistent filtering is required. Compilation and rendered platform checks
+   are prerequisites, not inferred from browser tests. Wait for exact workflow
+   outcomes before accepting a release.
+   ```sh
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+5. **Verify/rollback:** use two accounts on different updated clients. Reply,
+   broadcast, react from either surface, reload/reconnect, page over 50 replies,
+   switch roots/channels/DMs and use mobile Back. Confirm denied membership/grants
+   cannot read or reply and an unrelated voice call remains healthy. Client
+   rollback removes entry points but old clients may show replies inline. Prefer
+   a forward fix; do not roll backend images back across the migration because
+   SQLx validates applied history. A reviewed rollback build must retain the
+   migration and thread read/event filtering while disabling new replies. Keep
+   all messages, outbox records, columns and indexes; never delete conversation
+   data or migration records as rollback.
+
+## Message editing
+
+Web, Android, Apple (iOS/macOS) and Rust desktop message actions and pins offer
+**Edit message** to the original author account while it can participate in
+the conversation. This includes
+channel messages, thread roots, hidden replies, broadcast replies and DMs.
+Ownership follows the original session's account, so rotating a chat capability
+does not lose authorship. There is no age limit or space-owner override.
+Save uses the normal 4,000-code-point, nonblank text rules; desktop Ctrl/Cmd+Enter saves.
+Conflicts and failed saves keep the draft. **Discard draft and load latest**
+explicitly replaces it. Channel/account/access changes close obsolete dialogs.
+
+An **edited** indicator opens retained versions, also available from message
+actions and pins. Everyone with current read access can inspect the original
+and later versions, including members previewing an unjoined channel. Editing
+does not erase information: the dialog explains this before saving. History
+prominently shows the previous version on the left and current version on the
+right, with word-level changes highlighted. **View previous versions** below
+selects an older change without replacing that latest pair; the original has
+no fabricated predecessor. Web uses Pierre Diffs (`@pierre/diffs`); native
+clients render native word diffs with equivalent capabilities. There is no
+automatic version purge or restore-to-version action.
+
+### Editing API and durable delivery
+
+- `PUT /api/chat/channels/{channel}/messages/{message}` accepts the sending
+  capability and `{text,expectedRevision}` and returns the current message.
+  Legacy messages implicitly have `revision:1`. Actual changes add `revision`,
+  `editedAt` and decimal-string `editSeq`. Same-text saves are no-ops; an exact
+  retry of the immediately preceding successful edit does not create another
+  version/event. A stale draft returns 409. The limit is 30 actual edits per
+  author/channel/minute; retries/no-ops do not consume it.
+- `GET` at that URL reloads the current snapshot. `GET .../versions?before={revision}`
+  returns `{messageId,versions:[{revision,content,createdAt}],hasMore}`, newest
+  first, 50 per page with exclusive `before`. Reads recheck current membership
+  and private grants; outsiders have no version-history access.
+- Migration `202610060003_message_edits.sql` follows threads. It adds append-only
+  `message_versions`; the original published content is captured lazily on first
+  edit, without rewriting or backfilling all messages. The runtime role has
+  SELECT/INSERT, not UPDATE/DELETE, on this table.
+- The channel lock atomically commits version, current message, outbox event and
+  channel head. Events are `{type:"message.edited",schemaVersion:1,channelId,seq,message}`,
+  with `seq == message.editSeq`. Creation `seq`/time, message ID, original send
+  hash/idempotency, author, thread/broadcast identity, reactions and pins stay
+  unchanged. `thread.seq` remains an independent root-summary revision.
+- The existing publisher and gateway replay these events. Clients merge only
+  content by revision, including pinned/thread projections and late pages.
+  Editing does not insert unloaded messages, chime or announce a new message.
+  HTTP edit acknowledgements and history pages never advance replay cursors.
+  Excess unloaded edit snapshots cause resync rather than silent eviction.
+
+### Editing validation and release gaps
+
+| Platform | Evidence and limits |
+| --- | --- |
+| API | Initial editing baseline: 159 workspace tests, none ignored, including disposable Postgres/Valkey tests for ownership, rotated capability, permissions, roots/replies/DMs, stale drafts, retries, rollback, publisher, rate/paging boundaries and append-only grants. Locked release build passed. Backend is unchanged in the UI/parity follow-up; its default workspace run passed 124 tests with 35 database/integration tests ignored (disposable servers were not running), plus fmt/Clippy |
+| Web | Production build/typechecks, 382 web tests, 15 fixture tests and `scripts/test-message-edits.mjs` passed: real saves, pins, rendered split diffs with separate word highlights, fixed latest pair while browsing older changes, original selection, 390px history/conflict/draft/reload, ownership, hidden/broadcast edits, independent summaries, Escape isolation, 55-version paging and retry/rejected saves. Initial threads/pins regressions also passed (one default-pointer pins run needed retry). Inspected 2x desktop/narrow captures. Chromium fixtures do not prove touch devices, Safari or live multi-account acceptance |
+| Rust desktop | Native editor/history, cursor-neutral HTTP snapshots and independent gateway merge. Linux build, fmt and 221 tests (9 existing device/integration tests ignored); package Clippy uses `--no-deps` because vendored `webrtc-sys` has existing missing-safety-doc warnings. Actual wide/480px history, original selection and editor captures were inspected; resize/selection repaint fixes keep contents visible. Tests cover retained drafts, late results, author changes, HTTP/replay isolation, stale projections and selected-original placement. Windows and cross-client live acceptance remain prerequisites |
+| Android | Native author editor/history from timelines, threads and pins, with retained conflicts, latest/older comparisons and paginated history. Java 17/SDK 36 Kotlin main/test compilation and all 142 JVM unit tests passed, including edit headers/revision/identity, Unicode word diffs and bounded history. Orb setup now includes Java; install the Android SDK separately. No APK/native-audio build, rendered Compose/device or live cross-client acceptance is inferred from compilation/unit tests |
+| Apple iOS/macOS | Native SwiftUI editor/history from rows/actions, threads and pins. Linux Swift 6 typechecked Foundation models and executed 10 history/diff/Unicode assertions; changed SwiftUI/API/model sources passed iOS 17 and macOS 14 syntax parsing. These checks do not typecheck SwiftUI/UIKit/AppKit or replace platform XCTest. Xcode compilation, rendered UI, physical devices and cross-client live acceptance remain prerequisites |
+| Containers / live | No Docker daemon; API release and web production build stages passed directly, not as container images. Staging secrets check could not authenticate the staging AWS profile; no secret/configuration changes are required. No live multi-account, physical-device or SFU evidence is inferred from fixture checks |
+
+With the disposable fixture and Vite running:
+
+```sh
+node --test tests/native-parity-fixture.test.mjs
+MESSAGE_TEST_WEB_URL=http://127.0.0.1:5174 node scripts/test-message-edits.mjs
+CHAT_TEST_DATABASE_URL=postgres://user@127.0.0.1:55432/postgres \
+  CHAT_TEST_VALKEY_URL=redis://127.0.0.1:56379 \
+  cargo test --workspace chat::editing -- --ignored
+```
+
+For Android source/unit validation, use JDK 17 and set `ANDROID_HOME` to an SDK
+with platform/build-tools 36 (the repository's native build also needs its pinned
+NDK/CMake). The smaller Gradle heap below fits a 4 GB orb:
+
+```sh
+apps/native/android/prepare-fonts.sh
+apps/native/android/gradlew -p apps/native/android --no-daemon --max-workers=1 \
+  '-Dorg.gradle.jvmargs=-Xmx768m -XX:MaxMetaspaceSize=384m -Dfile.encoding=UTF-8' \
+  :app:compileDebugKotlin :app:testDebugUnitTest
+```
+
+### Deployment order for editing
+
+Merging does not deploy. These are post-merge operator commands, not shared-state
+actions performed during development.
+
+1. **Prerequisites:** merge the threads dependency first, then editing; set
+   `MERGED_SHA` to the full cumulative merged revision and wait for its backend/web
+   images and native checks. No infrastructure apply, new secrets/configuration,
+   service, SFU change or Valkey reset is necessary. Keep the direct
+   `MIGRATION_DATABASE_URL`, existing runtime/Valkey configuration and one desired
+   API replica. Have a current database backup; never reset retained data.
+   Old native builds may miss edits or resync at the next event.
+2. **Database/API:** deploy API first. Startup runs embedded
+   `202610060003_message_edits.sql` after the pins/threads migrations and grants
+   append-only runtime access. No manual data write, backfill or separate
+   migration dispatch is needed. Wait for the dispatched workflow and readiness.
+   ```sh
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
+3. **Gateway:** deploy the same backend revision after API readiness, before
+   exposing editor controls. No new gateway service or protocol subscription is
+   needed. Do not change replica counts or close healthy voice tracks.
+   ```sh
+   gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-chat-gateway --timeout=15m
+   ```
+4. **Clients:** validate and release the editors/history on Android, iOS/macOS,
+   Windows/Linux and web. Clients can deploy independently after server readiness,
+   but coordinate release acceptance so users receive equivalent editing/history
+   capabilities. Wait for each exact workflow outcome before accepting a release.
+   ```sh
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+5. **Verify/rollback:** use two accounts on different updated clients. Edit a
+   root, hidden/broadcast reply, pin and DM; compare versions, reload/reconnect,
+   page past 50 versions and race two drafts. Confirm broadcast surfaces share
+   one content revision, thread summaries stay unchanged, outsiders cannot edit
+   or read versions, edits do not chime, and ordinary chat/voice stays healthy.
+   Client rollback hides editor controls but cannot undo saved edits/versions.
+   Prefer a forward fix; a reviewed server rollback build must retain the
+   migration, version reads and edit-event consumption while disabling writes.
+   Never drop retained content/outbox/migration records or roll SQLx images back
+   across the applied migration.
 
 ## Shared call state and rolling deployments
 

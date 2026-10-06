@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { ChatTimeline } from "../chat/timeline.ts";
-import { isChatReactionEvent, type ChatMessage, type ChatReactionEvent } from "../chat/types.ts";
+import { isChatMessage, isChannelMessage, isChatPinEvent, isChatReactionEvent, type ChatMessage, type ChatPinEvent, type ChatReactionEvent } from "../chat/types.ts";
 import { emojiAsset, emojiCode, emojiNames, preloadEmojiImages } from "../chat/emoji.ts";
 
 function message(seq: string, id = `message-${seq}`): ChatMessage {
@@ -42,6 +42,70 @@ function reaction(seq: string, authorIds = ["other"], messageId = "message-1"): 
   return { type: "message.reactions", schemaVersion: 1, channelId: "general", messageId, seq,
     reactions: authorIds.length ? [{ emoji: "👍🏽", authorIds }] : [] };
 }
+
+function pin(seq: string, active = true, target = message("1")): ChatPinEvent {
+  const pinned = { ...target, pinSeq: seq, pin: active ? { author: { id: "moderator", name: "Mod", isGuest: false }, createdAt: "2026-09-21T13:00:00Z" } : null };
+  return { type: "message.pin", schemaVersion: 1, channelId: "general", seq, message: pinned };
+}
+
+test("pins interleave with messages and reactions without changing creation order", () => {
+  const timeline = new ChatTimeline();
+  timeline.reset([message("1")], "1", []);
+  assert.equal(timeline.applyEvent(pin("2")), "applied");
+  assert.equal(timeline.applyEvent(reaction("3")), "applied");
+  assert.equal(timeline.applyEvent(message("4")), "applied");
+  assert.equal(timeline.cursor, "4");
+  assert.deepEqual(timeline.messages.map((item) => item.seq), ["1", "4"]);
+  assert.deepEqual(timeline.pinnedMessages.map((item) => item.id), ["message-1"]);
+  assert.ok(isChatPinEvent(pin("9007199254740993")));
+});
+
+test("an old pin outside the loaded page updates live and stale snapshots cannot resurrect its unpin", () => {
+  const timeline = new ChatTimeline();
+  const old = message("1", "old-pin");
+  timeline.reset([message("10")], "10", [{ ...old, ...pin("8", true, old).message }]);
+  assert.deepEqual(timeline.messages.map((item) => item.id), ["message-10"], "pins do not enter timeline pagination");
+  timeline.applyEvent(pin("11", false, old));
+  assert.equal(timeline.pinnedMessages.length, 0);
+  timeline.prepend([{ ...old, ...pin("8", true, old).message }]);
+  assert.equal(timeline.messages[0].pin, null, "the newer unpin tombstone wins on the old page");
+  timeline.reset([message("10")], "11", [pin("8", true, old).message]);
+  assert.equal(timeline.pinnedMessages.length, 0, "a stale history snapshot cannot resurrect the pin");
+});
+
+test("authoritative reconnect removes offline unpins and independent pin revisions survive stale pages", () => {
+  const timeline = new ChatTimeline();
+  const old = pin("8").message;
+  timeline.reset([message("10")], "10", [old]);
+  timeline.applyEvent(pin("11"));
+  timeline.reset([message("14")], "14", []);
+  assert.equal(timeline.pinnedMessages.length, 0, "absence at a newer history cursor removes a pin changed while offline");
+  timeline.reset([old], "8", [old]);
+  timeline.prepend([{ ...pin("12", false).message, reactionSeq: "5", reactions: [] }]);
+  timeline.prepend([{ ...old, reactionSeq: "13", reactions: reaction("13").reactions }]);
+  assert.equal(timeline.messages[0].pin, null);
+  assert.equal(timeline.messages[0].reactionSeq, "13", "reaction and pin revisions merge independently");
+  assert.equal(timeline.pinnedMessages.length, 0);
+  timeline.reset([], "0");
+  assert.equal(timeline.pinnedMessages.length, 0, "access revocation clears every pin snapshot");
+});
+
+test("complete pin history rejects old acknowledgements and pages but preserves newer HTTP snapshots", () => {
+  const timeline = new ChatTimeline();
+  const old = message("1", "unloaded-pin");
+  timeline.reset([message("50")], "60", []);
+  timeline.mergePin(pin("4", true, old));
+  timeline.mergePin(pin("60", true, old));
+  assert.equal(timeline.pinnedMessages.length, 0, "absence from complete history supersedes acknowledgements through its cursor");
+  timeline.prepend([pin("4", true, old).message]);
+  assert.equal(timeline.messages[0].pin, null, "a stale page must not restore the inline marker either");
+  timeline.mergePin(pin("61", true, old));
+  assert.equal(timeline.cursor, "60", "HTTP must not advance replay");
+  timeline.reset([message("50")], "60", []);
+  assert.deepEqual(timeline.pinnedMessages.map(item => item.id), [old.id], "a newer acknowledgement survives a concurrently captured history");
+  assert.equal(timeline.applyEvent(pin("61", true, old)), "applied");
+  assert.equal(timeline.cursor, "61");
+});
 
 test("reactions fill sequence gaps without becoming messages or accepting stale acknowledgements", () => {
   const timeline = new ChatTimeline();
@@ -306,4 +370,33 @@ test("fresh author metadata coexists with newer cached reaction revisions", () =
   assert.equal(timeline.messages[0].author.name, "Fresh name");
   assert.deepEqual(timeline.messages[0].reactions, reaction("3").reactions);
   assert.equal(timeline.cursor, "2");
+});
+
+test("thread summaries survive stale history, unloaded parents and duplicate broadcast replies", () => {
+  const timeline = new ChatTimeline();
+  const first = { replyCount: 1, participants: [message("1").author], seq: "12" };
+  const latest = { replyCount: 3, participants: [{ id: "other", name: "Other", isGuest: false }], seq: "15" };
+  timeline.reset([message("10")], "10");
+  const reply = { ...message("15"), threadRootId: "parent", broadcast: true, thread: latest };
+  timeline.mergeSent(reply);
+  assert.equal(timeline.cursor, "10");
+  timeline.prepend([{ ...message("1", "parent"), thread: first }]);
+  assert.deepEqual(timeline.messages[0].thread, latest, "a late parent page cannot lower the summary revision");
+  timeline.prepend([{ ...reply, thread: first, broadcast: true }]);
+  assert.equal(timeline.messages.filter((row) => row.id === reply.id).length, 1);
+  assert.deepEqual(timeline.messages[0].thread, latest);
+  assert.equal(isChannelMessage(reply), true);
+  assert.equal(isChannelMessage({ ...reply, broadcast: false }), false);
+  assert.equal(timeline.cursor, "10", "thread GET/HTTP ACK never advances channel replay");
+});
+
+test("thread metadata validators reject invalid roots, broadcasts and summary revisions", () => {
+  const root = message("1");
+  assert.ok(isChatMessage({ ...root, threadRootId: "root", broadcast: false }));
+  for (const invalid of [
+    { ...root, broadcast: true }, { ...root, threadRootId: "" },
+    { ...root, thread: { replyCount: 1, participants: [root.author], seq: "-1" } },
+    { ...root, thread: { replyCount: 0, participants: [root.author], seq: "2" } },
+    { ...root, thread: { replyCount: 2, participants: [root.author, root.author], seq: "2" } },
+  ]) assert.equal(isChatMessage(invalid), false);
 });

@@ -61,10 +61,19 @@ class CaperApi(
         )
         return validatedHistory(history, channel)
     }
+    suspend fun thread(token: String?, channel: String, root: String, before: String? = null): ThreadHistory {
+        require(messageId.matches(root)) { "Invalid message ID." }
+        val page: ThreadHistory = get("/api/chat/channels/${channel.pathId()}/messages/$root/thread" + (before?.let { "?before=$it" } ?: ""), token)
+        page.root.validated(channel)
+        require(page.root.id == root && page.root.threadRootId == null) { "Invalid thread parent." }
+        page.messages.forEach { it.validated(channel); require(it.threadRootId == root) { "Invalid thread reply." } }
+        return page
+    }
     private fun validatedHistory(history: ChatHistory, expectedChannel: String? = history.channel?.id): ChatHistory {
         require(Regex("^(0|[1-9][0-9]*)$").matches(history.cursor) && history.cursor.toLongOrNull() != null) { "Invalid history cursor." }
         val channel = requireNotNull(expectedChannel) { "History channel is missing." }
         history.messages.forEach { it.validated(channel) }
+        history.pinnedMessages.forEach { it.validated(channel) }
         return history
     }
     suspend fun chatSession(token: String?, name: String): ChatSession = post(
@@ -77,13 +86,43 @@ class CaperApi(
         author: ChatAuthor,
         clientMessageId: UUID,
         text: String,
+        threadRootId: String? = null,
+        broadcast: Boolean = false,
     ): ChatMessage {
         val message: ChatMessage = post(
             "/api/chat/channels/${channel.pathId()}/messages",
-            buildJsonObject { put("clientMessageId", clientMessageId.toString()); put("text", text) },
+            buildJsonObject {
+                put("clientMessageId", clientMessageId.toString()); put("text", text)
+                if (threadRootId != null) { put("threadRootId", threadRootId); put("broadcast", broadcast) }
+            },
             token, mapOf("x-caper-chat-token" to chatToken),
         )
+        require(message.threadRootId == threadRootId && message.broadcast == broadcast) { "Reply destination mismatch." }
         return message.validated(channel, author, clientMessageId, text)
+    }
+
+    suspend fun editMessage(token: String?, chatToken: String, channel: String, message: String, text: String, expectedRevision: Int): ChatMessage {
+        require(messageId.matches(message) && expectedRevision > 0 && validEditText(text)) { "Invalid message edit." }
+        val result: ChatMessage = request(
+            "/api/chat/channels/${channel.pathId()}/messages/$message", "PUT", token,
+            buildJsonObject { put("text", text); put("expectedRevision", expectedRevision) }.toString(),
+            mapOf("x-caper-chat-token" to chatToken),
+        )
+        require(result.id == message) { "Message identity mismatch." }
+        return result.validated(channel)
+    }
+
+    suspend fun loadMessage(token: String?, channel: String, message: String): ChatMessage {
+        require(messageId.matches(message)) { "Invalid message ID." }
+        val result: ChatMessage = get("/api/chat/channels/${channel.pathId()}/messages/$message", token)
+        require(result.id == message) { "Message identity mismatch." }
+        return result.validated(channel)
+    }
+
+    suspend fun messageVersions(token: String?, channel: String, message: String, before: Int? = null): MessageVersions {
+        require(messageId.matches(message) && (before == null || before > 0)) { "Invalid message history request." }
+        val page: MessageVersions = get("/api/chat/channels/${channel.pathId()}/messages/$message/versions" + (before?.let { "?before=$it" } ?: ""), token)
+        return page.validated(message, before)
     }
 
     suspend fun setReaction(token: String?, chatToken: String, channel: String, message: String, emoji: String, active: Boolean): ReactionUpdate {
@@ -101,6 +140,15 @@ class CaperApi(
         require(messageId.matches(message)) { "Invalid message ID." }
         val list: ReactorList = get("/api/chat/channels/${channel.pathId()}/messages/$message/reactions", token)
         return list.validated(message)
+    }
+
+    suspend fun setPin(token: String?, chatToken: String, channel: String, message: String, active: Boolean): PinUpdate {
+        require(messageId.matches(message)) { "Invalid message ID." }
+        val update: PinUpdate = request(
+            "/api/chat/channels/${channel.pathId()}/messages/$message/pin", "PUT", token,
+            buildJsonObject { put("active", active) }.toString(), mapOf("x-caper-chat-token" to chatToken),
+        )
+        return update.validated(channel, message)
     }
 
     suspend fun createSpace(token: String, name: String): Space = post(

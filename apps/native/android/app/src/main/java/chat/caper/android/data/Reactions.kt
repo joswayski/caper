@@ -60,11 +60,16 @@ internal fun mergeMessages(
         merged[candidate.id] = if (current == null) candidate else {
             val candidateReaction = candidate.reactionSeq?.toBigIntegerOrNull() ?: BigInteger.valueOf(-1)
             val currentReaction = current.reactionSeq?.toBigIntegerOrNull() ?: BigInteger.valueOf(-1)
-            if (candidateReaction > currentReaction) candidate else current
+            val summary = listOfNotNull(current.thread, candidate.thread).maxByOrNull { BigInteger(it.seq) }
+            val base = if (candidateReaction > currentReaction) candidate else current
+            mergeEdit(mergeEdit(base, current), candidate).copy(thread = summary)
         }
     }
+    val summaries = (loaded + incoming).filter { it.thread != null }.groupBy { it.threadRootId ?: it.id }
+        .mapValues { (_, rows) -> rows.mapNotNull { it.thread }.maxBy { BigInteger(it.seq) } }
     return merged.values.map { message ->
-        unseen.remove(message.id)?.let { mergeReaction(message, it) } ?: message
+        val updated = unseen.remove(message.id)?.let { mergeReaction(message, it) } ?: message
+        updated.copy(thread = summaries[message.threadRootId ?: message.id] ?: updated.thread)
     }.sortedWith(compareBy { BigInteger(it.seq) })
 }
 

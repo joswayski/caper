@@ -30,6 +30,31 @@ class CaperApiTest {
 
     @After fun close() { server.close() }
 
+    @Test fun `editing keeps identity and sends revision and capabilities correctly`() = runTest {
+        val body = """{"id":"message00000001","channelId":"channel00001","seq":"3","author":{"id":"account00001","name":"Jose","isGuest":false},"content":{"version":1,"type":"text","text":"corrected 🙂"},"createdAt":"2026-09-23T00:00:00Z","clientMessageId":"00000000-0000-4000-8000-000000000123","revision":2,"editSeq":"12","editedAt":"2026-10-06T00:00:00Z"}"""
+        server.enqueue(MockResponse().setBody(body))
+        server.enqueue(MockResponse().setBody(body))
+        server.enqueue(MockResponse().setBody("""{"messageId":"message00000001","versions":[{"revision":1,"content":{"version":1,"type":"text","text":"original"},"createdAt":"2026-09-23T00:00:00Z"}],"hasMore":false}"""))
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        val edited = api.editMessage("account-secret", "chat-secret", "channel00001", "message00000001", "corrected 🙂", 1)
+        assertEquals("message00000001", edited.id)
+        assertEquals("3", edited.seq)
+        assertEquals("12", edited.editSeq)
+        assertEquals(2, api.loadMessage("account-secret", "channel00001", "message00000001").revision)
+        assertEquals("original", api.messageVersions("account-secret", "channel00001", "message00000001", 2).versions.single().content.text)
+        val edit = server.takeRequest()
+        assertEquals("PUT", edit.method)
+        assertEquals("/api/chat/channels/channel00001/messages/message00000001", edit.path)
+        assertEquals("Bearer account-secret", edit.headers["Authorization"])
+        assertEquals("chat-secret", edit.headers["x-caper-chat-token"])
+        assertEquals("{\"text\":\"corrected 🙂\",\"expectedRevision\":1}", edit.body.readUtf8())
+        assertNull(server.takeRequest().headers["x-caper-chat-token"])
+        val versions = server.takeRequest()
+        assertEquals("/api/chat/channels/channel00001/messages/message00000001/versions?before=2", versions.path)
+        assertEquals("Bearer account-secret", versions.headers["Authorization"])
+        assertNull(versions.headers["x-caper-chat-token"])
+    }
+
     @Test fun `logout sends an authenticated POST with an empty object`() = runTest {
         server.enqueue(MockResponse().setResponseCode(204))
         CaperApi(baseUrl = server.url("/").toString()).logout("account-secret")
@@ -126,6 +151,16 @@ class CaperApiTest {
         assertEquals(404, (missing as ApiException).status)
         assertThrows(IllegalArgumentException::class.java) { runBlocking { api.reactors(null, "channel00001", "short") } }
         assertEquals(3, server.requestCount)
+    }
+
+    @Test fun `pin PUT sends active and returns full message event`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"type":"message.pin","schemaVersion":1,"channelId":"channel00001","seq":"9","message":{"id":"message00000001","channelId":"channel00001","seq":"3","author":{"id":"author","name":"A","isGuest":false},"content":{"version":1,"type":"text","text":"hello"},"createdAt":"2026-10-01T00:00:00Z","clientMessageId":"00000000-0000-4000-8000-000000000001","pin":{"author":{"id":"author","name":"A","isGuest":false},"createdAt":"2026-10-02T00:00:00Z"},"pinSeq":"9"}}"""))
+        CaperApi(baseUrl = server.url("/").toString()).setPin("account-secret", "chat-secret", "channel00001", "message00000001", true)
+        val request = server.takeRequest()
+        assertEquals("PUT", request.method)
+        assertEquals("/api/chat/channels/channel00001/messages/message00000001/pin", request.path)
+        assertEquals("chat-secret", request.headers["x-caper-chat-token"])
+        assertEquals("""{"active":true}""", request.body.readUtf8())
     }
 
     @Test fun `space list defaults invitations for old APIs`() {
