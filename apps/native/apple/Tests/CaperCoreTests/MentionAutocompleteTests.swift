@@ -99,16 +99,62 @@ final class MentionAutocompleteTests: XCTestCase {
                        "before members load a space channel offers only the specials")
     }
 
-    func testDirectMessagesOfferOnlyTheOtherParticipant() {
+    func testDirectMessagesFallBackToTheOtherParticipantUntilPeopleLoad() {
         let peer = DirectMessagePeer(id: "Peer00000001", username: "pat", displayName: "Pat Doe")
-        let direct = MentionSource.direct(peer: peer, accountID: selfID)
+        let direct = MentionSource.direct(peer: peer, people: nil, accountID: selfID)
         XCTAssertEqual(names("@", direct), ["pat"])
         XCTAssertEqual(names("@doe", direct), ["pat"])
         XCTAssertEqual(names("@every", direct), [], "specials are plain text in DMs")
-        let notes = MentionSource.direct(peer: DirectMessagePeer(id: selfID, username: "fixture_self", displayName: "Me"), accountID: selfID)
-        XCTAssertEqual(notes, .empty, "nobody to mention in the self-notes conversation")
+        let notes = MentionSource.direct(peer: DirectMessagePeer(id: selfID, username: "fixture_self", displayName: "Me"), people: nil, accountID: selfID)
+        XCTAssertEqual(notes, .empty, "nobody to mention in self-notes before people load")
         XCTAssertNil(MentionAutocomplete.match(text: "@", selection: caret("@"), markedText: false, source: notes))
-        XCTAssertEqual(MentionSource.direct(peer: nil, accountID: selfID), .empty)
+        XCTAssertEqual(MentionSource.direct(peer: nil, people: nil, accountID: selfID), .empty)
+    }
+
+    func testDirectMessagesSuggestEveryoneFromPeopleWithoutSpecials() {
+        let people = [
+            Person(id: "Alex00000001", username: "alex", displayName: "Alex Stone", avatarId: 7),
+            Person(id: "Peer00000001", username: "pat", displayName: "Pat Doe"),
+            Person(id: selfID, username: "fixture_self", displayName: "Me"),
+            Person(id: "Sam000000001", username: "sam", displayName: "Sam Lee"),
+        ]
+        let peer = DirectMessagePeer(id: "Peer00000001", username: "pat", displayName: "Pat Doe")
+        let direct = MentionSource.direct(peer: peer, people: people, accountID: selfID)
+        XCTAssertFalse(direct.specials)
+        XCTAssertEqual(names("@", direct), ["alex", "pat", "sam"], "people beyond the peer, never yourself, no specials")
+        XCTAssertEqual(names("@stone", direct), ["alex"], "same display-name ranking as space channels")
+        XCTAssertEqual(names("@every", direct), [], "@everyone/@here stay space-only")
+        XCTAssertEqual(names("@her", direct), [])
+        XCTAssertEqual(direct.members.first?.avatarId, 7)
+        XCTAssertEqual(direct.members.filter { $0.id == peer.id }.count, 1, "the peer is not duplicated")
+
+        let notes = MentionSource.direct(peer: DirectMessagePeer(id: selfID, username: "fixture_self", displayName: "Me"),
+                                         people: people, accountID: selfID)
+        XCTAssertEqual(names("@", notes), ["alex", "pat", "sam"], "self-notes suggest people too")
+        let newer = MentionSource.direct(peer: DirectMessagePeer(id: "New000000001", username: "newcomer", displayName: "New"),
+                                         people: people, accountID: selfID)
+        XCTAssertEqual(names("@new", newer), ["newcomer"], "a conversation newer than the list still offers its peer")
+        XCTAssertEqual(MentionSource.direct(peer: nil, people: [], accountID: selfID), .empty)
+        let many = (0..<10).map { Person(id: "User0000000\($0)", username: "user\($0)", displayName: "User \($0)") }
+        XCTAssertEqual(names("@", .direct(peer: nil, people: many, accountID: selfID)).count, 6, "same cap of six")
+    }
+
+    func testPeopleResponseDecodesNullAndMissingAvatars() throws {
+        let json = #"""
+        {"people":[
+          {"id":"Alex00000001","username":"alex","displayName":"Alex Stone","avatarId":12},
+          {"id":"Pat000000001","username":"pat","displayName":"Pat Doe","avatarId":null},
+          {"id":"Sam000000001","username":"sam","displayName":"Sam Lee"}
+        ]}
+        """#
+        let response = try JSONDecoder().decode(PeopleResponse.self, from: Data(json.utf8))
+        XCTAssertEqual(response.people, [
+            Person(id: "Alex00000001", username: "alex", displayName: "Alex Stone", avatarId: 12),
+            Person(id: "Pat000000001", username: "pat", displayName: "Pat Doe", avatarId: nil),
+            Person(id: "Sam000000001", username: "sam", displayName: "Sam Lee"),
+        ])
+        XCTAssertEqual(try JSONDecoder().decode(PeopleResponse.self, from: Data(#"{"people":[]}"#.utf8)).people, [])
+        XCTAssertThrowsError(try JSONDecoder().decode(PeopleResponse.self, from: Data(#"{"people":[{"id":"x","username":"x"}]}"#.utf8)))
     }
 
     // MARK: Insertion

@@ -564,13 +564,8 @@ async fn persist(
             "sending too quickly; try again shortly",
         ));
     }
-    let content = with_mentions(
-        &mut tx,
-        channel_id,
-        content,
-        &mentions::parse(text, space_id.is_some()),
-    )
-    .await?;
+    let content =
+        with_mentions(&mut tx, content, &mentions::parse(text, space_id.is_some())).await?;
     let seq = head + 1;
     let id = random_id(15);
     let payload = json!({"id":id,"channelId":channel,"seq":seq.to_string(),"author":{"id":author_id,"name":name,"isGuest":user_id.is_none(),"avatarId":avatar_id},"content":content,"createdAt":Utc::now().to_rfc3339(),"clientMessageId":client_id});
@@ -595,13 +590,12 @@ async fn persist(
     Ok(payload)
 }
 
-/// Adds `content.mentions` for `@everyone`/`@here` and for named members of this
-/// space (or participants of this DM). A member without access to a private
-/// channel is still tagged; notifications must check read access themselves.
-/// Other names stay plain text and are not recorded.
+/// Adds `content.mentions` for `@everyone`/`@here` and for any existing
+/// account named, in channels and DMs alike, so people can point each other at
+/// someone. Tagging is not access: notifications must check read access
+/// themselves. Unknown names stay plain text and are not recorded.
 async fn with_mentions(
     connection: &mut sqlx::PgConnection,
-    channel_id: i64,
     mut content: Value,
     found: &[Mention],
 ) -> Result<Value, ApiError> {
@@ -612,18 +606,12 @@ async fn with_mentions(
             Mention::Everyone | Mention::Here => None,
         })
         .collect();
-    let members: Vec<(String, String)> = if names.is_empty() {
+    let accounts: Vec<(String, String)> = if names.is_empty() {
         Vec::new()
     } else {
         sqlx::query_as(
-            "SELECT u.username,u.external_id FROM public.users u
-             JOIN public.channels c ON c.id=$1
-             WHERE u.username=ANY($2) AND u.deleted_at IS NULL
-               AND ((c.space_id IS NOT NULL
-                     AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=c.space_id AND sm.user_id=u.id AND sm.deleted_at IS NULL))
-                 OR (c.space_id IS NULL AND EXISTS(SELECT 1 FROM public.direct_conversations d WHERE d.channel_id=c.id AND u.id IN (d.low_user_id,d.high_user_id))))",
+            "SELECT username,external_id FROM public.users WHERE username=ANY($1) AND deleted_at IS NULL",
         )
-        .bind(channel_id)
         .bind(&names)
         .fetch_all(&mut *connection)
         .await
@@ -634,7 +622,7 @@ async fn with_mentions(
         .filter_map(|mention| match mention {
             Mention::Everyone => Some(json!({"type":"everyone"})),
             Mention::Here => Some(json!({"type":"here"})),
-            Mention::User(name) => members
+            Mention::User(name) => accounts
                 .iter()
                 .find(|(username, _)| username == name)
                 .map(|(username, id)| json!({"type":"user","id":id,"username":username})),

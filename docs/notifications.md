@@ -576,10 +576,10 @@ Either can be added later without changing the preference model.
    - `@username`, `@everyone` and `@here` autocomplete in the composer on all
      four clients, reusing the `:` emoji autocomplete pattern.
    - Highlighted mentions in messages, and a tint on messages that mention you.
-   - The server tags any member of the space (even one who cannot open a private
-     channel) and records them in the message's `content.mentions`. Phase 1
-     reads that list and notifies only tagged people who can read the
-     conversation; it needs no separate mentions table.
+   - The server tags any existing account named (in channels and DMs) and
+     records them in the message's `content.mentions`. Phase 1 reads that list
+     and notifies only tagged people who can read the conversation; it needs no
+     separate mentions table.
 1. **Mobile push for DMs and channels, with per-space/channel/DM controls.**
    - **Server:**
      - new migration;

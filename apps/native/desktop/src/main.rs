@@ -304,6 +304,8 @@ struct CaperApp {
     account: Option<Account>,
     spaces: Vec<model::Space>,
     directs: Vec<model::DirectConversation>,
+    /// `GET /api/people` for DM `@` suggestions; kept while it refreshes.
+    people: Option<Vec<model::Person>>,
     selected_direct: Option<String>,
     directs_refreshed: Instant,
     foreground: bool,
@@ -416,6 +418,7 @@ impl CaperApp {
             account: None,
             spaces: Vec::new(),
             directs: Vec::new(),
+            people: None,
             selected_direct: None,
             directs_refreshed: now - Duration::from_secs(15),
             foreground: false,
@@ -596,6 +599,20 @@ impl CaperApp {
                     app.timeline.reset(messages, "2").expect("valid DM fixture");
                     app.selected_channel = Some(id.clone());
                     app.selected_direct = Some(id);
+                    // As `GET /api/people` answers: space members and DM peers, not you.
+                    app.people = app.detail.as_ref().map(|detail| {
+                        detail
+                            .members
+                            .iter()
+                            .filter(|member| member.id != "fixture-owner")
+                            .map(|member| model::Person {
+                                id: member.id.clone(),
+                                username: member.username.clone(),
+                                display_name: member.display_name.clone(),
+                                avatar_id: member.avatar_id,
+                            })
+                            .collect()
+                    });
                     if name == "parity-direct-new" {
                         app.dialog = Some(Dialog::StartDirect);
                     } else if name == "parity-direct-no-spaces" {
@@ -1132,6 +1149,13 @@ impl CaperApp {
                 } if generation == self.generation => {
                     self.directs = directs;
                 }
+                // A failed refresh keeps the previous list (or the peer fallback).
+                Event::PeopleLoaded {
+                    generation,
+                    result: Ok(people),
+                } if generation == self.generation => {
+                    self.people = Some(people);
+                }
                 Event::DirectCreated {
                     generation,
                     navigation,
@@ -1410,6 +1434,7 @@ impl CaperApp {
 
     fn establish(&mut self, token: String, account: Account, spaces: Spaces) {
         self.invalidate_navigation_cache();
+        self.people = None;
         self.detail = None;
         self.selected_space = None;
         self.clear_channel_state();
@@ -1468,6 +1493,13 @@ impl CaperApp {
         self.remember_conversation();
         self.selected_direct = Some(direct.id.clone());
         self.reload_selected_channel(direct.id, false);
+        // After the reload's generation bump, so the answer is not discarded.
+        if let Some(token) = self.token.clone() {
+            self.worker.send(Command::LoadPeople {
+                generation: self.generation,
+                token,
+            });
+        }
     }
 
     fn select_or_create_self_direct(&mut self) {
@@ -2496,6 +2528,7 @@ impl CaperApp {
         self.invalidate_navigation_cache();
         self.spaces.clear();
         self.directs.clear();
+        self.people = None;
         self.selected_direct = None;
         self.invitations.clear();
         self.managed_invitations.clear();
@@ -6537,23 +6570,37 @@ impl CaperApp {
 
     /// Who `@` can suggest, never yourself, and whether `everyone`/`here` apply.
     /// Space channels use the members already loaded by
-    /// `GET /api/spaces/{space}` (none yet leaves only the specials); a DM
-    /// offers its other participant, and the self-notes DM offers nobody.
+    /// `GET /api/spaces/{space}` (none yet leaves only the specials). Any DM,
+    /// self-notes included, uses `GET /api/people`; until that loads, or if it
+    /// never does, a DM offers its other participant (self-notes: nobody).
     fn mention_people(&self) -> (Vec<mentions::Person>, bool) {
         let me = self.account.as_ref().map(|account| account.id.as_str());
         if let Some(id) = &self.selected_direct {
+            let known = self.people.as_deref().unwrap_or_default();
+            // The peer also covers a DM opened after the list was fetched.
             let peer = self
                 .directs
                 .iter()
                 .find(|direct| &direct.id == id)
                 .map(|direct| &direct.peer)
-                .filter(|peer| Some(peer.id.as_str()) != me)
-                .map(|peer| mentions::Person {
+                .filter(|peer| !known.iter().any(|person| person.id == peer.id))
+                .map(|peer| model::Person {
+                    id: peer.id.clone(),
                     username: peer.username.clone(),
                     display_name: peer.display_name.clone(),
                     avatar_id: None,
                 });
-            return (peer.into_iter().collect(), false);
+            let people = known
+                .iter()
+                .chain(peer.as_ref())
+                .filter(|person| Some(person.id.as_str()) != me)
+                .map(|person| mentions::Person {
+                    username: person.username.clone(),
+                    display_name: person.display_name.clone(),
+                    avatar_id: person.avatar_id,
+                })
+                .collect();
+            return (people, false);
         }
         let people = self
             .detail
@@ -11803,10 +11850,62 @@ mod tests {
             })
             .collect::<Vec<_>>()
         };
-        assert_eq!(names(&app, ""), ["maya"], "a DM offers its peer only");
+        let (events, receiver) = std::sync::mpsc::channel();
+        app.worker.events = receiver;
+        // The fixture previews `GET /api/people`: space members and DM peers.
+        assert_eq!(names(&app, ""), ["alex", "maya"]);
         assert!(names(&app, "every").is_empty(), "no specials in DMs");
+        app.people = None;
+        assert_eq!(names(&app, ""), ["maya"], "the peer until people load");
+
+        let person = |id: &str, username: &str| model::Person {
+            id: id.into(),
+            username: username.into(),
+            display_name: username.to_uppercase(),
+            avatar_id: None,
+        };
+        let loaded = |generation, result| crate::worker::Event::PeopleLoaded { generation, result };
+        events
+            .send(loaded(
+                app.generation,
+                Ok(vec![
+                    person("fixture-maya", "maya"),
+                    person("fixture-sam", "sam"),
+                ]),
+            ))
+            .unwrap();
+        app.receive();
+        assert_eq!(names(&app, ""), ["maya", "sam"], "people beyond the peer");
+        assert_eq!(names(&app, "SA"), ["sam"]);
+        events
+            .send(loaded(app.generation - 1, Ok(Vec::new())))
+            .unwrap();
+        events
+            .send(loaded(app.generation, Err("offline".into())))
+            .unwrap();
+        app.receive();
+        assert_eq!(
+            names(&app, ""),
+            ["maya", "sam"],
+            "stale or failed refreshes keep the list"
+        );
+        app.directs[0].peer = model::DirectPeer {
+            id: "fixture-new".into(),
+            username: "newbie".into(),
+            display_name: "Newbie".into(),
+        };
+        assert_eq!(
+            names(&app, ""),
+            ["maya", "newbie", "sam"],
+            "a DM newer than the list still offers its peer"
+        );
         app.directs[0].peer.id = app.account.as_ref().unwrap().id.clone();
-        assert!(names(&app, "").is_empty(), "self-notes DM suggests nobody");
+        assert_eq!(names(&app, ""), ["maya", "sam"], "self-notes uses people");
+        app.people = None;
+        assert!(
+            names(&app, "").is_empty(),
+            "self-notes suggests nobody before people load"
+        );
 
         app.selected_direct = None;
         app.selected_channel = Some("chan00000001".into());

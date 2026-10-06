@@ -40,6 +40,7 @@ import {
   createSpace,
   createDirectConversation,
   listDirectConversations,
+  listPeople,
   readDirectConversation,
   directUnread,
   deleteChannel,
@@ -61,6 +62,7 @@ import {
   SpacesApiError,
   type Channel,
   type DirectConversation,
+  type Person,
   type ChannelInvitation,
   type Member,
   type Space,
@@ -960,6 +962,15 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
   const [directError, setDirectError] = useState<string>();
   const [selfDirectPending, setSelfDirectPending] = useState(false);
   const [directView, setDirectView] = useState<{ conversation: DirectConversation; history?: GeneralChatHistory; error?: string }>();
+  // DM `@` suggestions; the previous list stays while a refresh is in flight.
+  const [people, setPeople] = useState<Person[]>();
+  const directId = directView?.conversation.id;
+  useEffect(() => {
+    if (!directId) return;
+    let current = true;
+    void listPeople().then((result) => { if (current) setPeople(result.people); }).catch(() => {});
+    return () => { current = false; };
+  }, [directId]);
   const detail = view?.detail ?? (!spaces.length ? { space: { id: "", name: "Direct messages", ownerId: "" }, channels: [], members: [] } : undefined);
   const navigation = useRef(createSpaceNavigation());
   const [selected, setSelected] = useState<{ spaceId?: string; channelId?: string; dmId?: string }>(() => embedded ? {} : selectedFromUrl());
@@ -1733,7 +1744,7 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
         initialHistory={directView ? directView.history : view?.history?.channel.id === channel.id ? view.history : undefined}
         initialHistoryError={directView ? directView.error : view?.channelId === channel.id ? view.historyError : undefined}
         onReadCursor={directView ? readDirect : undefined}
-        mentionMembers={directView ? [directView.conversation.peer] : view?.detail ? detail.members : undefined}
+        mentionMembers={directView ? people ?? [directView.conversation.peer] : view?.detail ? detail.members : undefined}
         onHistoryChange={navigation.current.rememberHistory}
         spaceRail={rail}
         channelNavigation={channelNavigation}

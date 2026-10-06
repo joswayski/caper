@@ -18,6 +18,7 @@ pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/dms", get(list).post(create))
         .route("/api/dms/{conversation}/read", post(read))
+        .route("/api/people", get(list_people))
 }
 
 fn pool(state: &AppState) -> Result<&PgPool, ApiError> {
@@ -33,6 +34,32 @@ pub(crate) async fn conversations(pool: &PgPool, user: i64) -> Result<Vec<Value>
          WHERE $1 IN (d.low_user_id,d.high_user_id) AND c.deleted_at IS NULL AND u.deleted_at IS NULL
          ORDER BY COALESCE((SELECT max(m.created_at) FROM public.messages m WHERE m.channel_id=c.id),d.created_at) DESC,c.id DESC",
     ).bind(user).fetch_all(pool).await.map_err(|_| chat::unavailable())
+}
+
+/// People the account already knows: anyone sharing an active space or a DM.
+/// Composers suggest them after `@` in DMs; it is not a directory search.
+pub(crate) async fn people(pool: &PgPool, user: i64) -> Result<Vec<Value>, ApiError> {
+    sqlx::query_scalar(
+        "SELECT jsonb_build_object('id',u.external_id,'username',u.username,'displayName',u.display_name,'avatarId',u.avatar_id)
+         FROM public.users u
+         WHERE u.id<>$1 AND u.deleted_at IS NULL AND u.username IS NOT NULL AND u.display_name IS NOT NULL
+           AND (EXISTS(SELECT 1 FROM public.space_members mine
+                       JOIN public.space_members theirs ON theirs.space_id=mine.space_id AND theirs.deleted_at IS NULL
+                       JOIN public.spaces s ON s.id=mine.space_id AND s.deleted_at IS NULL AND NOT s.demo
+                       WHERE mine.user_id=$1 AND mine.deleted_at IS NULL AND theirs.user_id=u.id)
+             OR EXISTS(SELECT 1 FROM public.direct_conversations d JOIN public.channels c ON c.id=d.channel_id AND c.deleted_at IS NULL
+                       WHERE (d.low_user_id=$1 AND d.high_user_id=u.id) OR (d.high_user_id=$1 AND d.low_user_id=u.id)))
+         ORDER BY lower(u.username),u.id LIMIT 500",
+    ).bind(user).fetch_all(pool).await.map_err(|_| chat::unavailable())
+}
+
+async fn list_people(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+) -> Result<Json<Value>, ApiError> {
+    Ok(Json(
+        json!({"people":people(pool(&state)?,principal.user.id).await?}),
+    ))
 }
 
 async fn list(

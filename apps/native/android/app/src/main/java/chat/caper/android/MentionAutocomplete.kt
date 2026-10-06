@@ -48,7 +48,8 @@ internal fun mentionToken(value: TextFieldValue): MentionToken? {
 
 /**
  * Who the composer may suggest: the space's members (excluding you) plus the
- * specials in a space channel, or the other participant in a DM.
+ * specials in a space channel; in a DM, everyone from `GET /api/people`,
+ * falling back to the other participant until that list loads.
  */
 internal data class MentionSource(val people: List<MentionCandidate>, val specials: Boolean)
 
@@ -56,8 +57,10 @@ internal fun mentionSource(state: AppUiState): MentionSource {
     val channel = state.selectedChannel ?: return MentionSource(emptyList(), false)
     val self = state.account?.id ?: state.chatAuthorId
     if (channel.direct) {
-        val peer = state.directConversations.firstOrNull { it.id == (state.selectedDirectId ?: channel.id) }?.peer
-        return MentionSource(listOfNotNull(peer?.takeIf { it.id != self }?.let { MentionCandidate(it.username, it.displayName) }), false)
+        val people = state.people?.filter { it.id != self }?.map { MentionCandidate(it.username, it.displayName, avatarId = it.avatarId) }
+            ?: listOfNotNull(state.directConversations.firstOrNull { it.id == (state.selectedDirectId ?: channel.id) }?.peer
+                ?.takeIf { it.id != self }?.let { MentionCandidate(it.username, it.displayName) })
+        return MentionSource(people, false)
     }
     // Members not loaded yet (or another space's): only the specials.
     val members = state.selectedSpace?.takeIf { detail -> detail.space.id == channel.spaceId || detail.channels.any { it.id == channel.id } }?.members.orEmpty()

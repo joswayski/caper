@@ -38,12 +38,18 @@ struct MentionSource: Equatable, Sendable {
         }, specials: true)
     }
 
-    /// A DM: only the other participant, nobody in the self-notes
-    /// conversation, and never the specials.
-    static func direct(peer: DirectMessagePeer?, accountID: String?) -> MentionSource {
-        guard let peer, peer.id != accountID else { return .empty }
-        return MentionSource(members: [.member(id: peer.id, username: peer.username, displayName: peer.displayName)],
-                             specials: false)
+    /// Any DM, self-notes included: everyone from `GET /api/people` once it
+    /// has loaded (plus the DM peer if that list predates the conversation);
+    /// until then only the other participant, so nobody in self-notes. Never
+    /// the specials.
+    static func direct(peer: DirectMessagePeer?, people: [Person]? = nil, accountID: String?) -> MentionSource {
+        var members = (people ?? []).filter { $0.id != accountID }.map {
+            MentionCandidate.member(id: $0.id, username: $0.username, displayName: $0.displayName, avatarId: $0.avatarId)
+        }
+        if let peer, peer.id != accountID, !members.contains(where: { $0.id == peer.id }) {
+            members.append(.member(id: peer.id, username: peer.username, displayName: peer.displayName))
+        }
+        return members.isEmpty ? .empty : MentionSource(members: members, specials: false)
     }
 }
 

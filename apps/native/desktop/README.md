@@ -40,10 +40,12 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   replay. Desktop does not provide OS push notifications in this stage.
 - Composer suggestions after `:` (emoji) and `@` (people) share one popup.
   Space channels offer the open space's loaded members except you, then
-  `@everyone`/`@here`; DMs offer only the other participant. Names the API
-  resolved in `content.mentions` render as pills: egui background spans with
-  square corners rather than 4px rounded ones. Messages that mention you get a
-  terracotta tint with a 2px leading edge. Mentions do not notify anyone.
+  `@everyone`/`@here`. DMs, self-notes included, offer the people you share a
+  space or DM with (`GET /api/people`, fetched when a DM opens); until that
+  loads, only the other participant. Names the API resolved in
+  `content.mentions` render as pills: egui background spans with square corners
+  rather than 4px rounded ones. Messages that mention you get a terracotta tint
+  with a 2px leading edge. Mentions do not notify anyone.
 - Message reactions. Hovering or keyboard-focusing a reaction chip shows who
   reacted (large emoji plus the shared summary wording); names load on demand
   with history's read access and are cached per message reaction revision.

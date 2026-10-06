@@ -28,6 +28,9 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 @Serializable data class DirectPeer(val id: String, val username: String, val displayName: String)
 @Serializable data class DirectConversation(val id: String, val peer: DirectPeer, val lastSeq: String, val readSeq: String)
 @Serializable data class DirectConversationList(val conversations: List<DirectConversation>)
+/** `GET /api/people`: accounts sharing a space or a DM with you (never you), by username. */
+@Serializable data class Person(val id: String, val username: String, val displayName: String, val avatarId: Int? = null)
+@Serializable data class PeopleList(val people: List<Person>)
 @Serializable data class PushConfig(val platforms: List<String>)
 @Serializable data class ChannelInvitation(val channel: Channel, val inviter: Inviter)
 @Serializable data class Member(val id: String, val username: String, val displayName: String, val owner: Boolean, val avatarId: Int? = null)
@@ -187,6 +190,8 @@ data class AppUiState(
     val selectedSpace: SpaceDetail? = null,
     val selectedChannel: Channel? = null,
     val directConversations: List<DirectConversation> = emptyList(),
+    /** DM mention candidates from `GET /api/people`; null until the first load succeeds. */
+    val people: List<Person>? = null,
     val selectedDirectId: String? = null,
     val messages: List<ChatMessage> = emptyList(),
     val hasMoreMessages: Boolean = false,

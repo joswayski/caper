@@ -101,6 +101,23 @@ pub struct Member {
     pub owner: bool,
 }
 
+/// A `GET /api/people` entry: someone who shares an active space or a DM with
+/// you (never yourself), for DM `@` suggestions.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Person {
+    pub id: String,
+    pub username: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub avatar_id: Option<i32>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct People {
+    pub people: Vec<Person>,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct Spaces {
     pub spaces: Vec<Space>,
@@ -1029,6 +1046,27 @@ mod tests {
             self.avatar_id = Some(avatar_id);
             self
         }
+    }
+
+    #[test]
+    fn people_decode_with_optional_avatars() {
+        let people: People = serde_json::from_value(serde_json::json!({"people": [
+            {"id": "user00000001", "username": "alex", "displayName": "Alex", "avatarId": 16},
+            {"id": "user00000002", "username": "maya", "displayName": "Maya", "avatarId": null},
+            {"id": "user00000003", "username": "sam", "displayName": "Sam"}
+        ]}))
+        .unwrap();
+        assert_eq!(
+            people.people[0],
+            Person {
+                id: "user00000001".into(),
+                username: "alex".into(),
+                display_name: "Alex".into(),
+                avatar_id: Some(16),
+            }
+        );
+        assert_eq!(people.people[1].avatar_id, None);
+        assert_eq!(people.people[2].avatar_id, None);
     }
 
     #[test]

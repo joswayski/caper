@@ -1697,6 +1697,44 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(try JSONSerialization.jsonObject(with: XCTUnwrap(requests[2].2)) as? [String: String], ["seq": "12"])
     }
 
+    func testPeopleGETUsesAccountAuthorizationAndDecodesNullAvatar() async throws {
+        var routes: [String] = []
+        MockURLProtocol.handler = { request in
+            routes.append("\(request.httpMethod ?? "") \(request.url?.path ?? "")")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "authorization"), "Bearer account-secret")
+            return (200, Data(#"{"people":[{"id":"alex00000001","username":"alex","displayName":"Alex","avatarId":799},{"id":"sam000000001","username":"sam","displayName":"Sam","avatarId":null}]}"#.utf8))
+        }
+        let people = try await client().people()
+        XCTAssertEqual(routes, ["GET /api/people"])
+        XCTAssertEqual(people.map(\.username), ["alex", "sam"])
+        XCTAssertEqual(people.map(\.avatarId), [799, nil])
+    }
+
+    @MainActor
+    func testPeopleRefreshKeepsLastListOnFailureAndClearsOnLogout() async throws {
+        let model = AppModel(api: client())
+        model.account = Account(id: "me0000000001", username: "me", displayName: "Me")
+        var fail = false
+        MockURLProtocol.handler = { request in
+            switch request.url!.path {
+            case "/api/people":
+                if fail { return (500, Data(#"{"error":"unavailable"}"#.utf8)) }
+                return (200, Data(#"{"people":[{"id":"alex00000001","username":"alex","displayName":"Alex","avatarId":null}]}"#.utf8))
+            case "/api/auth/logout": return (204, Data())
+            default: throw URLError(.badURL)
+            }
+        }
+        XCTAssertNil(model.people, "DM suggestions fall back to the peer until people load")
+        await model.refreshPeople()
+        XCTAssertEqual(model.people?.map(\.username), ["alex"])
+        fail = true
+        await model.refreshPeople()
+        XCTAssertEqual(model.people?.map(\.username), ["alex"], "a failed refresh keeps the previous list")
+        XCTAssertNil(model.error, "people failures are silent")
+        await model.logout()
+        XCTAssertNil(model.people)
+    }
+
     @MainActor
     func testSelfNotesCreateWithOwnUsernameAndReuseWithoutSpace() async throws {
         let model = AppModel(api: client())

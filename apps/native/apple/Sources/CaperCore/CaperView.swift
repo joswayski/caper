@@ -1753,11 +1753,12 @@ private struct ChatView: View {
             }
     }
     /// `@` suggestions: the open space's members as `GET /api/spaces/{space}`
-    /// returned them (only the specials until loaded), or the DM's other
-    /// participant. The signed-in account is never suggested.
+    /// returned them (only the specials until loaded), or in a DM everyone from
+    /// `GET /api/people` (the DM's other participant until that loads). The
+    /// signed-in account is never suggested.
     private var mentionSource: MentionSource {
         if let id = model.selectedDirectMessageID {
-            return .direct(peer: model.directMessages.first { $0.id == id }?.peer, accountID: viewerID)
+            return .direct(peer: model.directMessages.first { $0.id == id }?.peer, people: model.people, accountID: viewerID)
         }
         return .space(members: model.detail?.members ?? [], excluding: viewerID)
     }

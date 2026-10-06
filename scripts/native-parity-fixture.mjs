@@ -86,10 +86,9 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
     : state.spaces.some(detail => detail.space.id === channel?.spaceId && detail.members.some(member => member.id === user.id)
       && (!channel.private || detail.space.ownerId === user.id || (state.grants.get(channel.id) ?? []).includes(user.id))));
   // Same @mention grammar and rules as apps/api/src/mentions.rs and chat::with_mentions:
-  // any space member is tagged (even without private access); DMs tag participants.
+  // any existing account is tagged, in channels and DMs; specials only outside DMs.
   const mentionsFor = (channel, text) => {
-    const tagged = channel.direct ? [state.account, state.directs.find((conversation) => conversation.id === channel.id)?.peer]
-      : state.spaces.find((detail) => detail.space.id === channel.spaceId)?.members ?? members;
+    const tagged = [state.account, ...accounts.slice(1), ...state.directs.map((conversation) => conversation.peer)];
     const found = [], names = new Set(), chars = [...text];
     let previous;
     for (let index = 0; index < chars.length; index++) {
@@ -221,6 +220,19 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       }
       const user = identity(request);
       if (path === '/api/push/config') return user ? json(response, 200, { platforms: [] }) : reject(response, 401, 'Sign in required.');
+      if (path === '/api/people' && method === 'GET') {
+        // Like direct::people: everyone sharing a space or a DM, never yourself.
+        if (!user) return reject(response, 401, 'Sign in required.');
+        const known = new Map();
+        for (const detail of state.spaces) if (detail.members.some((member) => member.id === user.id)) {
+          for (const member of detail.members) if (!known.has(member.id)) known.set(member.id, member);
+        }
+        if (user.id === state.account.id) for (const { peer } of state.directs) if (!known.has(peer.id)) known.set(peer.id, peer);
+        known.delete(user.id);
+        const people = [...known.values()].map(({ id, username, displayName, avatarId }) => ({ id, username, displayName, avatarId: avatarId ?? null }))
+          .sort((a, b) => a.username.localeCompare(b.username));
+        return json(response, 200, { people });
+      }
       if (path === '/api/dms') {
         if (!user) return reject(response, 401, 'Sign in required.');
         if (method === 'POST') {

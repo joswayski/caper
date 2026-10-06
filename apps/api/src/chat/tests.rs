@@ -1880,7 +1880,7 @@ async fn account_channels_isolate_sequences_and_gateway_revokes_live_access() {
 
 #[sqlx::test(migrations = "./migrations")]
 #[ignore = "requires disposable loopback DATABASE_URL"]
-async fn mentions_tag_space_members_and_dm_participants_only(pool: PgPool) {
+async fn mentions_tag_existing_accounts_with_specials_only_in_spaces(pool: PgPool) {
     let mut users = Vec::new();
     for name in ["alice", "bob", "carol", "dave", "gone"] {
         let user: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name) VALUES($1||'-id',$1,$1) RETURNING id")
@@ -1939,13 +1939,14 @@ async fn mentions_tag_space_members_and_dm_participants_only(pool: PgPool) {
         json!([
             {"type":"user","id":"bob-id","username":"bob"},
             {"type":"user","id":"carol-id","username":"carol"},
+            {"type":"user","id":"dave-id","username":"dave"},
             {"type":"user","id":"alice-id","username":"alice"},
             {"type":"everyone"},
             {"type":"here"},
         ])
     );
-    // Carol is a space member without the private grant: still tagged, since
-    // notifications (not mentions) decide who may be told about the message.
+    // Carol lacks the private grant and Dave is not in the space: both are still
+    // tagged, since notifications (not mentions) decide who may be told.
     let private = persist(&pool, "mention-private", "alice", Uuid::new_v4(), text)
         .await
         .unwrap();
@@ -1958,7 +1959,7 @@ async fn mentions_tag_space_members_and_dm_participants_only(pool: PgPool) {
         .unwrap();
     assert!(plain["content"].get("mentions").is_none());
 
-    // DMs resolve only participants and have no @everyone/@here.
+    // DMs can point at anyone ("that's @bob") but have no @everyone/@here.
     let dm: i64 = sqlx::query_scalar("INSERT INTO public.channels(external_id,name,private) VALUES('mention-dm','direct',true) RETURNING id")
         .fetch_one(&pool).await.unwrap();
     sqlx::query("INSERT INTO public.direct_conversations(channel_id,low_user_id,high_user_id) VALUES($1,$2,$3)")
@@ -1969,10 +1970,29 @@ async fn mentions_tag_space_members_and_dm_participants_only(pool: PgPool) {
     assert_eq!(
         direct["content"]["mentions"],
         json!([
+            {"type":"user","id":"bob-id","username":"bob"},
+            {"type":"user","id":"carol-id","username":"carol"},
             {"type":"user","id":"dave-id","username":"dave"},
             {"type":"user","id":"alice-id","username":"alice"},
         ])
     );
+
+    // `@` suggestions in DMs: people sharing an active space or a DM, never
+    // yourself or deleted accounts.
+    let people = |user: i64| {
+        let pool = pool.clone();
+        async move {
+            crate::direct::people(&pool, user)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|person| person["username"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(people(alice).await, ["bob", "carol", "dave"]);
+    assert_eq!(people(bob).await, ["alice", "carol"]);
+    assert_eq!(people(dave).await, ["alice"]);
 
     // History and the outbox event carry the same resolved content.
     let history = history_page(&pool, "mention-public", None, Some(alice))

@@ -41,6 +41,18 @@ class CaperApiTest {
         assertNull(request.requestUrl?.query)
     }
 
+    @Test fun `people list is an authenticated GET`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"people":[{"id":"account00002","username":"mira","displayName":"Mira","avatarId":null}]}"""))
+        val people = CaperApi(baseUrl = server.url("/").toString()).people("account-secret").people
+
+        assertEquals("mira", people.single().username)
+        assertNull(people.single().avatarId)
+        val request = server.takeRequest()
+        assertEquals("GET", request.method)
+        assertEquals("/api/people", request.path)
+        assertEquals("Bearer account-secret", request.headers["Authorization"])
+    }
+
     @Test fun `direct message contract uses global routes and string read cursor`() = runTest {
         server.enqueue(MockResponse().setBody("""{"conversations":[{"id":"direct000001","peer":{"id":"account00002","username":"mira","displayName":"Mira"},"lastSeq":"9007199254740993","readSeq":"7"}]}"""))
         server.enqueue(MockResponse().setBody("""{"id":"direct000001","peer":{"id":"account00002","username":"mira","displayName":"Mira"},"lastSeq":"9007199254740993","readSeq":"7"}"""))

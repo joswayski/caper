@@ -34,14 +34,16 @@ An `@` at the start of a draft, after whitespace or after an opening bracket
 starts a name of up to 32 ASCII letters, digits or underscores; emails such as
 `bob@maya.com` and `x/@maya` do not. Space channels suggest the open space's
 loaded members except you, then `@everyone` ("Everyone in this channel") and
-`@here` ("Everyone online in this channel"); DMs suggest only the other
-participant. Selecting inserts `@username ` without sending; keys and limits match
-emoji. Anyone who can post may use `@everyone`/`@here`; permissions are deferred.
+`@here` ("Everyone online in this channel"). DMs suggest everyone you share a
+space or DM with, from authenticated `GET /api/people` (`{"people":[{"id",
+"username","displayName","avatarId"}]}`, excluding you, at most 500), fetched when
+a DM opens; until it loads the DM peer is offered. Selecting inserts `@username `
+without sending; keys and limits match emoji. Anyone who can post may use `@everyone`/`@here`; permissions are deferred.
 
 On send, `chat::persist` resolves names inside the message transaction (shared
-grammar in `apps/api/src/mentions.rs`) to non-deleted members of the channel's
-space, including members who cannot open a private channel, or to the two DM
-participants. The message's `content.mentions` lists resolved
+grammar in `apps/api/src/mentions.rs`) to any non-deleted account with that
+username, in channels and DMs alike, so people can point each other at someone
+("that's @alex"). The message's `content.mentions` lists resolved
 users (`{"type":"user","id","username"}`) and, in space channels only,
 `{"type":"everyone"}` / `{"type":"here"}`, in first-appearance order with at most
 20 distinct names. Unresolved names stay plain text and the field is omitted when
@@ -49,9 +51,10 @@ empty. `content.version` stays `1`; history, live gateway events and replay carr
 the same payload. Clients ignore unknown entry types, render resolved tokens as
 terracotta pills, and tint messages that mention the reader (their id, or
 `@everyone`/`@here` from someone else). `everyone` and `here` are reserved
-usernames. Tagging is not access: a member tagged in a private channel they cannot
+usernames. Tagging is not access: someone tagged in a conversation they cannot
 open still cannot read it, and future notifications go only to people who can read
-the conversation. Mentions do not notify anyone yet; see
+the conversation. Mention ids are the 12-character random account `external_id`,
+never the internal sequence key. Pills are not yet clickable. Mentions do not notify anyone yet; see
 [notifications.md](notifications.md).
 
 No migration, gateway, infrastructure or secret change is required. The API and
@@ -59,9 +62,9 @@ clients deploy independently in either order: older clients ignore
 `content.mentions`, and newer clients render plain text from an older API. Rolling
 the API back only stops resolving new mentions. Validation:
 - API: unit grammar tests and a Postgres test of resolution (public and private
-  channels including a member without the private grant, DMs, deleted and
-  non-member accounts, history and outbox payloads), plus the full ignored
-  Postgres/Valkey suite.
+  channels, a member without the private grant, a non-member, DMs naming third
+  parties, deleted and unknown accounts, history and outbox payloads) and of
+  `/api/people`, plus the full ignored Postgres/Valkey suite.
 - Web: unit tests, and a real Chromium check against the fixture at 1280px and
   390px (suggestion order, Enter inserts without sending, Escape, no overlap with
   emoji, pills, mentioned-row tint).

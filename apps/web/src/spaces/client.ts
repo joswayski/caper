@@ -38,6 +38,18 @@ export function directUnread(conversation: DirectConversation) {
   return BigInt(conversation.lastSeq) > BigInt(conversation.readSeq);
 }
 
+/** People sharing a space or DM with you, for `@` suggestions in DMs. */
+export interface Person {
+  id: string;
+  username: string;
+  displayName: string;
+  avatarId?: number | null;
+}
+
+export function listPeople() {
+  return request<{ people: Person[] }>("/api/people");
+}
+
 export function listDirectConversations() {
   return request<{ conversations: DirectConversation[] }>("/api/dms");
 }

@@ -10,6 +10,8 @@ import chat.caper.android.model.DirectConversation
 import chat.caper.android.model.DirectPeer
 import chat.caper.android.model.Member
 import chat.caper.android.model.MessageMention
+import chat.caper.android.model.PeopleList
+import chat.caper.android.model.Person
 import chat.caper.android.model.Space
 import chat.caper.android.model.SpaceDetail
 import kotlinx.serialization.json.Json
@@ -72,7 +74,7 @@ class MentionAutocompleteTest {
         assertTrue(mentionSuggestions(MentionSource(emptyList(), specials = false), "ev").isEmpty())
     }
 
-    @Test fun `candidates come from space members or the DM peer, never yourself`() {
+    @Test fun `candidates come from space members or DM people, never yourself`() {
         val me = Account("me000000000a", "me", "Me")
         val members = listOf(Member("me000000000a", "me", "Me", true), Member("bob00000000a", "bob", "Bob B", false, 7))
         val channel = Channel("channel00001", "space0000001", "general", private = false)
@@ -85,12 +87,32 @@ class MentionAutocompleteTest {
 
         val dm = DirectConversation("direct000001", DirectPeer("bob00000000a", "bob", "Bob B"), "0", "0")
         val notes = DirectConversation("direct000002", DirectPeer("me000000000a", "me", "Me"), "0", "0")
-        fun direct(conversation: DirectConversation) = mentionSource(AppUiState(
+        fun direct(conversation: DirectConversation, people: List<Person>? = null) = mentionSource(AppUiState(
             account = me, selectedSpace = detail, directConversations = listOf(dm, notes), selectedDirectId = conversation.id,
-            selectedChannel = Channel(conversation.id, "", conversation.peer.displayName, private = true, direct = true),
+            selectedChannel = Channel(conversation.id, "", conversation.peer.displayName, private = true, direct = true), people = people,
         ))
+        // Before `/api/people` loads (or when it fails): the DM peer, nobody in self-notes.
         assertEquals(MentionSource(listOf(MentionCandidate("bob", "Bob B")), false), direct(dm))
         assertEquals(MentionSource(emptyList(), false), direct(notes))
+
+        // Once loaded, every DM (self-notes too) suggests the people list without you or specials.
+        val people = listOf(Person("alex0000000a", "alex", "Alex Doe", 3), Person("me000000000a", "me", "Me"), Person("bob00000000a", "bob", "Bob B"))
+        val expected = MentionSource(listOf(MentionCandidate("alex", "Alex Doe", avatarId = 3), MentionCandidate("bob", "Bob B")), false)
+        assertEquals(expected, direct(dm, people))
+        assertEquals(expected, direct(notes, people))
+        assertEquals(MentionSource(emptyList(), false), direct(dm, emptyList()))
+        assertEquals(listOf("alex"), mentionSuggestions(direct(dm, people), "do").map { it.username })
+        assertTrue(mentionSuggestions(direct(dm, people), "every").isEmpty())
+        // Space channels ignore the people list.
+        assertEquals(inSpace, mentionSource(AppUiState(account = me, selectedSpace = detail, selectedChannel = channel, people = people)))
+    }
+
+    @Test fun `people response decodes with optional avatars`() {
+        val json = Json { ignoreUnknownKeys = true }
+        val decoded = json.decodeFromString<PeopleList>("""{"people":[{"id":"alex0000000a","username":"alex","displayName":"Alex","avatarId":null},
+            {"id":"bob00000000a","username":"bob","displayName":"Bob","avatarId":12,"future":true},{"id":"cy000000000a","username":"cy","displayName":"Cy"}]}""")
+        assertEquals(listOf(Person("alex0000000a", "alex", "Alex"), Person("bob00000000a", "bob", "Bob", 12), Person("cy000000000a", "cy", "Cy")), decoded.people)
+        assertEquals(emptyList<Person>(), json.decodeFromString<PeopleList>("""{"people":[]}""").people)
     }
 
     @Test fun `insertion adds a trailing space, keeps Unicode around it and places the caret`() {

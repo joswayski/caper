@@ -71,6 +71,19 @@ public struct DirectMessagesResponse: Codable, Sendable {
     public let conversations: [DirectMessageConversation]
 }
 
+/// An account that shares an active space or a DM with you, from
+/// `GET /api/people` (you excluded, ordered by username, at most 500).
+public struct Person: Codable, Equatable, Identifiable, Sendable {
+    public let id: String
+    public let username: String
+    public let displayName: String
+    public var avatarId: Int? = nil
+}
+
+public struct PeopleResponse: Codable, Sendable {
+    public let people: [Person]
+}
+
 public struct PushConfiguration: Codable, Equatable, Sendable {
     public let platforms: [String]
 }

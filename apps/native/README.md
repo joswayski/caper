@@ -41,7 +41,8 @@ builds and physical keyboard/IME checks require their platform toolchains/device
 browser coverage is not native acceptance.
 
 Composers also suggest people after `@`: the open space's loaded members except
-you, then `@everyone` and `@here`; in DMs, only the other participant. Selecting
+you, then `@everyone` and `@here`; in DMs, everyone you share a space or DM with
+(`GET /api/people`, falling back to the other participant until it loads). Selecting
 inserts `@username ` without sending. Names the API resolved in
 `content.mentions` render as terracotta pills, and messages that mention you get a
 light terracotta row tint with a 2px/pt/dp leading edge. Android, SwiftUI and egui
