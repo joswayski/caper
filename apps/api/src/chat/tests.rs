@@ -1880,7 +1880,7 @@ async fn account_channels_isolate_sequences_and_gateway_revokes_live_access() {
 
 #[sqlx::test(migrations = "./migrations")]
 #[ignore = "requires disposable loopback DATABASE_URL"]
-async fn mentions_resolve_only_accounts_that_can_read_the_conversation(pool: PgPool) {
+async fn mentions_tag_space_members_and_dm_participants_only(pool: PgPool) {
     let mut users = Vec::new();
     for name in ["alice", "bob", "carol", "dave", "gone"] {
         let user: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name) VALUES($1||'-id',$1,$1) RETURNING id")
@@ -1944,18 +1944,14 @@ async fn mentions_resolve_only_accounts_that_can_read_the_conversation(pool: PgP
             {"type":"here"},
         ])
     );
-    // Carol is a space member without the private grant.
+    // Carol is a space member without the private grant: still tagged, since
+    // notifications (not mentions) decide who may be told about the message.
     let private = persist(&pool, "mention-private", "alice", Uuid::new_v4(), text)
         .await
         .unwrap();
     assert_eq!(
         private["content"]["mentions"],
-        json!([
-            {"type":"user","id":"bob-id","username":"bob"},
-            {"type":"user","id":"alice-id","username":"alice"},
-            {"type":"everyone"},
-            {"type":"here"},
-        ])
+        public["content"]["mentions"]
     );
     let plain = persist(&pool, "mention-public", "alice", Uuid::new_v4(), "no one")
         .await

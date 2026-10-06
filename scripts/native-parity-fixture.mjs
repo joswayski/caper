@@ -85,10 +85,11 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
     ? user.id === state.account.id && state.directs.some(conversation => conversation.id === channel.id)
     : state.spaces.some(detail => detail.space.id === channel?.spaceId && detail.members.some(member => member.id === user.id)
       && (!channel.private || detail.space.ownerId === user.id || (state.grants.get(channel.id) ?? []).includes(user.id))));
-  // Same @mention grammar and reader rules as apps/api/src/mentions.rs and chat::with_mentions.
+  // Same @mention grammar and rules as apps/api/src/mentions.rs and chat::with_mentions:
+  // any space member is tagged (even without private access); DMs tag participants.
   const mentionsFor = (channel, text) => {
-    const readers = channel.direct ? [state.account, state.directs.find((conversation) => conversation.id === channel.id)?.peer]
-      : (state.spaces.find((detail) => detail.space.id === channel.spaceId)?.members ?? members).filter((member) => canRead(channel, member));
+    const tagged = channel.direct ? [state.account, state.directs.find((conversation) => conversation.id === channel.id)?.peer]
+      : state.spaces.find((detail) => detail.space.id === channel.spaceId)?.members ?? members;
     const found = [], names = new Set(), chars = [...text];
     let previous;
     for (let index = 0; index < chars.length; index++) {
@@ -103,8 +104,8 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         if (!channel.direct && !found.some((entry) => entry.type === name)) found.push({ type: name });
       } else if (name.length >= 3 && !names.has(name) && names.size < 20) {
         names.add(name);
-        const reader = readers.find((member) => member?.username === name);
-        if (reader) found.push({ type: 'user', id: reader.id, username: reader.username });
+        const member = tagged.find((candidate) => candidate?.username === name);
+        if (member) found.push({ type: 'user', id: member.id, username: member.username });
       }
     }
     return found;

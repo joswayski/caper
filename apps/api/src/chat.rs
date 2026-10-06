@@ -595,8 +595,10 @@ async fn persist(
     Ok(payload)
 }
 
-/// Adds `content.mentions` for `@everyone`/`@here` and for named accounts that
-/// can read this channel. Other names stay plain text and are not recorded.
+/// Adds `content.mentions` for `@everyone`/`@here` and for named members of this
+/// space (or participants of this DM). A member without access to a private
+/// channel is still tagged; notifications must check read access themselves.
+/// Other names stay plain text and are not recorded.
 async fn with_mentions(
     connection: &mut sqlx::PgConnection,
     channel_id: i64,
@@ -610,16 +612,15 @@ async fn with_mentions(
             Mention::Everyone | Mention::Here => None,
         })
         .collect();
-    let readers: Vec<(String, String)> = if names.is_empty() {
+    let members: Vec<(String, String)> = if names.is_empty() {
         Vec::new()
     } else {
         sqlx::query_as(
             "SELECT u.username,u.external_id FROM public.users u
-             JOIN public.channels c ON c.id=$1 LEFT JOIN public.spaces s ON s.id=c.space_id
+             JOIN public.channels c ON c.id=$1
              WHERE u.username=ANY($2) AND u.deleted_at IS NULL
                AND ((c.space_id IS NOT NULL
-                     AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=c.space_id AND sm.user_id=u.id AND sm.deleted_at IS NULL)
-                     AND (s.owner_id=u.id OR NOT c.private OR EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=c.id AND cm.user_id=u.id AND cm.deleted_at IS NULL)))
+                     AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=c.space_id AND sm.user_id=u.id AND sm.deleted_at IS NULL))
                  OR (c.space_id IS NULL AND EXISTS(SELECT 1 FROM public.direct_conversations d WHERE d.channel_id=c.id AND u.id IN (d.low_user_id,d.high_user_id))))",
         )
         .bind(channel_id)
@@ -633,7 +634,7 @@ async fn with_mentions(
         .filter_map(|mention| match mention {
             Mention::Everyone => Some(json!({"type":"everyone"})),
             Mention::Here => Some(json!({"type":"here"})),
-            Mention::User(name) => readers
+            Mention::User(name) => members
                 .iter()
                 .find(|(username, _)| username == name)
                 .map(|(username, id)| json!({"type":"user","id":id,"username":username})),

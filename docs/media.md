@@ -39,9 +39,9 @@ participant. Selecting inserts `@username ` without sending; keys and limits mat
 emoji. Anyone who can post may use `@everyone`/`@here`; permissions are deferred.
 
 On send, `chat::persist` resolves names inside the message transaction (shared
-grammar in `apps/api/src/mentions.rs`) to non-deleted accounts that can read the
-conversation: space members who own the space, or the channel is public, or hold a
-private grant; DM participants. The message's `content.mentions` lists resolved
+grammar in `apps/api/src/mentions.rs`) to non-deleted members of the channel's
+space, including members who cannot open a private channel, or to the two DM
+participants. The message's `content.mentions` lists resolved
 users (`{"type":"user","id","username"}`) and, in space channels only,
 `{"type":"everyone"}` / `{"type":"here"}`, in first-appearance order with at most
 20 distinct names. Unresolved names stay plain text and the field is omitted when
@@ -49,16 +49,19 @@ empty. `content.version` stays `1`; history, live gateway events and replay carr
 the same payload. Clients ignore unknown entry types, render resolved tokens as
 terracotta pills, and tint messages that mention the reader (their id, or
 `@everyone`/`@here` from someone else). `everyone` and `here` are reserved
-usernames. A suggested space member without access to a private channel does not
-resolve. Mentions do not notify anyone; see [notifications.md](notifications.md).
+usernames. Tagging is not access: a member tagged in a private channel they cannot
+open still cannot read it, and future notifications go only to people who can read
+the conversation. Mentions do not notify anyone yet; see
+[notifications.md](notifications.md).
 
 No migration, gateway, infrastructure or secret change is required. The API and
 clients deploy independently in either order: older clients ignore
 `content.mentions`, and newer clients render plain text from an older API. Rolling
 the API back only stops resolving new mentions. Validation:
-- API: unit grammar tests and a Postgres test of reader-only resolution (public,
-  private, DM, deleted and non-member accounts, history and outbox payloads), plus
-  the full ignored Postgres/Valkey suite.
+- API: unit grammar tests and a Postgres test of resolution (public and private
+  channels including a member without the private grant, DMs, deleted and
+  non-member accounts, history and outbox payloads), plus the full ignored
+  Postgres/Valkey suite.
 - Web: unit tests, and a real Chromium check against the fixture at 1280px and
   390px (suggestion order, Enter inserts without sending, Escape, no overlap with
   emoji, pills, mentioned-row tint).

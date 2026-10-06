@@ -279,7 +279,7 @@ test('message IDs match the API shape native clients accept for reaction paths',
   assert.deepEqual((await request(root, { auth: true })).value.messages.find(message => message.id === target).reactions, [{ emoji: '🚀', authorIds: [ids.owner] }]);
 });
 
-test('sent messages resolve @mentions like the API: readers only, specials outside DMs', async (t) => {
+test('sent messages resolve @mentions like the API: space members, specials outside DMs', async (t) => {
   const { request } = await setup(t);
   const session = await request('/api/chat/session', { auth: true, method: 'POST', body: { name: 'Fixture Owner' } });
   const send = (channel, text) => request(`/api/chat/channels/${channel}/messages`, { auth: true, method: 'POST',
@@ -290,9 +290,11 @@ test('sent messages resolve @mentions like the API: readers only, specials outsi
     { type: 'user', id: ids.other, username: 'alex' },
     { type: 'everyone' }, { type: 'here' },
   ]);
-  // Alex has no grant to the private channel.
+  // Alex has no grant to the private channel but is still tagged; Sam is not a member.
   assert.deepEqual((await send(ids.private, text)).value.content.mentions, [
-    { type: 'user', id: ids.member, username: 'maya' }, { type: 'everyone' }, { type: 'here' },
+    { type: 'user', id: ids.member, username: 'maya' },
+    { type: 'user', id: ids.other, username: 'alex' },
+    { type: 'everyone' }, { type: 'here' },
   ]);
   assert.equal((await send(ids.general, 'no one')).value.content.mentions, undefined);
   const seeded = (await request(`/api/chat/channels/${ids.general}/messages`, { auth: true })).value.messages[3];
