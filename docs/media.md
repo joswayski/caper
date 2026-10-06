@@ -1256,6 +1256,106 @@ requirements, instead of a separate invitation/channel rollout.
    with the limitations above; do not roll API/gateway back across the consent
    or participation boundary or drop membership/invitation tables as rollback.
 
+## Message pins
+
+Pins are channel-wide, not personal bookmarks. Any joined channel member can pin
+or unpin another member's message; the two participants can do the same in a DM.
+Private-channel grants and active space membership still apply. Preview readers
+can see pins but cannot change them, including no-op writes. Actions do not ask
+for confirmation. Inline “Pinned by …” attribution updates for other readers.
+The central channel header has a Pins button with a count; web, Android and Rust
+desktop show pins in the central conversation area. Apple uses a platform sheet.
+Each list shows the original author, avatar, date/time, text, and shared attribution,
+and offers Unpin. These are independent native implementations, not web wrappers.
+
+`PUT /api/chat/channels/{channel}/messages/{message}/pin` accepts `{active:boolean}`
+and `X-Caper-Chat-Token`; clients cannot supply a pin author. The response and
+durable outbox event are
+`{type:"message.pin",schemaVersion:1,channelId,seq,message}`. The message snapshot
+contains nullable `pin:{author,createdAt}` and decimal-string `pinSeq`. The
+event's `seq` equals `message.pinSeq`; original message `seq`, content, and
+creation time remain unchanged. Pin/reaction revisions merge independently.
+HTTP acknowledgements do not advance replay/read cursors. Reconnect replays
+mutations, and authoritative history clears pins removed while offline; stale
+acknowledgements/pages must not restore an unpin.
+
+Every history page includes complete `pinnedMessages`, newest pin first, captured
+under the same channel lock as its cursor. The pins collection is separate from
+the 50-message timeline page: an old pin must not enter that page or skip the
+intervening history. There are at most 100 active pins per channel and 60 actual
+mutations per actor/channel/minute. Idempotent retries preserve the original
+attribution and consume neither an event nor the mutation budget. Pin snapshots,
+rate-limit activity, sequence allocation and outbox commit atomically. Unpinning
+retains messages and durable mutation events; only expired rate-limit records
+are pruned. Pins do not send system messages, play message sounds, or create push.
+
+### Pin validation boundary
+
+| Platform | Evidence and remaining gap |
+| --- | --- |
+| API/gateway | Disposable Postgres/Valkey tests cover two authenticated readers, live delivery/replay, persistence, concurrent no-ops, reactions, transaction rollback, old-message pins, limits and retained-but-revoked membership/grants. No production write or deployment |
+| Web | Build/unit tests plus `scripts/test-message-pins.mjs`: two tabs, remote attribution, one-action pin/unpin, original metadata, old pins, pending/error/retry, channel isolation and desktop/narrow layouts. Chromium touch input with `(pointer:coarse)` verified; screenshots inspected. Not Safari or a physical phone |
+| Rust desktop | Linux build/tests/Clippy and disposable HTTP fixture rendering/interactions. Windows build/runtime and production cross-client checks remain release validation |
+| Android | Models, gateway, Compose actions/list and JVM regressions implemented. JDK/Android SDK unavailable in this orb; compilation, rendered states and physical-device checks require CI/a native runner |
+| Apple | Models, gateway, SwiftUI actions/list and protocol regressions implemented. Swift/Xcode unavailable in this Linux orb; macOS/iOS builds, rendered states and devices require CI/a native runner |
+| Containers/live | Docker has no running daemon. Validate web/API build stages directly; no container-image, live account/SFU or physical-device acceptance is inferred from fixtures |
+
+With the disposable fixture and Vite running, use:
+
+```sh
+node --test tests/native-parity-fixture.test.mjs
+MESSAGE_TEST_WEB_URL=http://127.0.0.1:5174 node scripts/test-message-pins.mjs
+CHAT_TEST_DATABASE_URL=postgres://user@127.0.0.1:55432/postgres \
+CHAT_TEST_VALKEY_URL=redis://127.0.0.1:6379 \
+  cargo test --locked -p caper-api pins_are_shared -- --ignored --nocapture
+```
+
+### Deployment order for pins
+
+Merging does not deploy. These are operator actions, not commands run by tests.
+
+1. **Prerequisites/infrastructure/configuration:** no infrastructure apply, new
+   service, secret, feature flag, or Valkey/SFU reset is required. Keep existing
+   `DATABASE_URL`, direct `MIGRATION_DATABASE_URL`, `VALKEY_URL` and chat config.
+   Keep one desired API replica. Set `MERGED_SHA` to the full merged revision;
+   wait for its API/web images and native CI. Update native testers before
+   enabling pins: old clients do not display pins and may resync across new events.
+2. **Database/API first:** startup applies pending embedded migrations, including
+   `202610060001_message_pins.sql` (partial pin index and rate-limit table), and
+   runtime grants before readiness. No manual data writes/backfill are needed.
+   Watch the exact dispatched workflow and readiness, then verify history/send.
+   ```sh
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
+3. **Gateway next:** deploy the same backend revision before pinning clients.
+   Replay and publishing must preserve the original message author's avatar
+   when the mutation sequence differs from the message creation sequence.
+   Do not change replica counts or close healthy voice tracks.
+   ```sh
+   gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-chat-gateway --timeout=15m
+   ```
+4. **Client releases:** after server readiness, web and native releases are
+   technically independent. Release validated native builds first so testers
+   can consume pin events before exposing the web action. Wait for each exact
+   workflow run; platform compilation/rendering is a prerequisite for release.
+   ```sh
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+5. **Verify/rollback:** with two accounts on different clients, pin/unpin each
+   other's messages, confirm attribution/list updates, reload/reconnect, pin an
+   old message, and switch channels/DMs. Preview, removed membership and revoked
+   private grants must deny mutations. Confirm ordinary sends/reactions and an
+   unrelated voice call remain healthy. Prefer a forward fix; client rollback
+   removes entry points but leaves durable pins. Do not roll server images back
+   across this migration: SQLx validates applied migration history. A reviewed
+   rollback build must retain the migration and disable pin writes while keeping
+   history/events readable. Keep additive tables/indexes and durable events;
+   never drop message/pin data or migration records as rollback.
+
 ## Shared call state and rolling deployments
 
 The original shared-state rollout below covers the public General room. Account

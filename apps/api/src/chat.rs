@@ -797,9 +797,9 @@ async fn persist_pin(
         "SELECT c.id,c.last_seq FROM public.channels c LEFT JOIN public.spaces s ON s.id=c.space_id
          WHERE c.external_id=$1 AND c.deleted_at IS NULL AND $2::bigint IS NOT NULL
            AND ((s.deleted_at IS NULL AND NOT s.demo
-                 AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=$2)
-                 AND (s.owner_id=$2 OR NOT c.private OR EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=c.id AND cm.user_id=$2))
-                 AND EXISTS(SELECT 1 FROM public.channel_joins cj WHERE cj.channel_id=c.id AND cj.user_id=$2))
+                 AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=$2 AND sm.deleted_at IS NULL)
+                 AND (s.owner_id=$2 OR NOT c.private OR EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=c.id AND cm.user_id=$2 AND cm.deleted_at IS NULL))
+                 AND EXISTS(SELECT 1 FROM public.channel_joins cj WHERE cj.channel_id=c.id AND cj.user_id=$2 AND cj.deleted_at IS NULL))
                 OR (c.space_id IS NULL AND EXISTS(SELECT 1 FROM public.direct_conversations d
                     JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
                     WHERE d.channel_id=c.id AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL)))

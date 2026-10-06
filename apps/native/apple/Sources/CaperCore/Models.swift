@@ -595,21 +595,36 @@ struct ReactionSnapshots: Sendable {
 
 struct PinSnapshots: Sendable {
     private var values: [String: (seq: String, pin: MessagePin?)] = [:]
+    private var snapshotCursor: String?
 
     mutating func apply(_ message: ChatMessage) -> Bool {
         guard let seq = message.pinSeq, (try? Sequence.compare(seq, "0")) != nil else { return false }
+        if let snapshotCursor, (try? Sequence.compare(seq, snapshotCursor)) != .orderedDescending { return false }
         if let current = values[message.id], (try? Sequence.compare(seq, current.seq)) != .orderedDescending { return false }
         values[message.id] = (seq, message.pin)
         return true
     }
 
+    mutating func replace(_ messages: [ChatMessage], cursor: String) {
+        let newer = values.filter { (try? Sequence.compare($0.value.seq, cursor)) == .orderedDescending }
+        values.removeAll(keepingCapacity: true)
+        snapshotCursor = nil
+        seed(messages)
+        values.merge(newer) { _, next in next }
+        snapshotCursor = cursor
+    }
+
     mutating func seed(_ messages: [ChatMessage]) { messages.forEach { _ = apply($0) } }
     func overlay(_ message: ChatMessage) -> ChatMessage {
-        guard let value = values[message.id] else { return message }
-        var result = message; result.pin = value.pin; result.pinSeq = value.seq
+        var result = message
+        if let value = values[message.id] {
+            result.pin = value.pin; result.pinSeq = value.seq
+        } else if let snapshotCursor, (try? Sequence.compare(message.pinSeq ?? "0", snapshotCursor)) != .orderedDescending {
+            result.pin = nil; result.pinSeq = snapshotCursor
+        }
         return result
     }
-    mutating func reset() { values.removeAll(keepingCapacity: false) }
+    mutating func reset() { values.removeAll(keepingCapacity: false); snapshotCursor = nil }
 }
 
 /// Accepts only snapshots that cannot move an already-versioned view

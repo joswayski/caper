@@ -8,6 +8,7 @@ export class ChatTimeline {
   private readonly eventBuffer = new Map<bigint, ChatMessage | ChatReactionEvent | ChatPinEvent>();
   private readonly unseenReactions = new Map<string, ChatReactionEvent>();
   private readonly pinUpdates = new Map<string, ChatMessage>();
+  private pinSnapshotCursor = 0n;
   private pinnedById = new Map<string, ChatMessage>();
   private sortedMessages?: ChatMessage[];
 
@@ -33,10 +34,12 @@ export class ChatTimeline {
     this.eventBuffer.clear();
     this.unseenReactions.clear();
     this.sortedMessages = undefined;
+    this.pinSnapshotCursor = 0n;
     this.pinnedById = new Map();
     for (const message of messages) this.merge(message);
     for (const message of pinnedMessages) this.mergePinMessage(message);
     for (const message of this.pinUpdates.values()) this.mergePinMessage(message);
+    this.pinSnapshotCursor = this.cursorValue;
   }
 
   prepend(messages: ChatMessage[]) {
@@ -96,6 +99,18 @@ export class ChatTimeline {
 
   private mergePinMessage(message: ChatMessage) {
     const previous = this.pinUpdates.get(message.id);
+    if (this.pinSnapshotCursor > 0n && sequence(message.pinSeq ?? "0") <= this.pinSnapshotCursor) {
+      // The complete collection also governs messages outside loaded history.
+      // Overlay old pages, but ignore acknowledgements already covered by it.
+      const visible = this.byId.get(message.id);
+      const pin = previous?.pin ?? null;
+      const pinSeq = previous?.pinSeq ?? this.pinSnapshotCursor.toString();
+      if (visible && (previous || visible.pin) && (visible.pin !== pin || visible.pinSeq !== pinSeq)) {
+        this.byId.set(visible.id, { ...visible, pin, pinSeq });
+        this.sortedMessages = undefined;
+      }
+      return;
+    }
     const snapshot = previous && sequence(previous.pinSeq ?? "0") > sequence(message.pinSeq ?? "0") ? previous : message;
     if (snapshot.pinSeq !== undefined) this.pinUpdates.set(snapshot.id, snapshot);
     if (snapshot.pin) this.pinnedById.set(snapshot.id, snapshot);

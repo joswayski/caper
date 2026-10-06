@@ -22,11 +22,14 @@ internal fun mergePin(current: ChatMessage, incoming: ChatMessage): ChatMessage 
     return if (next > old) current.copy(pin = incoming.pin, pinSeq = incoming.pinSeq) else current
 }
 
-internal fun mergePinned(current: List<ChatMessage>, snapshots: List<ChatMessage>): List<ChatMessage> {
-    val byId = (current + snapshots).groupBy { it.id }.mapValues { (_, rows) -> rows.reduce(::mergePin) }.toMutableMap()
-    // A newer unpin snapshot must remove a pin even when a stale history list still contains it.
-    snapshots.filter { it.pin == null }.forEach { byId[it.id] = mergePin(byId.getValue(it.id), it) }
-    return byId.values.filter { it.pin != null }.sortedByDescending { it.pinSeq?.toBigIntegerOrNull() ?: BigInteger.ZERO }
+/** Complete pin history covers unloaded messages as well as known snapshots. */
+internal fun overlayPin(message: ChatMessage, snapshot: ChatMessage?, historyCursor: String?): ChatMessage {
+    val cursor = historyCursor?.toBigIntegerOrNull()
+    val revision = message.pinSeq?.toBigIntegerOrNull() ?: BigInteger.valueOf(-1)
+    val authoritative = if (cursor != null && revision <= cursor) {
+        message.copy(pin = snapshot?.pin, pinSeq = snapshot?.pinSeq ?: historyCursor)
+    } else message
+    return snapshot?.let { mergePin(authoritative, it) } ?: authoritative
 }
 
 internal fun replayCursorAfterPin(current: String?, update: PinUpdate, sequenced: Boolean) = if (sequenced) update.seq else current

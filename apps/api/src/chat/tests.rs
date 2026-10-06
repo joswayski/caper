@@ -267,12 +267,14 @@ async fn pins_are_shared_idempotent_authorized_and_transactional() {
     server.abort();
 
     // Readable previews do not grant mutations; private grants gate reads too.
-    sqlx::query("DELETE FROM public.channel_joins WHERE channel_id=$1 AND user_id=$2")
-        .bind(channel_id)
-        .bind(member)
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE public.channel_joins SET deleted_at=now() WHERE channel_id=$1 AND user_id=$2",
+    )
+    .bind(channel_id)
+    .bind(member)
+    .execute(&pool)
+    .await
+    .unwrap();
     assert!(
         history_page(&pool, channel, None, Some(member))
             .await
@@ -290,8 +292,31 @@ async fn pins_are_shared_idempotent_authorized_and_transactional() {
     pool.execute("UPDATE public.channels SET private=true")
         .await
         .unwrap();
+    sqlx::query(
+        "UPDATE public.channel_joins SET deleted_at=NULL WHERE channel_id=$1 AND user_id=$2",
+    )
+    .bind(channel_id)
+    .bind(member)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO public.channel_members(channel_id,user_id,deleted_at) VALUES($1,$2,now())",
+    )
+    .bind(channel_id)
+    .bind(member)
+    .execute(&pool)
+    .await
+    .unwrap();
     assert_eq!(
         history_page(&pool, channel, None, Some(member))
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        persist_pin(&pool, channel, message, "pin-member", true)
             .await
             .unwrap_err()
             .status,
@@ -385,12 +410,14 @@ async fn pins_are_shared_idempotent_authorized_and_transactional() {
     pool.execute("UPDATE public.channels SET private=false")
         .await
         .unwrap();
-    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) VALUES($1,$2)")
-        .bind(channel_id)
-        .bind(member)
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE public.channel_joins SET deleted_at=NULL WHERE channel_id=$1 AND user_id=$2",
+    )
+    .bind(channel_id)
+    .bind(member)
+    .execute(&pool)
+    .await
+    .unwrap();
     let mut revocation = pool.begin().await.unwrap();
     sqlx::query("SELECT id FROM public.spaces WHERE id=$1 FOR UPDATE")
         .bind(space)
@@ -404,12 +431,14 @@ async fn pins_are_shared_idempotent_authorized_and_transactional() {
     });
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(!pending.is_finished());
-    sqlx::query("DELETE FROM public.space_members WHERE space_id=$1 AND user_id=$2")
-        .bind(space)
-        .bind(member)
-        .execute(&mut *revocation)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE public.space_members SET deleted_at=now() WHERE space_id=$1 AND user_id=$2",
+    )
+    .bind(space)
+    .bind(member)
+    .execute(&mut *revocation)
+    .await
+    .unwrap();
     revocation.commit().await.unwrap();
     assert_eq!(
         pending.await.unwrap().unwrap_err().status,

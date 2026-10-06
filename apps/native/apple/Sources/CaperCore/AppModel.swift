@@ -1081,7 +1081,7 @@ public final class ChatModel {
         guard generation == requestGeneration else { return }
         channelID = history.channel?.id; spaceID = history.space?.id
         reactionSnapshots.seed(history.messages)
-        pinSnapshots.seed(history.messages + history.pinnedMessages)
+        pinSnapshots.replace(history.messages + history.pinnedMessages, cursor: history.cursor)
         messages = history.messages.map { pinSnapshots.overlay(reactionSnapshots.overlay($0)) }
         pinnedMessages = history.pinnedMessages.map { pinSnapshots.overlay($0) }
         delivery.reset(cursor: history.cursor); hasMore = history.hasMore
@@ -1135,7 +1135,7 @@ public final class ChatModel {
         if let prepared {
             self.channelID = prepared.channel?.id; spaceID = prepared.space?.id
             reactionSnapshots.seed(prepared.messages)
-            pinSnapshots.seed(prepared.messages + prepared.pinnedMessages)
+            pinSnapshots.replace(prepared.messages + prepared.pinnedMessages, cursor: prepared.cursor)
             messages = prepared.messages.map { pinSnapshots.overlay(reactionSnapshots.overlay($0)) }
             pinnedMessages = prepared.pinnedMessages.map { pinSnapshots.overlay($0) }
             delivery.reset(cursor: prepared.cursor); hasMore = prepared.hasMore
@@ -1172,16 +1172,10 @@ public final class ChatModel {
             if prepared == nil {
                 // The latest history response is authoritative for the channel-wide
                 // pin list. Older pagination responses are deliberately ignored.
-                pinSnapshots.reset()
-                pinSnapshots.seed(history.messages + history.pinnedMessages)
-                let pinnedIDs = Set(history.pinnedMessages.map(\.id))
-                // Absence from the authoritative pin collection is an unpin
-                // tombstone for retained rows, including rows older than this page.
-                for var message in preservedMessages + history.messages where !pinnedIDs.contains(message.id) {
-                    message.pin = nil; message.pinSeq = history.cursor
-                    _ = pinSnapshots.apply(message)
-                }
-                pinnedMessages = history.pinnedMessages.map { pinSnapshots.overlay($0) }
+                pinSnapshots.replace(history.messages + history.pinnedMessages, cursor: history.cursor)
+                let candidates = Dictionary((pinnedMessages + history.pinnedMessages).map { ($0.id, $0) }, uniquingKeysWith: { _, next in next })
+                pinnedMessages = candidates.values.map { pinSnapshots.overlay($0) }.filter { $0.pin != nil }
+                    .sorted { (try? Sequence.compare($0.pinSeq ?? "0", $1.pinSeq ?? "0")) == .orderedDescending }
                 if canRetain {
                     // Include HTTP confirmations received while refresh was pending.
                     merge(history.messages) // The refreshed representation wins overlapping IDs.
@@ -1189,7 +1183,7 @@ public final class ChatModel {
                     // Preserve a newer reaction revision on overlapping rows, but
                     // discard snapshots for rows no longer in the fresh window.
                     reactionSnapshots.seed(history.messages)
-                    messages = history.messages.map { reactionSnapshots.overlay($0) }
+                    messages = history.messages.map { pinSnapshots.overlay(reactionSnapshots.overlay($0)) }
                     reactionSnapshots.reset()
                     reactionSnapshots.seed(messages)
                 }
@@ -1628,7 +1622,10 @@ public final class ChatModel {
         messages = messages.map { pinSnapshots.overlay($0) }
         pinnedMessages.removeAll { $0.id == message.id }
         let updated = pinSnapshots.overlay(message)
-        if updated.pin != nil { pinnedMessages.insert(updated, at: 0) }
+        if updated.pin != nil {
+            pinnedMessages.append(updated)
+            pinnedMessages.sort { (try? Sequence.compare($0.pinSeq ?? "0", $1.pinSeq ?? "0")) == .orderedDescending }
+        }
     }
 
     private func applyReactions(_ event: MessageReactionsEvent) {

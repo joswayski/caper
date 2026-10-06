@@ -16,7 +16,19 @@ class PinsTest {
         val unpinned = message("9", false)
         val stale = message("7", true)
         assertNull(mergePin(unpinned, stale).pin)
-        assertTrue(mergePinned(listOf(unpinned), listOf(stale)).isEmpty())
+        assertEquals("9", mergePin(unpinned, stale).pinSeq)
+    }
+
+    @Test fun `complete history removes stale pins from unloaded pages but preserves newer snapshots`() {
+        val stale = message("4", true)
+        assertNull(overlayPin(stale, null, "60").pin)
+        assertEquals("60", overlayPin(stale, null, "60").pinSeq)
+        assertNull(overlayPin(message("60", true), null, "60").pin)
+        val newer = message("61", true)
+        assertEquals(newer.pin, overlayPin(stale, newer, "60").pin)
+        assertEquals("61", overlayPin(stale, newer, "60").pinSeq)
+        assertEquals(newer.pin, overlayPin(newer, null, "60").pin)
+        assertEquals("61", overlayPin(newer, null, "60").pinSeq)
     }
 
     @Test fun `pin acknowledgement does not advance replay cursor`() {

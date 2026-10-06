@@ -6,7 +6,7 @@ CREATE INDEX messages_channel_pins ON messages (channel_id)
 -- Count actual mutations, not idempotent retries, across API replicas.
 CREATE TABLE message_pin_activity (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    message_id bigint NOT NULL REFERENCES messages (id) ON DELETE CASCADE,
+    message_id bigint NOT NULL REFERENCES messages (id),
     user_id bigint NOT NULL REFERENCES users (id),
     created_at timestamptz NOT NULL DEFAULT now()
 );

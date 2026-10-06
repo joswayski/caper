@@ -90,6 +90,23 @@ test("authoritative reconnect removes offline unpins and independent pin revisio
   assert.equal(timeline.pinnedMessages.length, 0, "access revocation clears every pin snapshot");
 });
 
+test("complete pin history rejects old acknowledgements and pages but preserves newer HTTP snapshots", () => {
+  const timeline = new ChatTimeline();
+  const old = message("1", "unloaded-pin");
+  timeline.reset([message("50")], "60", []);
+  timeline.mergePin(pin("4", true, old));
+  timeline.mergePin(pin("60", true, old));
+  assert.equal(timeline.pinnedMessages.length, 0, "absence from complete history supersedes acknowledgements through its cursor");
+  timeline.prepend([pin("4", true, old).message]);
+  assert.equal(timeline.messages[0].pin, null, "a stale page must not restore the inline marker either");
+  timeline.mergePin(pin("61", true, old));
+  assert.equal(timeline.cursor, "60", "HTTP must not advance replay");
+  timeline.reset([message("50")], "60", []);
+  assert.deepEqual(timeline.pinnedMessages.map(item => item.id), [old.id], "a newer acknowledgement survives a concurrently captured history");
+  assert.equal(timeline.applyEvent(pin("61", true, old)), "applied");
+  assert.equal(timeline.cursor, "61");
+});
+
 test("reactions fill sequence gaps without becoming messages or accepting stale acknowledgements", () => {
   const timeline = new ChatTimeline();
   timeline.reset([message("1")], "1");

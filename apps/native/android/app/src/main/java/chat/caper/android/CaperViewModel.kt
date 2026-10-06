@@ -46,6 +46,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private val authoritativeReactionMessages = mutableMapOf<String, ChatMessage>()
     private val reactorCache = ReactorCache()
     private val pinSnapshots = mutableMapOf<String, ChatMessage>()
+    private var pinSnapshotCursor: String? = null
     private val pinWorkers = mutableMapOf<String, Job>()
     private var reactionIntentVersion = 0L
     private var directRefresh: Job? = null
@@ -792,6 +793,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (update.channelId != mutable.value.selectedChannel?.id) return
         durableReplayCursor = replayCursorAfterPin(durableReplayCursor, update, sequenced)
         if (sequenced && mutable.value.selectedDirectId == update.channelId) markDirectRead(update.channelId, update.seq)
+        if (pinSnapshotCursor?.let { update.seq.toBigInteger() <= it.toBigInteger() } == true) return
         val old = pinSnapshots[update.message.id]
         val merged = if (old == null) update.message else mergePin(old, update.message)
         pinSnapshots[update.message.id] = merged
@@ -805,6 +807,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun installHistoryPins(history: ChatHistory) {
         val listed = history.pinnedMessages.associateBy { it.id }
         val cursor = history.cursor.toBigIntegerOrNull()
+        pinSnapshotCursor = history.cursor
         if (cursor != null) (mutable.value.messages + pinSnapshots.values.toList()).forEach { message ->
             val current = pinSnapshots[message.id]?.let { mergePin(message, it) } ?: message
             if (current.id !in listed && (current.pinSeq?.toBigIntegerOrNull() ?: java.math.BigInteger.valueOf(-1)) <= cursor) {
@@ -818,7 +821,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun mergeTimelinePins(messages: List<ChatMessage>) = messages.map { message ->
-        pinSnapshots[message.id]?.let { mergePin(message, it) } ?: message
+        overlayPin(message, pinSnapshots[message.id], pinSnapshotCursor)
     }
 
     private fun confirmPending(message: ChatMessage) {
@@ -1078,6 +1081,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         reactionWorkers.clear(); reactionIntents.clear(); authoritativeReactionMessages.clear()
         reactorCache.clear()
         pinWorkers.values.forEach { it.cancel() }; pinWorkers.clear(); pinSnapshots.clear()
+        pinSnapshotCursor = null
         mutable.value = mutable.value.copy(
             selectedChannel = null, selectedDirectId = null, messages = emptyList(), typingAuthors = emptyList(), presence = emptyMap(),
             loadingOlder = false, olderError = null, messagesLoading = false, messagesError = null, refreshError = null,
