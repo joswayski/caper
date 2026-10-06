@@ -203,6 +203,116 @@ public struct MessageReaction: Codable, Equatable, Sendable, Identifiable {
     public var id: String { emoji }
 }
 
+/// One person in a who-reacted list. `id` is the public user ID used in
+/// snapshot `authorIds`; names may be missing.
+public struct ReactorPerson: Codable, Equatable, Identifiable, Sendable {
+    public let id: String
+    public let username: String?
+    public let displayName: String?
+    public let avatarId: Int?
+
+    public init(id: String, username: String? = nil, displayName: String? = nil, avatarId: Int? = nil) {
+        self.id = id; self.username = username; self.displayName = displayName; self.avatarId = avatarId
+    }
+
+    /// Display name, then username, then "Someone".
+    public var name: String {
+        if let displayName, !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return displayName }
+        if let username, !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return username }
+        return "Someone"
+    }
+}
+
+public struct ReactorGroup: Codable, Equatable, Sendable {
+    public let emoji: String
+    /// In reaction order: the first person to react comes first.
+    public let authors: [ReactorPerson]
+
+    public init(emoji: String, authors: [ReactorPerson]) { self.emoji = emoji; self.authors = authors }
+}
+
+/// `GET /api/chat/channels/{channel}/messages/{message}/reactions`.
+public struct ReactorList: Codable, Equatable, Sendable {
+    public let messageId: String
+    public let reactionSeq: String
+    public let reactions: [ReactorGroup]
+
+    public init(messageId: String, reactionSeq: String, reactions: [ReactorGroup]) {
+        self.messageId = messageId; self.reactionSeq = reactionSeq; self.reactions = reactions
+    }
+
+    func isValid(messageID: String) -> Bool {
+        messageId == messageID && (try? Sequence.compare(reactionSeq, "0")) != nil
+            && Set(reactions.map(\.emoji)).count == reactions.count
+            && reactions.allSatisfy { group in
+                !group.emoji.isEmpty && Set(group.authors.map(\.id)).count == group.authors.count
+                    && group.authors.allSatisfy { !$0.id.isEmpty }
+            }
+    }
+
+    /// The people behind `reaction` as the snapshot shows it now, in this
+    /// list's reaction order. The list only supplies names: people who have
+    /// since removed their reaction are left out, and the viewer's own newer
+    /// reaction is added. Returns nil when anyone else is missing, so callers
+    /// show the count-only summary and fetch again.
+    public func people(for reaction: MessageReaction, viewer: ReactorPerson?) -> [ReactorPerson]? {
+        let current = Set(reaction.authorIds)
+        var people = (reactions.first { $0.emoji == reaction.emoji }?.authors ?? []).filter { current.contains($0.id) }
+        let named = Set(people.map(\.id))
+        for id in reaction.authorIds where !named.contains(id) {
+            guard let viewer, id == viewer.id else { return nil }
+            people.append(reactions.flatMap(\.authors).first(where: { $0.id == id }) ?? viewer)
+        }
+        return people
+    }
+}
+
+/// Who reacted, in the wording every Caper client uses.
+public enum ReactionSummary {
+    /// "You, Alice A, Bob B and 2 others reacted with :thumbs-up:". The
+    /// viewer moves to the front as "You"; others keep reaction order.
+    public static func text(authors: [ReactorPerson], selfID: String?, emojiName: String?, emoji: String) -> String {
+        guard !authors.isEmpty else { return fallback(authorIDs: [], selfID: selfID, emojiName: emojiName, emoji: emoji) }
+        var names = authors.map(\.name)
+        if let selfID, let index = authors.firstIndex(where: { $0.id == selfID }) {
+            names.remove(at: index)
+            names.insert("You", at: 0)
+        }
+        return list(names) + reacted(emojiName: emojiName, emoji: emoji)
+    }
+
+    /// Before names load, or when loading fails: only the snapshot's count.
+    public static func fallback(authorIDs: [String], selfID: String?, emojiName: String?, emoji: String) -> String {
+        let count = authorIDs.count
+        let subject: String
+        if let selfID, authorIDs == [selfID] { subject = "You" }
+        else { subject = "\(count) \(count == 1 ? "person" : "people")" }
+        return subject + reacted(emojiName: emojiName, emoji: emoji)
+    }
+
+    /// ":thumbs-up:" for a catalog emoji, otherwise the emoji itself.
+    public static func emojiLabel(emojiName: String?, emoji: String) -> String {
+        guard let emojiName, !emojiName.isEmpty else { return emoji }
+        return ":\(emojiName):"
+    }
+
+    static func list(_ names: [String]) -> String {
+        switch names.count {
+        case 0: return ""
+        case 1: return names[0]
+        case 2: return "\(names[0]) and \(names[1])"
+        case 3: return "\(names[0]), \(names[1]) and \(names[2])"
+        default:
+            let others = names.count - 3
+            return "\(names[0]), \(names[1]), \(names[2]) and \(others) \(others == 1 ? "other" : "others")"
+        }
+    }
+
+    private static func reacted(emojiName: String?, emoji: String) -> String {
+        " reacted with \(emojiLabel(emojiName: emojiName, emoji: emoji))"
+    }
+}
+
 public struct MessageReactionsEvent: Codable, Equatable, Sendable {
     public let type: String
     public let schemaVersion: Int

@@ -956,6 +956,14 @@ struct UserFacingError: LocalizedError, Equatable {
     var errorDescription: String? { message }
 }
 
+/// Who reacted with one emoji: names once loaded, otherwise the chip's
+/// count-only summary (with Retry in the sheet after a failure).
+public enum ReactorsState: Equatable, Sendable {
+    case loading
+    case loaded([ReactorPerson])
+    case failed
+}
+
 @MainActor @Observable
 public final class ChatModel {
     public var messages: [ChatMessage] = []
@@ -997,6 +1005,12 @@ public final class ChatModel {
     private var reactionWorkers: Set<String> = []
     private var nextReactionIntent = 0
     private var failedReactions: [String: (emoji: String, active: Bool)] = [:]
+    /// Who reacted, per message: the last list with the reaction sequence it
+    /// was requested at, the request in flight, and failed loads.
+    private var reactorCache: [String: (seq: String, list: ReactorList)] = [:]
+    private var reactorRequests: [String: (seq: String, token: Int)] = [:]
+    private var reactorFailures: Set<String> = []
+    private var nextReactorRequest = 0
     private var typers: [String: (author: ChatAuthor, typing: Bool, revision: String, expires: Date)] = [:]
     private var typingActive = false
     private var typingSent = false
@@ -1316,6 +1330,98 @@ public final class ChatModel {
         await setReaction(messageID: messageID, emoji: failed.emoji, active: failed.active)
     }
 
+    /// What a chip's tooltip or the who-reacted sheet can show for `emoji`
+    /// on `message` as currently displayed (including pending own changes).
+    public func reactorsState(for message: ChatMessage, emoji: String, viewerID: String?) -> ReactorsState {
+        let cached = reactorCache[message.id]
+        if let list = cached?.list {
+            guard let reaction = message.reactions?.first(where: { $0.emoji == emoji }) else { return .loaded([]) }
+            if let people = list.people(for: reaction, viewer: reactorViewer(viewerID)) { return .loaded(people) }
+        }
+        if reactorRequests[message.id] != nil { return .loading }
+        if reactorFailures.contains(message.id) { return .failed }
+        // Loaded at this revision yet someone is still unnamed: offer Retry
+        // instead of waiting. A stale list is about to be refetched.
+        if let cached, Self.reactorListIsCurrent(cached, for: message) { return .failed }
+        return .loading
+    }
+
+    private static func reactorListIsCurrent(_ cached: (seq: String, list: ReactorList), for message: ChatMessage) -> Bool {
+        let seq = message.reactionSeq ?? "0"
+        return cached.seq == seq || cached.list.reactionSeq == seq
+    }
+
+    /// Loads who reacted unless the cached list was requested at the message's
+    /// current reaction sequence and still names everyone on it. Uses account
+    /// authorization only, so read-only previews work too.
+    @discardableResult
+    public func requestReactors(messageID: String, force: Bool = false) -> Task<Void, Never>? {
+        guard let channelID, let message = messages.first(where: { $0.id == messageID }) else { return nil }
+        let seq = message.reactionSeq ?? "0"
+        if !force, let cached = reactorCache[messageID], Self.reactorListIsCurrent(cached, for: message),
+           (message.reactions ?? []).allSatisfy({ cached.list.people(for: $0, viewer: reactorViewer(session?.author.id)) != nil }) {
+            return nil
+        }
+        if reactorRequests[messageID]?.seq == seq { return nil }
+        nextReactorRequest += 1
+        let token = nextReactorRequest
+        reactorRequests[messageID] = (seq, token)
+        reactorFailures.remove(messageID)
+        let requestGeneration = generation
+        let api = self.api
+        // Parity fixture chips carry local-only authors the fixture server
+        // cannot name, so the fixture answers locally without a request.
+        let fixture = CaperRuntime.isChatPreview("reaction-chips") ? fixtureReactors(for: message) : nil
+        return Task { [weak self] in
+            let result: Result<ReactorList, Error>
+            if let fixture { result = .success(fixture) }
+            else {
+                do { result = .success(try await api.reactors(channelID: channelID, messageID: messageID)) }
+                catch { result = .failure(error) }
+            }
+            self?.finishReactors(messageID: messageID, channelID: channelID, seq: seq, token: token,
+                                 generation: requestGeneration, result: result)
+        }
+    }
+
+    private func finishReactors(messageID: String, channelID: String, seq: String, token: Int,
+                                generation requestGeneration: Int, result: Result<ReactorList, Error>) {
+        guard reactorRequests[messageID]?.token == token else { return }
+        reactorRequests[messageID] = nil
+        guard generation == requestGeneration, self.channelID == channelID else { return }
+        switch result {
+        case .success(let list):
+            // A slower response for an older revision must not replace a newer list.
+            if let cached = reactorCache[messageID]?.list,
+               (try? Sequence.compare(cached.reactionSeq, list.reactionSeq)) == .orderedDescending { return }
+            reactorCache[messageID] = (seq, list)
+        case .failure:
+            reactorFailures.insert(messageID)
+        }
+    }
+
+    /// The viewer, named from the chat session when it is theirs, so an own
+    /// reaction not yet in the fetched list still reads as "You".
+    private func reactorViewer(_ id: String?) -> ReactorPerson? {
+        guard let id else { return nil }
+        guard let author = session?.author, author.id == id else { return ReactorPerson(id: id) }
+        return ReactorPerson(id: id, displayName: author.name, avatarId: author.avatarId)
+    }
+
+    private func fixtureReactors(for message: ChatMessage) -> ReactorList {
+        let own = session?.author
+        let groups: [ReactorGroup] = (message.reactions ?? []).map { reaction -> ReactorGroup in
+            ReactorGroup(emoji: reaction.emoji, authors: reaction.authorIds.map { id -> ReactorPerson in
+                if let own, id == own.id { return ReactorPerson(id: id, displayName: own.name, avatarId: own.avatarId) }
+                if id == "fixture-other" {
+                    return ReactorPerson(id: id, username: "fixture_other", displayName: "TEST FIXTURE Other", avatarId: 31)
+                }
+                return ReactorPerson(id: id)
+            })
+        }
+        return ReactorList(messageId: message.id, reactionSeq: message.reactionSeq ?? "0", reactions: groups)
+    }
+
     @discardableResult public func discardRejected(edit: Bool = false) -> Bool {
         guard !sending, delivery.rejected, !edit || draft.isEmpty else { return false }
         guard let text = delivery.discardRejected() else { return false }
@@ -1435,6 +1541,7 @@ public final class ChatModel {
         typers = [:]; typingNames = []; typingActive = false; typingSent = false
         delivery.reset(preservingPending: preservingPending)
         reactionSnapshots.reset(); pendingReactions = [:]; reactionWorkers = []; reactionErrors = [:]; failedReactions = [:]
+        reactorCache = [:]; reactorRequests = [:]; reactorFailures = []
         isPreview = false
         session = nil; channelID = nil; spaceID = nil; messages = []; draft = ""; hasMore = false
         channelName = "general"; spaceName = "Caper"; error = nil
