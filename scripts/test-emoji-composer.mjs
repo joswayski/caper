@@ -31,7 +31,7 @@ try {
   assert.match(evaluate('return document.querySelector(".chat-messages").textContent;'), /TEST FIXTURE/);
   browser('set', 'viewport', '1280', '800', '2');
   // Hold the catalog request to exercise loading without slowing other APIs.
-  evaluate('const fetch=window.fetch.bind(window); window.fetch=(input, options) => String(input).endsWith("/autocomplete.json") ? new Promise(resolve => { window.releaseEmojiCatalog=() => fetch(input, options).then(resolve); }) : fetch(input, options);');
+  evaluate('const fetch=window.fetch.bind(window); window.fetch=(input, options) => String(input).endsWith("/autocomplete-v2.json") ? new Promise(resolve => { window.releaseEmojiCatalog=() => fetch(input, options).then(resolve); }) : fetch(input, options);');
   const beforeLoading = messages();
   browser('fill', '#chat-message', ':tom');
   wait('document.querySelector(".chat-emoji-suggestions")?.textContent.includes("Loading emoji")');
@@ -73,6 +73,22 @@ try {
     assert.equal(evaluate('return document.querySelector("#chat-message").selectionStart;'), '👩‍💻 hi 🚀'.length);
     assert.equal(messages(), before);
 
+    for (const [query, id, emoji, name] of [
+      ['israel', '1f1ee-1f1f1', '🇮🇱', 'israel'],
+      ['united_states', '1f1fa-1f1f8', '🇺🇸', 'united-states'],
+      ['cote-divoire', '1f1e8-1f1ee', '🇨🇮', 'cote-divoire'],
+    ]) {
+      browser('fill', '#chat-message', `:${query}`);
+      wait(`!!document.querySelector("#chat-emoji-${id}")`);
+      assert.equal(evaluate(`return document.querySelector("#chat-emoji-${id} span").textContent;`), `:${name}:`);
+      assert.equal(evaluate(`return document.querySelector("#chat-emoji-${id}").getAttribute("aria-label");`), `Insert ${name} emoji`);
+      wait('[...document.querySelectorAll(".chat-emoji-suggestions img")].every(image => image.complete && image.naturalWidth > 0)');
+      if (artifacts && query === 'israel') browser('screenshot', `${artifacts}/emoji-flag-${layout}.png`);
+      browser('press', 'Enter');
+      assert.equal(value(), emoji, 'Country name inserts the original Unicode flag');
+      assert.equal(messages(), before, 'Selecting a flag must not send');
+    }
+
     browser('fill', '#chat-message', ':face_with_open_eyes');
     wait('!!document.querySelector("#chat-emoji-1fae2")');
     assert.match(evaluate('return document.querySelector("#chat-emoji-1fae2").getAttribute("aria-label");'), /face-with-open-eyes-and-hand-over-mouth/);
@@ -111,7 +127,7 @@ try {
     assert.equal(evaluate('return [...document.querySelectorAll(".chat-message p")].at(-1).textContent;'), '🍅');
     console.log(`PASS: ${layout} colon/search, arrows/Tab, pointer/caret/Unicode, Escape, URL/time boundaries, insertion then send, artwork and viewport bounds`);
   }
-  browser('network', 'route', '**/emoji/twemoji-15/autocomplete.json', '--abort');
+  browser('network', 'route', '**/emoji/twemoji-15/autocomplete-v2.json', '--abort');
   browser('reload');
   wait('!!document.querySelector("#chat-message:not(:disabled)")');
   browser('fill', '#chat-message', ':tom');

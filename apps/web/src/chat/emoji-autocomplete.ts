@@ -39,7 +39,7 @@ export function insertEmoji(text: string, token: EmojiToken, emoji: string) {
 
 let catalog: Promise<EmojiChoice[]> | undefined;
 export function loadEmojiChoices() {
-  return catalog ??= fetch("/emoji/twemoji-15/autocomplete.json").then(async (response) => {
+  return catalog ??= fetch("/emoji/twemoji-15/autocomplete-v2.json").then(async (response) => {
     if (!response.ok) throw new Error("Emoji suggestions unavailable.");
     return await response.json() as EmojiChoice[];
   }).catch((error) => { catalog = undefined; throw error; });

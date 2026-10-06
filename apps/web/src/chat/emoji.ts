@@ -13,8 +13,14 @@ export function emojiCode(emoji: string) {
 // The picker displays the last alias. Prefer dashes, but accept all three
 // separator spellings in search across web and the generated native catalog.
 export function emojiNames(names: string[]) {
-  const preferred = names[names.length - 1].replace(/[\s_]+/g, "-");
-  const aliases = names.flatMap((name) => {
+  const label = names[names.length - 1];
+  // CLDR's "flag: Country" is a display label, not a shortcode. Use the
+  // country alone, normalized for the composer's ASCII shortcode input.
+  const preferred = (label.startsWith("flag: ")
+    ? label.slice(6).normalize("NFD").replace(/\p{M}/gu, "").toLowerCase()
+      .replaceAll("&", "and").replace(/[.'’()]/g, "")
+    : label).replace(/[\s_]+/g, "-");
+  const aliases = [...names, preferred].flatMap((name) => {
     const dashed = name.replace(/[\s_]+/g, "-");
     return [name, dashed.replaceAll("-", " "), dashed.replaceAll("-", "_"), dashed];
   });
