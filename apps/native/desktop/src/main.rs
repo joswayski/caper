@@ -6207,11 +6207,12 @@ impl CaperApp {
                 Color32::TRANSPARENT
             })
             .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
                 if let Some(pin) = pinned {
                     egui::Frame::new()
                         .inner_margin(egui::Margin {
                             left: 62,
-                            right: 18,
+                            right: 74,
                             top: 6,
                             bottom: 0,
                         })
@@ -9227,6 +9228,9 @@ mod tests {
                 .iter()
                 .all(|section| section.format.color == egui::Color32::from_rgb(228, 199, 106))
         );
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Rect(rect) if rect.fill == egui::Color32::from_rgba_unmultiplied(228, 199, 106, 15) && rect.rect.width() > 700.0
+        )), "a short pinned message must still highlight the full conversation row");
         let nodes = &output
             .platform_output
             .accesskit_update

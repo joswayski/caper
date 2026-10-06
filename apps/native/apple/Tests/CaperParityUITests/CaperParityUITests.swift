@@ -360,8 +360,6 @@ final class CaperParityUITests: XCTestCase {
                               timeout: 5, "Missing selected fixture chip")
         let other = try require(reactions.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "❤️ reaction")).firstMatch,
                                 timeout: 5, "Missing unselected fixture chip")
-        let unrelatedAdd = try require(app.buttons["add-reaction-chan00000001m02"], timeout: 5,
-                                       "Missing another message's add-reaction button")
         XCTAssertTrue(own.label.hasSuffix(", selected by you"))
         XCTAssertTrue(other.label.hasSuffix(", not selected by you"))
         try openReactionPicker(for: targetID, in: app)
@@ -369,6 +367,11 @@ final class CaperParityUITests: XCTestCase {
         let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),
                                                object: app.descendants(matching: .any)["reaction-picker"])
         XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
+        let unrelatedRow = try require(app.descendants(matching: .any)["message-row-chan00000001m02"], timeout: 5,
+                                       "Missing unrelated hover target")
+        unrelatedRow.hover()
+        let unrelatedAdd = try require(app.buttons["add-reaction-chan00000001m02"], timeout: 5,
+                                       "Hovering another message did not reveal Add reaction")
 
         // Accessibility focus alone cannot detect the bug: the old modifier
         // painted inherited timeline focus around every otherwise valid button.

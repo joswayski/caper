@@ -32,7 +32,6 @@
 /* Match the account dock's 30px avatar column and 6px label gap. SVG viewBoxes
    keep the smaller action glyphs centered within the same leading column. */
 .direct-section :is(.direct-section-title, .direct-action) > svg { width: 30px; }
-.spaces-room .direct-section > ul { min-height: 0; overflow-y: auto; }
 .direct-section :is(.direct-select, .direct-action) { height: 28px; }
 .direct-section .direct-select { gap: 6px; padding-right: 9px; }
 .direct-select > small { color: var(--text-muted); font-size: .72rem; }

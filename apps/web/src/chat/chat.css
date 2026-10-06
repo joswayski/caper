@@ -83,6 +83,7 @@
 @media (max-width: 760px), (pointer: coarse) {
   .chat-add-reaction { display: none; }
   .chat-message-actions-trigger { width: 44px; height: 44px; }
+  .chat-message:not(.chat-message-pending) > .chat-avatar + div { padding-right: 44px; }
   .chat-message header { padding-right: 0; }
   .chat-message-actions .chat-reaction-picker-heading { min-height: 44px; font-size: .85rem; }
   .chat-message-actions .chat-reaction-picker-heading button { width: 44px; height: 44px; }

@@ -1266,7 +1266,8 @@ for confirmation. Inline “Pinned by …” attribution updates for other reade
 Attribution appears above the author/message in warm gold with a subtle gold wash.
 Desktop message controls appear on hover or keyboard focus: two 14px glyphs in
 24px targets, separated by 2px. Touch clients retain long-press actions and large
-targets. Browse channels lives in the space-name menu, and the DM divider follows
+targets; narrow web reserves text space beside its 44px action target.
+Browse channels lives in the space-name menu, and the DM divider follows
 the channel list; the account/audio dock stays fixed.
 The central channel header has a Pins button with a count; web, Android and Rust
 desktop show pins in the central conversation area. Apple uses a platform sheet.

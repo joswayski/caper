@@ -140,6 +140,7 @@ function openOverview() {
   wait('!!document.querySelector(".delete-confirmation")');
 }
 function geometry(selector) {
+  wait(`!document.querySelector(${JSON.stringify(selector)}).getAnimations({subtree: true}).some(animation => animation.playState === "running" && Number.isFinite(animation.effect.getComputedTiming().iterations))`);
   return evaluate(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; })()`);
 }
 function dismissMemberBackdrop() {
@@ -222,7 +223,7 @@ function testModalGeometry() {
       browser('press', 'Escape');
     }
     browser('click', '.space-menu summary');
-    browser('click', '.space-actions button');
+    browser('find', 'role', 'button', 'click', '--name', 'Space settings', '--exact');
     screenshot(`modal-manage-space-${width}-${height}`);
     stableShell('.space-dialog[open]');
     browser('fill', '#member-username', 'fixture_new');
@@ -419,7 +420,7 @@ try {
   wait('!document.querySelector(".space-dialog[open]")');
   assert.deepEqual(evaluate('spaceControlFixture.deletes'), Array(2).fill('/api/spaces/space1234567/channels/channel12345'));
   browser('click', '.space-menu summary');
-  browser('click', '.space-actions button');
+  browser('find', 'role', 'button', 'click', '--name', 'Space settings', '--exact');
   browser('fill', '.space-field input', '   Renamed studio   ');
   browser('press', 'Enter');
   wait('document.querySelector(".space-field input").value === "Renamed studio"');

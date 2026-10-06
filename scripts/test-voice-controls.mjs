@@ -363,11 +363,11 @@ try {
           wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === ${JSON.stringify(name)} && document.querySelector('.chat-heading h2')?.textContent.includes(${JSON.stringify(name)})`);
         }
       }
-      for (const selector of ['.space-rail button:enabled', '.call-account button:enabled', '.browse-channels']) {
+      for (const selector of ['.space-rail button:enabled', '.call-account button:enabled', '.space-menu summary']) {
         assert.ok(evaluate(`const buttons = [...document.querySelectorAll(${JSON.stringify(selector)})]; return buttons.length > 0 && buttons.every(button => getComputedStyle(button).cursor === 'pointer');`), `${selector}: enabled controls need hand cursors`);
       }
       assert.ok(evaluate(`return [...document.querySelectorAll('.channel-manage')].every(button => getComputedStyle(button).cursor === 'pointer');`), 'Owner channel options need hand cursors');
-      assert.ok(evaluate(`const button = document.querySelector('.browse-channels');
+      assert.ok(evaluate(`const button = document.querySelector('.call-settings-trigger');
         button.disabled = true; const disabled = getComputedStyle(button).cursor; button.disabled = false;
         button.setAttribute('aria-disabled', 'true'); const ariaDisabled = getComputedStyle(button).cursor; button.removeAttribute('aria-disabled');
         return disabled !== 'pointer' && ariaDisabled !== 'pointer';`), 'Disabled controls must not advertise a click');

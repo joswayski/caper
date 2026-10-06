@@ -183,8 +183,13 @@ try {
   const { sessionId } = await cdp('Target.attachToTarget', { targetId: target.targetId, flatten: true });
   await cdp('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 }, sessionId);
   assert.equal(evaluate('pins-check', 'matchMedia("(pointer: coarse)").matches'), true);
+  assert.equal(evaluate('pins-check', `([...document.querySelectorAll('.chat-message:not(.chat-message-pending)')]).every(row => {
+    const button = row.querySelector('.chat-message-actions-trigger'), text = row.querySelector('p');
+    return !button || text.getBoundingClientRect().right <= button.getBoundingClientRect().left;
+  })`), true, 'Large touch targets must not cover message text');
   browser('pins-check', 'scrollintoview', `${row} p`);
   await delay(150);
+  screenshot('pins-check', 'pins-web-narrow-inline');
   const point = evaluate('pins-check', `(() => { const r = document.querySelector('${row} p').getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);
   await cdp('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [point] }, sessionId);
   await delay(650);
@@ -231,7 +236,8 @@ try {
   wait('pins-check', 'document.querySelector("#chat-heading")?.textContent === "# design"');
   assert.equal(evaluate('pins-check', '!!document.querySelector(".chat-pins")'), false, 'Channel changes must leave the previous pin view');
   assert.equal(evaluate('pins-check', 'document.querySelector(".chat-pins-toggle").getAttribute("aria-label")'), 'Pins, 0');
-  console.log('PASS: compact desktop hover/focus controls, gold top attribution, content-following DMs, space-menu Browse, one-action pin/unpin, two-tab fanout, full pin history, reaction-details coexistence, pending/error/retry, touch drawer, narrow/wrapping layout and channel isolation.');
+  console.log('PASS: gold top attribution, content-following DMs, space-menu Browse, one-action pin/unpin, two-tab fanout, full pin history, reaction-details coexistence, pending/error/retry, touch drawer, narrow/wrapping layout and channel isolation.');
+  console.log(process.env.MESSAGE_TEST_CHROME ? 'PASS: compact desktop hover/focus controls, 14px glyphs, 24px targets and 2px spacing.' : 'SKIP: desktop hover/focus assertions (set MESSAGE_TEST_CHROME to a fine-pointer Chromium wrapper).');
 } catch (error) {
   console.error(browser('pins-check', 'snapshot', '-i').snapshot);
   browser('pins-check', 'screenshot', '/tmp/caper-pins-test-failure.png');
