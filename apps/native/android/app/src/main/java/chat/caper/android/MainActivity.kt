@@ -1026,9 +1026,12 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 @Composable private fun MessageTimeline(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, pendingStatus: @Composable () -> Unit = {}) {
     var actionTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var pickerTarget by remember { mutableStateOf<ChatMessage?>(null) }
+    // Message ID and the pressed chip's emoji.
+    var reactorsTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
     LaunchedEffect(state.account?.id, state.selectedSpace?.space?.id, state.selectedChannel?.id, state.selectedDirectId) {
         actionTarget = null
         pickerTarget = null
+        reactorsTarget = null
     }
     // Web's chat phases: loading, failed first load, then the conversation.
     if (state.messagesLoading) return Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -1062,9 +1065,10 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             if (index == 0 || !sameLocalDay(state.messages[index - 1].createdAt, message.createdAt)) {
                 DateDivider(message.createdAt)
             }
-            ReactionMessageRow(message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError) {
-                actionTarget = message
-            }
+            ReactionMessageRow(
+                message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
+                openReactors = { target, emoji -> reactorsTarget = target.id to emoji },
+            ) { actionTarget = message }
         }
         state.pendingMessage?.let { pending -> item("pending:${pending.clientMessageId}") {
             Column {
@@ -1090,6 +1094,13 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             setReaction = viewModel::setReaction,
             openPicker = { actionTarget = null; pickerTarget = presented },
         )
+    }
+    reactorsTarget?.let { (messageId, emoji) ->
+        val presented = state.messages.firstOrNull { it.id == messageId }
+        if (presented == null) LaunchedEffect(messageId) { reactorsTarget = null }
+        else key(messageId) {
+            ReactorsSheet(presented, emoji, state.chatAuthorId ?: state.account?.id, viewModel::reactors) { reactorsTarget = null }
+        }
     }
     pickerTarget?.let { target ->
         val canReact = state.selectedChannel?.joined == true && (state.chatAuthorId ?: state.account?.id) != null
@@ -1120,6 +1131,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     setReaction: (String, String, Boolean) -> Unit,
     retryReaction: (String, String) -> Unit,
     dismissReactionError: (String, String) -> Unit,
+    openReactors: (ChatMessage, String) -> Unit,
     openActions: (ChatMessage) -> Unit,
 ) {
     val own = state.chatAuthorId ?: state.account?.id
@@ -1134,16 +1146,11 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         FlowRow(Modifier.padding(start = 62.dp, end = 18.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             message.reactions.forEach { reaction ->
                 val selected = own != null && own in reaction.authorIds
-                OutlinedButton(
-                    onClick = { setReaction(message.id, reaction.emoji, !selected) }, enabled = canReact,
-                    shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, if (selected) Terracotta else Border),
-                    colors = ButtonDefaults.outlinedButtonColors(containerColor = if (selected) Terracotta.copy(alpha = .18f) else Color.Transparent),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                    modifier = Modifier.heightIn(min = 48.dp).semantics {
-                        this.selected = selected
-                        contentDescription = "${reaction.emoji} reaction, ${reaction.authorIds.size}"
-                    },
-                ) { EmojiImage(reaction.emoji, null, Modifier.size(19.dp)); Spacer(Modifier.width(5.dp)); Text(reaction.authorIds.size.toString()) }
+                ReactionChip(
+                    reaction, selected, canReact,
+                    toggle = { setReaction(message.id, reaction.emoji, !selected) },
+                    showReactors = { openReactors(message, reaction.emoji) },
+                )
             }
         }
         saves.filter { it.error != null }.forEach { save ->
@@ -1290,7 +1297,7 @@ internal fun counterTone(count: Int): Color = when {
     else -> TextMuted
 }
 
-@Composable private fun Avatar(name: String, size: Dp, modifier: Modifier = Modifier, avatarId: Int? = null, speaking: Boolean = false) {
+@Composable internal fun Avatar(name: String, size: Dp, modifier: Modifier = Modifier, avatarId: Int? = null, speaking: Boolean = false) {
     val index = caperAvatarIndex(avatarId)
     Box(
         modifier
