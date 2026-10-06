@@ -38,6 +38,26 @@ test("catalog search matches names, aliases and stable ranked results", () => {
   assert.deepEqual(emojiSuggestions(entries, "rock_et").map((entry) => entry.id), ["exact", "prefix", "keyword", "substring"]);
 });
 
+test("country flags use clean names in suggestions and insert the original Unicode", () => {
+  for (const [query, emoji, name] of [
+    ["ISRAEL", "🇮🇱", "israel"],
+    ["IL", "🇮🇱", "israel"],
+    ["united-states", "🇺🇸", "united-states"],
+    ["united_states", "🇺🇸", "united-states"],
+    ["bosnia-and-herzegovina", "🇧🇦", "bosnia-and-herzegovina"],
+    ["cote-divoire", "🇨🇮", "cote-divoire"],
+    ["turkiye", "🇹🇷", "turkiye"],
+  ]) {
+    const choice = emojiSuggestions(catalog, query).find((entry) => entry.emoji === emoji)!;
+    assert.ok(choice, query);
+    assert.equal(choice.name, name);
+    const text = `flag :${query}`;
+    assert.deepEqual(insertEmoji(text, emojiToken(text, text.length)!, choice.emoji), {
+      value: `flag ${emoji}`, caret: `flag ${emoji}`.length,
+    });
+  }
+});
+
 test("insertion preserves Unicode prefix/suffix and enforces scalar boundary", () => {
   const text = "👩‍💻 hi :roc suffix 🚀";
   const caret = "👩‍💻 hi :roc".length;

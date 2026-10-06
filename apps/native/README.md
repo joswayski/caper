@@ -136,11 +136,23 @@ app from one `main` commit:
 It replaces the `native-latest` pre-release, so these links always point at the
 newest build:
 
-- Mac (Apple Silicon): https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Apple-Silicon.zip
-- Mac (Intel): https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Intel.zip
+- Mac (Apple Silicon): https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Apple-Silicon.dmg
+- Mac (Intel): https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Intel.dmg
 - Android: https://github.com/joswayski/caper/releases/download/native-latest/Caper-Android.apk
 - Windows: https://github.com/joswayski/caper/releases/download/native-latest/Caper-Windows-x64-Setup.exe
 - Linux: https://github.com/joswayski/caper/releases/download/native-latest/Caper-Linux-x64.deb
+
+Mac users open the disk image and drag Caper onto its Applications shortcut,
+then eject the image and open the installed app from Applications. The image and
+app are Developer ID-signed, notarized, and stapled. If `/Applications` is not
+writable, create `~/Applications` in Finder and drag Caper there instead. Signed
+release copies outside these locations or in a non-writable folder show install
+instructions and quit before opening the account UI; development/test apps do not.
+This uses Finder's normal installation/Gatekeeper flow, without stripping
+quarantine or copying apps behind the user's back. Existing Mac ZIP URLs remain
+available for self-updaters and previously shared links; their app must still be
+dragged into a writable Applications folder. The DMG and first-launch alert
+require real macOS visual/installation acceptance; the Linux orb cannot render them.
 
 Windows users open Setup once; it installs immediately and opens Caper, with no
 Welcome/Next/Finish clicks. Later launches use Start or the desktop shortcut.
@@ -174,7 +186,7 @@ TestFlight public link get new builds automatically.
 
 **Desktop self-updates.** Release builds of the Mac, Windows and Linux apps carry
 `caper-updater` (`apps/native/updater`) and the run number as their build number.
-About 20 seconds after launch and every hour they check
+About 20 seconds after launch and every minute they check
 `https://caper.chat/api/updates/native`. The Rust API caches GitHub's
 `native-latest/latest.json` and its signature together for 60 seconds per process;
 simultaneous refresh requests share one upstream fetch. The updater falls back
@@ -183,11 +195,19 @@ Downloads still come from GitHub. That manifest is signed with the Ed25519 key i
 the `caper_update` section of `production/signing/release`, and each app only trusts the public key compiled
 into it. When a newer build exists, the Mac app shows an alert (and has
 **Caper › Check for Updates…**), and the Windows and Linux app shows a banner.
+Windows/Linux also have **User Settings › Settings… › Updates › Check for updates**,
+with checking, up-to-date, and retryable failure feedback. Manual checks restore
+an offer dismissed with **Later**; automatic checks keep that version dismissed
+but offer a newer version. Checks do not run concurrently. A running, online app
+normally detects a published release within about one to two minutes, allowing
+for the server cache; manual checks also use that cache. Build/signing time and
+download/install time are separate. Existing installs retain their old schedule
+until they update once. Development builds and static fixtures do not check.
 **Restart to update** hands off to the updater, which verifies the download's
 SHA-256 (and, on Mac, its Developer ID team), waits for Caper to quit, swaps in
 the new copy and reopens it. A copy it cannot replace, such as the Linux `.deb`
-or a Mac app outside a writable folder, gets a **Download** link instead.
-That link downloads the matching Mac architecture's ZIP, Windows Setup, or Linux
+or a Mac app whose folder permissions changed after launch, gets a **Download** link instead.
+That link downloads the matching Mac architecture's DMG, Windows Setup, or Linux
 `.deb` directly; it does not open the GitHub release page. These downloads still
 need manual installation.
 Releases made before the key is stored skip `latest.json`, and apps from before

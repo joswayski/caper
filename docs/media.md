@@ -3299,7 +3299,7 @@ edge or desktop client caches responses. Restarting a process empties its cache.
 After a failed refresh, the API returns `502` with `no-store` and waits 60 seconds
 before retrying. It does not serve expired metadata indefinitely.
 
-Desktop release builds check about 20 seconds after launch and every hour. They
+Desktop release builds check about 20 seconds after launch and every minute. They
 verify the envelope's signature against their compiled-in public key before
 using any metadata, and fall back to GitHub's manifest/signature on site errors,
 malformed data, or signature mismatch (including a rolling-release upload race).
@@ -3307,11 +3307,24 @@ Archive downloads and checksum verification remain unchanged. Android and iOS
 distribution is unchanged. Existing desktop builds keep their old check schedule
 until they install a new native release.
 
+Manual checks use **Caper › Check for Updates…** on Mac and
+**User Settings › Settings… › Updates › Check for updates** on Windows/Linux.
+They share the automatic-check worker, restore a dismissed update offer, and
+report up-to-date/failure results. The server's 60-second cache still applies;
+healthy running clients normally detect a new manifest within about one to two
+minutes of publication, not of starting the release workflow. Sleep, offline
+clients, upstream outages, and download/install time can delay delivery.
+
 Deploy the API before publishing the native release to use the cache immediately;
 either component can roll back independently because GitHub remains a fallback.
 Verify the deployed endpoint returns `200`, the documented cache headers, and a
 verifiable envelope; then test **Check for Updates…** on a packaged Mac build and
-the automatic check on Windows/Linux. Merging does not deploy or release them.
+the manual and automatic checks on Windows/Linux. The one-minute polling/manual
+action change is client-only: if the cache is already deployed, no API, web,
+gateway, configuration, infrastructure, or database rollout is needed. Publish
+the merged commit with the existing **Deploy Caper apps** action (or
+`gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha=MERGED_COMMIT_SHA`),
+then update installed clients once. Merging does not publish a native release.
 
 ### Native distribution and acceptance
 

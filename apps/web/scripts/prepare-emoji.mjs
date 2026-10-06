@@ -12,7 +12,8 @@ const target = new URL("../public/emoji/twemoji-15/", import.meta.url);
 await mkdir(target, { recursive: true });
 await cp(source, target, { recursive: true, filter: (path) => path === source || path.endsWith(".svg") || path === join(source, "license") });
 // All composers use the native catalog's names/order, without its sprite metadata.
-await writeFile(new URL("autocomplete.json", target), JSON.stringify(catalog.filter((entry) => entry.selectable)
+// Version metadata when names change: this directory is cached immutably.
+await writeFile(new URL("autocomplete-v2.json", target), JSON.stringify(catalog.filter((entry) => entry.selectable)
   .map(({ id, emoji, name, keywords }) => ({ id, emoji, name, keywords }))));
 // Some artwork files use an unqualified sequence while the picker supplies
 // presentation selectors. Alias those filenames and verify every offered asset.

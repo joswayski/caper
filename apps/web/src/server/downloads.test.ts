@@ -30,8 +30,8 @@ test("mobile, tablets and ChromeOS never receive a desktop installer", () => {
 
 test("all desktop links use the rolling native release, never legacy previews", () => {
   const base = "https://github.com/joswayski/caper/releases/download/native-latest/";
-  assert.equal(downloads.macos.url, `${base}Caper-macOS-Apple-Silicon.zip`);
-  assert.equal(intelMacDownload, `${base}Caper-macOS-Intel.zip`);
+  assert.equal(downloads.macos.url, `${base}Caper-macOS-Apple-Silicon.dmg`);
+  assert.equal(intelMacDownload, `${base}Caper-macOS-Intel.dmg`);
   assert.equal(downloads.windows.url, `${base}Caper-Windows-x64-Setup.exe`);
   assert.equal(downloads["linux-deb"].url, `${base}Caper-Linux-x64.deb`);
   assert.equal(downloads.linux.url, "https://github.com/joswayski/caper/releases/tag/native-latest");

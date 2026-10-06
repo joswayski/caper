@@ -1,8 +1,8 @@
 name: Native release
 
 # Signed builds friends can install from stable links:
-#   https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Apple-Silicon.zip
-#   https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Intel.zip
+#   https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Apple-Silicon.dmg
+#   https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Intel.dmg
 #   https://github.com/joswayski/caper/releases/download/native-latest/Caper-Android.apk
 #   https://github.com/joswayski/caper/releases/download/native-latest/Caper-Windows-x64-Setup.exe
 #   https://github.com/joswayski/caper/releases/download/native-latest/Caper-Linux-x64.deb
@@ -123,6 +123,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Install the headless disk-image builder
+        run: python3 -m pip install dmgbuild==1.6.7
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -182,7 +184,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: release-macos-${{ matrix.label }}
-          path: apps/native/apple/dist/Caper-macOS-${{ matrix.label }}.zip
+          path: |
+            apps/native/apple/dist/Caper-macOS-${{ matrix.label }}.dmg
+            apps/native/apple/dist/Caper-macOS-${{ matrix.label }}.zip
           if-no-files-found: error
           retention-days: 7
       - name: Remove signing material
@@ -469,14 +473,15 @@ jobs:
         run: |
           set -euo pipefail
           cd release
-          assets=(Caper-macOS-Apple-Silicon.zip Caper-macOS-Intel.zip Caper-Android.apk
+          assets=(Caper-macOS-Apple-Silicon.dmg Caper-macOS-Intel.dmg
+            Caper-macOS-Apple-Silicon.zip Caper-macOS-Intel.zip Caper-Android.apk
             Caper-Windows-x64-Setup.exe Caper-Windows-x64.zip Caper-Linux-x64.deb Caper-Linux-x64.tar.gz)
           for asset in "${assets[@]}"; do test -s "$asset"; done
           sha256sum "${assets[@]}" >SHA256SUMS
           cat >notes.md <<EOF
           Test builds of the Caper apps, from \`${RELEASE_SHA::7}\`. They use your caper.chat account.
 
-          **Mac:** download [Apple Silicon](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-macOS-Apple-Silicon.zip) (M1 or newer) or [Intel](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-macOS-Intel.zip), unzip, and drag Caper into Applications. It is signed and notarized by Apple.
+          **Mac:** open the [Apple Silicon](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-macOS-Apple-Silicon.dmg) (M1 or newer) or [Intel](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-macOS-Intel.dmg) disk image, drag Caper onto Applications, then eject the image and open Caper from Applications. The app and disk image are signed and notarized by Apple. If you cannot write to /Applications, drag Caper to ~/Applications instead. Running a release directly from the download or image shows installation instructions and quits. ZIPs are retained for existing self-updaters.
 
           **Android:** open [Caper-Android.apk](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-Android.apk) on the phone and allow installing from your browser when asked. Later versions install over it.
 
