@@ -24,6 +24,8 @@ use std::{sync::Arc, time::Duration};
 use tokio::sync::Notify;
 use uuid::Uuid;
 
+mod forwarding;
+
 pub(crate) const TOPIC: &str = "caper:chat:v1:events";
 // Separate from durable events: older gateways require a sequence on that topic.
 pub(crate) const TYPING_TOPIC: &str = "caper:chat:v1:typing";
@@ -104,6 +106,7 @@ pub(crate) fn routes() -> Router<AppState> {
             get(thread_history),
         )
         .route("/api/chat/channels/{channel}/typing", post(typing))
+        .merge(forwarding::routes())
 }
 
 fn enabled(state: &AppState) -> Result<&Chat, ApiError> {
@@ -231,23 +234,27 @@ async fn conversation_page(
     let more = rows.len() > PAGE as usize;
     rows.truncate(PAGE as usize);
     rows.reverse();
-    let rows: Vec<Value> = rows
+    let mut rows: Vec<Value> = rows
         .into_iter()
         .map(|(payload, avatar)| enrich_author(payload, avatar))
         .collect();
+    forwarding::hydrate(&mut tx, &mut rows).await?;
     if let Some((_, root, avatar)) = thread_root {
+        let mut roots = vec![enrich_author(root, avatar)];
+        forwarding::hydrate(&mut tx, &mut roots).await?;
         return Ok(
-            json!({"root":enrich_author(root, avatar),"messages":rows,"cursor":head.to_string(),"hasMore":more}),
+            json!({"root":roots[0],"messages":rows,"cursor":head.to_string(),"hasMore":more}),
         );
     }
     // All pins are returned independently of the history page. The shared
     // channel lock also makes their revisions consistent with this cursor.
     let pins: Vec<(Value, Option<i16>)> = sqlx::query_as("SELECT m.payload,u.avatar_id FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.channel_id=$1 AND jsonb_typeof(m.payload->'pin')='object' ORDER BY (m.payload->>'pinSeq')::bigint DESC LIMIT 100")
         .bind(channel_id).fetch_all(&mut *tx).await.map_err(database_error)?;
-    let pins: Vec<Value> = pins
+    let mut pins: Vec<Value> = pins
         .into_iter()
         .map(|(payload, avatar)| enrich_author(payload, avatar))
         .collect();
+    forwarding::hydrate(&mut tx, &mut pins).await?;
     let mut channel_identity = json!({"id":channel,"name":channel_name});
     if space_id.is_none() {
         channel_identity["direct"] = json!(true);
@@ -1013,6 +1020,9 @@ async fn publish_pending(chat: &Chat) -> Result<bool, ()> {
     if rows.is_empty() {
         return Ok(false);
     }
+    forwarding::project_events(&mut tx, &rows)
+        .await
+        .map_err(|_| ())?;
     let mut connection = tokio::time::timeout(
         Duration::from_secs(2),
         chat.broker.get_multiplexed_async_connection(),

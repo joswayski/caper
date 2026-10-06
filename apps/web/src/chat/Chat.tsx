@@ -7,6 +7,7 @@ import MessageActions, { type MessageActionTarget } from "./MessageActions.tsx";
 import ReactorsPanel, { type ReactorsTarget } from "./ReactorsPanel.tsx";
 import ThreadPanel from "./ThreadPanel.tsx";
 import { MessageSquare } from "lucide-react";
+import { ForwardCard, ForwardConversation, ForwardPicker, type ForwardTarget } from "./Forwarding.tsx";
 import { dateDivider } from "./dates.ts";
 import { isChannelMessage, type ChatAuthor, type GeneralChatHistory } from "./types.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
@@ -60,6 +61,8 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   const clientRef = useRef<ChatClient | undefined>(undefined);
   const [actionTarget, setActionTarget] = useState<MessageActionTarget>();
   const [reactorsTarget, setReactorsTarget] = useState<ReactorsTarget>();
+  const [forwardTarget, setForwardTarget] = useState<ForwardTarget>();
+  const [conversationTarget, setConversationTarget] = useState<ForwardTarget>();
   const [actionStatus, setActionStatus] = useState("");
   const [reactionSaves, setReactionSaves] = useState<Record<string, ReactionSave | undefined>>({});
   const [showPins, setShowPins] = useState(false);
@@ -71,6 +74,8 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   useEffect(() => {
     setActionTarget(undefined);
     setReactorsTarget(undefined);
+    setForwardTarget(undefined);
+    setConversationTarget(undefined);
     setActionStatus("");
     setReactionSaves({});
     setShowPins(false);
@@ -99,7 +104,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       window.removeEventListener("scroll", cancelPress, true);
     };
   }, [channelId]);
-  useEffect(() => { setActionTarget(undefined); setReactorsTarget(undefined); }, [state.author?.id]);
+  useEffect(() => { setActionTarget(undefined); setReactorsTarget(undefined); setForwardTarget(undefined); setConversationTarget(undefined); }, [state.author?.id]);
   const isTouchLayout = () => window.matchMedia("(max-width: 760px), (pointer: coarse)").matches;
   const openActions = (messageId: string, anchor: HTMLElement) => setActionTarget({ messageId, anchor, mode: "actions", drawer: isTouchLayout() });
   const openThread = (rootId: string) => {
@@ -129,6 +134,10 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   };
   const actionMessage = state.messages.find((message) => message.id === actionTarget?.messageId);
   const reactorsMessage = state.messages.find((message) => message.id === reactorsTarget?.messageId);
+  const forwardMessage = state.messages.find((message) => message.id === forwardTarget?.messageId);
+  const conversationMessage = [...state.messages, ...state.pinnedMessages].find((message) => message.id === conversationTarget?.messageId);
+  const closeForward = useCallback(() => setForwardTarget(undefined), []);
+  const closeConversation = useCallback(() => setConversationTarget(undefined), []);
   const pin = async (messageId: string, active: boolean) => {
     const client = clientRef.current;
     if (!client || readOnly) return;
@@ -283,7 +292,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   useEffect(() => { onOnlineChange?.(state.online); }, [state.online, onOnlineChange]);
 
   useEffect(() => {
-    if (identityReady && !readOnly) clientRef.current?.identify(name, signedIn);
+    if (identityReady && (!readOnly || signedIn)) clientRef.current?.identify(name, signedIn);
   }, [identityReady, name, signedIn, readOnly]);
 
   useEffect(() => {
@@ -371,8 +380,9 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       <div>
         <header><strong>{author?.name ?? name}</strong>{author?.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt, timeFormatter) : ""}</time></header>
         {!inThread && message.threadRootId && <button type="button" className="chat-thread-context" onClick={() => openThread(message.threadRootId!)}>Replied to a thread · View thread</button>}
-        <p>{"content" in message ? message.content.text : message.text}</p>
+        {(!("content" in message) || message.content.text) && <p>{"content" in message ? message.content.text : message.text}</p>}
         {"content" in message && <>
+          <ForwardCard message={message} onOpen={(anchor) => setConversationTarget({ messageId: message.id, anchor })} />
           <button type="button" className="chat-message-actions-trigger" aria-label={`Message actions for ${message.author.name}`} aria-haspopup="dialog" aria-expanded={actionTarget?.messageId === message.id && actionTarget.mode === "actions"} onClick={(event) => openActions(message.id, event.currentTarget)}><MoreHorizontal size={14} aria-hidden="true" /></button>
           {!inThread && <button type="button" className="chat-reply-thread" aria-label={`Reply in thread to ${message.author.name}`} title="Reply in thread" onClick={() => openThread(message.threadRootId ?? message.id)}><MessageSquare size={14} aria-hidden="true" /></button>}
           <MessageReactions message={message} channelId={state.channelId} authorId={state.author?.id} readOnly={readOnly} save={reactionSaves[message.id]} onReact={react}
@@ -418,6 +428,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
           <div className="chat-avatar chat-pinned-avatar"><Avatar avatarId={message.author.avatarId} name={message.author.name} /></div>
           <header><strong>{message.author.name}</strong><time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt, pinTimeFormatter) : ""}</time></header>
           <p>{message.content.text}</p>
+          <ForwardCard message={message} onOpen={(anchor) => setConversationTarget({ messageId: message.id, anchor })} />
           {!readOnly && !!state.author && <button type="button" disabled={pinning.has(message.id)} onClick={() => void pin(message.id, false)}>{pinning.has(message.id) ? "Unpinning…" : "Unpin"}</button>}
         </article>)}
       </div>}
@@ -465,11 +476,19 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
 
     {actionTarget && actionMessage && <MessageActions key={actionMessage.id} message={actionMessage} target={actionTarget} authorId={state.author?.id}
       canReact={!readOnly && !!state.author} canPin={!readOnly && !!state.author} pinning={pinning.has(actionMessage.id)} onReact={react} onPin={pin}
+      canForward={signedIn && !!state.author && !state.author.isGuest && actionMessage.forward?.message !== null}
+      onForward={() => { setForwardTarget({ messageId: actionMessage.id, anchor: actionTarget.anchor }); setActionTarget(undefined); }}
       onClose={() => setActionTarget(undefined)} onCopied={setActionStatus}
       onReply={() => openThread(actionMessage.threadRootId ?? actionMessage.id)}
       onViewReactions={(emoji) => showReactors(actionMessage.id, emoji, actionTarget.anchor)} />}
     {reactorsTarget && reactorsMessage && state.channelId && <ReactorsPanel key={reactorsMessage.id} channelId={state.channelId}
       message={reactorsMessage} target={reactorsTarget} onClose={closeReactors} />}
+    {forwardTarget && forwardMessage && <ForwardPicker key={forwardMessage.id} message={forwardMessage} target={forwardTarget} onClose={closeForward}
+      onForward={(destination, messageId, key, text) => {
+        if (!clientRef.current) return Promise.reject(new Error("Chat session is unavailable."));
+        return clientRef.current.forward(destination, messageId, key, text);
+      }} onSent={(destination) => { setActionStatus(`Forwarded to ${destination.direct ? "" : "#"}${destination.name}.`); setForwardTarget(undefined); }} />}
+    {conversationTarget && conversationMessage && <ForwardConversation key={conversationMessage.id} message={conversationMessage} target={conversationTarget} onClose={closeConversation} />}
 
     <p className="chat-typing" role="status" aria-atomic="true">
       <span className="chat-typing-content" data-visible={!!typingLabel} aria-hidden={!typingLabel}>

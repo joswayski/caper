@@ -49,6 +49,8 @@ function initialState() {
     spaces: [{ space, channels, members: clone(members) }], messages, directs: [],
     reactionEvents: new Map(),
     pinEvents: new Map(),
+    forwardEvents: new Map(),
+    forwardSources: new Map(),
     invitations: new Map(),
     channelInvitations: new Map(),
     joins: new Map(channels.map(channel => [channel.id, channel.private ? [ids.owner, ids.member] : members.map(member => member.id)])),
@@ -76,7 +78,8 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
   const sockets = new Set();
   const identity = (request) => request.headers.authorization === 'Bearer fixture-owner-token'
     || /(?:^|;\s*)caper_fixture=owner(?:;|$)/.test(request.headers.cookie ?? '') ? state.account
-    : request.headers.authorization === 'Bearer fixture-member-token' ? members[1] : undefined;
+    : request.headers.authorization === 'Bearer fixture-member-token' ? members[1]
+    : request.headers.authorization === 'Bearer fixture-other-token' || /(?:^|;\s*)caper_fixture=other(?:;|$)/.test(request.headers.cookie ?? '') ? members[2] : undefined;
   const channelFor = (id) => id === ids.demo ? demoChannel
     : state.directs.some((conversation) => conversation.id === id) ? { id, spaceId: '', name: state.directs.find(conversation => conversation.id === id).peer.displayName, private: true, direct: true }
     : state.spaces.flatMap((detail) => detail.channels).find((channel) => channel.id === id);
@@ -97,8 +100,28 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
     ...(state.messages.get(channelId) ?? []).map(message => ({ type: 'message.created', channelId, seq: message.seq, message })),
     ...(state.reactionEvents.get(channelId) ?? []),
     ...(state.pinEvents.get(channelId) ?? []),
+    ...(state.forwardEvents.get(channelId) ?? []),
   ].sort((a, b) => BigInt(a.seq) < BigInt(b.seq) ? -1 : 1);
   const channelHead = (channelId) => channelEvents(channelId).at(-1)?.seq ?? '0';
+  const messageFor = id => [...state.messages.values()].flat().find(message => message.id === id);
+  const sharedMessage = message => {
+    const shared = clone(message);
+    if (shared.threadRootId) delete shared.thread;
+    for (const key of ['threadRootId', 'broadcast', 'pin', 'pinSeq', 'forward', 'forwardSeq']) delete shared[key];
+    return shared;
+  };
+  const snapshot = source => ({ message: source ? sharedMessage(source) : null, seq: source ? channelHead(source.channelId) : '0' });
+  const projectForwards = changed => {
+    for (const [wrapperId, sourceId] of state.forwardSources) {
+      if (sourceId !== changed.id && sourceId !== changed.threadRootId) continue;
+      const wrapper = messageFor(wrapperId);
+      wrapper.forward = snapshot(messageFor(sourceId));
+      wrapper.forwardSeq = String(BigInt(channelHead(wrapper.channelId)) + 1n);
+      const event = { type: 'message.forward', schemaVersion: 1, channelId: wrapper.channelId, seq: wrapper.forwardSeq, message: clone(wrapper) };
+      state.forwardEvents.set(wrapper.channelId, [...(state.forwardEvents.get(wrapper.channelId) ?? []), event]);
+      broadcast('chat', wrapper.channelId, event);
+    }
+  };
   const react = (channelId, message, emoji, userId, active) => {
     const reactions = message.reactions ?? [];
     const own = reactions.find(reaction => reaction.emoji === emoji)?.authorIds.includes(userId) ?? false;
@@ -111,6 +134,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       const event = { type: 'message.reactions', schemaVersion: 1, channelId, seq: message.reactionSeq, messageId: message.id, reactions: clone(message.reactions) };
       state.reactionEvents.set(channelId, [...(state.reactionEvents.get(channelId) ?? []), event]);
       broadcast('chat', channelId, event);
+      projectForwards(message);
     }
     return { type: 'message.reactions', schemaVersion: 1, channelId, seq: message.reactionSeq ?? '0', messageId: message.id, reactions: message.reactions ?? [] };
   };
@@ -172,6 +196,29 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           if (!message) return reject(response, 404, 'Fixture message not found.');
           if (!accounts.some(account => account.id === userId)) return reject(response, 400, 'Unknown fixture account.');
           react(channelId, message, emoji, userId, active);
+        }
+        if (body.incomingEdit) {
+          const { messageId, text } = body.incomingEdit;
+          const message = messageFor(messageId);
+          if (!message || typeof text !== 'string') return reject(response, 400, 'Invalid fixture edit.');
+          message.content.text = `TEST FIXTURE — ${text}`;
+          message.revision = (message.revision ?? 1) + 1; message.editedAt = new Date().toISOString();
+          message.editSeq = String(BigInt(channelHead(message.channelId)) + 1n);
+          const event = { type: 'message.edited', schemaVersion: 1, channelId: message.channelId, seq: message.editSeq, message: clone(message) };
+          state.reactionEvents.set(message.channelId, [...(state.reactionEvents.get(message.channelId) ?? []), event]);
+          broadcast('chat', message.channelId, event); projectForwards(message);
+        }
+        if (body.incomingReply) {
+          const root = messageFor(body.incomingReply.rootId);
+          if (!root) return reject(response, 404, 'Fixture root not found.');
+          const seq = String(BigInt(channelHead(root.channelId)) + 1n);
+          root.thread = { replyCount: (root.thread?.replyCount ?? 0) + 1, participants: [author(members[1])], seq };
+          const reply = { id: randomUUID().replaceAll('-', '').slice(0, 15), channelId: root.channelId, seq,
+            author: author(members[1]), content: { version: 1, type: 'text', text: `TEST FIXTURE — ${body.incomingReply.text}` },
+            createdAt: new Date().toISOString(), clientMessageId: randomUUID(), threadRootId: root.id, thread: clone(root.thread), broadcast: false };
+          state.messages.get(root.channelId).push(reply);
+          broadcast('chat', root.channelId, { type: 'message.created', schemaVersion: 1, channelId: root.channelId, seq, message: clone(reply) });
+          projectForwards(reply);
         }
         if (body.incomingPin) {
           const { channelId, messageId, active = true } = body.incomingPin;
@@ -274,9 +321,9 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       if (path === '/api/chat/session' && method === 'POST') {
         const token = `fixture-chat-${randomUUID()}`;
         const requestedName = typeof body.name === 'string' ? body.name.trim() : '';
-        const name = user ? state.account.displayName : requestedName;
+        const name = user ? user.displayName : requestedName;
         if (!name || [...name].length > 64 || /[\p{Cc}]/u.test(name)) return reject(response, 400, 'invalid name');
-        const who = user ? author(state.account) : { id: randomUUID().replaceAll('-', '').slice(0, 12), name, isGuest: true };
+        const who = user ? author(user) : { id: randomUUID().replaceAll('-', '').slice(0, 12), name, isGuest: true };
         state.chatSessions.set(token, who);
         return json(response, 200, { token, author: who });
       }
@@ -284,6 +331,49 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       if (mediaChannel && !canParticipate(channelFor(mediaChannel[1]), user)) return reject(response, 404, 'resource not found');
       if (/^\/api\/(?:channels\/[^/]+\/)?media\/status$/.test(path)) return json(response, 200, { enabled: true });
       if (/^\/api\/(?:channels\/[^/]+\/)?media\//.test(path)) return reject(response, 503, 'TEST FIXTURE: no real media engine or SFU is connected.');
+      if (path === '/api/chat/forward-destinations' && method === 'GET') {
+        if (!user) return reject(response, 401, 'Sign in required.');
+        const channels = [...state.spaces.flatMap(detail => detail.channels), ...state.directs.map(direct => channelFor(direct.id))];
+        return json(response, 200, { destinations: channels.filter(channel => canParticipate(channel, user)).map(channel => ({
+          id: channel.id, name: channel.name, spaceName: spaceFor(channel.spaceId).name, direct: !!channel.direct,
+        })) });
+      }
+      const forwardPath = /^\/api\/chat\/channels\/([^/]+)\/forwards(?:\/([^/]+)\/thread)?$/.exec(path);
+      if (forwardPath) {
+        const channel = channelFor(forwardPath[1]);
+        if (!canRead(channel, user)) return reject(response, 404, 'resource not found');
+        if (method === 'GET' && forwardPath[2]) {
+          const wrapper = state.messages.get(channel.id)?.find(message => message.id === forwardPath[2]);
+          const source = wrapper && messageFor(state.forwardSources.get(wrapper.id));
+          if (!wrapper || !state.forwardSources.has(wrapper.id)) return reject(response, 404, 'Forward not found.');
+          const before = url.searchParams.get('before');
+          if (before !== null && !/^(0|[1-9]\d*)$/.test(before)) return reject(response, 400, 'invalid cursor');
+          const replies = source ? state.messages.get(source.channelId).filter(message => message.threadRootId === source.id && (before === null || BigInt(message.seq) < BigInt(before))) : [];
+          return json(response, 200, { root: source ? sharedMessage(source) : null, messages: replies.slice(-50).map(sharedMessage), cursor: source ? channelHead(source.channelId) : '0', hasMore: replies.length > 50 });
+        }
+        if (method === 'POST' && !forwardPath[2]) {
+          if (!canParticipate(channel, user) || !canRead(channelFor(body.sourceChannelId), user)) return reject(response, 404, 'resource not found');
+          const who = state.chatSessions.get(request.headers['x-caper-chat-token']);
+          if (!who || who.isGuest) return reject(response, 401, 'Messaging session required.');
+          const selected = state.messages.get(body.sourceChannelId)?.find(message => message.id === body.sourceMessageId);
+          const source = selected && messageFor(state.forwardSources.get(selected.id) ?? selected.id);
+          if (!source) return reject(response, 404, 'Original not found.');
+          if (typeof body.clientMessageId !== 'string' || typeof (body.text ?? '') !== 'string' || [...(body.text ?? '')].length > 4000) return reject(response, 400, 'Invalid forward.');
+          const key = `${channel.id}:${body.clientMessageId}`;
+          const previous = state.sendKeys.get(key);
+          if (previous) return previous.token === request.headers['x-caper-chat-token'] && previous.text === (body.text ?? '') && previous.source === source.id
+            ? json(response, 200, { ...previous.message, forward: snapshot(source) }) : reject(response, 409, 'Message ID already used.');
+          const seq = String(BigInt(channelHead(channel.id)) + 1n);
+          const wrapper = { id: randomUUID().replaceAll('-', '').slice(0, 15), channelId: channel.id, seq, author: who,
+            content: { version: 1, type: 'text', text: body.text ?? '' }, createdAt: new Date().toISOString(), clientMessageId: body.clientMessageId,
+            forward: snapshot(source), forwardSeq: seq };
+          state.messages.set(channel.id, [...(state.messages.get(channel.id) ?? []), wrapper]);
+          state.forwardSources.set(wrapper.id, source.id);
+          state.sendKeys.set(key, { token: request.headers['x-caper-chat-token'], text: body.text ?? '', source: source.id, message: wrapper });
+          broadcast('chat', channel.id, { type: 'message.created', schemaVersion: 1, channelId: channel.id, seq, message: clone(wrapper) });
+          return json(response, 200, wrapper);
+        }
+      }
       const reaction = /^\/api\/chat\/channels\/([^/]+)\/messages\/([^/]+)\/reactions$/.exec(path);
       if (reaction && method === 'PUT') {
         const channel = channelFor(reaction[1]);

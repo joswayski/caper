@@ -1168,6 +1168,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 @Composable private fun MessageTimeline(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, inThread: Boolean = false, pendingStatus: @Composable () -> Unit = {}) {
     var actionTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var pickerTarget by remember { mutableStateOf<ChatMessage?>(null) }
+    var forwardTarget by remember { mutableStateOf<ChatMessage?>(null) }
+    var conversationTarget by remember { mutableStateOf<ChatMessage?>(null) }
     // Message ID and the pressed chip's emoji.
     var reactorsTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
     val messages = if (inThread) state.messages else state.messages.filter { (it.threadRootId == null || it.broadcast) && it.id !in state.threadOnlyRows }
@@ -1175,6 +1177,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         actionTarget = null
         pickerTarget = null
         reactorsTarget = null
+        forwardTarget = null
+        conversationTarget = null
     }
     // Web's chat phases: loading, failed first load, then the conversation.
     if (state.messagesLoading) return Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -1213,6 +1217,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
                 openReactors = { target, emoji -> reactorsTarget = target.id to emoji },
                 openActions = { actionTarget = it },
+                openConversation = { conversationTarget = it },
                 retryPin = viewModel::retryPin,
                 dismissPinError = viewModel::dismissPinError,
             )
@@ -1247,7 +1252,13 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             openPicker = { actionTarget = null; pickerTarget = presented },
             setPin = { id, active -> viewModel.setPin(id, active); actionTarget = null },
             onReply = { actionTarget = null; viewModel.openThread(presented.threadRootId ?: presented.id) },
+            forward = { actionTarget = null; forwardTarget = presented },
         )
+    }
+    forwardTarget?.let { target -> key(target.id) { ForwardPickerSheet(target, viewModel) { forwardTarget = null } } }
+    conversationTarget?.let { target ->
+        val current = state.messages.firstOrNull { it.id == target.id }
+        if (current != null) key(target.id) { ForwardConversationSheet(current, viewModel) { conversationTarget = null } }
     }
     reactorsTarget?.let { (messageId, emoji) ->
         val presented = state.messages.firstOrNull { it.id == messageId }
@@ -1288,6 +1299,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     openReactors: (ChatMessage, String) -> Unit,
     retryPin: (String) -> Unit = {},
     dismissPinError: (String) -> Unit = {},
+    openConversation: (ChatMessage) -> Unit = {},
     openActions: (ChatMessage) -> Unit,
 ) {
     val own = state.chatAuthorId ?: state.account?.id
@@ -1302,6 +1314,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             onLongClick = { openActions(message) },
             onLongClickLabel = "Message actions for ${message.author.name}",
         )) { MessageRow(message) }
+        ForwardCard(message) { openConversation(message) }
         FlowRow(Modifier.padding(start = 62.dp, end = 18.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             message.reactions.forEach { reaction ->
                 val selected = own != null && own in reaction.authorIds
@@ -1342,6 +1355,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     openPicker: () -> Unit,
     setPin: (String, Boolean) -> Unit = { _, _ -> },
     onReply: (() -> Unit)? = null,
+    forward: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val clipboard = context.getSystemService(ClipboardManager::class.java)
@@ -1374,6 +1388,10 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
             }
             Surface(shape = MaterialTheme.shapes.small, color = Surface) {
                 Column {
+                    if (state.account != null && (message.forward == null || message.forward.message != null)) {
+                        TextButton(forward, Modifier.fillMaxWidth().heightIn(min = 48.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) { Text("Forward message", Modifier.fillMaxWidth()) }
+                        HorizontalDivider(color = Border)
+                    }
                     if (canReact) {
                         val saving = state.pinSaves[message.id]?.saving == true
                         TextButton({ setPin(message.id, message.pin == null) }, enabled = !saving, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) {
@@ -1392,6 +1410,8 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
 }
 
 @Composable private fun PinnedMessages(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier) {
+    var conversationTarget by remember { mutableStateOf<ChatMessage?>(null) }
+    LaunchedEffect(state.account?.id, state.selectedChannel?.id) { conversationTarget = null }
     LazyColumn(modifier.fillMaxWidth(), contentPadding = PaddingValues(vertical = 10.dp)) {
         item {
             Text("Pinned messages", Modifier.padding(horizontal = 18.dp, vertical = 8.dp), fontWeight = FontWeight.Bold, fontSize = 15.sp)
@@ -1404,6 +1424,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                 message.pin?.let { Text("Pinned by ${it.author.name}", Modifier.padding(start = 62.dp, end = 18.dp, top = 4.dp), color = PinGold, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
                 Text(fullDateLabel(message.createdAt), Modifier.padding(start = 62.dp, end = 18.dp), color = TextMuted, fontSize = 10.sp)
                 MessageRow(message)
+                ForwardCard(message) { conversationTarget = message }
                 if (state.selectedChannel?.joined == true && (state.chatAuthorId ?: state.account?.id) != null) {
                     val saving = state.pinSaves[message.id]?.saving == true
                     TextButton({ viewModel.setPin(message.id, false) }, enabled = !saving, modifier = Modifier.padding(start = 62.dp).heightIn(min = 48.dp)) {
@@ -1418,6 +1439,11 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                     }
                 }
             }
+        }
+    }
+    conversationTarget?.let { target ->
+        state.pinnedMessages.firstOrNull { it.id == target.id }?.let { current ->
+            key(target.id) { ForwardConversationSheet(current, viewModel) { conversationTarget = null } }
         }
     }
 }

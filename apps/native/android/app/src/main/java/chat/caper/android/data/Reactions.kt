@@ -61,7 +61,8 @@ internal fun mergeMessages(
             val candidateReaction = candidate.reactionSeq?.toBigIntegerOrNull() ?: BigInteger.valueOf(-1)
             val currentReaction = current.reactionSeq?.toBigIntegerOrNull() ?: BigInteger.valueOf(-1)
             val summary = listOfNotNull(current.thread, candidate.thread).maxByOrNull { BigInteger(it.seq) }
-            (if (candidateReaction > currentReaction) candidate else current).copy(thread = summary)
+            val reaction = (if (candidateReaction > currentReaction) candidate else current).copy(thread = summary)
+            mergeForward(reaction, mergeForward(current, candidate))
         }
     }
     val summaries = (loaded + incoming).filter { it.thread != null }.groupBy { it.threadRootId ?: it.id }

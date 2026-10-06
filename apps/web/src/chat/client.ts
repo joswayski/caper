@@ -2,7 +2,7 @@ import { ChatConnection } from "./connection.ts";
 import { ChatTimeline } from "./timeline.ts";
 import { playSound } from "../audio/effects.ts";
 import { appGateway } from "../gateway/client.ts";
-import { isChannelMessage, isChatMessage, isChatPinEvent, isChatReactionEvent, sequence, type ChatAuthor, type ChatHistory, type ChatMessage, type ChatPinEvent, type ChatReactionEvent, type ChatSession, type ChatThreadHistory, type ChatTypingEvent, type GeneralChatHistory } from "./types.ts";
+import { isChannelMessage, isChatMessage, isChatPinEvent, isChatReactionEvent, sequence, type ChatAuthor, type ChatForwardEvent, type ChatHistory, type ChatMessage, type ChatPinEvent, type ChatReactionEvent, type ChatSession, type ChatThreadHistory, type ChatTypingEvent, type GeneralChatHistory } from "./types.ts";
 
 const SESSION_KEY = "caper.chat.session";
 
@@ -462,7 +462,26 @@ export class ChatClient {
     this.update({ messages: this.timeline.messages, pinnedMessages: this.timeline.pinnedMessages });
   }
 
-  private receiveEvent(event: ChatMessage | ChatReactionEvent | ChatPinEvent) {
+  async forward(destination: string, messageId: string, clientMessageId: string, text: string): Promise<ChatMessage> {
+    const channelId = this.state.channelId;
+    const session = this.session;
+    if (this.controller.signal.aborted || !channelId || !session || session.author.isGuest) throw new Error("Your chat session is unavailable. Retry the session, then try again.");
+    const response = await fetch(`/api/chat/channels/${encodeURIComponent(destination)}/forwards`, {
+      method: "POST", headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
+      body: JSON.stringify({ sourceChannelId: channelId, sourceMessageId: messageId, clientMessageId, text }),
+      signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
+    });
+    if (!response.ok) throw new ChatHistoryError(response.status, (await apiError(response, "Forward could not be confirmed. Retry to check the same forward.")).message);
+    const message: unknown = await response.json();
+    if (!isChatMessage(message) || !message.forward || message.channelId !== destination || message.clientMessageId !== clientMessageId || message.author.id !== session.author.id) throw new Error("The chat service returned an invalid forward.");
+    if (!this.controller.signal.aborted && this.state.channelId === destination) {
+      this.timeline.mergeSent(message);
+      this.update({ messages: this.timeline.messages });
+    }
+    return message;
+  }
+
+  private receiveEvent(event: ChatMessage | ChatReactionEvent | ChatPinEvent | ChatForwardEvent) {
     const visible = new Set(this.timeline.messages.map((item) => item.id));
     const result = this.timeline.applyEvent(event);
     if (!("type" in event)) {
@@ -529,6 +548,7 @@ export class ChatClient {
         message: (message) => this.receiveEvent(message),
         reactions: (event) => this.receiveEvent(event),
         pin: (event) => this.receiveEvent(event),
+        forward: (event) => this.receiveEvent(event),
         status: (online) => {
           if (!online) { this.typers.clear(); this.refreshTypers(); }
           this.update({ online });

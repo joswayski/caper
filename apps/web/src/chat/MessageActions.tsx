@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ComponentType } from "react";
 import { autoUpdate, flip, FloatingFocusManager, FloatingOverlay, FloatingPortal, offset, shift, useDismiss, useFloating, useInteractions, useRole } from "@floating-ui/react";
-import { Copy, Hash, MessageSquare, Pin, PinOff, SmilePlus, Users, X } from "lucide-react";
+import { Copy, Forward, Hash, MessageSquare, Pin, PinOff, SmilePlus, Users, X } from "lucide-react";
 import type { ChatMessage } from "./types.ts";
 import { emojiAsset, emojiCode, preloadEmojiImages } from "./emoji.ts";
 
@@ -19,15 +19,17 @@ export function preloadReactionPicker() {
   void preloadEmojiImages();
 }
 
-export default function MessageActions({ message, target, authorId, canReact, canPin, pinning, onReact, onPin, onClose, onCopied, onViewReactions, onReply }: {
+export default function MessageActions({ message, target, authorId, canReact, canPin, canForward = false, pinning, onReact, onPin, onForward, onClose, onCopied, onViewReactions, onReply }: {
   message: ChatMessage;
   target: MessageActionTarget;
   authorId?: string;
   canReact: boolean;
   canPin: boolean;
+  canForward?: boolean;
   pinning: boolean;
   onReact: (messageId: string, emoji: string, active: boolean) => Promise<void>;
   onPin: (messageId: string, active: boolean) => Promise<void>;
+  onForward?: () => void;
   onClose: () => void;
   onCopied: (status: string) => void;
   onViewReactions: (emoji: string) => void;
@@ -93,6 +95,7 @@ export default function MessageActions({ message, target, authorId, canReact, ca
         </div>}
         <div className="chat-copy-actions">
           <button type="button" onClick={onReply}><MessageSquare size={20} aria-hidden="true" />Reply in thread</button>
+          {canForward && <button type="button" onClick={onForward}><Forward size={16} aria-hidden="true" />Forward message</button>}
           {!!message.reactions?.length && <button type="button" onClick={() => onViewReactions(message.reactions![0].emoji)}>
             <Users size={16} aria-hidden="true" />View reactions</button>}
           {canPin && <button type="button" disabled={pinning} onClick={() => { onClose(); void onPin(message.id, !message.pin); }}>
