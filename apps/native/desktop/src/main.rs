@@ -5556,11 +5556,16 @@ impl CaperApp {
                                 .fixed_pos(response.rect.left_top() - egui::vec2(0.0, 6.0))
                                 .show(ui.ctx(), |ui| {
                                     egui::Frame::new().fill(COMPOSER).stroke(Stroke::new(1.0, BORDER)).corner_radius(8).inner_margin(4).show(ui, |ui| {
+                                        let width = response.rect.width().min(260.0) - 8.0;
+                                        ui.set_width(width);
+                                        ui.spacing_mut().item_spacing.y = 0.0;
                                         for (index, entry) in choices.iter().enumerate() {
                                             let image = self.reaction_textures.image(ui, entry, 24.0);
                                             let label = format!(":{}:", entry.name.replace(' ', "_"));
                                             let button = egui::Button::image_and_text(image, label)
-                                                .min_size(egui::vec2(response.rect.width().min(344.0) - 8.0, 44.0))
+                                                .min_size(egui::vec2(width, 44.0))
+                                                .truncate()
+                                                .stroke(Stroke::NONE)
                                                 .fill(if index == self.emoji_selected { Color32::from_rgb(67, 36, 30) } else { Color32::TRANSPARENT });
                                             if ui.add(button).clicked() { chosen = Some(*entry); }
                                         }

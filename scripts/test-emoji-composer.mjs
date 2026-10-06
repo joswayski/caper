@@ -48,6 +48,12 @@ try {
     const before = messages();
     browser('fill', '#chat-message', ':');
     wait('document.querySelectorAll("#chat-emoji-options [role=option]").length === 6');
+    const popupStyle = evaluate('const popup=document.querySelector(".chat-emoji-suggestions"); return {width:popup.getBoundingClientRect().width,borderless:[...popup.querySelectorAll("button")].every(row => ["borderTopWidth","borderRightWidth","borderBottomWidth","borderLeftWidth"].every(side => getComputedStyle(row)[side] === "0px"))};');
+    assert.ok(popupStyle.width <= 260, `Popup must remain compact: ${popupStyle.width}px`);
+    assert.ok(popupStyle.borderless, 'Suggestion rows must not have individual borders');
+    assert.equal(evaluate('return document.querySelector("#chat-emoji-1f44d span").textContent;'), ':thumbs-up:', 'Merged dash-separated names must remain visible');
+    wait('[...document.querySelectorAll(".chat-emoji-suggestions img")].every(image => image.complete && image.naturalWidth > 0)');
+    if (artifacts) browser('screenshot', `${artifacts}/emoji-flat-${layout}.png`);
     browser('press', 'ArrowDown');
     browser('press', 'Tab');
     assert.equal(value(), '😀');
@@ -64,6 +70,12 @@ try {
     assert.equal(value(), '👩‍💻 hi 🚀 suffix 🚀');
     assert.equal(evaluate('return document.querySelector("#chat-message").selectionStart;'), '👩‍💻 hi 🚀'.length);
     assert.equal(messages(), before);
+
+    browser('fill', '#chat-message', ':face_with_open_eyes');
+    wait('!!document.querySelector("#chat-emoji-1fae2")');
+    assert.match(evaluate('return document.querySelector("#chat-emoji-1fae2").getAttribute("aria-label");'), /face-with-open-eyes-and-hand-over-mouth/);
+    assert.ok(evaluate('const label=document.querySelector("#chat-emoji-1fae2 span"); return label.scrollWidth > label.clientWidth && getComputedStyle(label).textOverflow === "ellipsis";'), 'Long labels must truncate without widening the popup');
+    if (artifacts) browser('screenshot', `${artifacts}/emoji-long-${layout}.png`);
 
     for (const text of ['https://tom', '12:30', 'word:tom', ':tom:']) {
       browser('fill', '#chat-message', text);

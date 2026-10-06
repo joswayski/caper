@@ -991,7 +991,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 return true
             }
             if (suggestions.isNotEmpty()) Surface(
-                Modifier.fillMaxWidth().padding(bottom = 6.dp), color = SurfaceRaised,
+                Modifier.widthIn(max = 260.dp).fillMaxWidth().padding(bottom = 6.dp), color = SurfaceRaised,
                 shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border),
             ) {
                 LazyColumn(Modifier.heightIn(max = 192.dp).padding(vertical = 4.dp), state = suggestionList) {

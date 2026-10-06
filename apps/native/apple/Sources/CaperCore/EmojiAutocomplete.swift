@@ -107,9 +107,11 @@ struct EmojiSuggestionsView: View {
             }
             }.frame(height: min(CGFloat(match.choices.count) * 44, 176))
                 .onChange(of: controller.selected) { _, index in proxy.scrollTo(match.choices[index].id, anchor: .center) }
-            }.background(CaperTheme.surface).clipShape(RoundedRectangle(cornerRadius: 6))
+            }.frame(maxWidth: 260)
+                .background(CaperTheme.surface).clipShape(RoundedRectangle(cornerRadius: 6))
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(CaperTheme.border))
                 .accessibilityIdentifier("emoji-suggestions")
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
