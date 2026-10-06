@@ -34,6 +34,9 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
 - Global two-person direct messages, including exact-username conversation
   creation, unread state, account-wide read cursors, paging, typing, retry, and gateway
   replay. Desktop does not provide OS push notifications in this stage.
+- Message reactions. Hovering or keyboard-focusing a reaction chip shows who
+  reacted (large emoji plus the shared summary wording); names load on demand
+  with history's read access and are cached per message reaction revision.
 - Experimental native voice: raw Google libwebrtc with platform audio devices,
   Caper SFU offer/answer publication and subscription, voice roster, lease
   snapshots, TURN refresh and replay-safe ICE restart/ACK. Browsing leaves the
@@ -242,6 +245,8 @@ the voice dock and Audio test dialog without starting capture or a transport.
 exact-username dialog without a live account or notification provider.
 `parity-direct-no-spaces` previews the first-space page's Direct messages entry
 and the global list without any space membership.
+`parity-reactions` adds reaction chips whose hover cards name the labelled
+fixture members locally instead of requesting who reacted.
 `parity-opening`, `parity-opening-narrow`, and `parity-opening-error` preview
 pending navigation and its retry state with retained conversation chrome and a
 labelled fixture draft; `parity-loading` previews the initial history skeleton.

@@ -29,6 +29,22 @@ pub fn find(value: &str) -> Option<&'static Entry> {
     catalog().iter().find(|entry| entry.id == id)
 }
 
+/// The catalog's dash-separated name (`thumbs-up`) for a reaction emoji.
+/// Reactions are stored fully qualified while the catalog keys some emoji
+/// without U+FE0F, so the fallback compares with every U+FE0F removed.
+/// Unoffered variants (such as skin tones) are named only by their code
+/// points, which is not a name.
+pub fn name(value: &str) -> Option<&'static str> {
+    let bare = |emoji: &str| emoji.replace('\u{fe0f}', "");
+    find(value)
+        .or_else(|| {
+            let wanted = bare(value);
+            catalog().iter().find(|entry| bare(&entry.emoji) == wanted)
+        })
+        .filter(|entry| entry.name != entry.id)
+        .map(|entry| entry.name.as_str())
+}
+
 pub fn unicode_id(value: &str) -> String {
     let joined = value
         .chars()
@@ -102,5 +118,30 @@ mod tests {
         assert_eq!(unicode_id("👩‍💻"), "1f469-200d-1f4bb");
         assert!(catalog().iter().filter(|entry| entry.selectable).count() >= 1870);
         assert!(find("👍").is_some());
+    }
+
+    #[test]
+    fn reaction_names_ignore_variation_selectors() {
+        for (emoji, expected) in [
+            ("👍", "thumbs-up"),
+            ("😂", "face-with-tears-of-joy"),
+            ("🎉", "party-popper"),
+            ("👀", "looking"),
+            ("❤️", "red-heart"),
+            ("❤", "red-heart"),
+        ] {
+            assert_eq!(name(emoji), Some(expected), "{emoji}");
+        }
+        // The catalog keeps U+FE0F in these ZWJ sequences; reactions written
+        // without it still find the name.
+        for emoji in [
+            "\u{1f3c3}\u{200d}\u{2640}\u{fe0f}",
+            "\u{1f3c3}\u{200d}\u{2640}",
+        ] {
+            assert_eq!(name(emoji), Some("woman-running"));
+        }
+        assert_eq!(name("\u{1f3f3}\u{200d}\u{1f308}"), Some("rainbow-flag"));
+        assert_eq!(name("👍🏽"), None, "skin tones have no catalog name");
+        assert_eq!(name("not an emoji"), None);
     }
 }
