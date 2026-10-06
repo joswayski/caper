@@ -4364,3 +4364,54 @@ push. Android/Apple compilation and physical device layouts remain native releas
 acceptance requirements. APNs/FCM credential validation, physical-device delivery,
 offline behavior and registration lifecycle/pruning must be covered when direct
 mobile push is implemented, not treated as current supported functionality.
+
+### Mobile Browse navigation and channel menu (October 6, 2026)
+
+On narrow layouts, **Back to Browse** replaces the conversation's Browse label.
+Tap the channel name to open **Members**; it uses the existing member panel,
+including Close and outside-tap dismissal. No new settings are implied. Direct
+messages and unjoined channel previews have no member dropdown. Wide layouts
+retain their existing header/member controls.
+
+Swiping right opens the existing space/channel browser; swiping left returns to
+the selected conversation without selecting a different channel. Web keeps the
+chat mounted, Apple keeps the draft in its chat model, and Android saves the
+conversation state while Browse replaces it. Gestures require at least 64
+CSS pixels/native points of mostly horizontal travel and reject vertical drags.
+
+| Platform | Intentional behavior and validation boundary |
+| --- | --- |
+| Web ≤760px | Touch swipes on content and channel rows; inputs, sliders, buttons other than channel selection, text selection, multi-touch, and open menus/dialogs/member overlays do not navigate. Build/type checks and 369 web tests pass. Disposable Chromium touch regression covers both directions, threshold/direction/cancellation/vertical/multi-touch guards, composer and overlay exclusion, channel-row release-click protection, draft/history retention, Back and menu keyboard dismissal. Desktop, 390px and 320px captures were inspected. This is not physical-device or Safari validation. |
+| Android narrow | Swipes are scoped to the timeline and channel sidebar; composer/account audio controls keep native gestures. Child-consumed drags and member overlays do not trigger navigation. Draft and lazy-list state survive Browse via saved conversation state. No Android build or device run in this orb: Java/Android toolchain is unavailable. Native CI and physical-device acceptance remain required. |
+| Apple narrow | Right swipe starts within 24 points of the timeline's left edge; return swipe starts within 24 points of the joined-channel browser's right edge. Search/Browse-channels mode retains Close navigation instead of swipes, to avoid its text field. Composer/account controls and member/reaction overlays are excluded. Updated iOS UI test covers both edge directions, vertical scrolling, draft retention and the channel menu. No Xcode/Swift build or UI test run in this Linux orb; macOS/iOS CI and devices remain required. |
+| Rust desktop | No navigation behavior change or client release required. The shared icon exporter also bundles the new back glyph here; existing desktop icon packaging tests pass. |
+| Containers/live voice | Docker daemon unavailable; the web build stage passed directly. No production deployment, shared data writes or live SFU validation performed. |
+
+#### Deployment order
+
+1. No infrastructure, secret/configuration, database migration, API, gateway or
+   Valkey change is necessary. Wait for the merged revision's immutable web image
+   and native build checks. Set `MERGED_SHA` to that full merged commit SHA;
+   merging publishes build artifacts but does not deploy services or release apps.
+2. Deploy web through the existing operator workflow from an authenticated
+   checkout with the production Kubernetes context:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # Wait for this SHA's deployment workflow to succeed, then:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+
+3. Build/release Android and Apple through their existing native workflows after
+   native checks and device acceptance. Web and native clients can deploy
+   independently; no server-first compatibility requirement is introduced.
+   Native build commands on suitable machines are
+   `bash apps/native/android/build.sh`, `bash apps/native/apple/build.sh ios`, and
+   `bash apps/native/apple/build.sh macos`. Build output is not an app-store release.
+4. Verify swipe out/back with an unsent draft, vertical message/channel scrolling,
+   Members menu/Close, keyboard dismissal, long-press message actions, and audio
+   slider drags on real Android/iPhone devices and mobile Safari. Check wide
+   desktop controls remain unchanged. Roll back web by running the deployment
+   command with the previous known-good web image SHA; stop native distribution
+   and release a corrected higher-build-number client if needed. No data rollback
+   or migration reversal is required.

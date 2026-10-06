@@ -41,6 +41,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.zIndex
@@ -91,6 +92,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import java.util.Locale
+import kotlin.math.abs
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -259,6 +261,7 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
     viewModel: CaperViewModel,
 ) {
     var channelsExpanded by rememberSaveable { mutableStateOf(true) }
+    val conversationState = rememberSaveableStateHolder()
     val context = LocalContext.current
     val latestState by rememberUpdatedState(state)
     var pendingVoiceJoin by remember(viewModel.accountEpoch, viewModel.spaceAccessEpoch, state.selectedSpace?.space?.id) { mutableStateOf<VoiceJoinIntent?>(null) }
@@ -322,12 +325,15 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
                         Row(Modifier.weight(1f)) {
                             SpaceRail(state, viewModel, show, Modifier.width(60.dp))
                             ChannelSidebar(state, voice, viewModel, show,
-                                Modifier.weight(1f).padding(top = 8.dp, end = 8.dp).clip(RoundedCornerShape(16.dp)),
+                                Modifier.weight(1f).padding(top = 8.dp, end = 8.dp).clip(RoundedCornerShape(16.dp))
+                                    .browseSwipe(open = true, enabled = state.selectedChannel != null) { setNavigationOpen(it) },
                                 channelsExpanded, { channelsExpanded = it }, joinVoice, pendingVoiceJoin, voicePermissionError,
                                 { voicePermissionError = null }, showAccountBar = false) { setNavigationOpen(false) }
                         }
                         AccountBar(state, voice, viewModel, show)
-                    } else Conversation(state, voice, viewModel, show, true, membersVisible, { membersVisible = !membersVisible }, voicePermissionError) { setNavigationOpen(true) }
+                    } else conversationState.SaveableStateProvider(state.selectedChannel?.id ?: "empty") {
+                        Conversation(state, voice, viewModel, show, true, membersVisible, { membersVisible = !membersVisible }, voicePermissionError) { setNavigationOpen(true) }
+                    }
                     if (membersVisible && !navigationOpen && state.selectedChannel?.joined == true && state.selectedDirectId == null) {
                         Box(Modifier.fillMaxSize().padding(top = 54.dp).clickable(
                             interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
@@ -353,6 +359,32 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
         }
     }
 }
+
+// Only the timeline/sidebar uses this gesture; the composer and audio controls
+// keep their native drags. Consumed moves belong to scrolling, selection or a slider.
+private fun Modifier.browseSwipe(open: Boolean, enabled: Boolean, onOpenChange: (Boolean) -> Unit): Modifier =
+    if (!enabled) this else pointerInput(open) {
+        val threshold = 64.dp.toPx()
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            var rejected = false
+            var horizontal = false
+            do {
+                val event = awaitPointerEvent()
+                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                val dx = change.position.x - down.position.x
+                val dy = change.position.y - down.position.y
+                if (event.changes.size != 1 || change.isConsumed || change.uptimeMillis - down.uptimeMillis > 600 ||
+                    abs(dy) > maxOf(viewConfiguration.touchSlop, abs(dx))) rejected = true
+                if (!rejected && abs(dx) > viewConfiguration.touchSlop && abs(dx) > abs(dy) * 2 &&
+                    (if (open) dx < 0 else dx > 0)) horizontal = true
+                if (horizontal && !rejected) {
+                    change.consume() // Cancel a channel row's release click after a drag.
+                    if (!change.pressed && abs(dx) >= threshold && abs(dx) > abs(dy) * 2) onOpenChange(!open)
+                }
+            } while (event.changes.any { it.pressed })
+        }
+    }
 
 @Composable private fun SpaceRail(state: AppUiState, viewModel: CaperViewModel, show: (Overlay) -> Unit, modifier: Modifier = Modifier) {
     Column(modifier.fillMaxHeight().background(Blackout).verticalScroll(rememberScrollState()).padding(vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -913,7 +945,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 ) {
     val channel = state.selectedChannel
     if (channel == null) return EmptyChannel(state, narrow, show, openNavigation, modifier)
-    var draft by remember(channel.id) { mutableStateOf(TextFieldValue("")) }
+    var draft by rememberSaveable(channel.id, stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("")) }
+    var channelMenuOpen by remember(channel.id) { mutableStateOf(false) }
     var showingPins by remember(channel.id) { mutableStateOf(false) }
     val joined = channel.joined
     Column(modifier.fillMaxHeight().background(SurfaceConversation)) {
@@ -922,15 +955,28 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         var showConnection by remember(channel.id) { mutableStateOf(false) }
         LaunchedEffect(live, channel.id) { showConnection = false; if (!live) { kotlinx.coroutines.delay(1_000); showConnection = true } }
         Row(Modifier.fillMaxWidth().height(53.dp).padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            // Web: narrow screens show a bordered Menu + "Browse" toggle before the title.
-            if (narrow) BrowseButton("Browse", R.drawable.lucide_menu, openNavigation)
-            Text(if (channel.direct) channel.name else "# ${channel.name}", Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (narrow) IconButton(openNavigation, Modifier.size(44.dp)) {
+                Icon(painterResource(R.drawable.lucide_arrow_right), "Back to Browse", Modifier.size(20.dp).graphicsLayer { rotationZ = 180f }, tint = TextMuted)
+            }
+            if (narrow && !channel.direct && joined) Box(Modifier.weight(1f)) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
+                    .clickable(role = Role.Button) { channelMenuOpen = true }
+                    .semantics(mergeDescendants = true) { contentDescription = "# ${channel.name} channel menu" }, verticalAlignment = Alignment.CenterVertically) {
+                    Text("# ${channel.name}", Modifier.weight(1f, fill = false), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Icon(painterResource(R.drawable.lucide_chevron_down), null, Modifier.size(16.dp), tint = TextMuted)
+                }
+                DropdownMenu(channelMenuOpen, { channelMenuOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+                    DropdownMenuItem(text = { Text(if (membersVisible) "Hide member list" else "Members") },
+                        leadingIcon = { Icon(painterResource(R.drawable.lucide_users), null) },
+                        onClick = { channelMenuOpen = false; toggleMembers() })
+                }
+            } else Text(if (channel.direct) channel.name else "# ${channel.name}", Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             TextButton({ showingPins = !showingPins }, Modifier.heightIn(min = 48.dp)) {
                 Text(if (showingPins) "Messages" else "Pins (${state.pinnedMessages.size})", fontSize = 11.sp, fontWeight = FontWeight.Bold)
             }
             if (!channel.direct && !joined) Button({ viewModel.joinChannel(channel) }, enabled = !state.busy, shape = MaterialTheme.shapes.small) { Text("Join channel") }
             if (!live && showConnection) Text(if (state.gateway == GatewayStatus.ERROR || state.messagesError != null) "Offline" else "Connecting…", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-            if (!channel.direct && joined) IconButton(toggleMembers, Modifier.size(36.dp)) { Icon(painterResource(R.drawable.lucide_users), if (membersVisible) "Hide member list" else "Show member list", tint = if (membersVisible) Text else TextMuted) }
+            if (!narrow && !channel.direct && joined) IconButton(toggleMembers, Modifier.size(36.dp)) { Icon(painterResource(R.drawable.lucide_users), if (membersVisible) "Hide member list" else "Show member list", tint = if (membersVisible) Text else TextMuted) }
         }
         HorizontalDivider(color = Border)
         if (!joined) Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
@@ -955,7 +1001,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         }
         // Web shows a pending message's status inline, under the message itself.
         if (showingPins) PinnedMessages(state, viewModel, Modifier.weight(1f))
-        else MessageTimeline(state, viewModel, Modifier.weight(1f)) {
+        else MessageTimeline(state, viewModel, Modifier.weight(1f).browseSwipe(open = false, enabled = narrow && !membersVisible && !channelMenuOpen, onOpenChange = { openNavigation() })) {
             state.pendingMessage?.error?.let { pending ->
                 val editable = canEditRejectedMessage(draft.text, state.pendingMessage.text)
                 Row(verticalAlignment = Alignment.CenterVertically) {
