@@ -2356,6 +2356,9 @@ private struct ReactionPicker: View {
         }
         .frame(width: 352, height: 420)
         .accessibilityElement(children: .contain)
+        // Containers otherwise report only their children's union, which
+        // shrinks when the scrolling catalog becomes an empty-search message.
+        .contentShape(.accessibility, Rectangle())
         .accessibilityIdentifier("reaction-picker")
         #else
         NavigationStack {
