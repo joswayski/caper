@@ -1479,6 +1479,7 @@ private struct ChatView: View {
             reactorsTarget = ReactorsTarget(messageID: messageID, emoji: emoji)
         }
     }
+    @StateObject private var emojiComposer = EmojiComposerController()
 
     /// Defer the scroll request; content geometry repeats it when the timeline
     /// finishes measuring, including history above the unsent message.
@@ -1649,15 +1650,21 @@ private struct ChatView: View {
                 if let joinError { Text(joinError).font(CaperTheme.font(11)).foregroundStyle(.red) }
                 }.padding(12)
             } else { HStack(alignment: .bottom, spacing: 8) {
-                TextField("Message #\(chat.channelName.lowercased())", text: $chat.draft, axis: .vertical)
-                    .font(CaperTheme.font(14)).lineLimit(1...8).textFieldStyle(.plain).padding(11)
+                VStack(spacing: 6) {
+                    EmojiSuggestionsView(controller: emojiComposer)
+                    ZStack(alignment: .topLeading) {
+                        if chat.draft.isEmpty {
+                            Text("Message #\(chat.channelName.lowercased())").font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
+                                .padding(.leading, 11).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
+                        }
+                        NativeMessageComposer(text: $chat.draft, placeholder: "Message #\(chat.channelName.lowercased())",
+                                              controller: emojiComposer, submit: { Task { await chat.send() } })
+                    }
+                    .frame(minHeight: 42, maxHeight: 174)
                     .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 6))
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(CaperTheme.border))
-                    .accessibilityIdentifier("message-composer")
-                    .accessibilityValue(chat.draft)
-                    .accessibilityHint("Return sends on macOS. Shift-Return adds a new line. Use the Send button when composing with the iPhone keyboard.")
                     .onChange(of: chat.draft) { _, value in chat.setTyping(!value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
-                    .onSubmit { Task { await chat.send() } }
+                }
                 Button { Task { await chat.send() } } label: {
                     Image(systemName: "arrow.up").font(.system(size: 15, weight: .bold))
                         // Size the actual label, not only its styled background: clicks

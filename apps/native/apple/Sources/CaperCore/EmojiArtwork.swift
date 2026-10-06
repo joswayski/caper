@@ -2,7 +2,7 @@ import Foundation
 import SwiftUI
 import ImageIO
 
-struct EmojiCatalogEntry: Codable, Identifiable, Sendable {
+struct EmojiCatalogEntry: Codable, Identifiable, Sendable, Equatable {
     let id: String
     let emoji: String
     let name: String

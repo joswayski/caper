@@ -292,6 +292,7 @@ targets:
       - Tests/CaperCoreTests/AvatarTests.swift
       - Tests/CaperCoreTests/GatewayLifecycleTests.swift
       - Tests/CaperCoreTests/ReactorSummaryTests.swift
+      - Tests/CaperCoreTests/EmojiAutocompleteTests.swift
     dependencies:
       - target: CaperCoreIOS
       - target: CaperRTCBridgeIOS

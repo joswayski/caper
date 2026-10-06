@@ -9,6 +9,26 @@ unified text/voice channels; history, live messages, presence and calls require
 membership. See [spaces and channel access](#spaces-and-channel-access).
 Participants use their account display name and saved Caper avatar. This is not an outgoing-call flow.
 No camera, screen sharing, or server-side voice recording.
+
+Message composers offer `:` emoji autocomplete on web, Android, Apple and Rust
+desktop, using the same bundled Emoji 15 catalog. A colon at the start of a draft,
+after whitespace or after an opening bracket activates suggestions; URLs, times,
+selected text and active IME composition do not. Selection inserts Unicode at the
+caret, preserves the rest of the draft and respects the 4,000-scalar limit. The
+emoji presentation selectors are preserved separately from normalized artwork IDs.
+Enter/Tab accepts a suggestion, arrows move the selection and Escape closes it;
+Shift+Enter retains newline behavior. iPhone software-keyboard users select a row
+and send with the existing Send button; Android's IME Send accepts an active
+suggestion first. No API, gateway, database, infrastructure or secret changes are
+required. Web and native binaries can deploy independently; merging alone does
+not deploy them. Custom emoji uploads remain unimplemented.
+Run `node scripts/native-parity-fixture.mjs` beside Vite, then
+`node scripts/test-emoji-composer.mjs http://localhost:5173` for desktop/narrow
+browser insertion, selection, send and geometry checks against disposable fixture
+data. This is not native keyboard/device coverage. Android and Apple tests require
+their platform toolchains; physical touch/IME, software keyboard viewport changes
+and Windows rendering remain separate acceptance checks.
+
 Web channel names and `⋯` actions have a separate row above voice
 activity. Join, Joining and Switch here use one fixed-width action slot;
 connected channels reserve that space without an inline Leave action.

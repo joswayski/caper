@@ -8,6 +8,8 @@ import { dateDivider } from "./dates.ts";
 import type { ChatAuthor, GeneralChatHistory } from "./types.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
 import Avatar from "../components/Avatar";
+import { emojiAsset } from "./emoji.ts";
+import { emojiToken, emojiSuggestions, insertEmoji, loadEmojiChoices, type EmojiChoice } from "./emoji-autocomplete.ts";
 import "./chat.css";
 
 // Virtuoso's prepend index is local bookkeeping, never the bigint server cursor.
@@ -125,6 +127,47 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     return () => clearTimeout(timer);
   }, [state.author?.id, readOnly]);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const [selection, setSelection] = useState({ start: 0, end: 0 });
+  const [composerFocused, setComposerFocused] = useState(false);
+  const [composing, setComposing] = useState(false);
+  const [emojiChoices, setEmojiChoices] = useState<EmojiChoice[]>();
+  const [emojiError, setEmojiError] = useState(false);
+  const [dismissedEmoji, setDismissedEmoji] = useState<string>();
+  const [selectedEmoji, setSelectedEmoji] = useState(0);
+  const selectionKey = `${draft}:${selection.start}:${selection.end}`;
+  const token = composerFocused && !composing && dismissedEmoji !== selectionKey
+    ? emojiToken(draft, selection.start, selection.end) : undefined;
+  const emojiOpen = !!token;
+  const suggestions = token && emojiChoices ? emojiSuggestions(emojiChoices, token.query) : [];
+  const activeEmoji = Math.min(selectedEmoji, Math.max(0, suggestions.length - 1));
+  const activeEmojiId = suggestions[activeEmoji]?.id;
+  useLayoutEffect(() => {
+    if (activeEmojiId) document.getElementById(`chat-emoji-${activeEmojiId}`)?.scrollIntoView({ block: "nearest" });
+  }, [activeEmojiId]);
+  useEffect(() => { setSelectedEmoji(0); }, [selectionKey]);
+  useEffect(() => {
+    if (!emojiOpen || emojiChoices) return;
+    let active = true;
+    setEmojiError(false);
+    void loadEmojiChoices().then((choices) => { if (active) setEmojiChoices(choices); })
+      .catch(() => { if (active) setEmojiError(true); });
+    return () => { active = false; };
+  }, [emojiOpen, emojiChoices]);
+  const updateSelection = (input: HTMLTextAreaElement) => {
+    setSelection({ start: input.selectionStart, end: input.selectionEnd });
+    const nextKey = `${input.value}:${input.selectionStart}:${input.selectionEnd}`;
+    setDismissedEmoji((current) => current === nextKey ? current : undefined);
+  };
+  const chooseEmoji = (entry: EmojiChoice) => {
+    if (!token) return;
+    const result = insertEmoji(draft, token, entry.emoji);
+    if (!result) { setValidationError("Messages must be 4,000 characters or fewer."); return; }
+    setDraft(result.value);
+    setSelection({ start: result.caret, end: result.caret });
+    setValidationError(undefined);
+    clientRef.current?.setTyping(!!result.value.trim());
+    requestAnimationFrame(() => { composerRef.current?.focus(); composerRef.current?.setSelectionRange(result.caret, result.caret); });
+  };
   const followLatest = useRef(true);
   const latestMessage = state.messages.at(-1);
   // Reaction events advance the conversation stream without adding a message.
@@ -384,10 +427,36 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       {validationError && <p className="chat-inline-error" role="alert">{validationError}</p>}
       <form onSubmit={(event) => { event.preventDefault(); void submit(); }}>
         <label className="sr-only" htmlFor="chat-message">Message {channelName}</label>
-        <textarea ref={composerRef} id="chat-message" rows={1} value={draft} disabled={state.phase !== "ready"} enterKeyHint="send" aria-describedby="chat-composer-hint" placeholder={`Message ${direct ? "" : "#"}${channelName}`} onChange={(event) => { setDraft(event.target.value); setValidationError(undefined); clientRef.current?.setTyping(!!event.target.value.trim()); }} onBlur={() => clientRef.current?.setTyping(false)} onKeyDown={(event) => {
+        {emojiOpen && <div className="chat-emoji-suggestions">
+          {suggestions.length > 0 ? <div id="chat-emoji-options" role="listbox" aria-label="Emoji suggestions">
+            {suggestions.map((entry, index) => <button type="button" role="option" id={`chat-emoji-${entry.id}`} key={entry.id} tabIndex={-1}
+              aria-selected={index === activeEmoji} aria-label={`Insert ${entry.name} emoji`}
+              onPointerDown={(event) => event.preventDefault()} onClick={() => chooseEmoji(entry)}>
+              <img src={emojiAsset(entry.id)} alt="" width="24" height="24" />
+              <span>:{entry.name.replaceAll(" ", "_")}:</span>
+            </button>)}
+          </div> : <p role="status">{emojiError ? "Emoji suggestions unavailable. You can still send text." : emojiChoices ? "No emoji found." : "Loading emoji…"}</p>}
+        </div>}
+        <textarea ref={composerRef} id="chat-message" rows={1} value={draft} disabled={state.phase !== "ready"} enterKeyHint="send" aria-describedby="chat-composer-hint"
+          aria-autocomplete="list" aria-controls={suggestions.length ? "chat-emoji-options" : undefined}
+          aria-activedescendant={suggestions[activeEmoji] ? `chat-emoji-${suggestions[activeEmoji].id}` : undefined}
+          placeholder={`Message ${direct ? "" : "#"}${channelName}`}
+          onFocus={(event) => { setComposerFocused(true); updateSelection(event.currentTarget); }} onSelect={(event) => updateSelection(event.currentTarget)}
+          onCompositionStart={() => setComposing(true)} onCompositionEnd={(event) => { setComposing(false); updateSelection(event.currentTarget); }}
+          onChange={(event) => { setDraft(event.target.value); setDismissedEmoji(undefined); updateSelection(event.target); setValidationError(undefined); clientRef.current?.setTyping(!!event.target.value.trim()); }}
+          onBlur={() => { setComposerFocused(false); clientRef.current?.setTyping(false); }} onKeyDown={(event) => {
+          if (event.nativeEvent.isComposing || composing) return;
+          if (emojiOpen && event.key === "Escape") { event.preventDefault(); setDismissedEmoji(selectionKey); return; }
+          if (suggestions.length && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+            event.preventDefault(); setSelectedEmoji((activeEmoji + (event.key === "ArrowDown" ? 1 : suggestions.length - 1)) % suggestions.length); return;
+          }
+          if (suggestions.length && !event.shiftKey && (event.key === "Enter" || event.key === "Tab")) {
+            event.preventDefault(); chooseEmoji(suggestions[activeEmoji]); return;
+          }
+          if (emojiOpen && !emojiChoices && !emojiError && event.key === "Enter" && !event.shiftKey) { event.preventDefault(); return; }
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); if (!sending) void submit(); }
         }} />
-        <span id="chat-composer-hint" className="sr-only">Enter to send. Shift+Enter for a new line.</span>
+        <span id="chat-composer-hint" className="sr-only">Type : to find emoji. Up and Down choose; Enter or Tab inserts; Escape closes suggestions. Enter to send. Shift+Enter for a new line.</span>
         {characterCount >= 3000 && <small className="chat-counter" data-tone={counterTone}>{characterCount.toLocaleString()} / 4,000</small>}
       </form>
     </div>}
