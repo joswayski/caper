@@ -881,7 +881,12 @@ fn describe(row: &Row) -> Value {
             value[name] = json!(v);
         }
     }
-    if row.preview_content_type.is_some() && row.status != "failed" {
+    // `finish` is authoritative: a video that ended up stored as a plain file
+    // keeps its early poster object (purged with the row) but shows none.
+    if row.preview_content_type.is_some()
+        && row.status != "failed"
+        && matches!(row.kind.as_str(), "image" | "video")
+    {
         value["preview"] = json!({});
     }
     if row.animated {
