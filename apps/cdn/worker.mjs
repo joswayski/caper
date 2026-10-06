@@ -48,6 +48,25 @@ function deny(status) {
   return new Response(null, { status, headers: { "cache-control": "no-store" } });
 }
 
+// The media worker stores compressible documents gzip-encoded. Clients that
+// accept gzip get the stored bytes; others get them decompressed here. Either
+// way the downloaded file is byte-identical to the upload.
+function storedEncoding(object) {
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  return (headers.get("content-encoding") ?? "").trim().toLowerCase() === "gzip" ? "gzip" : null;
+}
+
+function acceptsGzip(request) {
+  return (request.headers.get("accept-encoding") ?? "")
+    .split(",")
+    .some((part) => {
+      const [name, ...params] = part.trim().toLowerCase().split(";");
+      const q = params.map((p) => p.trim()).find((p) => p.startsWith("q="));
+      return (name === "gzip" || name === "*") && (q === undefined || Number(q.slice(2)) > 0);
+    });
+}
+
 function headersFor(object) {
   const headers = new Headers();
   object.writeHttpMetadata(headers);
@@ -68,6 +87,27 @@ function headersFor(object) {
   // Objects never change once uploaded; the signed URL itself rotates daily.
   headers.set("cache-control", PRIVATE);
   return headers;
+}
+
+async function encoded(request, env, key, found, passthrough) {
+  const headers = headersFor(found);
+  headers.set("vary", "accept-encoding");
+  headers.delete("accept-ranges");
+  if (passthrough) headers.set("content-encoding", "gzip");
+  if (request.method === "HEAD") {
+    if (passthrough) headers.set("content-length", String(found.size));
+    return new Response(null, { status: 200, headers });
+  }
+  // A ranged or conditional read returned part or none of the body: refetch.
+  const object = found.range || found.body == null ? await env.MEDIA.get(key) : found;
+  if (!object) return deny(404);
+  if (passthrough) {
+    headers.set("content-length", String(object.size));
+    // `encodeBody: "manual"` stops the runtime from compressing again.
+    return new Response(object.body, { status: 200, headers, encodeBody: "manual" });
+  }
+  const body = new Response(object.body).body.pipeThrough(new DecompressionStream("gzip"));
+  return new Response(body, { status: 200, headers });
 }
 
 export default {
@@ -99,6 +139,9 @@ export default {
       ? await env.MEDIA.head(key)
       : await env.MEDIA.get(key, { range: request.headers, onlyIf: request.headers });
     if (!object) return deny(404);
+    // Encoded documents skip ranges and the shared edge cache (one cached copy
+    // cannot serve both encodings), so they are never edge-cache hits above.
+    if (storedEncoding(object)) return encoded(request, env, key, object, acceptsGzip(request));
     const headers = headersFor(object);
     if (!("body" in object) || object.body == null) {
       // HEAD, or a conditional request that matched (If-None-Match).

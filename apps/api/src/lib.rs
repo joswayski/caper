@@ -812,11 +812,13 @@ impl AppState {
         Ok(())
     }
 
-    /// Uploads need R2 credentials; without them the routes answer 503.
+    /// Uploads need the S3 incoming bucket, R2 and the media worker secret;
+    /// without them the routes answer 503. Enable chat first so finished files
+    /// can wake the event publisher.
     pub fn enable_assets(&mut self, environment: &RuntimeEnvironment) -> Result<(), String> {
         self.assets = assets::Assets::from_env(self.database.as_ref(), environment)?;
         if let Some(assets) = self.assets.clone() {
-            assets::spawn_purger(assets);
+            assets::spawn_purger(assets, self.chat.as_ref().map(|chat| chat.wake.clone()));
         }
         Ok(())
     }
@@ -1103,6 +1105,7 @@ fn app_router(state: AppState, test_only_routes: Router<AppState>) -> Router {
         .merge(account_login)
         .merge(updates::routes())
         .merge(protected)
+        .merge(assets::worker_routes())
         .merge(channel_media::routes())
         .merge(chat::routes())
         .merge(test_only_routes)

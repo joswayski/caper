@@ -121,7 +121,7 @@ impl Gateway {
                                 if let Ok(text) = message.get_payload::<String>()
                                     && let Ok(event) = serde_json::from_str::<Value>(&text) {
                                     state.application.dispatch(&event);
-                                    let sender = if event["type"] == "typing.updated" { &state.typing } else { &state.events };
+                                    let sender = if chat::ephemeral(&event) { &state.typing } else { &state.events };
                                     let _ = sender.send(event);
                                 }
                             }

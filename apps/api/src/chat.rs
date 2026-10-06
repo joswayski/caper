@@ -30,6 +30,15 @@ pub(crate) const TOPIC: &str = "caper:chat:v1:events";
 pub(crate) const TYPING_TOPIC: &str = "caper:chat:v1:typing";
 const PAGE: i64 = 50;
 
+/// Unsequenced broker events: typing and media processing progress. Gateways
+/// forward them without touching the durable delivery cursor.
+pub(crate) fn ephemeral(event: &Value) -> bool {
+    matches!(
+        event["type"].as_str(),
+        Some("typing.updated" | "attachment.progress")
+    )
+}
+
 #[derive(Clone)]
 pub(crate) struct Chat {
     pub pool: PgPool,

@@ -905,7 +905,11 @@ attachment, for clients open longer than a URL's lifetime.
   `{"type":"message.attachments","schemaVersion":1,"channelId","seq","messageId","attachments":[…]}`.
   Replace the message's `content.attachments` with `attachments` (freshly
   signed). Sent when a preview appears, when processing finishes, and when it
-  fails.
+  fails. The stored message also records `attachmentsSeq` (like
+  `reactionSeq`): apply an event only when its `seq` is newer than the
+  message's `attachmentsSeq`, and take a fetched message's attachments only
+  when its `attachmentsSeq` is newer, so a replayed "processing" event never
+  overwrites a "ready" snapshot.
 - `attachment.progress` (ephemeral, unsequenced, like `typing.updated`):
   `{"type":"attachment.progress","channelId","messageId","attachmentId","percent"}`
   with `percent` 0–100, at most every few seconds while a video encodes. Clients
