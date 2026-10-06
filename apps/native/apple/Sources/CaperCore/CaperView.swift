@@ -1930,13 +1930,14 @@ private struct MessageRow: View {
             .onLongPressGesture(perform: showReactionPicker)
             .accessibilityAction(named: Text("Message actions")) { showReactionPicker() }
         #else
-        row.contentShape(Rectangle())
-            .onHover { controlsHovered = $0 }
+        row
             .overlay(alignment: .topTrailing) {
                 HStack(spacing: 2) {
                     Button(action: showReactionPicker) {
                         Image(systemName: "face.smiling").font(.system(size: 14, weight: .medium)).frame(width: 24, height: 24)
-                    }.buttonStyle(.plain).focused($reactionFocused).accessibilityLabel("Add reaction")
+                            .contentShape(Rectangle())
+                    }.buttonStyle(.plain).frame(width: 24, height: 24)
+                        .focused($reactionFocused).accessibilityLabel("Add reaction")
                         .modifier(ControlHover(isFocused: reactionFocused))
                         .disabled(chat.isPreview || chat.currentAuthor == nil)
                         .accessibilityIdentifier("add-reaction-\(message.id)")
@@ -1950,12 +1951,19 @@ private struct MessageRow: View {
                         }
                     } label: {
                         Image(systemName: "ellipsis").font(.system(size: 14, weight: .medium)).frame(width: 24, height: 24)
-                    }.menuStyle(.borderlessButton).menuIndicator(.hidden).focused($actionsFocused)
+                    }.menuStyle(.borderlessButton).menuIndicator(.hidden)
+                        // Native Menu otherwise expands the overlay to the row's
+                        // width, moving Add reaction away from the trailing edge.
+                        .frame(width: 24, height: 24).focused($actionsFocused)
                         .accessibilityLabel("Message options")
                 }.opacity(controlsHovered || reactionFocused || actionsFocused ? 1 : 0)
                     .allowsHitTesting(controlsHovered || reactionFocused || actionsFocused)
                     .padding(.trailing, 18).padding(.top, 6)
             }
+            // Track the whole row, including its overlay. Entering a message
+            // action must not hide that action before the pointer can click it.
+            .contentShape(Rectangle())
+            .onHover { controlsHovered = $0 }
             .contextMenu {
                 Button(message.pin == nil ? "Pin message" : "Unpin message") {
                     Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
