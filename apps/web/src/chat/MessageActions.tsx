@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ComponentType } from "react";
 import { autoUpdate, flip, FloatingFocusManager, FloatingOverlay, FloatingPortal, offset, shift, useDismiss, useFloating, useInteractions, useRole } from "@floating-ui/react";
-import { Copy, Hash, SmilePlus, X } from "lucide-react";
+import { Copy, Hash, SmilePlus, Users, X } from "lucide-react";
 import type { ChatMessage } from "./types.ts";
 import { emojiAsset, emojiCode, preloadEmojiImages } from "./emoji.ts";
 
@@ -19,7 +19,7 @@ export function preloadReactionPicker() {
   void preloadEmojiImages();
 }
 
-export default function MessageActions({ message, target, authorId, canReact, onReact, onClose, onCopied }: {
+export default function MessageActions({ message, target, authorId, canReact, onReact, onClose, onCopied, onViewReactions }: {
   message: ChatMessage;
   target: MessageActionTarget;
   authorId?: string;
@@ -27,6 +27,7 @@ export default function MessageActions({ message, target, authorId, canReact, on
   onReact: (messageId: string, emoji: string, active: boolean) => Promise<void>;
   onClose: () => void;
   onCopied: (status: string) => void;
+  onViewReactions: (emoji: string) => void;
 }) {
   const [mode, setMode] = useState(target.mode);
   const [Picker, setPicker] = useState<ComponentType<{ onSelect: (emoji: string) => void }>>();
@@ -87,6 +88,8 @@ export default function MessageActions({ message, target, authorId, canReact, on
             onClick={() => setMode("emoji")}><SmilePlus size={24} aria-hidden="true" /></button>
         </div>}
         <div className="chat-copy-actions">
+          {!!message.reactions?.length && <button type="button" onClick={() => onViewReactions(message.reactions![0].emoji)}>
+            <Users size={20} aria-hidden="true" />View reactions</button>}
           <button type="button" onClick={() => void copy(message.content.text, "Text")}><Copy size={20} aria-hidden="true" />Copy text</button>
           <button type="button" onClick={() => void copy(message.id, "Message ID")}><Hash size={20} aria-hidden="true" />Copy message ID</button>
         </div>

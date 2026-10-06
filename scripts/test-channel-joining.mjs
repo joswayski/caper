@@ -96,7 +96,7 @@ try {
   assert.equal(evaluate('channelFixture.requests.some(r => r.path.includes("other1234567/media") || r.path.endsWith("membership"))'), false);
   assert.equal(evaluate('channelFixture.microphones'), 0);
   wait('!!document.querySelector(".chat-reaction")');
-  assert.equal(evaluate('[...document.querySelectorAll(".chat-reaction,.chat-add-reaction")].every(button => button.disabled)'), true);
+  assert.equal(evaluate('[...document.querySelectorAll(".chat-reaction,.chat-add-reaction")].every(button => button.disabled || button.getAttribute("aria-disabled") === "true")'), true);
   assert.equal(evaluate('document.querySelector(".chat-reaction").textContent'), '2');
   screenshot('public-channel-preview-1280');
   evaluate('channelFixture.fail = true');
@@ -109,7 +109,7 @@ try {
   assert.equal(evaluate('channelFixture.microphones'), 0);
   browser('reload');
   wait('document.querySelector("#space-channel-list").textContent.includes("design")');
-  wait('!document.querySelector(".chat-initial-messages") && !!document.querySelector(".chat-reaction:not(:disabled)")');
+  wait('!document.querySelector(".chat-initial-messages") && !!document.querySelector(\'.chat-reaction:not([aria-disabled="true"])\')');
   browser('find', 'first', '.chat-reaction', 'click');
   wait('!!document.querySelector(".chat-send-error")');
   const reactionWrites = evaluate('channelFixture.requests.filter(r => r.path.endsWith("/reactions")).length');
@@ -119,7 +119,7 @@ try {
   evaluate('channelFixture.state.joined = channelFixture.state.joined.filter(id => id !== "other1234567"); window.dispatchEvent(new Event("focus"))');
   wait('!!document.querySelector(".channel-preview") && !document.querySelector("#chat-message")');
   assert.equal(evaluate('document.querySelector("#space-channel-list").textContent.includes("design")'), false);
-  assert.equal(evaluate('[...document.querySelectorAll(".chat-reaction,.chat-add-reaction")].every(button => button.disabled)'), true);
+  assert.equal(evaluate('[...document.querySelectorAll(".chat-reaction,.chat-add-reaction")].every(button => button.disabled || button.getAttribute("aria-disabled") === "true")'), true);
   assert.equal(evaluate('document.querySelector(".chat-reaction-picker") === null'), true);
   assert.equal(evaluate('[...document.querySelectorAll("button")].filter(button => button.textContent === "Retry reaction").every(button => button.disabled)'), true);
   evaluate('[...document.querySelectorAll(".chat-reaction,.chat-add-reaction, .chat-send-error button")].filter(button => button.textContent !== "Dismiss").forEach(button => button.click())');
@@ -164,7 +164,7 @@ try {
   wait('!!document.querySelector(".channel-preview")');
   assert.equal(evaluate('document.documentElement.scrollWidth > innerWidth'), false);
   wait('!!document.querySelector(".chat-reaction")');
-  assert.equal(evaluate('[...document.querySelectorAll(".chat-reaction,.chat-add-reaction")].every(button => button.disabled)'), true);
+  assert.equal(evaluate('[...document.querySelectorAll(".chat-reaction,.chat-add-reaction")].every(button => button.disabled || button.getAttribute("aria-disabled") === "true")'), true);
   screenshot('public-channel-preview-390');
   browser('find', 'role', 'button', 'click', '--name', 'Browse', '--exact');
   browser('click', '.pending-channel-invite');

@@ -1467,6 +1467,18 @@ private struct ChatView: View {
     // live messages arrive. Keep the sheet's presenter and target outside it.
     @State private var reactionMessage: ChatMessage?
     @State private var showingEmojiPicker = false
+    /// Who reacted: opened by holding a chip (iOS) or its VoiceOver action.
+    @State private var reactorsTarget: ReactorsTarget?
+
+    /// The signed-in person, also while previewing without a chat session.
+    private var viewerID: String? { chat.currentAuthor?.id ?? model.account?.id }
+
+    private var reactorContext: ReactorContext {
+        ReactorContext(viewerID: viewerID, sheetOpen: reactorsTarget != nil) { messageID, emoji in
+            reactionMessage = nil; showingEmojiPicker = false
+            reactorsTarget = ReactorsTarget(messageID: messageID, emoji: emoji)
+        }
+    }
     @StateObject private var emojiComposer = EmojiComposerController()
 
     /// Defer the scroll request; content geometry repeats it when the timeline
@@ -1538,7 +1550,9 @@ private struct ChatView: View {
                                     if index == 0 || !ChatDateDivider.sameLocalDay(chat.messages[index - 1].createdAt, message.createdAt) {
                                         ChatDateDivider(createdAt: message.createdAt)
                                     }
-                                    MessageRow(message: message, chat: chat) {
+                                    MessageRow(message: message, chat: chat, reactors: reactorContext) {
+                                        // Holding a chip opens who reacted, not message actions.
+                                        guard reactorsTarget == nil else { return }
                                         showingEmojiPicker = false
                                         reactionMessage = message
                                     }
@@ -1671,6 +1685,33 @@ private struct ChatView: View {
                 Text("\(chat.draft.unicodeScalars.count.formatted()) / 4,000").font(CaperTheme.font(10)).foregroundStyle(counterTone).padding(.bottom, 6)
             }
         }.background(CaperTheme.conversation)
+            #if os(macOS)
+            // Drawn above the whole conversation so the timeline's clipping
+            // and later rows never cover a hovered chip's tooltip.
+            .overlayPreferenceValue(ReactionTooltipKey.self) { tooltip in
+                GeometryReader { proxy in
+                    if let tooltip {
+                        let chip = proxy[tooltip.anchor]
+                        ReactionTooltipBubble(emoji: tooltip.emoji, text: tooltip.text)
+                            // Start at the chip, kept 8 points inside the conversation.
+                            .alignmentGuide(.leading) { size in
+                                let rightmost: CGFloat = max(8, proxy.size.width - size.width - 8)
+                                return -min(max(8, chip.minX), rightmost)
+                            }
+                            // Above the chip; below it when there is no room above.
+                            .alignmentGuide(.top) { size in
+                                let top: CGFloat = chip.minY - 6 - size.height
+                                return top >= 0 ? -top : -(chip.maxY + 6)
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    }
+                }
+                .allowsHitTesting(false)
+            }
+            #endif
+            .sheet(item: $reactorsTarget) { target in
+                ReactorsSheet(chat: chat, messageID: target.messageID, emoji: target.emoji, viewerID: viewerID)
+            }
             .sheet(item: $reactionMessage) { message in
                 #if os(iOS)
                 MessageActionsSheet(message: message, showingEmojiPicker: $showingEmojiPicker,
@@ -1697,8 +1738,8 @@ private struct ChatView: View {
                 if preview { reactionMessage = nil; showingEmojiPicker = false }
             }
             .onChange(of: chat.currentAuthor?.id) { _, _ in reactionMessage = nil; showingEmojiPicker = false }
-            .onChange(of: model.selectedChannelID) { _, _ in reactionMessage = nil; showingEmojiPicker = false }
-            .onChange(of: model.selectedDirectMessageID) { _, _ in reactionMessage = nil; showingEmojiPicker = false }
+            .onChange(of: model.selectedChannelID) { _, _ in reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil }
+            .onChange(of: model.selectedDirectMessageID) { _, _ in reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil }
             .task(id: chat.liveState) {
                 showConnectionStatus = false
                 guard chat.liveState != .connected else { return }
@@ -1801,6 +1842,7 @@ struct ChatDateDivider: View {
 private struct MessageRow: View {
     let message: ChatMessage
     @Bindable var chat: ChatModel
+    let reactors: ReactorContext
     let showReactionPicker: () -> Void
     var body: some View {
         let row = HStack(alignment: .top, spacing: 10) {
@@ -1816,7 +1858,7 @@ private struct MessageRow: View {
                     #if os(macOS)
                     .textSelection(.enabled)
                     #endif
-                ReactionRow(message: message, chat: chat, showPicker: showReactionPicker)
+                ReactionRow(message: message, chat: chat, reactors: reactors, showPicker: showReactionPicker)
                 if let error = chat.reactionErrors[message.id] {
                     HStack(spacing: 8) {
                         Text(error)
@@ -1850,12 +1892,13 @@ private struct MessageRow: View {
 private struct ReactionRow: View {
     let message: ChatMessage
     @Bindable var chat: ChatModel
+    let reactors: ReactorContext
     let showPicker: () -> Void
 
     var body: some View {
         ReactionFlowLayout(spacing: 6) {
             ForEach(message.reactions ?? []) { reaction in
-                ReactionChip(messageID: message.id, reaction: reaction, chat: chat)
+                ReactionChip(message: message, reaction: reaction, chat: chat, reactors: reactors)
             }
             #if os(macOS)
             Button(action: showPicker) {
@@ -1881,14 +1924,40 @@ private struct ReactionRow: View {
 }
 
 private struct ReactionChip: View {
-    let messageID: String
+    let message: ChatMessage
     let reaction: MessageReaction
     @Bindable var chat: ChatModel
+    let reactors: ReactorContext
+    #if os(iOS)
+    /// The release that ends a hold must not also toggle the reaction.
+    @State private var suppressTap = false
+    #else
+    @State private var hovering = false
+    @State private var tooltipVisible = false
+    #endif
     private var own: Bool { chat.currentAuthor.map { reaction.authorIds.contains($0.id) } ?? false }
+
+    /// Names once loaded; until then, or after a failure, the snapshot count.
+    private var summary: String {
+        let name = EmojiArtwork.name(for: reaction.emoji)
+        if case .loaded(let people) = chat.reactorsState(for: message, emoji: reaction.emoji, viewerID: reactors.viewerID),
+           !people.isEmpty {
+            return ReactionSummary.text(authors: people, selfID: reactors.viewerID, emojiName: name, emoji: reaction.emoji)
+        }
+        return ReactionSummary.fallback(authorIDs: reaction.authorIds, selfID: reactors.viewerID, emojiName: name, emoji: reaction.emoji)
+    }
+
+    #if os(macOS)
+    /// Read while the body is evaluated, so loading names updates the tooltip.
+    private var tooltipText: String? { tooltipVisible ? summary : nil }
+    #endif
 
     var body: some View {
         Button {
-            Task { await chat.setReaction(messageID: messageID, emoji: reaction.emoji, active: !own) }
+            #if os(iOS)
+            if suppressTap { suppressTap = false; return }
+            #endif
+            Task { await chat.setReaction(messageID: message.id, emoji: reaction.emoji, active: !own) }
         } label: {
             HStack(spacing: 4) {
                 EmojiArtworkView(emoji: reaction.emoji, size: 18)
@@ -1906,6 +1975,226 @@ private struct ReactionChip: View {
         .disabled(chat.isPreview || chat.currentAuthor == nil)
         .accessibilityLabel("\(reaction.emoji) reaction, \(reaction.authorIds.count), \(own ? "selected by you" : "not selected by you")")
         .accessibilityAddTraits(own ? .isSelected : [])
+        // Outside .disabled: read-only previews can still see who reacted.
+        .accessibilityAction(named: Text("Show who reacted")) { reactors.show(message.id, reaction.emoji) }
+        #if os(iOS)
+        // Just under the row's 0.5 s hold, so the chip's sheet wins over
+        // message actions; the row's handler also yields while it is open.
+        .simultaneousGesture(LongPressGesture(minimumDuration: 0.45).onEnded { _ in
+            suppressTap = true
+            reactors.show(message.id, reaction.emoji)
+        })
+        // A hold whose touch was cancelled never delivers the suppressed tap.
+        .onChange(of: reactors.sheetOpen) { _, open in if !open { suppressTap = false } }
+        #else
+        .onHover { hovering = $0 }
+        .task(id: hovering) {
+            guard hovering else { tooltipVisible = false; return }
+            do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
+            tooltipVisible = true
+            _ = chat.requestReactors(messageID: message.id)
+        }
+        .onChange(of: message.reactionSeq) { _, _ in
+            if tooltipVisible { _ = chat.requestReactors(messageID: message.id) }
+        }
+        .anchorPreference(key: ReactionTooltipKey.self, value: .bounds) { [text = tooltipText, emoji = reaction.emoji] anchor in
+            text.map { ReactionTooltip(emoji: emoji, text: $0, anchor: anchor) }
+        }
+        #endif
+    }
+}
+
+/// How chips reveal who reacted: the viewer (shown as "You") and the
+/// press-and-hold sheet, which a chip must know has closed.
+private struct ReactorContext {
+    let viewerID: String?
+    let sheetOpen: Bool
+    let show: (_ messageID: String, _ emoji: String) -> Void
+}
+
+private struct ReactorsTarget: Identifiable, Equatable {
+    let messageID: String
+    let emoji: String
+    var id: String { "\(messageID)|\(emoji)" }
+}
+
+#if os(macOS)
+private struct ReactionTooltip {
+    let emoji: String
+    let text: String
+    let anchor: Anchor<CGRect>
+}
+
+private struct ReactionTooltipKey: PreferenceKey {
+    static var defaultValue: ReactionTooltip? { nil }
+    static func reduce(value: inout ReactionTooltip?, nextValue: () -> ReactionTooltip?) {
+        value = value ?? nextValue()
+    }
+}
+
+/// Discord-style hover card: a large emoji beside who reacted.
+private struct ReactionTooltipBubble: View {
+    let emoji: String
+    let text: String
+    var body: some View {
+        HStack(spacing: 10) {
+            if EmojiArtwork.entry(for: emoji) != nil {
+                EmojiArtworkView(emoji: emoji, size: 38)
+            } else {
+                Text(emoji).font(.system(size: 32))
+            }
+            Text(text).font(CaperTheme.font(12, weight: .medium)).foregroundStyle(CaperTheme.text)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(10)
+        .background(CaperTheme.blackout, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+        .shadow(color: .black.opacity(0.35), radius: 8, y: 3)
+        .frame(maxWidth: 280, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(text)
+        .accessibilityIdentifier("reaction-tooltip")
+    }
+}
+#endif
+
+/// Who reacted, by emoji: tabs in chip order, then each person.
+private struct ReactorsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Bindable var chat: ChatModel
+    let messageID: String
+    let viewerID: String?
+    @State private var selected: String
+
+    init(chat: ChatModel, messageID: String, emoji: String, viewerID: String?) {
+        self.chat = chat
+        self.messageID = messageID
+        self.viewerID = viewerID
+        _selected = State(initialValue: emoji)
+    }
+
+    private var message: ChatMessage? { chat.messages.first { $0.id == messageID } }
+    private var reactions: [MessageReaction] { message?.reactions ?? [] }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                tabs
+                Rectangle().fill(CaperTheme.border).frame(height: 1)
+                people
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .background(CaperTheme.raised)
+            // Contain, so this identifier does not replace each tab's and row's own.
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("reactors-sheet")
+            .navigationTitle("Reactions")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+        }
+        #if os(iOS)
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .presentationBackground(CaperTheme.raised)
+        #else
+        .frame(minWidth: 360, minHeight: 420)
+        #endif
+        // Opening again after a change, or a change while open, refetches.
+        .task(id: message?.reactionSeq) { _ = chat.requestReactors(messageID: messageID) }
+        .onChange(of: reactions.map(\.emoji)) { _, emojis in
+            guard let first = emojis.first else { dismiss(); return }
+            if !emojis.contains(selected) { selected = first }
+        }
+    }
+
+    private var tabs: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    ForEach(reactions) { reaction in
+                        let isSelected = reaction.emoji == selected
+                        let count = reaction.authorIds.count
+                        Button { selected = reaction.emoji } label: {
+                            HStack(spacing: 5) {
+                                EmojiArtworkView(emoji: reaction.emoji, size: 20)
+                                Text("\(count)").font(CaperTheme.font(12, weight: .bold))
+                            }
+                            .foregroundStyle(isSelected ? CaperTheme.text : CaperTheme.muted)
+                            .padding(.horizontal, 10)
+                            .frame(minHeight: 44)
+                            .overlay(alignment: .bottom) {
+                                Rectangle().fill(isSelected ? CaperTheme.terracotta : Color.clear).frame(height: 2)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .modifier(ControlHover())
+                        .id(reaction.emoji)
+                        .accessibilityLabel("\(reaction.emoji), \(count) \(count == 1 ? "person" : "people")")
+                        .accessibilityAddTraits(isSelected ? .isSelected : [])
+                        .accessibilityIdentifier("reactors-tab-\(reaction.emoji)")
+                    }
+                }
+                .padding(.horizontal, 12)
+            }
+            .onAppear { proxy.scrollTo(selected, anchor: .center) }
+            .onChange(of: selected) { _, emoji in withAnimation { proxy.scrollTo(emoji, anchor: .center) } }
+        }
+    }
+
+    @ViewBuilder private var people: some View {
+        if let message, let reaction = reactions.first(where: { $0.emoji == selected }) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(ReactionSummary.emojiLabel(emojiName: EmojiArtwork.name(for: reaction.emoji), emoji: reaction.emoji))
+                        .font(CaperTheme.font(12, weight: .medium)).foregroundStyle(CaperTheme.muted)
+                        .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 6)
+                        .accessibilityIdentifier("reactors-emoji-name")
+                    switch chat.reactorsState(for: message, emoji: reaction.emoji, viewerID: viewerID) {
+                    case .loaded(let reactors):
+                        ForEach(reactors) { person in ReactorRow(person: person) }
+                    case .loading:
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("Loading…").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
+                        }
+                        .padding(16)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("reactors-loading")
+                    case .failed:
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Couldn’t load reactions").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
+                            Button("Retry") { _ = chat.requestReactors(messageID: messageID, force: true) }
+                                .buttonStyle(CaperSecondaryButton())
+                                .accessibilityIdentifier("reactors-retry")
+                        }
+                        .padding(16)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+}
+
+private struct ReactorRow: View {
+    let person: ReactorPerson
+    var body: some View {
+        HStack(spacing: 10) {
+            Avatar(name: person.name, size: 34, avatarID: person.avatarId)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(person.name).font(CaperTheme.font(14, weight: .bold)).foregroundStyle(CaperTheme.text).lineLimit(1)
+                if let username = person.username, !username.isEmpty {
+                    Text("@\(username)").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 7)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("reactor-row-\(person.id)")
     }
 }
 

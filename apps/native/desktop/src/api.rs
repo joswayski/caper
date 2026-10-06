@@ -1,6 +1,6 @@
 use crate::model::{
     Account, Channel, ChatSession, DirectConversation, DirectConversations, History, Member,
-    Members, Message, ReactionUpdate, Space, SpaceDetail, Spaces,
+    Members, Message, ReactionUpdate, Reactors, Space, SpaceDetail, Spaces,
 };
 use reqwest::blocking::{Client, Response};
 use reqwest::{Method, StatusCode, redirect::Policy};
@@ -450,6 +450,23 @@ impl Api {
         )
     }
 
+    /// Who reacted to one message, with the same read access (and account
+    /// token) as `history`.
+    pub fn reactors(
+        &self,
+        token: Option<&str>,
+        channel: &str,
+        message: &str,
+    ) -> Result<Reactors, ApiError> {
+        self.request(
+            Method::GET,
+            &format!("api/chat/channels/{channel}/messages/{message}/reactions"),
+            token,
+            None,
+            None,
+        )
+    }
+
     /// Whether voice is enabled for the General demo (`channel` None, no
     /// credentials) or for one account channel, as web reads it.
     pub fn media_status(&self, token: Option<&str>, channel: Option<&str>) -> bool {
@@ -541,5 +558,69 @@ fn invalid(message: &str) -> ApiError {
         status: None,
         message: message.into(),
         attempts_remaining: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Api;
+    use std::io::{BufRead, BufReader, Write};
+
+    #[test]
+    fn reactor_list_uses_history_auth_and_decodes_people() {
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api = Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
+        let worker = std::thread::spawn(move || {
+            for (status, body) in [
+                (
+                    "200 OK",
+                    r#"{"messageId":"m1","reactionSeq":"12","reactions":[{"emoji":"👍","authors":[{"id":"bob","username":"bob","displayName":"Bob B","avatarId":101},{"id":"alice","username":"alice","displayName":null,"avatarId":100}]}]}"#,
+                ),
+                ("404 Not Found", r#"{"error":"message not found"}"#),
+            ] {
+                let (stream, _) = server.accept().unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                assert_eq!(
+                    request,
+                    "GET /api/chat/channels/c1/messages/m1/reactions HTTP/1.1\r\n"
+                );
+                let mut authorized = false;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    let lower = line.to_ascii_lowercase();
+                    authorized |= lower == "authorization: bearer account\r\n";
+                    assert!(
+                        !lower.starts_with("x-caper-chat-token"),
+                        "reading needs no chat session"
+                    );
+                }
+                assert!(authorized, "the account token authorizes the read");
+                write!(
+                    reader.get_mut(),
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+        });
+        let list = api.reactors(Some("account"), "c1", "m1").unwrap();
+        assert_eq!(list.message_id, "m1");
+        assert_eq!(list.reaction_seq, "12");
+        let names: Vec<_> = list.reactions[0]
+            .authors
+            .iter()
+            .map(|author| (author.id.as_str(), author.display_name.as_deref()))
+            .collect();
+        assert_eq!(names, [("bob", Some("Bob B")), ("alice", None)]);
+        assert_eq!(list.reactions[0].authors[1].avatar_id, Some(100));
+        let missing = api.reactors(Some("account"), "c1", "m1").unwrap_err();
+        assert_eq!(missing.status.map(|status| status.as_u16()), Some(404));
+        worker.join().unwrap();
     }
 }

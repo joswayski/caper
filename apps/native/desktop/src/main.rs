@@ -167,6 +167,38 @@ struct PendingReaction {
     superseded: bool,
 }
 
+/// Who reacted to one message, read at the snapshot's `reactionSeq`.
+struct ReactorCache {
+    revision: String,
+    state: ReactorState,
+}
+
+enum ReactorState {
+    Loading(Instant),
+    Loaded(Vec<model::ReactorGroup>),
+    /// Hovering again retries after `REACTOR_RETRY`.
+    Failed(Instant),
+}
+
+impl ReactorCache {
+    /// Whether hovering should (re)start the request for `revision`.
+    fn wants_request(&self, revision: &str) -> bool {
+        self.revision != revision
+            || match self.state {
+                ReactorState::Loaded(_) => false,
+                // The API client times out after 15 s, so this request is lost.
+                ReactorState::Loading(at) => at.elapsed() >= Duration::from_secs(20),
+                ReactorState::Failed(at) => at.elapsed() >= REACTOR_RETRY,
+            }
+    }
+}
+
+const REACTOR_RETRY: Duration = Duration::from_secs(5);
+const REACTOR_CACHE_LIMIT: usize = 256;
+/// Discord-style hover card: large emoji, then the summary.
+const REACTOR_TOOLTIP_WIDTH: f32 = 280.0;
+const REACTOR_TOOLTIP_EMOJI: f32 = 36.0;
+
 fn projected_reactions(
     reactions: &[model::Reaction],
     message: &str,
@@ -260,6 +292,8 @@ struct CaperApp {
     reaction_textures: emoji::Textures,
     pending_reactions: BTreeMap<(String, String), PendingReaction>,
     reaction_errors: BTreeMap<String, String>,
+    /// Who reacted, by message ID, for reaction chip hover cards.
+    reactors: BTreeMap<String, ReactorCache>,
     typers: BTreeMap<String, Typer>,
     typing_sent: bool,
     typing_edited: Instant,
@@ -370,6 +404,7 @@ impl CaperApp {
             reaction_textures: emoji::Textures::default(),
             pending_reactions: BTreeMap::new(),
             reaction_errors: BTreeMap::new(),
+            reactors: BTreeMap::new(),
             typers: BTreeMap::new(),
             typing_sent: false,
             typing_edited: now,
@@ -1241,6 +1276,32 @@ impl CaperApp {
                         }
                     }
                 }
+                Event::Reactors {
+                    generation,
+                    channel,
+                    message,
+                    revision,
+                    result,
+                } if current(
+                    generation,
+                    self.generation,
+                    Some(&channel),
+                    self.selected_channel.as_deref(),
+                ) =>
+                {
+                    // A newer revision may have started its own request since.
+                    if let Some(cached) = self.reactors.get_mut(&message).filter(|cached| {
+                        cached.revision == revision
+                            && matches!(cached.state, ReactorState::Loading(_))
+                    }) {
+                        cached.state = match result {
+                            Ok(list) if list.message_id == message => {
+                                ReactorState::Loaded(list.reactions)
+                            }
+                            _ => ReactorState::Failed(Instant::now()),
+                        };
+                    }
+                }
                 Event::Admin { generation, result } if generation == self.generation => {
                     self.loading = false;
                     match result {
@@ -1859,6 +1920,7 @@ impl CaperApp {
         self.reaction_picker = None;
         self.pending_reactions.clear();
         self.reaction_errors.clear();
+        self.reactors.clear();
         self.draft.clear();
         self.typers.clear();
         self.error = None;
@@ -2329,6 +2391,7 @@ impl CaperApp {
         self.reaction_picker = None;
         self.pending_reactions.clear();
         self.reaction_errors.clear();
+        self.reactors.clear();
         self.draft.clear();
         self.typers.clear();
         self.live = "Offline".into();
@@ -5990,6 +6053,7 @@ impl CaperApp {
                                 label.clone(),
                             )
                         });
+                        self.reactor_tooltip(&response, message, reaction, entry);
                         if response.clicked() {
                             self.set_reaction(&message.id, &reaction.emoji, !owned);
                         }
@@ -6034,6 +6098,149 @@ impl CaperApp {
                     });
                 }
             });
+    }
+
+    /// Hovering (or keyboard-focusing) a reaction chip shows who reacted,
+    /// Discord-style: the emoji large, then the shared summary. Clicking
+    /// still toggles the reaction and hides the card, as for every tooltip.
+    fn reactor_tooltip(
+        &mut self,
+        chip: &egui::Response,
+        message: &model::Message,
+        reaction: &model::Reaction,
+        entry: &'static emoji::Entry,
+    ) {
+        const BELOW: [egui::RectAlign; 1] = [egui::RectAlign::BOTTOM_START];
+        let mut tooltip = egui::Tooltip::for_widget(chip);
+        tooltip.popup = tooltip
+            .popup
+            .open(chip.has_focus() || egui::Tooltip::should_show_tooltip(chip, false))
+            .align(egui::RectAlign::TOP_START)
+            .align_alternatives(&BELOW)
+            .width(REACTOR_TOOLTIP_WIDTH)
+            .frame(
+                egui::Frame::popup(&chip.ctx.style())
+                    .fill(SURFACE)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .corner_radius(8)
+                    .inner_margin(10),
+            );
+        tooltip.show(|ui| {
+            // Only runs while the card is showing, so names load on demand.
+            self.load_reactors(message);
+            let summary = self.reactor_summary(message, reaction);
+            ui.set_max_width(REACTOR_TOOLTIP_WIDTH - 20.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                let image = self
+                    .reaction_textures
+                    .image(ui, entry, REACTOR_TOOLTIP_EMOJI);
+                ui.add(image);
+                ui.add(egui::Label::new(RichText::new(summary).size(13.0).color(TEXT)).wrap());
+            });
+        });
+    }
+
+    /// The signed-in person, as reaction snapshots name them.
+    fn reactor_self_id(&self) -> Option<&str> {
+        self.session
+            .as_ref()
+            .map(|session| session.author.id.as_str())
+            .or_else(|| self.account.as_ref().map(|account| account.id.as_str()))
+    }
+
+    /// Starts reading who reacted to `message` unless its current reaction
+    /// revision is cached or already loading.
+    fn load_reactors(&mut self, message: &model::Message) {
+        let revision = message.reaction_seq.clone().unwrap_or_else(|| "0".into());
+        if self
+            .reactors
+            .get(&message.id)
+            .is_some_and(|cached| !cached.wants_request(&revision))
+        {
+            return;
+        }
+        if self.reactors.len() >= REACTOR_CACHE_LIMIT && !self.reactors.contains_key(&message.id) {
+            self.reactors.clear();
+        }
+        if !self.persist_preferences {
+            // Fixtures never contact Caper: name the labelled fixture members.
+            let members = self
+                .detail
+                .as_ref()
+                .map_or(&[][..], |detail| detail.members.as_slice());
+            let reactions = message
+                .reactions
+                .iter()
+                .map(|reaction| model::ReactorGroup {
+                    emoji: reaction.emoji.clone(),
+                    authors: reaction
+                        .author_ids
+                        .iter()
+                        .map(|id| {
+                            let member = members.iter().find(|member| member.id == *id);
+                            model::Reactor {
+                                id: id.clone(),
+                                username: member.map(|member| member.username.clone()),
+                                display_name: member.map(|member| member.display_name.clone()),
+                                avatar_id: member.and_then(|member| member.avatar_id),
+                            }
+                        })
+                        .collect(),
+                })
+                .collect();
+            self.reactors.insert(
+                message.id.clone(),
+                ReactorCache {
+                    revision,
+                    state: ReactorState::Loaded(reactions),
+                },
+            );
+            return;
+        }
+        self.reactors.insert(
+            message.id.clone(),
+            ReactorCache {
+                revision: revision.clone(),
+                state: ReactorState::Loading(Instant::now()),
+            },
+        );
+        self.worker.send(Command::LoadReactors {
+            generation: self.generation,
+            token: self.token.clone(),
+            channel: message.channel_id.clone(),
+            message: message.id.clone(),
+            revision,
+        });
+    }
+
+    /// Names once they load for this exact set of people (a pending toggle
+    /// of your own changes the set); the snapshot's count until then.
+    fn reactor_summary(&self, message: &model::Message, reaction: &model::Reaction) -> String {
+        let self_id = self.reactor_self_id();
+        let name = emoji::name(&reaction.emoji);
+        let revision = message.reaction_seq.as_deref().unwrap_or("0");
+        let loaded = self
+            .reactors
+            .get(&message.id)
+            .filter(|cached| cached.revision == revision)
+            .and_then(|cached| match &cached.state {
+                ReactorState::Loaded(groups) => {
+                    groups.iter().find(|group| group.emoji == reaction.emoji)
+                }
+                _ => None,
+            })
+            .filter(|group| {
+                group.authors.len() == reaction.author_ids.len()
+                    && group
+                        .authors
+                        .iter()
+                        .all(|author| reaction.author_ids.contains(&author.id))
+            });
+        match loaded {
+            Some(group) => model::reactor_summary(&group.authors, self_id, name, &reaction.emoji),
+            None => model::reactor_fallback(&reaction.author_ids, self_id, name, &reaction.emoji),
+        }
     }
 
     fn set_reaction(&mut self, message: &str, emoji: &str, active: bool) {
@@ -9503,6 +9710,282 @@ mod tests {
         assert!(!labels.contains(&"Add reaction"), "{labels:?}");
         assert!(!labels.contains(&"Retry"), "{labels:?}");
         assert!(app.reaction_picker.is_none());
+    }
+
+    fn texts(output: &egui::FullOutput) -> Vec<&str> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The reaction chip count drawn just below a message's text.
+    fn chip_position(output: &egui::FullOutput, message: &str, count: &str) -> egui::Pos2 {
+        let below = text_position(output, message).y;
+        output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == count && text.pos.y > below => {
+                    Some(text.pos + egui::vec2(3.0, 4.0))
+                }
+                _ => None,
+            })
+            .min_by(|a, b| a.y.total_cmp(&b.y))
+            .unwrap_or_else(|| panic!("missing {count} chip under {message}"))
+    }
+
+    /// Tooltips wait for the pointer to rest, so these frames carry time.
+    fn timed_frame(
+        app: &mut CaperApp,
+        context: &egui::Context,
+        time: f64,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        context.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1440.0, 900.0),
+                )),
+                time: Some(time),
+                events,
+                ..Default::default()
+            },
+            |context| app.page(context),
+        )
+    }
+
+    #[test]
+    fn read_only_previews_still_show_who_reacted() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-reactions"),
+        );
+        let channel = app.selected_channel.clone().unwrap();
+        app.detail
+            .as_mut()
+            .unwrap()
+            .channels
+            .iter_mut()
+            .find(|entry| entry.id == channel)
+            .unwrap()
+            .joined = false;
+        let message = app.timeline.messages().nth(1).unwrap().clone();
+        timed_frame(&mut app, &context, 0.0, vec![]);
+        let output = timed_frame(&mut app, &context, 0.1, vec![]);
+        let chip = chip_position(&output, &message.content.text, "2");
+        timed_frame(
+            &mut app,
+            &context,
+            0.2,
+            vec![egui::Event::PointerMoved(chip)],
+        );
+        let mut output = timed_frame(&mut app, &context, 1.0, vec![]);
+        for step in 1..4 {
+            output = timed_frame(&mut app, &context, 1.0 + f64::from(step) * 0.05, vec![]);
+        }
+        assert!(
+            texts(&output).contains(&"You and Maya reacted with :thumbs-up:"),
+            "disabled chips keep their hover card: {:?}",
+            texts(&output)
+        );
+        click(&mut app, &context, chip);
+        assert!(app.pending_reactions.is_empty(), "previews cannot react");
+    }
+
+    #[test]
+    fn hovering_a_reaction_chip_names_who_reacted_and_clicking_still_toggles() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-reactions"),
+        );
+        let message = app.timeline.messages().nth(1).unwrap().clone();
+        let frame = |app: &mut CaperApp, time: f64, events: Vec<egui::Event>| {
+            timed_frame(app, &context, time, events)
+        };
+        frame(&mut app, 0.0, vec![]);
+        let output = frame(&mut app, 0.1, vec![]);
+        let chip = chip_position(&output, &message.content.text, "2");
+        let summary = "You and Maya reacted with :thumbs-up:";
+        let hovered = frame(&mut app, 0.2, vec![egui::Event::PointerMoved(chip)]);
+        assert!(
+            !texts(&hovered).contains(&summary),
+            "the card waits for the tooltip delay"
+        );
+        assert!(
+            app.reactors.is_empty(),
+            "nothing loads before the card shows"
+        );
+        let mut output = frame(&mut app, 1.0, vec![]);
+        for step in 1..4 {
+            output = frame(&mut app, 1.0 + f64::from(step) * 0.05, vec![]);
+        }
+        assert!(
+            texts(&output).contains(&summary),
+            "fixture names replace the count: {:?}",
+            texts(&output)
+        );
+        let card = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == summary => Some(text.pos),
+                _ => None,
+            })
+            .unwrap();
+        assert!(card.y < chip.y, "the card opens above the chip");
+        assert!(
+            matches!(
+                app.reactors[&message.id].state,
+                super::ReactorState::Loaded(_)
+            ),
+            "fixtures answer locally instead of contacting Caper"
+        );
+
+        click(&mut app, &context, chip);
+        let key = (message.id.clone(), "👍".to_owned());
+        assert!(
+            app.pending_reactions
+                .get(&key)
+                .is_some_and(|pending| !pending.desired),
+            "clicking removes your reaction exactly as before"
+        );
+    }
+
+    #[test]
+    fn reactor_names_load_once_per_reaction_revision_and_stale_answers_are_ignored() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-reactions"),
+        );
+        // Exercise the networked path: fixtures otherwise answer locally.
+        app.persist_preferences = true;
+        let (events, receiver) = std::sync::mpsc::channel();
+        app.worker.events = receiver;
+        let message = app.timeline.messages().nth(1).unwrap().clone();
+        let thumbs = message.reactions[0].clone();
+        assert_eq!(thumbs.emoji, "👍");
+
+        app.load_reactors(&message);
+        assert!(matches!(
+            app.reactors[&message.id].state,
+            super::ReactorState::Loading(_)
+        ));
+        assert_eq!(
+            app.reactor_summary(&message, &thumbs),
+            "2 people reacted with :thumbs-up:",
+            "the snapshot count shows until names arrive"
+        );
+        let generation = app.generation;
+        let answer = |revision: &str, maya: &str| crate::worker::Event::Reactors {
+            generation,
+            channel: message.channel_id.clone(),
+            message: message.id.clone(),
+            revision: revision.into(),
+            result: Ok(model::Reactors {
+                message_id: message.id.clone(),
+                reaction_seq: revision.into(),
+                reactions: vec![model::ReactorGroup {
+                    emoji: "👍".into(),
+                    authors: vec![
+                        model::Reactor {
+                            id: "fixture-maya".into(),
+                            username: Some("maya".into()),
+                            display_name: Some(maya.into()),
+                            avatar_id: Some(15),
+                        },
+                        model::Reactor {
+                            id: "fixture-owner".into(),
+                            username: Some("fixture_owner".into()),
+                            display_name: Some("Fixture Owner".into()),
+                            avatar_id: Some(0),
+                        },
+                    ],
+                }],
+            }),
+        };
+        events.send(answer("3", "Stale Maya")).unwrap();
+        app.receive();
+        assert!(
+            matches!(
+                app.reactors[&message.id].state,
+                super::ReactorState::Loading(_)
+            ),
+            "an answer for another revision is ignored"
+        );
+        events.send(answer("4", "Maya B")).unwrap();
+        app.receive();
+        assert_eq!(
+            app.reactor_summary(&message, &thumbs),
+            "You and Maya B reacted with :thumbs-up:"
+        );
+        let heart = &message.reactions[1];
+        assert_eq!(
+            app.reactor_summary(&message, heart),
+            "1 person reacted with :red-heart:",
+            "emoji missing from the list keep the snapshot count"
+        );
+
+        // Cached for this revision: hovering again sends nothing new.
+        app.load_reactors(&message);
+        assert!(matches!(
+            app.reactors[&message.id].state,
+            super::ReactorState::Loaded(_)
+        ));
+        // Your own pending toggle changes the people, so the count shows.
+        let mut toggled = thumbs.clone();
+        toggled.author_ids.retain(|id| id != "fixture-owner");
+        assert_eq!(
+            app.reactor_summary(&message, &toggled),
+            "1 person reacted with :thumbs-up:"
+        );
+        // A new reaction revision reloads.
+        let mut changed = message.clone();
+        changed.reaction_seq = Some("5".into());
+        app.load_reactors(&changed);
+        assert_eq!(app.reactors[&message.id].revision, "5");
+        assert!(matches!(
+            app.reactors[&message.id].state,
+            super::ReactorState::Loading(_)
+        ));
+        events
+            .send(crate::worker::Event::Reactors {
+                generation: app.generation,
+                channel: message.channel_id.clone(),
+                message: message.id.clone(),
+                revision: "5".into(),
+                result: Err("Could not reach Caper.".into()),
+            })
+            .unwrap();
+        app.receive();
+        assert!(matches!(
+            app.reactors[&message.id].state,
+            super::ReactorState::Failed(_)
+        ));
+        assert_eq!(
+            app.reactor_summary(&changed, &thumbs),
+            "2 people reacted with :thumbs-up:",
+            "failures keep the snapshot count"
+        );
+        app.load_reactors(&changed);
+        assert!(
+            matches!(
+                app.reactors[&message.id].state,
+                super::ReactorState::Failed(_)
+            ),
+            "failures are not retried on every frame"
+        );
     }
 
     #[test]

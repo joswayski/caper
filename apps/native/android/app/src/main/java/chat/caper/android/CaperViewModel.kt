@@ -44,6 +44,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private val reactionIntents = mutableMapOf<String, LinkedHashMap<String, ReactionIntent>>()
     private val reactionWorkers = mutableMapOf<String, Job>()
     private val authoritativeReactionMessages = mutableMapOf<String, ChatMessage>()
+    private val reactorCache = ReactorCache()
     private var reactionIntentVersion = 0L
     private var directRefresh: Job? = null
     private var pendingDirectIntent: String? = null
@@ -511,6 +512,20 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun dismissReactionError(messageId: String, emoji: String) {
         val key = "$messageId:$emoji"
         mutable.value = mutable.value.copy(reactionSaves = mutable.value.reactionSaves - key)
+    }
+
+    /** Who reacted to [message] in the open conversation, reused until its reaction revision changes. */
+    suspend fun reactors(message: ChatMessage): ReactorList {
+        reactorCache.get(message.id, message.reactionSeq)?.let { return it }
+        val channel = mutable.value.selectedChannel?.takeIf { it.id == message.channelId }
+            ?: throw IllegalStateException("This conversation is no longer open.")
+        val requestAccountGeneration = accountGeneration
+        val list = api.reactors(accountToken, channel.id, message.id)
+        check(requestAccountGeneration == accountGeneration && mutable.value.selectedChannel?.id == channel.id) {
+            "This conversation is no longer open."
+        }
+        reactorCache.put(list)
+        return list
     }
 
     internal fun authorizeVoiceJoin(intent: VoiceJoinIntent, onAuthorized: () -> Unit, onFailure: (String) -> Unit) {
@@ -994,6 +1009,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (clearPending) pendingSends.clear()
         reactionWorkers.values.forEach { it.cancel() }
         reactionWorkers.clear(); reactionIntents.clear(); authoritativeReactionMessages.clear()
+        reactorCache.clear()
         mutable.value = mutable.value.copy(
             selectedChannel = null, selectedDirectId = null, messages = emptyList(), typingAuthors = emptyList(), presence = emptyMap(),
             loadingOlder = false, olderError = null, messagesLoading = false, messagesError = null, refreshError = null,

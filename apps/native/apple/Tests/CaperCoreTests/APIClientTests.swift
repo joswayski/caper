@@ -106,6 +106,88 @@ final class APIClientTests: XCTestCase {
         } catch let error as APIError { XCTAssertEqual(error.status, 400) }
     }
 
+    func testReactorsGETUsesAccountAuthorizationAndRejectsAnotherMessage() async throws {
+        let channel = "Channel12345"
+        let message = "Message00000001"
+        var routes: [String] = []
+        MockURLProtocol.handler = { request in
+            routes.append("\(request.httpMethod ?? "") \(request.url?.path ?? "")")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "authorization"), "Bearer account-secret")
+            XCTAssertNil(request.value(forHTTPHeaderField: "x-caper-chat-token"), "who reacted needs no chat session")
+            return (200, Data("""
+            {"messageId":"\(message)","reactionSeq":"12","reactions":[{"emoji":"👍","authors":[{"id":"bob","username":"bob","displayName":"Bob B","avatarId":101},{"id":"alice","username":null,"displayName":null,"avatarId":100}]}]}
+            """.utf8))
+        }
+        let list = try await client().reactors(channelID: channel, messageID: message)
+        XCTAssertEqual(routes, ["GET /api/chat/channels/\(channel)/messages/\(message)/reactions"])
+        XCTAssertEqual(list.reactions.first?.authors.map(\.name), ["Bob B", "Someone"])
+        do {
+            _ = try await client().reactors(channelID: channel, messageID: "Message00000002")
+            XCTFail("A list for another message must be rejected")
+        } catch let error as APIError { XCTAssertEqual(error.status, 502) }
+        do {
+            _ = try await client().reactors(channelID: channel, messageID: "only-twelve1")
+            XCTFail("Expected local message ID rejection")
+        } catch let error as APIError { XCTAssertEqual(error.status, 400) }
+    }
+
+    @MainActor
+    func testReactorListsAreCachedByReactionSequenceAndRefetchedAfterChanges() async throws {
+        let channel = "chan00000001"
+        let messageID = "Message00000001"
+        var reactorRequests = 0
+        MockURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/api/chat/session":
+                return (200, Data(#"{"token":"chat-secret","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+            case "/api/chat/channels/\(channel)/messages/\(messageID)/reactions" where request.httpMethod == "GET":
+                reactorRequests += 1
+                if reactorRequests == 3 { return (500, Data(#"{"error":"unavailable"}"#.utf8)) }
+                let third = reactorRequests == 1 ? "" : #",{"id":"third","username":"third","displayName":"Third T","avatarId":4}"#
+                return (200, Data("""
+                {"messageId":"\(messageID)","reactionSeq":"\(reactorRequests)","reactions":[{"emoji":"👍","authors":[{"id":"other","username":"other","displayName":"Other O","avatarId":3}\(third)]}]}
+                """.utf8))
+            default: throw URLError(.badURL)
+            }
+        }
+        let message = ChatMessage(id: messageID, channelId: channel, seq: "1",
+                                  author: ChatAuthor(id: "other", name: "Other", isGuest: false),
+                                  content: ChatContent(version: 1, type: "text", text: "Hello"), createdAt: "now",
+                                  clientMessageId: "client", reactions: [MessageReaction(emoji: "👍", authorIds: ["other"])],
+                                  reactionSeq: "1")
+        let history = ChatHistory(space: HistoryIdentity(id: "Space1234567", name: "Space"),
+                                  channel: HistoryIdentity(id: channel, name: "general"), messages: [message], cursor: "1", hasMore: false)
+        let chat = ChatModel(api: client())
+        await chat.open(history: history, displayName: "Me")
+        let other = ReactorPerson(id: "other", username: "other", displayName: "Other O", avatarId: 3)
+        let third = ReactorPerson(id: "third", username: "third", displayName: "Third T", avatarId: 4)
+
+        XCTAssertEqual(chat.reactorsState(for: chat.messages[0], emoji: "👍", viewerID: "self"), .loading)
+        _ = await chat.requestReactors(messageID: messageID)?.value
+        XCTAssertEqual(chat.reactorsState(for: chat.messages[0], emoji: "👍", viewerID: "self"), .loaded([other]))
+        XCTAssertNil(chat.requestReactors(messageID: messageID), "an unchanged reaction sequence reuses the list")
+        XCTAssertEqual(reactorRequests, 1)
+
+        chat.receive(["type": "message.reactions", "schemaVersion": 1, "channelId": channel, "seq": "2",
+                      "messageId": messageID, "reactions": [["emoji": "👍", "authorIds": ["other", "third"]]]],
+                     generation: 1, channelID: channel)
+        XCTAssertEqual(chat.messages[0].reactionSeq, "2")
+        XCTAssertEqual(chat.reactorsState(for: chat.messages[0], emoji: "👍", viewerID: "self"), .loading,
+                       "a stale list cannot name the new reactor and is refetched")
+        _ = await chat.requestReactors(messageID: messageID)?.value
+        XCTAssertEqual(reactorRequests, 2)
+        XCTAssertEqual(chat.reactorsState(for: chat.messages[0], emoji: "👍", viewerID: "self"), .loaded([other, third]))
+
+        chat.receive(["type": "message.reactions", "schemaVersion": 1, "channelId": channel, "seq": "3",
+                      "messageId": messageID, "reactions": [["emoji": "👍", "authorIds": ["other", "third", "fourth"]]]],
+                     generation: 1, channelID: channel)
+        _ = await chat.requestReactors(messageID: messageID)?.value
+        XCTAssertEqual(reactorRequests, 3)
+        XCTAssertEqual(chat.reactorsState(for: chat.messages[0], emoji: "👍", viewerID: "self"), .failed)
+        await chat.stop()
+        XCTAssertNil(chat.requestReactors(messageID: messageID), "a stopped chat has no message to load")
+    }
+
     @MainActor
     private func waitUntil(_ predicate: @escaping @MainActor () -> Bool) async {
         for _ in 0..<100 where !predicate() { try? await Task.sleep(for: .milliseconds(10)) }

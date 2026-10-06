@@ -96,6 +96,13 @@ class CaperApi(
         return update.validated(channel, message)
     }
 
+    /** Who reacted, with the same read access and credentials as [history]. */
+    suspend fun reactors(token: String?, channel: String, message: String): ReactorList {
+        require(messageId.matches(message)) { "Invalid message ID." }
+        val list: ReactorList = get("/api/chat/channels/${channel.pathId()}/messages/$message/reactions", token)
+        return list.validated(message)
+    }
+
     suspend fun createSpace(token: String, name: String): Space = post(
         "/api/spaces", buildJsonObject { put("name", name.trim()) }, token,
     )
