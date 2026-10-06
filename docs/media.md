@@ -3236,6 +3236,12 @@ integrations and external references, the API returns this value as `id`, alongs
 `username` and `displayName`. Usernames are globally unique, changeable handles;
 changing a username or email does not change either account ID.
 
+Messages store the author's display name as it was at send time, but history,
+gateway replay, live publication and idempotent retries serve the author's current
+display name and avatar (like Discord). Deleted accounts and guests keep the stored
+name. Messages already on screen update on the next history load or reconnect, not
+instantly; the member list and suggestions follow their own refresh.
+
 ### Desktop update metadata cache
 
 `GET https://caper.chat/api/updates/native` returns an envelope with `manifest`
