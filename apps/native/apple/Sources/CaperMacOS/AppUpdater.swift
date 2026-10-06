@@ -3,7 +3,7 @@ import Foundation
 
 /// Self-updates through `caper-updater` (apps/native/updater), which release
 /// builds carry in Contents/MacOS. It checks the signed release manifest shortly
-/// after launch and every hour; when the user accepts, the updater waits
+/// after launch and every minute; when the user accepts, the updater waits
 /// for Caper to quit, swaps in the new notarized app and reopens it.
 ///
 /// Prompts are AppKit alerts rather than SwiftUI `.alert` modifiers, so they
@@ -19,6 +19,11 @@ import Foundation
     private let build: Int
     private var declined: Set<String> = []
     private var timer: Timer?
+    private var checking = false
+    private var manualCheck = false
+
+    static let firstCheckDelay: TimeInterval = 20
+    static let checkInterval: TimeInterval = 60
 
     // Match the running app's architecture, including Intel builds under Rosetta.
     #if arch(arm64)
@@ -43,24 +48,36 @@ import Foundation
     func start() {
         guard isAvailable, timer == nil else { return }
         Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(20))
+            try? await Task.sleep(for: .seconds(Self.firstCheckDelay))
             self?.check(manual: false)
         }
-        timer = Timer.scheduledTimer(withTimeInterval: 60 * 60, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: Self.checkInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.check(manual: false) }
         }
     }
 
     func check(manual: Bool) {
         guard let updater else { return }
+        // A manual request can share a running automatic check, but must still
+        // report its result and offer a version previously declined with Later.
+        manualCheck = manualCheck || manual
+        guard !checking else { return }
+        checking = true
         let arguments = ["check", "--current-build", String(build), "--install", Bundle.main.bundleURL.path]
         Task.detached(priority: .utility) {
             let result = Self.run(updater, arguments)
-            await MainActor.run { self.finish(result, manual: manual) }
+            await MainActor.run { self.finish(result) }
         }
     }
 
-    private func finish(_ result: Result<Data, Error>, manual: Bool) {
+    private func finish(_ result: Result<Data, Error>) {
+        let manual = manualCheck
+        manualCheck = false
+        // Keep the check fenced while a modal prompt runs its nested event loop.
+        defer {
+            checking = false
+            manualCheck = false
+        }
         switch result {
         case let .success(data):
             guard let update = Self.parse(data) else {
