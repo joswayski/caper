@@ -1,5 +1,7 @@
 use crate::media_gateway::{CATCHUP_DEADLINE, Connection, ConnectionAttempt, Failure};
-use crate::model::{Author, Message, Presence, ReactionUpdate, VoiceOccupant, sequence};
+use crate::model::{
+    AttachmentUpdate, Author, Message, Presence, ReactionUpdate, VoiceOccupant, sequence,
+};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
@@ -41,6 +43,18 @@ pub enum GatewayEvent {
         generation: u64,
         channel: String,
         update: ReactionUpdate,
+    },
+    Attachments {
+        generation: u64,
+        channel: String,
+        update: AttachmentUpdate,
+    },
+    /// Ephemeral media-worker progress for a processing attachment.
+    AttachmentProgress {
+        generation: u64,
+        channel: String,
+        attachment: String,
+        percent: u8,
     },
     Typing {
         generation: u64,
@@ -471,6 +485,64 @@ fn receive_frame(
                         update,
                     });
                 }
+                Some("message.attachments") => {
+                    let update: AttachmentUpdate =
+                        serde_json::from_value(event.clone()).map_err(|_| {
+                            Failure::Retry("The gateway returned invalid attachments.".into())
+                        })?;
+                    if update.channel_id != channel
+                        || update.kind != "message.attachments"
+                        || update.schema_version != 1
+                        || update.message_id.is_empty()
+                    {
+                        return Err(Failure::Retry(
+                            "The gateway returned invalid attachments.".into(),
+                        ));
+                    }
+                    let previous = sequence(cursor).map_err(Failure::Retry)?;
+                    let next = sequence(&update.seq).map_err(Failure::Retry)?;
+                    let position = sequence(&stream.cursor).map_err(Failure::Retry)?;
+                    if next > position.saturating_add(1) || next > previous.saturating_add(1) {
+                        if !replacement {
+                            let _ = events.send(GatewayEvent::Resync {
+                                generation,
+                                channel: channel.into(),
+                            });
+                        }
+                        return Err(Failure::Retry("Non-contiguous gateway replay.".into()));
+                    }
+                    if next > position {
+                        stream.cursor = update.seq.clone();
+                    }
+                    if next <= previous {
+                        return Ok(false);
+                    }
+                    *cursor = update.seq.clone();
+                    let _ = events.send(GatewayEvent::Attachments {
+                        generation,
+                        channel: channel.into(),
+                        update,
+                    });
+                }
+                // Ephemeral like typing: a malformed frame is dropped, never
+                // a reason to reconnect.
+                Some("attachment.progress") => {
+                    if replacement || event["channelId"].as_str() != Some(channel) {
+                        return Ok(false);
+                    }
+                    let attachment = event["attachmentId"].as_str().filter(|id| !id.is_empty());
+                    let percent = event["percent"]
+                        .as_f64()
+                        .filter(|percent| percent.is_finite());
+                    if let (Some(attachment), Some(percent)) = (attachment, percent) {
+                        let _ = events.send(GatewayEvent::AttachmentProgress {
+                            generation,
+                            channel: channel.into(),
+                            attachment: attachment.into(),
+                            percent: percent.clamp(0.0, 100.0).round() as u8,
+                        });
+                    }
+                }
                 Some("resync_required") => {
                     if !replacement {
                         let _ = events.send(GatewayEvent::Resync {
@@ -701,6 +773,26 @@ mod tests {
                 }}),
             );
         }
+        fn attachments(socket: &mut Socket, id: &str, seq: &str) {
+            send(
+                socket,
+                json!({"type":"event", "id":id, "event":{
+                    "type":"message.attachments", "schemaVersion":1, "channelId":"text",
+                    "seq":seq, "messageId":"message-41",
+                    "attachments":[{"id":"asset", "kind":"video", "contentType":"video/mp4",
+                        "name":"clip.mp4", "size":9, "status":"ready", "animated":true}, "junk"]
+                }}),
+            );
+        }
+        fn progress(socket: &mut Socket, id: &str, percent: Value) {
+            send(
+                socket,
+                json!({"type":"event", "id":id, "event":{
+                    "type":"attachment.progress", "channelId":"text", "messageId":"message-41",
+                    "attachmentId":"asset", "percent":percent
+                }}),
+            );
+        }
         fn roster(socket: &mut Socket, id: &str, revision: u64) {
             send(
                 socket,
@@ -758,6 +850,9 @@ mod tests {
             presence(&mut last, &ids["presence"]);
             assert!(matches!(replacement.read(), Ok(WsMessage::Close(_))));
             message(&mut last, &ids["chat"], "41");
+            progress(&mut last, &ids["chat"], json!("not a number"));
+            progress(&mut last, &ids["chat"], json!(140.4));
+            attachments(&mut last, &ids["chat"], "42");
             assert!(
                 matches!(last.read(), Ok(WsMessage::Close(_))),
                 "stop closes promoted socket"
@@ -789,6 +884,7 @@ mod tests {
         let mut messages = vec![];
         let mut reactions = vec![];
         let mut rosters = vec![];
+        let mut percents = vec![];
         loop {
             match incoming.recv_timeout(Duration::from_secs(5)).unwrap() {
                 GatewayEvent::Message { message, .. } => {
@@ -796,9 +892,6 @@ mod tests {
                     messages.push(seq.clone());
                     if seq == "38" || seq == "40" {
                         advance.send(()).unwrap();
-                    }
-                    if seq == "41" {
-                        break;
                     }
                 }
                 GatewayEvent::VoiceRoster { participants, .. } => {
@@ -809,6 +902,17 @@ mod tests {
                     rosters.push(name);
                 }
                 GatewayEvent::Reactions { update, .. } => reactions.push(update.seq),
+                GatewayEvent::AttachmentProgress {
+                    attachment,
+                    percent,
+                    ..
+                } => percents.push((attachment, percent)),
+                GatewayEvent::Attachments { update, .. } => {
+                    assert_eq!(update.seq, "42");
+                    assert_eq!(update.attachments.len(), 1, "malformed entries are skipped");
+                    assert!(update.attachments[0].animated);
+                    break;
+                }
                 GatewayEvent::Presence { .. } | GatewayEvent::Status { online: true, .. } => {}
                 other => panic!("handoff must not disconnect/reset/resync: {other:?}"),
             }
@@ -816,6 +920,11 @@ mod tests {
         assert_eq!(messages, ["38", "40", "41"]);
         assert_eq!(reactions, ["39"], "candidate replay is deduplicated");
         assert_eq!(rosters, ["revision-7", "revision-8"]);
+        assert_eq!(
+            percents,
+            [("asset".to_owned(), 100)],
+            "malformed progress is dropped without reconnecting"
+        );
         control.stop();
         server.join().unwrap();
     }

@@ -22,13 +22,10 @@ Apache-2.0), and keyring (MIT OR Apache-2.0).
 
 ## Attachments
 
-Attachment images are decoded with the pure-Rust `image` crate codecs
-(`png`, `zune-jpeg`, `image-webp`, `gif`; MIT OR Apache-2.0, zune-jpeg also
-Zlib) and encoded with `png` (MIT OR Apache-2.0) and `jpeg-encoder`
-((MIT OR Apache-2.0) AND IJG: this software is based in part on the work of
-the Independent JPEG Group). The exact-palette indexed PNG writer and JPEG
-settings are adapted from Caper's sibling project Captures
-(`joswayski/captures`, Apache-2.0). The file dialog uses `rfd` (MIT).
+Attachment previews are decoded for display with the pure-Rust `image` crate
+codecs (`png`, `zune-jpeg`, `image-webp`, `gif`; MIT OR Apache-2.0, zune-jpeg
+also Zlib). The app does not encode or compress attachments. The file dialog
+uses `rfd` (MIT).
 
 ## Native audio
 

@@ -162,6 +162,22 @@ pub enum AttachmentKind {
     File,
 }
 
+/// Server-side processing state. Old payloads have none and are ready.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AttachmentStatus {
+    Processing,
+    #[default]
+    Ready,
+    Failed,
+}
+
+impl AttachmentStatus {
+    fn is_ready(&self) -> bool {
+        *self == Self::Ready
+    }
+}
+
 impl AttachmentKind {
     fn parse(value: &str) -> Option<Self> {
         Some(match value {
@@ -201,6 +217,12 @@ pub struct Attachment {
     pub preview_url: Option<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub unavailable: bool,
+    /// Absent (ready) is not written back, so old payloads round-trip.
+    #[serde(skip_serializing_if = "AttachmentStatus::is_ready")]
+    pub status: AttachmentStatus,
+    /// A GIF or animated image stored as a silent looping MP4.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub animated: bool,
 }
 
 fn preview_marker<S: serde::Serializer>(_: &bool, serializer: S) -> Result<S::Ok, S::Error> {
@@ -267,6 +289,13 @@ impl Attachment {
             url: optional_url("url").ok()?,
             preview_url: optional_url("previewUrl").ok()?,
             unavailable: object.get("unavailable") == Some(&serde_json::Value::Bool(true)),
+            // Unknown future states read as ready: the URLs decide what shows.
+            status: match object.get("status").and_then(serde_json::Value::as_str) {
+                Some("processing") => AttachmentStatus::Processing,
+                Some("failed") => AttachmentStatus::Failed,
+                _ => AttachmentStatus::Ready,
+            },
+            animated: object.get("animated") == Some(&serde_json::Value::Bool(true)),
         })
     }
 }
@@ -302,6 +331,21 @@ pub struct ReactionUpdate {
     pub reactions: Vec<Reaction>,
 }
 
+/// `message.attachments`: the message's files after the media worker
+/// produced a preview, finished or failed. Sequenced like reactions.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentUpdate {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub schema_version: u8,
+    pub channel_id: String,
+    pub seq: String,
+    pub message_id: String,
+    #[serde(deserialize_with = "tolerant_attachments")]
+    pub attachments: Vec<Attachment>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Message {
@@ -316,6 +360,10 @@ pub struct Message {
     pub reactions: Vec<Reaction>,
     #[serde(default)]
     pub reaction_seq: Option<String>,
+    /// Sequence of the last `message.attachments` update folded into this
+    /// payload, like `reaction_seq`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachments_seq: Option<String>,
 }
 
 impl Message {
@@ -324,7 +372,10 @@ impl Message {
         if self.content.version != 1 || self.content.kind != "text" {
             return Err("unsupported message content".into());
         }
-        if let Some(revision) = &self.reaction_seq {
+        for revision in [&self.reaction_seq, &self.attachments_seq]
+            .into_iter()
+            .flatten()
+        {
             sequence(revision)?;
         }
         if !valid_reactions(&self.reactions) {
@@ -377,6 +428,7 @@ pub struct Timeline {
     ids: BTreeSet<String>,
     buffered: BTreeMap<u64, Message>,
     unseen_reactions: BTreeMap<String, ReactionUpdate>,
+    unseen_attachments: BTreeMap<String, AttachmentUpdate>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -394,6 +446,7 @@ impl Timeline {
         self.ids.clear();
         self.buffered.clear();
         self.unseen_reactions.clear();
+        self.unseen_attachments.clear();
         for message in messages {
             self.merge(message)?;
         }
@@ -449,6 +502,62 @@ impl Timeline {
             self.unseen_reactions.clear();
         }
         Ok(applied)
+    }
+
+    /// Same sequencing as [`Timeline::apply_reactions`].
+    pub fn apply_attachments(&mut self, update: AttachmentUpdate) -> Result<Apply, String> {
+        if !self.merge_attachments(&update)? {
+            self.unseen_attachments.clear();
+            return Ok(Apply::Resync);
+        }
+        let applied = self.apply_sequence(&update.seq)?;
+        if applied == Apply::Resync {
+            self.unseen_attachments.clear();
+        }
+        Ok(applied)
+    }
+
+    /// Replace a message's files when the update is newer than its
+    /// `attachments_seq`; updates for unloaded messages wait for them.
+    fn merge_attachments(&mut self, update: &AttachmentUpdate) -> Result<bool, String> {
+        let seq = sequence(&update.seq)?;
+        if update.kind != "message.attachments" || update.schema_version != 1 {
+            return Err("unsupported attachment update".into());
+        }
+        if update.channel_id.is_empty() || update.message_id.is_empty() {
+            return Err("invalid attachment update".into());
+        }
+        if let Some(message) = self
+            .messages
+            .values_mut()
+            .find(|item| item.id == update.message_id)
+        {
+            if message.channel_id != update.channel_id {
+                return Err("attachment update is for another channel".into());
+            }
+            if seq > revision(message.attachments_seq.as_deref())? {
+                message.content.attachments.clone_from(&update.attachments);
+                message.attachments_seq = Some(update.seq.clone());
+            }
+            return Ok(true);
+        }
+        if self
+            .messages
+            .values()
+            .next()
+            .is_some_and(|message| message.channel_id != update.channel_id)
+        {
+            return Err("attachment update is for another channel".into());
+        }
+        match self.unseen_attachments.get(&update.message_id) {
+            Some(current) if seq <= sequence(&current.seq)? => {}
+            None if self.unseen_attachments.len() >= 256 => return Ok(false),
+            _ => {
+                self.unseen_attachments
+                    .insert(update.message_id.clone(), update.clone());
+            }
+        }
+        Ok(true)
     }
 
     /// Merge an HTTP acknowledgement without moving the gateway replay cursor.
@@ -536,6 +645,15 @@ impl Timeline {
 
     fn merge(&mut self, mut message: Message) -> Result<(), String> {
         message.validate()?;
+        if let Some(update) = self.unseen_attachments.remove(&message.id) {
+            if update.channel_id != message.channel_id {
+                return Err("attachment update is for another channel".into());
+            }
+            if sequence(&update.seq)? > revision(message.attachments_seq.as_deref())? {
+                message.content.attachments = update.attachments;
+                message.attachments_seq = Some(update.seq);
+            }
+        }
         if let Some(update) = self.unseen_reactions.remove(&message.id) {
             if update.channel_id != message.channel_id {
                 return Err("reaction update is for another channel".into());
@@ -574,12 +692,28 @@ impl Timeline {
                 message.reactions = std::mem::take(&mut existing.reactions);
                 message.reaction_seq = existing.reaction_seq.take();
             }
+            // A stale page or replay never turns ready files back into
+            // processing ones.
+            if revision(existing.attachments_seq.as_deref())?
+                > revision(message.attachments_seq.as_deref())?
+            {
+                message.content.attachments = std::mem::take(&mut existing.content.attachments);
+                message.attachments_seq = existing.attachments_seq.take();
+            }
             *existing = message;
         } else if !self.messages.contains_key(&seq) && self.ids.insert(message.id.clone()) {
             self.messages.insert(seq, message);
         }
         Ok(())
     }
+}
+
+/// An optional revision; absent is "0".
+fn revision(value: Option<&str>) -> Result<u64, String> {
+    value
+        .map(sequence)
+        .transpose()
+        .map(Option::unwrap_or_default)
 }
 
 fn valid_reactions(reactions: &[Reaction]) -> bool {
@@ -681,6 +815,7 @@ mod tests {
             },
             reactions: Vec::new(),
             reaction_seq: None,
+            attachments_seq: None,
         }
     }
 
@@ -985,5 +1120,131 @@ mod tests {
         assert_eq!(direct.peer.display_name, "TEST FIXTURE Alex");
         assert_eq!(sequence(&direct.last_seq), Ok(12));
         assert_eq!(sequence(&direct.read_seq), Ok(9));
+    }
+
+    fn file(id: &str, status: &str) -> serde_json::Value {
+        serde_json::json!({"id": id, "kind": "image", "contentType": "image/avif", "name": "a.avif",
+            "size": 5, "status": status})
+    }
+
+    fn attachment_update(message_id: &str, seq: u64, status: &str) -> AttachmentUpdate {
+        serde_json::from_value(serde_json::json!({
+            "type": "message.attachments", "schemaVersion": 1, "channelId": "channel",
+            "seq": seq.to_string(), "messageId": message_id,
+            "attachments": [file("img", status), {"bad": true}]
+        }))
+        .unwrap()
+    }
+
+    fn with_files(id: &str, seq: u64, status: &str, attachments_seq: Option<&str>) -> Message {
+        let mut message = message(id, seq);
+        message.content.attachments = vec![Attachment::parse(&file("img", status)).unwrap()];
+        message.attachments_seq = attachments_seq.map(str::to_owned);
+        message
+    }
+
+    fn status_of(timeline: &Timeline, id: &str) -> AttachmentStatus {
+        timeline
+            .messages()
+            .find(|message| message.id == id)
+            .unwrap()
+            .content
+            .attachments[0]
+            .status
+    }
+
+    #[test]
+    fn attachment_status_and_animation_parse_with_ready_default() {
+        let parse = |value| Attachment::parse(&value).unwrap();
+        assert_eq!(
+            parse(file("a", "processing")).status,
+            AttachmentStatus::Processing
+        );
+        assert_eq!(parse(file("a", "failed")).status, AttachmentStatus::Failed);
+        assert_eq!(parse(file("a", "ready")).status, AttachmentStatus::Ready);
+        assert_eq!(parse(file("a", "future")).status, AttachmentStatus::Ready);
+        let mut legacy = file("a", "");
+        legacy.as_object_mut().unwrap().remove("status");
+        let legacy = parse(legacy);
+        assert_eq!(legacy.status, AttachmentStatus::Ready);
+        assert!(!legacy.animated);
+        let mut gif = file("a", "ready");
+        gif["animated"] = serde_json::json!(true);
+        assert!(parse(gif).animated);
+        let encoded = serde_json::to_value(parse(file("a", "processing"))).unwrap();
+        assert_eq!(encoded["status"], "processing");
+        assert!(
+            serde_json::to_value(&legacy)
+                .unwrap()
+                .get("status")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn attachment_updates_are_sequenced_like_reactions() {
+        let mut timeline = Timeline::default();
+        timeline
+            .reset(vec![with_files("one", 1, "processing", None)], "1")
+            .unwrap();
+        let update = attachment_update("one", 2, "ready");
+        assert_eq!(update.attachments.len(), 1, "malformed entries are skipped");
+        assert_eq!(timeline.apply_attachments(update), Ok(Apply::Applied));
+        assert_eq!(timeline.cursor(), "2");
+        assert_eq!(status_of(&timeline, "one"), AttachmentStatus::Ready);
+        // A replayed older update is a duplicate and changes nothing.
+        assert_eq!(
+            timeline.apply_attachments(attachment_update("one", 2, "processing")),
+            Ok(Apply::Duplicate)
+        );
+        assert_eq!(status_of(&timeline, "one"), AttachmentStatus::Ready);
+        assert_eq!(
+            timeline.apply_attachments(attachment_update("one", 9, "failed")),
+            Ok(Apply::Resync)
+        );
+        let mut wrong = attachment_update("one", 3, "ready");
+        wrong.kind = "message.reactions".into();
+        assert!(timeline.apply_attachments(wrong).is_err());
+    }
+
+    #[test]
+    fn stale_snapshots_and_replays_never_regress_ready_files() {
+        let mut timeline = Timeline::default();
+        timeline
+            .reset(vec![with_files("one", 1, "ready", Some("7"))], "7")
+            .unwrap();
+        // An older history page or replayed message.created stays ready.
+        timeline
+            .prepend(vec![with_files("one", 1, "processing", None)])
+            .unwrap();
+        assert_eq!(status_of(&timeline, "one"), AttachmentStatus::Ready);
+        timeline
+            .prepend(vec![with_files("one", 1, "processing", Some("5"))])
+            .unwrap();
+        assert_eq!(status_of(&timeline, "one"), AttachmentStatus::Ready);
+        // A newer snapshot wins.
+        timeline
+            .prepend(vec![with_files("one", 1, "failed", Some("8"))])
+            .unwrap();
+        assert_eq!(status_of(&timeline, "one"), AttachmentStatus::Failed);
+    }
+
+    #[test]
+    fn attachment_update_before_its_message_is_overlaid() {
+        let mut timeline = Timeline::default();
+        timeline.reset(vec![message("newer", 10)], "10").unwrap();
+        assert_eq!(
+            timeline.apply_attachments(attachment_update("older", 11, "ready")),
+            Ok(Apply::Applied)
+        );
+        timeline
+            .prepend(vec![with_files("older", 1, "processing", None)])
+            .unwrap();
+        assert_eq!(status_of(&timeline, "older"), AttachmentStatus::Ready);
+        let older = timeline
+            .messages()
+            .find(|message| message.id == "older")
+            .unwrap();
+        assert_eq!(older.attachments_seq.as_deref(), Some("11"));
     }
 }

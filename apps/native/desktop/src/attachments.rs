@@ -3,8 +3,13 @@
 //! Mirrors `apps/web/src/chat/Attachments.tsx`. Desktop stays open for days,
 //! longer than a signed URL lives (24–48 hours), so URLs are refreshed through
 //! `POST /api/assets/urls` before they expire and after a 403/404 load.
+//!
+//! Inline images come from the WebP `previewUrl` the media worker generates
+//! for every image and video poster. Stored photos are mostly AVIF, which the
+//! pure-Rust `image` codecs cannot decode (its AVIF decoder needs native
+//! dav1d), so full-size originals open in the system browser instead.
 
-use crate::model::Attachment;
+use crate::model::{Attachment, AttachmentKind, AttachmentStatus};
 use eframe::egui;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -26,7 +31,9 @@ const MAX_TEXTURES: usize = 200;
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct FreshUrl {
-    pub url: String,
+    /// Absent while the file is still processing.
+    #[serde(default)]
+    pub url: Option<String>,
     #[serde(default)]
     pub preview_url: Option<String>,
 }
@@ -50,24 +57,88 @@ pub fn needs_refresh(url: &str, now: i64) -> bool {
 }
 
 /// The attachment with whichever signed URLs live longer: a refreshed pair or
-/// the ones a newer history page or gateway frame carried.
+/// the ones a newer history page or gateway frame carried. A refresh taken
+/// while the file was processing (preview only) never hides a later `url`.
 pub fn resolve(attachment: &Attachment, fresh: Option<&FreshUrl>) -> Attachment {
     let mut resolved = attachment.clone();
     let Some(fresh) = fresh.filter(|_| !attachment.unavailable) else {
         return resolved;
     };
-    let current = attachment
-        .url
-        .as_deref()
-        .map_or(Some(i64::MIN), url_expiry)
-        .unwrap_or(i64::MIN);
-    if attachment.url.is_none() || url_expiry(&fresh.url).unwrap_or(i64::MIN) > current {
-        resolved.url = Some(fresh.url.clone());
-        if fresh.preview_url.is_some() {
-            resolved.preview_url.clone_from(&fresh.preview_url);
+    let expiry = |url: Option<&str>| url.and_then(url_expiry).unwrap_or(i64::MIN);
+    if let Some(url) = &fresh.url {
+        if attachment.url.is_none() || expiry(Some(url)) > expiry(attachment.url.as_deref()) {
+            resolved.url = Some(url.clone());
+            if fresh.preview_url.is_some() {
+                resolved.preview_url.clone_from(&fresh.preview_url);
+            }
         }
+    } else if let Some(preview) = &fresh.preview_url
+        && attachment.url.is_none()
+        && (attachment.preview_url.is_none()
+            || expiry(Some(preview)) > expiry(attachment.preview_url.as_deref()))
+    {
+        resolved.preview_url = Some(preview.clone());
     }
     resolved
+}
+
+/// Still formats the bundled pure-Rust codecs decode. Originals in these
+/// formats (from before server-side processing) may load inline when they
+/// have no preview; AVIF, HEIC and anything else never do.
+pub fn decodable(content_type: &str) -> bool {
+    matches!(
+        content_type,
+        "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+    )
+}
+
+/// What to download for an inline tile: the WebP preview (images and video
+/// posters, available even while processing), else a ready original that
+/// decodes here.
+pub fn inline_source(attachment: &Attachment) -> Option<&str> {
+    attachment.preview_url.as_deref().or_else(|| {
+        (attachment.kind == AttachmentKind::Image
+            && attachment.status == AttachmentStatus::Ready
+            && decodable(&attachment.content_type))
+        .then_some(attachment.url.as_deref())
+        .flatten()
+    })
+}
+
+/// Locally shown images fit the largest inline frame at 2x.
+pub const THUMBNAIL_EDGE: u32 = 720;
+/// Own files larger than this are not decoded for a local preview.
+const MAX_LOCAL_DECODE_BYTES: u64 = 50 * 1024 * 1024;
+
+/// Decode a still for display only, within memory limits.
+pub fn decode_thumbnail(bytes: &[u8]) -> Option<egui::ColorImage> {
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(16_384);
+    limits.max_image_height = Some(16_384);
+    limits.max_alloc = Some(512 * 1024 * 1024);
+    reader.limits(limits);
+    let mut image = reader.decode().ok()?;
+    if image.width() > THUMBNAIL_EDGE || image.height() > THUMBNAIL_EDGE {
+        image = image.thumbnail(THUMBNAIL_EDGE, THUMBNAIL_EDGE);
+    }
+    let image = image.to_rgba8();
+    Some(egui::ColorImage::from_rgba_unmultiplied(
+        [image.width() as usize, image.height() as usize],
+        image.as_raw(),
+    ))
+}
+
+/// The sender's own copy of a picked image, shown on its draft chip and on
+/// the sent message until the server's preview arrives. Formats this build
+/// cannot decode (HEIC, AVIF, …) simply show no local image.
+pub fn local_thumbnail(path: &std::path::Path, content_type: &str) -> Option<egui::ColorImage> {
+    if !decodable(content_type) || std::fs::metadata(path).ok()?.len() > MAX_LOCAL_DECODE_BYTES {
+        return None;
+    }
+    decode_thumbnail(&std::fs::read(path).ok()?)
 }
 
 /// Display size that reserves layout space before an image loads.
@@ -248,7 +319,8 @@ impl Media {
         Some(
             self.fresh
                 .get(&id)
-                .map_or(fallback, |fresh| fresh.url.clone()),
+                .and_then(|fresh| fresh.url.clone())
+                .unwrap_or(fallback),
         )
     }
 
@@ -364,13 +436,9 @@ impl Media {
             let context = context.clone();
             let generation = self.generation;
             std::thread::spawn(move || {
-                let result = api.fetch_media(&url).and_then(|bytes| {
-                    let image = crate::compress::thumbnail(&bytes).ok_or(None)?;
-                    Ok(egui::ColorImage::from_rgba_unmultiplied(
-                        [image.width() as usize, image.height() as usize],
-                        image.as_raw(),
-                    ))
-                });
+                let result = api
+                    .fetch_media(&url)
+                    .and_then(|bytes| decode_thumbnail(&bytes).ok_or(None));
                 let _ = sender.send(Fetched {
                     generation,
                     id,
@@ -404,7 +472,6 @@ impl Media {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::AttachmentKind;
 
     fn attachment(url: Option<&str>) -> Attachment {
         Attachment {
@@ -420,6 +487,8 @@ mod tests {
             url: url.map(str::to_owned),
             preview_url: url.map(|url| url.replace("original", "preview")),
             unavailable: false,
+            status: AttachmentStatus::Ready,
+            animated: false,
         }
     }
 
@@ -453,24 +522,78 @@ mod tests {
     #[test]
     fn resolve_prefers_the_longer_lived_urls() {
         let fresh = FreshUrl {
-            url: signed(NOW + 90_000),
+            url: Some(signed(NOW + 90_000)),
             preview_url: Some("https://cdn.caper.chat/preview/asset1?exp=1&sig=p".into()),
         };
         let old = attachment(Some(&signed(NOW)));
         let resolved = resolve(&old, Some(&fresh));
-        assert_eq!(resolved.url, Some(fresh.url.clone()));
+        assert_eq!(resolved.url, fresh.url);
         assert_eq!(resolved.preview_url, fresh.preview_url);
         // A newer history page beats an older refresh.
         let newer = attachment(Some(&signed(NOW + 200_000)));
         assert_eq!(resolve(&newer, Some(&fresh)).url, newer.url);
         // A message without URLs gains them; removed files never do.
-        assert_eq!(
-            resolve(&attachment(None), Some(&fresh)).url,
-            Some(fresh.url.clone())
-        );
+        assert_eq!(resolve(&attachment(None), Some(&fresh)).url, fresh.url);
         let mut removed = attachment(None);
         removed.unavailable = true;
         assert_eq!(resolve(&removed, Some(&fresh)).url, None);
+    }
+
+    #[test]
+    fn processing_refreshes_add_previews_without_hiding_later_urls() {
+        let mut processing = attachment(None);
+        processing.status = AttachmentStatus::Processing;
+        let poster = FreshUrl {
+            url: None,
+            preview_url: Some("https://cdn.caper.chat/preview/asset1?exp=9&sig=p".into()),
+        };
+        let resolved = resolve(&processing, Some(&poster));
+        assert_eq!(resolved.preview_url, poster.preview_url);
+        assert_eq!(resolved.url, None);
+        // Once ready, the message's own URLs win over the older refresh.
+        let ready = attachment(Some(&signed(NOW)));
+        let resolved = resolve(&ready, Some(&poster));
+        assert_eq!(resolved.url, ready.url);
+        assert_eq!(resolved.preview_url, ready.preview_url);
+    }
+
+    #[test]
+    fn inline_images_use_the_preview_and_never_fetch_avif_originals() {
+        let mut photo = attachment(Some(&signed(NOW)));
+        photo.content_type = "image/avif".into();
+        assert_eq!(inline_source(&photo), photo.preview_url.as_deref());
+        photo.preview_url = None;
+        assert_eq!(inline_source(&photo), None, "AVIF opens in the browser");
+        // A legacy PNG without a preview still loads its original.
+        let mut legacy = attachment(Some(&signed(NOW)));
+        legacy.preview_url = None;
+        assert_eq!(inline_source(&legacy), legacy.url.as_deref());
+        legacy.status = AttachmentStatus::Processing;
+        assert_eq!(inline_source(&legacy), None);
+        let mut gif = attachment(Some(&signed(NOW)));
+        gif.kind = AttachmentKind::Video;
+        gif.animated = true;
+        gif.preview_url = None;
+        assert_eq!(inline_source(&gif), None, "MP4s are never decoded");
+    }
+
+    #[test]
+    fn webp_previews_decode_and_shrink_to_the_thumbnail_edge() {
+        let mut bytes = Vec::new();
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            1440,
+            360,
+            image::Rgba([182, 77, 50, 255]),
+        ))
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::WebP,
+        )
+        .unwrap();
+        assert_eq!(&bytes[8..12], b"WEBP");
+        let image = decode_thumbnail(&bytes).unwrap();
+        assert_eq!(image.size, [720, 180]);
+        assert!(decode_thumbnail(b"not an image").is_none());
     }
 
     #[test]
@@ -548,7 +671,7 @@ mod tests {
         let requested = media.take_refresh(Instant::now());
         assert_eq!(requested, ["asset1"]);
         let fresh = FreshUrl {
-            url: signed(NOW + 90_000),
+            url: Some(signed(NOW + 90_000)),
             preview_url: None,
         };
         media.refreshed(
@@ -556,16 +679,17 @@ mod tests {
             BTreeMap::from([("asset1".into(), fresh.clone())]),
         );
         let resolved = media.resolve(&attachment(Some(&first)));
-        assert_eq!(resolved.url.as_deref(), Some(fresh.url.as_str()));
+        assert_eq!(resolved.url, fresh.url);
+        let fresh_url = fresh.url.unwrap();
         assert!(matches!(
-            media.image("asset1", Some(&fresh.url)),
+            media.image("asset1", Some(&fresh_url)),
             ImageState::Loading
         ));
         media.poll(&context);
         deliver(&media, Err(Some(404)));
         media.poll(&context);
         assert!(matches!(
-            media.image("asset1", Some(&fresh.url)),
+            media.image("asset1", Some(&fresh_url)),
             ImageState::Failed
         ));
         assert!(
@@ -614,7 +738,7 @@ mod tests {
         );
         media.open_after_refresh = Some(("asset1".into(), signed(NOW + 60)));
         let fresh = FreshUrl {
-            url: signed(NOW + 90_000),
+            url: Some(signed(NOW + 90_000)),
             preview_url: None,
         };
         assert_eq!(

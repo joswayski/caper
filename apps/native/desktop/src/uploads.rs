@@ -1,11 +1,9 @@
-//! Sending attachments: prepare a file, reserve it, PUT the bytes straight to
-//! storage, confirm, and return the description sent with `attachmentIds`.
-//! Mirrors `apps/web/src/chat/uploads.ts` (`prepareFile`, `uploadPrepared`).
-//! Desktop has no bundled video transcoder: videos upload unchanged, with
-//! dimensions and duration read from MP4/QuickTime headers when present.
+//! Sending attachments: reserve the original's exact size, PUT it straight
+//! to storage, confirm, and return the description sent with `attachmentIds`.
+//! Clients never compress: the server-side media worker processes every
+//! upload (docs/media.md, "Uploads and attachments").
 
 use crate::api::Api;
-use crate::compress::{self, Compression};
 use crate::model::{Attachment, AttachmentKind};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -13,14 +11,23 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
-/// Stills larger than this upload unchanged instead of being read for decoding.
-const MAX_IMAGE_READ_BYTES: u64 = 200 * 1024 * 1024;
+pub const MAX_ATTACHMENTS: usize = 10;
+/// Waits before re-asking `complete` after a 409 (the upload has not
+/// arrived in storage yet).
+const COMPLETE_RETRY_DELAYS: [Duration; 4] = [
+    Duration::from_millis(500),
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UploadError {
     pub message: String,
     pub storage_full: bool,
+    pub status: Option<u16>,
 }
 
 impl UploadError {
@@ -28,29 +35,73 @@ impl UploadError {
         Self {
             message: message.into(),
             storage_full: false,
+            status: None,
         }
     }
 }
 
-pub enum Body {
-    Memory(Vec<u8>),
-    /// Streamed from disk so large files never sit in memory.
-    File(PathBuf),
-}
-
+/// One picked or dropped file, uploaded unchanged.
 pub struct Prepared {
     pub name: String,
     pub content_type: String,
-    pub kind: AttachmentKind,
-    pub source_size: u64,
     pub size: u64,
-    pub body: Body,
-    pub width: Option<u32>,
-    pub height: Option<u32>,
-    pub duration_ms: Option<u64>,
-    /// Always JPEG, at most 512 KiB.
-    pub preview: Option<Vec<u8>>,
-    pub thumbnail: Option<image::RgbaImage>,
+    pub path: PathBuf,
+}
+
+impl Prepared {
+    /// For the draft chip only; the server decides the stored kind.
+    pub fn kind(&self) -> AttachmentKind {
+        kind_for(&self.content_type)
+    }
+}
+
+pub fn kind_for(content_type: &str) -> AttachmentKind {
+    match content_type.split('/').next() {
+        Some("image") => AttachmentKind::Image,
+        Some("video") => AttachmentKind::Video,
+        Some("audio") => AttachmentKind::Audio,
+        _ => AttachmentKind::File,
+    }
+}
+
+/// Desktop files have names, not browser MIME types. The declared type is
+/// display-only until processed: the worker detects the real type from the
+/// bytes, so a guess from the extension is enough.
+pub fn content_type_for(name: &str) -> &'static str {
+    let extension = name
+        .rsplit_once('.')
+        .map(|(_, extension)| extension.to_ascii_lowercase())
+        .unwrap_or_default();
+    match extension.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" | "jpe" | "jfif" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "avif" => "image/avif",
+        "heic" => "image/heic",
+        "heif" => "image/heif",
+        "bmp" => "image/bmp",
+        "svg" => "image/svg+xml",
+        "tif" | "tiff" => "image/tiff",
+        "mp4" | "m4v" => "video/mp4",
+        "webm" => "video/webm",
+        "mov" | "qt" => "video/quicktime",
+        "mkv" => "video/x-matroska",
+        "avi" => "video/x-msvideo",
+        "mp3" => "audio/mpeg",
+        "m4a" => "audio/x-m4a",
+        "aac" => "audio/aac",
+        "ogg" | "oga" | "opus" => "audio/ogg",
+        "wav" => "audio/wav",
+        "aif" | "aiff" => "audio/aiff",
+        "flac" => "audio/flac",
+        "pdf" => "application/pdf",
+        "zip" => "application/zip",
+        "json" => "application/json",
+        "txt" | "log" | "md" => "text/plain",
+        "csv" => "text/csv",
+        _ => "application/octet-stream",
+    }
 }
 
 fn file_name(path: &Path) -> String {
@@ -60,8 +111,8 @@ fn file_name(path: &Path) -> String {
         .unwrap_or_else(|| "file".into())
 }
 
-/// Read, classify and compress one picked or dropped file. Runs off the UI thread.
-pub fn prepare_path(path: &Path, settings: &Compression) -> Result<Prepared, String> {
+/// Check one picked or dropped file before anything is reserved.
+pub fn prepare_path(path: &Path, max_upload_bytes: Option<u64>) -> Result<Prepared, String> {
     let name = file_name(path);
     let metadata = std::fs::metadata(path).map_err(|_| format!("Could not read {name}."))?;
     if !metadata.is_file() {
@@ -71,102 +122,28 @@ pub fn prepare_path(path: &Path, settings: &Compression) -> Result<Prepared, Str
     if size == 0 {
         return Err(format!("{name} is empty."));
     }
-    let mut file = std::fs::File::open(path).map_err(|_| format!("Could not read {name}."))?;
-    let mut head = [0; 64];
-    let read = file.read(&mut head).unwrap_or(0);
-    let content_type = compress::content_type_for(&name, &head[..read]);
-    if content_type.starts_with("image/") && size <= MAX_IMAGE_READ_BYTES {
-        let bytes = std::fs::read(path).map_err(|_| format!("Could not read {name}."))?;
-        return Ok(prepare_bytes(&name, bytes, settings));
+    if let Some(limit) = max_upload_bytes.filter(|limit| size > *limit) {
+        return Err(format!(
+            "This file is larger than the {} upload limit.",
+            format_bytes(limit)
+        ));
     }
-    let mut prepared = Prepared {
-        kind: compress::attachment_kind(&content_type),
+    Ok(Prepared {
+        content_type: content_type_for(&name).into(),
         name,
-        content_type,
-        source_size: size,
         size,
-        body: Body::File(path.to_owned()),
-        width: None,
-        height: None,
-        duration_ms: None,
-        preview: None,
-        thumbnail: None,
-    };
-    if matches!(
-        prepared.content_type.as_str(),
-        "video/mp4" | "video/quicktime"
-    ) {
-        let info = compress::probe_mp4(&mut file);
-        prepared.width = info.width;
-        prepared.height = info.height;
-        prepared.duration_ms = info.duration_ms;
-    }
-    Ok(prepared)
-}
-
-/// Prepare in-memory bytes (stills are compressed with the server settings).
-pub fn prepare_bytes(name: &str, bytes: Vec<u8>, settings: &Compression) -> Prepared {
-    let head = &bytes[..bytes.len().min(64)];
-    let content_type = compress::content_type_for(name, head);
-    let source_size = bytes.len() as u64;
-    if content_type.starts_with("image/") {
-        let image = compress::prepare_image(name, bytes, &content_type, settings);
-        return Prepared {
-            kind: compress::attachment_kind(&image.content_type),
-            name: image.name,
-            content_type: image.content_type,
-            source_size,
-            size: image.bytes.len() as u64,
-            body: Body::Memory(image.bytes),
-            width: image.width,
-            height: image.height,
-            duration_ms: None,
-            preview: image.preview,
-            thumbnail: image.thumbnail,
-        };
-    }
-    Prepared {
-        kind: compress::attachment_kind(&content_type),
-        name: name.into(),
-        content_type,
-        source_size,
-        size: source_size,
-        body: Body::Memory(bytes),
-        width: None,
-        height: None,
-        duration_ms: None,
-        preview: None,
-        thumbnail: None,
-    }
+        path: path.to_owned(),
+    })
 }
 
 /// The reservation request (`POST /api/assets`).
 pub fn reservation(channel: &str, prepared: &Prepared) -> Value {
-    let mut body = json!({
+    json!({
         "channelId": channel,
         "filename": prepared.name,
         "contentType": prepared.content_type,
         "byteSize": prepared.size,
-    });
-    if prepared.source_size > 0 {
-        body["sourceByteSize"] = json!(prepared.source_size);
-    }
-    // The API accepts 1..=32768 pixels and up to 24 hours.
-    let dimension = |value: Option<u32>| value.filter(|value| (1..=32_768).contains(value));
-    if let (Some(width), Some(height)) = (dimension(prepared.width), dimension(prepared.height)) {
-        body["width"] = json!(width);
-        body["height"] = json!(height);
-    }
-    if let Some(duration) = prepared
-        .duration_ms
-        .filter(|duration| *duration <= 24 * 60 * 60 * 1000)
-    {
-        body["durationMs"] = json!(duration);
-    }
-    if let Some(preview) = &prepared.preview {
-        body["preview"] = json!({"contentType": "image/jpeg", "byteSize": preview.len()});
-    }
-    body
+    })
 }
 
 struct PresignedPut {
@@ -222,8 +199,9 @@ fn cancelled(cancel: &AtomicBool) -> Result<(), UploadError> {
     }
 }
 
-/// Reserve, upload straight to storage (preview first), then confirm.
-/// `progress` receives 0–1 across preview and original bytes.
+/// Reserve, stream the original from disk straight to storage, then confirm.
+/// `progress` receives 0–1 of the original's bytes. The result is usually
+/// `status: processing`; the message can be sent right away.
 pub fn upload(
     api: &Api,
     token: &str,
@@ -232,8 +210,31 @@ pub fn upload(
     progress: Arc<dyn Fn(f32) + Send + Sync>,
     cancel: Arc<AtomicBool>,
 ) -> Result<Attachment, UploadError> {
+    upload_with_delays(
+        api,
+        token,
+        channel,
+        prepared,
+        progress,
+        cancel,
+        &COMPLETE_RETRY_DELAYS,
+    )
+}
+
+fn upload_with_delays(
+    api: &Api,
+    token: &str,
+    channel: &str,
+    prepared: Prepared,
+    progress: Arc<dyn Fn(f32) + Send + Sync>,
+    cancel: Arc<AtomicBool>,
+    delays: &[Duration],
+) -> Result<Attachment, UploadError> {
     let invalid = || UploadError::new("The upload service returned an invalid response.");
     cancelled(&cancel)?;
+    // Open first so an unreadable file never holds a reservation.
+    let file = std::fs::File::open(&prepared.path)
+        .map_err(|_| UploadError::new(format!("Could not read {}.", prepared.name)))?;
     let reserved = api.create_asset(token, reservation(channel, &prepared))?;
     let id = reserved["id"]
         .as_str()
@@ -246,53 +247,23 @@ pub fn upload(
         .ok_or_else(invalid)?
         .to_owned();
     let upload = presigned(&reserved["upload"]).ok_or_else(invalid)?;
-    let preview_size = prepared.preview.as_ref().map_or(0, Vec::len) as u64;
-    let total = (prepared.size + preview_size).max(1) as f32;
-    if let (Some(preview), Some(put)) = (&prepared.preview, presigned(&reserved["previewUpload"])) {
-        cancelled(&cancel)?;
-        let body = Progress {
-            inner: std::io::Cursor::new(preview.clone()),
-            sent: 0,
-            report: Arc::new(|_| {}),
-            cancel: cancel.clone(),
-        };
-        api.put_presigned(
-            &put.url,
-            &put.headers,
-            reqwest::blocking::Body::sized(body, preview_size),
-        )?;
-    }
     cancelled(&cancel)?;
+    let total = prepared.size.max(1) as f32;
     let report: Arc<dyn Fn(u64) + Send + Sync> = {
         let progress = progress.clone();
-        Arc::new(move |sent| progress((preview_size + sent) as f32 / total))
+        Arc::new(move |sent| progress(sent as f32 / total))
     };
-    let body = match prepared.body {
-        Body::Memory(bytes) => reqwest::blocking::Body::sized(
-            Progress {
-                inner: std::io::Cursor::new(bytes),
-                sent: 0,
-                report,
-                cancel: cancel.clone(),
-            },
-            prepared.size,
-        ),
-        Body::File(path) => {
-            let file = std::fs::File::open(&path)
-                .map_err(|_| UploadError::new(format!("Could not read {}.", prepared.name)))?;
-            // Exactly the reserved size: a file that grew since is cut, one
-            // that shrank fails verification.
-            reqwest::blocking::Body::sized(
-                Progress {
-                    inner: file.take(prepared.size),
-                    sent: 0,
-                    report,
-                    cancel: cancel.clone(),
-                },
-                prepared.size,
-            )
-        }
-    };
+    // Exactly the reserved size, which the URL signs: a file that grew since
+    // is cut, one that shrank fails verification.
+    let body = reqwest::blocking::Body::sized(
+        Progress {
+            inner: file.take(prepared.size),
+            sent: 0,
+            report,
+            cancel: cancel.clone(),
+        },
+        prepared.size,
+    );
     api.put_presigned(&upload.url, &upload.headers, body)
         .map_err(|error| {
             if cancel.load(Ordering::Relaxed) {
@@ -301,24 +272,22 @@ pub fn upload(
                 error
             }
         })?;
-    cancelled(&cancel)?;
-    let completed = api.complete_asset(token, &id)?;
+    let mut delays = delays.iter();
+    let completed = loop {
+        cancelled(&cancel)?;
+        match api.complete_asset(token, &id) {
+            Err(error) if error.status == Some(409) => match delays.next() {
+                Some(delay) => std::thread::sleep(*delay),
+                None => return Err(error),
+            },
+            result => break result?,
+        }
+    };
     let attachment = Attachment::parse(&completed)
         .filter(|attachment| attachment.id == id)
         .ok_or_else(invalid)?;
     progress(1.0);
     Ok(attachment)
-}
-
-/// "X MB → Y KB" when compression saved space, otherwise the stored size.
-pub fn size_label(source: u64, stored: Option<u64>) -> String {
-    match stored {
-        Some(stored) if stored < source => {
-            format!("{} → {}", format_bytes(source), format_bytes(stored))
-        }
-        Some(stored) => format_bytes(stored),
-        None => format_bytes(source),
-    }
 }
 
 /// Web `formatBytes`.
@@ -405,42 +374,67 @@ mod tests {
         (base, handle)
     }
 
-    fn text_file_with_preview() -> Prepared {
-        let mut prepared = prepare_bytes(
-            "notes.txt",
-            b"hello attachments".to_vec(),
-            &Compression::default(),
-        );
-        prepared.preview = Some(vec![0xff, 0xd8, 0xff, 1, 2, 3]);
-        prepared.width = Some(1920);
-        prepared.height = Some(1080);
-        prepared
+    /// A scratch directory removed when dropped.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(label: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "caper-upload-{label}-{}-{}",
+                std::process::id(),
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        fn file(&self, name: &str, bytes: &[u8]) -> PathBuf {
+            let path = self.0.join(name);
+            std::fs::write(&path, bytes).unwrap();
+            path
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn reserved(base: &str) -> String {
+        json!({
+            "id": "asset0001",
+            "kind": "image",
+            "upload": {"method": "PUT", "url": format!("{base}/s3/incoming/asset0001?X-Amz-Signature=s"), "headers": {
+                "content-type": "image/heic"
+            }},
+            "storage": {"used": 23, "limit": 1000}
+        })
+        .to_string()
+    }
+
+    fn processing() -> String {
+        json!({
+            "id": "asset0001", "kind": "image", "contentType": "image/heic",
+            "name": "IMG_0001.HEIC", "size": 17, "status": "processing"
+        })
+        .to_string()
     }
 
     #[test]
-    fn upload_reserves_puts_preview_then_original_and_completes() {
+    fn upload_reserves_the_original_puts_it_unchanged_and_retries_complete() {
+        let scratch = Scratch::new("flow");
+        let path = scratch.file("IMG_0001.HEIC", b"original heic data");
+        let prepared = prepare_path(&path, Some(1 << 30)).unwrap();
+        assert_eq!(prepared.content_type, "image/heic");
+        assert_eq!(prepared.kind(), AttachmentKind::Image);
         let (base, server) = serve(|base| {
-            let reserved = json!({
-                "id": "asset0001",
-                "kind": "file",
-                "upload": {"method": "PUT", "url": format!("{base}/r2/original/asset0001?X-Amz-Signature=s"), "headers": {
-                    "content-type": "text/plain",
-                    "content-disposition": "attachment; filename=\"notes.txt\""
-                }},
-                "previewUpload": {"method": "PUT", "url": format!("{base}/r2/preview/asset0001?X-Amz-Signature=p"), "headers": {
-                    "content-type": "image/jpeg"
-                }},
-                "storage": {"used": 23, "limit": 1000}
-            });
-            let completed = json!({
-                "id": "asset0001", "kind": "file", "contentType": "text/plain",
-                "name": "notes.txt", "size": 17
-            });
             vec![
-                (201, reserved.to_string()),
+                (201, reserved(base)),
                 (200, String::new()),
-                (200, String::new()),
-                (200, completed.to_string()),
+                (409, r#"{"error":"upload has not arrived"}"#.into()),
+                (409, r#"{"error":"upload has not arrived"}"#.into()),
+                (200, processing()),
             ]
         });
         let api = Api::new(&base).unwrap();
@@ -449,17 +443,21 @@ mod tests {
             let seen = seen.clone();
             Arc::new(move |value| seen.lock().unwrap().push(value))
         };
-        let attachment = upload(
+        let attachment = upload_with_delays(
             &api,
             "account-token",
             "chan00000001",
-            text_file_with_preview(),
+            prepared,
             progress,
             Arc::new(AtomicBool::new(false)),
+            &[Duration::from_millis(1); 3],
         )
         .unwrap();
         assert_eq!(attachment.id, "asset0001");
-        assert_eq!(attachment.kind, AttachmentKind::File);
+        assert_eq!(
+            attachment.status,
+            crate::model::AttachmentStatus::Processing
+        );
         let requests = server.join().unwrap();
         let lines: Vec<_> = requests
             .iter()
@@ -469,52 +467,82 @@ mod tests {
             lines,
             [
                 "POST /api/assets HTTP/1.1",
-                "PUT /r2/preview/asset0001?X-Amz-Signature=p HTTP/1.1",
-                "PUT /r2/original/asset0001?X-Amz-Signature=s HTTP/1.1",
+                "PUT /s3/incoming/asset0001?X-Amz-Signature=s HTTP/1.1",
+                "POST /api/assets/asset0001/complete HTTP/1.1",
+                "POST /api/assets/asset0001/complete HTTP/1.1",
                 "POST /api/assets/asset0001/complete HTTP/1.1",
             ]
         );
+        // Exactly the original's size and the extension's type, nothing else.
         let reservation: Value = serde_json::from_slice(&requests[0].body).unwrap();
         assert_eq!(
             reservation,
             json!({
-                "channelId": "chan00000001", "filename": "notes.txt", "contentType": "text/plain",
-                "byteSize": 17, "sourceByteSize": 17, "width": 1920, "height": 1080,
-                "preview": {"contentType": "image/jpeg", "byteSize": 6}
+                "channelId": "chan00000001", "filename": "IMG_0001.HEIC",
+                "contentType": "image/heic", "byteSize": 18
             })
         );
-        for api_request in [&requests[0], &requests[3]] {
+        for api_request in [&requests[0], &requests[2], &requests[4]] {
             assert_eq!(
                 api_request.headers.get("authorization").map(String::as_str),
                 Some("Bearer account-token")
             );
         }
-        // Storage PUTs carry exactly the returned headers and the exact
-        // length, and never a Caper credential.
-        let preview = &requests[1];
-        assert_eq!(preview.body, [0xff, 0xd8, 0xff, 1, 2, 3]);
-        assert_eq!(preview.headers["content-type"], "image/jpeg");
-        assert_eq!(preview.headers["content-length"], "6");
-        let original = &requests[2];
-        assert_eq!(original.body, b"hello attachments");
-        assert_eq!(original.headers["content-type"], "text/plain");
-        assert_eq!(original.headers["content-length"], "17");
-        assert_eq!(
-            original.headers["content-disposition"],
-            "attachment; filename=\"notes.txt\""
-        );
-        for put in [preview, original] {
-            assert!(!put.headers.contains_key("authorization"));
-            assert!(!put.headers.contains_key("x-caper-chat-token"));
-            assert!(!put.headers.contains_key("transfer-encoding"));
-        }
+        // The storage PUT carries exactly the returned headers, the exact
+        // length and the unchanged bytes, and never a Caper credential.
+        let put = &requests[1];
+        assert_eq!(put.body, b"original heic data");
+        assert_eq!(put.headers["content-type"], "image/heic");
+        assert_eq!(put.headers["content-length"], "18");
+        assert!(!put.headers.contains_key("authorization"));
+        assert!(!put.headers.contains_key("x-caper-chat-token"));
+        assert!(!put.headers.contains_key("transfer-encoding"));
+        assert!(!put.headers.contains_key("cookie"));
         let progress = seen.lock().unwrap();
         assert_eq!(progress.last(), Some(&1.0));
         assert!(progress.windows(2).all(|pair| pair[0] <= pair[1]));
     }
 
     #[test]
+    fn complete_gives_up_after_its_retries_and_reports_size_mismatch() {
+        let scratch = Scratch::new("complete");
+        let path = scratch.file("a.bin", b"x");
+        let (base, server) = serve(|base| {
+            vec![
+                (201, reserved(base)),
+                (200, String::new()),
+                (409, r#"{"error":"upload has not arrived"}"#.into()),
+                (409, r#"{"error":"upload has not arrived"}"#.into()),
+                (201, reserved(base)),
+                (200, String::new()),
+                (422, r#"{"error":"uploaded size does not match"}"#.into()),
+            ]
+        });
+        let api = Api::new(&base).unwrap();
+        let attempt = || {
+            upload_with_delays(
+                &api,
+                "token",
+                "chan",
+                prepare_path(&path, None).unwrap(),
+                Arc::new(|_| {}),
+                Arc::new(AtomicBool::new(false)),
+                &[Duration::from_millis(1)],
+            )
+            .unwrap_err()
+        };
+        let pending = attempt();
+        assert_eq!(pending.status, Some(409));
+        assert_eq!(pending.message, "upload has not arrived");
+        let mismatch = attempt();
+        assert_eq!(mismatch.status, Some(422));
+        assert_eq!(server.join().unwrap().len(), 7);
+    }
+
+    #[test]
     fn storage_full_and_server_errors_are_explicit() {
+        let scratch = Scratch::new("errors");
+        let path = scratch.file("a.txt", b"x");
         let (base, server) = serve(|_| {
             vec![
                 (
@@ -534,7 +562,7 @@ mod tests {
                 &api,
                 "token",
                 "chan00000001",
-                prepare_bytes("a.txt", b"x".to_vec(), &Compression::default()),
+                prepare_path(&path, None).unwrap(),
                 Arc::new(|_| {}),
                 Arc::new(AtomicBool::new(false)),
             )
@@ -555,12 +583,13 @@ mod tests {
 
     #[test]
     fn cancelled_uploads_never_reserve_and_bad_storage_urls_are_refused() {
+        let scratch = Scratch::new("cancel");
         let api = Api::new("http://127.0.0.1:9").unwrap();
         let cancelled = upload(
             &api,
             "token",
             "chan",
-            prepare_bytes("a.txt", b"x".to_vec(), &Compression::default()),
+            prepare_path(&scratch.file("a.txt", b"x"), None).unwrap(),
             Arc::new(|_| {}),
             Arc::new(AtomicBool::new(true)),
         )
@@ -580,6 +609,46 @@ mod tests {
     }
 
     #[test]
+    fn files_are_checked_against_the_upload_limit_before_reserving() {
+        let scratch = Scratch::new("limits");
+        let path = scratch.file("clip.mov", &[7; 2048]);
+        let prepared = prepare_path(&path, Some(2048)).unwrap();
+        assert_eq!(prepared.size, 2048);
+        assert_eq!(prepared.content_type, "video/quicktime");
+        assert_eq!(
+            prepare_path(&path, Some(2047)).err().as_deref(),
+            Some("This file is larger than the 2.0 KB upload limit.")
+        );
+        assert_eq!(
+            prepare_path(&scratch.file("empty.txt", b""), None).err(),
+            Some("empty.txt is empty.".into())
+        );
+        assert_eq!(
+            prepare_path(&scratch.0, None)
+                .err()
+                .map(|error| error.ends_with("is not a file.")),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn content_types_come_from_the_extension() {
+        assert_eq!(content_type_for("photo.JPG"), "image/jpeg");
+        assert_eq!(content_type_for("anim.gif"), "image/gif");
+        assert_eq!(content_type_for("scan.tiff"), "image/tiff");
+        assert_eq!(content_type_for("take.MOV"), "video/quicktime");
+        assert_eq!(content_type_for("memo.wav"), "audio/wav");
+        assert_eq!(content_type_for("notes.md"), "text/plain");
+        assert_eq!(
+            content_type_for("archive.tar.zst"),
+            "application/octet-stream"
+        );
+        assert_eq!(content_type_for("README"), "application/octet-stream");
+        assert_eq!(kind_for("application/pdf"), AttachmentKind::File);
+        assert_eq!(kind_for("audio/flac"), AttachmentKind::Audio);
+    }
+
+    #[test]
     fn send_includes_attachment_ids_only_when_present() {
         let message = |text: &str| {
             json!({
@@ -587,7 +656,7 @@ mod tests {
                 "clientMessageId": "client", "author": {"id": "u", "name": "U", "isGuest": false},
                 "content": {"version": 1, "type": "text", "text": text, "attachments": [
                     {"id": "asset0001", "kind": "image", "contentType": "image/png", "name": "a.png", "size": 4,
-                     "url": "https://cdn.caper.chat/original/asset0001?exp=1&sig=s"}
+                     "status": "processing"}
                 ]}
             })
             .to_string()
@@ -625,6 +694,7 @@ mod tests {
                     200,
                     json!({"urls": {
                         "a": {"url": "https://cdn.caper.chat/original/a?exp=9&sig=s", "previewUrl": "https://cdn.caper.chat/preview/a?exp=9&sig=p"},
+                        "processing": {"previewUrl": "https://cdn.caper.chat/preview/p?exp=9&sig=p"},
                         "b": {"url": "javascript:alert(1)"},
                         "c": {"nope": true}
                     }})
@@ -632,45 +702,28 @@ mod tests {
                 ),
                 (
                     200,
-                    json!({"used": 1, "limit": 2, "compression": {"imageQuality": 70}}).to_string(),
+                    json!({"used": 1, "limit": 2, "maxUploadBytes": 2147483648_u64}).to_string(),
                 ),
+                (200, json!({"used": 1, "limit": 2}).to_string()),
                 (503, r#"{"error":"uploads are not configured"}"#.into()),
             ]
         });
         let api = Api::new(&base).unwrap();
         let urls = api
-            .attachment_urls("token", &["a".into(), "b".into(), "c".into()])
+            .attachment_urls(
+                "token",
+                &["a".into(), "processing".into(), "b".into(), "c".into()],
+            )
             .unwrap();
-        assert_eq!(urls.keys().collect::<Vec<_>>(), ["a"]);
-        assert_eq!(api.asset_usage("token").unwrap().image_quality, 70);
+        assert_eq!(urls.keys().collect::<Vec<_>>(), ["a", "processing"]);
+        assert_eq!(urls["processing"].url, None);
+        let usage = api.asset_usage("token").unwrap();
+        assert_eq!(usage.max_upload_bytes, Some(2_147_483_648));
+        assert_eq!(api.asset_usage("token").unwrap().max_upload_bytes, None);
         assert!(api.asset_usage("token").is_err());
         let requests = server.join().unwrap();
         assert_eq!(requests[0].line, "POST /api/assets/urls HTTP/1.1");
-        assert_eq!(
-            serde_json::from_slice::<Value>(&requests[0].body).unwrap(),
-            json!({"ids": ["a", "b", "c"]})
-        );
         assert_eq!(requests[1].line, "GET /api/assets/usage HTTP/1.1");
-    }
-
-    #[test]
-    fn video_and_large_files_stream_from_disk_with_header_metadata() {
-        let directory = std::env::temp_dir().join(format!("caper-upload-{}", std::process::id()));
-        std::fs::create_dir_all(&directory).unwrap();
-        let path = directory.join("clip.mp4");
-        std::fs::write(&path, b"\0\0\0\x10ftypisom\0\0\0\0").unwrap();
-        let prepared = prepare_path(&path, &Compression::default()).unwrap();
-        assert_eq!(prepared.content_type, "video/mp4");
-        assert_eq!(prepared.kind, AttachmentKind::Video);
-        assert!(matches!(prepared.body, Body::File(_)));
-        assert_eq!(prepared.size, 16);
-        let empty = directory.join("empty.txt");
-        std::fs::write(&empty, b"").unwrap();
-        assert_eq!(
-            prepare_path(&empty, &Compression::default()).err(),
-            Some("empty.txt is empty.".into())
-        );
-        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -679,8 +732,6 @@ mod tests {
         assert_eq!(format_bytes(1536), "1.5 KB");
         assert_eq!(format_bytes(143 * 1024), "143 KB");
         assert_eq!(format_bytes(1_677_722), "1.6 MB");
-        assert_eq!(size_label(1_677_722, Some(146_432)), "1.6 MB → 143 KB");
-        assert_eq!(size_label(2048, Some(2048)), "2.0 KB");
-        assert_eq!(size_label(2048, None), "2.0 KB");
+        assert_eq!(format_bytes(2_147_483_648), "2.0 GB");
     }
 }

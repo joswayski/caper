@@ -3,7 +3,6 @@
 mod api;
 mod attachments;
 mod avatar_images;
-mod compress;
 mod credentials;
 mod daily_icon;
 mod effects;
@@ -169,8 +168,8 @@ struct DraftUpload {
     channel: String,
     name: String,
     kind: model::AttachmentKind,
-    source_size: u64,
-    stored_size: Option<u64>,
+    /// The original's size; 0 until the file was checked.
+    size: u64,
     progress: f32,
     error: Option<String>,
     attachment: Option<model::Attachment>,
@@ -327,8 +326,10 @@ struct CaperApp {
     connection_copy_status: &'static str,
     diagnostics_copied: bool,
     updates: updates::Updates,
-    /// Compression settings while uploads are configured; `None` hides Attach.
-    uploads: Option<compress::Compression>,
+    /// Upload limits while uploads are configured; `None` hides Attach.
+    uploads: Option<api::Usage>,
+    /// Latest `attachment.progress` percent per processing attachment id.
+    attachment_progress: BTreeMap<String, u8>,
     uploads_checked: Option<Instant>,
     drafts: Vec<DraftUpload>,
     draft_keys: u64,
@@ -444,6 +445,7 @@ impl CaperApp {
             diagnostics_copied: false,
             updates: updates::Updates::start(context, fixture.is_none()),
             uploads: None,
+            attachment_progress: BTreeMap::new(),
             uploads_checked: None,
             drafts: Vec::new(),
             draft_keys: 0,
@@ -953,6 +955,7 @@ impl CaperApp {
                 },
                 reactions: Vec::new(),
                 reaction_seq: None,
+                attachments_seq: None,
             })
             .collect();
         self.timeline.reset(messages, "4").expect("valid fixture");
@@ -964,7 +967,9 @@ impl CaperApp {
     }
 
     /// Static attachment preview: synthetic local images, never fetched, and
-    /// `.invalid` URLs. Uploads read as available without contacting a server.
+    /// `.invalid` URLs. Covers ready, processing (with and without a poster
+    /// and progress), failed, animated and removed files. Uploads read as
+    /// available without contacting a server.
     fn install_attachments_fixture(&mut self) {
         self.token = Some("fixture-account".into());
         self.session = Some(ChatSession {
@@ -976,7 +981,9 @@ impl CaperApp {
                 avatar_id: Some(0),
             },
         });
-        self.uploads = Some(compress::Compression::default());
+        self.uploads = Some(api::Usage {
+            max_upload_bytes: Some(2 << 30),
+        });
         let url = |kind: &str, id: &str| format!("https://fixture.invalid/{kind}/{id}");
         let file = |id: &str, kind, content_type: &str, name: &str, size| model::Attachment {
             id: id.into(),
@@ -991,28 +998,65 @@ impl CaperApp {
             url: Some(url("original", id)),
             preview_url: None,
             unavailable: false,
+            status: model::AttachmentStatus::Ready,
+            animated: false,
+        };
+        let processing = |mut attachment: model::Attachment| {
+            attachment.url = None;
+            attachment.status = model::AttachmentStatus::Processing;
+            attachment
         };
         let mut screenshot = file(
             "fixture-image",
             model::AttachmentKind::Image,
-            "image/png",
-            "TEST FIXTURE screenshot.png",
+            "image/webp",
+            "TEST FIXTURE screenshot.webp",
             146_432,
         );
         (screenshot.width, screenshot.height) = (Some(1280), Some(720));
-        let mut video = file(
+        screenshot.preview_url = Some(url("preview", "fixture-image"));
+        // A video still encoding: its poster arrived first.
+        let mut video = processing(file(
             "fixture-video",
             model::AttachmentKind::Video,
-            "video/mp4",
-            "TEST FIXTURE walkthrough.mp4",
-            8_400_000,
-        );
+            "video/quicktime",
+            "TEST FIXTURE walkthrough.mov",
+            84_000_000,
+        ));
         (video.width, video.height) = (Some(1920), Some(1080));
+        video.preview_url = Some(url("preview", "fixture-video"));
+        let mut gif = file(
+            "fixture-gif",
+            model::AttachmentKind::Video,
+            "video/mp4",
+            "TEST FIXTURE reaction.mp4",
+            220_000,
+        );
+        (gif.width, gif.height) = (Some(480), Some(270));
+        gif.animated = true;
+        gif.preview_url = Some(url("preview", "fixture-gif"));
+        let mut photo = processing(file(
+            "fixture-photo",
+            model::AttachmentKind::Image,
+            "image/heic",
+            "TEST FIXTURE photo.heic",
+            3_100_000,
+        ));
+        (photo.width, photo.height) = (Some(4032), Some(3024));
+        let mut scan = file(
+            "fixture-failed",
+            model::AttachmentKind::Image,
+            "image/tiff",
+            "TEST FIXTURE scan.tiff",
+            9_000_000,
+        );
+        scan.url = None;
+        scan.status = model::AttachmentStatus::Failed;
         let audio = file(
             "fixture-audio",
             model::AttachmentKind::Audio,
-            "audio/mpeg",
-            "TEST FIXTURE voice note.mp3",
+            "audio/flac",
+            "TEST FIXTURE voice note.flac",
             1_250_000,
         );
         let report = file(
@@ -1022,6 +1066,13 @@ impl CaperApp {
             "TEST FIXTURE report.pdf",
             2_400_000,
         );
+        let notes = processing(file(
+            "fixture-notes",
+            model::AttachmentKind::File,
+            "text/plain",
+            "TEST FIXTURE notes.txt",
+            48_000,
+        ));
         let mut removed = file(
             "fixture-removed",
             model::AttachmentKind::File,
@@ -1032,12 +1083,14 @@ impl CaperApp {
         removed.url = None;
         removed.unavailable = true;
         let mut messages: Vec<_> = self.timeline.messages().cloned().collect();
-        messages[2].content.attachments = vec![screenshot, video];
+        messages[1].content.attachments = vec![photo, scan];
+        messages[2].content.attachments = vec![screenshot, video, gif];
         messages[3].content.text.clear();
-        messages[3].content.attachments = vec![audio, report, removed];
+        messages[3].content.attachments = vec![audio, report, notes, removed];
         self.timeline
             .reset(messages, "4")
             .expect("valid attachments fixture");
+        self.attachment_progress.insert("fixture-video".into(), 45);
         let [width, height] = [320_usize, 180];
         let pixels: Vec<u8> = (0..width * height)
             .flat_map(|index| {
@@ -1050,52 +1103,35 @@ impl CaperApp {
             })
             .collect();
         let image = egui::ColorImage::from_rgba_unmultiplied([width, height], &pixels);
-        self.local_media
-            .push(("fixture-image".into(), image.clone()));
+        for id in ["fixture-image", "fixture-video", "fixture-gif"] {
+            self.local_media.push((id.into(), image.clone()));
+        }
         let channel = self.selected_channel.clone().unwrap_or_default();
-        let draft = |key, name: &str, source_size, stored_size, progress, error: Option<&str>| {
-            DraftUpload {
-                key,
-                channel: channel.clone(),
-                name: name.into(),
-                kind: model::AttachmentKind::Image,
-                source_size,
-                stored_size,
-                progress,
-                error: error.map(str::to_owned),
-                attachment: None,
-                thumbnail_image: Some(image.clone()),
-                thumbnail: None,
-                cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            }
+        let draft = |key, name: &str, size, progress, error: Option<&str>| DraftUpload {
+            key,
+            channel: channel.clone(),
+            name: name.into(),
+            kind: model::AttachmentKind::Image,
+            size,
+            progress,
+            error: error.map(str::to_owned),
+            attachment: None,
+            thumbnail_image: Some(image.clone()),
+            thumbnail: None,
+            cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
-        let mut done = draft(
-            1,
+        let mut done = draft(1, "TEST FIXTURE photo.jpg", 1_677_722, 1.0, None);
+        done.attachment = Some(processing(file(
+            "fixture-draft",
+            model::AttachmentKind::Image,
+            "image/jpeg",
             "TEST FIXTURE photo.jpg",
             1_677_722,
-            Some(146_432),
-            1.0,
-            None,
-        );
-        done.attachment = Some(model::Attachment {
-            id: "fixture-draft".into(),
-            kind: model::AttachmentKind::Image,
-            content_type: "image/jpeg".into(),
-            name: "TEST FIXTURE photo.jpg".into(),
-            size: 146_432,
-            width: None,
-            height: None,
-            duration_ms: None,
-            preview: false,
-            url: None,
-            preview_url: None,
-            unavailable: false,
-        });
+        )));
         let mut failed = draft(
             3,
             "TEST FIXTURE large.mov",
             900_000_000,
-            Some(900_000_000),
             0.0,
             Some("You’ve used all of your file storage."),
         );
@@ -1103,14 +1139,7 @@ impl CaperApp {
         failed.thumbnail_image = None;
         self.drafts = vec![
             done,
-            draft(
-                2,
-                "TEST FIXTURE diagram.png",
-                640_000,
-                Some(52_000),
-                0.45,
-                None,
-            ),
+            draft(2, "TEST FIXTURE diagram.png", 640_000, 0.45, None),
             failed,
         ];
         self.draft_keys = 3;
@@ -1387,8 +1416,8 @@ impl CaperApp {
                 {
                     self.sent(result)
                 }
-                Event::AssetUsage { token, settings } if self.token.as_ref() == Some(&token) => {
-                    self.uploads = settings;
+                Event::AssetUsage { token, usage } if self.token.as_ref() == Some(&token) => {
+                    self.uploads = usage;
                 }
                 Event::AttachmentUrls { token, ids, result }
                     if self.token.as_ref() == Some(&token) =>
@@ -2353,6 +2382,46 @@ impl CaperApp {
                     _ => {}
                 }
             }
+            GatewayEvent::Attachments {
+                generation,
+                channel,
+                update,
+            } if current(
+                generation,
+                self.generation,
+                Some(&channel),
+                self.selected_channel.as_deref(),
+            ) =>
+            {
+                for attachment in &update.attachments {
+                    if attachment.status != model::AttachmentStatus::Processing {
+                        self.attachment_progress.remove(&attachment.id);
+                    }
+                }
+                match self.timeline.apply_attachments(update) {
+                    Ok(model::Apply::Applied) => self.mark_selected_direct_read(),
+                    Ok(model::Apply::Resync) | Err(_) => self.reload_channel(),
+                    _ => {}
+                }
+            }
+            GatewayEvent::AttachmentProgress {
+                generation,
+                channel,
+                attachment,
+                percent,
+            } if current(
+                generation,
+                self.generation,
+                Some(&channel),
+                self.selected_channel.as_deref(),
+            ) =>
+            {
+                if self.attachment_progress.contains_key(&attachment)
+                    || self.attachment_progress.len() < 256
+                {
+                    self.attachment_progress.insert(attachment, percent);
+                }
+            }
             GatewayEvent::Typing {
                 generation,
                 channel,
@@ -2588,6 +2657,7 @@ impl CaperApp {
         self.uploads = None;
         self.uploads_checked = None;
         self.media.clear();
+        self.attachment_progress.clear();
         self.local_media.clear();
         self.open_after_refresh = None;
         self.invalidate_navigation_cache();
@@ -2734,18 +2804,18 @@ impl CaperApp {
         if paths.is_empty() || !self.can_attach() {
             return;
         }
-        let (Some(settings), Some(token), Some(channel)) = (
+        let (Some(usage), Some(token), Some(channel)) = (
             self.uploads.clone(),
             self.token.clone(),
             self.selected_channel.clone(),
         ) else {
             return;
         };
-        let room = compress::MAX_ATTACHMENTS.saturating_sub(self.drafts.len());
+        let room = uploads::MAX_ATTACHMENTS.saturating_sub(self.drafts.len());
         if room == 0 {
             self.error = Some(format!(
                 "You can attach up to {} files.",
-                compress::MAX_ATTACHMENTS
+                uploads::MAX_ATTACHMENTS
             ));
             return;
         }
@@ -2765,8 +2835,7 @@ impl CaperApp {
                     .file_name()
                     .map_or_else(|| "file".into(), |name| name.to_string_lossy().into_owned()),
                 kind: model::AttachmentKind::File,
-                source_size: 0,
-                stored_size: None,
+                size: 0,
                 progress: 0.0,
                 error: None,
                 attachment: None,
@@ -2779,7 +2848,7 @@ impl CaperApp {
                 token: token.clone(),
                 channel: channel.clone(),
                 path,
-                settings: settings.clone(),
+                max_upload_bytes: usage.max_upload_bytes,
                 cancel,
             });
         }
@@ -2790,7 +2859,7 @@ impl CaperApp {
         let Some(channel) = self.selected_channel.clone() else {
             return;
         };
-        let room = compress::MAX_ATTACHMENTS.saturating_sub(self.drafts.len());
+        let room = uploads::MAX_ATTACHMENTS.saturating_sub(self.drafts.len());
         for attachment in attachments.into_iter().take(room) {
             self.draft_keys += 1;
             self.drafts.push(DraftUpload {
@@ -2798,8 +2867,7 @@ impl CaperApp {
                 channel: channel.clone(),
                 name: attachment.name.clone(),
                 kind: attachment.kind,
-                source_size: attachment.size,
-                stored_size: Some(attachment.size),
+                size: attachment.size,
                 progress: 1.0,
                 error: None,
                 attachment: Some(attachment),
@@ -2833,27 +2901,26 @@ impl CaperApp {
             return;
         };
         match update {
-            worker::UploadUpdate::Prepared {
-                name,
-                kind,
-                source_size,
-                stored_size,
-                thumbnail,
-            } => {
+            worker::UploadUpdate::Prepared { name, kind, size } => {
                 draft.name = name;
                 draft.kind = kind;
-                draft.source_size = source_size;
-                draft.stored_size = Some(stored_size);
-                draft.thumbnail_image = thumbnail;
+                draft.size = size;
+            }
+            worker::UploadUpdate::Thumbnail(image) => {
+                // The upload may have finished first.
+                if let Some(attachment) = &draft.attachment {
+                    self.local_media
+                        .push((attachment.id.clone(), image.clone()));
+                }
+                draft.thumbnail_image = Some(image);
             }
             worker::UploadUpdate::Progress(progress) => {
                 draft.progress = progress.max(draft.progress);
             }
             worker::UploadUpdate::Finished(Ok(attachment)) => {
                 draft.progress = 1.0;
-                if attachment.kind == model::AttachmentKind::Image
-                    && let Some(image) = draft.thumbnail_image.clone()
-                {
+                // The sender sees its own copy until the server's preview.
+                if let Some(image) = draft.thumbnail_image.clone() {
                     self.local_media.push((attachment.id.clone(), image));
                 }
                 draft.attachment = Some(attachment);
@@ -5967,7 +6034,7 @@ impl CaperApp {
                             .char_limit(4_000),
                     ));
                     let editor = if attach {
-                        let full = self.drafts.len() >= compress::MAX_ATTACHMENTS;
+                        let full = self.drafts.len() >= uploads::MAX_ATTACHMENTS;
                         let mut pick = false;
                         let editor = ui.horizontal_top(|ui| {
                             ui.vertical(|ui| {
@@ -6183,7 +6250,7 @@ impl CaperApp {
                 painter.text(
                     rect.center(),
                     egui::Align2::CENTER_CENTER,
-                    format!("Drop files to attach (up to {})", compress::MAX_ATTACHMENTS),
+                    format!("Drop files to attach (up to {})", uploads::MAX_ATTACHMENTS),
                     egui::FontId::new(14.0, egui::FontFamily::Name("Satoshi Bold".into())),
                     TEXT,
                 );
@@ -6450,8 +6517,10 @@ impl CaperApp {
             });
     }
 
-    /// Files under a message: inline images, video posters that open the
-    /// system player, and cards for audio and other files.
+    /// Files under a message by processing status: inline images and video
+    /// posters (opening the system browser or player), processing
+    /// placeholders with the worker's progress, failures, and cards for audio
+    /// and other files.
     fn attachment_list(
         &mut self,
         ui: &mut egui::Ui,
@@ -6463,6 +6532,27 @@ impl CaperApp {
         }
         let unix_now = chrono::Utc::now().timestamp();
         let now = Instant::now();
+        let resolved: Vec<(model::Attachment, bool)> = attachments
+            .iter()
+            .map(|attachment| {
+                let attachment = self.media.resolve(attachment);
+                if !pending {
+                    self.media.visible(&attachment, unix_now, now);
+                }
+                let media = matches!(
+                    attachment.kind,
+                    model::AttachmentKind::Image | model::AttachmentKind::Video
+                );
+                let inline = !attachment.unavailable
+                    && media
+                    && match attachment.status {
+                        model::AttachmentStatus::Processing => true,
+                        model::AttachmentStatus::Ready => pending || attachment.url.is_some(),
+                        model::AttachmentStatus::Failed => false,
+                    };
+                (attachment, inline)
+            })
+            .collect();
         egui::Frame::new()
             .inner_margin(egui::Margin {
                 left: 62,
@@ -6472,28 +6562,28 @@ impl CaperApp {
             })
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
-                ui.horizontal_wrapped(|ui| {
-                    for attachment in attachments {
-                        let attachment = self.media.resolve(attachment);
-                        if !pending {
-                            self.media.visible(&attachment, unix_now, now);
-                        }
-                        let inline = !attachment.unavailable
-                            && (pending || attachment.url.is_some())
-                            && matches!(
-                                attachment.kind,
-                                model::AttachmentKind::Image | model::AttachmentKind::Video
-                            );
-                        let clicked = if inline {
-                            self.media_tile(ui, &attachment, pending)
-                        } else {
-                            file_card(ui, &attachment, pending)
-                        };
-                        if clicked && !pending {
-                            self.media.open(ui.ctx(), &attachment, unix_now);
-                        }
+                // Media tiles first, then cards, so rows of different
+                // heights never share a wrapped line.
+                for tiles in [true, false] {
+                    if !resolved.iter().any(|(_, inline)| *inline == tiles) {
+                        continue;
                     }
-                });
+                    ui.horizontal_wrapped(|ui| {
+                        for (attachment, _) in
+                            resolved.iter().filter(|(_, inline)| *inline == tiles)
+                        {
+                            let progress = self.attachment_progress.get(&attachment.id).copied();
+                            let clicked = if tiles {
+                                self.media_tile(ui, attachment, pending, progress)
+                            } else {
+                                file_card(ui, attachment, pending, progress)
+                            };
+                            if clicked && !pending {
+                                self.media.open(ui.ctx(), attachment, unix_now);
+                            }
+                        }
+                    });
+                }
             });
         if self.media.busy() {
             ui.ctx().request_repaint();
@@ -6505,59 +6595,83 @@ impl CaperApp {
         ui: &mut egui::Ui,
         attachment: &model::Attachment,
         pending: bool,
+        progress: Option<u8>,
     ) -> bool {
+        let processing = attachment.status == model::AttachmentStatus::Processing;
         let video = attachment.kind == model::AttachmentKind::Video;
+        let clickable = !pending && !processing && attachment.url.is_some();
         // Narrow conversations shrink the frame, keeping its aspect ratio.
         let frame = attachments::frame_size(attachment);
         let size = frame * (ui.max_rect().width() / frame.x).clamp(0.1, 1.0);
         let (rect, response) = ui.allocate_exact_size(
             size,
-            if pending {
-                egui::Sense::hover()
-            } else {
+            if clickable {
                 egui::Sense::click()
+            } else {
+                egui::Sense::hover()
             },
         );
-        let source = if pending {
-            None
-        } else if video {
-            attachment.preview_url.as_deref()
-        } else {
-            attachment
-                .preview_url
-                .as_deref()
-                .or(attachment.url.as_deref())
-        };
-        let state = if video && source.is_none() && !pending {
-            attachments::ImageState::Failed
-        } else {
-            self.media.image(&attachment.id, source)
-        };
+        // A cached local copy (own uploads) shows without any source.
+        let state = self
+            .media
+            .image(&attachment.id, attachments::inline_source(attachment));
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 8.0, SURFACE);
-        match state {
-            attachments::ImageState::Ready(texture) => {
-                egui::Image::new((texture, size))
-                    .corner_radius(8)
-                    .paint_at(ui, rect);
+        let shown = if let attachments::ImageState::Ready(texture) = state {
+            egui::Image::new((texture, size))
+                .corner_radius(8)
+                .paint_at(ui, rect);
+            true
+        } else {
+            false
+        };
+        if processing {
+            if shown {
+                painter.rect_filled(rect, 8.0, Color32::from_black_alpha(140));
             }
-            attachments::ImageState::Loading => {}
-            attachments::ImageState::Failed if !video => {
-                painter.text(
-                    rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    if pending {
-                        "Uploaded"
-                    } else {
-                        "Image unavailable"
-                    },
-                    egui::FontId::proportional(11.5),
-                    MUTED,
-                );
-            }
-            attachments::ImageState::Failed => {}
+            let center = rect.center();
+            egui::Spinner::new().size(22.0).color(TEXT).paint_at(
+                ui,
+                egui::Rect::from_center_size(
+                    center - egui::vec2(0.0, 10.0),
+                    egui::vec2(22.0, 22.0),
+                ),
+            );
+            painter.text(
+                center + egui::vec2(0.0, 16.0),
+                egui::Align2::CENTER_CENTER,
+                processing_label(progress),
+                egui::FontId::proportional(11.5),
+                TEXT,
+            );
+        } else if !shown && !matches!(state, attachments::ImageState::Loading) && !video {
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                if pending {
+                    "Uploaded"
+                } else if attachment.preview_url.is_none() {
+                    "Open to view full size"
+                } else {
+                    "Image unavailable"
+                },
+                egui::FontId::proportional(11.5),
+                MUTED,
+            );
         }
-        if video {
+        if !processing && video && attachment.animated {
+            // Looping MP4s from GIFs: the browser autoplays them.
+            let badge =
+                egui::Rect::from_min_size(rect.min + egui::vec2(8.0, 8.0), egui::vec2(34.0, 20.0));
+            painter.rect_filled(badge, 6.0, Color32::from_black_alpha(190));
+            painter.text(
+                badge.center(),
+                egui::Align2::CENTER_CENTER,
+                "GIF",
+                egui::FontId::new(11.0, egui::FontFamily::Name("Satoshi Bold".into())),
+                TEXT,
+            );
+        } else if !processing && video {
             let center = rect.center();
             painter.circle_filled(center, 22.0, Color32::from_black_alpha(170));
             paint_icon(
@@ -6572,7 +6686,7 @@ impl CaperApp {
             8.0,
             Stroke::new(
                 1.0,
-                if response.hovered() && !pending {
+                if response.hovered() && clickable {
                     MUTED
                 } else {
                     BORDER
@@ -6580,15 +6694,27 @@ impl CaperApp {
             ),
             egui::StrokeKind::Inside,
         );
-        let label = if video {
+        let label = if processing {
+            format!("{}, {}", attachment.name, processing_label(progress))
+        } else if video && attachment.animated {
+            format!("Play animation {} in your browser", attachment.name)
+        } else if video {
             format!("Play {} in your browser or video player", attachment.name)
         } else {
-            format!("Open {}", attachment.name)
+            format!("Open {} in your browser", attachment.name)
         };
         response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, !pending, label.clone())
+            egui::WidgetInfo::labeled(
+                if clickable {
+                    egui::WidgetType::Button
+                } else {
+                    egui::WidgetType::Label
+                },
+                clickable,
+                label.clone(),
+            )
         });
-        if pending {
+        if !clickable {
             return false;
         }
         let response = response
@@ -6639,9 +6765,11 @@ impl CaperApp {
                 let status = if let Some(error) = &draft.error {
                     error.clone()
                 } else if draft.attachment.is_some() {
-                    uploads::size_label(draft.source_size, draft.stored_size)
-                } else if draft.stored_size.is_none() {
+                    uploads::format_bytes(draft.size)
+                } else if draft.size == 0 {
                     "Preparing…".into()
+                } else if draft.progress >= 1.0 {
+                    "Confirming…".into()
                 } else {
                     format!("Uploading… {}%", (draft.progress * 100.0).round() as u32)
                 };
@@ -8378,10 +8506,29 @@ fn message_row(
         });
 }
 
-/// Audio and other files open in the system browser or player; removed files
-/// say so and are not clickable.
-fn file_card(ui: &mut egui::Ui, attachment: &model::Attachment, pending: bool) -> bool {
-    let clickable = !pending && !attachment.unavailable && attachment.url.is_some();
+/// "Processing…" with the media worker's latest percent, when known.
+fn processing_label(progress: Option<u8>) -> String {
+    progress.map_or_else(
+        || "Processing…".into(),
+        |percent| format!("Processing… {percent}%"),
+    )
+}
+
+/// Audio and other files open in the system browser or player. Removed,
+/// failed and processing files say so and are not clickable.
+fn file_card(
+    ui: &mut egui::Ui,
+    attachment: &model::Attachment,
+    pending: bool,
+    progress: Option<u8>,
+) -> bool {
+    let processing =
+        !attachment.unavailable && attachment.status == model::AttachmentStatus::Processing;
+    let failed = !attachment.unavailable && attachment.status == model::AttachmentStatus::Failed;
+    let clickable = !pending
+        && !attachment.unavailable
+        && attachment.status == model::AttachmentStatus::Ready
+        && attachment.url.is_some();
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(ui.max_rect().width().clamp(120.0, 280.0), 52.0),
         if clickable {
@@ -8406,12 +8553,20 @@ fn file_card(ui: &mut egui::Ui, attachment: &model::Attachment, pending: bool) -
         Stroke::new(1.0, BORDER),
         egui::StrokeKind::Inside,
     );
-    paint_icon(
-        &painter,
-        egui::Rect::from_min_size(rect.min + egui::vec2(13.0, 16.0), egui::vec2(20.0, 20.0)),
-        NavIcon::FileText,
-        MUTED,
-    );
+    let icon = egui::Rect::from_min_size(rect.min + egui::vec2(13.0, 16.0), egui::vec2(20.0, 20.0));
+    if processing {
+        egui::Spinner::new()
+            .size(18.0)
+            .color(MUTED)
+            .paint_at(ui, icon);
+    } else {
+        paint_icon(
+            &painter,
+            icon,
+            NavIcon::FileText,
+            if failed { ERROR } else { MUTED },
+        );
+    }
     let width = rect.width() - 56.0;
     let line = |text: String, font: egui::FontId, color: Color32| {
         let mut job = egui::text::LayoutJob::simple_singleline(text, font, color);
@@ -8420,6 +8575,10 @@ fn file_card(ui: &mut egui::Ui, attachment: &model::Attachment, pending: bool) -
     };
     let detail = if attachment.unavailable {
         "File removed".to_owned()
+    } else if failed {
+        "Couldn't process this file".to_owned()
+    } else if processing {
+        processing_label(progress)
     } else if attachment.kind == model::AttachmentKind::Audio {
         format!("Audio · {}", uploads::format_bytes(attachment.size))
     } else {
@@ -8434,10 +8593,15 @@ fn file_card(ui: &mut egui::Ui, attachment: &model::Attachment, pending: bool) -
         ),
         TEXT,
     );
+    let detail_color = if failed { ERROR } else { MUTED };
     painter.galley(
         rect.min + egui::vec2(44.0, 29.0),
-        line(detail.clone(), egui::FontId::proportional(11.0), MUTED),
-        MUTED,
+        line(
+            detail.clone(),
+            egui::FontId::proportional(11.0),
+            detail_color,
+        ),
+        detail_color,
     );
     let label = if clickable {
         format!("Open {}", attachment.name)
@@ -12337,8 +12501,29 @@ mod tests {
         })
     }
 
+    fn click_at(app: &mut CaperApp, context: &egui::Context, pos: egui::Pos2) -> Option<String> {
+        let mut opened = None;
+        for pressed in [true, false] {
+            let output = render(
+                app,
+                context,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+            opened = opened.or_else(|| opened_url(&output));
+        }
+        opened
+    }
+
     #[test]
-    fn attachments_render_under_messages_and_open_in_the_system_browser() {
+    fn attachments_render_by_status_and_open_in_the_system_browser() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
             &context,
@@ -12353,8 +12538,12 @@ mod tests {
             "TEST FIXTURE archive.zip",
             "File removed",
             "Audio · 1.2 MB",
+            "Couldn't process this file",
+            "Processing… 45%",
+            "Processing…",
+            "GIF",
             "TEST FIXTURE photo.jpg",
-            "1.6 MB → 143 KB",
+            "1.6 MB",
             "Uploading… 45%",
             "You’ve used all of your file storage.",
         ] {
@@ -12367,45 +12556,78 @@ mod tests {
                 && text.pos.x > 60.0 && text.pos.x < 80.0
         )));
         let pdf = text_position(&output, "TEST FIXTURE report.pdf");
-        let mut opened = None;
-        for pressed in [true, false] {
-            let output = render(
-                &mut app,
-                &context,
-                vec![
-                    egui::Event::PointerMoved(pdf),
-                    egui::Event::PointerButton {
-                        pos: pdf,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                ],
-            );
-            opened = opened.or_else(|| opened_url(&output));
-        }
         assert_eq!(
-            opened.as_deref(),
+            click_at(&mut app, &context, pdf).as_deref(),
             Some("https://fixture.invalid/original/fixture-pdf")
         );
-        // A removed file is not a link.
-        let removed = text_position(&output, "File removed");
-        for pressed in [true, false] {
-            let output = render(
-                &mut app,
-                &context,
-                vec![
-                    egui::Event::PointerMoved(removed),
-                    egui::Event::PointerButton {
-                        pos: removed,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                ],
-            );
-            assert_eq!(opened_url(&output), None);
+        // Animated MP4s open in the browser, which autoplays them.
+        let gif = text_position(&output, "GIF");
+        assert_eq!(
+            click_at(&mut app, &context, gif).as_deref(),
+            Some("https://fixture.invalid/original/fixture-gif")
+        );
+        // Removed, failed and processing files are not links.
+        for label in [
+            "File removed",
+            "Couldn't process this file",
+            "Processing… 45%",
+            "Processing…",
+        ] {
+            let position = text_position(&output, label);
+            assert_eq!(click_at(&mut app, &context, position), None, "{label}");
         }
+    }
+
+    #[test]
+    fn attachment_events_update_messages_and_progress() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-attachments"),
+        );
+        let channel = app.selected_channel.clone().unwrap();
+        let message = app.timeline.messages().nth(2).unwrap().clone();
+        app.gateway(GatewayEvent::AttachmentProgress {
+            generation: app.generation,
+            channel: channel.clone(),
+            attachment: "fixture-video".into(),
+            percent: 80,
+        });
+        assert_eq!(app.attachment_progress.get("fixture-video"), Some(&80));
+        let mut ready = message.content.attachments.clone();
+        ready[1].status = model::AttachmentStatus::Ready;
+        ready[1].url = Some("https://fixture.invalid/original/fixture-video".into());
+        let update: model::AttachmentUpdate = serde_json::from_value(serde_json::json!({
+            "type": "message.attachments", "schemaVersion": 1, "channelId": channel,
+            "seq": "5", "messageId": message.id, "attachments": ready
+        }))
+        .unwrap();
+        app.gateway(GatewayEvent::Attachments {
+            generation: app.generation,
+            channel: channel.clone(),
+            update,
+        });
+        let updated = app
+            .timeline
+            .messages()
+            .find(|item| item.id == message.id)
+            .unwrap();
+        assert_eq!(
+            updated.content.attachments[1].status,
+            model::AttachmentStatus::Ready
+        );
+        assert_eq!(updated.attachments_seq.as_deref(), Some("5"));
+        assert_eq!(app.timeline.cursor(), "5");
+        assert!(!app.attachment_progress.contains_key("fixture-video"));
+        // Events for another channel are ignored.
+        app.gateway(GatewayEvent::AttachmentProgress {
+            generation: app.generation,
+            channel: "elsewhere".into(),
+            attachment: "fixture-video".into(),
+            percent: 10,
+        });
+        assert!(!app.attachment_progress.contains_key("fixture-video"));
     }
 
     #[test]
@@ -12419,7 +12641,7 @@ mod tests {
         assert!(app.can_attach());
         app.uploads = None;
         assert!(!app.can_attach(), "usage failure hides Attach");
-        app.uploads = Some(crate::compress::Compression::default());
+        app.uploads = Some(crate::api::Usage::default());
         let channel = app.selected_channel.clone().unwrap();
         app.detail
             .as_mut()
@@ -12476,7 +12698,7 @@ mod tests {
             pending.attachments
         );
         let output = render(&mut app, &context, vec![]);
-        text_position(&output, "Uploaded");
+        text_position(&output, "Processing…");
     }
 
     #[test]
@@ -12503,6 +12725,8 @@ mod tests {
             url: None,
             preview_url: None,
             unavailable: false,
+            status: model::AttachmentStatus::Processing,
+            animated: false,
         };
         app.upload_update(
             2,
@@ -12513,6 +12737,25 @@ mod tests {
             app.local_media.iter().any(|(id, _)| id == "uploaded"),
             "own images show without a download"
         );
+        // A local copy decoded after the upload finished still reaches the
+        // sent message.
+        app.upload_update(
+            1,
+            crate::worker::UploadUpdate::Prepared {
+                name: "photo.jpg".into(),
+                kind: model::AttachmentKind::Image,
+                size: 1_677_722,
+            },
+        );
+        assert_eq!(app.drafts[0].size, 1_677_722);
+        app.upload_update(
+            1,
+            crate::worker::UploadUpdate::Thumbnail(egui::ColorImage::filled(
+                [2, 2],
+                egui::Color32::WHITE,
+            )),
+        );
+        assert!(app.local_media.iter().any(|(id, _)| id == "fixture-draft"));
         // Late updates for removed drafts are ignored.
         app.remove_draft(2);
         app.upload_update(2, crate::worker::UploadUpdate::Progress(1.0));
@@ -13121,6 +13364,7 @@ mod tests {
             },
             reactions: Vec::new(),
             reaction_seq: None,
+            attachments_seq: None,
         };
         assert!(pending.confirmed_by(&message, "author"));
         assert!(!pending.confirmed_by(&message, "another-author"));
@@ -13199,6 +13443,7 @@ mod tests {
                 },
                 reactions: Vec::new(),
                 reaction_seq: None,
+                attachments_seq: None,
             }),
         });
         assert!(!app.typers.get("other").unwrap().typing);

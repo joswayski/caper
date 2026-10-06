@@ -32,27 +32,33 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   paginated member presence, owner space/channel/member management, and confirmed
   non-owner leave-space with immediate call teardown and conversation clearing.
 - File attachments, when the server has storage configured (otherwise the
-  attach control is hidden). Images render inline, decoded off the UI thread
-  and cached by attachment id; clicking opens the full file in the system
-  browser. Videos show their poster with a play button, and audio and other
-  files show cards; these open in the system browser or player. Desktop has
-  **no in-app video or audio playback**. Removed files read "File removed".
-  Signed URLs are refreshed (`POST /api/assets/urls`) before they expire and
-  once after a 403/404 image load, so a window left open for days keeps
-  working.
+  attach control is hidden). Inline images show the server's WebP preview,
+  decoded off the UI thread and cached by attachment id; clicking opens the
+  full file in the system browser. Stored photos are mostly AVIF, which the
+  bundled pure-Rust decoders cannot read, so originals are never decoded in
+  the app. Videos show their poster with a play button; animated GIFs (stored
+  as looping MP4) show their poster with a "GIF" badge and play in the
+  browser. Audio and other files show cards that open in the system browser
+  or player. Desktop has **no in-app video or audio playback**. Files still
+  being processed on the server show their preview (when one exists), a
+  spinner and the worker's percent (`attachment.progress`); failed files read
+  "Couldn't process this file" and removed files "File removed".
+  `message.attachments` updates are sequenced like reactions. Signed URLs are
+  refreshed (`POST /api/assets/urls`) before they expire and once after a
+  403/404 image load, so a window left open for days keeps working.
 - Sending up to 10 files per message from the paperclip file dialog (Win32 on
   Windows; on Linux the XDG desktop portal, which needs a file-chooser backend
   such as xdg-desktop-portal-gtk, -gnome or -kde) or by dropping files on the
-  window.
-  Chips show the name, saving ("1.6 MB → 143 KB"), progress, errors such as
-  storage full, and remove. Stills use the server's compression settings:
-  scaled to the maximum edge, then an exact-palette indexed PNG when the
-  colours fit (pixel-exact screenshots), otherwise JPEG at the server quality
-  (pure-Rust encoders; no WebP encoder), kept only when at least 10% smaller.
-  Videos upload **unchanged** (no bundled transcoder); MP4/QuickTime
-  dimensions and duration come from the file header. Bytes go straight to
-  storage with exactly the presigned headers. Pasting images from the
-  clipboard is not supported (egui does not deliver image pastes).
+  window. The client never compresses: it reserves the original's exact size
+  (type guessed from the extension; larger than the server's `maxUploadBytes`
+  is refused before reserving), streams it from disk straight to storage with
+  exactly the presigned headers and no Caper credentials, confirms (retrying
+  while storage has not seen it yet), and sends; the server-side media worker
+  compresses it afterwards. Chips show the name, size, upload progress, errors
+  such as storage full, and remove; PNG/JPEG/WebP/GIF picks also show a local
+  thumbnail, which the sent message keeps until the server preview arrives.
+  Pasting images from the clipboard is not supported (egui does not deliver
+  image pastes).
 - Global two-person direct messages, including exact-username conversation
   creation, unread state, account-wide read cursors, paging, typing, retry, and gateway
   replay. Desktop does not provide OS push notifications in this stage.
@@ -264,7 +270,8 @@ the voice dock and Audio test dialog without starting capture or a transport.
 exact-username dialog without a live account or notification provider.
 `parity-direct-no-spaces` previews the first-space page's Direct messages entry
 and the global list without any space membership.
-`parity-attachments` previews inline images, a video poster, file/audio/removed
+`parity-attachments` previews ready, processing (with poster and percent, and
+without a preview), failed, animated ("GIF") and removed files, file/audio
 cards and upload chips from synthetic local images; it never fetches media or
 uploads.
 `parity-opening`, `parity-opening-narrow`, and `parity-opening-error` preview

@@ -116,7 +116,7 @@ pub enum Command {
         /// Resent unchanged on retry: ids join the idempotency hash.
         attachment_ids: Vec<String>,
     },
-    /// Whether uploads are configured, and the compression settings.
+    /// Whether uploads are configured, and the largest accepted original.
     AssetUsage {
         token: String,
     },
@@ -124,13 +124,13 @@ pub enum Command {
         token: String,
         ids: Vec<String>,
     },
-    /// Prepare and upload one file off the UI thread, reporting progress.
+    /// Upload one original file off the UI thread, reporting progress.
     Upload {
         key: u64,
         token: String,
         channel: String,
         path: PathBuf,
-        settings: crate::compress::Compression,
+        max_upload_bytes: Option<u64>,
         cancel: Arc<AtomicBool>,
     },
     React {
@@ -363,7 +363,7 @@ pub enum Event {
     /// Fenced by account token: channel loads advance the generation.
     AssetUsage {
         token: String,
-        settings: Option<crate::compress::Compression>,
+        usage: Option<crate::api::Usage>,
     },
     AttachmentUrls {
         token: String,
@@ -394,10 +394,10 @@ pub enum UploadUpdate {
     Prepared {
         name: String,
         kind: crate::model::AttachmentKind,
-        source_size: u64,
-        stored_size: u64,
-        thumbnail: Option<egui::ColorImage>,
+        size: u64,
     },
+    /// The sender's own decoded copy, when the format decodes here.
+    Thumbnail(egui::ColorImage),
     Progress(f32),
     Finished(Result<crate::model::Attachment, crate::uploads::UploadError>),
 }
@@ -714,13 +714,13 @@ fn upload_file(
     token: &str,
     channel: &str,
     path: &std::path::Path,
-    settings: &crate::compress::Compression,
+    max_upload_bytes: Option<u64>,
     cancel: Arc<AtomicBool>,
     events: &Sender<Event>,
     context: &egui::Context,
 ) {
     let update = |update| send(events, context, Event::Upload { key, update });
-    let mut prepared = match crate::uploads::prepare_path(path, settings) {
+    let prepared = match crate::uploads::prepare_path(path, max_upload_bytes) {
         Ok(prepared) => prepared,
         Err(message) => {
             update(UploadUpdate::Finished(Err(
@@ -731,16 +731,26 @@ fn upload_file(
     };
     update(UploadUpdate::Prepared {
         name: prepared.name.clone(),
-        kind: prepared.kind,
-        source_size: prepared.source_size,
-        stored_size: prepared.size,
-        thumbnail: prepared.thumbnail.take().map(|image| {
-            egui::ColorImage::from_rgba_unmultiplied(
-                [image.width() as usize, image.height() as usize],
-                image.as_raw(),
-            )
-        }),
+        kind: prepared.kind(),
+        size: prepared.size,
     });
+    // Decoding the local copy never delays the upload.
+    {
+        let (path, content_type) = (prepared.path.clone(), prepared.content_type.clone());
+        let (events, context) = (events.clone(), context.clone());
+        thread::spawn(move || {
+            if let Some(image) = crate::attachments::local_thumbnail(&path, &content_type) {
+                send(
+                    &events,
+                    &context,
+                    Event::Upload {
+                        key,
+                        update: UploadUpdate::Thumbnail(image),
+                    },
+                );
+            }
+        });
+    }
     // Whole-percent steps keep the event queue small for large files.
     let progress: Arc<dyn Fn(f32) + Send + Sync> = {
         let events = events.clone();
@@ -775,16 +785,24 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             token,
             channel,
             path,
-            settings,
+            max_upload_bytes,
             cancel,
         } => {
             upload_file(
-                api, key, &token, &channel, &path, &settings, cancel, events, context,
+                api,
+                key,
+                &token,
+                &channel,
+                &path,
+                max_upload_bytes,
+                cancel,
+                events,
+                context,
             );
             return;
         }
         Command::AssetUsage { token } => Event::AssetUsage {
-            settings: api.asset_usage(&token).ok(),
+            usage: api.asset_usage(&token).ok(),
             token,
         },
         Command::RefreshAttachmentUrls { token, ids } => Event::AttachmentUrls {
