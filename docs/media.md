@@ -1003,9 +1003,9 @@ lists in the app.
 | --- | --- |
 | API | Disposable-Postgres test: reaction order, names/avatars, preview readers allowed, removed reactions hidden, outsiders/guests/other channels 404 |
 | Web | Unit tests for wording, parsing and emoji names; Chromium with the fixture at 1280px (hover tooltip, right-click popover, tabs, click toggle) and 390px touch emulation (hold sheet without toggling, tap toggles, **View reactions**); screenshots inspected |
-| Rust desktop | 200 tests, Clippy and fmt; Linux build rendered under Xvfb at 1440px and 420px with the fixture. Tooltip delay is egui's app-wide 0.5 s; keyboard-focus display not checked |
-| Android | 127 JVM tests, lint and androidTest compilation; the new emulator UI test and on-screen sheet are unverified until CI |
-| iOS/macOS | Swift parsed and core logic run on Linux only; views compile and UI tests run first in CI. macOS shows the card on hover, not on keyboard focus |
+| Rust desktop | 202 tests, Clippy and fmt; Linux build rendered under Xvfb at 1440px and 420px with the fixture. Tooltip delay is egui's app-wide 0.5 s; keyboard-focus display not checked |
+| Android | 131 JVM tests, lint and androidTest compilation; the new emulator UI test and on-screen sheet are unverified until native CI runs (on `main`, or a dispatched branch build — pull requests get no CI) |
+| iOS/macOS | Swift parsed and core logic run on Linux only; SwiftUI views are first compiled, and UI tests first run, by native CI (on `main`, or a dispatched branch build). macOS shows the card on hover, not on keyboard focus |
 
 None of this is physical-device, TalkBack/VoiceOver or live-server acceptance.
 
