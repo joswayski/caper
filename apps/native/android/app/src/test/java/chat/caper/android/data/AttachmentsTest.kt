@@ -3,9 +3,7 @@ package chat.caper.android.data
 import chat.caper.android.model.AttachmentUrls
 import chat.caper.android.model.ChatAttachment
 import chat.caper.android.model.ChatMessage
-import chat.caper.android.model.CompressionSettings
-import java.io.ByteArrayInputStream
-import java.io.ByteArrayOutputStream
+import chat.caper.android.model.AttachmentState
 import kotlinx.serialization.json.Json
 import org.junit.Assert.*
 import org.junit.Test
@@ -99,79 +97,66 @@ class AttachmentsTest {
 
     @Test fun `kinds mirror the api allowlist`() {
         assertEquals("image", AttachmentPolicy.kind("image/PNG; charset=binary"))
+        assertEquals("image", AttachmentPolicy.kind("image/avif"))
         assertEquals("file", AttachmentPolicy.kind("image/heic"))
         assertEquals("file", AttachmentPolicy.kind("image/svg+xml"))
         assertEquals("video", AttachmentPolicy.kind("video/quicktime"))
         assertEquals("audio", AttachmentPolicy.kind("audio/x-m4a"))
         assertEquals("file", AttachmentPolicy.kind("application/pdf"))
         assertEquals("application/octet-stream", AttachmentPolicy.normalizedType(null))
-        assertTrue(AttachmentPolicy.compressibleStill("image/heic"))
-        assertFalse(AttachmentPolicy.compressibleStill("image/gif"))
-        assertFalse(AttachmentPolicy.compressibleStill("image/avif"))
-        assertFalse(AttachmentPolicy.compressibleStill("image/svg+xml"))
+        assertEquals("application/octet-stream", AttachmentPolicy.normalizedType("garbage"))
     }
 
-    @Test fun `palette fits become lossless png, photos lossy, quality 100 keeps originals`() {
-        val defaults = CompressionSettings()
-        assertEquals(AttachmentPolicy.StillEncoding.PALETTE_PNG, AttachmentPolicy.stillEncoding(256, defaults, resized = false, originalInline = true))
-        assertEquals(AttachmentPolicy.StillEncoding.LOSSY, AttachmentPolicy.stillEncoding(null, defaults, resized = false, originalInline = true))
-        assertEquals(AttachmentPolicy.StillEncoding.LOSSY, AttachmentPolicy.stillEncoding(12, defaults.copy(paletteColors = 0), resized = false, originalInline = true))
-        assertEquals(AttachmentPolicy.StillEncoding.LOSSY, AttachmentPolicy.stillEncoding(40, defaults.copy(paletteColors = 32), resized = false, originalInline = true))
-        val lossless = defaults.copy(imageQuality = 100)
-        assertEquals(AttachmentPolicy.StillEncoding.KEEP, AttachmentPolicy.stillEncoding(null, lossless, resized = false, originalInline = true))
-        assertEquals(AttachmentPolicy.StillEncoding.LOSSY, AttachmentPolicy.stillEncoding(null, lossless, resized = true, originalInline = true))
-        assertEquals(AttachmentPolicy.StillEncoding.LOSSY, AttachmentPolicy.stillEncoding(null, lossless, resized = false, originalInline = false))
-    }
-
-    @Test fun `re-encoded files are kept only when 10 percent smaller or the original is not inline`() {
-        assertTrue(AttachmentPolicy.keepReencoded("image/png", 1_000, 900))
-        assertFalse(AttachmentPolicy.keepReencoded("image/png", 1_000, 901))
-        assertTrue(AttachmentPolicy.keepReencoded("image/heic", 1_000, 5_000))
-        assertTrue(AttachmentPolicy.keepTranscoded("video/mp4", 1_000, 999))
-        assertFalse(AttachmentPolicy.keepTranscoded("video/mp4", 1_000, 1_000))
-        assertTrue(AttachmentPolicy.keepTranscoded("video/x-matroska", 1_000, 2_000))
-        assertFalse(AttachmentPolicy.keepTranscoded("video/x-matroska", 1_000, 0))
-        assertEquals("shot.png", AttachmentPolicy.renamed("shot.HEIC", "image/png"))
-        assertEquals("photo.webp", AttachmentPolicy.renamed("photo.jpeg", "image/webp"))
-        assertEquals("clip.mp4", AttachmentPolicy.renamed("clip.mov", "video/mp4"))
-        assertEquals("noext.jpg", AttachmentPolicy.renamed("noext", "image/jpeg"))
-        assertEquals("doc.pdf", AttachmentPolicy.renamed("doc.pdf", "application/pdf"))
-    }
-
-    @Test fun `sizing never enlarges and previews follow edge and byte limits`() {
-        assertEquals(4096 to 2304, AttachmentPolicy.fitWithin(8000, 4500, 4096))
-        assertEquals(640 to 1138, AttachmentPolicy.fitWithin(1080, 1920, 1138))
-        assertEquals(100 to 50, AttachmentPolicy.fitWithin(100, 50, 640))
-        assertEquals(8000 to 4500, AttachmentPolicy.fitWithin(8000, 4500, 0))
-        assertEquals(640 to 1, AttachmentPolicy.fitWithin(10_000, 10, 640))
-        assertTrue(AttachmentPolicy.needsPreview("image", 641, 100, 1_000, 640))
-        assertFalse(AttachmentPolicy.needsPreview("image", 640, 640, 512 * 1024, 640))
-        assertTrue(AttachmentPolicy.needsPreview("image", 10, 10, 512 * 1024 + 1, 640))
-        assertTrue(AttachmentPolicy.needsPreview("video", null, null, 1, 640))
-        assertFalse(AttachmentPolicy.needsPreview("file", 4000, 4000, 9_999_999, 640))
-        assertFalse(AttachmentPolicy.needsPreview("audio", null, null, 9_999_999, 640))
-    }
-
-    @Test fun `video max height bounds the short edge and never upscales`() {
-        val defaults = CompressionSettings()
-        assertEquals(1080, AttachmentPolicy.videoTargetHeight(3840, 2160, defaults))
-        assertEquals(1920, AttachmentPolicy.videoTargetHeight(2160, 3840, defaults))
-        assertEquals("portrait 1080p keeps its size", 1920, AttachmentPolicy.videoTargetHeight(1080, 1920, defaults))
-        assertEquals(720, AttachmentPolicy.videoTargetHeight(1280, 720, defaults))
-        assertEquals(1080, AttachmentPolicy.videoTargetHeight(1920, 1080, defaults))
-        assertEquals("even for H.264", 1080, AttachmentPolicy.videoTargetHeight(1101, 1101, defaults))
-        assertEquals(720, AttachmentPolicy.videoTargetHeight(2160, 3840, defaults.copy(videoMaxHeight = 405)))
-        assertNull(AttachmentPolicy.videoTargetHeight(null, 2160, defaults))
-        assertNull(AttachmentPolicy.videoTargetHeight(3840, 2160, defaults.copy(videoMaxHeight = 0)))
-    }
-
-    @Test fun `size labels show the compression saving`() {
+    @Test fun `byte sizes are formatted like the web`() {
         assertEquals("512 B", AttachmentPolicy.formatBytes(512))
         assertEquals("1.6 MB", AttachmentPolicy.formatBytes(1_677_722))
         assertEquals("143 KB", AttachmentPolicy.formatBytes(146_432))
-        assertEquals("1.6 MB → 143 KB", AttachmentPolicy.sizeLabel(1_677_722, 146_432))
-        assertEquals("143 KB", AttachmentPolicy.sizeLabel(146_432, 146_432))
-        assertEquals("143 KB", AttachmentPolicy.sizeLabel(146_432, null))
+        assertEquals("2.0 GB", AttachmentPolicy.formatBytes(2_147_483_648))
+    }
+
+    @Test fun `status parses with new fields and defaults to ready`() {
+        val parsed = message(
+            """{"version":1,"type":"text","text":"","attachments":[
+                {"id":"AbCdEfGh12345678","kind":"image","contentType":"image/avif","name":"a.avif","size":1,"status":"ready","url":"https://cdn.caper.chat/original/a?exp=1&sig=s"},
+                {"id":"BbCdEfGh12345678","kind":"video","contentType":"video/quicktime","name":"b.mov","size":1,"status":"processing","width":1920,"height":1080,"previewUrl":"https://cdn.caper.chat/preview/b?exp=1&sig=p"},
+                {"id":"CbCdEfGh12345678","kind":"file","contentType":"image/heic","name":"c.heic","size":1,"status":"failed"},
+                {"id":"DbCdEfGh12345678","kind":"video","contentType":"video/mp4","name":"d.mp4","size":1,"animated":true,"url":"https://cdn.caper.chat/original/d?exp=1&sig=s"},
+                {"id":"EbCdEfGh12345678","kind":"file","contentType":"text/plain","name":"e.txt","size":1,"status":"someday"},
+                {"id":"FbCdEfGh12345678","kind":"file","contentType":"text/plain","name":"f.txt","size":1,"status":7,"animated":"yes"}]}""",
+        )
+        val byId = parsed.content.attachments.associateBy { it.id }
+        assertEquals(AttachmentState.READY, byId.getValue("AbCdEfGh12345678").state)
+        assertEquals(AttachmentState.PROCESSING, byId.getValue("BbCdEfGh12345678").state)
+        assertEquals("https://cdn.caper.chat/preview/b?exp=1&sig=p", byId.getValue("BbCdEfGh12345678").previewUrl)
+        assertEquals(AttachmentState.FAILED, byId.getValue("CbCdEfGh12345678").state)
+        val animated = byId.getValue("DbCdEfGh12345678")
+        assertTrue(animated.animated)
+        assertEquals("absent status means ready", AttachmentState.READY, animated.state)
+        assertEquals("unknown status without a url waits", AttachmentState.PROCESSING, byId.getValue("EbCdEfGh12345678").state)
+        assertFalse("a malformed new field drops only that file", "FbCdEfGh12345678" in byId)
+    }
+
+    @Test fun `fresh urls never make a processing file look ready`() {
+        val processing = ChatAttachment(
+            "AbCdEfGh12345678", "video", "video/mp4", "a.mp4", 10, status = "processing",
+            previewUrl = "https://cdn.example/preview/a?exp=2000&sig=p",
+        )
+        val stale = AttachmentUrls("https://cdn.example/original/a?exp=3000&sig=a", "https://cdn.example/preview/a?exp=3000&sig=b")
+        val refreshed = processing.withFreshUrls(stale)
+        assertNull(refreshed.url)
+        assertEquals(stale.previewUrl, refreshed.previewUrl)
+        val ready = processing.copy(status = "ready", url = "https://cdn.example/original/a?exp=2000&sig=x")
+        assertEquals(stale.url, ready.withFreshUrls(stale).url)
+        // A preview-only refresh keeps a ready file's URL.
+        assertEquals(ready.url, ready.withFreshUrls(AttachmentUrls(previewUrl = "https://cdn.example/preview/a?exp=4000&sig=c")).url)
+        assertSame(ready, ready.withFreshUrls(AttachmentUrls()))
+    }
+
+    @Test fun `processing previews are refreshed near expiry too`() {
+        val refresh = AttachmentUrlRefresh(nowSeconds = { 0 }, marginSeconds = 3_600)
+        val processing = ChatAttachment("AbCdEfGh12345678", "video", "video/mp4", "a.mp4", 10, status = "processing", previewUrl = "https://cdn.example/preview/a?exp=100&sig=p")
+        assertEquals(listOf("AbCdEfGh12345678"), refresh.expiring(listOf(processing)))
+        assertTrue(refresh.afterLoadFailure(processing, 403))
     }
 
     @Test fun `upload errors use the web copy`() {
@@ -181,60 +166,5 @@ class AttachmentsTest {
         assertEquals("invalid file name", AttachmentPolicy.uploadErrorMessage(ApiException(400, "invalid file name")))
         assertEquals("Storage refused the upload (403).", AttachmentPolicy.uploadErrorMessage(UploadException("Storage refused the upload (403).")))
         assertEquals("This file could not be uploaded.", AttachmentPolicy.uploadErrorMessage(IllegalStateException("boom")))
-    }
-
-    @Test fun `animated webp and apng are detected so they upload unchanged`() {
-        fun bytes(vararg parts: Any): ByteArray = ByteArrayOutputStream().apply {
-            parts.forEach { part -> when (part) { is String -> write(part.toByteArray(Charsets.US_ASCII)); is Int -> write(part); is ByteArray -> write(part) } }
-        }.toByteArray()
-        val animatedWebp = bytes("RIFF", ByteArray(4), "WEBP", "VP8X", ByteArray(4), 0x02, ByteArray(9))
-        val stillWebp = bytes("RIFF", ByteArray(4), "WEBP", "VP8X", ByteArray(4), 0x10, ByteArray(9))
-        assertTrue(isAnimatedImage("image/webp", animatedWebp))
-        assertFalse(isAnimatedImage("image/webp", stillWebp))
-        val ihdr = bytes(0, 0, 0, 13, "IHDR", ByteArray(13), ByteArray(4))
-        val actl = bytes(0, 0, 0, 8, "acTL", ByteArray(8), ByteArray(4))
-        val idat = bytes(0, 0, 0, 0, "IDAT", ByteArray(4))
-        val signature = byteArrayOf(0x89.toByte(), 'P'.code.toByte(), 'N'.code.toByte(), 'G'.code.toByte(), 13, 10, 26, 10)
-        assertTrue(isAnimatedImage("image/png", signature + ihdr + actl + idat))
-        assertFalse(isAnimatedImage("image/png", signature + ihdr + idat + actl))
-        assertFalse(isAnimatedImage("image/jpeg", animatedWebp))
-    }
-
-    @Test fun `palette counting stops past the limit and sorts translucent colours first`() {
-        val pixels = intArrayOf(0xFF102030.toInt(), 0x00000000, 0xFF102030.toInt(), 0x80FF0000.toInt())
-        val palette = paletteOf(2, 2, 256) { y, row -> System.arraycopy(pixels, y * 2, row, 0, 2) }!!
-        assertEquals(3, palette.size)
-        assertTrue(palette.take(2).all { (it ushr 24) != 0xFF })
-        assertEquals(0xFF102030.toInt(), palette.last())
-        val gradient = IntArray(300) { 0xFF000000.toInt() or it }
-        assertNull(paletteOf(300, 1, 256) { _, row -> System.arraycopy(gradient, 0, row, 0, 300) })
-        assertEquals(256, paletteOf(256, 1, 256) { _, row -> System.arraycopy(gradient, 0, row, 0, 256) }!!.size)
-        assertNull(paletteOf(2, 2, 0) { _, _ -> })
-    }
-
-    private fun roundTrip(width: Int, height: Int, pixels: IntArray) {
-        val palette = requireNotNull(paletteOf(width, height, 256) { y, row -> System.arraycopy(pixels, y * width, row, 0, width) })
-        val png = ByteArrayOutputStream().also { out ->
-            IndexedPng.encode(width, height, palette, out) { y, row -> System.arraycopy(pixels, y * width, row, 0, width) }
-        }.toByteArray()
-        // The JDK's own PNG decoder (reflection: unit tests compile against android.jar).
-        val decoded = requireNotNull(Class.forName("javax.imageio.ImageIO").getMethod("read", java.io.InputStream::class.java).invoke(null, ByteArrayInputStream(png)))
-        val type = decoded.javaClass
-        assertEquals(width, type.getMethod("getWidth").invoke(decoded)); assertEquals(height, type.getMethod("getHeight").invoke(decoded))
-        val getRgb = type.getMethod("getRGB", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
-        for (y in 0 until height) for (x in 0 until width) {
-            val expected = pixels[y * width + x]
-            val actual = getRgb.invoke(decoded, x, y) as Int
-            // Fully transparent pixels carry no colour information in the PNG palette sense.
-            if ((expected ushr 24) == 0) assertEquals(0, actual ushr 24) else assertEquals("pixel $x,$y", expected, actual)
-        }
-    }
-
-    @Test fun `indexed png is lossless at every bit depth including alpha`() {
-        roundTrip(5, 3, IntArray(15) { if (it % 2 == 0) 0xFF000000.toInt() else 0xFFFFFFFF.toInt() })
-        roundTrip(9, 2, IntArray(18) { intArrayOf(0xFFFF0000.toInt(), 0xFF00FF00.toInt(), 0xFF0000FF.toInt(), 0x00000000)[it % 4] })
-        roundTrip(7, 7, IntArray(49) { 0xFF000000.toInt() or (it * 4111 and 0xFFFFFF) }.also { it[3] = 0x40123456 })
-        roundTrip(300, 200, IntArray(60_000) { 0xFF000000.toInt() or ((it % 200) * 0x010101) })
-        assertEquals(1, IndexedPng.bitDepth(2)); assertEquals(2, IndexedPng.bitDepth(4)); assertEquals(4, IndexedPng.bitDepth(16)); assertEquals(8, IndexedPng.bitDepth(17))
     }
 }

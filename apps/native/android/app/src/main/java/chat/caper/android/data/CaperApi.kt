@@ -12,7 +12,6 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
-import kotlinx.serialization.json.putJsonObject
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
@@ -98,25 +97,17 @@ class CaperApi(
     /** Succeeds only when uploads are configured; anything else hides the attach control. */
     suspend fun assetUsage(token: String): AssetUsage = get("/api/assets/usage", token)
 
-    suspend fun createAsset(
-        token: String, channel: String, filename: String, contentType: String, byteSize: Long,
-        sourceByteSize: Long? = null, width: Int? = null, height: Int? = null, durationMs: Long? = null,
-        previewContentType: String? = null, previewByteSize: Long? = null,
-    ): AssetReservation {
+    /** Reserves an upload of the original: its exact size and declared type, nothing else. */
+    suspend fun createAsset(token: String, channel: String, filename: String, contentType: String, byteSize: Long): AssetReservation {
         val reservation: AssetReservation = post("/api/assets", buildJsonObject {
             put("channelId", channel.pathId()); put("filename", filename); put("contentType", contentType); put("byteSize", byteSize)
-            sourceByteSize?.let { put("sourceByteSize", it) }
-            width?.let { put("width", it) }; height?.let { put("height", it) }; durationMs?.let { put("durationMs", it) }
-            if (previewContentType != null && previewByteSize != null) putJsonObject("preview") {
-                put("contentType", previewContentType); put("byteSize", previewByteSize)
-            }
         }, token)
         reservation.id.assetPathId()
         require(reservation.upload.method == "PUT" && reservation.upload.url.isStorageUrl()) { "The upload service returned an invalid response." }
-        reservation.previewUpload?.let { require(it.method == "PUT" && it.url.isStorageUrl()) { "The upload service returned an invalid response." } }
         return reservation
     }
 
+    /** `409` means storage has not seen the upload yet; [AttachmentUploader] retries a few times. */
     suspend fun completeAsset(token: String, id: String): ChatAttachment =
         post("/api/assets/${id.assetPathId()}/complete", token = token)
 
@@ -126,17 +117,21 @@ class CaperApi(
         val response: AttachmentUrlsResponse = post(
             "/api/assets/urls", buildJsonObject { putJsonArray("ids") { ids.forEach { add(it.assetPathId()) } } }, token,
         )
-        return response.urls.filter { (id, urls) -> id in ids && urls.url.isStorageUrl() && urls.previewUrl?.isStorageUrl() != false }
+        return response.urls.filter { (id, urls) ->
+            id in ids && (urls.url != null || urls.previewUrl != null) &&
+                urls.url?.isStorageUrl() != false && urls.previewUrl?.isStorageUrl() != false
+        }
     }
 
     /**
-     * PUT bytes straight to storage with exactly the presigned headers. No account or chat
-     * credential is attached; OkHttp sets Content-Length from the file, which the URL signs.
+     * PUT the original straight to storage with exactly the presigned headers and a fixed
+     * Content-Length of [size]. No account or chat credential is attached, and redirects are
+     * never followed. The body streams from [open] without holding the file in memory.
      */
-    suspend fun putUpload(upload: PresignedUpload, file: java.io.File, progress: (Long) -> Unit = {}) {
+    suspend fun putUpload(upload: PresignedUpload, size: Long, open: () -> java.io.InputStream, progress: (Long) -> Unit = {}) {
         val request = Request.Builder().url(upload.url).apply {
             upload.headers.forEach { (name, value) -> header(name, value) }
-            put(ProgressFileBody(file, progress))
+            put(StreamingUploadBody(size, open, progress))
         }.build()
         try {
             storageClient.newCall(request).awaitDecoded { response ->
@@ -274,21 +269,28 @@ private val assetId = Regex("^[A-Za-z0-9]{16}$")
 fun String.assetPathId(): String = also { require(assetId.matches(it)) { "Invalid file ID." } }
 private fun String.isStorageUrl() = startsWith("https://") || startsWith("http://")
 
-/** Streams a file with upload progress. No content type: the presigned header is set verbatim. */
-private class ProgressFileBody(private val file: java.io.File, private val progress: (Long) -> Unit) : okhttp3.RequestBody() {
+/**
+ * Streams exactly [size] bytes with upload progress. No content type: the presigned header is
+ * set verbatim. A source that turns out shorter or longer than declared fails the upload
+ * instead of sending bytes that do not match the signed length.
+ */
+private class StreamingUploadBody(
+    private val size: Long, private val open: () -> java.io.InputStream, private val progress: (Long) -> Unit,
+) : okhttp3.RequestBody() {
     override fun contentType(): okhttp3.MediaType? = null
-    override fun contentLength(): Long = file.length()
+    override fun contentLength(): Long = size
     override fun writeTo(sink: okio.BufferedSink) {
-        file.inputStream().use { input ->
+        open().use { input ->
             val buffer = ByteArray(64 * 1024)
             var sent = 0L
-            while (true) {
-                val read = input.read(buffer)
-                if (read < 0) break
+            while (sent < size) {
+                val read = input.read(buffer, 0, minOf(buffer.size.toLong(), size - sent).toInt())
+                if (read < 0) throw UploadException("The file changed while uploading.")
                 sink.write(buffer, 0, read)
                 sent += read
                 progress(sent)
             }
+            if (input.read() >= 0) throw UploadException("The file changed while uploading.")
         }
     }
 }

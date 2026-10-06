@@ -63,11 +63,24 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val durationMs: Long? = null,
     /** Present (as `{}`) when a preview image exists. */
     val preview: JsonObject? = null,
+    /** `processing`, `ready` or `failed`; absent in older payloads, which are ready. */
+    val status: String? = null,
+    /** A GIF or animated image stored as a silent looping MP4: play it like a GIF. */
+    val animated: Boolean = false,
+    /** Only ready files have a `url`; `previewUrl` can appear while processing. */
     val url: String? = null,
     val previewUrl: String? = null,
     /** The file was deleted: show a placeholder. */
     val unavailable: Boolean = false,
 ) {
+    /** How to show the file. Unknown future states fall back on whether a URL was delivered. */
+    val state: AttachmentState get() = when (status) {
+        null, "ready" -> AttachmentState.READY
+        "processing", "uploading" -> AttachmentState.PROCESSING
+        "failed" -> AttachmentState.FAILED
+        else -> if (url != null) AttachmentState.READY else AttachmentState.PROCESSING
+    }
+
     internal fun isValid(): Boolean {
         val web = { value: String? -> value == null || value.startsWith("https://") || value.startsWith("http://") }
         return id.isNotEmpty() && name.isNotEmpty() && contentType.isNotEmpty() && size >= 0 &&
@@ -75,6 +88,8 @@ import kotlinx.serialization.json.JsonTransformingSerializer
             web(url) && web(previewUrl)
     }
 }
+
+enum class AttachmentState { PROCESSING, READY, FAILED }
 
 val ATTACHMENT_KINDS = setOf("image", "video", "audio", "file")
 
@@ -93,22 +108,14 @@ object TolerantAttachmentsSerializer : KSerializer<List<ChatAttachment>> {
     }
 }
 
-@Serializable data class AttachmentUrls(val url: String, val previewUrl: String? = null)
+/** `POST /api/assets/urls`: only ready files get a `url`; a processing file may get just a preview. */
+@Serializable data class AttachmentUrls(val url: String? = null, val previewUrl: String? = null)
 @Serializable data class AttachmentUrlsResponse(val urls: Map<String, AttachmentUrls> = emptyMap())
 
-/** Server-tunable client compression (`GET /api/assets/usage`). */
-@Serializable data class CompressionSettings(
-    val imageQuality: Int = 92,
-    val imageMaxEdge: Int = 4096,
-    val paletteColors: Int = 256,
-    val previewEdge: Int = 640,
-    val videoMaxHeight: Int = 1080,
-    val videoBitrateKbps: Int = 4000,
-    val audioBitrateKbps: Int = 128,
-)
-@Serializable data class AssetUsage(val used: Long, val limit: Long, val compression: CompressionSettings = CompressionSettings())
+/** `GET /api/assets/usage`. Unknown fields (such as retired client compression settings) are ignored. */
+@Serializable data class AssetUsage(val used: Long, val limit: Long, val maxUploadBytes: Long? = null)
 @Serializable data class PresignedUpload(val method: String = "PUT", val url: String, val headers: Map<String, String> = emptyMap())
-@Serializable data class AssetReservation(val id: String, val kind: String = "file", val upload: PresignedUpload, val previewUpload: PresignedUpload? = null)
+@Serializable data class AssetReservation(val id: String, val kind: String = "file", val upload: PresignedUpload)
 @Serializable data class MessageReaction(val emoji: String, val authorIds: List<String>)
 @Serializable data class ReactionUpdate(
     val type: String,
@@ -117,6 +124,15 @@ object TolerantAttachmentsSerializer : KSerializer<List<ChatAttachment>> {
     val seq: String,
     val messageId: String,
     val reactions: List<MessageReaction>,
+)
+/** `message.attachments`: the message's files after the media worker changed them. */
+@Serializable data class AttachmentsUpdate(
+    val type: String,
+    val schemaVersion: Int,
+    val channelId: String,
+    val seq: String,
+    val messageId: String,
+    @Serializable(with = TolerantAttachmentsSerializer::class) val attachments: List<ChatAttachment> = emptyList(),
 )
 @Serializable data class ChatMessage(
     val id: String,
@@ -128,6 +144,8 @@ object TolerantAttachmentsSerializer : KSerializer<List<ChatAttachment>> {
     val clientMessageId: String,
     val reactions: List<MessageReaction> = emptyList(),
     val reactionSeq: String? = null,
+    /** Sequence of the last `message.attachments` applied to this message. */
+    val attachmentsSeq: String? = null,
 )
 @Serializable data class ChatHistory(
     val messages: List<ChatMessage>,
@@ -260,6 +278,10 @@ data class AppUiState(
     val attachmentError: String? = null,
     /** Re-signed URLs for long-open conversations, keyed by attachment ID. */
     val freshAttachmentUrls: Map<String, AttachmentUrls> = emptyMap(),
+    /** Latest server processing percent (`attachment.progress`), keyed by attachment ID. */
+    val attachmentProgress: Map<String, Int> = emptyMap(),
+    /** This device's picked content for files it sent, shown while the server processes them. */
+    val localAttachmentPreviews: Map<String, String> = emptyMap(),
     val busy: Boolean = false,
     val error: String? = null,
 ) {
@@ -277,22 +299,18 @@ data class PendingMessageUi(
     val createdAt: String,
     val error: String? = null,
     val rejected: Boolean = false,
-    /** Uploaded files with local `file://` copies until the server confirms. */
+    /** Uploaded files, shown from the picked content until the server confirms. */
     val attachments: List<ChatAttachment> = emptyList(),
 )
 
-/** A file in the composer: preparing, uploading, ready to send, or failed. */
+/** A file in the composer: uploading, ready to send, or failed. */
 data class DraftAttachmentUi(
     val key: String,
     val name: String,
     val kind: String,
-    val sourceSize: Long = 0,
-    val storedSize: Long? = null,
-    /** Local `file://` thumbnail (the file itself for images, a poster for video). */
+    val size: Long = 0,
+    /** The picked `content://` image itself, shown as the chip thumbnail and by the pending message. */
     val thumbnail: String? = null,
-    /** Local `file://` copy of the bytes being uploaded, shown by the pending message. */
-    val localUrl: String? = null,
-    val compressing: Boolean = true,
     val progress: Float = 0f,
     val error: String? = null,
     val attachment: ChatAttachment? = null,

@@ -1,6 +1,7 @@
 package chat.caper.android
 
 import android.content.Context
+import android.os.Build
 import androidx.annotation.OptIn
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -39,6 +40,7 @@ import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import chat.caper.android.data.AttachmentPolicy
+import chat.caper.android.model.AttachmentState
 import chat.caper.android.model.ChatAttachment
 import chat.caper.android.model.DraftAttachmentUi
 import chat.caper.android.ui.*
@@ -52,7 +54,11 @@ import coil3.request.ImageRequest
 import okhttp3.OkHttpClient
 import okio.Path.Companion.toOkioPath
 
-/** One image loader for attachments. Caches are keyed by attachment ID, so re-signed URLs reuse them. */
+/**
+ * One image loader for attachments. Caches are keyed by attachment ID, so re-signed URLs reuse
+ * them. OkHttp adds `Accept-Encoding: gzip` itself, so a gzip-encoded response is decoded
+ * transparently. Below API 31 the platform cannot decode AVIF, so a bundled decoder handles it.
+ */
 internal object AttachmentImages {
     @Volatile private var loader: ImageLoader? = null
 
@@ -62,6 +68,7 @@ internal object AttachmentImages {
                 .components {
                     // Delivery URLs are already signed; never follow redirects or attach credentials.
                     add(OkHttpNetworkFetcherFactory(callFactory = { OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).build() }))
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) add(AvifCompatDecoder.Factory())
                 }
                 .memoryCache { MemoryCache.Builder().maxSizePercent(app, 0.15).build() }
                 .diskCache { DiskCache.Builder().directory(app.cacheDir.resolve("attachment-images").toOkioPath()).maxSizeBytes(128L * 1024 * 1024).build() }
@@ -88,24 +95,41 @@ internal fun durationLabel(durationMs: Long?): String? {
     return if (seconds >= 3600) "%d:%02d:%02d".format(java.util.Locale.US, seconds / 3600, seconds / 60 % 60, seconds % 60) else "%d:%02d".format(java.util.Locale.US, seconds / 60, seconds % 60)
 }
 
-/** Files under a message. Pending rows show local copies and are not interactive. */
+/**
+ * Files under a message, shown by processing status. Pending rows show local copies and are not
+ * interactive. [progress] is the latest server percent per file; [localPreviews] are this
+ * device's own picked images, shown while the server processes them.
+ */
 @Composable internal fun MessageAttachments(
     attachments: List<ChatAttachment>,
     pending: Boolean,
     onLoadFailed: (ChatAttachment, Int?) -> Unit,
+    progress: Map<String, Int> = emptyMap(),
+    localPreviews: Map<String, String> = emptyMap(),
 ) {
     if (attachments.isEmpty()) return
     var viewing by remember { mutableStateOf<String?>(null) }
     var playing by remember { mutableStateOf<String?>(null) }
     val uriHandler = LocalUriHandler.current
+    // The system browser downloads or shows the file and handles `Content-Encoding: gzip` itself.
     val open: (String) -> Unit = { url -> runCatching { uriHandler.openUri(url) } }
     Column(Modifier.padding(top = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         attachments.forEach { attachment ->
             val url = attachment.url
             when {
-                attachment.unavailable || url == null -> FileCard(attachment, null)
+                attachment.unavailable -> FileCard(attachment, null)
+                attachment.state == AttachmentState.FAILED -> FileCard(attachment, null, detail = "Couldn’t process this file", error = true)
+                attachment.state == AttachmentState.PROCESSING -> ProcessingAttachment(
+                    attachment, attachment.previewUrl ?: localPreviews[attachment.id], progress[attachment.id], onLoadFailed,
+                )
+                url == null -> FileCard(attachment, null)
                 attachment.kind == "image" -> MediaFrame(attachment, if (pending) null else ({ viewing = attachment.id })) {
                     AttachmentImage(attachment, attachment.previewUrl ?: url, "display", Modifier.fillMaxSize(), ContentScale.Crop, onLoadFailed)
+                }
+                // Stored GIFs and animated images: muted, looping, inline, no controls.
+                attachment.kind == "video" && attachment.animated -> MediaFrame(attachment, null) {
+                    attachment.previewUrl?.let { AttachmentImage(attachment, it, "display", Modifier.fillMaxSize(), ContentScale.Crop, onLoadFailed) }
+                    if (!pending) AnimatedVideo(attachment, url, onLoadFailed)
                 }
                 attachment.kind == "video" -> MediaFrame(attachment, if (pending) null else ({ playing = attachment.id })) {
                     attachment.previewUrl?.let { AttachmentImage(attachment, it, "display", Modifier.fillMaxSize(), ContentScale.Crop, onLoadFailed) }
@@ -121,15 +145,78 @@ internal fun durationLabel(durationMs: Long?): String? {
             }
         }
     }
-    attachments.firstOrNull { it.id == viewing && it.url != null }?.let { attachment ->
+    attachments.firstOrNull { it.id == viewing && it.url != null && it.state == AttachmentState.READY }?.let { attachment ->
         ImageViewer(attachment, close = { viewing = null }, open = open, onLoadFailed = onLoadFailed)
     }
-    attachments.firstOrNull { it.id == playing && it.url != null }?.let { attachment ->
+    attachments.firstOrNull { it.id == playing && it.url != null && it.state == AttachmentState.READY }?.let { attachment ->
         MediaPlayerDialog(attachment, close = { playing = null }, open = open, onLoadFailed = onLoadFailed)
     }
 }
 
-@Composable private fun MediaFrame(attachment: ChatAttachment, onClick: (() -> Unit)?, content: @Composable BoxScope.() -> Unit) {
+/** Placeholder while the media worker compresses the file: preview (if any), spinner and percent. */
+@Composable private fun ProcessingAttachment(attachment: ChatAttachment, preview: String?, percent: Int?, onLoadFailed: (ChatAttachment, Int?) -> Unit) {
+    val label = if (percent != null) "Processing… $percent%" else "Processing…"
+    val visual = attachment.kind == "image" || attachment.kind == "video" || attachmentFrame(attachment.width, attachment.height) != null
+    if (!visual) {
+        FileCard(attachment, null, detail = label, busy = percent ?: -1)
+        return
+    }
+    MediaFrame(attachment, null, description = "${attachment.name}, $label") {
+        if (preview != null) AttachmentImage(attachment, preview, "processing", Modifier.fillMaxSize(), ContentScale.Crop, onLoadFailed)
+        Box(Modifier.fillMaxSize().background(Blackout.copy(alpha = if (preview != null) 0.45f else 0f)))
+        Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Spinner(percent, Modifier.size(28.dp))
+            Text(label, color = Text, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable private fun Spinner(percent: Int?, modifier: Modifier) {
+    if (percent != null && percent > 0) CircularProgressIndicator(
+        progress = { percent / 100f }, modifier = modifier, color = Terracotta, trackColor = Border, strokeWidth = 3.dp,
+    ) else CircularProgressIndicator(modifier = modifier, color = Terracotta, trackColor = Border, strokeWidth = 3.dp)
+}
+
+/** A stored GIF: plays muted and looping like the original, with no controls. */
+@OptIn(UnstableApi::class)
+@Composable private fun BoxScope.AnimatedVideo(attachment: ChatAttachment, url: String, onLoadFailed: (ChatAttachment, Int?) -> Unit) {
+    val context = LocalContext.current
+    val latest by rememberUpdatedState(attachment)
+    val reportFailure by rememberUpdatedState(onLoadFailed)
+    var failed by remember(url) { mutableStateOf(false) }
+    val player = remember(url) {
+        ExoPlayer.Builder(context).build().apply {
+            volume = 0f
+            repeatMode = Player.REPEAT_MODE_ONE
+            setMediaItem(MediaItem.fromUri(url))
+            addListener(object : Player.Listener {
+                override fun onPlayerError(error: PlaybackException) {
+                    failed = true
+                    reportFailure(latest, (error.cause as? HttpDataSource.InvalidResponseCodeException)?.responseCode)
+                }
+            })
+            prepare()
+            playWhenReady = true
+        }
+    }
+    DisposableEffect(player) { onDispose { player.release() } }
+    if (failed) return
+    AndroidView(
+        factory = {
+            PlayerView(it).apply {
+                useController = false
+                setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
+                resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+            }
+        },
+        update = { it.player = player },
+        modifier = Modifier.matchParentSize(),
+    )
+}
+
+@Composable private fun MediaFrame(
+    attachment: ChatAttachment, onClick: (() -> Unit)?, description: String = attachment.name, content: @Composable BoxScope.() -> Unit,
+) {
     val frame = attachmentFrame(attachment.width, attachment.height)
     val width: Dp = (frame?.first ?: 240).dp
     val ratio = frame?.let { it.first.toFloat() / it.second } ?: (4f / 3f)
@@ -137,7 +224,7 @@ internal fun durationLabel(durationMs: Long?): String? {
         Modifier.widthIn(max = width).fillMaxWidth().aspectRatio(ratio)
             .clip(MaterialTheme.shapes.small).background(Surface).border(1.dp, Border, MaterialTheme.shapes.small)
             .then(if (onClick != null) Modifier.clickable(role = Role.Button, onClickLabel = "Open ${attachment.name}", onClick = onClick) else Modifier)
-            .semantics { contentDescription = attachment.name },
+            .semantics { contentDescription = description },
         content = content,
     )
 }
@@ -155,8 +242,13 @@ internal fun durationLabel(durationMs: Long?): String? {
     )
 }
 
-@Composable private fun FileCard(attachment: ChatAttachment, onClick: (() -> Unit)?, icon: Int = R.drawable.lucide_file_text) {
-    val detail = when {
+/** [busy] shows a spinner: a percent, or -1 while the percent is unknown. */
+@Composable private fun FileCard(
+    attachment: ChatAttachment, onClick: (() -> Unit)?, icon: Int = R.drawable.lucide_file_text,
+    detail: String? = null, error: Boolean = false, busy: Int? = null,
+) {
+    val muted = attachment.unavailable || error
+    val text = detail ?: when {
         attachment.unavailable -> "File removed"
         attachment.kind == "audio" -> listOfNotNull(durationLabel(attachment.durationMs), AttachmentPolicy.formatBytes(attachment.size)).joinToString(" · ")
         else -> AttachmentPolicy.formatBytes(attachment.size)
@@ -164,13 +256,15 @@ internal fun durationLabel(durationMs: Long?): String? {
     Surface(
         Modifier.widthIn(max = 360.dp).fillMaxWidth().heightIn(min = 48.dp)
             .then(if (onClick != null) Modifier.clickable(role = Role.Button, onClickLabel = "Open ${attachment.name}", onClick = onClick) else Modifier),
-        shape = MaterialTheme.shapes.small, color = if (attachment.unavailable) Color.Transparent else Surface, border = BorderStroke(1.dp, Border),
+        shape = MaterialTheme.shapes.small, color = if (muted) Color.Transparent else Surface,
+        border = BorderStroke(1.dp, if (error) ErrorText.copy(alpha = 0.6f) else Border),
     ) {
         Row(Modifier.padding(horizontal = 10.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Icon(painterResource(if (attachment.unavailable) R.drawable.lucide_file_text else icon), null, Modifier.size(18.dp), tint = if (attachment.unavailable) TextMuted else Text)
+            if (busy != null) Spinner(busy.takeIf { it >= 0 }, Modifier.size(18.dp))
+            else Icon(painterResource(if (muted) R.drawable.lucide_file_text else icon), null, Modifier.size(18.dp), tint = if (muted) TextMuted else Text)
             Column(Modifier.weight(1f)) {
-                Text(attachment.name, color = if (attachment.unavailable) TextMuted else Text, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(detail, color = TextMuted, fontSize = 11.sp)
+                Text(attachment.name, color = if (muted) TextMuted else Text, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(text, color = if (error) ErrorText else TextMuted, fontSize = 11.sp)
             }
         }
     }
@@ -189,10 +283,20 @@ internal fun durationLabel(durationMs: Long?): String? {
     }
 }
 
+/** Full size. If the original cannot be decoded on this device, the WebP preview is shown instead. */
 @Composable private fun ImageViewer(attachment: ChatAttachment, close: () -> Unit, open: (String) -> Unit, onLoadFailed: (ChatAttachment, Int?) -> Unit) {
     val url = attachment.url ?: return
+    var usePreview by remember(url) { mutableStateOf(false) }
+    val preview = attachment.previewUrl
     ViewerFrame(attachment.name, close, actions = { TextButton({ open(url) }) { Text("Open", color = Text) } }) {
-        AttachmentImage(attachment, url, "original", Modifier.fillMaxSize(), ContentScale.Fit, onLoadFailed)
+        if (usePreview && preview != null) {
+            AttachmentImage(attachment, preview, "display", Modifier.fillMaxSize(), ContentScale.Fit, onLoadFailed)
+        } else {
+            AttachmentImage(attachment, url, "original", Modifier.fillMaxSize(), ContentScale.Fit) { failed, status ->
+                if (status == null && preview != null) usePreview = true
+                onLoadFailed(failed, status)
+            }
+        }
     }
 }
 
@@ -228,7 +332,7 @@ internal fun durationLabel(durationMs: Long?): String? {
     }
 }
 
-/** Composer chips: thumbnail, name, "X MB → Y KB", progress and remove (web `DraftAttachments`). */
+/** Composer chips: thumbnail, name, size or upload progress, and remove (web `DraftAttachments`). */
 @Composable internal fun DraftAttachmentStrip(drafts: List<DraftAttachmentUi>, remove: (String) -> Unit) {
     if (drafts.isEmpty()) return
     val context = LocalContext.current
@@ -246,8 +350,8 @@ internal fun durationLabel(durationMs: Long?): String? {
                     Column(Modifier.weight(1f)) {
                         Text(draft.name, color = Text, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         val status = draft.error ?: when {
-                            draft.attachment != null -> AttachmentPolicy.sizeLabel(draft.sourceSize, draft.storedSize)
-                            draft.compressing -> if (draft.progress > 0f) "Compressing… ${(draft.progress * 100).toInt()}%" else "Preparing…"
+                            draft.attachment != null -> AttachmentPolicy.formatBytes(draft.size)
+                            draft.size <= 0 -> "Preparing…"
                             else -> "Uploading… ${(draft.progress * 100).toInt()}%"
                         }
                         Text(status, color = if (draft.error != null) ErrorText else TextMuted, fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)

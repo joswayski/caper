@@ -1151,6 +1151,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             MessageRow(
                 message.author.name, message.author.isGuest, message.createdAt, message.content.text, false, message.author.avatarId,
                 message.content.attachments.map { it.withFreshUrls(state.freshAttachmentUrls[it.id]) }, onAttachmentFailed,
+                state.attachmentProgress, state.localAttachmentPreviews,
             )
         }
         FlowRow(Modifier.padding(start = 62.dp, end = 18.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
@@ -1256,6 +1257,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
 @Composable private fun MessageRow(
     author: String, guest: Boolean, createdAt: String, text: String, pending: Boolean, avatarId: Int? = null,
     attachments: List<ChatAttachment> = emptyList(), onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> },
+    attachmentProgress: Map<String, Int> = emptyMap(), localAttachmentPreviews: Map<String, String> = emptyMap(),
 ) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp)) {
         Avatar(author, 34.dp, avatarId = avatarId)
@@ -1268,7 +1270,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
             }
             // A file-only message has empty text: show just its files.
             if (text.isNotEmpty()) Text(text, color = if (pending) TextMuted else MessageText, fontSize = 14.sp, lineHeight = 21.sp)
-            MessageAttachments(attachments, pending, onAttachmentFailed)
+            MessageAttachments(attachments, pending, onAttachmentFailed, attachmentProgress, localAttachmentPreviews)
         }
     }
 }

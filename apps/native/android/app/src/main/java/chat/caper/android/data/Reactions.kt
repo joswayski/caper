@@ -1,5 +1,6 @@
 package chat.caper.android.data
 
+import chat.caper.android.model.AttachmentsUpdate
 import chat.caper.android.model.ChatMessage
 import chat.caper.android.model.MessageReaction
 import chat.caper.android.model.ReactionSaveUi
@@ -53,6 +54,7 @@ internal fun mergeReaction(message: ChatMessage, update: ReactionUpdate): ChatMe
 /** Monotonically merges messages and consumes cached updates once their message appears. */
 internal fun mergeMessages(
     loaded: List<ChatMessage>, incoming: List<ChatMessage>, unseen: MutableMap<String, ReactionUpdate>,
+    unseenAttachments: MutableMap<String, AttachmentsUpdate> = mutableMapOf(),
 ): List<ChatMessage> {
     val merged = linkedMapOf<String, ChatMessage>()
     (loaded + incoming).forEach { candidate ->
@@ -60,11 +62,14 @@ internal fun mergeMessages(
         merged[candidate.id] = if (current == null) candidate else {
             val candidateReaction = candidate.reactionSeq?.toBigIntegerOrNull() ?: BigInteger.valueOf(-1)
             val currentReaction = current.reactionSeq?.toBigIntegerOrNull() ?: BigInteger.valueOf(-1)
-            if (candidateReaction > currentReaction) candidate else current
+            // Reactions and files advance independently: each side keeps its newer snapshot.
+            val (base, other) = if (candidateReaction > currentReaction) candidate to current else current to candidate
+            newerAttachments(base, other)
         }
     }
     return merged.values.map { message ->
-        unseen.remove(message.id)?.let { mergeReaction(message, it) } ?: message
+        val reacted = unseen.remove(message.id)?.let { mergeReaction(message, it) } ?: message
+        unseenAttachments.remove(message.id)?.let { mergeAttachments(reacted, it) } ?: reacted
     }.sortedWith(compareBy { BigInteger(it.seq) })
 }
 
