@@ -43,4 +43,9 @@ test("emoji names come from the picker data and ignore variation selectors", () 
   for (const [emoji, name] of [["👍", "thumbs-up"], ["😂", "face-with-tears-of-joy"], ["🎉", "party-popper"], ["👀", "looking"], ["❤️", "red-heart"], ["❤", "red-heart"]]) {
     assert.equal(emojiNameFrom(index, emoji), name, emoji);
   }
+  for (const [emoji, label] of [["🇮🇱", ":israel:"], ["🇺🇸", ":united-states:"], ["🇨🇮", ":cote-divoire:"]]) {
+    const name = emojiNameFrom(index, emoji);
+    assert.equal(emojiLabel(emoji, name), label);
+    assert.equal(fallbackSummary({ emoji, authorIds: ["me"] }, "me", emojiLabel(emoji, name)), `You reacted with ${label}`);
+  }
 });
