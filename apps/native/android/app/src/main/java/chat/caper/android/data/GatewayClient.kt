@@ -21,6 +21,7 @@ class GatewayClient(
     initialCursor: String, private val onMessage: (ChatMessage) -> Unit,
     private val onReaction: (ReactionUpdate) -> Unit = {},
     private val onPin: (PinUpdate) -> Unit = {},
+    private val onEdit: (EditUpdate) -> Unit = {},
     private val onTyping: (ChatAuthor, Boolean, String) -> Unit = { _, _, _ -> },
     private val onPresence: (PresenceSnapshot) -> Unit = {},
     private val onMedia: (String, List<Participant>, Long?) -> Unit = { _, _, _ -> },
@@ -187,6 +188,18 @@ class GatewayClient(
                 if (n == applied + BigInteger.ONE) {
                     val update = json.decodeFromJsonElement(PinUpdate.serializer(), event).validated(channelId)
                     cursor = next; onPin(update)
+                } else if (n > applied) error("Logical delivery gap")
+                maybePromote(s)
+            }
+            "message.edited" -> {
+                val update = json.decodeFromJsonElement(EditUpdate.serializer(), event).validated(channelId)
+                val next = update.seq
+                val n = BigInteger(next)
+                val local = BigInteger(s.chatPosition)
+                if (n == local + BigInteger.ONE) s.chatPosition = next else if (n > local) error("Non-contiguous replay")
+                val applied = BigInteger(cursor)
+                if (n == applied + BigInteger.ONE) {
+                    cursor = next; onEdit(update)
                 } else if (n > applied) error("Logical delivery gap")
                 maybePromote(s)
             }

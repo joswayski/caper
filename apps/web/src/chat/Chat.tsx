@@ -6,6 +6,8 @@ import MessageReactions, { type ReactionSave } from "./MessageReactions.tsx";
 import MessageActions, { type MessageActionTarget } from "./MessageActions.tsx";
 import ReactorsPanel, { type ReactorsTarget } from "./ReactorsPanel.tsx";
 import ThreadPanel from "./ThreadPanel.tsx";
+import MessageEditor from "./MessageEditor.tsx";
+import MessageHistory from "./MessageHistory.tsx";
 import { MessageSquare } from "lucide-react";
 import { dateDivider } from "./dates.ts";
 import { isChannelMessage, type ChatAuthor, type GeneralChatHistory } from "./types.ts";
@@ -60,6 +62,8 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   const clientRef = useRef<ChatClient | undefined>(undefined);
   const [actionTarget, setActionTarget] = useState<MessageActionTarget>();
   const [reactorsTarget, setReactorsTarget] = useState<ReactorsTarget>();
+  const [editTarget, setEditTarget] = useState<string>();
+  const [historyTarget, setHistoryTarget] = useState<string>();
   const [actionStatus, setActionStatus] = useState("");
   const [reactionSaves, setReactionSaves] = useState<Record<string, ReactionSave | undefined>>({});
   const [showPins, setShowPins] = useState(false);
@@ -71,6 +75,8 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   useEffect(() => {
     setActionTarget(undefined);
     setReactorsTarget(undefined);
+    setEditTarget(undefined);
+    setHistoryTarget(undefined);
     setActionStatus("");
     setReactionSaves({});
     setShowPins(false);
@@ -99,7 +105,9 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       window.removeEventListener("scroll", cancelPress, true);
     };
   }, [channelId]);
-  useEffect(() => { setActionTarget(undefined); setReactorsTarget(undefined); }, [state.author?.id]);
+  useEffect(() => { setActionTarget(undefined); setReactorsTarget(undefined); setEditTarget(undefined); setHistoryTarget(undefined); }, [state.author?.id, state.channelId]);
+  useEffect(() => { if (readOnly) setEditTarget(undefined); }, [readOnly]);
+  useEffect(() => { if (state.phase === "error") { setEditTarget(undefined); setHistoryTarget(undefined); } }, [state.phase]);
   const isTouchLayout = () => window.matchMedia("(max-width: 760px), (pointer: coarse)").matches;
   const openActions = (messageId: string, anchor: HTMLElement) => setActionTarget({ messageId, anchor, mode: "actions", drawer: isTouchLayout() });
   const openThread = (rootId: string) => {
@@ -127,8 +135,13 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       if (clientRef.current === client) setReactionSaves((current) => ({ ...current, [messageId]: { emoji, active, error: error instanceof Error ? error.message : "Reaction could not be saved." } }));
     }
   };
-  const actionMessage = state.messages.find((message) => message.id === actionTarget?.messageId);
+  const findMessage = (id?: string) => state.messages.find((message) => message.id === id) ?? state.pinnedMessages.find((message) => message.id === id);
+  const actionMessage = findMessage(actionTarget?.messageId);
   const reactorsMessage = state.messages.find((message) => message.id === reactorsTarget?.messageId);
+  const editMessage = findMessage(editTarget);
+  const historyMessage = findMessage(historyTarget);
+  const openEdit = (messageId: string) => { setActionTarget(undefined); setHistoryTarget(undefined); setEditTarget(messageId); };
+  const openHistory = (messageId: string) => { setActionTarget(undefined); setEditTarget(undefined); setHistoryTarget(messageId); };
   const pin = async (messageId: string, active: boolean) => {
     const client = clientRef.current;
     if (!client || readOnly) return;
@@ -199,6 +212,10 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   };
   const followLatest = useRef(true);
   const latestMessage = state.messages.at(-1);
+  const [announcement, setAnnouncement] = useState("");
+  useEffect(() => {
+    if (state.phase === "ready" && latestMessage) setAnnouncement(`${latestMessage.author.name}: ${latestMessage.content.text}`);
+  }, [latestMessage?.id, state.phase]);
   // Reaction events advance the conversation stream without adding a message.
   // HTTP reaction snapshots do not advance this committed replay cursor.
   const readCursor = clientRef.current?.snapshotHistory()?.cursor ?? initialHistory?.cursor ?? latestMessage?.seq ?? "0";
@@ -369,7 +386,9 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       {"content" in message && message.pin && <div className="chat-pin-marker"><Pin size={12} aria-hidden="true" />Pinned by {message.pin.author.name}</div>}
       <div className="chat-avatar"><Avatar avatarId={author?.avatarId} name={author?.name ?? name} /></div>
       <div>
-        <header><strong>{author?.name ?? name}</strong>{author?.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt, timeFormatter) : ""}</time></header>
+        <header><strong>{author?.name ?? name}</strong>{author?.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt, timeFormatter) : ""}</time>
+          {"content" in message && (message.revision ?? 1) > 1 && <button type="button" className="chat-edited" title={message.editedAt ? `Edited ${new Date(message.editedAt).toLocaleString()}` : undefined} aria-label={`Message history, version ${message.revision}`} onClick={() => openHistory(message.id)}>edited</button>}
+        </header>
         {!inThread && message.threadRootId && <button type="button" className="chat-thread-context" onClick={() => openThread(message.threadRootId!)}>Replied to a thread · View thread</button>}
         <p>{"content" in message ? message.content.text : message.text}</p>
         {"content" in message && <>
@@ -418,6 +437,10 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
           <div className="chat-avatar chat-pinned-avatar"><Avatar avatarId={message.author.avatarId} name={message.author.name} /></div>
           <header><strong>{message.author.name}</strong><time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt, pinTimeFormatter) : ""}</time></header>
           <p>{message.content.text}</p>
+          {((message.revision ?? 1) > 1 || (!readOnly && state.author?.id === message.author.id)) && <div className="chat-pinned-edit-actions">
+            {(message.revision ?? 1) > 1 && <button type="button" className="chat-edited" onClick={() => openHistory(message.id)}>edited · Message history</button>}
+            {!readOnly && state.author?.id === message.author.id && <button type="button" onClick={() => openEdit(message.id)}>Edit message</button>}
+          </div>}
           {!readOnly && !!state.author && <button type="button" disabled={pinning.has(message.id)} onClick={() => void pin(message.id, false)}>{pinning.has(message.id) ? "Unpinning…" : "Unpin"}</button>}
         </article>)}
       </div>}
@@ -458,15 +481,17 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
         <HistoryHeader context={{ hasMore: state.hasMore, loadingOlder: false, loadOlder }} />
         {messages.slice(previewStart).map((message, index) => renderMessage(previewStart + index, message))}
       </div>}
-      <p className="sr-only" aria-live="polite" aria-atomic="true">{state.phase === "ready" && latestMessage && `${latestMessage.author.name}: ${latestMessage.content.text}`}</p>
+      <p className="sr-only" aria-live="polite" aria-atomic="true">{state.phase === "ready" && announcement}</p>
       <p className="sr-only" role="status">{actionStatus}</p>
       </>}
     </div>
 
     {actionTarget && actionMessage && <MessageActions key={actionMessage.id} message={actionMessage} target={actionTarget} authorId={state.author?.id}
       canReact={!readOnly && !!state.author} canPin={!readOnly && !!state.author} pinning={pinning.has(actionMessage.id)} onReact={react} onPin={pin}
+      canEdit={!readOnly && !state.author?.isGuest && state.author?.id === actionMessage.author.id}
       onClose={() => setActionTarget(undefined)} onCopied={setActionStatus}
       onReply={() => openThread(actionMessage.threadRootId ?? actionMessage.id)}
+      onEdit={() => openEdit(actionMessage.id)} onHistory={() => openHistory(actionMessage.id)}
       onViewReactions={(emoji) => showReactors(actionMessage.id, emoji, actionTarget.anchor)} />}
     {reactorsTarget && reactorsMessage && state.channelId && <ReactorsPanel key={reactorsMessage.id} channelId={state.channelId}
       message={reactorsMessage} target={reactorsTarget} onClose={closeReactors} />}
@@ -516,5 +541,10 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
         {characterCount >= 3000 && <small className="chat-counter" data-tone={counterTone}>{characterCount.toLocaleString()} / 4,000</small>}
       </form>
     </div>}
-  </section><ThreadPanel state={state} client={clientRef.current} channelName={channelName} readOnly={readOnly} renderMessage={renderMessage} onClose={closeThread} /></div>;
+  </section><ThreadPanel state={state} client={clientRef.current} channelName={channelName} readOnly={readOnly} renderMessage={renderMessage} onClose={closeThread} />
+    {state.phase === "ready" && !readOnly && editMessage && clientRef.current && <MessageEditor key={editMessage.id} message={editMessage}
+      onSave={(text, revision) => clientRef.current!.editMessage(editMessage.id, text, revision)}
+      onReload={() => clientRef.current!.reloadMessage(editMessage.id)} onClose={() => setEditTarget(undefined)} />}
+    {state.phase === "ready" && historyMessage && <MessageHistory key={`${historyMessage.id}:${historyMessage.revision ?? 1}`} message={historyMessage} onClose={() => setHistoryTarget(undefined)} />}
+  </div>;
 }

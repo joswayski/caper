@@ -282,6 +282,21 @@ pub struct PinUpdate {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct EditUpdate {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub schema_version: u8,
+    pub channel_id: String,
+    pub seq: String,
+    pub message: Message,
+}
+
+fn original_revision() -> u32 {
+    1
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct Message {
     pub id: String,
     pub channel_id: String,
@@ -304,6 +319,12 @@ pub struct Message {
     pub broadcast: bool,
     #[serde(default)]
     pub thread: Option<ThreadSummary>,
+    #[serde(default = "original_revision")]
+    pub revision: u32,
+    #[serde(default)]
+    pub edited_at: Option<String>,
+    #[serde(default)]
+    pub edit_seq: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -330,6 +351,22 @@ impl Message {
 
     pub fn validate(&self) -> Result<(), String> {
         sequence(&self.seq)?;
+        if self.revision == 0 {
+            return Err("invalid content revision".into());
+        }
+        if self.revision == 1 {
+            if self.edited_at.is_some() || self.edit_seq.is_some() {
+                return Err("unexpected edit metadata".into());
+            }
+        } else {
+            let edited_at = self.edited_at.as_deref().ok_or("missing edit timestamp")?;
+            chrono::DateTime::parse_from_rfc3339(edited_at)
+                .map_err(|_| "invalid edit timestamp")?;
+            let edit_seq = self.edit_seq.as_deref().ok_or("missing edit sequence")?;
+            if sequence(edit_seq)? <= sequence(&self.seq)? {
+                return Err("invalid edit sequence".into());
+            }
+        }
         if self.broadcast && self.thread_root_id.is_none() {
             return Err("invalid broadcast reply".into());
         }
@@ -361,6 +398,18 @@ impl Message {
             return Err("invalid message reactions".into());
         }
         Ok(())
+    }
+
+    fn merge_edit(&mut self, incoming: &Self) {
+        if self.id == incoming.id
+            && self.channel_id == incoming.channel_id
+            && incoming.revision > self.revision
+        {
+            self.content.clone_from(&incoming.content);
+            self.revision = incoming.revision;
+            self.edited_at.clone_from(&incoming.edited_at);
+            self.edit_seq.clone_from(&incoming.edit_seq);
+        }
     }
 }
 
@@ -413,6 +462,7 @@ pub struct Timeline {
     unseen_pins: BTreeMap<String, Message>,
     pinned: BTreeMap<u64, Message>,
     thread_summaries: BTreeMap<String, ThreadSummary>,
+    edits: BTreeMap<String, Message>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -434,6 +484,7 @@ impl Timeline {
         self.unseen_pins.clear();
         self.pinned.clear();
         self.thread_summaries.clear();
+        self.edits.clear();
         for message in messages {
             self.merge(message)?;
         }
@@ -526,6 +577,49 @@ impl Timeline {
         Ok(())
     }
 
+    pub fn apply_edit(&mut self, update: EditUpdate) -> Result<Apply, String> {
+        if update.kind != "message.edited"
+            || update.schema_version != 1
+            || update.channel_id != update.message.channel_id
+            || update.message.edit_seq.as_deref() != Some(update.seq.as_str())
+            || update.message.revision <= 1
+        {
+            return Err("invalid edit update".into());
+        }
+        update.message.validate()?;
+        if !self.ids.contains(&update.message.id)
+            && !self.edits.contains_key(&update.message.id)
+            && self
+                .edits
+                .keys()
+                .filter(|id| !self.ids.contains(*id))
+                .count()
+                >= 256
+        {
+            return Ok(Apply::Resync);
+        }
+        let message = self.remember_edit(update.message);
+        for loaded in self
+            .messages
+            .values_mut()
+            .chain(self.pinned.values_mut())
+            .chain(self.unseen_pins.values_mut())
+        {
+            loaded.merge_edit(&message);
+        }
+        self.apply_sequence(&update.seq)
+    }
+
+    fn remember_edit(&mut self, mut message: Message) -> Message {
+        if let Some(snapshot) = self.edits.get(&message.id) {
+            message.merge_edit(snapshot);
+        }
+        if message.revision > 1 {
+            self.edits.insert(message.id.clone(), message.clone());
+        }
+        message
+    }
+
     pub fn apply_pin(&mut self, update: PinUpdate) -> Result<Apply, String> {
         self.merge_pin_update(update.clone())?;
         self.apply_sequence(&update.seq)
@@ -588,6 +682,7 @@ impl Timeline {
 
     fn merge_pin_message(&mut self, message: Message) -> Result<(), String> {
         message.validate()?;
+        let message = self.remember_edit(message);
         self.pinned.retain(|_, item| item.id != message.id);
         if message.pin.is_some() {
             let revision = message
@@ -680,6 +775,7 @@ impl Timeline {
 
     fn merge(&mut self, mut message: Message) -> Result<(), String> {
         message.validate()?;
+        message = self.remember_edit(message);
         if self.pin_snapshot_cursor > 0
             && message
                 .pin_seq
@@ -906,7 +1002,125 @@ mod tests {
             thread_root_id: None,
             broadcast: false,
             thread: None,
+            revision: 1,
+            edited_at: None,
+            edit_seq: None,
         }
+    }
+
+    fn edit_update(mut message: Message, seq: u64, revision: u32) -> EditUpdate {
+        message.content.text = "corrected".into();
+        message.revision = revision;
+        message.edited_at = Some("2026-10-06T00:00:00Z".into());
+        message.edit_seq = Some(seq.to_string());
+        EditUpdate {
+            kind: "message.edited".into(),
+            schema_version: 1,
+            channel_id: message.channel_id.clone(),
+            seq: seq.to_string(),
+            message,
+        }
+    }
+
+    #[test]
+    fn edits_preserve_identity_and_independent_revisions_on_loaded_and_pinned_rows() {
+        let mut original = message("one", 3);
+        original.reaction_seq = Some("12".into());
+        original.reactions = vec![Reaction {
+            emoji: "👍".into(),
+            author_ids: vec!["other".into()],
+        }];
+        original.pin_seq = Some("13".into());
+        original.pin = Some(Pin {
+            author: original.author.clone(),
+            created_at: "2026-10-05T00:00:00Z".into(),
+        });
+        original.thread_root_id = Some("root".into());
+        original.broadcast = true;
+        original.thread = Some(ThreadSummary {
+            reply_count: 4,
+            participants: vec![original.author.clone()],
+            seq: "11".into(),
+        });
+        let mut timeline = Timeline::default();
+        timeline.reset(vec![original.clone()], "13").unwrap();
+        timeline.reset_pins(vec![original.clone()]).unwrap();
+        let mut update = edit_update(original.clone(), 14, 2);
+        update.message.reactions.clear();
+        update.message.reaction_seq = None;
+        update.message.pin = None;
+        update.message.pin_seq = None;
+        update.message.thread = None;
+        assert_eq!(timeline.apply_edit(update), Ok(Apply::Applied));
+        assert_eq!(timeline.cursor(), "14");
+        let current = timeline.messages().next().unwrap();
+        assert_eq!(current.content.text, "corrected");
+        assert_eq!(current.seq, "3");
+        assert_eq!(current.created_at, "2026-01-01T00:00:00Z");
+        assert_eq!(current.reaction_seq.as_deref(), Some("12"));
+        assert_eq!(current.reactions[0].author_ids, ["other"]);
+        assert_eq!(current.pin_seq.as_deref(), Some("13"));
+        assert_eq!(current.thread.as_ref().unwrap().seq, "11");
+        assert!(current.broadcast);
+        assert_eq!(
+            timeline.pinned_messages().next().unwrap().content.text,
+            "corrected"
+        );
+        timeline.prepend(vec![original.clone()]).unwrap();
+        timeline.reset_pins(vec![original]).unwrap();
+        assert_eq!(timeline.messages().next().unwrap().revision, 2);
+        assert_eq!(
+            timeline.pinned_messages().next().unwrap().content.text,
+            "corrected"
+        );
+        assert_eq!(timeline.cursor(), "14");
+    }
+
+    #[test]
+    fn unloaded_edits_do_not_insert_ghost_messages_and_overlay_later_thread_pages() {
+        let mut timeline = Timeline::default();
+        timeline.reset(vec![message("recent", 10)], "10").unwrap();
+        let mut older = message("older", 3);
+        older.thread_root_id = Some("root".into());
+        assert_eq!(
+            timeline.apply_edit(edit_update(older.clone(), 11, 2)),
+            Ok(Apply::Applied)
+        );
+        assert_eq!(timeline.messages().count(), 1);
+        timeline.prepend(vec![older.clone()]).unwrap();
+        let loaded = timeline.messages().next().unwrap();
+        assert_eq!(loaded.content.text, "corrected");
+        assert_eq!(loaded.seq, "3");
+        assert_eq!(loaded.thread_root_id.as_deref(), Some("root"));
+        assert_eq!(timeline.cursor(), "11");
+        assert_eq!(
+            timeline.apply_edit(edit_update(older.clone(), 11, 2)),
+            Ok(Apply::Duplicate)
+        );
+        assert_eq!(
+            timeline.apply_edit(edit_update(older, 13, 3)),
+            Ok(Apply::Resync)
+        );
+    }
+
+    #[test]
+    fn edit_sequence_is_not_creation_sequence_and_old_messages_default_to_revision_one() {
+        let mut value = serde_json::to_value(message("one", 3)).unwrap();
+        value.as_object_mut().unwrap().remove("revision");
+        assert_eq!(
+            serde_json::from_value::<Message>(value).unwrap().revision,
+            1
+        );
+        let mut timeline = Timeline::default();
+        let mut invalid = edit_update(message("one", 3), 4, 2);
+        invalid.seq = "3".into();
+        assert!(timeline.apply_edit(invalid).is_err());
+        assert!(
+            edit_update(message("one", 3), 3, 2)
+                .message
+                .validate()
+                .is_err()
+        );
     }
 
     #[test]

@@ -1976,6 +1976,7 @@ private struct MessageRow: View {
                     Text(message.author.name).font(CaperTheme.font(13, weight: .bold))
                     if message.author.isGuest { Text("GUEST").font(CaperTheme.font(9, weight: .bold)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 5).overlay(RoundedRectangle(cornerRadius: 4).stroke(CaperTheme.border)) }
                     Text(timeLabel(message.createdAt)).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
+                    if (message.revision ?? 1) > 1 { Text("(edited)").font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted) }
                 }
                 #if os(macOS)
                 .padding(.trailing, 56)
@@ -2535,6 +2536,7 @@ private struct PinnedMessagesView: View {
                                             Text(date.formatted(date: .abbreviated, time: .shortened))
                                                 .font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
                                         }
+                                        if (message.revision ?? 1) > 1 { Text("(edited)").font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted) }
                                         Text(message.content.text).font(CaperTheme.font(14))
                                         if let error = chat.pinErrors[message.id] {
                                             HStack {

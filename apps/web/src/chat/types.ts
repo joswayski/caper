@@ -33,6 +33,20 @@ export interface ChatPinEvent {
   message: ChatMessage;
 }
 
+export interface ChatEditEvent {
+  type: "message.edited";
+  schemaVersion: 1;
+  channelId: string;
+  seq: string;
+  message: ChatMessage;
+}
+
+export interface MessageVersion {
+  revision: number;
+  content: ChatMessage["content"];
+  createdAt: string;
+}
+
 export interface ChatMessage {
   id: string;
   channelId: string;
@@ -48,6 +62,9 @@ export interface ChatMessage {
   threadRootId?: string;
   broadcast?: boolean;
   thread?: ChatThreadSummary;
+  revision?: number;
+  editedAt?: string;
+  editSeq?: string;
 }
 
 export interface ChatHistory {
@@ -83,6 +100,7 @@ export type ChatEvent =
   | ChatTypingEvent
   | ChatReactionEvent
   | ChatPinEvent
+  | ChatEditEvent
   | { type: "message.created"; channelId: string; seq: string; message: ChatMessage }
   | { type: "ready"; cursor: string }
   | { type: "migrating" }
@@ -105,6 +123,10 @@ export function isChatMessage(value: unknown): value is ChatMessage {
   return typeof message.id === "string" && typeof message.channelId === "string"
     && typeof message.seq === "string" && /^(0|[1-9]\d*)$/.test(message.seq)
     && typeof message.createdAt === "string" && typeof message.clientMessageId === "string"
+    && (message.revision === undefined || (Number.isSafeInteger(message.revision) && message.revision >= 1))
+    && (message.editedAt === undefined || typeof message.editedAt === "string")
+    && (message.editSeq === undefined || (typeof message.editSeq === "string" && /^(0|[1-9]\d*)$/.test(message.editSeq)))
+    && ((message.revision ?? 1) === 1 || (message.editedAt !== undefined && message.editSeq !== undefined))
     && (message.threadRootId === undefined || (typeof message.threadRootId === "string" && !!message.threadRootId))
     && (message.broadcast === undefined || (typeof message.broadcast === "boolean" && (!message.broadcast || !!message.threadRootId)))
     && (message.thread === undefined || isChatThreadSummary(message.thread))
@@ -114,6 +136,14 @@ export function isChatMessage(value: unknown): value is ChatMessage {
     && (message.pin === undefined || message.pin === null || (typeof message.pin === "object" && isChatAuthor(message.pin.author) && typeof message.pin.createdAt === "string"))
     && isChatAuthor(message.author) && !!message.content
     && message.content.version === 1 && message.content.type === "text" && typeof message.content.text === "string";
+}
+
+export function isChatEditEvent(value: unknown): value is ChatEditEvent {
+  if (!value || typeof value !== "object") return false;
+  const event = value as Partial<ChatEditEvent>;
+  return event.type === "message.edited" && event.schemaVersion === 1 && typeof event.channelId === "string"
+    && typeof event.seq === "string" && /^(0|[1-9]\d*)$/.test(event.seq) && isChatMessage(event.message)
+    && event.message.channelId === event.channelId && event.message.editSeq === event.seq && (event.message.revision ?? 1) > 1;
 }
 
 export function isChatPinEvent(value: unknown): value is ChatPinEvent {

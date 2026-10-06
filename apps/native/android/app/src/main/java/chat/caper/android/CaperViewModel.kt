@@ -46,6 +46,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private val authoritativeReactionMessages = mutableMapOf<String, ChatMessage>()
     private val reactorCache = ReactorCache()
     private val pinSnapshots = mutableMapOf<String, ChatMessage>()
+    private val editSnapshots = mutableMapOf<String, ChatMessage>()
     private var pinSnapshotCursor: String? = null
     private val pinWorkers = mutableMapOf<String, Job>()
     private var reactionIntentVersion = 0L
@@ -721,6 +722,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             } },
             onReaction = { value -> viewModelScope.launch { if (generation == request) receiveReaction(value) } },
             onPin = { value -> viewModelScope.launch { if (generation == request) receivePin(value) } },
+            onEdit = { value -> viewModelScope.launch { if (generation == request) receiveEdit(value) } },
             onTyping = { author, active, revision -> viewModelScope.launch { if (participating && generation == request) receiveTyping(author, active, revision) } },
             onPresence = { snapshot -> viewModelScope.launch {
                 if (participating && generation == request) mutable.value = mutable.value.copy(presence = snapshot.members.associate { it.userId to it.status })
@@ -825,17 +827,35 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         })
     }
 
+    private fun receiveEdit(update: EditUpdate) {
+        if (update.channelId != mutable.value.selectedChannel?.id) return
+        durableReplayCursor = update.seq
+        if (mutable.value.selectedDirectId == update.channelId) markDirectRead(update.channelId, update.seq)
+        val loadedIds = (mutable.value.messages + mutable.value.pinnedMessages).map { it.id }.toSet()
+        if (!cacheEditSnapshot(editSnapshots, update.message, loadedIds)) {
+            resyncChannel(update.channelId)
+            return
+        }
+        authoritativeReactionMessages[update.message.id]?.let { authoritativeReactionMessages[update.message.id] = mergeEdit(it, update.message) }
+        pinSnapshots[update.message.id]?.let { pinSnapshots[update.message.id] = mergeEdit(it, update.message) }
+        mutable.value = mutable.value.copy(
+            messages = mutable.value.messages.map { mergeEdit(it, update.message) },
+            pinnedMessages = mutable.value.pinnedMessages.map { mergeEdit(it, update.message) },
+        )
+    }
+
     private fun receivePin(update: PinUpdate, sequenced: Boolean = true) {
         if (update.channelId != mutable.value.selectedChannel?.id) return
         durableReplayCursor = replayCursorAfterPin(durableReplayCursor, update, sequenced)
         if (sequenced && mutable.value.selectedDirectId == update.channelId) markDirectRead(update.channelId, update.seq)
         if (pinSnapshotCursor?.let { update.seq.toBigInteger() <= it.toBigInteger() } == true) return
         val old = pinSnapshots[update.message.id]
-        val merged = if (old == null) update.message else mergePin(old, update.message)
+        val candidate = overlayEdit(update.message)
+        val merged = if (old == null) candidate else mergeEdit(mergePin(old, candidate), candidate)
         pinSnapshots[update.message.id] = merged
-        authoritativeReactionMessages[merged.id]?.let { authoritativeReactionMessages[merged.id] = mergePin(it, merged) }
+        authoritativeReactionMessages[merged.id]?.let { authoritativeReactionMessages[merged.id] = mergeEdit(mergePin(it, merged), merged) }
         mutable.value = mutable.value.copy(
-            messages = mutable.value.messages.map { if (it.id == merged.id) mergePin(it, merged) else it },
+            messages = mutable.value.messages.map { if (it.id == merged.id) mergeEdit(mergePin(it, merged), merged) else it },
             pinnedMessages = pinSnapshots.values.filter { it.pin != null }.sortedByDescending { it.pinSeq?.toBigIntegerOrNull() },
         )
     }
@@ -852,12 +872,21 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 pinSnapshots[current.id] = current.copy(pin = null, pinSeq = history.cursor)
             }
         }
-        listed.forEach { (id, message) -> pinSnapshots[id] = pinSnapshots[id]?.let { mergePin(it, message) } ?: message }
+        listed.forEach { (id, message) ->
+            val candidate = overlayEdit(message)
+            pinSnapshots[id] = pinSnapshots[id]?.let { mergeEdit(mergePin(it, candidate), candidate) } ?: candidate
+        }
         mutable.value = mutable.value.copy(pinnedMessages = pinSnapshots.values.filter { it.pin != null }.sortedByDescending { it.pinSeq?.toBigIntegerOrNull() })
     }
 
+    private fun overlayEdit(message: ChatMessage): ChatMessage {
+        val loaded = mutable.value.messages.find { it.id == message.id }
+        val current = loaded?.let { mergeEdit(message, it) } ?: message
+        return editSnapshots[message.id]?.let { mergeEdit(current, it) } ?: current
+    }
+
     private fun mergeTimelinePins(messages: List<ChatMessage>) = messages.map { message ->
-        overlayPin(message, pinSnapshots[message.id], pinSnapshotCursor)
+        overlayEdit(overlayPin(message, pinSnapshots[message.id], pinSnapshotCursor))
     }
 
     private fun confirmPending(message: ChatMessage) {
@@ -1120,6 +1149,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         reactionWorkers.clear(); reactionIntents.clear(); authoritativeReactionMessages.clear()
         reactorCache.clear()
         pinWorkers.values.forEach { it.cancel() }; pinWorkers.clear(); pinSnapshots.clear()
+        editSnapshots.clear()
         pinSnapshotCursor = null
         mutable.value = mutable.value.copy(
             selectedChannel = null, selectedDirectId = null, messages = emptyList(), typingAuthors = emptyList(), presence = emptyMap(),

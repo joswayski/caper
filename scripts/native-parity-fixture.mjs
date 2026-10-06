@@ -47,8 +47,10 @@ function initialState() {
   }))]));
   return {
     spaces: [{ space, channels, members: clone(members) }], messages, directs: [],
+    createdEvents: new Map([...messages].map(([channelId, rows]) => [channelId, rows.map(message => ({ type: 'message.created', channelId, seq: message.seq, message: clone(message) }))])),
     reactionEvents: new Map(),
     pinEvents: new Map(),
+    editEvents: new Map(), versions: new Map(),
     invitations: new Map(),
     channelInvitations: new Map(),
     joins: new Map(channels.map(channel => [channel.id, channel.private ? [ids.owner, ids.member] : members.map(member => member.id)])),
@@ -94,11 +96,31 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
     }
   };
   const channelEvents = (channelId) => [
-    ...(state.messages.get(channelId) ?? []).map(message => ({ type: 'message.created', channelId, seq: message.seq, message })),
+    ...(state.createdEvents.get(channelId) ?? []),
     ...(state.reactionEvents.get(channelId) ?? []),
     ...(state.pinEvents.get(channelId) ?? []),
+    ...(state.editEvents.get(channelId) ?? []),
   ].sort((a, b) => BigInt(a.seq) < BigInt(b.seq) ? -1 : 1);
   const channelHead = (channelId) => channelEvents(channelId).at(-1)?.seq ?? '0';
+  const created = (message) => {
+    const event = { type: 'message.created', channelId: message.channelId, seq: message.seq, message: clone(message) };
+    state.createdEvents.set(message.channelId, [...(state.createdEvents.get(message.channelId) ?? []), event]);
+    broadcast('chat', message.channelId, event);
+  };
+  const edit = (message, text) => {
+    if (message.content.text === text) return message;
+    const versions = state.versions.get(message.id) ?? [{ revision: 1, content: clone(message.content), createdAt: message.createdAt }];
+    message.editSeq = String(BigInt(channelHead(message.channelId)) + 1n);
+    message.revision = (message.revision ?? 1) + 1;
+    message.editedAt = new Date().toISOString();
+    message.content = { version: 1, type: 'text', text };
+    versions.push({ revision: message.revision, content: clone(message.content), createdAt: message.editedAt });
+    state.versions.set(message.id, versions);
+    const event = { type: 'message.edited', schemaVersion: 1, channelId: message.channelId, seq: message.editSeq, message: clone(message) };
+    state.editEvents.set(message.channelId, [...(state.editEvents.get(message.channelId) ?? []), event]);
+    broadcast('chat', message.channelId, event);
+    return message;
+  };
   const react = (channelId, message, emoji, userId, active) => {
     const reactions = message.reactions ?? [];
     const own = reactions.find(reaction => reaction.emoji === emoji)?.authorIds.includes(userId) ?? false;
@@ -164,7 +186,13 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             clientMessageId: randomUUID(), createdAt: new Date().toISOString(),
           };
           messages.push(message); state.messages.set(channelId, messages);
-          broadcast('chat', channelId, { type: 'message.created', channelId, seq: message.seq, message });
+          created(message);
+        }
+        if (body.incomingEdit) {
+          const { channelId, messageId, text } = body.incomingEdit;
+          const message = state.messages.get(channelId)?.find(message => message.id === messageId);
+          if (!message || typeof text !== 'string') return reject(response, 400, 'Invalid fixture edit.');
+          edit(message, text);
         }
         if (body.incomingReaction) {
           const { channelId, messageId, emoji, active = true, userId = ids.other } = body.incomingReaction;
@@ -274,9 +302,9 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       if (path === '/api/chat/session' && method === 'POST') {
         const token = `fixture-chat-${randomUUID()}`;
         const requestedName = typeof body.name === 'string' ? body.name.trim() : '';
-        const name = user ? state.account.displayName : requestedName;
+        const name = user ? user.displayName : requestedName;
         if (!name || [...name].length > 64 || /[\p{Cc}]/u.test(name)) return reject(response, 400, 'invalid name');
-        const who = user ? author(state.account) : { id: randomUUID().replaceAll('-', '').slice(0, 12), name, isGuest: true };
+        const who = user ? author(user) : { id: randomUUID().replaceAll('-', '').slice(0, 12), name, isGuest: true };
         state.chatSessions.set(token, who);
         return json(response, 200, { token, author: who });
       }
@@ -284,6 +312,35 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       if (mediaChannel && !canParticipate(channelFor(mediaChannel[1]), user)) return reject(response, 404, 'resource not found');
       if (/^\/api\/(?:channels\/[^/]+\/)?media\/status$/.test(path)) return json(response, 200, { enabled: true });
       if (/^\/api\/(?:channels\/[^/]+\/)?media\//.test(path)) return reject(response, 503, 'TEST FIXTURE: no real media engine or SFU is connected.');
+      const editing = /^\/api\/chat\/channels\/([^/]+)\/messages\/([^/]+)(\/versions)?$/.exec(path);
+      if (editing && (method === 'GET' || method === 'PUT' && !editing[3])) {
+        const channel = channelFor(editing[1]);
+        if (!user || !channel || !canRead(channel, user) || method === 'PUT' && !canParticipate(channel, user)) return reject(response, 404, 'resource not found');
+        const message = state.messages.get(channel.id)?.find(message => message.id === editing[2]);
+        if (!message) return reject(response, 404, 'Message not found.');
+        if (method === 'PUT') {
+          const who = state.chatSessions.get(request.headers['x-caper-chat-token']);
+          if (!who || who.isGuest || who.id !== user.id) return reject(response, 401, 'Messaging session required.');
+          if (message.author.id !== who.id) return reject(response, 403, 'only the author can edit this message');
+          if (Object.keys(body).length !== 2 || !Number.isSafeInteger(body.expectedRevision) || body.expectedRevision < 1
+            || typeof body.text !== 'string' || !body.text.trim() || [...body.text].length > 4000 || /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/u.test(body.text)) return reject(response, 400, 'Invalid message edit.');
+          const revision = message.revision ?? 1;
+          if (body.expectedRevision !== revision) return revision === body.expectedRevision + 1 && message.content.text === body.text
+            ? json(response, 200, message) : reject(response, 409, 'message changed; reload it before editing again');
+          if (message.content.text !== body.text) {
+            const recent = (state.messages.get(channel.id) ?? []).filter(row => row.author.id === who.id)
+              .flatMap(row => state.versions.get(row.id) ?? []).filter(version => version.revision > 1 && Date.parse(version.createdAt) > Date.now() - 60_000).length;
+            if (recent >= 30) return reject(response, 429, 'editing too quickly; try again shortly');
+          }
+          return json(response, 200, edit(message, body.text));
+        }
+        if (!editing[3]) return json(response, 200, message);
+        const before = url.searchParams.get('before');
+        if (before !== null && (!/^[1-9]\d*$/.test(before) || !Number.isSafeInteger(Number(before)))) return reject(response, 400, 'invalid message revision');
+        const versions = (state.versions.get(message.id) ?? [{ revision: 1, content: message.content, createdAt: message.createdAt }])
+          .filter(version => before === null || version.revision < Number(before)).toReversed();
+        return json(response, 200, { messageId: message.id, versions: versions.slice(0, 50), hasMore: versions.length > 50 });
+      }
       const reaction = /^\/api\/chat\/channels\/([^/]+)\/messages\/([^/]+)\/reactions$/.exec(path);
       if (reaction && method === 'PUT') {
         const channel = channelFor(reaction[1]);
@@ -369,7 +426,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           }
           messages.push(message); state.messages.set(channel.id, messages);
           state.sendKeys.set(key, { token: request.headers['x-caper-chat-token'], text: body.text, message });
-          broadcast('chat', channel.id, { type: 'message.created', channelId: channel.id, seq: message.seq, message });
+          created(message);
           return json(response, 200, message);
         }
         const before = url.searchParams.get('before');

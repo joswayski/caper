@@ -195,7 +195,7 @@ public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
     public let channelId: String
     public let seq: String
     public let author: ChatAuthor
-    public let content: ChatContent
+    public var content: ChatContent
     public let createdAt: String
     public let clientMessageId: String
     public var reactions: [MessageReaction]? = nil
@@ -205,6 +205,9 @@ public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
     public var threadRootId: String? = nil
     public var broadcast: Bool? = nil
     public var thread: ThreadSummary? = nil
+    public var revision: Int? = nil
+    public var editedAt: String? = nil
+    public var editSeq: String? = nil
     public var isChannelMessage: Bool { threadRootId == nil || broadcast == true }
 }
 
@@ -553,6 +556,56 @@ enum ReactionEvent {
               let seq = event["seq"] as? String, (try? Sequence.compare(seq, "0")) != nil else { return nil }
         return seq
     }
+}
+
+enum EditEvent {
+    static func message(_ event: [String: Any], channelID: String) -> ChatMessage? {
+        let timestamp = ISO8601DateFormatter()
+        timestamp.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard event["type"] as? String == "message.edited", event["schemaVersion"] as? Int == 1,
+              event["channelId"] as? String == channelID,
+              let raw = event["message"], let data = try? JSONSerialization.data(withJSONObject: raw),
+              let message = try? JSONDecoder().decode(ChatMessage.self, from: data),
+              message.channelId == channelID, (message.revision ?? 1) > 1,
+              message.content.version == 1, message.content.type == "text",
+              let editedAt = message.editedAt,
+              timestamp.date(from: editedAt) != nil || ISO8601DateFormatter().date(from: editedAt) != nil,
+              let seq = event["seq"] as? String, message.editSeq == seq,
+              (try? Sequence.compare(seq, message.seq)) == .orderedDescending else { return nil }
+        return message
+    }
+}
+
+/// Overlays only content. Never inserts an unloaded message into a timeline.
+struct EditSnapshots: Sendable {
+    private var values: [String: ChatMessage] = [:]
+    private var knownMessageIDs: Set<String> = []
+    private(set) var unseenOverflowed = false
+
+    mutating func apply(_ message: ChatMessage) {
+        guard (message.revision ?? 1) > 1 else { return }
+        if let current = values[message.id], (current.revision ?? 1) >= (message.revision ?? 1) { return }
+        guard knownMessageIDs.contains(message.id) || values[message.id] != nil || values.keys.filter({ !knownMessageIDs.contains($0) }).count < 256 else {
+            unseenOverflowed = true; return
+        }
+        values[message.id] = message
+    }
+
+    mutating func seed(_ messages: [ChatMessage]) {
+        knownMessageIDs.formUnion(messages.map(\.id))
+        messages.forEach { apply($0) }
+    }
+
+    func overlay(_ message: ChatMessage) -> ChatMessage {
+        guard let snapshot = values[message.id], snapshot.channelId == message.channelId,
+              (snapshot.revision ?? 1) > (message.revision ?? 1) else { return message }
+        var result = message
+        result.content = snapshot.content; result.revision = snapshot.revision
+        result.editedAt = snapshot.editedAt; result.editSeq = snapshot.editSeq
+        return result
+    }
+
+    mutating func reset() { values = [:]; knownMessageIDs = []; unseenOverflowed = false }
 }
 
 enum PinEvent {

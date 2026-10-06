@@ -536,6 +536,23 @@ impl CaperApp {
                     app.timeline
                         .reset(messages, "4")
                         .expect("valid reaction fixture");
+                } else if name == "parity-edits" {
+                    let mut message = app.timeline.messages().nth(1).unwrap().clone();
+                    message.content.text =
+                        "The same edited conversation should feel familiar on every platform."
+                            .into();
+                    message.revision = 2;
+                    message.edited_at = Some("2026-10-06T09:44:00Z".into());
+                    message.edit_seq = Some("5".into());
+                    app.timeline
+                        .apply_edit(model::EditUpdate {
+                            kind: "message.edited".into(),
+                            schema_version: 1,
+                            channel_id: message.channel_id.clone(),
+                            seq: "5".into(),
+                            message,
+                        })
+                        .expect("valid edit fixture");
                 } else if matches!(
                     name,
                     "parity-direct" | "parity-direct-new" | "parity-direct-no-spaces"
@@ -992,6 +1009,9 @@ impl CaperApp {
                 thread_root_id: None,
                 broadcast: false,
                 thread: None,
+                revision: 1,
+                edited_at: None,
+                edit_seq: None,
             })
             .collect();
         self.timeline.reset(messages, "4").expect("valid fixture");
@@ -2379,6 +2399,23 @@ impl CaperApp {
                 self.pending_pins.remove(&update.message.id);
                 self.pin_errors.remove(&update.message.id);
                 match self.timeline.apply_pin(*update) {
+                    Ok(model::Apply::Applied) => self.mark_selected_direct_read(),
+                    Ok(model::Apply::Resync) | Err(_) => self.reload_channel(),
+                    _ => {}
+                }
+            }
+            GatewayEvent::Edit {
+                generation,
+                channel,
+                update,
+            } if current(
+                generation,
+                self.generation,
+                Some(&channel),
+                self.selected_channel.as_deref(),
+            ) =>
+            {
+                match self.timeline.apply_edit(*update) {
                     Ok(model::Apply::Applied) => self.mark_selected_direct_read(),
                     Ok(model::Apply::Resync) | Err(_) => self.reload_channel(),
                     _ => {}
@@ -6505,6 +6542,11 @@ impl CaperApp {
             )
         } else {
             display_time(&message.created_at)
+        };
+        let time = if message.revision > 1 {
+            format!("{time} (edited)")
+        } else {
+            time
         };
         let pinned = message.pin.as_ref();
         let message_rect = egui::Frame::new()
@@ -13603,6 +13645,9 @@ mod tests {
             thread_root_id: None,
             broadcast: false,
             thread: None,
+            revision: 1,
+            edited_at: None,
+            edit_seq: None,
         };
         assert!(pending.confirmed_by(&message, "author"));
         assert!(!pending.confirmed_by(&message, "another-author"));
@@ -13685,6 +13730,9 @@ mod tests {
                 thread_root_id: None,
                 broadcast: false,
                 thread: None,
+                revision: 1,
+                edited_at: None,
+                edit_seq: None,
             }),
         });
         assert!(!app.typers.get("other").unwrap().typing);
