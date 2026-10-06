@@ -50,7 +50,7 @@ import java.util.UUID
             if (original == null) Text("Original conversation unavailable.", color = TextMuted)
             else {
                 SharedOriginal(original)
-                TextButton(open) { Text("${original.thread?.replyCount?.let { "$it replies · " }.orEmpty()}View conversation") }
+                TextButton(open) { Text("${original.thread?.replyCount?.let { "$it ${if (it == 1) "reply" else "replies"} · " }.orEmpty()}View conversation") }
             }
         }
     }

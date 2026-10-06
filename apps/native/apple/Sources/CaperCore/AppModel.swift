@@ -1001,6 +1001,9 @@ public final class ChatModel {
         set { if let threadRootID { threadBroadcasts[threadRootID] = newValue } }
     }
     public var currentAuthor: ChatAuthor? { session?.author }
+    public private(set) var canForward = false
+    public var forwardTarget: ChatMessage?
+    public var forwardConversationTarget: ChatMessage?
     public private(set) var isPreview = false
     /// Web's failed first load: no conversation to show, only the error.
     public private(set) var loadFailed = false
@@ -1097,7 +1100,9 @@ public final class ChatModel {
         clearLocal(preservingPending: false)
         isPreview = true
         if let oldSubscription { await gateway.unsubscribe(oldSubscription) }
+        let signedIn = await api.isSignedIn
         guard generation == requestGeneration else { return }
+        canForward = signedIn
         channelID = history.channel?.id; spaceID = history.space?.id
         reactionSnapshots.seed(history.messages)
         pinSnapshots.replace(history.messages + history.pinnedMessages, cursor: history.cursor)
@@ -1180,7 +1185,9 @@ public final class ChatModel {
                 chatSession = nil
                 sessionError = error.localizedDescription
             }
+            let signedIn = await api.isSignedIn
             guard self.channelID == channelID, generation == requestGeneration else { return }
+            canForward = signedIn
             let resolvedChannelID = history.channel?.id
             spaceID = history.space?.id
             self.channelID = resolvedChannelID
@@ -1699,6 +1706,7 @@ public final class ChatModel {
         reactorCache = [:]; reactorRequests = [:]; reactorFailures = []
         pinSnapshots.reset(); pinnedMessages = []; pendingPins = []; pinErrors = [:]
         forwardSnapshots.reset()
+        canForward = false; forwardTarget = nil; forwardConversationTarget = nil
         failedPinActions = [:]
         closeThread(); threadOnlyRows = []; threadDrafts = [:]; threadBroadcasts = [:]
         isPreview = false

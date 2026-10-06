@@ -1,8 +1,8 @@
 //! Persistent participation and recipient consent, separate from access grants.
 use super::*;
 
-pub(crate) async fn channel_participation(
-    pool: &PgPool,
+pub(crate) async fn channel_participation<'e>(
+    pool: impl sqlx::Executor<'e, Database = Postgres>,
     channel: &str,
     user: Option<i64>,
 ) -> Result<ChannelAccess, ApiError> {

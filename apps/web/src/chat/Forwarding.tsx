@@ -161,11 +161,12 @@ export function ForwardConversation({ message, target, onClose }: { message: Cha
     } catch (reason) { if (!request.signal.aborted) setError(reason instanceof Error ? reason.message : "Older replies are unavailable."); }
     finally { if (!request.signal.aborted) setLoading(false); }
   };
+  const replyCount = conversation?.root?.thread?.replyCount ?? conversation?.messages.length ?? 0;
   return <ForwardDialog title="Forwarded conversation" anchor={target.anchor} onClose={onClose}>
     <div className="chat-forward-body">
       <p className="chat-forward-disclosure">Live · Read-only original. Replies you add to the forward stay in the destination conversation.</p>
       {conversation?.root ? <><OriginalMessage message={conversation.root} />
-        <h3>{conversation.root.thread?.replyCount ?? conversation.messages.length} replies</h3>
+        <h3>{replyCount} {replyCount === 1 ? "reply" : "replies"}</h3>
         {conversation.hasMore && <button type="button" disabled={loading} onClick={() => void loadOlder()}>Load older replies</button>}
         {conversation.messages.map((reply) => <OriginalMessage key={reply.id} message={reply} />)}
         {!conversation.messages.length && <p>No replies yet.</p>}

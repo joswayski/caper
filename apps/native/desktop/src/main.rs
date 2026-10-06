@@ -6,6 +6,7 @@ mod credentials;
 mod daily_icon;
 mod effects;
 mod emoji;
+mod forwarding;
 mod gateway;
 #[path = "../voice-spike/src/media.rs"]
 mod media;
@@ -290,6 +291,7 @@ struct CaperApp {
     session: Option<ChatSession>,
     session_error: Option<String>,
     timeline: Timeline,
+    forwarding: forwarding::Forwarding,
     live: String,
     email: String,
     challenge: Option<String>,
@@ -409,6 +411,7 @@ impl CaperApp {
             session: None,
             session_error: None,
             timeline: Timeline::default(),
+            forwarding: forwarding::Forwarding::default(),
             live: "Connecting…".into(),
             email: String::new(),
             challenge: None,
@@ -992,6 +995,9 @@ impl CaperApp {
                 thread_root_id: None,
                 broadcast: false,
                 thread: None,
+                forward: None,
+                forward_seq: None,
+                edited_at: None,
             })
             .collect();
         self.timeline.reset(messages, "4").expect("valid fixture");
@@ -1338,6 +1344,17 @@ impl CaperApp {
                     .is_some_and(|pending| pending.id == client_id) =>
                 {
                     self.sent(result)
+                }
+                Event::Forward {
+                    generation,
+                    request,
+                    result,
+                } if generation == self.generation => {
+                    if let Some(message) = self.forwarding.receive(request, result)
+                        && self.selected_channel.as_deref() == Some(&message.channel_id)
+                    {
+                        let _ = self.timeline.merge_sent(message);
+                    }
                 }
                 Event::Reacted {
                     generation,
@@ -2384,6 +2401,23 @@ impl CaperApp {
                     _ => {}
                 }
             }
+            GatewayEvent::Forward {
+                generation,
+                channel,
+                update,
+            } if current(
+                generation,
+                self.generation,
+                Some(&channel),
+                self.selected_channel.as_deref(),
+            ) =>
+            {
+                match self.timeline.apply_forward(*update) {
+                    Ok(model::Apply::Applied) => self.mark_selected_direct_read(),
+                    Ok(model::Apply::Resync) | Err(_) => self.reload_channel(),
+                    _ => {}
+                }
+            }
             GatewayEvent::Typing {
                 generation,
                 channel,
@@ -2591,6 +2625,7 @@ impl CaperApp {
         self.older_error = None;
         self.has_more = false;
         self.timeline = Timeline::default();
+        self.forwarding.close();
         self.older_armed = false;
         self.older_anchor = None;
         self.load_error = None;
@@ -3115,6 +3150,20 @@ impl eframe::App for CaperApp {
         self.periodic(context);
         self.update_banner(context);
         self.page(context);
+        let messages = self
+            .timeline
+            .messages()
+            .chain(self.timeline.pinned_messages())
+            .cloned()
+            .collect::<Vec<_>>();
+        self.forwarding.show(
+            context,
+            &self.worker,
+            self.generation,
+            self.token.as_deref(),
+            &messages,
+            &mut self.reaction_textures,
+        );
         if !matches!(self.dialog, Some(Dialog::Audio)) {
             if !matches!(self.voice.microphone, MicrophoneState::Idle) {
                 self.voice.stop_mic_test();
@@ -6552,6 +6601,68 @@ impl CaperApp {
             })
             .response
             .rect;
+        if let Some(token) = self.token.clone() {
+            ui.interact(
+                message_rect,
+                ui.id().with((&message.id, "forward-context")),
+                egui::Sense::click(),
+            )
+            .context_menu(|ui| {
+                if ui.button("Forward message").clicked() {
+                    self.forwarding
+                        .picker(&self.worker, self.generation, token, message.clone());
+                    ui.close();
+                }
+            });
+        }
+        if let Some(forward) = &message.forward {
+            egui::Frame::new()
+                .inner_margin(egui::Margin {
+                    left: 62,
+                    right: 18,
+                    top: 4,
+                    bottom: 8,
+                })
+                .show(ui, |ui| {
+                    egui::Frame::new()
+                        .stroke(Stroke::new(1.0, BORDER))
+                        .corner_radius(8)
+                        .inner_margin(12)
+                        .show(ui, |ui| {
+                            ui.label(RichText::new("Forwarded · live").size(11.0).color(MUTED));
+                            if let Some(original) = &forward.message {
+                                forwarding::original(ui, original, &mut self.reaction_textures);
+                                let count = original
+                                    .thread
+                                    .as_ref()
+                                    .map(|summary| {
+                                        format!(
+                                            "{} {} · ",
+                                            summary.reply_count,
+                                            if summary.reply_count == 1 {
+                                                "reply"
+                                            } else {
+                                                "replies"
+                                            }
+                                        )
+                                    })
+                                    .unwrap_or_default();
+                                if ui.button(format!("{count}View conversation")).clicked()
+                                    && let Some(token) = self.token.clone()
+                                {
+                                    self.forwarding.conversation(
+                                        &self.worker,
+                                        self.generation,
+                                        token,
+                                        message.clone(),
+                                    );
+                                }
+                            } else {
+                                ui.label("Original conversation unavailable.");
+                            }
+                        });
+                });
+        }
         let author = self
             .session
             .as_ref()
@@ -6643,6 +6754,17 @@ impl CaperApp {
                 }
                 let active = message.pin.is_some();
                 egui::Popup::menu(&more).show(|ui| {
+                    if ui.button("Forward message").clicked()
+                        && let Some(token) = self.token.clone()
+                    {
+                        self.forwarding.picker(
+                            &self.worker,
+                            self.generation,
+                            token,
+                            message.clone(),
+                        );
+                        ui.close();
+                    }
                     if ui
                         .add_enabled(
                             !self.pending_pins.contains(&message.id),
@@ -13603,6 +13725,9 @@ mod tests {
             thread_root_id: None,
             broadcast: false,
             thread: None,
+            forward: None,
+            forward_seq: None,
+            edited_at: None,
         };
         assert!(pending.confirmed_by(&message, "author"));
         assert!(!pending.confirmed_by(&message, "another-author"));
@@ -13685,6 +13810,9 @@ mod tests {
                 thread_root_id: None,
                 broadcast: false,
                 thread: None,
+                forward: None,
+                forward_seq: None,
+                edited_at: None,
             }),
         });
         assert!(!app.typers.get("other").unwrap().typing);

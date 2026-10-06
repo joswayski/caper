@@ -101,13 +101,15 @@ async fn persist_forward(
     .await
     .map_err(database_error)?;
     lock_spaces(&mut tx, &ids).await?;
-    channel_access(pool, &input.source_channel_id, user).await?;
-    let destination = channel_participation(pool, channel, user).await?;
     sqlx::query("SELECT id FROM public.channels WHERE id=ANY($1) ORDER BY id FOR UPDATE")
         .bind(&ids)
         .fetch_all(&mut *tx)
         .await
         .map_err(database_error)?;
+    // Use the locked connection: borrowing another pool connection here can
+    // exhaust the pool when concurrent forwards each hold a transaction.
+    channel_access(&mut *tx, &input.source_channel_id, user).await?;
+    let destination = channel_participation(&mut *tx, channel, user).await?;
     // Reading a forward is also permission to forward its original again.
     // No client-provided source payload or source-access bypass is accepted.
     let source = source.0;
@@ -222,12 +224,17 @@ async fn thread(
         .map_err(database_error)?
         .ok_or_else(not_found)?;
     lock_spaces(&mut tx, &[id]).await?;
-    channel_access(&chat.pool, &channel, user).await?;
+    sqlx::query("SELECT id FROM public.channels WHERE id=$1 FOR SHARE")
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(database_error)?;
+    channel_access(&mut *tx, &channel, user).await?;
     let source: i64 = sqlx::query_scalar("SELECT forward_source_id FROM public.messages WHERE channel_id=$1 AND external_id=$2 AND forward_source_id IS NOT NULL")
         .bind(id).bind(&message).fetch_optional(&mut *tx).await.map_err(database_error)?.ok_or_else(not_found)?;
     // One repeatable snapshot for the root, replies, and their source cursor.
     // The destination grant authorizes only direct children of this original.
-    let rows: Vec<(Value, Option<i16>, i64)> = sqlx::query_as("SELECT m.payload,u.avatar_id,c.last_seq FROM public.messages root JOIN public.channels c ON c.id=root.channel_id LEFT JOIN public.spaces s ON s.id=c.space_id JOIN public.messages m ON m.channel_id=root.channel_id AND (m.id=root.id OR m.payload->>'threadRootId'=root.external_id) JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE root.id=$1 AND c.deleted_at IS NULL AND (c.space_id IS NULL OR s.deleted_at IS NULL) AND (m.id=root.id OR $2::bigint IS NULL OR m.channel_seq<$2) ORDER BY (m.id=root.id) DESC,m.channel_seq DESC LIMIT $3")
+    let rows: Vec<(Value, Option<i16>, i64)> = sqlx::query_as("SELECT m.payload,u.avatar_id,c.last_seq FROM public.messages root JOIN public.channels c ON c.id=root.channel_id LEFT JOIN public.spaces s ON s.id=c.space_id JOIN public.messages m ON m.channel_id=root.channel_id AND (m.id=root.id OR m.thread_root_id=root.id) JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE root.id=$1 AND c.deleted_at IS NULL AND (c.space_id IS NULL OR s.deleted_at IS NULL) AND (m.id=root.id OR $2::bigint IS NULL OR m.channel_seq<$2) ORDER BY (m.id=root.id) DESC,m.channel_seq DESC LIMIT $3")
         .bind(source).bind(before).bind(PAGE+2).fetch_all(&mut *tx).await.map_err(database_error)?;
     let mut root = Value::Null;
     let mut replies = Vec::new();
@@ -281,7 +288,7 @@ pub(super) async fn project_events(
         return Ok(());
     }
     // Reactions/edits on an original reply also invalidate its parent's view.
-    let parents: Vec<String> = sqlx::query_scalar("SELECT payload->>'threadRootId' FROM public.messages WHERE external_id=ANY($1) AND payload->>'threadRootId' IS NOT NULL")
+    let parents: Vec<String> = sqlx::query_scalar("SELECT root.external_id FROM public.messages m JOIN public.messages root ON root.id=m.thread_root_id WHERE m.external_id=ANY($1)")
         .bind(&targets).fetch_all(&mut **tx).await.map_err(database_error)?;
     targets.extend(parents);
     let destinations: Vec<i64> = sqlx::query_scalar("SELECT DISTINCT f.channel_id FROM public.messages f JOIN public.messages source ON source.id=f.forward_source_id JOIN public.channels c ON c.id=f.channel_id WHERE source.external_id=ANY($1) AND c.deleted_at IS NULL ORDER BY f.channel_id")

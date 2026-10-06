@@ -4,6 +4,7 @@ use axum::{
     body::{Body, to_bytes},
     http::Request,
 };
+use futures_util::StreamExt;
 use tower::ServiceExt;
 
 async fn request(
@@ -49,7 +50,7 @@ fn shared_reply_never_grants_parent_or_sibling_access() {
 }
 
 #[sqlx::test(migrations = "./migrations")]
-#[ignore = "requires disposable loopback DATABASE_URL"]
+#[ignore = "requires disposable loopback DATABASE_URL and Valkey on 6388 (or FORWARD_TEST_VALKEY_URL)"]
 async fn live_forwards_are_destination_authorized_flattened_and_replayable(pool: PgPool) {
     assert!(matches!(
         reqwest::Url::parse(&std::env::var("DATABASE_URL").unwrap())
@@ -127,37 +128,33 @@ async fn live_forwards_are_destination_authorized_flattened_and_replayable(pool:
     )
     .await
     .unwrap();
-    let reply = persist(&pool, "source", "bob", Uuid::new_v4(), "First reply")
-        .await
-        .unwrap();
-    let mut reply = reply;
-    reply["threadRootId"] = original["id"].clone();
-    sqlx::query("UPDATE public.messages SET payload=$2 WHERE external_id=$1")
-        .bind(reply["id"].as_str())
-        .bind(&reply)
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query(
-        "UPDATE public.messages SET payload=jsonb_set(payload,'{thread}',$2) WHERE external_id=$1",
+    persist_message(
+        &pool,
+        "source",
+        "bob",
+        Uuid::new_v4(),
+        "First reply",
+        original["id"].as_str(),
+        false,
     )
-    .bind(original["id"].as_str())
-    .bind(json!({"replyCount":1,"participants":[],"seq":"3"}))
-    .execute(&pool)
     .await
     .unwrap();
     let mut config = Config::test(false);
     config.auth_fixture = false;
-    let mut state = AppState::with_database(
-        config,
-        Arc::new(Cloudflare::new()),
-        Some(pool.clone()),
-    );
+    let mut state =
+        AppState::with_database(config, Arc::new(Cloudflare::new()), Some(pool.clone()));
+    let broker_url = std::env::var("FORWARD_TEST_VALKEY_URL")
+        .unwrap_or_else(|_| "redis://127.0.0.1:6388".into());
+    assert!(matches!(
+        reqwest::Url::parse(&broker_url).unwrap().host_str(),
+        Some("127.0.0.1" | "localhost")
+    ));
     state.chat = Some(Chat {
         pool: pool.clone(),
-        broker: redis::Client::open("redis://127.0.0.1:6379").unwrap(),
+        broker: redis::Client::open(broker_url).unwrap(),
         wake: Arc::new(Notify::new()),
     });
+    let chat = state.chat.clone().unwrap();
     let app = crate::app(state);
     let key = Uuid::new_v4();
     let input = json!({"sourceChannelId":"source","sourceMessageId":original["id"],"clientMessageId":key,"text":"Watch this conversation"});
@@ -294,9 +291,10 @@ async fn live_forwards_are_destination_authorized_flattened_and_replayable(pool:
     )
     .await
     .unwrap();
-    let event = json!({"type":"message.reactions","channelId":"source","messageId":original["id"],"seq":reaction["reactionSeq"],"reactions":reaction["reactions"]});
+    let reaction_seq = reaction["seq"].as_str().unwrap().parse().unwrap();
+    let event = reaction;
     let mut tx = pool.begin().await.unwrap();
-    project_events(&mut tx, &[(channels[0], 4, event.clone(), None)])
+    project_events(&mut tx, &[(channels[0], reaction_seq, event.clone(), None)])
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -331,7 +329,7 @@ async fn live_forwards_are_destination_authorized_flattened_and_replayable(pool:
     );
     // Replayed outbox work emits no duplicate destination revision.
     let mut tx = pool.begin().await.unwrap();
-    project_events(&mut tx, &[(channels[0], 4, event, None)])
+    project_events(&mut tx, &[(channels[0], reaction_seq, event, None)])
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -344,17 +342,19 @@ async fn live_forwards_are_destination_authorized_flattened_and_replayable(pool:
     // Editing is a separate feature; exercise its published event contract here.
     sqlx::query("UPDATE public.messages SET payload=jsonb_set(jsonb_set(payload,'{content,text}','\"Edited live original\"'),'{revision}', '2') WHERE external_id=$1")
         .bind(original["id"].as_str()).execute(&pool).await.unwrap();
-    sqlx::query("UPDATE public.channels SET last_seq=5 WHERE id=$1")
-        .bind(channels[0])
-        .execute(&pool)
-        .await
-        .unwrap();
+    let edit_seq: i64 = sqlx::query_scalar(
+        "UPDATE public.channels SET last_seq=last_seq+1 WHERE id=$1 RETURNING last_seq",
+    )
+    .bind(channels[0])
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     let mut tx = pool.begin().await.unwrap();
     project_events(
         &mut tx,
         &[(
             channels[0],
-            5,
+            edit_seq,
             json!({"type":"message.edited","message":{"id":original["id"]}}),
             None,
         )],
@@ -370,17 +370,18 @@ async fn live_forwards_are_destination_authorized_flattened_and_replayable(pool:
     );
     // Existing and future reply pagination is selected by root, not channel.
     for index in 0i64..53 {
-        let id = random_id(15);
-        let seq = 6 + index;
-        let payload = json!({"id":id,"channelId":"source","seq":seq.to_string(),"author":{"id":"bob","name":"bob","isGuest":false},"content":{"version":1,"type":"text","text":format!("reply {index}")},"createdAt":Utc::now().to_rfc3339(),"clientMessageId":Uuid::new_v4(),"threadRootId":original["id"]});
-        sqlx::query("INSERT INTO public.messages(external_id,channel_id,session_id,client_message_id,request_hash,channel_seq,payload) SELECT $1,$2,id,$3,$4,$5,$6 FROM public.chat_sessions WHERE external_id='bob'")
-            .bind(id).bind(channels[0]).bind(Uuid::new_v4()).bind(vec![0u8]).bind(seq).bind(payload).execute(&pool).await.unwrap();
-    }
-    sqlx::query("UPDATE public.channels SET last_seq=58 WHERE id=$1")
-        .bind(channels[0])
-        .execute(&pool)
+        persist_message(
+            &pool,
+            "source",
+            if index % 2 == 0 { "alice" } else { "bob" },
+            Uuid::new_v4(),
+            &format!("reply {index}"),
+            original["id"].as_str(),
+            false,
+        )
         .await
         .unwrap();
+    }
     let page = request(&app, "GET", &path, "carol", Value::Null).await.1;
     assert_eq!(page["messages"].as_array().unwrap().len(), 50);
     assert_eq!(page["messages"][0]["content"]["text"], "reply 3");
@@ -389,7 +390,10 @@ async fn live_forwards_are_destination_authorized_flattened_and_replayable(pool:
     let earlier = request(
         &app,
         "GET",
-        &format!("{path}?before=9"),
+        &format!(
+            "{path}?before={}",
+            page["messages"][0]["seq"].as_str().unwrap()
+        ),
         "carol",
         Value::Null,
     )
@@ -398,6 +402,82 @@ async fn live_forwards_are_destination_authorized_flattened_and_replayable(pool:
     assert_eq!(earlier["messages"].as_array().unwrap().len(), 4);
     assert_eq!(earlier["messages"][0]["content"]["text"], "First reply");
     assert_eq!(earlier["hasMore"], false);
+    // Exercise the real publisher and Valkey fanout, not just the projection.
+    while publish_pending(&chat).await.unwrap() {}
+    let mut subscriber = chat.broker.get_async_pubsub().await.unwrap();
+    subscriber
+        .subscribe(format!("{TOPIC}:destination"))
+        .await
+        .unwrap();
+    persist_reaction(
+        &pool,
+        "source",
+        original["id"].as_str().unwrap(),
+        "bob",
+        "🎉",
+        true,
+    )
+    .await
+    .unwrap();
+    while publish_pending(&chat).await.unwrap() {}
+    let mut stream = subscriber.on_message();
+    let published = tokio::time::timeout(Duration::from_secs(5), stream.next())
+        .await
+        .unwrap()
+        .unwrap();
+    let projected: Value =
+        serde_json::from_str(&published.get_payload::<String>().unwrap()).unwrap();
+    assert_eq!(projected["type"], "message.forward");
+    assert_eq!(projected["channelId"], "destination");
+    assert_eq!(
+        projected["message"]["forward"]["message"]["content"]["text"],
+        "Edited live original"
+    );
+    assert_eq!(
+        projected["message"]["forward"]["message"]["thread"]["replyCount"],
+        54
+    );
+    assert!(
+        projected["message"]["forward"]["message"]["reactions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reaction| reaction["emoji"] == "🎉")
+    );
+    assert_eq!(projected["message"]["seq"], "1");
+    assert!(
+        !publish_pending(&chat).await.unwrap(),
+        "drained replay creates no duplicate events"
+    );
+    let destination_reply = persist_message(
+        &pool,
+        "destination",
+        "carol",
+        Uuid::new_v4(),
+        "Destination-only reply",
+        forward["id"].as_str(),
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(destination_reply["threadRootId"], forward["id"]);
+    let local_path = format!(
+        "/api/chat/channels/destination/messages/{}/thread",
+        forward["id"].as_str().unwrap()
+    );
+    let local_thread = request(&app, "GET", &local_path, "carol", Value::Null)
+        .await
+        .1;
+    assert_eq!(local_thread["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        local_thread["messages"][0]["content"]["text"],
+        "Destination-only reply"
+    );
+    assert_eq!(local_thread["root"]["thread"]["replyCount"], 1);
+    assert_eq!(
+        request(&app, "GET", &path, "carol", Value::Null).await.1["root"]["thread"]["replyCount"],
+        54
+    );
     // Removing destination membership revokes scoped reads, not just browsing.
     sqlx::query("UPDATE public.space_members SET deleted_at=now() WHERE user_id=$1")
         .bind(users[2])

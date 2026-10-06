@@ -20,6 +20,13 @@ full-screen view. **Also send to channel** shows the same reply in both places,
 sharing its reactions. Native release and validation gaps are tracked in
 [the runbook](docs/media.md#message-threads).
 
+**Forward message** shares a live, read-only conversation across spaces or into
+an existing DM, including reactions and future replies. Destination readers do
+not need source membership; their replies stay in a separate destination thread.
+Editing integration, native validation and rollout are tracked in
+[the runbook](docs/media.md#live-message-forwarding). This change is not deployed
+by merging alone.
+
 Mac release downloads use a signed, notarized disk image: open it, drag Caper onto
 Applications, eject the image, then launch Caper from Applications. `~/Applications`
 also works without administrator access. Release copies outside these folders or
