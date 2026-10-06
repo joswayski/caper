@@ -252,6 +252,14 @@ final class CaperParityUITests: XCTestCase {
         #endif
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: add)
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
+        #if os(macOS)
+        // A flexible native Menu can stretch this overlay across the message,
+        // exposing an Add reaction click target that misses its visible icon.
+        XCTAssertEqual(add.frame.width, 24, accuracy: 1)
+        XCTAssertEqual(add.frame.height, 24, accuracy: 1)
+        XCTAssertGreaterThan(add.frame.minX, row.frame.midX, "Message actions must stay at the trailing edge")
+        XCTAssertTrue(add.isHittable)
+        #endif
         add.tap()
     }
 
