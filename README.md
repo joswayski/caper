@@ -37,6 +37,7 @@ for available settings. Stop the stack with Ctrl-C.
 
 - [apps/web](apps/web) — TanStack Start web app
 - [apps/api](apps/api) — Rust API and WebSocket gateway
+- [apps/media-worker](apps/media-worker) — Rust Lambda that compresses uploaded attachments
 - [apps/native](apps/native/README.md) — native development clients; not yet feature-parity releases
 - [shared](shared) — shared design tokens
 

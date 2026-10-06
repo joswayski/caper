@@ -1,0 +1,115 @@
+name: Media worker image
+on:
+  push:
+    branches: [main]
+    paths:
+      - apps/media-worker/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/media-worker-image.yml
+permissions:
+  contents: read
+# Runs on main only. Each push gets a unique group (the run id), so publishing
+# is never cancelled or queued.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.run_id }}
+  cancel-in-progress: false
+jobs:
+  media-worker:
+    name: Publish immutable ECR image
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ECR: 395451633568.dkr.ecr.us-east-1.amazonaws.com/production/caper-media-worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/media-worker/Dockerfile
+          target: worker
+          platforms: linux/arm64
+          load: true
+          # Lambda rejects image indexes carrying attestation manifests.
+          provenance: false
+          sbom: false
+          tags: caper-media-worker:test
+          cache-from: type=gha,scope=media-worker
+          # Only main exports the layer cache (mode=max uploads take up to a
+          # minute).
+          cache-to: ${{ github.event_name == 'push' && 'type=gha,scope=media-worker,mode=max' || '' }}
+      - name: Verify arm64 image, tools and the processing pipeline
+        run: |
+          set -euo pipefail
+          test "$(docker image inspect caper-media-worker:test --format '{{.Os}}/{{.Architecture}}')" = linux/arm64
+          test "$(docker image inspect caper-media-worker:test --format '{{.Config.User}}')" = 10001:10001
+          docker run --rm --platform linux/arm64 --entrypoint /bin/sh caper-media-worker:test -c '
+            set -eu
+            test "$(uname -m)" = aarch64
+            for tool in caper-media-worker ffmpeg ffprobe vips vipsheader cwebp avifenc jpegtran; do
+              command -v "$tool" >/dev/null || { echo "missing $tool"; exit 1; }
+            done
+            vips -l | grep -q heifload
+            cd /tmp
+            ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0xF3F4F5:s=640x400" \
+              -vf "drawbox=x=0:y=0:w=120:h=400:c=0x151719:t=fill,drawgrid=w=40:h=20:t=1:c=0x34383B" \
+              -frames:v 1 shot.png
+            caper-media-worker process shot.png out > shot.json
+            grep -q "\"contentType\": \"image/webp\"" shot.json
+            ffmpeg -hide_banner -loglevel error -f lavfi -i "testsrc2=size=640x360:rate=30" \
+              -f lavfi -i "sine=frequency=440" -t 2 -c:v mpeg4 -c:a pcm_s16le clip.mov
+            caper-media-worker process clip.mov out > clip.json
+            grep -q "\"contentType\": \"video/mp4\"" clip.json
+            grep -q "\"preview\"" clip.json
+            ffmpeg -hide_banner -loglevel error -f lavfi -i "testsrc=size=160x120:rate=10" -t 1 party.gif
+            caper-media-worker process party.gif out > gif.json
+            grep -q "\"animated\": true" gif.json
+            ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=440:duration=1" notes.wav
+            caper-media-worker process notes.wav out > wav.json
+            grep -q "\"contentType\": \"audio/flac\"" wav.json
+            cat shot.json clip.json gif.json wav.json
+          '
+          # Outside Lambda, without configuration, the runtime must fail fast.
+          if docker run --rm --platform linux/arm64 caper-media-worker:test; then
+            echo "worker started without configuration" >&2
+            exit 1
+          fi
+      - name: Configure AWS credentials
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: aws-actions/configure-aws-credentials@v6.2.3
+        with:
+          role-to-assume: arn:aws:iam::395451633568:role/production-caper-ecr-publisher
+          role-session-name: caper-media-worker-ecr-${{ github.run_id }}
+          aws-region: us-east-1
+          allowed-account-ids: "395451633568"
+      - name: Check immutable tag
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: existing
+        run: |
+          digest="$(aws ecr describe-images --repository-name production/caper-media-worker --image-ids "imageTag=$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || true)"
+          if [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then echo 'exists=true' >> "$GITHUB_OUTPUT"; fi
+      - uses: aws-actions/amazon-ecr-login@v2.1.6
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.existing.outputs.exists != 'true'
+      - name: Publish single-platform image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.existing.outputs.exists != 'true'
+        run: |
+          docker tag caper-media-worker:test "$ECR:$GITHUB_SHA"
+          docker push "$ECR:$GITHUB_SHA"
+      - name: Record immutable image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          digest="$(aws ecr describe-images --repository-name production/caper-media-worker --image-ids "imageTag=$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text)"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          manifest="$(aws ecr batch-get-image --repository-name production/caper-media-worker --image-ids "imageTag=$GITHUB_SHA" --query 'images[0].imageManifestMediaType' --output text)"
+          case "$manifest" in
+            *manifest.list*|*image.index*) echo "Lambda needs a single-platform manifest, got $manifest" >&2; exit 1 ;;
+          esac
+          {
+            printf '### Published media worker image\n\n`%s:%s@%s`\n\n' "$ECR" "$GITHUB_SHA" "$digest"
+            printf 'Deploy: `gh workflow run deploy-caper-media-worker.yml --repo joswayski/infrastructure --ref main -f git_sha=%s`\n' "$GITHUB_SHA"
+          } >> "$GITHUB_STEP_SUMMARY"

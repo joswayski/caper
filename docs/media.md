@@ -994,6 +994,64 @@ All are idempotent. A sweeper marks files still `uploading` 1 hour after
 creation, or `processing` 30 minutes after their last worker contact, as
 failed.
 
+### Media worker (`apps/media-worker`)
+
+Rust Lambda custom runtime (`caper-media-worker`, arm64 container image on
+Debian trixie with ffmpeg, libvips + libheif, cwebp, avifenc, jpegtran). The
+SQS mapping uses batch size 1 and `ReportBatchItemFailures`; each message body
+is an S3 notification (URL-encoded keys; `s3:TestEvent` and keys other than
+`incoming/{1–64 alphanumerics}` are ignored). The secret is read once per cold
+start. Per file it calls `start` (`409` → delete the original, done), streams
+the original to `/tmp`, fails with `size mismatch` when the size differs from
+`uploadByteSize` (or `upload missing` when the object is gone), processes it,
+uploads `original/{id}` (with the API's `Content-Disposition`, and
+`Content-Encoding: gzip` when set) and `preview/{id}`, calls `finish`, then
+deletes the original. Network/5xx callback errors are retried three times;
+other failures leave the message to SQS, and on the last receive
+(`ApproximateReceiveCount` ≥ `MEDIA_MAX_RECEIVES`, default 3, matching the
+redrive policy) the worker reports `fail {"reason":"processing failed"}` first.
+If the Lambda deadline is about to pass it reports `processing timed out`.
+
+Decisions beyond the rules table:
+
+- Type detection uses magic bytes, then libvips/ffprobe; media that cannot be
+  decoded is stored as a file (`application/octet-stream`, gzip only for
+  uncompressed formats such as BMP/TIFF/WAV). File content types keep the
+  declared type unless it claims `image/`, `video/` or `audio/`.
+- Images: libvips autorotates and keeps only the ICC profile; lossless WebP
+  uses `cwebp -z 3` (`-z 1` above 25 MP: 24 MP ≈ 9 s vs ≈ 7 s at similar
+  size); AVIF is 8-bit, 4:4:4 when the lossless WebP is under 4 bits/pixel
+  (graphics), else 4:2:0. The original JPEG/PNG/WebP/AVIF is kept only when it
+  is upright (EXIF orientation 1/absent) and not resized, and also when a
+  chosen lossless WebP would not be smaller than it. Kept JPEGs go through
+  `jpegtran -copy icc -optimize` (colour profile kept, EXIF/XMP/comments
+  dropped); PNG/WebP drop metadata chunks; an AVIF is kept only without
+  EXIF/XMP. HEIC/HEIF, TIFF, BMP and single-frame GIF always convert.
+- Animated GIF/APNG/WebP/AVIF become silent MP4 without B-frames (exact
+  variable frame delays); transparency becomes black; the short edge follows
+  `MEDIA_VIDEO_MAX_HEIGHT`. Animated WebP frames are extracted with libvips.
+- Video: the poster preview is uploaded and reported before the encode;
+  `progress` is sent at most every 3 s when the integer percent increases
+  (never 100; `finish` completes it). When the encode is projected to miss the
+  Lambda deadline (minus 30 s + upload time) it restarts with `superfast`, then
+  `ultrafast`. If it still cannot finish, a remuxable H.264 source is stored
+  remuxed; anything else is stored unchanged as a `file` (its earlier preview
+  is not repeated in `finish`). Metadata (including location) is dropped.
+- Audio: integer PCM WAV/AIFF (≤ 24-bit, ≤ 8 channels) becomes FLAC when
+  smaller; float/32-bit PCM and other audio stay unchanged.
+- File names keep the base name; converted results get the stored type's
+  extension (`photo.HEIC` → `photo.avif`), names with a matching extension
+  (`IMG.JPG`, `a.jpeg`) are unchanged, and files keep their name.
+
+Run the processing step locally (no AWS, prints the `finish` body; the
+result and `preview.webp` land in the output directory):
+
+```sh
+cargo run -p caper-media-worker -- process photo.heic out/ [--settings settings.json] [--deadline 120]
+cargo test -p caper-media-worker                                  # unit tests
+cargo test -p caper-media-worker --test pipeline -- --ignored     # needs the tools above
+```
+
 ### Delivery and URL signing
 
 Every response or socket frame that carries a message signs URLs as it leaves:
