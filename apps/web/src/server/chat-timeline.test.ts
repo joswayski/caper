@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { ChatTimeline } from "../chat/timeline.ts";
 import { isChatReactionEvent, type ChatMessage, type ChatReactionEvent } from "../chat/types.ts";
-import { emojiAsset, emojiCode, preloadEmojiImages } from "../chat/emoji.ts";
+import { emojiAsset, emojiCode, emojiNames, preloadEmojiImages } from "../chat/emoji.ts";
 
 function message(seq: string, id = `message-${seq}`): ChatMessage {
   return {
@@ -87,6 +88,28 @@ test("Twemoji filenames handle selectors, keycaps, flags, skin tones and ZWJ seq
     assert.equal(emojiAsset(emojiCode(emoji)), `/emoji/twemoji-15/${filename}.svg`);
   }
   assert.equal(emojiAsset("0031-fe0f-20e3"), "/emoji/twemoji-15/31-20e3.svg");
+});
+
+test("emoji names prefer dashes while retaining spaced and underscore search aliases", () => {
+  const original = ["happy_face", "grinning face"];
+  assert.deepEqual(emojiNames(original), [
+    "happy_face", "happy face", "happy-face", "grinning face", "grinning_face", "grinning-face",
+  ]);
+  assert.deepEqual(original, ["happy_face", "grinning face"], "the package catalog must stay unchanged");
+  assert.deepEqual(emojiNames(["thumbs-up", "+1", "thumbs up"]), ["thumbs up", "thumbs_up", "+1", "thumbs-up"]);
+  assert.equal(emojiNames(["face_with  big_eyes"]).at(-1), "face-with-big-eyes");
+});
+
+test("bundled native emoji names and aliases match on Android, Apple and desktop", () => {
+  const shared = readFileSync(new URL("../../../../shared/emoji/catalog.json", import.meta.url), "utf8");
+  const apple = readFileSync(new URL("../../../native/apple/Sources/CaperCore/EmojiAssets/catalog.json", import.meta.url), "utf8");
+  assert.equal(apple, shared);
+  const entries: { id: string; name: string; keywords: string; selectable: boolean; emoji: string }[] = JSON.parse(shared);
+  assert.ok(entries.filter((entry) => entry.selectable).every((entry) => !/[\s_]/.test(entry.name)));
+  const grinning = entries.find((entry) => entry.id === "1f600")!;
+  assert.equal(grinning.name, "grinning-face");
+  assert.equal(grinning.emoji, "😀");
+  for (const query of ["grinning-face", "grinning_face", "grinning face"]) assert.ok(grinning.keywords.includes(query));
 });
 
 test("emoji preload shares decoding per category, retries failures, and stays warm across messages", async (t) => {

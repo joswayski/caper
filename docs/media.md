@@ -915,8 +915,19 @@ look consistent across all clients. Native apps bundle raster sprite sheets from
 artwork with `node scripts/native-emoji.mjs` (requires npm dependencies and
 ImageMagick 7). Android and Rust read `shared/emoji`; SwiftPM requires a generated
 copy inside its target, checked byte-for-byte by CI, including licenses.
+Picker names use dashes (for example, `grinning-face`). Web and all native
+catalogs also include underscore and spaced search aliases (`grinning_face` and
+`grinning face`). Names are labels/search terms, not stored reaction identifiers:
+selecting any spelling still sends the same Unicode emoji. Existing reactions
+need no migration. The browser fixture checks all three search spellings,
+dash-separated accessible names/image alt text, and Unicode persistence.
 Message-body emoji are unchanged. Custom uploads, frequently used/top-five lists,
-and a skin-tone selector are deferred.
+and a skin-tone selector are deferred. Message text does not currently convert
+`:name:` shortcodes into emoji. Dashes are not a restriction on future custom
+emoji: the web picker supports named custom images, but uploads alone will not
+enable them. Custom reactions also need an authorized emoji catalog, stable asset
+IDs, API/protocol support alongside Unicode, and image rendering in every client;
+the current API deliberately accepts only standard Unicode emoji.
 
 `PUT /api/chat/channels/{channel}/messages/{message}/reactions` accepts
 `{emoji,active}` and `X-Caper-Chat-Token`. It checks the same channel/member/private

@@ -35,11 +35,12 @@ export function createSpaceNavigation() {
     const result = (async () => {
       const detail = await getSpace(spaceId);
       const previous = peek(spaceId, channelId);
-      if (previous?.channelId && !detail.channels.some((channel) => channel.id === previous.channelId)) {
+      const requestedChannel = channelId ?? previous?.channelId;
+      if (requestedChannel !== undefined && !detail.channels.some((channel) => channel.id === requestedChannel)) {
         forget(spaceId);
         throw new SpacesApiError(404, "This channel is no longer accessible.");
       }
-      const channel = detail.channels.find((item) => item.id === (channelId ?? previous?.channelId) && (channelId !== undefined || item.joined !== false))
+      const channel = detail.channels.find((item) => item.id === requestedChannel && (channelId !== undefined || item.joined !== false))
         ?? detail.channels.find((item) => item.joined !== false);
       let history: GeneralChatHistory | undefined;
       let historyError: string | undefined;
