@@ -260,6 +260,7 @@ export class ChatClient {
     const current = () => !this.controller.signal.aborted && this.state.channelId === channelId;
     this.setTyping(false);
     this.sending = true;
+    const controller = new AbortController();
     const confirmation = new Promise<ChatMessage>((resolve) => { this.confirmSend = resolve; });
     this.update({ pendingSend: pending, sendError: undefined, sendRejected: undefined });
     let rejected = false;
@@ -271,7 +272,7 @@ export class ChatClient {
           method: "POST",
           headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
           body: JSON.stringify({ clientMessageId: pending.clientMessageId, text: pending.text }),
-          signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
+          signal: AbortSignal.any([this.controller.signal, controller.signal, AbortSignal.timeout(10_000)]),
         });
         if (!response.ok) {
           rejected = [400, 404, 409, 413, 422].includes(response.status);
@@ -300,6 +301,9 @@ export class ChatClient {
       if (!this.controller.signal.aborted) this.update({ pendingSend: pending, sendRejected: rejected, sendError: error instanceof Error ? error.message : "Message could not be sent." });
       return false;
     } finally {
+      // Ordered replay/history may confirm delivery before HTTP responds.
+      // Release that request without aborting the client or its next command.
+      controller.abort();
       this.sending = false;
       this.confirmSend = undefined;
     }
