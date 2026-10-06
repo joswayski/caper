@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
@@ -55,13 +56,22 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
@@ -897,7 +907,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 ) {
     val channel = state.selectedChannel
     if (channel == null) return EmptyChannel(state, narrow, show, openNavigation, modifier)
-    var draft by remember(channel.id) { mutableStateOf("") }
+    var draft by remember(channel.id) { mutableStateOf(TextFieldValue("")) }
     val joined = channel.joined
     Column(modifier.fillMaxHeight().background(SurfaceConversation)) {
         // Web waits a second before announcing a lost connection.
@@ -936,12 +946,12 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         // Web shows a pending message's status inline, under the message itself.
         MessageTimeline(state, viewModel, Modifier.weight(1f)) {
             state.pendingMessage?.error?.let { pending ->
-                val editable = canEditRejectedMessage(draft, state.pendingMessage.text)
+                val editable = canEditRejectedMessage(draft.text, state.pendingMessage.text)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(if (state.pendingMessage.rejected) "Not sent. $pending" else "Not confirmed yet. $pending", Modifier.weight(1f), color = ErrorText, fontSize = 11.sp)
                     TextButton({
                         if (state.pendingMessage.rejected) {
-                            if (editable) viewModel.discardPending()?.let { draft = it }
+                            if (editable) viewModel.discardPending()?.let { draft = TextFieldValue(it, TextRange(it.length)) }
                         } else viewModel.send(state.pendingMessage.text)
                     }, Modifier.semantics { if (state.pendingMessage.rejected && !editable) stateDescription = "Clear your current draft to edit this message." },
                         enabled = !state.pendingMessage.rejected || editable) {
@@ -962,25 +972,79 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     TextButton(viewModel::retrySession) { Text("Retry session", fontSize = 12.sp) }
                 }
             }
+            val context = LocalContext.current
+            val catalog = remember { EmojiArtwork.catalog(context) }
+            var dismissedAt by remember(channel.id) { mutableStateOf<TextFieldValue?>(null) }
+            var composerFocused by remember(channel.id) { mutableStateOf(false) }
+            val token = emojiToken(draft)
+            val suggestions = if (composerFocused && token != null && draft != dismissedAt) emojiSuggestions(catalog, token.query) else emptyList()
+            var selectedSuggestion by remember(channel.id) { mutableIntStateOf(0) }
+            LaunchedEffect(token) { selectedSuggestion = 0 }
+            val suggestionList = rememberLazyListState()
+            LaunchedEffect(selectedSuggestion, token) {
+                if (suggestions.isNotEmpty()) suggestionList.animateScrollToItem(selectedSuggestion.coerceAtMost(suggestions.lastIndex))
+            }
+            fun chooseEmoji(index: Int): Boolean {
+                val currentToken = emojiToken(draft) ?: return false
+                val entry = suggestions.getOrNull(index) ?: return false
+                insertEmoji(draft, currentToken, entry.emoji)?.let { draft = it; dismissedAt = null; viewModel.reportActivity(); viewModel.setTyping(it.text.isNotBlank()) }
+                return true
+            }
+            if (suggestions.isNotEmpty()) Surface(
+                Modifier.widthIn(max = 260.dp).fillMaxWidth().padding(bottom = 6.dp), color = SurfaceRaised,
+                shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border),
+            ) {
+                LazyColumn(Modifier.heightIn(max = 192.dp).padding(vertical = 4.dp), state = suggestionList) {
+                    itemsIndexed(suggestions, key = { _, entry -> entry.id }) { index, entry ->
+                        Row(
+                            Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                                .background(if (index == selectedSuggestion) Terracotta.copy(alpha = 0.18f) else Color.Transparent)
+                                .clickable { selectedSuggestion = index; chooseEmoji(index) }
+                                .semantics { contentDescription = "Insert emoji ${emojiShortcodeLabel(entry.name)}" }
+                                .padding(horizontal = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            EmojiImage(entry.emoji, null, Modifier.size(28.dp))
+                            Text(emojiShortcodeLabel(entry.name), color = if (index == selectedSuggestion) Text else TextMuted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
                 OutlinedTextField(
-                    draft, { value -> draft = value.codePointTake(4000); viewModel.reportActivity(); viewModel.setTyping(value.isNotBlank()) },
-                    modifier = Modifier.weight(1f), placeholder = { Text(if (channel.direct) "Message ${channel.name}" else "Message #${channel.name}") }, maxLines = 6,
+                    draft, { value ->
+                        val limited = if (value.text.codePointCount(0, value.text.length) <= 4000) value else {
+                            val text = value.text.codePointTake(4000)
+                            value.copy(text = text, selection = TextRange(value.selection.start.coerceAtMost(text.length), value.selection.end.coerceAtMost(text.length)), composition = null)
+                        }
+                        draft = limited; dismissedAt = null; viewModel.reportActivity(); viewModel.setTyping(limited.text.isNotBlank())
+                    },
+                    modifier = Modifier.weight(1f).onFocusChanged { composerFocused = it.isFocused }.onPreviewKeyEvent { event ->
+                        if (event.type != KeyEventType.KeyDown || suggestions.isEmpty()) false else when (event.key) {
+                            Key.DirectionDown -> { selectedSuggestion = (selectedSuggestion + 1) % suggestions.size; true }
+                            Key.DirectionUp -> { selectedSuggestion = (selectedSuggestion - 1 + suggestions.size) % suggestions.size; true }
+                            Key.Enter, Key.Tab -> if (event.isShiftPressed) false else chooseEmoji(selectedSuggestion.coerceAtMost(suggestions.lastIndex))
+                            Key.Escape -> { dismissedAt = draft; true }
+                            else -> false
+                        }
+                    }, placeholder = { Text(if (channel.direct) "Message ${channel.name}" else "Message #${channel.name}") }, maxLines = 6,
                     enabled = !state.messagesLoading && state.messagesError == null,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(onSend = {
+                        if (suggestions.isNotEmpty()) { chooseEmoji(selectedSuggestion.coerceAtMost(suggestions.lastIndex)); return@KeyboardActions }
                         val pending = state.pendingMessage
                         // Web: Enter retries an unconfirmed send; a rejected one waits for Edit or Dismiss.
                         if (state.chatAuthorId != null) {
                             if (pending != null) { if (!pending.rejected && pending.error != null) viewModel.send(pending.text) }
-                            else if (draft.isNotBlank()) { val sent = draft; viewModel.setTyping(false); viewModel.send(sent); draft = "" }
+                            else if (draft.text.isNotBlank()) { val sent = draft.text; viewModel.setTyping(false); viewModel.send(sent); draft = TextFieldValue("") }
                         }
                     }),
                     colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = SurfaceComposer, unfocusedContainerColor = SurfaceComposer, focusedBorderColor = Terracotta, unfocusedBorderColor = Border),
                 )
                 FilledIconButton(
-                    { if (draft.isNotBlank() && state.pendingMessage == null) { val sent = draft; viewModel.setTyping(false); viewModel.send(sent); draft = "" } },
-                    modifier = Modifier.size(48.dp).semantics { contentDescription = "Send" }, enabled = draft.isNotBlank() && state.pendingMessage == null && state.chatAuthorId != null,
+                    { if (draft.text.isNotBlank() && state.pendingMessage == null) { val sent = draft.text; viewModel.setTyping(false); viewModel.send(sent); draft = TextFieldValue("") } },
+                    modifier = Modifier.size(48.dp).semantics { contentDescription = "Send" }, enabled = draft.text.isNotBlank() && state.pendingMessage == null && state.chatAuthorId != null,
                     shape = MaterialTheme.shapes.small,
                     colors = IconButtonDefaults.filledIconButtonColors(
                         containerColor = Terracotta, contentColor = Color.White,
@@ -988,7 +1052,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     ),
                 ) { Icon(painterResource(R.drawable.lucide_arrow_up), null) }
             }
-            val count = draft.codePointCount(0, draft.length)
+            val count = draft.text.codePointCount(0, draft.text.length)
             if (count >= 3000) Text("${"%,d".format(java.util.Locale.US, count)} / 4,000", Modifier.align(Alignment.End), color = counterTone(count), fontSize = 10.sp)
         }
     }

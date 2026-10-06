@@ -249,6 +249,10 @@ struct CaperApp {
     username: String,
     display_name: String,
     draft: String,
+    emoji_token: Option<emoji::Token>,
+    emoji_selected: usize,
+    emoji_dismissed: Option<(String, usize)>,
+    emoji_composing: bool,
     pending: Option<PendingSend>,
     reaction_picker: Option<String>,
     reaction_search: String,
@@ -355,6 +359,10 @@ impl CaperApp {
             username: String::new(),
             display_name: String::new(),
             draft: String::new(),
+            emoji_token: None,
+            emoji_selected: 0,
+            emoji_dismissed: None,
+            emoji_composing: false,
             pending: None,
             reaction_picker: None,
             reaction_search: String::new(),
@@ -5482,14 +5490,45 @@ impl CaperApp {
                     } else {
                         format!("Message #{}", self.channel_name())
                     };
+                    let composer_id = egui::Id::new("message-composer");
+                    let ime_frame = ui.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::Ime(_))));
+                    ui.input(|input| {
+                        for event in &input.events {
+                            if let egui::Event::Ime(event) = event {
+                                self.emoji_composing = matches!(event, egui::ImeEvent::Enabled | egui::ImeEvent::Preedit(_));
+                            }
+                        }
+                    });
+                    let cursor = egui::TextEdit::load_state(ui.ctx(), composer_id)
+                        .and_then(|state| state.cursor.char_range());
+                    if let Some((text, caret)) = &self.emoji_dismissed
+                        && (text != &self.draft || cursor.is_none_or(|range| !range.is_empty() || range.primary.index != *caret)) {
+                        self.emoji_dismissed = None;
+                    }
+                    let active = cursor.filter(|range| range.is_empty())
+                        .filter(|_| !self.emoji_composing && !ime_frame && ui.memory(|memory| memory.has_focus(composer_id)))
+                        .and_then(|range| emoji::token(&self.draft, range.primary.index))
+                        .filter(|token| self.emoji_dismissed.as_ref() != Some(&(self.draft.clone(), token.end)));
+                    if active != self.emoji_token { self.emoji_selected = 0; self.emoji_token = active.clone(); }
+                    let choices = active.as_ref().map(|token| emoji::suggestions(&token.query)).unwrap_or_default();
+                    let mut chosen = None;
+                    if !choices.is_empty() {
+                        self.emoji_selected = self.emoji_selected.min(choices.len() - 1);
+                        ui.input_mut(|input| {
+                            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) { self.emoji_selected = (self.emoji_selected + 1) % choices.len(); }
+                            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) { self.emoji_selected = (self.emoji_selected + choices.len() - 1) % choices.len(); }
+                            if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter) || input.consume_key(egui::Modifiers::NONE, egui::Key::Tab) { chosen = Some(choices[self.emoji_selected]); }
+                            if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) { self.emoji_dismissed = active.as_ref().map(|token| (self.draft.clone(), token.end)); }
+                        });
+                    }
                     let editor = egui::ScrollArea::vertical()
                         .id_salt("composer-scroll")
                         .max_height((ui.ctx().viewport_rect().height() * 0.4).min(320.0))
                         .min_scrolled_height(42.0)
                         .auto_shrink([false, true])
-                        .show(ui, |ui| ui.add(
+                        .show(ui, |ui|
                         egui::TextEdit::multiline(&mut self.draft)
-                            .id(egui::Id::new("message-composer"))
+                            .id(composer_id)
                             .desired_width(f32::INFINITY)
                             .min_size(egui::vec2(0.0, 42.0))
                             .desired_rows(1)
@@ -5501,9 +5540,56 @@ impl CaperApp {
                                     .color(Color32::from_rgb(142, 149, 152)),
                             )
                             .background_color(COMPOSER)
-                            .char_limit(4_000),
-                    ));
-                    let response = editor.inner;
+                            .char_limit(4_000).show(ui)
+                    );
+                    let mut output = editor.inner;
+                    let response = &output.response;
+                    let active = output.cursor_range.filter(|range| range.is_empty())
+                        .filter(|_| response.has_focus() && !self.emoji_composing && !ime_frame)
+                        .and_then(|range| emoji::token(&self.draft, range.primary.index))
+                        .filter(|token| self.emoji_dismissed.as_ref() != Some(&(self.draft.clone(), token.end)));
+                    if let Some(token) = &active {
+                        let choices = emoji::suggestions(&token.query);
+                        if !choices.is_empty() && chosen.is_none() {
+                            egui::Area::new(egui::Id::new("composer-emoji-suggestions"))
+                                .order(egui::Order::Foreground).pivot(egui::Align2::LEFT_BOTTOM)
+                                .fixed_pos(response.rect.left_top() - egui::vec2(0.0, 6.0))
+                                .show(ui.ctx(), |ui| {
+                                    egui::Frame::new().fill(COMPOSER).stroke(Stroke::new(1.0, BORDER)).corner_radius(8).inner_margin(4).show(ui, |ui| {
+                                        let width = response.rect.width().min(260.0) - 8.0;
+                                        ui.set_width(width);
+                                        ui.spacing_mut().icon_spacing = 12.0;
+                                        ui.spacing_mut().item_spacing.y = 0.0;
+                                        for (index, entry) in choices.iter().enumerate() {
+                                            let image = self.reaction_textures.image(ui, entry, 24.0);
+                                            let label = format!(":{}:", entry.name.replace(' ', "_"));
+                                            let button = egui::Button::image_and_text(image, label)
+                                                .min_size(egui::vec2(width, 44.0))
+                                                .truncate()
+                                                .stroke(Stroke::NONE)
+                                                .fill(if index == self.emoji_selected { Color32::from_rgb(67, 36, 30) } else { Color32::TRANSPARENT });
+                                            if ui.add(button).clicked() { chosen = Some(*entry); }
+                                        }
+                                    });
+                                });
+                        }
+                    }
+                    if let Some(entry) = chosen
+                        && let Some(token) = active.as_ref()
+                        && let Some((value, caret)) = emoji::insert(&self.draft, token, &entry.emoji) {
+                        self.draft = value;
+                        output.state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(caret))));
+                        output.state.store(ui.ctx(), composer_id);
+                        response.request_focus();
+                        self.emoji_token = None;
+                    }
+                    // egui processes focus traversal before widgets handle keys.
+                    // Keep Tab/Escape in the editor while suggestions are open.
+                    let lock_suggestions = chosen.is_none() && active.as_ref().is_some_and(|token| !emoji::suggestions(&token.query).is_empty());
+                    ui.memory_mut(|memory| memory.set_focus_lock_filter(composer_id, egui::EventFilter {
+                        horizontal_arrows: true, vertical_arrows: true,
+                        tab: lock_suggestions, escape: lock_suggestions,
+                    }));
                     ui.painter().rect_stroke(
                         editor.inner_rect,
                         6.0,
@@ -5513,7 +5599,7 @@ impl CaperApp {
                     if self.draft != before {
                         self.typing_edited = Instant::now();
                     }
-                    let send = response.has_focus()
+                    let send = response.has_focus() && !self.emoji_composing && !ime_frame
                         && ui.input(|input| {
                             // The modifier belongs to the key event, not the end of
                             // the frame (Shift may already have been released).
@@ -10681,6 +10767,93 @@ mod tests {
             first,
             "reissued within 4 s"
         );
+    }
+
+    #[test]
+    fn emoji_composer_inserts_at_caret_without_sending_and_dismisses() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.session = Some(session());
+        render(&mut app, &context, vec![]);
+        let id = egui::Id::new("message-composer");
+        context.memory_mut(|memory| memory.request_focus(id));
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::Text(":rocket".into())],
+        );
+        render(&mut app, &context, vec![]);
+        let key = |key| {
+            [true, false]
+                .map(|pressed| egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                })
+                .to_vec()
+        };
+        render(&mut app, &context, key(egui::Key::Enter));
+        assert_eq!(app.draft, "🚀");
+        assert!(app.pending.is_none(), "Accepting emoji must not send");
+
+        app.draft = "👩‍💻 hi :rocket suffix".into();
+        let mut state = egui::TextEdit::load_state(&context, id).unwrap();
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::one(
+                egui::text::CCursor::new("👩‍💻 hi :rocket".chars().count()),
+            )));
+        state.store(&context, id);
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, key(egui::Key::Tab));
+        assert_eq!(app.draft, "👩‍💻 hi 🚀 suffix");
+        assert_eq!(
+            egui::TextEdit::load_state(&context, id)
+                .unwrap()
+                .cursor
+                .char_range()
+                .unwrap()
+                .primary
+                .index,
+            "👩‍💻 hi 🚀".chars().count()
+        );
+        assert!(app.pending.is_none());
+
+        app.draft = ":".into();
+        let mut state = egui::TextEdit::load_state(&context, id).unwrap();
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::one(
+                egui::text::CCursor::new(1),
+            )));
+        state.store(&context, id);
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, key(egui::Key::ArrowDown));
+        render(&mut app, &context, key(egui::Key::Tab));
+        assert_eq!(app.draft, "😀");
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::Text(" :thumbs_up".into())],
+        );
+        render(&mut app, &context, key(egui::Key::Escape));
+        assert_eq!(app.draft, "😀 :thumbs_up");
+        assert!(
+            context.memory(|memory| memory.has_focus(id)),
+            "Escape must retain composer focus"
+        );
+        assert!(
+            app.emoji_dismissed.is_some(),
+            "Escape must dismiss the current token"
+        );
+        render(&mut app, &context, key(egui::Key::Enter));
+        assert_eq!(app.pending.as_ref().unwrap().text, "😀 :thumbs_up");
     }
 
     #[test]

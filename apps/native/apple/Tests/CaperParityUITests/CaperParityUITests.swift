@@ -244,6 +244,25 @@ final class CaperParityUITests: XCTestCase {
         add.tap()
     }
 
+    func testColonEmojiSuggestionsPreserveDraftAndFocusWithoutSending() throws {
+        let app = launch()
+        let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 30,
+                                   "Missing message composer")
+        XCTAssertTrue(focus(composer))
+        composer.typeText("Before :tomato")
+        let tomato = try require(app.buttons["emoji-suggestion-1f345"], timeout: 5,
+                                 "Typing a colon query must offer tomato")
+        capture("emoji-composer-suggestions", app: app)
+        tomato.tap()
+        let inserted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Before 🍅"), object: composer)
+        XCTAssertEqual(XCTWaiter.wait(for: [inserted], timeout: 3), .completed,
+                       "Selecting emoji must retain the draft without sending")
+        XCTAssertTrue(hasKeyboardFocus(composer))
+        composer.typeText(" after")
+        XCTAssertEqual(composer.value as? String, "Before 🍅 after", "Insertion must preserve the caret")
+        XCTAssertFalse(app.buttons["emoji-suggestion-1f345"].exists)
+    }
+
     func testReactionChipsPickerAndEmptySearchState() throws {
         let app = launch(fixture: "reaction-chips")
         let own = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "selected by you")).firstMatch
