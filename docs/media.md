@@ -4060,8 +4060,10 @@ controls. `POST`/`DELETE /api/push/devices` are not exposed. DM persistence, unr
 cursors and live gateway events do not depend on push and continue unchanged.
 
 When mobile push is needed, implement direct APNs delivery for iOS and FCM HTTP v1
-delivery for Android. Provider credentials belong only in the server's secret
-store, never in client builds or source control. The native permission, token and
+delivery for Android. [notifications.md](notifications.md) holds the research and
+proposed design (preferences, transports and phases); it is not implemented.
+Provider credentials belong only in the server's secret store, never in client
+builds or source control. The native permission, token and
 tap handlers are dormant scaffolding, not working end-to-end notifications;
 Firebase build configuration and Apple push entitlements alone cannot enable them.
 Browser Web Push, macOS push and Rust desktop OS notifications are not implemented.

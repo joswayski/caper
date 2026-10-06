@@ -36,6 +36,7 @@ for available settings. Stop the stack with Ctrl-C.
 ## Documentation
 
 - [Configuration, deployment, and testing](docs/media.md)
+- [Notifications research and proposed design](docs/notifications.md) (not implemented)
 - [Native builds and platform status](apps/native/README.md)
 - [Brand and style guide](docs/brand)
 - [Caper character catalog](assets/avatars/README.md)
