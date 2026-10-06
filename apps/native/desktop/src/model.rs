@@ -143,6 +143,40 @@ pub struct Content {
     #[serde(rename = "type")]
     pub kind: String,
     pub text: String,
+    /// Server-resolved `@` mentions in first-appearance order. Older messages
+    /// and older servers omit it.
+    #[serde(
+        default,
+        deserialize_with = "mention_entries",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub mentions: Vec<Mention>,
+}
+
+/// A `content.mentions` entry: `user` (with `id`/`username`), `everyone` or
+/// `here`. Other types are future additions; readers ignore them.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct Mention {
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+}
+
+/// Mentions only decorate text, so a missing, `null` or unexpected list, or an
+/// entry shaped differently by a newer server, never rejects the message.
+fn mention_entries<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<Mention>, D::Error> {
+    Ok(match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::Array(entries) => entries
+            .into_iter()
+            .filter_map(|entry| serde_json::from_value(entry).ok())
+            .collect(),
+        _ => Vec::new(),
+    })
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -539,6 +573,7 @@ mod tests {
                 version: 1,
                 kind: "text".into(),
                 text: id.into(),
+                mentions: Vec::new(),
             },
             reactions: Vec::new(),
             reaction_seq: None,
@@ -751,6 +786,61 @@ mod tests {
         );
         timeline.prepend(vec![message("message-1", 1)]).unwrap();
         assert!(timeline.messages().next().unwrap().reactions.is_empty());
+    }
+
+    #[test]
+    fn content_mentions_are_optional_and_tolerate_unknown_entries() {
+        let legacy: Content =
+            serde_json::from_str(r#"{"version":1,"type":"text","text":"hi"}"#).unwrap();
+        assert!(legacy.mentions.is_empty());
+        let null: Content =
+            serde_json::from_str(r#"{"version":1,"type":"text","text":"hi","mentions":null}"#)
+                .unwrap();
+        assert!(null.mentions.is_empty());
+        let content: Content = serde_json::from_value(serde_json::json!({
+            "version": 1, "type": "text", "text": "hey @alice and @everyone",
+            "mentions": [
+                {"type": "user", "id": "user00000001", "username": "alice"},
+                {"type": "everyone"},
+                {"type": "role", "id": 7, "color": "red"},
+                {"type": "channel", "id": "chan00000001"},
+                "malformed"
+            ]
+        }))
+        .unwrap();
+        assert_eq!(
+            content.mentions,
+            [
+                Mention {
+                    kind: "user".into(),
+                    id: Some("user00000001".into()),
+                    username: Some("alice".into()),
+                },
+                Mention {
+                    kind: "everyone".into(),
+                    id: None,
+                    username: None,
+                },
+                Mention {
+                    kind: "channel".into(),
+                    id: Some("chan00000001".into()),
+                    username: None,
+                },
+            ]
+        );
+        let message: Message = serde_json::from_value(serde_json::json!({
+            "id": "m", "channelId": "c", "seq": "1", "createdAt": "2026-01-01T00:00:00Z",
+            "clientMessageId": "client",
+            "author": {"id": "a", "name": "A", "isGuest": false},
+            "content": {"version": 1, "type": "text", "text": "@here", "mentions": {"type": "here"}}
+        }))
+        .unwrap();
+        assert!(message.validate().is_ok());
+        assert!(message.content.mentions.is_empty());
+        assert_eq!(
+            serde_json::to_value(&legacy).unwrap(),
+            serde_json::json!({"version": 1, "type": "text", "text": "hi"})
+        );
     }
 
     #[test]

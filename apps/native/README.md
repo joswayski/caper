@@ -40,6 +40,15 @@ These use the existing Emoji 15 catalog, not custom uploaded emoji. Android/Appl
 builds and physical keyboard/IME checks require their platform toolchains/devices;
 browser coverage is not native acceptance.
 
+Composers also suggest people after `@`: the open space's loaded members except
+you, then `@everyone` and `@here`; in DMs, only the other participant. Selecting
+inserts `@username ` without sending. Names the API resolved in
+`content.mentions` render as terracotta pills, and messages that mention you get a
+light terracotta row tint with a 2px/pt/dp leading edge. Android, SwiftUI and egui
+pills are square-cornered background spans (web rounds them). Mentions do not
+notify anyone yet. The grammar and payload are described in
+[docs/media.md](../../docs/media.md#scope-and-architecture).
+
 First launch without a valid session opens email sign-in, not a Guest workspace.
 New accounts finish their profile, then name their first space. Existing accounts
 restore their saved session and open their spaces; logging out returns to sign-in.

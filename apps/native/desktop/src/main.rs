@@ -11,6 +11,7 @@ mod gateway;
 mod media;
 #[path = "../voice-spike/src/media_gateway.rs"]
 mod media_gateway;
+mod mentions;
 mod model;
 mod navigation;
 mod startup;
@@ -107,6 +108,47 @@ impl PendingSend {
 
 fn permanent_send_rejection(status: Option<u16>) -> bool {
     matches!(status, Some(400 | 404 | 409 | 413 | 422))
+}
+
+/// The composer token that opens suggestions. Their grammars never overlap,
+/// so at most one kind is active at a caret.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ComposerToken {
+    Emoji(emoji::Token),
+    Mention(mentions::Token),
+}
+
+impl ComposerToken {
+    fn at(text: &str, caret: usize) -> Option<Self> {
+        emoji::token(text, caret)
+            .map(Self::Emoji)
+            .or_else(|| mentions::token(text, caret).map(Self::Mention))
+    }
+
+    fn end(&self) -> usize {
+        match self {
+            Self::Emoji(token) => token.end,
+            Self::Mention(token) => token.end,
+        }
+    }
+
+    fn insert(&self, text: &str, choice: &Suggestion) -> Option<(String, usize)> {
+        match (self, choice) {
+            (Self::Emoji(token), Suggestion::Emoji(entry)) => {
+                emoji::insert(text, token, &entry.emoji)
+            }
+            (Self::Mention(token), Suggestion::Mention(candidate)) => {
+                mentions::insert(text, token, candidate.name())
+            }
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone)]
+enum Suggestion {
+    Emoji(&'static emoji::Entry),
+    Mention(mentions::Candidate),
 }
 
 #[derive(Clone)]
@@ -249,10 +291,10 @@ struct CaperApp {
     username: String,
     display_name: String,
     draft: String,
-    emoji_token: Option<emoji::Token>,
-    emoji_selected: usize,
-    emoji_dismissed: Option<(String, usize)>,
-    emoji_composing: bool,
+    suggestion_token: Option<ComposerToken>,
+    suggestion_selected: usize,
+    suggestion_dismissed: Option<(String, usize)>,
+    ime_composing: bool,
     pending: Option<PendingSend>,
     reaction_picker: Option<String>,
     reaction_search: String,
@@ -359,10 +401,10 @@ impl CaperApp {
             username: String::new(),
             display_name: String::new(),
             draft: String::new(),
-            emoji_token: None,
-            emoji_selected: 0,
-            emoji_dismissed: None,
-            emoji_composing: false,
+            suggestion_token: None,
+            suggestion_selected: 0,
+            suggestion_dismissed: None,
+            ime_composing: false,
             pending: None,
             reaction_picker: None,
             reaction_search: String::new(),
@@ -459,6 +501,33 @@ impl CaperApp {
                     app.timeline
                         .reset(messages, "4")
                         .expect("valid reaction fixture");
+                } else if name == "parity-mentions" {
+                    // Labelled sample entries as the server would resolve them:
+                    // you (Fixture Owner) are named once and by Alex's @everyone.
+                    let entry =
+                        |kind: &str, id: Option<&str>, username: Option<&str>| model::Mention {
+                            kind: kind.into(),
+                            id: id.map(Into::into),
+                            username: username.map(Into::into),
+                        };
+                    let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+                    messages[1].content.text =
+                        "@fixture_owner, the same conversation should feel familiar on every platform."
+                            .into();
+                    messages[1].content.mentions =
+                        vec![entry("user", Some("fixture-owner"), Some("fixture_owner"))];
+                    messages[2].content.text =
+                        "Keep the space rail and audio controls in their usual places, @alex. @nobody stays plain."
+                            .into();
+                    messages[2].content.mentions =
+                        vec![entry("user", Some("fixture-alex"), Some("alex"))];
+                    messages[3].content.text =
+                        "Agreed, @everyone. Let’s check the narrow layout and the management dialogs too."
+                            .into();
+                    messages[3].content.mentions = vec![entry("everyone", None, None)];
+                    app.timeline
+                        .reset(messages, "4")
+                        .expect("valid mentions fixture");
                 } else if matches!(
                     name,
                     "parity-direct" | "parity-direct-new" | "parity-direct-no-spaces"
@@ -907,6 +976,7 @@ impl CaperApp {
                     version: 1,
                     kind: "text".into(),
                     text: text.into(),
+                    mentions: Vec::new(),
                 },
                 reactions: Vec::new(),
                 reaction_seq: None,
@@ -5495,30 +5565,30 @@ impl CaperApp {
                     ui.input(|input| {
                         for event in &input.events {
                             if let egui::Event::Ime(event) = event {
-                                self.emoji_composing = matches!(event, egui::ImeEvent::Enabled | egui::ImeEvent::Preedit(_));
+                                self.ime_composing = matches!(event, egui::ImeEvent::Enabled | egui::ImeEvent::Preedit(_));
                             }
                         }
                     });
                     let cursor = egui::TextEdit::load_state(ui.ctx(), composer_id)
                         .and_then(|state| state.cursor.char_range());
-                    if let Some((text, caret)) = &self.emoji_dismissed
+                    if let Some((text, caret)) = &self.suggestion_dismissed
                         && (text != &self.draft || cursor.is_none_or(|range| !range.is_empty() || range.primary.index != *caret)) {
-                        self.emoji_dismissed = None;
+                        self.suggestion_dismissed = None;
                     }
                     let active = cursor.filter(|range| range.is_empty())
-                        .filter(|_| !self.emoji_composing && !ime_frame && ui.memory(|memory| memory.has_focus(composer_id)))
-                        .and_then(|range| emoji::token(&self.draft, range.primary.index))
-                        .filter(|token| self.emoji_dismissed.as_ref() != Some(&(self.draft.clone(), token.end)));
-                    if active != self.emoji_token { self.emoji_selected = 0; self.emoji_token = active.clone(); }
-                    let choices = active.as_ref().map(|token| emoji::suggestions(&token.query)).unwrap_or_default();
+                        .filter(|_| !self.ime_composing && !ime_frame && ui.memory(|memory| memory.has_focus(composer_id)))
+                        .and_then(|range| ComposerToken::at(&self.draft, range.primary.index))
+                        .filter(|token| self.suggestion_dismissed.as_ref() != Some(&(self.draft.clone(), token.end())));
+                    if active != self.suggestion_token { self.suggestion_selected = 0; self.suggestion_token = active.clone(); }
+                    let choices = active.as_ref().map(|token| self.suggestions(token)).unwrap_or_default();
                     let mut chosen = None;
                     if !choices.is_empty() {
-                        self.emoji_selected = self.emoji_selected.min(choices.len() - 1);
+                        self.suggestion_selected = self.suggestion_selected.min(choices.len() - 1);
                         ui.input_mut(|input| {
-                            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) { self.emoji_selected = (self.emoji_selected + 1) % choices.len(); }
-                            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) { self.emoji_selected = (self.emoji_selected + choices.len() - 1) % choices.len(); }
-                            if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter) || input.consume_key(egui::Modifiers::NONE, egui::Key::Tab) { chosen = Some(choices[self.emoji_selected]); }
-                            if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) { self.emoji_dismissed = active.as_ref().map(|token| (self.draft.clone(), token.end)); }
+                            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) { self.suggestion_selected = (self.suggestion_selected + 1) % choices.len(); }
+                            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) { self.suggestion_selected = (self.suggestion_selected + choices.len() - 1) % choices.len(); }
+                            if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter) || input.consume_key(egui::Modifiers::NONE, egui::Key::Tab) { chosen = Some(choices[self.suggestion_selected].clone()); }
+                            if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) { self.suggestion_dismissed = active.as_ref().map(|token| (self.draft.clone(), token.end())); }
                         });
                     }
                     let editor = egui::ScrollArea::vertical()
@@ -5545,47 +5615,53 @@ impl CaperApp {
                     let mut output = editor.inner;
                     let response = &output.response;
                     let active = output.cursor_range.filter(|range| range.is_empty())
-                        .filter(|_| response.has_focus() && !self.emoji_composing && !ime_frame)
-                        .and_then(|range| emoji::token(&self.draft, range.primary.index))
-                        .filter(|token| self.emoji_dismissed.as_ref() != Some(&(self.draft.clone(), token.end)));
-                    if let Some(token) = &active {
-                        let choices = emoji::suggestions(&token.query);
-                        if !choices.is_empty() && chosen.is_none() {
-                            egui::Area::new(egui::Id::new("composer-emoji-suggestions"))
-                                .order(egui::Order::Foreground).pivot(egui::Align2::LEFT_BOTTOM)
-                                .fixed_pos(response.rect.left_top() - egui::vec2(0.0, 6.0))
-                                .show(ui.ctx(), |ui| {
-                                    egui::Frame::new().fill(COMPOSER).stroke(Stroke::new(1.0, BORDER)).corner_radius(8).inner_margin(4).show(ui, |ui| {
-                                        let width = response.rect.width().min(260.0) - 8.0;
-                                        ui.set_width(width);
-                                        ui.spacing_mut().icon_spacing = 12.0;
-                                        ui.spacing_mut().item_spacing.y = 0.0;
-                                        for (index, entry) in choices.iter().enumerate() {
-                                            let image = self.reaction_textures.image(ui, entry, 24.0);
-                                            let label = format!(":{}:", entry.name.replace(' ', "_"));
-                                            let button = egui::Button::image_and_text(image, label)
-                                                .min_size(egui::vec2(width, 44.0))
-                                                .truncate()
-                                                .stroke(Stroke::NONE)
-                                                .fill(if index == self.emoji_selected { Color32::from_rgb(67, 36, 30) } else { Color32::TRANSPARENT });
-                                            if ui.add(button).clicked() { chosen = Some(*entry); }
-                                        }
-                                    });
+                        .filter(|_| response.has_focus() && !self.ime_composing && !ime_frame)
+                        .and_then(|range| ComposerToken::at(&self.draft, range.primary.index))
+                        .filter(|token| self.suggestion_dismissed.as_ref() != Some(&(self.draft.clone(), token.end())));
+                    let choices = active.as_ref().map(|token| self.suggestions(token)).unwrap_or_default();
+                    // One popup serves `:` emoji and `@` mention rows.
+                    if !choices.is_empty() && chosen.is_none() {
+                        egui::Area::new(egui::Id::new("composer-suggestions"))
+                            .order(egui::Order::Foreground).pivot(egui::Align2::LEFT_BOTTOM)
+                            .fixed_pos(response.rect.left_top() - egui::vec2(0.0, 6.0))
+                            .show(ui.ctx(), |ui| {
+                                egui::Frame::new().fill(COMPOSER).stroke(Stroke::new(1.0, BORDER)).corner_radius(8).inner_margin(4).show(ui, |ui| {
+                                    let width = response.rect.width().min(260.0) - 8.0;
+                                    ui.set_width(width);
+                                    ui.spacing_mut().icon_spacing = 12.0;
+                                    ui.spacing_mut().item_spacing.y = 0.0;
+                                    for (index, choice) in choices.iter().enumerate() {
+                                        let fill = if index == self.suggestion_selected { Color32::from_rgb(67, 36, 30) } else { Color32::TRANSPARENT };
+                                        let clicked = match choice {
+                                            Suggestion::Emoji(entry) => {
+                                                let image = self.reaction_textures.image(ui, entry, 24.0);
+                                                let label = format!(":{}:", entry.name.replace(' ', "_"));
+                                                let button = egui::Button::image_and_text(image, label)
+                                                    .min_size(egui::vec2(width, 44.0))
+                                                    .truncate()
+                                                    .stroke(Stroke::NONE)
+                                                    .fill(fill);
+                                                ui.add(button).clicked()
+                                            }
+                                            Suggestion::Mention(candidate) => mention_suggestion(ui, candidate, width, fill).clicked(),
+                                        };
+                                        if clicked { chosen = Some(choice.clone()); }
+                                    }
                                 });
-                        }
+                            });
                     }
-                    if let Some(entry) = chosen
+                    if let Some(choice) = &chosen
                         && let Some(token) = active.as_ref()
-                        && let Some((value, caret)) = emoji::insert(&self.draft, token, &entry.emoji) {
+                        && let Some((value, caret)) = token.insert(&self.draft, choice) {
                         self.draft = value;
                         output.state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(caret))));
                         output.state.store(ui.ctx(), composer_id);
                         response.request_focus();
-                        self.emoji_token = None;
+                        self.suggestion_token = None;
                     }
                     // egui processes focus traversal before widgets handle keys.
                     // Keep Tab/Escape in the editor while suggestions are open.
-                    let lock_suggestions = chosen.is_none() && active.as_ref().is_some_and(|token| !emoji::suggestions(&token.query).is_empty());
+                    let lock_suggestions = chosen.is_none() && !choices.is_empty();
                     ui.memory_mut(|memory| memory.set_focus_lock_filter(composer_id, egui::EventFilter {
                         horizontal_arrows: true, vertical_arrows: true,
                         tab: lock_suggestions, escape: lock_suggestions,
@@ -5599,7 +5675,7 @@ impl CaperApp {
                     if self.draft != before {
                         self.typing_edited = Instant::now();
                     }
-                    let send = response.has_focus() && !self.emoji_composing && !ime_frame
+                    let send = response.has_focus() && !self.ime_composing && !ime_frame
                         && ui.input(|input| {
                             // The modifier belongs to the key event, not the end of
                             // the frame (Shift may already have been released).
@@ -5732,7 +5808,7 @@ impl CaperApp {
                             |session| session.author.name.clone(),
                         );
                         let avatar_id = self.session.as_ref().and_then(|session| session.author.avatar_id);
-                        message_row(ui, &author, avatar_id, "Now", &pending.text, false, true);
+                        message_row(ui, &author, avatar_id, "Now", message_text(&pending.text, &[], MUTED), false);
                         if let Some(rejection) = &pending.rejection {
                             egui::Frame::new().inner_margin(egui::Margin { left: 62, right: 18, top: 0, bottom: 8 }).show(ui, |ui| {
                                 ui.colored_label(ERROR, format!("Not sent. {rejection}"));
@@ -5918,14 +5994,24 @@ impl CaperApp {
 
     fn message(&mut self, ui: &mut egui::Ui, message: &model::Message) {
         let time = display_time(&message.created_at);
-        message_row(
+        let mentioned = mentions::mentions_me(
+            &message.content.mentions,
+            &message.author.id,
+            self.account.as_ref().map(|account| account.id.as_str()),
+        );
+        // Reserved beneath the row so the tint can be sized after drawing.
+        let tint = ui.painter().add(egui::Shape::Noop);
+        let row = message_row(
             ui,
             &message.author.name,
             message.author.avatar_id,
             &time,
-            &message.content.text,
+            message_text(
+                &message.content.text,
+                &message.content.mentions,
+                Color32::from_rgb(222, 223, 224),
+            ),
             message.author.is_guest,
-            false,
         );
         let author = self
             .session
@@ -5938,7 +6024,7 @@ impl CaperApp {
             &self.pending_reactions,
         );
         let can_react = self.selected_is_joined() && self.session.is_some();
-        egui::Frame::new()
+        let controls = egui::Frame::new()
             .inner_margin(egui::Margin {
                 left: 62,
                 right: 18,
@@ -6034,6 +6120,22 @@ impl CaperApp {
                     });
                 }
             });
+        if mentioned {
+            // Messages that mention you: an 8% terracotta row with a 2px edge.
+            let rect = egui::Rect::from_x_y_ranges(
+                ui.max_rect().x_range(),
+                row.top()..=controls.response.rect.bottom(),
+            );
+            ui.painter().set(
+                tint,
+                egui::Shape::rect_filled(rect, 0.0, TERRACOTTA.gamma_multiply(0.08)),
+            );
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(rect.min, egui::vec2(2.0, rect.height())),
+                0.0,
+                TERRACOTTA,
+            );
+        }
     }
 
     fn set_reaction(&mut self, message: &str, emoji: &str, active: bool) {
@@ -6197,6 +6299,61 @@ impl CaperApp {
                     .find(|channel| Some(channel.id.as_str()) == id)
             })
             .map_or("general", |channel| channel.name.as_str())
+    }
+
+    fn suggestions(&self, token: &ComposerToken) -> Vec<Suggestion> {
+        match token {
+            ComposerToken::Emoji(token) => emoji::suggestions(&token.query)
+                .into_iter()
+                .map(Suggestion::Emoji)
+                .collect(),
+            ComposerToken::Mention(token) => {
+                let (people, specials) = self.mention_people();
+                mentions::suggestions(&people, specials, &token.query)
+                    .into_iter()
+                    .map(Suggestion::Mention)
+                    .collect()
+            }
+        }
+    }
+
+    /// Who `@` can suggest, never yourself, and whether `everyone`/`here` apply.
+    /// Space channels use the members already loaded by
+    /// `GET /api/spaces/{space}` (none yet leaves only the specials); a DM
+    /// offers its other participant, and the self-notes DM offers nobody.
+    fn mention_people(&self) -> (Vec<mentions::Person>, bool) {
+        let me = self.account.as_ref().map(|account| account.id.as_str());
+        if let Some(id) = &self.selected_direct {
+            let peer = self
+                .directs
+                .iter()
+                .find(|direct| &direct.id == id)
+                .map(|direct| &direct.peer)
+                .filter(|peer| Some(peer.id.as_str()) != me)
+                .map(|peer| mentions::Person {
+                    username: peer.username.clone(),
+                    display_name: peer.display_name.clone(),
+                    avatar_id: None,
+                });
+            return (peer.into_iter().collect(), false);
+        }
+        let people = self
+            .detail
+            .as_ref()
+            .filter(|detail| self.selected_space.as_ref() == Some(&detail.space.id))
+            .map_or_else(Vec::new, |detail| {
+                detail
+                    .members
+                    .iter()
+                    .filter(|member| Some(member.id.as_str()) != me)
+                    .map(|member| mentions::Person {
+                        username: member.username.clone(),
+                        display_name: member.display_name.clone(),
+                        avatar_id: member.avatar_id,
+                    })
+                    .collect()
+            });
+        (people, true)
     }
 
     /// Web's `canCreateSpace`: needs the server's limits.
@@ -7600,10 +7757,9 @@ fn message_row(
     author: &str,
     avatar_id: Option<i32>,
     time: &str,
-    text: &str,
+    text: egui::WidgetText,
     guest: bool,
-    pending: bool,
-) {
+) -> egui::Rect {
     egui::Frame::new()
         .inner_margin(egui::Margin::symmetric(18, 10))
         .show(ui, |ui| {
@@ -7618,14 +7774,108 @@ fn message_row(
                         }
                         ui.label(RichText::new(time).size(10.0).color(MUTED));
                     });
-                    ui.label(RichText::new(text).size(14.0).color(if pending {
-                        MUTED
-                    } else {
-                        Color32::from_rgb(222, 223, 224)
-                    }));
+                    ui.label(text);
                 });
             });
-        });
+        })
+        .response
+        .rect
+}
+
+/// Message text with resolved mentions drawn as pills: one weight bolder,
+/// primary text color and a 24% terracotta background with 2px side padding.
+/// egui `LayoutJob` backgrounds are plain rectangles, so pills have square
+/// corners here rather than the 4px corners other clients draw.
+fn message_text(text: &str, mentions: &[model::Mention], color: Color32) -> egui::WidgetText {
+    let pills = mentions::highlights(text, mentions);
+    if pills.is_empty() {
+        return RichText::new(text).size(14.0).color(color).into();
+    }
+    let plain = egui::TextFormat::simple(egui::FontId::proportional(14.0), color);
+    let pill = egui::TextFormat {
+        font_id: egui::FontId::new(14.0, egui::FontFamily::Name("Satoshi Medium".into())),
+        color: TEXT,
+        background: TERRACOTTA.gamma_multiply(0.24),
+        // Grow the background into the 2px gaps left on either side.
+        expand_bg: 2.0,
+        ..Default::default()
+    };
+    let mut job = egui::text::LayoutJob::default();
+    let mut written = 0;
+    for range in pills {
+        if range.start > written {
+            let gap = if written == 0 { 0.0 } else { 2.0 };
+            job.append(&text[written..range.start], gap, plain.clone());
+        }
+        job.append(&text[range.clone()], 2.0, pill.clone());
+        written = range.end;
+    }
+    if written < text.len() {
+        job.append(&text[written..], 2.0, plain);
+    }
+    job.into()
+}
+
+/// One `@` row in the shared suggestion popup, laid out like an emoji row:
+/// a 24px avatar slot, the 12px icon gap, then the name and a muted detail.
+fn mention_suggestion(
+    ui: &mut egui::Ui,
+    candidate: &mentions::Candidate,
+    width: f32,
+    fill: Color32,
+) -> egui::Response {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let (title, detail) = match candidate {
+        mentions::Candidate::Person(person) => {
+            (person.display_name.clone(), format!("@{}", person.username))
+        }
+        mentions::Candidate::Everyone => ("@everyone".into(), "Everyone in this channel".into()),
+        mentions::Candidate::Here => ("@here".into(), "Everyone online in this channel".into()),
+    };
+    let mut text = egui::text::LayoutJob::default();
+    text.append(
+        &title,
+        0.0,
+        egui::TextFormat {
+            valign: egui::Align::Center,
+            ..egui::TextFormat::simple(font, TEXT)
+        },
+    );
+    // Smaller secondary text keeps the specials' descriptions inside 260px.
+    text.append(
+        &format!(" {detail}"),
+        4.0,
+        egui::TextFormat {
+            valign: egui::Align::Center,
+            ..egui::TextFormat::simple(egui::FontId::proportional(11.0), MUTED)
+        },
+    );
+    let slot = egui::Id::new("mention-suggestion-avatar").with(candidate.name());
+    let row = egui::Button::new((egui::Atom::custom(slot, egui::vec2(24.0, 24.0)), text))
+        .min_size(egui::vec2(width, 44.0))
+        .truncate()
+        .stroke(Stroke::NONE)
+        .fill(fill)
+        .atom_ui(ui);
+    if let Some(rect) = row.rect(slot) {
+        match candidate {
+            mentions::Candidate::Person(person) => {
+                paint_avatar(ui, rect, &person.display_name, person.avatar_id);
+            }
+            mentions::Candidate::Everyone | mentions::Candidate::Here => {
+                ui.painter()
+                    .circle_filled(rect.center(), rect.width() / 2.0, RAISED);
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "@",
+                    egui::FontId::proportional(rect.width() * 0.5),
+                    MUTED,
+                );
+            }
+        }
+    }
+    row.response
 }
 
 fn date_divider(ui: &mut egui::Ui, label: &str) {
@@ -8356,11 +8606,12 @@ fn main() -> eframe::Result {
 #[cfg(test)]
 mod tests {
     use super::{
-        CaperApp, ConnectionReport, Dialog, GatewayEvent, NavigationTarget, PendingReaction,
-        PendingSend, Phase, SelfDirectTarget, endpoint, media, member_page_ids, normalize_channel,
-        permanent_send_rejection, projected_reactions, take_date_divider, timestamp_parts, voice,
+        CaperApp, ComposerToken, ConnectionReport, Dialog, GatewayEvent, NavigationTarget,
+        PendingReaction, PendingSend, Phase, SelfDirectTarget, Suggestion, TERRACOTTA, TEXT,
+        endpoint, media, member_page_ids, normalize_channel, permanent_send_rejection,
+        projected_reactions, take_date_divider, timestamp_parts, voice,
     };
-    use crate::navigation;
+    use crate::{mentions, navigation};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -10849,11 +11100,241 @@ mod tests {
             "Escape must retain composer focus"
         );
         assert!(
-            app.emoji_dismissed.is_some(),
+            app.suggestion_dismissed.is_some(),
             "Escape must dismiss the current token"
         );
         render(&mut app, &context, key(egui::Key::Enter));
         assert_eq!(app.pending.as_ref().unwrap().text, "😀 :thumbs_up");
+    }
+
+    fn press(key: egui::Key) -> Vec<egui::Event> {
+        [true, false]
+            .map(|pressed| egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            })
+            .to_vec()
+    }
+
+    fn place_caret(context: &egui::Context, draft: &str, app: &mut CaperApp) {
+        let id = egui::Id::new("message-composer");
+        app.draft = draft.replace('|', "");
+        let mut state = egui::TextEdit::load_state(context, id).unwrap();
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::one(
+                egui::text::CCursor::new(draft.chars().take_while(|c| *c != '|').count()),
+            )));
+        state.store(context, id);
+    }
+
+    fn caret(context: &egui::Context) -> usize {
+        egui::TextEdit::load_state(context, egui::Id::new("message-composer"))
+            .unwrap()
+            .cursor
+            .char_range()
+            .unwrap()
+            .primary
+            .index
+    }
+
+    fn text_shapes(output: &egui::FullOutput) -> Vec<String> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(text) => Some(text.galley.job.text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn shows(output: &egui::FullOutput, text: &str) -> bool {
+        text_shapes(output).iter().any(|label| label == text)
+    }
+
+    #[test]
+    fn mention_composer_suggests_members_and_specials_and_inserts_without_sending() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.session = Some(session());
+        render(&mut app, &context, vec![]);
+        let id = egui::Id::new("message-composer");
+        context.memory_mut(|memory| memory.request_focus(id));
+        render(&mut app, &context, vec![egui::Event::Text("@".into())]);
+        let output = render(&mut app, &context, vec![]);
+        let labels = text_shapes(&output);
+        for row in [
+            "Alex @alex",
+            "Maya @maya",
+            "@everyone Everyone in this channel",
+            "@here Everyone online in this channel",
+        ] {
+            assert!(labels.iter().any(|label| label == row), "{row}: {labels:?}");
+        }
+        assert!(
+            !labels.iter().any(|label| label.contains("@fixture_owner")),
+            "never suggest yourself: {labels:?}"
+        );
+        render(&mut app, &context, vec![egui::Event::Text("ma".into())]);
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, press(egui::Key::Enter));
+        assert_eq!(app.draft, "@maya ");
+        assert_eq!(caret(&context), 6);
+        assert!(app.pending.is_none(), "Accepting a mention must not send");
+
+        place_caret(&context, "👩‍💻 hi @AL| suffix", &mut app);
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, press(egui::Key::Tab));
+        assert_eq!(app.draft, "👩‍💻 hi @alex  suffix");
+        assert_eq!(caret(&context), "👩‍💻 hi @alex ".chars().count());
+        assert!(
+            context.memory(|memory| memory.has_focus(id)),
+            "Tab must stay in the composer"
+        );
+
+        place_caret(&context, "(@|", &mut app);
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, press(egui::Key::ArrowDown));
+        render(&mut app, &context, press(egui::Key::ArrowDown));
+        render(&mut app, &context, press(egui::Key::Tab));
+        assert_eq!(app.draft, "(@everyone ");
+
+        place_caret(&context, "mail bob@ma|", &mut app);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            !shows(&output, "Maya @maya"),
+            "an email address is not a mention"
+        );
+
+        // Selected text and active IME composition never open suggestions.
+        app.draft = "hi @ma".into();
+        let mut state = egui::TextEdit::load_state(&context, id).unwrap();
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::two(
+                egui::text::CCursor::new(3),
+                egui::text::CCursor::new(6),
+            )));
+        state.store(&context, id);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(!shows(&output, "Maya @maya"), "selection");
+        place_caret(&context, "hi @ma|", &mut app);
+        let ime = |event| vec![egui::Event::Ime(event)];
+        render(&mut app, &context, ime(egui::ImeEvent::Enabled));
+        let output = render(&mut app, &context, vec![]);
+        assert!(!shows(&output, "Maya @maya"), "IME composition");
+        render(&mut app, &context, ime(egui::ImeEvent::Disabled));
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Maya @maya"));
+        render(&mut app, &context, press(egui::Key::Escape));
+        assert!(app.suggestion_dismissed.is_some());
+        assert!(context.memory(|memory| memory.has_focus(id)));
+        render(&mut app, &context, press(egui::Key::Enter));
+        assert_eq!(app.pending.as_ref().unwrap().text, "hi @ma");
+    }
+
+    #[test]
+    fn mention_candidates_follow_the_conversation() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-direct"),
+        );
+        let names = |app: &CaperApp, query: &str| {
+            app.suggestions(&ComposerToken::Mention(mentions::Token {
+                start: 0,
+                end: query.len() + 1,
+                query: query.into(),
+            }))
+            .into_iter()
+            .map(|choice| match choice {
+                Suggestion::Mention(candidate) => candidate.name().to_owned(),
+                Suggestion::Emoji(entry) => entry.emoji.clone(),
+            })
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(names(&app, ""), ["maya"], "a DM offers its peer only");
+        assert!(names(&app, "every").is_empty(), "no specials in DMs");
+        app.directs[0].peer.id = app.account.as_ref().unwrap().id.clone();
+        assert!(names(&app, "").is_empty(), "self-notes DM suggests nobody");
+
+        app.selected_direct = None;
+        app.selected_channel = Some("chan00000001".into());
+        assert_eq!(names(&app, ""), ["alex", "maya", "everyone", "here"]);
+        app.detail = None;
+        assert_eq!(
+            names(&app, ""),
+            ["everyone", "here"],
+            "only specials until members load"
+        );
+    }
+
+    #[test]
+    fn mention_pills_and_mentions_me_rows_render_from_server_entries() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        let entry = |kind: &str, id: Option<&str>, username: Option<&str>| model::Mention {
+            kind: kind.into(),
+            id: id.map(Into::into),
+            username: username.map(Into::into),
+        };
+        let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+        messages[0].content.text = "@everyone from me".into();
+        messages[0].content.mentions = vec![entry("everyone", None, None)];
+        messages[1].content.text = "hi @Fixture_Owner and @nobody".into();
+        messages[1].content.mentions =
+            vec![entry("user", Some("fixture-owner"), Some("fixture_owner"))];
+        messages[2].content.text = "ping @alex @here".into();
+        messages[2].content.mentions = vec![entry("user", Some("fixture-alex"), Some("alex"))];
+        app.timeline.reset(messages, "4").unwrap();
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let pill = |text: &str, token: &str| {
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape,
+                egui::epaint::Shape::Text(galley) if galley.galley.job.text == text
+                    && galley.galley.job.sections.iter().any(|section|
+                        &text[section.byte_range.clone()] == token
+                            && section.format.background == TERRACOTTA.gamma_multiply(0.24)
+                            && section.format.color == TEXT
+                            && section.format.font_id.family
+                                == egui::FontFamily::Name("Satoshi Medium".into())))
+            })
+        };
+        assert!(pill("@everyone from me", "@everyone"));
+        assert!(pill("hi @Fixture_Owner and @nobody", "@Fixture_Owner"));
+        assert!(!pill("hi @Fixture_Owner and @nobody", "@nobody"));
+        assert!(pill("ping @alex @here", "@alex"));
+        assert!(!pill("ping @alex @here", "@here"), "no here entry");
+        let tints = output
+            .shapes
+            .iter()
+            .filter(|shape| {
+                matches!(&shape.shape,
+                egui::epaint::Shape::Rect(rect) if rect.fill == TERRACOTTA.gamma_multiply(0.08))
+            })
+            .count();
+        assert_eq!(
+            tints, 1,
+            "only the message naming me is tinted, not my own @everyone"
+        );
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::epaint::Shape::Rect(rect) if rect.fill == TERRACOTTA && rect.rect.width() == 2.0)));
     }
 
     #[test]
@@ -12159,6 +12640,7 @@ mod tests {
                 version: 1,
                 kind: "text".into(),
                 text: pending.text.clone(),
+                mentions: Vec::new(),
             },
             reactions: Vec::new(),
             reaction_seq: None,
@@ -12236,6 +12718,7 @@ mod tests {
                     version: 1,
                     kind: "text".into(),
                     text: "sent".into(),
+                    mentions: Vec::new(),
                 },
                 reactions: Vec::new(),
                 reaction_seq: None,

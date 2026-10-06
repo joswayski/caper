@@ -65,9 +65,12 @@ the API back only stops resolving new mentions. Validation:
 - Fixture: `native-parity-fixture.mjs` resolves mentions on send like the API and
   seeds one message mentioning `fixture_owner`.
 - Android: JVM unit tests and lint; no device, emulator or IME check.
+- Rust desktop: unit and headless egui tests, fmt, clippy and the full desktop
+  suite with the pinned toolchain, plus Linux Xvfb rendering of the
+  `parity-mentions` and `parity-direct` fixtures; no Windows or IME check.
 - Apple: the pure mention logic and its 13 tests ran with a Linux Swift toolchain;
-  SwiftUI/UIKit/AppKit code and the parity UI test need Apple CI. SwiftUI and
-  Android inline pills are square-cornered background spans.
+  SwiftUI/UIKit/AppKit code and the parity UI test need Apple CI. SwiftUI,
+  Android and egui inline pills are square-cornered background spans.
 
 Web channel names and `⋯` actions have a separate row above voice
 activity. Join, Joining and Switch here use one fixed-width action slot;
