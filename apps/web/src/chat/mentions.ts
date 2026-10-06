@@ -72,15 +72,25 @@ function mentionList(mentions: unknown): ChatMention[] {
     : [];
 }
 
+/** A person a user-mention pill points at; `everyone`/`here` pills have none. */
+export interface MentionedUser { id: string; username: string }
+
+export interface MentionSegment {
+  text: string;
+  mention: boolean;
+  user?: MentionedUser;
+}
+
 /** Splits message text into plain runs and mentions the server resolved. */
-export function mentionSegments(text: string, mentions: ChatMention[] | undefined): Array<{ text: string; mention: boolean }> {
-  const resolved = new Set<string>();
+export function mentionSegments(text: string, mentions: ChatMention[] | undefined): MentionSegment[] {
+  const resolved = new Map<string, MentionedUser | undefined>();
   for (const mention of mentionList(mentions)) {
-    if (mention.type === "user" && typeof mention.username === "string") resolved.add(mention.username.toLowerCase());
-    else if (mention.type === "everyone" || mention.type === "here") resolved.add(mention.type);
+    if (mention.type === "user" && typeof mention.username === "string" && typeof mention.id === "string") {
+      resolved.set(mention.username.toLowerCase(), { id: mention.id, username: mention.username });
+    } else if (mention.type === "everyone" || mention.type === "here") resolved.set(mention.type, undefined);
   }
   if (!resolved.size) return [{ text, mention: false }];
-  const segments: Array<{ text: string; mention: boolean }> = [];
+  const segments: MentionSegment[] = [];
   let plainStart = 0;
   let index = 0;
   while (index < text.length) {
@@ -90,7 +100,8 @@ export function mentionSegments(text: string, mentions: ChatMention[] | undefine
     const name = text.slice(index + 1, end).toLowerCase();
     if (name.length <= MAX_NAME && resolved.has(name)) {
       if (index > plainStart) segments.push({ text: text.slice(plainStart, index), mention: false });
-      segments.push({ text: text.slice(index, end), mention: true });
+      const user = resolved.get(name);
+      segments.push(user ? { text: text.slice(index, end), mention: true, user } : { text: text.slice(index, end), mention: true });
       plainStart = end;
     }
     index = Math.max(end, index + 1);
@@ -105,4 +116,23 @@ export function mentionsAccount(message: ChatMessage, accountId: string | undefi
   return mentionList(message.content.mentions).some((mention) => mention.type === "user"
     ? mention.id === accountId
     : (mention.type === "everyone" || mention.type === "here") && message.author.id !== accountId);
+}
+
+/** What the profile card shows: the best local match by id, never a network call. */
+export interface MentionCardPerson extends MentionedUser {
+  displayName?: string;
+  avatarId?: number | null;
+  self: boolean;
+}
+
+/** `directory` is ordered by preference: space members, then people, then DM peers. */
+export function mentionCardPerson(user: MentionedUser, directory: MentionCandidate[], accountId: string | undefined): MentionCardPerson {
+  const known = directory.find((candidate) => candidate.id === user.id);
+  return {
+    id: user.id,
+    username: known?.username ?? user.username,
+    displayName: known?.displayName,
+    avatarId: known?.avatarId,
+    self: !!accountId && user.id === accountId,
+  };
 }

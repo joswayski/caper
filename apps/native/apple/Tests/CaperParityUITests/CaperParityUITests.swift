@@ -290,6 +290,20 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertFalse(app.buttons["mention-suggestion-maya"].exists)
     }
 
+    func testOwnMentionPillOpensCardWithoutMessageButton() throws {
+        let app = launch()
+        // The fixture's seeded message from Alex mentions @fixture_owner (you).
+        let row = try require(app.descendants(matching: .any)["message-row-chan00000001m04"], timeout: 30,
+                              "Missing the seeded message that mentions you")
+        let pill = try require(row.links.matching(NSPredicate(format: "label CONTAINS %@", "fixture_owner")).firstMatch,
+                               timeout: 5, "The @fixture_owner pill must be a link")
+        pill.tap()
+        _ = try require(app.descendants(matching: .any)["mention-card"], timeout: 5, "Tapping a pill must open the mention card")
+        XCTAssertTrue(app.descendants(matching: .any)["mention-card-you"].waitForExistence(timeout: 2), "Your own card says You")
+        XCTAssertFalse(app.buttons["mention-card-message"].exists, "Your own card has no Message button")
+        capture("mention-card-self", app: app)
+    }
+
     func testReactionChipsPickerAndEmptySearchState() throws {
         let app = launch(fixture: "reaction-chips")
         let own = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "selected by you")).firstMatch

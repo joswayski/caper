@@ -962,15 +962,16 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
   const [directError, setDirectError] = useState<string>();
   const [selfDirectPending, setSelfDirectPending] = useState(false);
   const [directView, setDirectView] = useState<{ conversation: DirectConversation; history?: GeneralChatHistory; error?: string }>();
-  // DM `@` suggestions; the previous list stays while a refresh is in flight.
+  // DM `@` suggestions and mention profile cards; the previous list stays while
+  // a refresh is in flight. Loaded once signed in and again whenever a DM opens.
   const [people, setPeople] = useState<Person[]>();
   const directId = directView?.conversation.id;
   useEffect(() => {
-    if (!directId) return;
+    if (!account?.id) return;
     let current = true;
     void listPeople().then((result) => { if (current) setPeople(result.people); }).catch(() => {});
     return () => { current = false; };
-  }, [directId]);
+  }, [directId, account?.id]);
   const detail = view?.detail ?? (!spaces.length ? { space: { id: "", name: "Direct messages", ownerId: "" }, channels: [], members: [] } : undefined);
   const navigation = useRef(createSpaceNavigation());
   const [selected, setSelected] = useState<{ spaceId?: string; channelId?: string; dmId?: string }>(() => embedded ? {} : selectedFromUrl());
@@ -1745,6 +1746,12 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
         initialHistoryError={directView ? directView.error : view?.channelId === channel.id ? view.historyError : undefined}
         onReadCursor={directView ? readDirect : undefined}
         mentionMembers={directView ? people ?? [directView.conversation.peer] : view?.detail ? detail.members : undefined}
+        mentionDirectory={[...(directView ? [] : detail.members), ...(people ?? []), ...directs.map((conversation) => conversation.peer)]}
+        onMessagePerson={async (username) => {
+          const conversation = await createDirectConversation(username);
+          setDirects((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
+          openDirect(conversation);
+        }}
         onHistoryChange={navigation.current.rememberHistory}
         spaceRail={rail}
         channelNavigation={channelNavigation}

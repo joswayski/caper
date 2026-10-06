@@ -10,7 +10,8 @@ import { appGateway, type PresenceStatus } from "../gateway/client.ts";
 import Avatar from "../components/Avatar";
 import { emojiAsset } from "./emoji.ts";
 import { emojiToken, emojiSuggestions, insertEmoji, loadEmojiChoices, type EmojiChoice } from "./emoji-autocomplete.ts";
-import { insertMention, mentionName, mentionSegments, mentionSuggestions, mentionToken, mentionsAccount, specialMentionLabels, type MentionCandidate, type MentionSuggestion } from "./mentions.ts";
+import { insertMention, mentionCardPerson, mentionName, mentionSegments, mentionSuggestions, mentionToken, mentionsAccount, specialMentionLabels, type MentionCandidate, type MentionSuggestion } from "./mentions.ts";
+import MentionCard, { type MentionCardTarget } from "./MentionCard.tsx";
 import "./chat.css";
 
 // Virtuoso's prepend index is local bookkeeping, never the bigint server cursor.
@@ -49,7 +50,7 @@ function MessageList({ context, children, ...props }: ListProps & ContextProp<Hi
 const listComponents = { Header: HistoryHeader, List: MessageList };
 const measureItem = (element: HTMLElement, field: "offsetHeight" | "offsetWidth") => element[field];
 
-export default function Chat({ name, signedIn, identityReady, channelId, channelName: expectedChannelName, direct = false, onReadCursor, initialHistory, initialHistoryError, showTitle = false, headerActions, readOnly = false, composerNotice, messageSounds = true, onAuthorChange, onHistoryChange, onLocalPresenceChange, onOnlineChange, mentionMembers }: { name: string; signedIn: boolean; identityReady: boolean; channelId?: string; channelName?: string; direct?: boolean; onReadCursor?: (seq: string) => void; initialHistory?: GeneralChatHistory; initialHistoryError?: string; showTitle?: boolean; headerActions?: ReactNode; readOnly?: boolean; composerNotice?: ReactNode; messageSounds?: boolean; onAuthorChange?: (author: ChatAuthor) => void; onHistoryChange?: (history: GeneralChatHistory) => void; onLocalPresenceChange?: (status: PresenceStatus) => void; onOnlineChange?: (online: boolean) => void; /** People `@` can suggest; undefined until loaded. */ mentionMembers?: MentionCandidate[] }) {
+export default function Chat({ name, signedIn, identityReady, channelId, channelName: expectedChannelName, direct = false, onReadCursor, initialHistory, initialHistoryError, showTitle = false, headerActions, readOnly = false, composerNotice, messageSounds = true, onAuthorChange, onHistoryChange, onLocalPresenceChange, onOnlineChange, mentionMembers, mentionDirectory = [], onMessagePerson }: { name: string; signedIn: boolean; identityReady: boolean; channelId?: string; channelName?: string; direct?: boolean; onReadCursor?: (seq: string) => void; initialHistory?: GeneralChatHistory; initialHistoryError?: string; showTitle?: boolean; headerActions?: ReactNode; readOnly?: boolean; composerNotice?: ReactNode; messageSounds?: boolean; onAuthorChange?: (author: ChatAuthor) => void; onHistoryChange?: (history: GeneralChatHistory) => void; onLocalPresenceChange?: (status: PresenceStatus) => void; onOnlineChange?: (online: boolean) => void; /** People `@` can suggest; undefined until loaded. */ mentionMembers?: MentionCandidate[]; /** Profile-card lookup, most specific first. */ mentionDirectory?: MentionCandidate[]; onMessagePerson?: (username: string) => Promise<void> }) {
   const [state, setState] = useState(() => initialChatView(initialHistory, initialHistoryError));
   const [showConnectionStatus, setShowConnectionStatus] = useState(false);
   const [firstItemIndex, setFirstItemIndex] = useState(INITIAL_ITEM_INDEX);
@@ -60,12 +61,14 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   const [reactorsTarget, setReactorsTarget] = useState<ReactorsTarget>();
   const [actionStatus, setActionStatus] = useState("");
   const [reactionSaves, setReactionSaves] = useState<Record<string, ReactionSave | undefined>>({});
+  const [mentionCard, setMentionCard] = useState<MentionCardTarget>();
   const press = useRef<{ timer: ReturnType<typeof setTimeout>; x: number; y: number; pointerId: number }>(undefined);
   const suppressClick = useRef(false);
   const cancelPress = () => { clearTimeout(press.current?.timer); press.current = undefined; };
   useEffect(() => {
     setActionTarget(undefined);
     setReactorsTarget(undefined);
+    setMentionCard(undefined);
     setActionStatus("");
     setReactionSaves({});
     // The drawer can appear under the held finger. Its release click must not
@@ -351,7 +354,19 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       <div>
         <header><strong>{author?.name ?? name}</strong>{author?.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt, timeFormatter) : ""}</time></header>
         <p>{"content" in message
-          ? mentionSegments(message.content.text, message.content.mentions).map((segment, part) => segment.mention ? <span key={part} className="chat-mention">{segment.text}</span> : segment.text)
+          ? mentionSegments(message.content.text, message.content.mentions).map((segment, part) => {
+            if (!segment.mention) return segment.text;
+            const user = segment.user;
+            if (!user) return <span key={part} className="chat-mention">{segment.text}</span>;
+            const known = mentionDirectory.find((candidate) => candidate.id === user.id);
+            return <button type="button" key={part} className="chat-mention chat-mention-person" aria-haspopup="dialog"
+              aria-label={`Open profile for ${known?.displayName ?? `@${user.username}`}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                setActionTarget(undefined);
+                setMentionCard({ person: mentionCardPerson(user, mentionDirectory, state.author?.id), anchor: event.currentTarget, drawer: isTouchLayout() });
+              }}>{segment.text}</button>;
+          })
           : message.text}</p>
         {"content" in message && <>
           <button type="button" className="chat-message-actions-trigger sr-only" aria-haspopup="dialog" onClick={(event) => openActions(message.id, event.currentTarget)}>Message actions for {message.author.name}</button>
@@ -423,6 +438,8 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       <p className="sr-only" aria-live="polite" aria-atomic="true">{state.phase === "ready" && latestMessage && `${latestMessage.author.name}: ${latestMessage.content.text}`}</p>
       <p className="sr-only" role="status">{actionStatus}</p>
     </div>
+
+    {mentionCard && <MentionCard key={mentionCard.person.id} target={mentionCard} onClose={() => setMentionCard(undefined)} onMessage={onMessagePerson} />}
 
     {actionTarget && actionMessage && <MessageActions key={actionMessage.id} message={actionMessage} target={actionTarget} authorId={state.author?.id}
       canReact={!readOnly && !!state.author} onReact={react} onClose={() => setActionTarget(undefined)} onCopied={setActionStatus}

@@ -249,9 +249,13 @@ interface CallProps {
   onChatOnlineChange?: (online: boolean) => void;
   /** People the composer's `@` can suggest; undefined until loaded. */
   mentionMembers?: MentionCandidate[];
+  /** Profile-card lookup for mention pills, most specific first. */
+  mentionDirectory?: MentionCandidate[];
+  /** Opens (or starts) a DM from a mention's profile card. */
+  onMessagePerson?: (username: string) => Promise<void>;
 }
 
-export default function Call({ channel, onReadCursor, channelActions, voiceChannels, spaceRail, channelNavigation, membersPanel, navigationOpen = false, onNavigationToggle, initialAccount, initialHistory, initialHistoryError, onHistoryChange, embedded = false, engaged = true, onChatOnlineChange, mentionMembers }: CallProps = {}) {
+export default function Call({ channel, onReadCursor, channelActions, voiceChannels, spaceRail, channelNavigation, membersPanel, navigationOpen = false, onNavigationToggle, initialAccount, initialHistory, initialHistoryError, onHistoryChange, embedded = false, engaged = true, onChatOnlineChange, mentionMembers, mentionDirectory, onMessagePerson }: CallProps = {}) {
   const systemSounds = useSyncExternalStore(subscribeSystemSounds, getSystemSoundsEnabled, () => true);
   const [state, setState] = useState(initialState);
   const [name, setName] = useState(initialAccount?.displayName ?? "");
@@ -827,7 +831,7 @@ export default function Call({ channel, onReadCursor, channelActions, voiceChann
         </ChannelSidebar>
         <div className="stage">
           {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened || mutedParticipants.has(media.participantId)} output={output} volume={outputVolume * (participantVolumes[media.participantId] ?? 100) / 100} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
-          <Chat key={`${channel?.id ?? "general"}:${channelJoined}`} name={name} signedIn={!!account} identityReady={identityReady && engaged} direct={channel?.direct} onReadCursor={onReadCursor} readOnly={!channelJoined} composerNotice={channelActions} messageSounds={engaged && channelJoined} onOnlineChange={onChatOnlineChange} mentionMembers={mentionMembers} channelId={channel?.id} channelName={channel?.name} initialHistory={initialHistory} initialHistoryError={initialHistoryError} onHistoryChange={onHistoryChange} showTitle={!!channel || embedded} onAuthorChange={setChatAuthor} onLocalPresenceChange={accountPresence ? undefined : setLocalPresence} headerActions={<div className="voice-actions">
+          <Chat key={`${channel?.id ?? "general"}:${channelJoined}`} name={name} signedIn={!!account} identityReady={identityReady && engaged} direct={channel?.direct} onReadCursor={onReadCursor} readOnly={!channelJoined} composerNotice={channelActions} messageSounds={engaged && channelJoined} onOnlineChange={onChatOnlineChange} mentionMembers={mentionMembers} mentionDirectory={mentionDirectory} onMessagePerson={onMessagePerson} channelId={channel?.id} channelName={channel?.name} initialHistory={initialHistory} initialHistoryError={initialHistoryError} onHistoryChange={onHistoryChange} showTitle={!!channel || embedded} onAuthorChange={setChatAuthor} onLocalPresenceChange={accountPresence ? undefined : setLocalPresence} headerActions={<div className="voice-actions">
             {!audioPanel && actionError && <div className="room-error chat-refresh-error" role="alert">{actionError}</div>}
             {channelJoined && channelActions}
             {onNavigationToggle && <button className="navigation-toggle" type="button" aria-expanded={navigationOpen} onClick={onNavigationToggle}><Menu aria-hidden="true" />Browse</button>}
