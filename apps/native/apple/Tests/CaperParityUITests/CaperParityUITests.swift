@@ -253,12 +253,14 @@ final class CaperParityUITests: XCTestCase {
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: add)
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
         #if os(macOS)
-        // A flexible native Menu can stretch this overlay across the message,
-        // exposing an Add reaction click target that misses its visible icon.
+        // Keep the action's declared size and trailing placement, and verify
+        // moving the pointer into its overlay does not hide the click target.
         XCTAssertEqual(add.frame.width, 24, accuracy: 1)
         XCTAssertEqual(add.frame.height, 24, accuracy: 1)
         XCTAssertGreaterThan(add.frame.minX, row.frame.midX, "Message actions must stay at the trailing edge")
         XCTAssertTrue(add.isHittable)
+        add.hover()
+        XCTAssertTrue(add.isHittable, "Moving from the row onto Add reaction must not hide its click target")
         #endif
         add.tap()
     }
