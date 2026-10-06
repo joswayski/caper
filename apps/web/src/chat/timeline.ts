@@ -1,12 +1,15 @@
-import { sequence, type ChatMessage, type ChatReactionEvent } from "./types.ts";
+import { sequence, type ChatAttachmentsEvent, type ChatMessage, type ChatReactionEvent } from "./types.ts";
 
 const MAX_PENDING_EVENTS = 256;
+
+export type ChatTimelineEvent = ChatMessage | ChatReactionEvent | ChatAttachmentsEvent;
 
 export class ChatTimeline {
   private cursorValue = 0n;
   private readonly byId = new Map<string, ChatMessage>();
-  private readonly eventBuffer = new Map<bigint, ChatMessage | ChatReactionEvent>();
+  private readonly eventBuffer = new Map<bigint, ChatTimelineEvent>();
   private readonly unseenReactions = new Map<string, ChatReactionEvent>();
+  private readonly unseenAttachments = new Map<string, ChatAttachmentsEvent>();
   private sortedMessages?: ChatMessage[];
 
   get cursor() { return this.cursorValue.toString(); }
@@ -23,6 +26,7 @@ export class ChatTimeline {
     this.byId.clear();
     this.eventBuffer.clear();
     this.unseenReactions.clear();
+    this.unseenAttachments.clear();
     this.sortedMessages = undefined;
     for (const message of messages) this.merge(message);
   }
@@ -35,7 +39,7 @@ export class ChatTimeline {
     this.merge(message);
   }
 
-  applyEvent(message: ChatMessage | ChatReactionEvent): "applied" | "buffered" | "duplicate" | "overflow" {
+  applyEvent(message: ChatTimelineEvent): "applied" | "buffered" | "duplicate" | "overflow" {
     const next = sequence(message.seq);
     if (next <= this.cursorValue) {
       this.merge(message);
@@ -47,11 +51,11 @@ export class ChatTimeline {
       return "buffered";
     }
     this.applyContiguous(next, message);
-    if (this.unseenReactions.size > MAX_PENDING_EVENTS) return "overflow";
+    if (this.unseenReactions.size > MAX_PENDING_EVENTS || this.unseenAttachments.size > MAX_PENDING_EVENTS) return "overflow";
     return "applied";
   }
 
-  private applyContiguous(next: bigint, message: ChatMessage | ChatReactionEvent) {
+  private applyContiguous(next: bigint, message: ChatTimelineEvent) {
     this.merge(message);
     this.cursorValue = next;
     while (true) {
@@ -78,19 +82,49 @@ export class ChatTimeline {
     }
   }
 
-  private merge(message: ChatMessage | ChatReactionEvent) {
-    if ("type" in message) { this.mergeReactions(message); return; }
+  /** Same revision rule as reactions: a replayed older event (for example a
+   * stale "processing") never overwrites a newer snapshot. */
+  private mergeAttachments(event: ChatAttachmentsEvent) {
+    const existing = this.byId.get(event.messageId);
+    if (existing) {
+      if (sequence(event.seq) > sequence(existing.attachmentsSeq ?? "0")) {
+        this.byId.set(existing.id, { ...existing, content: { ...existing.content, attachments: event.attachments }, attachmentsSeq: event.seq });
+        this.sortedMessages = undefined;
+      }
+    } else {
+      const previous = this.unseenAttachments.get(event.messageId);
+      if (!previous || sequence(event.seq) > sequence(previous.seq)) this.unseenAttachments.set(event.messageId, event);
+    }
+  }
+
+  private merge(message: ChatTimelineEvent) {
+    if ("type" in message) {
+      if (message.type === "message.reactions") this.mergeReactions(message);
+      else this.mergeAttachments(message);
+      return;
+    }
     const existing = this.byId.get(message.id);
     if (!existing) {
       this.byId.set(message.id, message);
       this.sortedMessages = undefined;
-    } else if (sequence(message.reactionSeq ?? "0") > sequence(existing.reactionSeq ?? "0")) {
+    } else {
       // reset puts fresh rows first; retain their author metadata even when a
-      // cached row carries a more recent HTTP reaction snapshot.
-      this.byId.set(message.id, { ...existing, reactions: message.reactions, reactionSeq: message.reactionSeq });
-      this.sortedMessages = undefined;
+      // cached row carries a more recent reaction or attachment snapshot.
+      let next = existing;
+      if (sequence(message.reactionSeq ?? "0") > sequence(existing.reactionSeq ?? "0")) {
+        next = { ...next, reactions: message.reactions, reactionSeq: message.reactionSeq };
+      }
+      if (sequence(message.attachmentsSeq ?? "0") > sequence(existing.attachmentsSeq ?? "0")) {
+        next = { ...next, content: { ...next.content, attachments: message.content.attachments }, attachmentsSeq: message.attachmentsSeq };
+      }
+      if (next !== existing) {
+        this.byId.set(message.id, next);
+        this.sortedMessages = undefined;
+      }
     }
     const unseen = this.unseenReactions.get(message.id);
     if (unseen) { this.mergeReactions(unseen); this.unseenReactions.delete(message.id); }
+    const unseenAttachments = this.unseenAttachments.get(message.id);
+    if (unseenAttachments) { this.mergeAttachments(unseenAttachments); this.unseenAttachments.delete(message.id); }
   }
 }

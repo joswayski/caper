@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { ChatTimeline } from "../chat/timeline.ts";
-import { isChatReactionEvent, type ChatMessage, type ChatReactionEvent } from "../chat/types.ts";
+import { isChatReactionEvent, type ChatAttachmentsEvent, type ChatMessage, type ChatReactionEvent } from "../chat/types.ts";
 import { emojiAsset, emojiCode, emojiNames, preloadEmojiImages } from "../chat/emoji.ts";
 
 function message(seq: string, id = `message-${seq}`): ChatMessage {
@@ -273,4 +273,57 @@ test("fresh author metadata coexists with newer cached reaction revisions", () =
   assert.equal(timeline.messages[0].author.name, "Fresh name");
   assert.deepEqual(timeline.messages[0].reactions, reaction("3").reactions);
   assert.equal(timeline.cursor, "2");
+});
+
+function attachmentsEvent(seq: string, status: "processing" | "ready" | "failed", messageId = "message-1"): ChatAttachmentsEvent {
+  return {
+    type: "message.attachments", schemaVersion: 1, channelId: "general", seq, messageId,
+    attachments: [{ id: "f1", kind: "image", contentType: "image/avif", name: "a.avif", size: 1, status,
+      ...(status === "ready" ? { url: "https://cdn.test/original/f1" } : {}) }],
+  };
+}
+
+function withFiles(value: ChatMessage, status: "processing" | "ready" | "failed", attachmentsSeq?: string): ChatMessage {
+  return { ...value, content: { ...value.content, attachments: attachmentsEvent("1", status).attachments }, ...(attachmentsSeq ? { attachmentsSeq } : {}) };
+}
+
+const statusOf = (value: ChatMessage) => value.content.attachments?.[0]?.status;
+
+test("attachment updates replace content in sequence and fill gaps like reactions", () => {
+  const timeline = new ChatTimeline();
+  timeline.reset([withFiles(message("1"), "processing")], "1");
+  assert.equal(timeline.applyEvent(message("3")), "buffered");
+  assert.equal(timeline.applyEvent(attachmentsEvent("2", "ready")), "applied");
+  assert.equal(timeline.cursor, "3");
+  assert.deepEqual(timeline.messages.map((m) => m.seq), ["1", "3"], "updates never become messages");
+  assert.equal(statusOf(timeline.messages[0]), "ready");
+  assert.equal(timeline.messages[0].attachmentsSeq, "2");
+  assert.equal(timeline.messages[0].content.text, "<b>safe 1</b>", "text is kept");
+  assert.equal(timeline.applyEvent(attachmentsEvent("2", "processing")), "duplicate");
+  assert.equal(statusOf(timeline.messages[0]), "ready", "a replayed older processing event cannot regress a ready file");
+});
+
+test("history snapshots with a newer attachmentsSeq win over replayed events and stale pages", () => {
+  const timeline = new ChatTimeline();
+  const ready = withFiles(message("1"), "ready", "5");
+  timeline.reset([ready], "5");
+  timeline.applyEvent(attachmentsEvent("4", "processing"));
+  assert.equal(statusOf(timeline.messages[0]), "ready");
+  timeline.applyEvent(attachmentsEvent("6", "failed"));
+  assert.equal(statusOf(timeline.messages[0]), "failed");
+  timeline.prepend([ready]);
+  assert.equal(statusOf(timeline.messages[0]), "failed", "an older fetched page cannot restore a stale snapshot");
+  timeline.prepend([withFiles(message("1"), "ready", "9")]);
+  assert.equal(statusOf(timeline.messages[0]), "ready", "a newer fetched snapshot is taken");
+  assert.equal(timeline.messages[0].attachmentsSeq, "9");
+});
+
+test("attachment updates for unloaded messages apply once the message arrives", () => {
+  const timeline = new ChatTimeline();
+  timeline.reset([message("10")], "10");
+  timeline.applyEvent(attachmentsEvent("11", "ready"));
+  assert.equal(timeline.messages.length, 1);
+  timeline.prepend([withFiles(message("1"), "processing")]);
+  assert.equal(statusOf(timeline.messages[0]), "ready");
+  assert.equal(timeline.cursor, "11");
 });

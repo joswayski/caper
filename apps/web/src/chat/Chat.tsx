@@ -6,8 +6,8 @@ import MessageReactions, { type ReactionSave } from "./MessageReactions.tsx";
 import MessageActions, { type MessageActionTarget } from "./MessageActions.tsx";
 import { dateDivider } from "./dates.ts";
 import { attachmentsOf, type ChatAttachment, type ChatAuthor, type GeneralChatHistory } from "./types.ts";
-import { DraftAttachments, MessageAttachments, type DraftAttachment } from "./Attachments.tsx";
-import { MAX_ATTACHMENTS, browserTransport, prepareFile, refreshAttachmentUrls, uploadPrepared, uploadSettings, type CompressionSettings } from "./uploads.ts";
+import { DraftAttachments, MessageAttachments, type DraftAttachment, type LocalPreview } from "./Attachments.tsx";
+import { MAX_ATTACHMENTS, browserTransport, refreshAttachmentUrls, uploadFile, uploadSettings, type UploadLimits } from "./uploads.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
 import Avatar from "../components/Avatar";
 import "./chat.css";
@@ -120,10 +120,12 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   const [drafts, setDrafts] = useState<DraftAttachment[]>([]);
   const uploads = useRef(new Map<string, AbortController>());
   const objectUrls = useRef(new Set<string>());
-  // Present only when the API has uploads configured; carries its compression settings.
-  const [compression, setCompression] = useState<CompressionSettings>();
-  const uploadsEnabled = !!compression;
-  const [freshUrls, setFreshUrls] = useState<Record<string, { url: string; previewUrl?: string }>>({});
+  // Present only when the API has uploads configured; carries its upload limit.
+  const [uploadLimits, setUploadLimits] = useState<UploadLimits>();
+  const uploadsEnabled = !!uploadLimits;
+  const [freshUrls, setFreshUrls] = useState<Record<string, { url?: string; previewUrl?: string }>>({});
+  // The sender's local copies of sent files, shown while the server processes them.
+  const [localPreviews, setLocalPreviews] = useState<Record<string, LocalPreview>>({});
   const followLatest = useRef(true);
   const latestMessage = state.messages.at(-1);
   // Reaction events advance the conversation stream without adding a message.
@@ -210,9 +212,9 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   useEffect(() => { clientRef.current?.setSounds(messageSounds); }, [messageSounds]);
 
   useEffect(() => {
-    if (!signedIn) { setCompression(undefined); return; }
+    if (!signedIn) { setUploadLimits(undefined); return; }
     let active = true;
-    void uploadSettings().then((settings) => { if (active) setCompression(settings); });
+    void uploadSettings().then((limits) => { if (active) setUploadLimits(limits); });
     return () => { active = false; };
   }, [signedIn]);
 
@@ -230,22 +232,23 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
 
   const addFiles = (files: File[]) => {
     const channel = state.channelId;
-    if (!signedIn || !uploadsEnabled || !channel || !files.length) return;
+    const limits = uploadLimits;
+    if (!signedIn || !limits || !channel || !files.length) return;
     const room = MAX_ATTACHMENTS - drafts.length;
     if (room <= 0) { setValidationError(`You can attach up to ${MAX_ATTACHMENTS} files.`); return; }
     setValidationError(files.length > room ? `Only ${room} more file${room === 1 ? "" : "s"} can be attached.` : undefined);
     for (const file of files.slice(0, room)) {
       const key = crypto.randomUUID();
-      const localUrl = file.type.startsWith("image/") || file.type.startsWith("video/") ? URL.createObjectURL(file) : undefined;
+      const localKind = file.type.startsWith("image/") ? "image" as const : file.type.startsWith("video/") ? "video" as const : undefined;
+      const localUrl = localKind ? URL.createObjectURL(file) : undefined;
       if (localUrl) objectUrls.current.add(localUrl);
       const controller = new AbortController();
       uploads.current.set(key, controller);
-      setDrafts((current) => [...current, { key, name: file.name, kind: file.type.startsWith("image/") ? "image" : "file", localUrl, sourceSize: file.size, progress: 0 }]);
+      setDrafts((current) => [...current, { key, name: file.name, localUrl, localKind, size: file.size, progress: 0 }]);
       void (async () => {
         try {
-          const prepared = await prepareFile(file, compression, (fraction) => updateDraft(key, { compressing: fraction }));
-          updateDraft(key, { name: prepared.name, kind: prepared.kind, storedSize: prepared.blob.size });
-          const attachment = await uploadPrepared(channel, prepared, browserTransport, (progress) => updateDraft(key, { progress }), controller.signal);
+          // The original goes up unchanged; the server's media worker compresses it.
+          const attachment = await uploadFile(channel, file, limits, browserTransport, (progress) => updateDraft(key, { progress }), controller.signal);
           updateDraft(key, { attachment, progress: 1 });
         } catch (error) {
           if (!controller.signal.aborted) updateDraft(key, { error: error instanceof Error ? error.message : "Upload failed." });
@@ -265,7 +268,9 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   const refreshUrls = useCallback((ids: string[]) => {
     void refreshAttachmentUrls(ids).then((urls) => { if (Object.keys(urls).length) setFreshUrls((current) => ({ ...current, ...urls })); });
   }, []);
-  const withFreshUrls = (attachments: ChatAttachment[]) => attachments.map((attachment) => ({ ...attachment, ...freshUrls[attachment.id] }));
+  // Only ready files have URLs worth refreshing; processing ones get theirs from events.
+  const withFreshUrls = (attachments: ChatAttachment[]) => attachments.map((attachment) =>
+    attachment.status === undefined || attachment.status === "ready" ? { ...attachment, ...freshUrls[attachment.id] } : attachment);
 
   useEffect(() => { onOnlineChange?.(state.online); }, [state.online, onOnlineChange]);
 
@@ -316,9 +321,11 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       setValidationError(drafts.some((item) => item.error) ? "Remove files that failed to upload first." : "Wait for files to finish uploading.");
       return;
     }
-    // Pending messages show local copies until the server's signed URLs arrive.
-    const attachments = drafts.flatMap((item) => item.attachment
-      ? [{ ...item.attachment, url: item.localUrl, previewUrl: item.localUrl }] : []);
+    // Sent files show the sender's local copies until processing finishes.
+    const attachments = drafts.flatMap((item) => item.attachment ? [item.attachment] : []);
+    const local = Object.fromEntries(drafts.flatMap((item) => item.attachment && item.localUrl && item.localKind
+      ? [[item.attachment.id, { url: item.localUrl, video: item.localKind === "video" }] as const] : []));
+    if (Object.keys(local).length) setLocalPreviews((current) => ({ ...current, ...local }));
     try {
       await clientRef.current?.send(submitted, attachments);
     } catch (error) {
@@ -362,7 +369,8 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       <div>
         <header><strong>{author?.name ?? name}</strong>{author?.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt, timeFormatter) : ""}</time></header>
         {("content" in message ? message.content.text : message.text) && <p>{"content" in message ? message.content.text : message.text}</p>}
-        <MessageAttachments attachments={"content" in message ? withFreshUrls(attachmentsOf(message)) : message.attachments ?? []} onExpired={pending ? undefined : refreshUrls} />
+        <MessageAttachments attachments={"content" in message ? withFreshUrls(attachmentsOf(message)) : message.attachments ?? []}
+          progress={state.attachmentProgress} localPreviews={localPreviews} onExpired={pending ? undefined : refreshUrls} />
         {"content" in message && <>
           <button type="button" className="chat-message-actions-trigger sr-only" aria-haspopup="dialog" onClick={(event) => openActions(message.id, event.currentTarget)}>Message actions for {message.author.name}</button>
           <MessageReactions message={message} authorId={state.author?.id} readOnly={readOnly} save={reactionSaves[message.id]} onReact={react}

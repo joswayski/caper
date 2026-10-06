@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { attachmentsOf, isChatMessage, type ChatMessage } from "../chat/types.ts";
-import { attachmentKind, compressible, uploadSettings, compressionSettings, stillPlan, videoTargetSize, DEFAULT_COMPRESSION, fitWithin, formatBytes, keepCompressed, refreshAttachmentUrls, renamed, uploadPrepared, urlExpiry, UploadError, type UploadTransport } from "../chat/uploads.ts";
+import { attachmentView, attachmentsOf, isChatAttachment, isChatAttachmentProgressEvent, isChatAttachmentsEvent, isChatMessage, type ChatAttachment, type ChatMessage } from "../chat/types.ts";
+import { formatBytes, refreshAttachmentUrls, uploadFile, uploadSettings, uploadSizeError, urlExpiry, UploadError, type UploadTransport } from "../chat/uploads.ts";
 
 const message = (content: unknown) => ({
   id: "m1", channelId: "c1", seq: "1", createdAt: "2026-10-01T00:00:00Z", clientMessageId: "x",
   author: { id: "a", name: "A", isGuest: false }, content,
+});
+
+const file = (overrides: Partial<ChatAttachment> = {}): ChatAttachment => ({
+  id: "f1", kind: "image", contentType: "image/avif", name: "a.avif", size: 10, ...overrides,
 });
 
 test("messages with attachments stay valid and malformed files are skipped, not fatal", () => {
@@ -18,113 +22,164 @@ test("messages with attachments stay valid and malformed files are skipped, not 
   assert.deepEqual(attachmentsOf(value as ChatMessage).map((item) => item.id), ["f1"]);
   assert.ok(isChatMessage(message({ version: 1, type: "text", text: "plain" })));
   assert.ok(!isChatMessage(message({ version: 1, type: "text", text: "", attachments: "nope" })));
+  assert.ok(isChatMessage({ ...message({ version: 1, type: "text", text: "" }), attachmentsSeq: "7" }));
+  assert.ok(!isChatMessage({ ...message({ version: 1, type: "text", text: "" }), attachmentsSeq: "07" }));
 });
 
-test("inline kinds match the API allowlist and SVG never renders inline", () => {
-  assert.equal(attachmentKind("image/png"), "image");
-  assert.equal(attachmentKind("video/quicktime"), "video");
-  assert.equal(attachmentKind("audio/mpeg"), "audio");
-  assert.equal(attachmentKind("image/svg+xml"), "file");
-  assert.equal(attachmentKind("image/heic"), "file");
-  assert.ok(compressible("image/png") && compressible("image/heic"));
-  assert.ok(!compressible("image/gif") && !compressible("image/svg+xml"));
+test("attachment validation accepts processing states and animation, tolerates extra fields, rejects garbage", () => {
+  for (const status of [undefined, "processing", "ready", "failed"] as const) assert.ok(isChatAttachment(file({ status })), String(status));
+  assert.ok(isChatAttachment({ ...file(), status: "processing", previewUrl: "https://cdn.test/preview/f1", preview: {} }));
+  assert.ok(isChatAttachment({ ...file({ kind: "video", contentType: "video/mp4" }), animated: true, futureField: { nested: 1 } }));
+  assert.ok(!isChatAttachment({ ...file(), status: "done" }));
+  assert.ok(!isChatAttachment({ ...file(), status: 1 }));
+  assert.ok(!isChatAttachment({ ...file(), animated: "yes" }));
+  assert.ok(!isChatAttachment({ ...file(), previewUrl: "data:image/png;base64,AAAA" }));
+  assert.ok(!isChatAttachment({ ...file(), width: -1 }));
 });
 
-test("compression is kept only when it saves space or makes the file viewable", () => {
-  assert.ok(keepCompressed({ type: "image/png", size: 1000 }, { size: 280 }));
-  assert.ok(!keepCompressed({ type: "image/jpeg", size: 1000 }, { size: 950 }));
-  assert.ok(keepCompressed({ type: "image/heic", size: 1000 }, { size: 1200 }));
-  assert.equal(renamed("Screenshot 2026.png", "image/webp"), "Screenshot 2026.webp");
-  assert.equal(renamed("noext", "image/jpeg"), "noext.jpg");
-  assert.deepEqual(fitWithin(3840, 2160), { width: 640, height: 360 });
-  assert.deepEqual(fitWithin(300, 200), { width: 300, height: 200 });
-  assert.equal(formatBytes(512), "512 B");
-  assert.equal(formatBytes(18.4 * 1024 * 1024), "18 MB");
-  assert.equal(formatBytes(1.5 * 1024 * 1024), "1.5 MB");
+test("render decision follows status, and animated videos play like GIFs", () => {
+  const url = "https://cdn.test/original/f1";
+  assert.equal(attachmentView(file({ status: "processing", previewUrl: url })), "processing");
+  assert.equal(attachmentView(file({ status: "failed" })), "failed");
+  assert.equal(attachmentView(file({ url })), "image", "absent status means ready");
+  assert.equal(attachmentView(file({ status: "ready", url })), "image");
+  assert.equal(attachmentView(file({ status: "ready", kind: "video", url })), "video");
+  assert.equal(attachmentView(file({ status: "ready", kind: "video", animated: true, url })), "animated");
+  assert.equal(attachmentView(file({ status: "ready", kind: "video", animated: false, url })), "video");
+  assert.equal(attachmentView(file({ status: "ready", kind: "audio", url })), "audio");
+  assert.equal(attachmentView(file({ status: "ready", kind: "image" })), "file", "no URL falls back to a file card");
+  assert.equal(attachmentView(file({ status: "processing", unavailable: true })), "unavailable");
 });
 
-test("uploads reserve, put the preview and original with the signed headers, then confirm", async () => {
+test("live attachment events are validated and unknown fields tolerated", () => {
+  const event = { type: "message.attachments", schemaVersion: 1, channelId: "c1", seq: "9", messageId: "m1", attachments: [file()], extra: true };
+  assert.ok(isChatAttachmentsEvent(event));
+  assert.ok(!isChatAttachmentsEvent({ ...event, seq: "x" }));
+  assert.ok(!isChatAttachmentsEvent({ ...event, schemaVersion: 2 }));
+  assert.ok(!isChatAttachmentsEvent({ ...event, attachments: {} }));
+  const progress = { type: "attachment.progress", channelId: "c1", messageId: "m1", attachmentId: "f1", percent: 42, extra: 1 };
+  assert.ok(isChatAttachmentProgressEvent(progress));
+  assert.ok(!isChatAttachmentProgressEvent({ ...progress, percent: 101 }));
+  assert.ok(!isChatAttachmentProgressEvent({ ...progress, percent: Number.NaN }));
+  assert.ok(!isChatAttachmentProgressEvent({ ...progress, attachmentId: 3 }));
+});
+
+function transport(complete: Array<() => Response>) {
   const calls: string[] = [];
-  const puts: Array<{ url: string; headers: Record<string, string>; size: number }> = [];
-  const progress: number[] = [];
-  const transport: UploadTransport = {
+  const reserved: Array<Record<string, unknown>> = [];
+  const puts: Array<{ url: string; headers: Record<string, string>; body: Blob }> = [];
+  const sleeps: number[] = [];
+  const value: UploadTransport = {
     fetch: (async (input: string | URL | Request, init?: RequestInit) => {
       calls.push(`${init?.method} ${String(input)}`);
       if (String(input) === "/api/assets") {
-        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-        assert.equal(body.channelId, "c1");
-        assert.equal(body.byteSize, 300);
-        assert.equal(body.sourceByteSize, 1200);
-        assert.deepEqual(body.preview, { contentType: "image/webp", byteSize: 100 });
+        reserved.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
         return Response.json({
-          id: "f1",
-          upload: { method: "PUT", url: "https://r2.test/original", headers: { "content-type": "image/webp", "content-disposition": "attachment" } },
-          previewUpload: { method: "PUT", url: "https://r2.test/preview", headers: { "content-type": "image/webp" } },
+          id: "f1", kind: "image",
+          upload: { method: "PUT", url: "https://incoming.s3.test/incoming/f1?X-Amz-Signature=s", headers: { "content-type": "image/png" } },
+          storage: { used: 0, limit: 10 },
         }, { status: 201 });
       }
-      return Response.json({ id: "f1", kind: "image", contentType: "image/webp", name: "a.webp", size: 300, preview: {} });
+      const next = complete.shift();
+      assert.ok(next, "unexpected extra /complete call");
+      return next();
     }) as typeof fetch,
-    put: async (url, headers, body, report) => { puts.push({ url, headers, size: body.size }); report(1); },
+    put: async (url, headers, body, report) => { puts.push({ url, headers, body }); report(0.5); report(1); },
+    sleep: async (ms) => { sleeps.push(ms); },
   };
-  const attachment = await uploadPrepared("c1", {
-    blob: new Blob([new Uint8Array(300)], { type: "image/webp" }), name: "a.webp", contentType: "image/webp", kind: "image",
-    sourceSize: 1200, width: 40, height: 30, preview: new Blob([new Uint8Array(100)], { type: "image/webp" }),
-  }, transport, (value) => progress.push(value), new AbortController().signal);
+  return { value, calls, reserved, puts, sleeps };
+}
+
+const processing = () => Response.json({ id: "f1", kind: "image", contentType: "image/png", name: "shot.png", size: 1200, status: "processing" });
+
+test("uploads reserve the original's exact size and type, PUT it unchanged with exactly the signed headers, then confirm", async () => {
+  const t = transport([processing]);
+  const original = new File([new Uint8Array(1200)], "shot.png", { type: "image/png" });
+  const progress: number[] = [];
+  const attachment = await uploadFile("c1", original, { maxUploadBytes: 2 ** 31 }, t.value, (value) => progress.push(value), new AbortController().signal);
+  assert.equal(attachment.status, "processing");
+  assert.deepEqual(t.reserved, [{ channelId: "c1", filename: "shot.png", contentType: "image/png", byteSize: 1200 }], "no compression metadata or previews are reserved");
+  assert.deepEqual(t.calls, ["POST /api/assets", "POST /api/assets/f1/complete"]);
+  assert.equal(t.puts.length, 1);
+  assert.equal(t.puts[0].url, "https://incoming.s3.test/incoming/f1?X-Amz-Signature=s");
+  assert.deepEqual(t.puts[0].headers, { "content-type": "image/png" });
+  assert.equal(t.puts[0].body, original, "the original bytes go up untouched");
+  assert.deepEqual(progress, [0.5, 1, 1]);
+});
+
+test("files without a browser type are declared as application/octet-stream", async () => {
+  const t = transport([processing]);
+  await uploadFile("c1", new File(["abc"], "notes"), {}, t.value, () => undefined, new AbortController().signal);
+  assert.equal(t.reserved[0].contentType, "application/octet-stream");
+  assert.equal(t.reserved[0].byteSize, 3);
+});
+
+test("complete retries 409 with short backoff until the upload is visible", async () => {
+  const notYet = () => Response.json({ error: "upload not received" }, { status: 409 });
+  const t = transport([notYet, notYet, processing]);
+  const attachment = await uploadFile("c1", new File(["x"], "a.txt", { type: "text/plain" }), {}, t.value, () => undefined, new AbortController().signal);
   assert.equal(attachment.id, "f1");
-  assert.deepEqual(calls, ["POST /api/assets", "POST /api/assets/f1/complete"]);
-  assert.deepEqual(puts.map((put) => [put.url, put.size]), [["https://r2.test/preview", 100], ["https://r2.test/original", 300]]);
-  assert.equal(puts[1].headers["content-disposition"], "attachment");
-  assert.equal(progress.at(-1), 1);
+  assert.deepEqual(t.sleeps, [250, 500]);
+  assert.equal(t.calls.filter((call) => call.endsWith("/complete")).length, 3);
+
+  const stuck = transport(Array.from({ length: 5 }, () => notYet));
+  await assert.rejects(uploadFile("c1", new File(["x"], "a.txt"), {}, stuck.value, () => undefined, new AbortController().signal),
+    (error: unknown) => error instanceof UploadError && error.message === "upload not received");
+  assert.equal(stuck.sleeps.length, 4, "gives up after a few attempts");
+
+  const mismatch = transport([() => Response.json({ error: "size mismatch" }, { status: 422 })]);
+  await assert.rejects(uploadFile("c1", new File(["x"], "a.txt"), {}, mismatch.value, () => undefined, new AbortController().signal),
+    /did not arrive intact/);
+  assert.deepEqual(mismatch.sleeps, [], "422 is final");
+});
+
+test("files over the server's upload limit fail before reserving", async () => {
+  const t = transport([]);
+  await assert.rejects(uploadFile("c1", new File([new Uint8Array(11)], "big.mov"), { maxUploadBytes: 10 }, t.value, () => undefined, new AbortController().signal),
+    (error: unknown) => error instanceof UploadError && /larger than the 10 B upload limit/.test(error.message));
+  assert.deepEqual(t.calls, []);
+  assert.equal(uploadSizeError(2 * 1024 ** 3, { maxUploadBytes: 2 * 1024 ** 3 }), undefined);
+  assert.equal(uploadSizeError(2 * 1024 ** 3 + 1, { maxUploadBytes: 2 * 1024 ** 3 }), "This file is larger than the 2.0 GB upload limit.");
+  assert.equal(uploadSizeError(10 ** 12, {}), undefined, "older servers enforce the limit themselves");
 });
 
 test("a full storage allowance surfaces a clear, typed error", async () => {
-  const transport: UploadTransport = {
+  const value: UploadTransport = {
     fetch: (async () => Response.json({ error: "storage limit reached", code: "storage_full" }, { status: 413 })) as typeof fetch,
     put: async () => { throw new Error("must not upload"); },
   };
   await assert.rejects(
-    uploadPrepared("c1", { blob: new Blob(["x"]), name: "x", contentType: "", kind: "file", sourceSize: 1 }, transport, () => undefined, new AbortController().signal),
+    uploadFile("c1", new File(["x"], "x"), {}, value, () => undefined, new AbortController().signal),
     (error: unknown) => error instanceof UploadError && error.storageFull,
   );
 });
 
-test("expired URLs can be refreshed and their expiry read", async () => {
-  const urls = await refreshAttachmentUrls(["f1"], (async (_: unknown, init?: RequestInit) => {
-    assert.deepEqual(JSON.parse(String(init?.body)), { ids: ["f1"] });
-    return Response.json({ urls: { f1: { url: "https://cdn.test/original/f1?exp=172800&sig=s" } } });
+test("expired URLs can be refreshed, garbage is dropped, and expiry is readable", async () => {
+  const urls = await refreshAttachmentUrls(["f1", "f2", "f3"], (async (_: unknown, init?: RequestInit) => {
+    assert.deepEqual(JSON.parse(String(init?.body)), { ids: ["f1", "f2", "f3"] });
+    return Response.json({ urls: {
+      f1: { url: "https://cdn.test/original/f1?exp=172800&sig=s", previewUrl: "https://cdn.test/preview/f1?exp=172800&sig=s" },
+      f2: { previewUrl: "https://cdn.test/preview/f2" },
+      f3: { url: "javascript:alert(1)" },
+    } });
   }) as typeof fetch);
   assert.equal(urlExpiry(urls.f1.url), 172800);
+  assert.deepEqual(urls.f2, { previewUrl: "https://cdn.test/preview/f2" }, "processing files have no url yet");
+  assert.equal(urls.f3, undefined);
   assert.equal(urlExpiry(undefined), undefined);
   assert.deepEqual(await refreshAttachmentUrls(["f1"], (async () => new Response(null, { status: 503 })) as typeof fetch), {});
 });
 
-test("the attach control appears only when the API has uploads configured, with its settings", async () => {
-  const tuned = await uploadSettings((async () => Response.json({ used: 0, limit: 1, compression: { ...DEFAULT_COMPRESSION, imageQuality: 80, videoMaxHeight: 0 } })) as typeof fetch);
-  assert.equal(tuned?.imageQuality, 80);
-  assert.equal(tuned?.videoMaxHeight, 0);
-  assert.deepEqual(await uploadSettings((async () => Response.json({ used: 0, limit: 1 })) as typeof fetch), DEFAULT_COMPRESSION, "older servers get defaults");
+test("the attach control appears only when the API has uploads configured, with its upload limit", async () => {
+  assert.deepEqual(await uploadSettings((async () => Response.json({ used: 0, limit: 1, maxUploadBytes: 2147483648 })) as typeof fetch), { maxUploadBytes: 2147483648 });
+  assert.deepEqual(await uploadSettings((async () => Response.json({ used: 0, limit: 1, compression: { imageQuality: 1 } })) as typeof fetch), {}, "older servers still enable uploads");
+  assert.deepEqual(await uploadSettings((async () => Response.json({ used: 0, limit: 1, maxUploadBytes: "big" })) as typeof fetch), {});
   assert.equal(await uploadSettings((async () => Response.json({ error: "uploads unavailable" }, { status: 503 })) as typeof fetch), undefined);
   assert.equal(await uploadSettings((async () => { throw new TypeError("offline"); }) as typeof fetch), undefined);
 });
 
-test("server compression settings are validated field by field", () => {
-  assert.deepEqual(compressionSettings({ imageQuality: 0, paletteColors: 999, previewEdge: 320, videoBitrateKbps: "fast" }),
-    { ...DEFAULT_COMPRESSION, previewEdge: 320 });
-  assert.deepEqual(compressionSettings(null), DEFAULT_COMPRESSION);
-});
-
-test("flat images go lossless indexed; others lossy unless quality is 100", () => {
-  assert.equal(stillPlan(DEFAULT_COMPRESSION, "within-palette"), "indexed-png");
-  assert.equal(stillPlan(DEFAULT_COMPRESSION, "too-many"), "lossy");
-  assert.equal(stillPlan({ ...DEFAULT_COMPRESSION, paletteColors: 0 }, "within-palette"), "lossy");
-  assert.equal(stillPlan({ ...DEFAULT_COMPRESSION, imageQuality: 100 }, "too-many"), "lossless-png");
-});
-
-test("videos only shrink so the short edge fits, keeping even dimensions", () => {
-  assert.deepEqual(videoTargetSize(3840, 2160, 1080), { height: 1080 });
-  assert.deepEqual(videoTargetSize(2160, 3840, 1080), { width: 1080 }, "portrait phone video stays 1080p");
-  assert.equal(videoTargetSize(1080, 1920, 1080), undefined);
-  assert.equal(videoTargetSize(1280, 720, 1080), undefined);
-  assert.equal(videoTargetSize(3840, 2160, 0), undefined);
-  assert.deepEqual(videoTargetSize(3840, 2160, 721), { height: 720 });
+test("byte sizes format compactly", () => {
+  assert.equal(formatBytes(512), "512 B");
+  assert.equal(formatBytes(18.4 * 1024 * 1024), "18 MB");
+  assert.equal(formatBytes(1.5 * 1024 * 1024), "1.5 MB");
 });

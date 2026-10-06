@@ -1099,3 +1099,32 @@ test("older history from another channel is rejected without polluting the timel
   assert.equal(f.state.hasMore, true);
   assert.equal(f.state.olderError, "The chat service returned messages from another channel.");
 });
+
+test("live attachment updates are sequenced, and progress is ephemeral and dropped once ready", async (t) => {
+  const f = await sendingFixture(t);
+  const file = { id: "f1", kind: "video" as const, contentType: "video/quicktime", name: "clip.mov", size: 9, status: "processing" as const };
+  const base = committed({ clientMessageId: "with-file", text: "" }, "1");
+  f.sockets[0].message({ ...base, content: { ...base.content, attachments: [file] } });
+  const historyLoads = () => (globalThis.fetch as unknown as { mock: { calls: Array<{ arguments: unknown[] }> } }).mock.calls
+    .filter((call) => String(call.arguments[0]) === "/api/chat/general").length;
+  const loadsBefore = historyLoads();
+  const progress = { type: "attachment.progress" as const, channelId: "general", messageId: base.id, attachmentId: "f1", percent: 41.6 };
+  f.sockets[0].frame(progress);
+  assert.deepEqual(f.state.attachmentProgress, { f1: 42 });
+  f.sockets[0].frame({ ...progress, channelId: "elsewhere", percent: 90 });
+  f.sockets[0].frame({ ...progress, attachmentId: "unknown", percent: 90 });
+  f.sockets[0].frame({ ...progress, percent: "lots" } as unknown as typeof progress);
+  assert.deepEqual(f.state.attachmentProgress, { f1: 42 }, "other channels, unknown files and malformed progress are ignored");
+  assert.equal(f.client.snapshotHistory()?.cursor, "1", "progress never advances replay");
+
+  const ready = { ...file, kind: "video" as const, contentType: "video/mp4", name: "clip.mp4", status: "ready" as const, animated: false, url: "https://cdn.test/original/f1", previewUrl: "https://cdn.test/preview/f1" };
+  f.sockets[0].frame({ type: "message.attachments", schemaVersion: 1, channelId: "general", seq: "2", messageId: base.id, attachments: [ready], futureField: true } as never);
+  assert.deepEqual(f.state.messages[0].content.attachments, [ready]);
+  assert.equal(f.state.messages[0].attachmentsSeq, "2");
+  assert.equal(f.client.snapshotHistory()?.cursor, "2", "attachment updates advance replay like reactions");
+  assert.deepEqual(f.state.attachmentProgress, {}, "progress is dropped when processing ends");
+  f.sockets[0].frame(progress);
+  assert.deepEqual(f.state.attachmentProgress, {}, "late progress for a ready file is ignored");
+  await tick();
+  assert.equal(historyLoads(), loadsBefore, "no event forced a history reload");
+});

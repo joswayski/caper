@@ -1,8 +1,8 @@
 import { ChatConnection } from "./connection.ts";
-import { ChatTimeline } from "./timeline.ts";
 import { playSound } from "../audio/effects.ts";
 import { appGateway } from "../gateway/client.ts";
-import { isChatMessage, isChatReactionEvent, sequence, type ChatAttachment, type ChatAuthor, type ChatHistory, type ChatMessage, type ChatReactionEvent, type ChatSession, type ChatTypingEvent, type GeneralChatHistory } from "./types.ts";
+import { ChatTimeline, type ChatTimelineEvent } from "./timeline.ts";
+import { attachmentsOf, isChatMessage, isChatReactionEvent, sequence, type ChatAttachment, type ChatAttachmentProgressEvent, type ChatAuthor, type ChatHistory, type ChatMessage, type ChatSession, type ChatTypingEvent, type GeneralChatHistory } from "./types.ts";
 
 const SESSION_KEY = "caper.chat.session";
 
@@ -31,13 +31,22 @@ export interface ChatViewState {
   sendError?: string;
   sendRejected?: boolean;
   pendingSend?: PendingChatMessage;
+  /** Latest `attachment.progress` percent per still-processing attachment id. */
+  attachmentProgress: Record<string, number>;
   error?: string;
 }
 
 const initialState: ChatViewState = {
   phase: "loading", online: false, spaceName: "Caper", channelName: "general",
-  messages: [], typingAuthors: [], hasMore: false, loadingOlder: false,
+  messages: [], typingAuthors: [], hasMore: false, loadingOlder: false, attachmentProgress: {},
 };
+
+/** Ids of attachments the server is still processing. */
+function processingIds(messages: ChatMessage[]) {
+  const ids = new Set<string>();
+  for (const message of messages) for (const attachment of attachmentsOf(message)) if (attachment.status === "processing") ids.add(attachment.id);
+  return ids;
+}
 
 export function initialChatView(history?: GeneralChatHistory, error?: string): ChatViewState {
   if (error) return { ...initialState, phase: "error", error };
@@ -359,7 +368,18 @@ export class ChatClient {
     finally { if (this.reactionRequests.get(messageId) === request) this.reactionRequests.delete(messageId); }
   }
 
-  private receiveEvent(event: ChatMessage | ChatReactionEvent) {
+  /** Ephemeral, like typing: shown on the processing placeholder, dropped when
+   * the attachment leaves processing. Unknown attachments are ignored. */
+  private receiveProgress(event: ChatAttachmentProgressEvent) {
+    const message = this.timeline.messages.find((item) => item.id === event.messageId);
+    const attachment = message && attachmentsOf(message).find((item) => item.id === event.attachmentId);
+    if (attachment?.status !== "processing") return;
+    const percent = Math.round(event.percent);
+    if (this.state.attachmentProgress[attachment.id] === percent) return;
+    this.update({ attachmentProgress: { ...this.state.attachmentProgress, [attachment.id]: percent } });
+  }
+
+  private receiveEvent(event: ChatTimelineEvent) {
     const visible = new Set(this.timeline.messages.map((item) => item.id));
     const result = this.timeline.applyEvent(event);
     if (!("type" in event)) {
@@ -423,6 +443,8 @@ export class ChatClient {
         cursor: () => this.timeline.cursor,
         message: (message) => this.receiveEvent(message),
         reactions: (event) => this.receiveEvent(event),
+        attachments: (event) => this.receiveEvent(event),
+        progress: (event) => this.receiveProgress(event),
         status: (online) => {
           if (!online) { this.typers.clear(); this.refreshTypers(); }
           this.update({ online });
@@ -484,6 +506,11 @@ export class ChatClient {
       }) };
     }
     this.state = { ...this.state, ...change };
+    if (change.messages && Object.keys(this.state.attachmentProgress).length) {
+      const processing = processingIds(change.messages);
+      const progress = Object.fromEntries(Object.entries(this.state.attachmentProgress).filter(([id]) => processing.has(id)));
+      if (Object.keys(progress).length !== Object.keys(this.state.attachmentProgress).length) this.state = { ...this.state, attachmentProgress: progress };
+    }
     if (change.author) {
       this.typers.delete(change.author.id);
       this.state = { ...this.state, typingAuthors: this.state.typingAuthors.filter((author) => author.id !== change.author!.id) };

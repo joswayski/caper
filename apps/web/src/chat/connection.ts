@@ -1,13 +1,17 @@
 import { appGateway, type AppGateway, type GatewaySubscription } from "../gateway/client.ts";
-import { isChatAuthor, isChatMessage, isChatReactionEvent, sequence, type ChatEvent, type ChatMessage, type ChatReactionEvent, type ChatTypingEvent } from "./types.ts";
+import { isChatAttachmentProgressEvent, isChatAttachmentsEvent, isChatAuthor, isChatMessage, isChatReactionEvent, sequence, type ChatAttachmentProgressEvent, type ChatAttachmentsEvent, type ChatEvent, type ChatMessage, type ChatReactionEvent, type ChatTypingEvent } from "./types.ts";
+
+type ApplyResult = "applied" | "buffered" | "duplicate" | "overflow";
 
 export interface ChatConnectionCallbacks {
-  message: (message: ChatMessage) => "applied" | "buffered" | "duplicate" | "overflow";
+  message: (message: ChatMessage) => ApplyResult;
   cursor: () => string;
   status: (online: boolean) => void;
   resync: () => void;
   typing?: (event: ChatTypingEvent) => void;
-  reactions?: (event: ChatReactionEvent) => "applied" | "buffered" | "duplicate" | "overflow";
+  reactions?: (event: ChatReactionEvent) => ApplyResult;
+  attachments?: (event: ChatAttachmentsEvent) => ApplyResult;
+  progress?: (event: ChatAttachmentProgressEvent) => void;
 }
 
 function parseEvent(value: unknown): ChatEvent {
@@ -18,7 +22,7 @@ function parseEvent(value: unknown): ChatEvent {
     sequence(event.cursor);
     return { type: "ready", cursor: event.cursor };
   }
-  if (isChatReactionEvent(event)) return event;
+  if (isChatReactionEvent(event) || isChatAttachmentsEvent(event) || isChatAttachmentProgressEvent(event)) return event;
   if (event.type === "typing.updated" && typeof event.channelId === "string" && isChatAuthor(event.author)
     && typeof event.typing === "boolean" && typeof event.revision === "string") {
     sequence(event.revision);
@@ -59,6 +63,9 @@ export class ChatConnection {
       status: this.callbacks.status,
       error: () => this.callbacks.resync(),
       event: (value) => {
+        // Progress is ephemeral and unsequenced: drop a malformed frame rather
+        // than reloading history over a missing percentage.
+        if ((value as { type?: unknown } | null)?.type === "attachment.progress" && !isChatAttachmentProgressEvent(value)) return;
         let event: ChatEvent;
         try { event = parseEvent(value); }
         catch { this.callbacks.resync(); return; }
@@ -68,8 +75,16 @@ export class ChatConnection {
           if (event.channelId === this.channelId) this.callbacks.typing?.(event);
           return;
         }
+        if (event.type === "attachment.progress") {
+          if (event.channelId === this.channelId) this.callbacks.progress?.(event);
+          return;
+        }
         if (event.type === "message.reactions" && event.channelId === this.channelId && this.callbacks.reactions) {
           if (this.callbacks.reactions(event) === "overflow") this.callbacks.resync();
+          return;
+        }
+        if (event.type === "message.attachments" && event.channelId === this.channelId && this.callbacks.attachments) {
+          if (this.callbacks.attachments(event) === "overflow") this.callbacks.resync();
           return;
         }
         if (event.type !== "message.created" || event.channelId !== this.channelId) {

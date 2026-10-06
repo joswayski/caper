@@ -7,6 +7,10 @@ export interface ChatAuthor {
 
 export type ChatAttachmentKind = "image" | "video" | "audio" | "file";
 
+/** Server-side processing state. Absent in payloads from before processing
+ * moved to the media worker, which means ready. */
+export type ChatAttachmentStatus = "processing" | "ready" | "failed";
+
 /** A file on a message. URLs are signed per response and expire in 1–2 days. */
 export interface ChatAttachment {
   id: string;
@@ -18,6 +22,10 @@ export interface ChatAttachment {
   height?: number;
   durationMs?: number;
   preview?: Record<string, never>;
+  status?: ChatAttachmentStatus;
+  /** A GIF or animated image stored as a silent looping video. */
+  animated?: boolean;
+  /** Present only when ready. */
   url?: string;
   previewUrl?: string;
   /** The file was deleted; show a placeholder. */
@@ -38,6 +46,27 @@ export interface ChatReactionEvent {
   reactions: ChatReaction[];
 }
 
+/** The media worker replaced a message's files: a preview appeared, or
+ * processing finished or failed. Sequenced like reactions. Entries are
+ * filtered with `attachmentsOf` when rendered, like message content. */
+export interface ChatAttachmentsEvent {
+  type: "message.attachments";
+  schemaVersion: 1;
+  channelId: string;
+  seq: string;
+  messageId: string;
+  attachments: ChatAttachment[];
+}
+
+/** Ephemeral video-encoding progress; unsequenced, like typing. */
+export interface ChatAttachmentProgressEvent {
+  type: "attachment.progress";
+  channelId: string;
+  messageId: string;
+  attachmentId: string;
+  percent: number;
+}
+
 export interface ChatMessage {
   id: string;
   channelId: string;
@@ -48,6 +77,8 @@ export interface ChatMessage {
   clientMessageId: string;
   reactions?: ChatReaction[];
   reactionSeq?: string;
+  /** Sequence of the latest `message.attachments` reflected in `content.attachments`. */
+  attachmentsSeq?: string;
 }
 
 export interface ChatHistory {
@@ -77,6 +108,8 @@ export interface ChatTypingEvent {
 export type ChatEvent =
   | ChatTypingEvent
   | ChatReactionEvent
+  | ChatAttachmentsEvent
+  | ChatAttachmentProgressEvent
   | { type: "message.created"; channelId: string; seq: string; message: ChatMessage }
   | { type: "ready"; cursor: string }
   | { type: "migrating" }
@@ -101,6 +134,7 @@ export function isChatMessage(value: unknown): value is ChatMessage {
     && typeof message.createdAt === "string" && typeof message.clientMessageId === "string"
     && (message.reactions === undefined || isChatReactions(message.reactions))
     && (message.reactionSeq === undefined || (typeof message.reactionSeq === "string" && /^(0|[1-9]\d*)$/.test(message.reactionSeq)))
+    && (message.attachmentsSeq === undefined || (typeof message.attachmentsSeq === "string" && /^(0|[1-9]\d*)$/.test(message.attachmentsSeq)))
     && isChatAuthor(message.author) && !!message.content
     && message.content.version === 1 && message.content.type === "text" && typeof message.content.text === "string"
     && (message.content.attachments === undefined || Array.isArray(message.content.attachments));
@@ -120,7 +154,38 @@ export function isChatAttachment(value: unknown): value is ChatAttachment {
   return typeof item.id === "string" && typeof item.name === "string" && typeof item.contentType === "string"
     && typeof item.size === "number" && ["image", "video", "audio", "file"].includes(item.kind as string)
     && optionalNumber(item.width) && optionalNumber(item.height) && optionalNumber(item.durationMs)
-    && optionalUrl(item.url) && optionalUrl(item.previewUrl);
+    && optionalUrl(item.url) && optionalUrl(item.previewUrl)
+    && (item.status === undefined || ["processing", "ready", "failed"].includes(item.status))
+    && (item.animated === undefined || typeof item.animated === "boolean");
+}
+
+export type AttachmentView = "unavailable" | "processing" | "failed" | "image" | "video" | "animated" | "audio" | "file";
+
+/** How a message attachment renders. Only ready files carry a URL; a ready
+ * file without one falls back to a plain file card. */
+export function attachmentView(attachment: ChatAttachment): AttachmentView {
+  if (attachment.unavailable) return "unavailable";
+  if (attachment.status === "processing") return "processing";
+  if (attachment.status === "failed") return "failed";
+  if (!attachment.url) return "file";
+  if (attachment.kind === "video") return attachment.animated ? "animated" : "video";
+  return attachment.kind;
+}
+
+export function isChatAttachmentsEvent(value: unknown): value is ChatAttachmentsEvent {
+  if (!value || typeof value !== "object") return false;
+  const event = value as Partial<ChatAttachmentsEvent>;
+  return event.type === "message.attachments" && event.schemaVersion === 1
+    && typeof event.channelId === "string" && typeof event.messageId === "string"
+    && typeof event.seq === "string" && /^(0|[1-9]\d*)$/.test(event.seq) && Array.isArray(event.attachments);
+}
+
+export function isChatAttachmentProgressEvent(value: unknown): value is ChatAttachmentProgressEvent {
+  if (!value || typeof value !== "object") return false;
+  const event = value as Partial<ChatAttachmentProgressEvent>;
+  return event.type === "attachment.progress" && typeof event.channelId === "string"
+    && typeof event.messageId === "string" && typeof event.attachmentId === "string"
+    && typeof event.percent === "number" && Number.isFinite(event.percent) && event.percent >= 0 && event.percent <= 100;
 }
 
 export function isChatReactions(value: unknown): value is ChatReaction[] {
