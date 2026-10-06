@@ -226,7 +226,9 @@ jobs:
     # the macOS UI tests (josemac-ui) and the iOS simulator (josemac-sim) run in
     # different VMs so the two jobs run at the same time.
     runs-on: ${{ needs.route.outputs.mac == 'true' && matrix.os == 'macos-15' && (matrix.platform == 'ios' && fromJSON('["self-hosted","josemac-sim"]') || fromJSON('["self-hosted","josemac-ui"]')) || matrix.os }}
-    timeout-minutes: 30
+    # A cold Intel build plus UI tests can exceed 30 minutes while still
+    # progressing normally. Keep the existing budget for ARM and iOS.
+    timeout-minutes: ${{ matrix.target == 'macos-x64' && 45 || 30 }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
