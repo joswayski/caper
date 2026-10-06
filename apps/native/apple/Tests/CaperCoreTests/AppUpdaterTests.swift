@@ -2,6 +2,12 @@ import XCTest
 
 final class AppUpdaterTests: XCTestCase {
     @MainActor
+    func testChecksEveryMinuteWithTheExistingStartupDelay() {
+        XCTAssertEqual(AppUpdater.firstCheckDelay, 20)
+        XCTAssertEqual(AppUpdater.checkInterval, 60)
+    }
+
+    @MainActor
     func testDownloadLinksToTheRunningArchitectureArchive() {
         #if arch(arm64)
         XCTAssertEqual(AppUpdater.downloadURL.absoluteString,

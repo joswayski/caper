@@ -7,6 +7,10 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
 
 - Signed-out first launch opens passwordless email request/verification and
   first-account profile onboarding, with no Guest/General fallback.
+- Packaged releases check for signed updates 20 seconds after launch and every
+  minute. **User Settings → Settings… → Updates → Check for updates** checks
+  immediately with progress and success/failure feedback. Writable installs
+  offer a restart to update; the `.deb` offers a download for manual installation.
 - Bearer sessions stored in Windows Credential Manager or the Linux Secret
   Service. If the vault is unavailable, the session remains in memory only and
   the UI warns that sign-in will not survive restart. There is no plaintext
@@ -174,7 +178,7 @@ Linux packages carry the checked native runtime and licenses. Windows also
 stages the four Microsoft-signed app-local VC++ DLLs imported by ORT; these come
 from the active Visual Studio toolchain and are not immutable hash-pinned. Windows
 package execution remains an exact-head CI/platform acceptance requirement.
-No camera, screen sharing, native push notifications, installers, signing or updates.
+No camera, screen sharing, native push notifications, or Windows/Linux code signing.
 IME/accessibility and sustained multi-network voice need separate acceptance.
 The `.deb` and archives are unsigned release artifacts, not installers.
 
@@ -251,6 +255,9 @@ fixture members locally instead of requesting who reacted.
 pending navigation and its retry state with retained conversation chrome and a
 labelled fixture draft; `parity-loading` previews the initial history skeleton.
 These previews do not start a navigation request or a media transport.
+`parity-settings`, `parity-settings-checking`, `parity-settings-current`, and
+`parity-settings-offline` preview the update control and check feedback. These
+are static states: their check buttons are disabled and no updater process runs.
 
 After `npm ci`, run `node scripts/native-icons.mjs --check` to verify the bundled
 vectors match the web client's pinned Lucide package. Omit `--check` to regenerate.

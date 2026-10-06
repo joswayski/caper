@@ -165,7 +165,7 @@ TestFlight public link get new builds automatically.
 
 **Desktop self-updates.** Release builds of the Mac, Windows and Linux apps carry
 `caper-updater` (`apps/native/updater`) and the run number as their build number.
-About 20 seconds after launch and every hour they check
+About 20 seconds after launch and every minute they check
 `https://caper.chat/api/updates/native`. The Rust API caches GitHub's
 `native-latest/latest.json` and its signature together for 60 seconds per process;
 simultaneous refresh requests share one upstream fetch. The updater falls back
@@ -174,6 +174,14 @@ Downloads still come from GitHub. That manifest is signed with the Ed25519 key i
 the `caper_update` section of `production/signing/release`, and each app only trusts the public key compiled
 into it. When a newer build exists, the Mac app shows an alert (and has
 **Caper › Check for Updates…**), and the Windows and Linux app shows a banner.
+Windows/Linux also have **User Settings › Settings… › Updates › Check for updates**,
+with checking, up-to-date, and retryable failure feedback. Manual checks restore
+an offer dismissed with **Later**; automatic checks keep that version dismissed
+but offer a newer version. Checks do not run concurrently. A running, online app
+normally detects a published release within about one to two minutes, allowing
+for the server cache; manual checks also use that cache. Build/signing time and
+download/install time are separate. Existing installs retain their old schedule
+until they update once. Development builds and static fixtures do not check.
 **Restart to update** hands off to the updater, which verifies the download's
 SHA-256 (and, on Mac, its Developer ID team), waits for Caper to quit, swaps in
 the new copy and reopens it. A copy it cannot replace, such as the Linux `.deb`
