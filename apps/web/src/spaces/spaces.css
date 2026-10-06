@@ -18,10 +18,10 @@
 .spaces-room .sidebar-channels { padding-top: 0; }
 .spaces-room .channel-navigation { margin-top: 0; }
 .spaces-room .sidebar-channels { overflow: hidden; }
-.spaces-room .channel-navigation { height: 100%; display: flex; flex-direction: column; }
+.spaces-room .channel-navigation { height: 100%; display: flex; flex-direction: column; overflow-y: auto; }
 .spaces-room .channel-navigation > :is(header, .channel-section-heading) { flex-shrink: 0; }
-.spaces-room .channel-navigation > #space-channel-list { flex: 1; min-height: 0; align-content: start; overflow-y: auto; }
-.direct-section { position: relative; flex: 0 1 auto; min-height: 100px; max-height: 45%; display: flex; flex-direction: column; margin-top: auto; padding: 6px 0 4px; }
+.spaces-room .channel-navigation > #space-channel-list { flex: 0 0 auto; min-height: 0; align-content: start; }
+.direct-section { position: relative; flex: 0 0 auto; display: flex; flex-direction: column; margin-top: 8px; padding: 6px 0 4px; }
 .spaces-room .direct-section::before, .spaces-room .channel-navigation > header::after { position: absolute; left: calc(-1 * var(--channel-sidebar-inset)); right: calc(-1 * var(--channel-sidebar-inset)); height: 1px; background: var(--border); content: ""; pointer-events: none; }
 .spaces-room .direct-section::before { top: 0; }
 .spaces-room .channel-navigation > header::after { bottom: 0; }
@@ -32,7 +32,6 @@
 /* Match the account dock's 30px avatar column and 6px label gap. SVG viewBoxes
    keep the smaller action glyphs centered within the same leading column. */
 .direct-section :is(.direct-section-title, .direct-action) > svg { width: 30px; }
-.spaces-room .direct-section > ul { min-height: 0; overflow-y: auto; }
 .direct-section :is(.direct-select, .direct-action) { height: 28px; }
 .direct-section .direct-select { gap: 6px; padding-right: 9px; }
 .direct-select > small { color: var(--text-muted); font-size: .72rem; }
@@ -246,11 +245,9 @@
 .channel-save-bar { margin-top: auto; }
 .channel-save-bar[aria-hidden="true"] { visibility: hidden; }
 
-.browse-channels, .pending-channel-invite { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 36px; padding: 7px 9px; border: 0; border-radius: 8px; background: transparent; color: var(--text-muted); font: inherit; font-size: .76rem; text-align: left; cursor: pointer; }
-.browse-channels svg, .pending-channel-invite svg { flex: none; width: 16px; height: 16px; }
-.browse-channels { gap: 6px; }
-.browse-channels svg { width: 30px; }
-.browse-channels:hover, .pending-channel-invite:hover { background: var(--surface-raised); color: var(--text); }
+.pending-channel-invite { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 36px; padding: 7px 9px; border: 0; border-radius: 8px; background: transparent; color: var(--text-muted); font: inherit; font-size: .76rem; text-align: left; cursor: pointer; }
+.pending-channel-invite svg { flex: none; width: 16px; height: 16px; }
+.pending-channel-invite:hover { background: var(--surface-raised); color: var(--text); }
 .pending-channel-invites { margin-top: 20px; }
 .pending-channel-invites h2 { margin: 0 9px 6px; color: var(--text-muted); font-size: .72rem; }
 .pending-channel-invite span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

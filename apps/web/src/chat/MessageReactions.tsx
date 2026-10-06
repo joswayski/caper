@@ -123,7 +123,7 @@ export default function MessageReactions({ message, channelId, authorId, readOnl
     <button type="button" className="chat-add-reaction" onClick={(event) => onOpenPicker(event.currentTarget)}
       onMouseEnter={() => { if (canReact) preloadReactionPicker(); }} onFocus={preloadReactionPicker}
       disabled={!canReact} aria-label="Add reaction" title="Add reaction" aria-haspopup="dialog" aria-expanded={pickerOpen}>
-      <SmilePlus size={18} aria-hidden="true" />
+      <SmilePlus size={14} aria-hidden="true" />
     </button>
     {!!message.reactions?.length && <div className="chat-reactions" aria-label="Reactions">
       {message.reactions.map((reaction) => <ReactionChip key={reaction.emoji} message={message} reaction={reaction} channelId={channelId}

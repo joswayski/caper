@@ -180,6 +180,8 @@
 .sim-section-toggle { display: flex; flex: 1; align-items: center; gap: 6px; padding: 4px 6px; color: var(--text-muted); font-size: .76rem; font-weight: 750; }
 .sim-section-toggle .section-count { margin-left: 0; }
 .sim-section-actions { display: flex; gap: 8px; color: var(--text-muted); }
+.sim-sidebar .browse-channels { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 36px; padding: 7px 9px; border-radius: 8px; color: var(--text-muted); font-size: .76rem; }
+.sim-sidebar .browse-channels svg { flex: none; width: 30px; height: 16px; }
 .sim-sidebar .sim-channel-list { flex: 1; min-height: 0; align-content: start; overflow-y: auto; }
 /* The six-person demo has no reserved voice action, so every preview fits. */
 .sim-sidebar .voice-stack-faces { display: flex; }

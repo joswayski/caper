@@ -315,6 +315,39 @@ pub struct ReactionUpdate {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct Pin {
+    pub author: Author,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PinUpdate {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub schema_version: u8,
+    pub channel_id: String,
+    pub seq: String,
+    pub message: Message,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EditUpdate {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub schema_version: u8,
+    pub channel_id: String,
+    pub seq: String,
+    pub message: Message,
+}
+
+fn original_revision() -> u32 {
+    1
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct Message {
     pub id: String,
     pub channel_id: String,
@@ -327,21 +360,139 @@ pub struct Message {
     pub reactions: Vec<Reaction>,
     #[serde(default)]
     pub reaction_seq: Option<String>,
+    #[serde(default)]
+    pub pin: Option<Pin>,
+    #[serde(default)]
+    pub pin_seq: Option<String>,
+    #[serde(default)]
+    pub thread_root_id: Option<String>,
+    #[serde(default)]
+    pub broadcast: bool,
+    #[serde(default)]
+    pub thread: Option<ThreadSummary>,
+    #[serde(default = "original_revision")]
+    pub revision: u32,
+    #[serde(default)]
+    pub edited_at: Option<String>,
+    #[serde(default)]
+    pub edit_seq: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadSummary {
+    pub reply_count: u64,
+    pub participants: Vec<Author>,
+    pub seq: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadHistory {
+    pub root: Message,
+    pub messages: Vec<Message>,
+    pub cursor: String,
+    pub has_more: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageVersion {
+    pub revision: u32,
+    pub content: Content,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageVersions {
+    pub message_id: String,
+    pub versions: Vec<MessageVersion>,
+    pub has_more: bool,
+}
+
+impl MessageVersions {
+    pub fn valid(&self, message: &str, before: Option<u32>) -> bool {
+        self.message_id == message
+            && self.versions.len() <= 50
+            && self.versions.iter().enumerate().all(|(index, version)| {
+                version.revision > 0
+                    && before.is_none_or(|before| version.revision < before)
+                    && (index == 0 || version.revision < self.versions[index - 1].revision)
+                    && version.content.version == 1
+                    && version.content.kind == "text"
+                    && crate::edits::valid_text(&version.content.text)
+                    && chrono::DateTime::parse_from_rfc3339(&version.created_at).is_ok()
+            })
+    }
 }
 
 impl Message {
+    pub fn is_channel_message(&self) -> bool {
+        self.thread_root_id.is_none() || self.broadcast
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         sequence(&self.seq)?;
+        if self.revision == 0 {
+            return Err("invalid content revision".into());
+        }
+        if self.revision == 1 {
+            if self.edited_at.is_some() || self.edit_seq.is_some() {
+                return Err("unexpected edit metadata".into());
+            }
+        } else {
+            let edited_at = self.edited_at.as_deref().ok_or("missing edit timestamp")?;
+            chrono::DateTime::parse_from_rfc3339(edited_at)
+                .map_err(|_| "invalid edit timestamp")?;
+            let edit_seq = self.edit_seq.as_deref().ok_or("missing edit sequence")?;
+            if sequence(edit_seq)? <= sequence(&self.seq)? {
+                return Err("invalid edit sequence".into());
+            }
+        }
+        if self.broadcast && self.thread_root_id.is_none() {
+            return Err("invalid broadcast reply".into());
+        }
+        if let Some(summary) = &self.thread {
+            sequence(&summary.seq)?;
+            if summary.reply_count == 0
+                || summary.participants.len() > 5
+                || summary
+                    .participants
+                    .iter()
+                    .map(|person| &person.id)
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    != summary.participants.len()
+            {
+                return Err("invalid thread summary".into());
+            }
+        }
         if self.content.version != 1 || self.content.kind != "text" {
             return Err("unsupported message content".into());
         }
         if let Some(revision) = &self.reaction_seq {
             sequence(revision)?;
         }
+        if let Some(revision) = &self.pin_seq {
+            sequence(revision)?;
+        }
         if !valid_reactions(&self.reactions) {
             return Err("invalid message reactions".into());
         }
         Ok(())
+    }
+
+    fn merge_edit(&mut self, incoming: &Self) {
+        if self.id == incoming.id
+            && self.channel_id == incoming.channel_id
+            && incoming.revision > self.revision
+        {
+            self.content.clone_from(&incoming.content);
+            self.revision = incoming.revision;
+            self.edited_at.clone_from(&incoming.edited_at);
+            self.edit_seq.clone_from(&incoming.edit_seq);
+        }
     }
 }
 
@@ -355,6 +506,8 @@ pub struct HistoryPlace {
 #[serde(rename_all = "camelCase")]
 pub struct History {
     pub messages: Vec<Message>,
+    #[serde(default)]
+    pub pinned_messages: Vec<Message>,
     pub cursor: String,
     pub has_more: bool,
     pub space: HistoryPlace,
@@ -384,10 +537,15 @@ pub struct Members {
 #[derive(Default)]
 pub struct Timeline {
     cursor: u64,
+    pin_snapshot_cursor: u64,
     messages: BTreeMap<u64, Message>,
     ids: BTreeSet<String>,
     buffered: BTreeMap<u64, Message>,
     unseen_reactions: BTreeMap<String, ReactionUpdate>,
+    unseen_pins: BTreeMap<String, Message>,
+    pinned: BTreeMap<u64, Message>,
+    thread_summaries: BTreeMap<String, ThreadSummary>,
+    edits: BTreeMap<String, Message>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -401,10 +559,15 @@ pub enum Apply {
 impl Timeline {
     pub fn reset(&mut self, messages: Vec<Message>, cursor: &str) -> Result<(), String> {
         self.cursor = sequence(cursor)?;
+        self.pin_snapshot_cursor = 0;
         self.messages.clear();
         self.ids.clear();
         self.buffered.clear();
         self.unseen_reactions.clear();
+        self.unseen_pins.clear();
+        self.pinned.clear();
+        self.thread_summaries.clear();
+        self.edits.clear();
         for message in messages {
             self.merge(message)?;
         }
@@ -470,6 +633,166 @@ impl Timeline {
             self.unseen_reactions.clear();
             Err("too many reactions for unloaded messages".into())
         }
+    }
+
+    pub fn reset_pins(&mut self, messages: Vec<Message>) -> Result<(), String> {
+        self.pin_snapshot_cursor = self.cursor;
+        self.pinned.clear();
+        for message in messages {
+            self.merge_pin_message(message)?;
+        }
+        // HTTP confirmations newer than the captured history survive refresh.
+        let retained: Vec<_> = self.messages.values().cloned().collect();
+        for message in &retained {
+            if message
+                .pin_seq
+                .as_deref()
+                .map(sequence)
+                .transpose()?
+                .is_some_and(|seq| seq > self.pin_snapshot_cursor)
+            {
+                self.merge_pin_message(message.clone())?;
+            }
+        }
+        for message in retained {
+            self.merge(message)?;
+        }
+        Ok(())
+    }
+
+    pub fn apply_edit(&mut self, update: EditUpdate) -> Result<Apply, String> {
+        if update.kind != "message.edited"
+            || update.schema_version != 1
+            || update.channel_id != update.message.channel_id
+            || update.message.edit_seq.as_deref() != Some(update.seq.as_str())
+            || update.message.revision <= 1
+        {
+            return Err("invalid edit update".into());
+        }
+        if !self.merge_edit_snapshot(update.message)? {
+            return Ok(Apply::Resync);
+        }
+        self.apply_sequence(&update.seq)
+    }
+
+    /// HTTP confirmations merge content only, never gateway/read position or unloaded rows.
+    pub fn merge_edit_ack(&mut self, message: Message) -> Result<(), String> {
+        if self.merge_edit_snapshot(message)? {
+            Ok(())
+        } else {
+            Err("too many edits for unloaded messages".into())
+        }
+    }
+
+    fn merge_edit_snapshot(&mut self, message: Message) -> Result<bool, String> {
+        message.validate()?;
+        if !self.ids.contains(&message.id)
+            && !self.edits.contains_key(&message.id)
+            && self
+                .edits
+                .keys()
+                .filter(|id| !self.ids.contains(*id))
+                .count()
+                >= 256
+        {
+            return Ok(false);
+        }
+        let message = self.remember_edit(message);
+        for loaded in self
+            .messages
+            .values_mut()
+            .chain(self.pinned.values_mut())
+            .chain(self.unseen_pins.values_mut())
+        {
+            loaded.merge_edit(&message);
+        }
+        Ok(true)
+    }
+
+    fn remember_edit(&mut self, mut message: Message) -> Message {
+        if let Some(snapshot) = self.edits.get(&message.id) {
+            message.merge_edit(snapshot);
+        }
+        if message.revision > 1 {
+            self.edits.insert(message.id.clone(), message.clone());
+        }
+        message
+    }
+
+    pub fn apply_pin(&mut self, update: PinUpdate) -> Result<Apply, String> {
+        self.merge_pin_update(update.clone())?;
+        self.apply_sequence(&update.seq)
+    }
+
+    /// Merge an HTTP acknowledgement without moving the gateway replay cursor.
+    pub fn merge_pin_ack(&mut self, update: PinUpdate) -> Result<(), String> {
+        self.merge_pin_update(update)
+    }
+
+    fn merge_pin_update(&mut self, update: PinUpdate) -> Result<(), String> {
+        if update.kind != "message.pin"
+            || update.schema_version != 1
+            || update.channel_id != update.message.channel_id
+            || update.message.pin_seq.as_deref() != Some(update.seq.as_str())
+        {
+            return Err("invalid pin update".into());
+        }
+        update.message.validate()?;
+        let revision = sequence(&update.seq)?;
+        if revision <= self.pin_snapshot_cursor {
+            return Ok(());
+        }
+        let mut accepted = false;
+        if let Some(existing) = self
+            .messages
+            .values_mut()
+            .find(|item| item.id == update.message.id)
+        {
+            let current = existing
+                .pin_seq
+                .as_deref()
+                .map(sequence)
+                .transpose()?
+                .unwrap_or(0);
+            if revision > current {
+                existing.pin.clone_from(&update.message.pin);
+                existing.pin_seq.clone_from(&update.message.pin_seq);
+                accepted = true;
+            }
+        } else {
+            let replace = self
+                .unseen_pins
+                .get(&update.message.id)
+                .and_then(|message| message.pin_seq.as_deref())
+                .map(sequence)
+                .transpose()?
+                .is_none_or(|current| revision > current);
+            if replace {
+                self.unseen_pins
+                    .insert(update.message.id.clone(), update.message.clone());
+                accepted = true;
+            }
+        }
+        if accepted {
+            self.merge_pin_message(update.message)?;
+        }
+        Ok(())
+    }
+
+    fn merge_pin_message(&mut self, message: Message) -> Result<(), String> {
+        message.validate()?;
+        let message = self.remember_edit(message);
+        self.pinned.retain(|_, item| item.id != message.id);
+        if message.pin.is_some() {
+            let revision = message
+                .pin_seq
+                .as_deref()
+                .map(sequence)
+                .transpose()?
+                .unwrap_or(0);
+            self.pinned.insert(revision, message);
+        }
+        Ok(())
     }
 
     fn merge_reactions(&mut self, update: &ReactionUpdate) -> Result<bool, String> {
@@ -545,8 +868,74 @@ impl Timeline {
         self.messages.values()
     }
 
+    pub fn pinned_messages(&self) -> impl DoubleEndedIterator<Item = &Message> {
+        self.pinned.values().rev()
+    }
+
     fn merge(&mut self, mut message: Message) -> Result<(), String> {
         message.validate()?;
+        message = self.remember_edit(message);
+        if self.pin_snapshot_cursor > 0
+            && message
+                .pin_seq
+                .as_deref()
+                .map(sequence)
+                .transpose()?
+                .unwrap_or(0)
+                <= self.pin_snapshot_cursor
+        {
+            if let Some(snapshot) = self.pinned.values().find(|pin| pin.id == message.id) {
+                message.pin.clone_from(&snapshot.pin);
+                message.pin_seq.clone_from(&snapshot.pin_seq);
+            } else {
+                message.pin = None;
+                message.pin_seq = Some(self.pin_snapshot_cursor.to_string());
+            }
+        }
+        if let Some(update) = self.unseen_pins.remove(&message.id) {
+            let incoming = update
+                .pin_seq
+                .as_deref()
+                .map(sequence)
+                .transpose()?
+                .unwrap_or(0);
+            let current = message
+                .pin_seq
+                .as_deref()
+                .map(sequence)
+                .transpose()?
+                .unwrap_or(0);
+            if incoming > current {
+                message.pin = update.pin;
+                message.pin_seq = update.pin_seq;
+            }
+        }
+        let root = message
+            .thread_root_id
+            .as_ref()
+            .unwrap_or(&message.id)
+            .clone();
+        if let Some(summary) = &message.thread {
+            let previous = self
+                .thread_summaries
+                .get(&root)
+                .map(|old| sequence(&old.seq))
+                .transpose()?
+                .unwrap_or(0);
+            if sequence(&summary.seq)? > previous {
+                self.thread_summaries.insert(root.clone(), summary.clone());
+                for loaded in self
+                    .messages
+                    .values_mut()
+                    .filter(|loaded| loaded.id == root)
+                {
+                    loaded.thread = Some(summary.clone());
+                }
+            }
+        }
+        if let Some(summary) = self.thread_summaries.get(&root) {
+            message.thread = Some(summary.clone());
+        }
         if let Some(update) = self.unseen_reactions.remove(&message.id) {
             if update.channel_id != message.channel_id {
                 return Err("reaction update is for another channel".into());
@@ -584,6 +973,22 @@ impl Timeline {
             if old_revision > new_revision {
                 message.reactions = std::mem::take(&mut existing.reactions);
                 message.reaction_seq = existing.reaction_seq.take();
+            }
+            let old_pin = existing
+                .pin_seq
+                .as_deref()
+                .map(sequence)
+                .transpose()?
+                .unwrap_or(0);
+            let new_pin = message
+                .pin_seq
+                .as_deref()
+                .map(sequence)
+                .transpose()?
+                .unwrap_or(0);
+            if old_pin > new_pin {
+                message.pin = existing.pin.take();
+                message.pin_seq = existing.pin_seq.take();
             }
             *existing = message;
         } else if !self.messages.contains_key(&seq) && self.ids.insert(message.id.clone()) {
@@ -692,7 +1097,163 @@ mod tests {
             },
             reactions: Vec::new(),
             reaction_seq: None,
+            pin: None,
+            pin_seq: None,
+            thread_root_id: None,
+            broadcast: false,
+            thread: None,
+            revision: 1,
+            edited_at: None,
+            edit_seq: None,
         }
+    }
+
+    fn edit_update(mut message: Message, seq: u64, revision: u32) -> EditUpdate {
+        message.content.text = "corrected".into();
+        message.revision = revision;
+        message.edited_at = Some("2026-10-06T00:00:00Z".into());
+        message.edit_seq = Some(seq.to_string());
+        EditUpdate {
+            kind: "message.edited".into(),
+            schema_version: 1,
+            channel_id: message.channel_id.clone(),
+            seq: seq.to_string(),
+            message,
+        }
+    }
+
+    #[test]
+    fn http_edit_snapshots_do_not_skip_replay_or_insert_unloaded_rows() {
+        let original = message("one", 3);
+        let mut timeline = Timeline::default();
+        timeline.reset(vec![original.clone()], "10").unwrap();
+        let corrected = edit_update(original.clone(), 12, 2).message;
+        timeline.merge_edit_ack(corrected).unwrap();
+        assert_eq!(timeline.cursor(), "10");
+        assert_eq!(
+            timeline.messages().next().unwrap().content.text,
+            "corrected"
+        );
+        timeline.merge_edit_ack(original).unwrap();
+        assert_eq!(timeline.messages().next().unwrap().revision, 2);
+        let unloaded = message("unloaded", 2);
+        timeline
+            .merge_edit_ack(edit_update(unloaded.clone(), 13, 3).message)
+            .unwrap();
+        assert_eq!(timeline.messages().count(), 1);
+        timeline.prepend(vec![unloaded]).unwrap();
+        assert_eq!(timeline.messages().next().unwrap().revision, 3);
+        assert_eq!(timeline.cursor(), "10");
+        assert_eq!(
+            timeline.apply_edit(edit_update(message("earlier", 5), 11, 2)),
+            Ok(Apply::Applied)
+        );
+        assert_eq!(
+            timeline.cursor(),
+            "11",
+            "The earlier event must remain replayable after the HTTP snapshot"
+        );
+    }
+
+    #[test]
+    fn edits_preserve_identity_and_independent_revisions_on_loaded_and_pinned_rows() {
+        let mut original = message("one", 3);
+        original.reaction_seq = Some("12".into());
+        original.reactions = vec![Reaction {
+            emoji: "👍".into(),
+            author_ids: vec!["other".into()],
+        }];
+        original.pin_seq = Some("13".into());
+        original.pin = Some(Pin {
+            author: original.author.clone(),
+            created_at: "2026-10-05T00:00:00Z".into(),
+        });
+        original.thread_root_id = Some("root".into());
+        original.broadcast = true;
+        original.thread = Some(ThreadSummary {
+            reply_count: 4,
+            participants: vec![original.author.clone()],
+            seq: "11".into(),
+        });
+        let mut timeline = Timeline::default();
+        timeline.reset(vec![original.clone()], "13").unwrap();
+        timeline.reset_pins(vec![original.clone()]).unwrap();
+        let mut update = edit_update(original.clone(), 14, 2);
+        update.message.reactions.clear();
+        update.message.reaction_seq = None;
+        update.message.pin = None;
+        update.message.pin_seq = None;
+        update.message.thread = None;
+        assert_eq!(timeline.apply_edit(update), Ok(Apply::Applied));
+        assert_eq!(timeline.cursor(), "14");
+        let current = timeline.messages().next().unwrap();
+        assert_eq!(current.content.text, "corrected");
+        assert_eq!(current.seq, "3");
+        assert_eq!(current.created_at, "2026-01-01T00:00:00Z");
+        assert_eq!(current.reaction_seq.as_deref(), Some("12"));
+        assert_eq!(current.reactions[0].author_ids, ["other"]);
+        assert_eq!(current.pin_seq.as_deref(), Some("13"));
+        assert_eq!(current.thread.as_ref().unwrap().seq, "11");
+        assert!(current.broadcast);
+        assert_eq!(
+            timeline.pinned_messages().next().unwrap().content.text,
+            "corrected"
+        );
+        timeline.prepend(vec![original.clone()]).unwrap();
+        timeline.reset_pins(vec![original]).unwrap();
+        assert_eq!(timeline.messages().next().unwrap().revision, 2);
+        assert_eq!(
+            timeline.pinned_messages().next().unwrap().content.text,
+            "corrected"
+        );
+        assert_eq!(timeline.cursor(), "14");
+    }
+
+    #[test]
+    fn unloaded_edits_do_not_insert_ghost_messages_and_overlay_later_thread_pages() {
+        let mut timeline = Timeline::default();
+        timeline.reset(vec![message("recent", 10)], "10").unwrap();
+        let mut older = message("older", 3);
+        older.thread_root_id = Some("root".into());
+        assert_eq!(
+            timeline.apply_edit(edit_update(older.clone(), 11, 2)),
+            Ok(Apply::Applied)
+        );
+        assert_eq!(timeline.messages().count(), 1);
+        timeline.prepend(vec![older.clone()]).unwrap();
+        let loaded = timeline.messages().next().unwrap();
+        assert_eq!(loaded.content.text, "corrected");
+        assert_eq!(loaded.seq, "3");
+        assert_eq!(loaded.thread_root_id.as_deref(), Some("root"));
+        assert_eq!(timeline.cursor(), "11");
+        assert_eq!(
+            timeline.apply_edit(edit_update(older.clone(), 11, 2)),
+            Ok(Apply::Duplicate)
+        );
+        assert_eq!(
+            timeline.apply_edit(edit_update(older, 13, 3)),
+            Ok(Apply::Resync)
+        );
+    }
+
+    #[test]
+    fn edit_sequence_is_not_creation_sequence_and_old_messages_default_to_revision_one() {
+        let mut value = serde_json::to_value(message("one", 3)).unwrap();
+        value.as_object_mut().unwrap().remove("revision");
+        assert_eq!(
+            serde_json::from_value::<Message>(value).unwrap().revision,
+            1
+        );
+        let mut timeline = Timeline::default();
+        let mut invalid = edit_update(message("one", 3), 4, 2);
+        invalid.seq = "3".into();
+        assert!(timeline.apply_edit(invalid).is_err());
+        assert!(
+            edit_update(message("one", 3), 3, 2)
+                .message
+                .validate()
+                .is_err()
+        );
     }
 
     #[test]
@@ -839,6 +1400,107 @@ mod tests {
                 author_ids: vec![author.into()],
             }],
         }
+    }
+
+    fn pin_update(mut message: Message, seq: u64, active: bool) -> PinUpdate {
+        message.pin = active.then(|| Pin {
+            author: message.author.clone(),
+            created_at: "2026-01-02T00:00:00Z".into(),
+        });
+        message.pin_seq = Some(seq.to_string());
+        PinUpdate {
+            kind: "message.pin".into(),
+            schema_version: 1,
+            channel_id: "channel".into(),
+            seq: seq.to_string(),
+            message,
+        }
+    }
+
+    #[test]
+    fn old_pins_stay_separate_and_gateway_sequence_advances() {
+        let mut timeline = Timeline::default();
+        timeline.reset(vec![message("new", 10)], "10").unwrap();
+        let update = pin_update(message("old", 1), 11, true);
+        assert_eq!(timeline.apply_pin(update), Ok(Apply::Applied));
+        assert_eq!(timeline.cursor(), "11");
+        assert_eq!(
+            timeline.messages().count(),
+            1,
+            "an old pin does not enter paginated history"
+        );
+        assert_eq!(timeline.pinned_messages().next().unwrap().id, "old");
+    }
+
+    #[test]
+    fn stale_history_cannot_resurrect_an_unpin() {
+        let mut timeline = Timeline::default();
+        timeline.reset(vec![message("new", 10)], "10").unwrap();
+        timeline
+            .merge_pin_ack(pin_update(message("old", 1), 15, false))
+            .unwrap();
+        let mut stale = message("old", 1);
+        stale.pin = Some(Pin {
+            author: stale.author.clone(),
+            created_at: stale.created_at.clone(),
+        });
+        stale.pin_seq = Some("12".into());
+        timeline.prepend(vec![stale]).unwrap();
+        let old = timeline
+            .messages()
+            .find(|message| message.id == "old")
+            .unwrap();
+        assert!(old.pin.is_none());
+        assert_eq!(old.pin_seq.as_deref(), Some("15"));
+        assert_eq!(timeline.pinned_messages().count(), 0);
+    }
+
+    #[test]
+    fn pin_http_ack_does_not_advance_gateway_cursor() {
+        let mut timeline = Timeline::default();
+        timeline.reset(vec![message("one", 1)], "1").unwrap();
+        timeline
+            .merge_pin_ack(pin_update(message("one", 1), 3, true))
+            .unwrap();
+        assert_eq!(timeline.cursor(), "1");
+        assert_eq!(timeline.apply_sequence("2"), Ok(Apply::Applied));
+        assert_eq!(
+            timeline.apply_pin(pin_update(message("one", 1), 3, true)),
+            Ok(Apply::Applied)
+        );
+        assert_eq!(timeline.cursor(), "3");
+    }
+
+    #[test]
+    fn complete_pin_snapshot_rejects_old_ack_and_stale_page() {
+        let mut timeline = Timeline::default();
+        let stale = pin_update(message("old", 1), 4, true);
+        timeline.reset(vec![message("new", 50)], "60").unwrap();
+        timeline.reset_pins(vec![]).unwrap();
+        timeline.merge_pin_ack(stale.clone()).unwrap();
+        assert_eq!(timeline.pinned_messages().count(), 0);
+        timeline.prepend(vec![stale.message]).unwrap();
+        assert!(
+            timeline
+                .messages()
+                .find(|message| message.id == "old")
+                .unwrap()
+                .pin
+                .is_none()
+        );
+        assert_eq!(
+            timeline.apply_pin(pin_update(message("old", 1), 61, true)),
+            Ok(Apply::Applied)
+        );
+        assert!(
+            timeline
+                .messages()
+                .find(|message| message.id == "old")
+                .unwrap()
+                .pin
+                .is_some()
+        );
+        assert_eq!(timeline.pinned_messages().count(), 1);
     }
 
     #[test]

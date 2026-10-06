@@ -124,12 +124,12 @@ try {
   assert.deepEqual(evaluate('[...document.querySelectorAll(".chat-reaction")].map(e => [e.getAttribute("aria-pressed"), e.textContent])'), [['true', '2'], ['false', '1']]);
   assert.equal(evaluate('document.querySelector(".chat-reaction").closest(".chat-message").querySelector("[data-avatar-id]").dataset.avatarId'), '0');
   if (artifacts) browser('screenshot', join(artifacts, 'avatars-desktop.png'));
-  browser('scroll', 'down', '1000', '--selector', '.direct-section > ul');
-  wait('document.querySelector(".direct-section > ul").scrollTop > 0');
-  assert.equal(evaluate('(() => { const list = document.querySelector(".direct-section > ul").getBoundingClientRect(); const last = [...document.querySelectorAll(".direct-select")].at(-1).getBoundingClientRect(); return last.top >= list.top && last.bottom <= list.bottom + 1 && document.querySelector(".direct-action").getBoundingClientRect().top >= list.bottom; })()'), true, 'Crowded DMs scroll to the final name without covering Invite people');
+  browser('scroll', 'down', '1000', '--selector', '.channel-navigation');
+  wait('document.querySelector(".channel-navigation").scrollTop > 0');
+  assert.equal(evaluate('(() => { const navigation = document.querySelector(".channel-navigation").getBoundingClientRect(); const last = [...document.querySelectorAll(".direct-select")].at(-1).getBoundingClientRect(); const invite = document.querySelector(".direct-action").getBoundingClientRect(); const dock = document.querySelector(".call-account").getBoundingClientRect(); return last.top >= navigation.top && last.bottom <= invite.top && invite.bottom <= navigation.bottom + 1 && navigation.bottom <= dock.top; })()'), true, 'Channels and crowded DMs scroll together to the final name and Invite people, without covering the fixed account dock');
   if (artifacts) browser('screenshot', join(artifacts, 'avatars-dms-scrolled.png'));
-  browser('scroll', 'up', '1000', '--selector', '.direct-section > ul');
-  wait('document.querySelector(".direct-section > ul").scrollTop === 0');
+  browser('scroll', 'up', '1000', '--selector', '.channel-navigation');
+  wait('document.querySelector(".channel-navigation").scrollTop === 0');
   // Explicit style-state mock: no microphone, transport, or live speaking detection.
   browser('click', '.voice-stack');
   wait('document.querySelector(".voice-occupants[data-open]") && !document.querySelector(".voice-occupants[data-open]").getAnimations({ subtree: true }).some(a => a.playState === "running")');
@@ -143,7 +143,7 @@ try {
   if (artifacts) browser('screenshot', join(artifacts, 'avatars-reaction-picker.png'));
   browser('click', '[aria-label="Close emoji picker"]');
   browser('click', '.space-menu summary');
-  browser('click', '.space-actions button');
+  browser('find', 'role', 'button', 'click', '--name', 'Space settings', '--exact');
   wait('document.querySelectorAll(".member-avatar [data-avatar-id]").length === 5');
   assert.equal(evaluate('[...document.querySelectorAll(".member-avatar [data-avatar-id]")].every(e => getComputedStyle(e.parentElement).backgroundColor === "rgba(0, 0, 0, 0)")'), true);
   if (artifacts) browser('screenshot', join(artifacts, 'avatars-members-settings.png'));
