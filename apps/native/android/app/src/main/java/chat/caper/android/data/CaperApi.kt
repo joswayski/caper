@@ -101,6 +101,30 @@ class CaperApi(
         return message.validated(channel, author, clientMessageId, text)
     }
 
+    suspend fun editMessage(token: String?, chatToken: String, channel: String, message: String, text: String, expectedRevision: Int): ChatMessage {
+        require(messageId.matches(message) && expectedRevision > 0 && validEditText(text)) { "Invalid message edit." }
+        val result: ChatMessage = request(
+            "/api/chat/channels/${channel.pathId()}/messages/$message", "PUT", token,
+            buildJsonObject { put("text", text); put("expectedRevision", expectedRevision) }.toString(),
+            mapOf("x-caper-chat-token" to chatToken),
+        )
+        require(result.id == message) { "Message identity mismatch." }
+        return result.validated(channel)
+    }
+
+    suspend fun loadMessage(token: String?, channel: String, message: String): ChatMessage {
+        require(messageId.matches(message)) { "Invalid message ID." }
+        val result: ChatMessage = get("/api/chat/channels/${channel.pathId()}/messages/$message", token)
+        require(result.id == message) { "Message identity mismatch." }
+        return result.validated(channel)
+    }
+
+    suspend fun messageVersions(token: String?, channel: String, message: String, before: Int? = null): MessageVersions {
+        require(messageId.matches(message) && (before == null || before > 0)) { "Invalid message history request." }
+        val page: MessageVersions = get("/api/chat/channels/${channel.pathId()}/messages/$message/versions" + (before?.let { "?before=$it" } ?: ""), token)
+        return page.validated(message, before)
+    }
+
     suspend fun setReaction(token: String?, chatToken: String, channel: String, message: String, emoji: String, active: Boolean): ReactionUpdate {
         require(messageId.matches(message)) { "Invalid message ID." }
         val update: ReactionUpdate = request(

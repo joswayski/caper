@@ -6,6 +6,84 @@ import CaperRTCBridge
 #endif
 
 final class ProtocolTests: XCTestCase {
+    func testMessageHistoryDiffPreservesSeparateEditsAndUnicode() {
+        let before = "Meet Friday 🙂\nKeep this unchanged\nAt 9"
+        let after = "Meet Saturday 🚀\nKeep this unchanged\nAt 11"
+        let (old, new) = messageDiff(before: before, after: after)
+        XCTAssertEqual(old.map(\.text).joined(), before)
+        XCTAssertEqual(new.map(\.text).joined(), after)
+        XCTAssertEqual(old.filter(\.changed).map(\.text).joined(), "Friday🙂9")
+        XCTAssertEqual(new.filter(\.changed).map(\.text).joined(), "Saturday🚀11")
+        XCTAssertTrue(old.filter { ["Keep", "this", "unchanged"].contains($0.text) }.allSatisfy { !$0.changed })
+        let original = MessageVersion(revision: 1, content: ChatContent(version: 1, type: "text", text: before), createdAt: "2026-10-01T00:00:00Z")
+        let revised = MessageVersion(revision: 2, content: original.content, createdAt: "2026-10-02T00:00:00Z")
+        XCTAssertTrue(MessageVersions(messageId: "message", versions: [revised, original], hasMore: false).isValid(messageID: "message", before: nil))
+        XCTAssertFalse(MessageVersions(messageId: "message", versions: [original, revised], hasMore: false).isValid(messageID: "message", before: nil))
+        XCTAssertFalse(MessageVersions(messageId: "message", versions: [revised], hasMore: false).isValid(messageID: "message", before: 2))
+    }
+
+    func testContentEditsPreserveIndependentMetadataAndOverlayStalePages() throws {
+        let author = ChatAuthor(id: "author", name: "Author", isGuest: false)
+        var original = ChatMessage(id: "message", channelId: "channel", seq: "3", author: author,
+                                   content: ChatContent(version: 1, type: "text", text: "original"),
+                                   createdAt: "2026-10-01T00:00:00Z", clientMessageId: "client")
+        original.reactionSeq = "12"; original.pinSeq = "13"
+        original.threadRootId = "root"; original.broadcast = true
+        original.thread = ThreadSummary(replyCount: 4, participants: [author], seq: "11")
+        var edited = original
+        edited.content = ChatContent(version: 1, type: "text", text: "corrected")
+        edited.revision = 2; edited.editSeq = "14"; edited.editedAt = "2026-10-06T00:00:00.123Z"
+        edited.reactionSeq = nil; edited.pinSeq = nil
+        edited.thread = ThreadSummary(replyCount: 1, participants: [author], seq: "4")
+        var snapshots = EditSnapshots()
+        snapshots.apply(edited) // Arrives before an older thread/history page.
+        snapshots.seed([original])
+        let merged = snapshots.overlay(original)
+        XCTAssertEqual(merged.content.text, "corrected")
+        XCTAssertEqual(merged.seq, "3")
+        XCTAssertEqual(merged.createdAt, "2026-10-01T00:00:00Z")
+        XCTAssertEqual(merged.reactionSeq, "12")
+        XCTAssertEqual(merged.pinSeq, "13")
+        XCTAssertEqual(merged.thread?.seq, "11")
+        XCTAssertEqual(merged.threadRootId, "root")
+        XCTAssertEqual(merged.broadcast, true)
+        let raw = try JSONSerialization.jsonObject(with: JSONEncoder().encode(edited))
+        var event: [String: Any] = ["type": "message.edited", "schemaVersion": 1, "channelId": "channel", "seq": "14", "message": raw]
+        XCTAssertEqual(EditEvent.message(event, channelID: "channel")?.content.text, "corrected")
+        event["seq"] = "3"
+        XCTAssertNil(EditEvent.message(event, channelID: "channel"))
+        event["seq"] = "14"
+        XCTAssertNil(EditEvent.message(event, channelID: "other"))
+    }
+
+    func testEditCacheBoundsOnlyUnloadedMessagesAndRecoversAfterRefresh() {
+        let author = ChatAuthor(id: "author", name: "Author", isGuest: false)
+        var edited = ChatMessage(id: "message", channelId: "channel", seq: "3", author: author,
+                                 content: ChatContent(version: 1, type: "text", text: "corrected"),
+                                 createdAt: "2026-10-01T00:00:00Z", clientMessageId: "client")
+        edited.revision = 2; edited.editSeq = "14"; edited.editedAt = "2026-10-06T00:00:00Z"
+        func row(_ id: String) -> ChatMessage {
+            let value = edited
+            return ChatMessage(id: id, channelId: value.channelId, seq: value.seq, author: value.author,
+                               content: value.content, createdAt: value.createdAt, clientMessageId: id,
+                               revision: value.revision, editedAt: value.editedAt, editSeq: value.editSeq)
+        }
+        var snapshots = EditSnapshots()
+        snapshots.seed((0...256).map { row("loaded-\($0)") })
+        for index in 0..<256 { snapshots.apply(row("unseen-\(index)")) }
+        XCTAssertFalse(snapshots.unseenOverflowed)
+        snapshots.apply(row("overflow"))
+        XCTAssertTrue(snapshots.unseenOverflowed)
+        var old = row("unseen-0")
+        old.revision = nil; old.editedAt = nil; old.editSeq = nil
+        old.content = ChatContent(version: 1, type: "text", text: "old")
+        XCTAssertEqual(snapshots.overlay(old).content.text, "corrected", "Overflow must not evict older corrections")
+        snapshots.reset() // Fresh history clears overflow before reseeding loaded rows.
+        snapshots.seed([row("loaded-0")])
+        snapshots.apply(row("overflow"))
+        XCTAssertFalse(snapshots.unseenOverflowed)
+    }
+
     @MainActor
     func testSoundEffectsPreferencePersistsBothDirectionsWithoutOpeningOutput() throws {
         let suite = "caper-effects-test-\(UUID().uuidString)"

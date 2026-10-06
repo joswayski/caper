@@ -20,6 +20,12 @@ full-screen view. **Also send to channel** shows the same reply in both places,
 sharing its reactions. Native release and validation gaps are tracked in
 [the runbook](docs/media.md#message-threads).
 
+Authors can edit messages on web, Android, Apple and Rust desktop, including
+thread roots/replies and DMs. The edited indicator opens retained history with
+the previous/current versions side by side and older changes selectable below;
+broadcast replies update in both places. See platform validation gaps and
+[editing and rollout details](docs/media.md#message-editing).
+
 Mac release downloads use a signed, notarized disk image: open it, drag Caper onto
 Applications, eject the image, then launch Caper from Applications. `~/Applications`
 also works without administrator access. Release copies outside these folders or

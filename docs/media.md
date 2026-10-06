@@ -488,7 +488,8 @@ and broadcast, not by deleting and reposting. No example replacement is enabled.
 An eventual transformation feature must separately retain the submitted original
 in restricted audit storage while publishing only the transformed content. The
 current hash is not an audit copy. Stable message IDs and channel event sequences
-permit later same-ID updates; audit history, integrations and edits are not implemented.
+support same-ID edits and retained content versions (see [message editing](#message-editing)).
+Restricted transformation audit storage and integrations are not implemented.
 Message bodies, chat capabilities, and account credentials are never logged.
 Messages and author snapshots are saved in Postgres and visible to authorized
 channel members; there is no automatic retention purge. Browser tokens use local
@@ -1503,6 +1504,136 @@ commands that have been run against shared systems.
    migration and thread read/event filtering while disabling new replies. Keep
    all messages, outbox records, columns and indexes; never delete conversation
    data or migration records as rollback.
+
+## Message editing
+
+Web, Android, Apple (iOS/macOS) and Rust desktop message actions and pins offer
+**Edit message** to the original author account while it can participate in
+the conversation. This includes
+channel messages, thread roots, hidden replies, broadcast replies and DMs.
+Ownership follows the original session's account, so rotating a chat capability
+does not lose authorship. There is no age limit or space-owner override.
+Save uses the normal 4,000-code-point, nonblank text rules; desktop Ctrl/Cmd+Enter saves.
+Conflicts and failed saves keep the draft. **Discard draft and load latest**
+explicitly replaces it. Channel/account/access changes close obsolete dialogs.
+
+An **edited** indicator opens retained versions, also available from message
+actions and pins. Everyone with current read access can inspect the original
+and later versions, including members previewing an unjoined channel. Editing
+does not erase information: the dialog explains this before saving. History
+prominently shows the previous version on the left and current version on the
+right, with word-level changes highlighted. **View previous versions** below
+selects an older change without replacing that latest pair; the original has
+no fabricated predecessor. Web uses Pierre Diffs (`@pierre/diffs`); native
+clients render native word diffs with equivalent capabilities. There is no
+automatic version purge or restore-to-version action.
+
+### Editing API and durable delivery
+
+- `PUT /api/chat/channels/{channel}/messages/{message}` accepts the sending
+  capability and `{text,expectedRevision}` and returns the current message.
+  Legacy messages implicitly have `revision:1`. Actual changes add `revision`,
+  `editedAt` and decimal-string `editSeq`. Same-text saves are no-ops; an exact
+  retry of the immediately preceding successful edit does not create another
+  version/event. A stale draft returns 409. The limit is 30 actual edits per
+  author/channel/minute; retries/no-ops do not consume it.
+- `GET` at that URL reloads the current snapshot. `GET .../versions?before={revision}`
+  returns `{messageId,versions:[{revision,content,createdAt}],hasMore}`, newest
+  first, 50 per page with exclusive `before`. Reads recheck current membership
+  and private grants; outsiders have no version-history access.
+- Migration `202610060003_message_edits.sql` follows threads. It adds append-only
+  `message_versions`; the original published content is captured lazily on first
+  edit, without rewriting or backfilling all messages. The runtime role has
+  SELECT/INSERT, not UPDATE/DELETE, on this table.
+- The channel lock atomically commits version, current message, outbox event and
+  channel head. Events are `{type:"message.edited",schemaVersion:1,channelId,seq,message}`,
+  with `seq == message.editSeq`. Creation `seq`/time, message ID, original send
+  hash/idempotency, author, thread/broadcast identity, reactions and pins stay
+  unchanged. `thread.seq` remains an independent root-summary revision.
+- The existing publisher and gateway replay these events. Clients merge only
+  content by revision, including pinned/thread projections and late pages.
+  Editing does not insert unloaded messages, chime or announce a new message.
+  HTTP edit acknowledgements and history pages never advance replay cursors.
+  Excess unloaded edit snapshots cause resync rather than silent eviction.
+
+### Editing validation and release gaps
+
+| Platform | Evidence and limits |
+| --- | --- |
+| API | Initial editing baseline: 159 workspace tests, none ignored, including disposable Postgres/Valkey tests for ownership, rotated capability, permissions, roots/replies/DMs, stale drafts, retries, rollback, publisher, rate/paging boundaries and append-only grants. Locked release build passed. Backend is unchanged in the UI/parity follow-up; its default workspace run passed 124 tests with 35 database/integration tests ignored (disposable servers were not running), plus fmt/Clippy |
+| Web | Production build/typechecks, 382 web tests, 15 fixture tests and `scripts/test-message-edits.mjs` passed: real saves, pins, rendered split diffs with separate word highlights, fixed latest pair while browsing older changes, original selection, 390px history/conflict/draft/reload, ownership, hidden/broadcast edits, independent summaries, Escape isolation, 55-version paging and retry/rejected saves. Initial threads/pins regressions also passed (one default-pointer pins run needed retry). Inspected 2x desktop/narrow captures. Chromium fixtures do not prove touch devices, Safari or live multi-account acceptance |
+| Rust desktop | Native editor/history, cursor-neutral HTTP snapshots and independent gateway merge. Linux build, fmt and 221 tests (9 existing device/integration tests ignored); package Clippy uses `--no-deps` because vendored `webrtc-sys` has existing missing-safety-doc warnings. Actual wide/480px history, original selection and editor captures were inspected; resize/selection repaint fixes keep contents visible. Tests cover retained drafts, late results, author changes, HTTP/replay isolation, stale projections and selected-original placement. Windows and cross-client live acceptance remain prerequisites |
+| Android | Native author editor/history from timelines, threads and pins, with retained conflicts, latest/older comparisons and paginated history. Java 17/SDK 36 Kotlin main/test compilation and all 142 JVM unit tests passed, including edit headers/revision/identity, Unicode word diffs and bounded history. Orb setup now includes Java; install the Android SDK separately. No APK/native-audio build, rendered Compose/device or live cross-client acceptance is inferred from compilation/unit tests |
+| Apple iOS/macOS | Native SwiftUI editor/history from rows/actions, threads and pins. Linux Swift 6 typechecked Foundation models and executed 10 history/diff/Unicode assertions; changed SwiftUI/API/model sources passed iOS 17 and macOS 14 syntax parsing. These checks do not typecheck SwiftUI/UIKit/AppKit or replace platform XCTest. Xcode compilation, rendered UI, physical devices and cross-client live acceptance remain prerequisites |
+| Containers / live | No Docker daemon; API release and web production build stages passed directly, not as container images. Staging secrets check could not authenticate the staging AWS profile; no secret/configuration changes are required. No live multi-account, physical-device or SFU evidence is inferred from fixture checks |
+
+With the disposable fixture and Vite running:
+
+```sh
+node --test tests/native-parity-fixture.test.mjs
+MESSAGE_TEST_WEB_URL=http://127.0.0.1:5174 node scripts/test-message-edits.mjs
+CHAT_TEST_DATABASE_URL=postgres://user@127.0.0.1:55432/postgres \
+  CHAT_TEST_VALKEY_URL=redis://127.0.0.1:56379 \
+  cargo test --workspace chat::editing -- --ignored
+```
+
+For Android source/unit validation, use JDK 17 and set `ANDROID_HOME` to an SDK
+with platform/build-tools 36 (the repository's native build also needs its pinned
+NDK/CMake). The smaller Gradle heap below fits a 4 GB orb:
+
+```sh
+apps/native/android/prepare-fonts.sh
+apps/native/android/gradlew -p apps/native/android --no-daemon --max-workers=1 \
+  '-Dorg.gradle.jvmargs=-Xmx768m -XX:MaxMetaspaceSize=384m -Dfile.encoding=UTF-8' \
+  :app:compileDebugKotlin :app:testDebugUnitTest
+```
+
+### Deployment order for editing
+
+Merging does not deploy. These are post-merge operator commands, not shared-state
+actions performed during development.
+
+1. **Prerequisites:** merge the threads dependency first, then editing; set
+   `MERGED_SHA` to the full cumulative merged revision and wait for its backend/web
+   images and native checks. No infrastructure apply, new secrets/configuration,
+   service, SFU change or Valkey reset is necessary. Keep the direct
+   `MIGRATION_DATABASE_URL`, existing runtime/Valkey configuration and one desired
+   API replica. Have a current database backup; never reset retained data.
+   Old native builds may miss edits or resync at the next event.
+2. **Database/API:** deploy API first. Startup runs embedded
+   `202610060003_message_edits.sql` after the pins/threads migrations and grants
+   append-only runtime access. No manual data write, backfill or separate
+   migration dispatch is needed. Wait for the dispatched workflow and readiness.
+   ```sh
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
+3. **Gateway:** deploy the same backend revision after API readiness, before
+   exposing editor controls. No new gateway service or protocol subscription is
+   needed. Do not change replica counts or close healthy voice tracks.
+   ```sh
+   gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-chat-gateway --timeout=15m
+   ```
+4. **Clients:** validate and release the editors/history on Android, iOS/macOS,
+   Windows/Linux and web. Clients can deploy independently after server readiness,
+   but coordinate release acceptance so users receive equivalent editing/history
+   capabilities. Wait for each exact workflow outcome before accepting a release.
+   ```sh
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+5. **Verify/rollback:** use two accounts on different updated clients. Edit a
+   root, hidden/broadcast reply, pin and DM; compare versions, reload/reconnect,
+   page past 50 versions and race two drafts. Confirm broadcast surfaces share
+   one content revision, thread summaries stay unchanged, outsiders cannot edit
+   or read versions, edits do not chime, and ordinary chat/voice stays healthy.
+   Client rollback hides editor controls but cannot undo saved edits/versions.
+   Prefer a forward fix; a reviewed server rollback build must retain the
+   migration, version reads and edit-event consumption while disabling writes.
+   Never drop retained content/outbox/migration records or roll SQLx images back
+   across the applied migration.
 
 ## Shared call state and rolling deployments
 

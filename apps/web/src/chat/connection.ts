@@ -1,5 +1,5 @@
 import { appGateway, type AppGateway, type GatewaySubscription } from "../gateway/client.ts";
-import { isChatAuthor, isChatMessage, isChatPinEvent, isChatReactionEvent, sequence, type ChatEvent, type ChatMessage, type ChatPinEvent, type ChatReactionEvent, type ChatTypingEvent } from "./types.ts";
+import { isChatAuthor, isChatEditEvent, isChatMessage, isChatPinEvent, isChatReactionEvent, sequence, type ChatEditEvent, type ChatEvent, type ChatMessage, type ChatPinEvent, type ChatReactionEvent, type ChatTypingEvent } from "./types.ts";
 
 export interface ChatConnectionCallbacks {
   message: (message: ChatMessage) => "applied" | "buffered" | "duplicate" | "overflow";
@@ -9,6 +9,7 @@ export interface ChatConnectionCallbacks {
   typing?: (event: ChatTypingEvent) => void;
   reactions?: (event: ChatReactionEvent) => "applied" | "buffered" | "duplicate" | "overflow";
   pin?: (event: ChatPinEvent) => "applied" | "buffered" | "duplicate" | "overflow";
+  edit?: (event: ChatEditEvent) => "applied" | "buffered" | "duplicate" | "overflow";
 }
 
 function parseEvent(value: unknown): ChatEvent {
@@ -21,6 +22,7 @@ function parseEvent(value: unknown): ChatEvent {
   }
   if (isChatReactionEvent(event)) return event;
   if (isChatPinEvent(event)) return event;
+  if (isChatEditEvent(event)) return event;
   if (event.type === "typing.updated" && typeof event.channelId === "string" && isChatAuthor(event.author)
     && typeof event.typing === "boolean" && typeof event.revision === "string") {
     sequence(event.revision);
@@ -76,6 +78,10 @@ export class ChatConnection {
         }
         if (event.type === "message.pin" && event.channelId === this.channelId && this.callbacks.pin) {
           if (this.callbacks.pin(event) === "overflow") this.callbacks.resync();
+          return;
+        }
+        if (event.type === "message.edited" && event.channelId === this.channelId && this.callbacks.edit) {
+          if (this.callbacks.edit(event) === "overflow") this.callbacks.resync();
           return;
         }
         if (event.type !== "message.created" || event.channelId !== this.channelId) {

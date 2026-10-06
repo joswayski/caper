@@ -69,7 +69,7 @@ export default function ThreadPanel({ state, client, channelName, readOnly, rend
     follow.current = true;
     composer.current?.focus();
     const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !event.defaultPrevented && !document.querySelector(".chat-reaction-picker, .chat-message-actions, .chat-reactors")) onClose();
+      if (event.key === "Escape" && !event.defaultPrevented && !document.querySelector(".chat-reaction-picker, .chat-message-actions, .chat-reactors, .chat-edit-dialog[open]")) onClose();
     };
     document.addEventListener("keydown", escape);
     return () => {
@@ -77,7 +77,7 @@ export default function ThreadPanel({ state, client, channelName, readOnly, rend
       if (returnFocus.current?.isConnected) returnFocus.current.focus();
     };
   }, [rootId, onClose]);
-  useEffect(() => { if (rootId && !state.thread?.loading) composer.current?.focus(); }, [rootId, state.thread?.loading]);
+  useEffect(() => { if (rootId && !state.thread?.loading && !document.querySelector(".chat-edit-dialog[open]")) composer.current?.focus(); }, [rootId, state.thread?.loading]);
   useEffect(() => {
     if (!pending) return;
     setDrafts((current) => {

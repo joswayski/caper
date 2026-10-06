@@ -20,6 +20,12 @@ internal fun ChatMessage.validated(
     require(content.text.isNotEmpty() && content.text.codePointCount(0, content.text.length) <= 4000) { "Invalid message text." }
     require(content.text.none { it.isISOControl() && it != '\n' && it != '\t' }) { "Invalid message text." }
     require(runCatching { Instant.parse(createdAt) }.isSuccess) { "Invalid message timestamp." }
+    require(revision >= 1) { "Invalid content revision." }
+    if (revision == 1) require(editedAt == null && editSeq == null) { "Unexpected edit metadata." }
+    else {
+        require(editedAt != null && runCatching { Instant.parse(editedAt) }.isSuccess) { "Invalid edit timestamp." }
+        require(editSeq != null && sequencePattern.matches(editSeq) && BigInteger(editSeq) > BigInteger(seq)) { "Invalid edit sequence." }
+    }
     pinSeq?.let { require(sequencePattern.matches(it) && runCatching { BigInteger(it) }.isSuccess) { "Invalid pin sequence." } }
     pin?.let {
         require(it.author.id.isNotEmpty() && it.author.name.isNotEmpty()) { "Invalid pin author." }

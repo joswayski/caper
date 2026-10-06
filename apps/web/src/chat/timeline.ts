@@ -1,13 +1,15 @@
-import { sequence, type ChatMessage, type ChatPinEvent, type ChatReactionEvent, type ChatThreadSummary } from "./types.ts";
+import { sequence, type ChatEditEvent, type ChatMessage, type ChatPinEvent, type ChatReactionEvent, type ChatThreadSummary } from "./types.ts";
+import { mergeEditedContent } from "./edits.ts";
 
 const MAX_PENDING_EVENTS = 256;
 
 export class ChatTimeline {
   private cursorValue = 0n;
   private readonly byId = new Map<string, ChatMessage>();
-  private readonly eventBuffer = new Map<bigint, ChatMessage | ChatReactionEvent | ChatPinEvent>();
+  private readonly eventBuffer = new Map<bigint, ChatMessage | ChatReactionEvent | ChatPinEvent | ChatEditEvent>();
   private readonly unseenReactions = new Map<string, ChatReactionEvent>();
   private readonly pinUpdates = new Map<string, ChatMessage>();
+  private readonly editUpdates = new Map<string, ChatMessage>();
   private pinSnapshotCursor = 0n;
   private pinnedById = new Map<string, ChatMessage>();
   private readonly threadSummaries = new Map<string, ChatThreadSummary>();
@@ -31,6 +33,9 @@ export class ChatTimeline {
     for (const [id, message] of this.pinUpdates) {
       if (this.cursorValue === 0n || sequence(message.pinSeq ?? "0") < this.cursorValue) this.pinUpdates.delete(id);
     }
+    for (const [id, message] of this.editUpdates) {
+      if (this.cursorValue === 0n || sequence(message.editSeq ?? "0") <= this.cursorValue) this.editUpdates.delete(id);
+    }
     this.byId.clear();
     this.eventBuffer.clear();
     this.unseenReactions.clear();
@@ -52,7 +57,7 @@ export class ChatTimeline {
     this.merge(message);
   }
 
-  applyEvent(message: ChatMessage | ChatReactionEvent | ChatPinEvent): "applied" | "buffered" | "duplicate" | "overflow" {
+  applyEvent(message: ChatMessage | ChatReactionEvent | ChatPinEvent | ChatEditEvent): "applied" | "buffered" | "duplicate" | "overflow" {
     const next = sequence(message.seq);
     if (next <= this.cursorValue) {
       this.merge(message);
@@ -64,11 +69,12 @@ export class ChatTimeline {
       return "buffered";
     }
     this.applyContiguous(next, message);
-    if (this.unseenReactions.size > MAX_PENDING_EVENTS) return "overflow";
+    if (this.unseenReactions.size > MAX_PENDING_EVENTS
+      || [...this.editUpdates.keys()].filter((id) => !this.byId.has(id) && !this.pinnedById.has(id)).length > MAX_PENDING_EVENTS) return "overflow";
     return "applied";
   }
 
-  private applyContiguous(next: bigint, message: ChatMessage | ChatReactionEvent | ChatPinEvent) {
+  private applyContiguous(next: bigint, message: ChatMessage | ChatReactionEvent | ChatPinEvent | ChatEditEvent) {
     this.merge(message);
     this.cursorValue = next;
     while (true) {
@@ -99,7 +105,26 @@ export class ChatTimeline {
     this.mergePinMessage(event.message);
   }
 
+  // A mutation is not an insertion into channel/thread pagination.
+  mergeEdit(message: ChatMessage) {
+    if ((message.revision ?? 1) <= 1) return;
+    const previous = this.editUpdates.get(message.id);
+    if (!previous || (message.revision ?? 1) > (previous.revision ?? 1)) this.editUpdates.set(message.id, message);
+    for (const collection of [this.byId, this.pinnedById, this.pinUpdates]) {
+      const current = collection.get(message.id);
+      if (current) collection.set(message.id, mergeEditedContent(current, message));
+    }
+    this.sortedMessages = undefined;
+  }
+
+  private withEdit(message: ChatMessage) {
+    const edit = this.editUpdates.get(message.id);
+    return edit ? mergeEditedContent(message, edit) : message;
+  }
+
   private mergePinMessage(message: ChatMessage) {
+    this.mergeEdit(message);
+    message = this.withEdit(message);
     const previous = this.pinUpdates.get(message.id);
     if (this.pinSnapshotCursor > 0n && sequence(message.pinSeq ?? "0") <= this.pinSnapshotCursor) {
       // The complete collection also governs messages outside loaded history.
@@ -113,7 +138,7 @@ export class ChatTimeline {
       }
       return;
     }
-    const snapshot = previous && sequence(previous.pinSeq ?? "0") > sequence(message.pinSeq ?? "0") ? previous : message;
+    const snapshot = this.withEdit(previous && sequence(previous.pinSeq ?? "0") > sequence(message.pinSeq ?? "0") ? previous : message);
     if (snapshot.pinSeq !== undefined) this.pinUpdates.set(snapshot.id, snapshot);
     if (snapshot.pin) this.pinnedById.set(snapshot.id, snapshot);
     else this.pinnedById.delete(snapshot.id);
@@ -124,8 +149,15 @@ export class ChatTimeline {
     }
   }
 
-  private merge(message: ChatMessage | ChatReactionEvent | ChatPinEvent) {
-    if ("type" in message) { message.type === "message.pin" ? this.mergePin(message) : this.mergeReactions(message); return; }
+  private merge(message: ChatMessage | ChatReactionEvent | ChatPinEvent | ChatEditEvent) {
+    if ("type" in message) {
+      if (message.type === "message.edited") this.mergeEdit(message.message);
+      else if (message.type === "message.pin") this.mergePin(message);
+      else this.mergeReactions(message);
+      return;
+    }
+    this.mergeEdit(message);
+    message = this.withEdit(message);
     const rootId = message.threadRootId ?? message.id;
     const previous = this.threadSummaries.get(rootId);
     if (message.thread && (!previous || sequence(message.thread.seq) > sequence(previous.seq))) {
