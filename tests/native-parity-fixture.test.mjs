@@ -278,3 +278,25 @@ test('message IDs match the API shape native clients accept for reaction paths',
   assert.deepEqual(reacted.value.reactions, [{ emoji: '🚀', authorIds: [ids.owner] }]);
   assert.deepEqual((await request(root, { auth: true })).value.messages.find(message => message.id === target).reactions, [{ emoji: '🚀', authorIds: [ids.owner] }]);
 });
+
+test('who-reacted lists people in reaction order for readers only', async (t) => {
+  const { request } = await setup(t);
+  const target = `${ids.general}m01`;
+  const path = `/api/chat/channels/${ids.general}/messages/${target}/reactions`;
+  for (const userId of [ids.other, ids.member]) {
+    const seeded = await request('/__fixture/control', { method: 'POST', body: { incomingReaction: { channelId: ids.general, messageId: target, emoji: '👍', userId } } });
+    assert.equal(seeded.response.status, 200);
+  }
+  const list = await request(path, { auth: true });
+  assert.equal(list.response.status, 200);
+  assert.equal(list.value.messageId, target);
+  assert.match(list.value.reactionSeq, /^[1-9]\d*$/);
+  assert.deepEqual(list.value.reactions, [{ emoji: '👍', authors: [
+    { id: ids.other, username: 'alex', displayName: 'Alex', avatarId: 799 },
+    { id: ids.member, username: 'maya', displayName: 'Maya', avatarId: 31 },
+  ] }]);
+  assert.equal((await request(path)).response.status, 404, 'signed-out readers cannot see who reacted');
+  assert.equal((await request(`/api/chat/channels/${ids.general}/messages/absent/reactions`, { auth: true })).response.status, 404);
+  const unknown = await request('/__fixture/control', { method: 'POST', body: { incomingReaction: { channelId: ids.general, messageId: target, emoji: '👍', userId: 'nobody' } } });
+  assert.equal(unknown.response.status, 400);
+});

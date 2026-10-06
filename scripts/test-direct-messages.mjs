@@ -199,11 +199,11 @@ try {
   wait('fetch("/api/dms").then(r => r.json()).then(v => v.conversations[0].readSeq === "4")');
   assert.equal((await conversations()).conversations[0].readSeq, '4', 'Reactions advance read receipts even though the newest message is still sequence 3');
   browser('click', '.chat-reaction');
-  wait('document.querySelector(".chat-reaction")?.getAttribute("aria-pressed") === "true" && !document.querySelector(".chat-reaction").disabled');
+  wait('document.querySelector(".chat-reaction")?.getAttribute("aria-pressed") === "true" && document.querySelector(".chat-reaction").getAttribute("aria-disabled") !== "true"');
   assert.equal(evaluate('document.querySelector(".chat-reaction").textContent'), '2');
   screenshot('dm-reactions-desktop');
   browser('click', '.chat-reaction');
-  wait('document.querySelector(".chat-reaction")?.getAttribute("aria-pressed") === "false" && !document.querySelector(".chat-reaction").disabled');
+  wait('document.querySelector(".chat-reaction")?.getAttribute("aria-pressed") === "false" && document.querySelector(".chat-reaction").getAttribute("aria-disabled") !== "true"');
   assert.equal(evaluate('document.querySelector(".chat-reaction").textContent'), '1');
   browser('reload');
   wait('document.querySelector(".chat-reaction")?.getAttribute("aria-label") === "🎉, 1 reaction"');
