@@ -118,13 +118,19 @@ final class GatewayLifecycleTests: XCTestCase {
                                        "seq": "2", "messageId": "message-1", "reactions": [["emoji": "🎉", "authorIds": ["peer"]]]]
         old.push(["type": "event", "id": chat, "event": reaction])
         await eventually { chatEvents.contains("message.reactions") }
+        let attachments: [String: Any] = ["type": "message.attachments", "schemaVersion": 1, "channelId": "chat",
+                                          "seq": "3", "messageId": "message-1", "attachments": [[String: Any]]()]
+        old.push(["type": "event", "id": chat, "event": attachments])
+        await eventually { chatEvents.contains("message.attachments") }
         candidate.push(["type": "event", "id": chat, "event": reaction])
-        candidate.push(["type": "event", "id": chat, "event": ["type": "ready", "cursor": "2"]])
+        candidate.push(["type": "event", "id": chat, "event": attachments])
+        candidate.push(["type": "event", "id": chat, "event": ["type": "ready", "cursor": "3"]])
         XCTAssertEqual(chatEvents.filter { $0 == "message.created" }.count, 1)
         XCTAssertFalse(old.cancelled, "chat catch-up alone must not drop voice")
         candidate.push(["type": "event", "id": media, "event": ["type": "snapshot", "revision": 1]])
         await eventually("candidate did not promote") { old.cancelled }
         XCTAssertEqual(chatEvents.filter { $0 == "message.reactions" }.count, 1, "candidate reaction replay must be deduplicated")
+        XCTAssertEqual(chatEvents.filter { $0 == "message.attachments" }.count, 1, "attachment updates are sequenced like reactions")
         XCTAssertEqual(mediaRevisions, [1], "stale candidate snapshot must not be redelivered")
         XCTAssertEqual(states, [.connecting, .connected], "planned handoff must not publish disconnection")
         await subject.stop()

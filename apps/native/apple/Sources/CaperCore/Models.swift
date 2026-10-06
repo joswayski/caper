@@ -197,18 +197,7 @@ public struct ChatContent: Codable, Equatable, Sendable {
         type = try values.decode(String.self, forKey: .type)
         text = try values.decode(String.self, forKey: .text)
         // Not an array (or null): ignore the field. Otherwise keep valid entries.
-        if var list = try? values.nestedUnkeyedContainer(forKey: .attachments) {
-            var decoded: [ChatAttachment] = []
-            while !list.isAtEnd {
-                let index = list.currentIndex
-                if (try? list.decodeNil()) == true { continue }
-                if let entry = try? list.decode(LossyAttachment.self), let value = entry.value { decoded.append(value) }
-                if list.currentIndex == index { break }
-            }
-            attachments = decoded
-        } else {
-            attachments = nil
-        }
+        attachments = values.decodeLossyAttachments(forKey: .attachments)
     }
 }
 
@@ -222,6 +211,9 @@ public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
     public let clientMessageId: String
     public var reactions: [MessageReaction]? = nil
     public var reactionSeq: String? = nil
+    /// The `message.attachments` event that produced `content.attachments`;
+    /// absent until the media worker first updates this message's files.
+    public var attachmentsSeq: String? = nil
 }
 
 public struct MessageReaction: Codable, Equatable, Sendable, Identifiable {
@@ -247,6 +239,44 @@ public struct MessageReactionsEvent: Codable, Equatable, Sendable {
                     && Set($0.authorIds).count == $0.authorIds.count
                     && $0.authorIds.allSatisfy { !$0.isEmpty }
             }
+    }
+}
+
+/// `message.attachments`: the worker added a preview, finished or failed.
+/// Sequenced like `message.reactions`; replaces the message's attachments.
+public struct MessageAttachmentsEvent: Decodable, Equatable, Sendable {
+    public let type: String
+    public let schemaVersion: Int
+    public let channelId: String
+    public let seq: String
+    public let messageId: String
+    /// Malformed entries are skipped, as in `ChatContent`.
+    public let attachments: [ChatAttachment]
+
+    private enum CodingKeys: String, CodingKey { case type, schemaVersion, channelId, seq, messageId, attachments }
+
+    public init(type: String = "message.attachments", schemaVersion: Int = 1, channelId: String, seq: String, messageId: String,
+                attachments: [ChatAttachment]) {
+        self.type = type; self.schemaVersion = schemaVersion; self.channelId = channelId
+        self.seq = seq; self.messageId = messageId; self.attachments = attachments
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        type = try values.decode(String.self, forKey: .type)
+        schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
+        channelId = try values.decode(String.self, forKey: .channelId)
+        seq = try values.decode(String.self, forKey: .seq)
+        messageId = try values.decode(String.self, forKey: .messageId)
+        guard let decoded = values.decodeLossyAttachments(forKey: .attachments) else {
+            throw DecodingError.dataCorruptedError(forKey: .attachments, in: values, debugDescription: "attachments must be an array")
+        }
+        attachments = decoded
+    }
+
+    public var isValid: Bool {
+        type == "message.attachments" && schemaVersion == 1 && !channelId.isEmpty && !messageId.isEmpty
+            && (try? Sequence.compare(seq, "0")) != nil
     }
 }
 
@@ -458,6 +488,63 @@ struct ReactionSnapshots: Sendable {
         result.reactions = snapshot.reactions
         result.reactionSeq = snapshot.seq
         return result
+    }
+
+    mutating func reset() {
+        values.removeAll(keepingCapacity: false)
+        knownMessageIDs.removeAll(keepingCapacity: false)
+        unseenOverflowed = false
+    }
+}
+
+/// Keeps each message's attachment list monotonic by `attachmentsSeq`, like
+/// `ReactionSnapshots`: a replayed older event, a late send response or an
+/// older history page never replaces a newer state (such as "ready" with a
+/// stale "processing"). Messages without `attachmentsSeq` were never updated
+/// by the media worker, so any event is newer.
+struct AttachmentSnapshots: Sendable {
+    private var values: [String: (seq: String, attachments: [ChatAttachment])] = [:]
+    private var knownMessageIDs: Set<String> = []
+    private(set) var unseenOverflowed = false
+    static let maximumUnseen = 256
+
+    mutating func apply(messageID: String, seq: String?, attachments: [ChatAttachment]) -> Bool {
+        guard let seq, (try? Sequence.compare(seq, "0")) != nil else { return false }
+        if let current = values[messageID], (try? Sequence.compare(seq, current.seq)) != .orderedDescending { return false }
+        let unseenCount = values.keys.filter { !knownMessageIDs.contains($0) }.count
+        guard knownMessageIDs.contains(messageID) || values[messageID] != nil || unseenCount < Self.maximumUnseen else {
+            unseenOverflowed = true
+            return false
+        }
+        values[messageID] = (seq, attachments)
+        return true
+    }
+
+    /// Records versioned attachment lists from fetched or replayed messages.
+    mutating func seed(_ messages: [ChatMessage]) {
+        knownMessageIDs.formUnion(messages.map(\.id))
+        for message in messages where message.attachmentsSeq != nil {
+            _ = apply(messageID: message.id, seq: message.attachmentsSeq, attachments: message.content.attachments ?? [])
+        }
+    }
+
+    /// A message keeps its own attachments when they are at least as new as
+    /// the snapshot (they may carry fresher signed URLs).
+    func overlay(_ message: ChatMessage) -> ChatMessage {
+        guard let snapshot = values[message.id] else { return message }
+        if let own = message.attachmentsSeq, let order = try? Sequence.compare(own, snapshot.seq), order != .orderedAscending {
+            return message
+        }
+        var result = message
+        result.content.attachments = snapshot.attachments
+        result.attachmentsSeq = snapshot.seq
+        return result
+    }
+
+    /// Keeps refreshed signatures in snapshots so a later overlay cannot
+    /// restore an expired URL.
+    mutating func updateAttachments(_ transform: (ChatAttachment) -> ChatAttachment) {
+        values = values.mapValues { (seq: $0.seq, attachments: $0.attachments.map(transform)) }
     }
 
     mutating func reset() {

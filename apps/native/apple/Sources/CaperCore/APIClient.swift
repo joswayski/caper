@@ -273,35 +273,33 @@ public actor APIClient {
     }
 
     /// Fresh signed URLs for up to 100 attachments; ids the account can no
-    /// longer see are omitted.
+    /// longer see are omitted. `url` is present only for ready files, so a
+    /// processing file may return just `previewUrl`.
     public func refreshAttachmentURLs(ids: [String]) async throws -> [String: AttachmentURLs] {
         let ids = Array(ids.filter(Self.validAssetID).prefix(100))
         guard !ids.isEmpty else { return [:] }
         let response: AttachmentURLsResponse = try await request("api/assets/urls", method: "POST", body: AttachmentURLsInput(ids: ids))
-        return response.urls.filter { ids.contains($0.key) && ChatAttachment.isWebURL($0.value.url) }
+        return response.urls.filter { entry in
+            let urls = [entry.value.url, entry.value.previewUrl].compactMap { $0 }
+            return ids.contains(entry.key) && !urls.isEmpty && urls.allSatisfy(ChatAttachment.isWebURL)
+        }
     }
 
-    public enum UploadBody: Sendable { case file(URL), data(Data) }
-
-    /// PUTs bytes straight to storage with exactly the presigned headers. No
-    /// account credential is attached; URLSession sets Content-Length, which
-    /// the URL signs.
-    public func putToStorage(_ upload: PresignedUpload, body: UploadBody, progress: (@Sendable (Double) -> Void)? = nil) async throws {
+    /// PUTs the original file straight to storage, streamed from disk, with
+    /// exactly the presigned headers. No account credential or cookie is
+    /// attached; URLSession sets Content-Length, which the URL signs.
+    public func putToStorage(_ upload: PresignedUpload, file: URL, progress: (@Sendable (Double) -> Void)? = nil) async throws {
         guard upload.method.uppercased() == "PUT", ChatAttachment.isWebURL(upload.url), let url = URL(string: upload.url) else {
             throw APIError(status: 502, message: "The upload service returned an invalid response.")
         }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 120)
         request.httpMethod = "PUT"
-        for (name, value) in upload.headers where name.lowercased() != "authorization" {
+        for (name, value) in upload.headers where !["authorization", "cookie"].contains(name.lowercased()) {
             request.setValue(value, forHTTPHeaderField: name)
         }
         let delegate = UploadProgressDelegate(progress: progress)
-        let result: (Data, URLResponse)
-        switch body {
-        case .file(let file): result = try await session.upload(for: request, fromFile: file, delegate: delegate)
-        case .data(let data): result = try await session.upload(for: request, from: data, delegate: delegate)
-        }
-        guard let http = result.1 as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        let (_, response) = try await session.upload(for: request, fromFile: file, delegate: delegate)
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
         guard (200..<300).contains(http.statusCode) else { throw StorageUploadError(status: http.statusCode) }
     }
 

@@ -1,23 +1,46 @@
 import Foundation
+import UniformTypeIdentifiers
 
 /// Mirrors `assets::kind` on the API: only these types render inline.
 public enum AttachmentKind: String, Codable, Equatable, Sendable {
     case image, video, audio, file
 
     public init(contentType: String) {
-        let type = contentType.split(separator: ";").first.map { $0.trimmingCharacters(in: .whitespaces).lowercased() } ?? ""
+        let type = Self.baseType(contentType)
         if ["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"].contains(type) { self = .image }
         else if ["video/mp4", "video/webm", "video/quicktime"].contains(type) { self = .video }
         else if ["audio/mpeg", "audio/mp4", "audio/x-m4a", "audio/aac", "audio/ogg", "audio/wav", "audio/x-wav", "audio/webm", "audio/flac"].contains(type) { self = .audio }
         else { self = .file }
     }
+
+    /// What this device can show for a local copy (draft chips and the
+    /// pending row). ImageIO and AVFoundation decode more than browsers, such
+    /// as HEIC photos, which upload unchanged and are converted by the server.
+    public static func local(contentType: String) -> AttachmentKind {
+        guard let type = UTType(mimeType: baseType(contentType)) else { return AttachmentKind(contentType: contentType) }
+        if type.conforms(to: .movie) { return .video }
+        if type.conforms(to: .audio) { return .audio }
+        if type.conforms(to: .image), !type.conforms(to: .svg) { return .image }
+        return AttachmentKind(contentType: contentType)
+    }
+
+    private static func baseType(_ contentType: String) -> String {
+        contentType.split(separator: ";").first.map { $0.trimmingCharacters(in: .whitespaces).lowercased() } ?? ""
+    }
+}
+
+/// Server-side processing state. Payloads from before server-side
+/// compression omit it, which means `ready`.
+public enum AttachmentStatus: String, Codable, Equatable, Sendable {
+    case processing, ready, failed
 }
 
 /// A file on a message. Signed URLs are added per response and expire after
-/// 24–48 hours; `ChatModel` refreshes them for long-open windows.
+/// 24–48 hours; `ChatModel` refreshes them for long-open windows. `url` is
+/// present only once the media worker has finished (`status == .ready`).
 public struct ChatAttachment: Codable, Equatable, Identifiable, Sendable {
     public let id: String
-    public let kind: AttachmentKind
+    public var kind: AttachmentKind
     public let contentType: String
     public let name: String
     public let size: Int
@@ -26,23 +49,32 @@ public struct ChatAttachment: Codable, Equatable, Identifiable, Sendable {
     public var durationMs: Int?
     /// The server stored a preview image (`previewUrl` when signed).
     public var hasPreview: Bool
+    public var status: AttachmentStatus
+    /// A GIF or animated image stored as a silent looping MP4: play muted,
+    /// looping and without controls.
+    public var animated: Bool
     public var url: String?
     public var previewUrl: String?
     /// The file was deleted; show a "File removed" placeholder.
     public var unavailable: Bool
 
-    private enum CodingKeys: String, CodingKey { case id, kind, contentType, name, size, width, height, durationMs, preview, url, previewUrl, unavailable }
+    private enum CodingKeys: String, CodingKey {
+        case id, kind, contentType, name, size, width, height, durationMs, preview, status, animated, url, previewUrl, unavailable
+    }
     private struct PreviewMarker: Codable {}
 
     public init(id: String, kind: AttachmentKind, contentType: String, name: String, size: Int, width: Int? = nil, height: Int? = nil,
-                durationMs: Int? = nil, hasPreview: Bool = false, url: String? = nil, previewUrl: String? = nil, unavailable: Bool = false) {
+                durationMs: Int? = nil, hasPreview: Bool = false, status: AttachmentStatus = .ready, animated: Bool = false,
+                url: String? = nil, previewUrl: String? = nil, unavailable: Bool = false) {
         self.id = id; self.kind = kind; self.contentType = contentType; self.name = name; self.size = size
         self.width = width; self.height = height; self.durationMs = durationMs; self.hasPreview = hasPreview
+        self.status = status; self.animated = animated
         self.url = url; self.previewUrl = previewUrl; self.unavailable = unavailable
     }
 
     /// Strict for one entry (like web's `isChatAttachment`); `ChatContent`
-    /// skips entries that fail instead of rejecting the message.
+    /// skips entries that fail instead of rejecting the message. The newer
+    /// optional fields (`status`, `animated`) never fail an entry.
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decode(String.self, forKey: .id)
@@ -57,6 +89,13 @@ public struct ChatAttachment: Codable, Equatable, Identifiable, Sendable {
         url = try values.decodeIfPresent(String.self, forKey: .url)
         previewUrl = try values.decodeIfPresent(String.self, forKey: .previewUrl)
         unavailable = try values.decodeIfPresent(Bool.self, forKey: .unavailable) ?? false
+        animated = (try? values.decodeIfPresent(Bool.self, forKey: .animated)) ?? false
+        if let raw = try? values.decodeIfPresent(String.self, forKey: .status) {
+            // An unknown future state renders like processing until it has a URL.
+            status = AttachmentStatus(rawValue: raw) ?? (url == nil ? .processing : .ready)
+        } else {
+            status = .ready
+        }
         guard !id.isEmpty, size >= 0, [width, height, durationMs].allSatisfy({ ($0 ?? 0) >= 0 }),
               [url, previewUrl].allSatisfy({ $0 == nil || Self.isWebURL($0!) }) else {
             throw DecodingError.dataCorruptedError(forKey: .id, in: values, debugDescription: "Invalid attachment")
@@ -74,6 +113,8 @@ public struct ChatAttachment: Codable, Equatable, Identifiable, Sendable {
         try values.encodeIfPresent(height, forKey: .height)
         try values.encodeIfPresent(durationMs, forKey: .durationMs)
         if hasPreview { try values.encode(PreviewMarker(), forKey: .preview) }
+        if status != .ready { try values.encode(status, forKey: .status) }
+        if animated { try values.encode(true, forKey: .animated) }
         try values.encodeIfPresent(url, forKey: .url)
         try values.encodeIfPresent(previewUrl, forKey: .previewUrl)
         if unavailable { try values.encode(true, forKey: .unavailable) }
@@ -91,62 +132,49 @@ struct LossyAttachment: Decodable {
     init(from decoder: Decoder) throws { value = try? ChatAttachment(from: decoder) }
 }
 
-/// Server-tunable client compression settings from `GET /api/assets/usage`.
-/// Missing or out-of-range values fall back to the contract defaults.
-public struct AttachmentCompression: Codable, Equatable, Sendable {
-    public var imageQuality: Int = 92
-    public var imageMaxEdge: Int = 4096
-    public var paletteColors: Int = 256
-    public var previewEdge: Int = 640
-    public var videoMaxHeight: Int = 1080
-    public var videoBitrateKbps: Int = 4000
-    public var audioBitrateKbps: Int = 128
-
-    public init() {}
-
-    private enum CodingKeys: String, CodingKey { case imageQuality, imageMaxEdge, paletteColors, previewEdge, videoMaxHeight, videoBitrateKbps, audioBitrateKbps }
-    public init(from decoder: Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        func value(_ key: CodingKeys, _ range: ClosedRange<Int>, _ fallback: Int) -> Int {
-            guard let decoded = try? values.decodeIfPresent(Int.self, forKey: key), range.contains(decoded) else { return fallback }
-            return decoded
+extension KeyedDecodingContainer {
+    /// Valid entries of an attachments array, skipping malformed ones; nil
+    /// when the field is absent or not an array.
+    func decodeLossyAttachments(forKey key: Key) -> [ChatAttachment]? {
+        guard var list = try? nestedUnkeyedContainer(forKey: key) else { return nil }
+        var decoded: [ChatAttachment] = []
+        while !list.isAtEnd {
+            let index = list.currentIndex
+            if (try? list.decodeNil()) == true { continue }
+            if let entry = try? list.decode(LossyAttachment.self), let value = entry.value { decoded.append(value) }
+            if list.currentIndex == index { break }
         }
-        imageQuality = value(.imageQuality, 1...100, 92)
-        imageMaxEdge = value(.imageMaxEdge, 0...65_536, 4096)
-        paletteColors = value(.paletteColors, 0...256, 256)
-        previewEdge = value(.previewEdge, 0...4096, 640)
-        videoMaxHeight = value(.videoMaxHeight, 0...8192, 1080)
-        videoBitrateKbps = value(.videoBitrateKbps, 1...1_000_000, 4000)
-        audioBitrateKbps = value(.audioBitrateKbps, 1...10_000, 128)
+        return decoded
     }
 }
 
+/// `GET /api/assets/usage`.
 public struct AssetUsage: Decodable, Equatable, Sendable {
     public let used: Int
     public let limit: Int
-    public let compression: AttachmentCompression
+    /// Largest original the API accepts; nil when the response omits it.
+    public let maxUploadBytes: Int?
 
-    private enum CodingKeys: String, CodingKey { case used, limit, compression }
+    private enum CodingKeys: String, CodingKey { case used, limit, maxUploadBytes }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         used = try values.decode(Int.self, forKey: .used)
         limit = try values.decode(Int.self, forKey: .limit)
-        compression = (try? values.decodeIfPresent(AttachmentCompression.self, forKey: .compression)) ?? AttachmentCompression()
+        let declared = try? values.decodeIfPresent(Int.self, forKey: .maxUploadBytes)
+        maxUploadBytes = declared.flatMap { $0 > 0 ? $0 : nil }
     }
 }
 
-/// `POST /api/assets` body. Optional fields are omitted when nil.
+/// `POST /api/assets` body: the original file, exactly as it will be uploaded.
 public struct AssetCreateInput: Encodable, Equatable, Sendable {
-    public struct Preview: Encodable, Equatable, Sendable { public let contentType: String; public let byteSize: Int }
     public let channelId: String
     public let filename: String
     public let contentType: String
     public let byteSize: Int
-    public var sourceByteSize: Int?
-    public var width: Int?
-    public var height: Int?
-    public var durationMs: Int?
-    public var preview: Preview?
+
+    public init(channelId: String, filename: String, contentType: String, byteSize: Int) {
+        self.channelId = channelId; self.filename = filename; self.contentType = contentType; self.byteSize = byteSize
+    }
 }
 
 public struct PresignedUpload: Decodable, Equatable, Sendable {
@@ -158,12 +186,14 @@ public struct PresignedUpload: Decodable, Equatable, Sendable {
 public struct AssetReservation: Decodable, Equatable, Sendable {
     public let id: String
     public let upload: PresignedUpload
-    public let previewUpload: PresignedUpload?
 }
 
+/// Fresh signatures for one attachment; `url` is absent until it is ready.
 public struct AttachmentURLs: Decodable, Equatable, Sendable {
-    public let url: String
+    public let url: String?
     public let previewUrl: String?
+
+    public init(url: String?, previewUrl: String?) { self.url = url; self.previewUrl = previewUrl }
 }
 
 struct AttachmentURLsResponse: Decodable { let urls: [String: AttachmentURLs] }
@@ -189,49 +219,9 @@ public enum AttachmentURLPolicy {
     public static func refreshesAfterFailure(status: Int) -> Bool { status == 403 || status == 404 }
 }
 
-/// Pure decisions from the attachment compression contract, kept separate
-/// from ImageIO/AVFoundation work so they can be unit tested.
+/// Pure attachment decisions, kept separate from the views for unit tests.
 public enum AttachmentPolicy {
     public static let maxAttachments = 10
-    public static let previewMaxBytes = 512 * 1024
-    public static let previewQuality = 0.8
-    /// Decoding enormous images can exhaust memory on phones; upload as-is.
-    public static let maxCompressPixels = 50_000_000
-
-    public enum StillEncoding: Equatable, Sendable { case indexedPNG, lossy(quality: Double), none }
-
-    /// Re-encode stills except animated or vector formats.
-    public static func compressible(_ contentType: String) -> Bool {
-        let type = contentType.lowercased()
-        return type.hasPrefix("image/") && !["image/gif", "image/svg+xml", "image/avif"].contains(type)
-    }
-
-    /// `colorCount` is nil when the image has more colours than the palette limit.
-    public static func stillEncoding(colorCount: Int?, settings: AttachmentCompression) -> StillEncoding {
-        if settings.paletteColors > 0, let colorCount, colorCount <= settings.paletteColors { return .indexedPNG }
-        if settings.imageQuality < 100 { return .lossy(quality: Double(settings.imageQuality) / 100) }
-        return .none
-    }
-
-    /// Keep a re-encoded file only when it is at least 10% smaller, or when the
-    /// original type cannot render inline at all (e.g. HEIC).
-    public static func keepReencoded(originalType: String, originalSize: Int, encodedSize: Int) -> Bool {
-        AttachmentKind(contentType: originalType) != .image || Double(encodedSize) <= Double(originalSize) * 0.9
-    }
-
-    public static func needsPreview(kind: AttachmentKind, width: Int?, height: Int?, byteSize: Int, settings: AttachmentCompression) -> Bool {
-        guard settings.previewEdge > 0 else { return false }
-        if kind == .video { return width != nil && height != nil }
-        guard kind == .image else { return false }
-        return max(width ?? 0, height ?? 0) > settings.previewEdge || byteSize > previewMaxBytes
-    }
-
-    /// Longest edge scaled to `edge`, never enlarged.
-    public static func fitWithin(width: Int, height: Int, edge: Int) -> (width: Int, height: Int) {
-        guard width > 0, height > 0, edge > 0 else { return (max(1, width), max(1, height)) }
-        let scale = min(1, Double(edge) / Double(max(width, height)))
-        return (max(1, Int((Double(width) * scale).rounded())), max(1, Int((Double(height) * scale).rounded())))
-    }
 
     /// Message display frame that reserves layout space before loading.
     public static func displaySize(width: Int?, height: Int?, maxWidth: Double = 360, maxHeight: Double = 300) -> (width: Double, height: Double)? {
@@ -240,33 +230,10 @@ public enum AttachmentPolicy {
         return ((Double(width) * scale).rounded(), (Double(height) * scale).rounded())
     }
 
-    public static func renamed(_ name: String, contentType: String) -> String {
-        let extensions = ["image/webp": "webp", "image/jpeg": "jpg", "image/png": "png", "video/mp4": "mp4"]
-        guard let ext = extensions[contentType] else { return name }
-        let base = (name as NSString).deletingPathExtension
-        return "\(base.isEmpty ? name : base).\(ext)"
-    }
-
-    /// AVAssetExportSession size presets as (long edge, short edge).
-    public static let videoPresets: [(name: String, long: Int, short: Int)] = [
-        ("AVAssetExportPreset640x480", 640, 480),
-        ("AVAssetExportPreset960x540", 960, 540),
-        ("AVAssetExportPreset1280x720", 1280, 720),
-        ("AVAssetExportPreset1920x1080", 1920, 1080),
-        ("AVAssetExportPreset3840x2160", 3840, 2160),
-    ]
-
-    /// The largest size preset whose output height (display orientation) stays
-    /// within `maxHeight`. Presets fit the video inside long×short without
-    /// enlarging it. Nil disables transcoding.
-    public static func videoPreset(width: Int, height: Int, maxHeight: Int) -> String? {
-        guard maxHeight > 0, width > 0, height > 0 else { return nil }
-        let candidates = videoPresets.filter { preset in
-            let scale = min(1, Double(preset.long) / Double(max(width, height)), Double(preset.short) / Double(min(width, height)))
-            // "1080p" bounds the short edge, so portrait phone video keeps full detail.
-            return Int((Double(min(width, height)) * scale).rounded()) <= maxHeight
-        }
-        return candidates.last?.name
+    /// Checked before reserving, so an oversized original never starts uploading.
+    public static func tooLargeMessage(size: Int, maxUploadBytes: Int?) -> String? {
+        guard let maxUploadBytes, size > maxUploadBytes else { return nil }
+        return "This file is too large to upload (max \(formatBytes(maxUploadBytes)))."
     }
 
     public static func formatBytes(_ bytes: Int) -> String {
@@ -304,21 +271,24 @@ public struct StorageUploadError: Error, Equatable { public let status: Int }
 public struct AttachmentDraft: Identifiable, Equatable, Sendable {
     public let id: String
     public var name: String
+    /// What this device can preview locally (see `AttachmentKind.local`).
     public var kind: AttachmentKind
-    /// Local file shown as the chip thumbnail and the pending-message preview.
+    /// The staged original: uploaded unchanged, and shown as the chip
+    /// thumbnail and the pending-message preview.
     public var localURL: URL
-    public var sourceSize: Int
-    public var storedSize: Int?
+    public var size: Int
     public var progress: Double = 0
     public var error: String?
+    /// The confirmed upload (`status: processing` until the server finishes).
     public var attachment: ChatAttachment?
+
+    public init(id: String, name: String, kind: AttachmentKind, localURL: URL, size: Int) {
+        self.id = id; self.name = name; self.kind = kind; self.localURL = localURL; self.size = size
+    }
 
     public var statusLabel: String {
         if let error { return error }
         guard attachment != nil else { return "Uploading… \(Int((progress * 100).rounded()))%" }
-        if let storedSize, storedSize < sourceSize {
-            return "\(AttachmentPolicy.formatBytes(sourceSize)) → \(AttachmentPolicy.formatBytes(storedSize))"
-        }
-        return AttachmentPolicy.formatBytes(storedSize ?? sourceSize)
+        return AttachmentPolicy.formatBytes(size)
     }
 }

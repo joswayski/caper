@@ -973,8 +973,11 @@ public final class ChatModel {
     public var reactionErrors: [String: String] = [:]
     /// `GET /api/assets/usage` succeeded; otherwise the attach control stays hidden.
     public private(set) var uploadsEnabled = false
-    public private(set) var attachmentCompression = AttachmentCompression()
+    /// `maxUploadBytes` from usage: larger originals are refused before reserving.
+    public private(set) var maxUploadBytes: Int?
     public private(set) var attachmentDrafts: [AttachmentDraft] = []
+    /// Latest ephemeral `attachment.progress` percent per processing attachment id.
+    public private(set) var attachmentProgress: [String: Int] = [:]
     /// Composer-level attachment message, such as the 10-file limit.
     public var attachmentNotice: String?
     public var canAttach: Bool { uploadsEnabled && !isPreview && session != nil && channelID != nil && !loadFailed }
@@ -1003,6 +1006,10 @@ public final class ChatModel {
     private var generation = 0
     private var delivery = ChatDeliveryState()
     private var reactionSnapshots = ReactionSnapshots()
+    private var attachmentSnapshots = AttachmentSnapshots()
+    /// Staged originals this device sent, shown while the server processes
+    /// them; removed once the attachment is ready or failed.
+    private var localAttachmentCopies: [String: URL] = [:]
     private struct PendingReaction: Equatable {
         let active: Bool
         let intent: Int
@@ -1056,7 +1063,7 @@ public final class ChatModel {
         return ChatHistory(
             space: HistoryIdentity(id: spaceID, name: spaceName),
             channel: HistoryIdentity(id: channelID, name: channelName),
-            messages: messages.map { reactionSnapshots.overlay($0) },
+            messages: messages.map { overlaySnapshots($0) },
             cursor: delivery.cursor,
             hasMore: hasMore
         )
@@ -1081,8 +1088,8 @@ public final class ChatModel {
         if let oldSubscription { await gateway.unsubscribe(oldSubscription) }
         guard generation == requestGeneration else { return }
         channelID = history.channel?.id; spaceID = history.space?.id
-        reactionSnapshots.seed(history.messages)
-        messages = history.messages.map { reactionSnapshots.overlay($0) }
+        seedSnapshots(history.messages)
+        messages = history.messages.map { overlaySnapshots($0) }
         delivery.reset(cursor: history.cursor); hasMore = history.hasMore
         channelName = history.channel?.name ?? "general"; spaceName = history.space?.name ?? "Caper"
         session = nil; loading = false; loadFailed = false; sessionError = nil
@@ -1133,8 +1140,8 @@ public final class ChatModel {
         // history load (and must not flash the previous channel's title).
         if let prepared {
             self.channelID = prepared.channel?.id; spaceID = prepared.space?.id
-            reactionSnapshots.seed(prepared.messages)
-            messages = prepared.messages.map { reactionSnapshots.overlay($0) }
+            seedSnapshots(prepared.messages)
+            messages = prepared.messages.map { overlaySnapshots($0) }
             delivery.reset(cursor: prepared.cursor); hasMore = prepared.hasMore
             channelName = prepared.channel?.name ?? "general"
             spaceName = prepared.space?.name ?? "Caper"
@@ -1173,10 +1180,10 @@ public final class ChatModel {
                 } else {
                     // Preserve a newer reaction revision on overlapping rows, but
                     // discard snapshots for rows no longer in the fresh window.
-                    reactionSnapshots.seed(history.messages)
-                    messages = history.messages.map { reactionSnapshots.overlay($0) }
-                    reactionSnapshots.reset()
-                    reactionSnapshots.seed(messages)
+                    seedSnapshots(history.messages)
+                    messages = history.messages.map { overlaySnapshots($0) }
+                    reactionSnapshots.reset(); attachmentSnapshots.reset()
+                    seedSnapshots(messages)
                 }
                 delivery.reset(cursor: history.cursor, preservingPending: preservingPending)
                 let retainedOlderPrefix = canRetain && firstRefreshed.map { first in
@@ -1294,15 +1301,24 @@ public final class ChatModel {
             if let validation = MessageValidation.error(for: draft, attachmentCount: attachmentDrafts.count) { error = validation; return }
         }
         let newSubmission = delivery.pending == nil
-        // The pending row previews local copies until the server's signed URLs arrive.
+        // The pending row previews the local originals (which this device can
+        // decode even when browsers cannot, e.g. HEIC) until the message is confirmed.
         let localAttachments: [ChatAttachment] = newSubmission ? attachmentDrafts.compactMap { item in
             guard var attachment = item.attachment else { return nil }
+            attachment.kind = item.kind
+            attachment.status = .ready
+            attachment.animated = false
             attachment.url = item.localURL.absoluteString
             attachment.previewUrl = nil
             return attachment
         } : []
         let command = delivery.begin(text: draft, attachments: localAttachments)
-        if newSubmission { draft = ""; attachmentDrafts = []; attachmentNotice = nil }
+        if newSubmission {
+            // Kept for the pending row and the processing placeholder; removed
+            // when the file is ready or failed, or when the conversation closes.
+            for item in attachmentDrafts { if let id = item.attachment?.id { localAttachmentCopies[id] = item.localURL } }
+            draft = ""; attachmentDrafts = []; attachmentNotice = nil
+        }
         let requestGeneration = generation
         sending = true; error = nil
         await gateway.reportActivity()
@@ -1380,6 +1396,9 @@ public final class ChatModel {
         if let oldSubscription { await gateway.unsubscribe(oldSubscription) }
     }
 
+    /// The generation `receive` currently accepts (tests deliver gateway events with it).
+    var eventGeneration: Int { generation }
+
     func receive(_ event: [String: Any], generation eventGeneration: Int, channelID eventChannelID: String) {
         guard generation == eventGeneration, channelID == eventChannelID else { return }
         guard let type = event["type"] as? String else { return }
@@ -1417,6 +1436,31 @@ public final class ChatModel {
                 let cursor = delivery.cursor
                 Task { await gateway.updateCursor(subscription: subscriptionID, after: cursor) }
             }
+            return
+        }
+        if type == "message.attachments" {
+            guard let data = try? JSONSerialization.data(withJSONObject: event),
+                  let attachmentsEvent = try? JSONDecoder().decode(MessageAttachmentsEvent.self, from: data),
+                  attachmentsEvent.isValid, attachmentsEvent.channelId == eventChannelID,
+                  delivery.receive(seq: attachmentsEvent.seq) else {
+                requestResync(generation: eventGeneration, channelID: eventChannelID)
+                return
+            }
+            applyAttachments(attachmentsEvent)
+            onReadCursor?()
+            if attachmentSnapshots.unseenOverflowed {
+                requestResync(generation: eventGeneration, channelID: eventChannelID)
+                return
+            }
+            if let subscriptionID {
+                let cursor = delivery.cursor
+                Task { await gateway.updateCursor(subscription: subscriptionID, after: cursor) }
+            }
+            return
+        }
+        if type == "attachment.progress" {
+            // Ephemeral and unsequenced, like typing: never a resync.
+            if event["channelId"] as? String == eventChannelID { receiveAttachmentProgress(event) }
             return
         }
         if type == "message.created", let raw = event["message"], let data = try? JSONSerialization.data(withJSONObject: raw), let message = try? JSONDecoder().decode(ChatMessage.self, from: data) {
@@ -1469,8 +1513,13 @@ public final class ChatModel {
         typingTask = nil; typingIdleTask = nil; typingExpiryTask = nil
         typers = [:]; typingNames = []; typingActive = false; typingSent = false
         delivery.reset(preservingPending: preservingPending)
-        reactionSnapshots.reset(); pendingReactions = [:]; reactionWorkers = []; reactionErrors = [:]; failedReactions = [:]
-        if !preservingPending { discardAttachmentDrafts() }
+        reactionSnapshots.reset(); attachmentSnapshots.reset(); pendingReactions = [:]; reactionWorkers = []; reactionErrors = [:]; failedReactions = [:]
+        if !preservingPending {
+            discardAttachmentDrafts()
+            localAttachmentCopies.values.forEach { AttachmentStaging.remove($0) }
+            localAttachmentCopies = [:]
+        }
+        attachmentProgress = [:]
         urlRefreshTask?.cancel(); urlRefreshTask = nil; urlRefreshQueue = []; urlRefreshAttempts = [:]
         isPreview = false
         session = nil; channelID = nil; spaceID = nil; messages = []; draft = ""; hasMore = false
@@ -1480,13 +1529,47 @@ public final class ChatModel {
     }
 
     private func merge(_ incoming: [ChatMessage]) {
-        reactionSnapshots.seed(incoming)
+        seedSnapshots(incoming)
         var byID = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) })
-        incoming.forEach { byID[$0.id] = reactionSnapshots.overlay($0) }
-        byID = byID.mapValues { reactionSnapshots.overlay($0) }
+        incoming.forEach { byID[$0.id] = overlaySnapshots($0) }
+        byID = byID.mapValues { overlaySnapshots($0) }
         messages = byID.values.sorted { (try? Sequence.compare($0.seq, $1.seq)) == .orderedAscending }
         renderReactions()
     }
+
+    private func seedSnapshots(_ incoming: [ChatMessage]) {
+        reactionSnapshots.seed(incoming)
+        attachmentSnapshots.seed(incoming)
+    }
+
+    private func overlaySnapshots(_ message: ChatMessage) -> ChatMessage {
+        attachmentSnapshots.overlay(reactionSnapshots.overlay(message))
+    }
+
+    /// Replaces a message's attachments when the event is newer than its
+    /// `attachmentsSeq`, then drops progress and local copies for files that
+    /// are no longer processing.
+    private func applyAttachments(_ event: MessageAttachmentsEvent) {
+        guard attachmentSnapshots.apply(messageID: event.messageId, seq: event.seq, attachments: event.attachments) else { return }
+        renderReactions()
+        for attachment in event.attachments where attachment.status != .processing || attachment.unavailable {
+            attachmentProgress[attachment.id] = nil
+            if let local = localAttachmentCopies.removeValue(forKey: attachment.id) { AttachmentStaging.remove(local) }
+        }
+    }
+
+    private func receiveAttachmentProgress(_ event: [String: Any]) {
+        guard let attachmentID = event["attachmentId"] as? String, APIClient.validAssetID(attachmentID),
+              let messageID = event["messageId"] as? String, !messageID.isEmpty,
+              let percent = (event["percent"] as? NSNumber)?.doubleValue, percent.isFinite else { return }
+        // Only files still shown as processing; a late frame after "ready" is dropped.
+        guard let message = messages.first(where: { $0.id == messageID }),
+              message.content.attachments?.contains(where: { $0.id == attachmentID && $0.status == .processing }) == true else { return }
+        attachmentProgress[attachmentID] = Int(min(100, max(0, percent)).rounded())
+    }
+
+    /// The original this device uploaded, while the server still processes it.
+    public func localCopy(for attachmentID: String) -> URL? { localAttachmentCopies[attachmentID] }
 
     private func applyReactions(_ event: MessageReactionsEvent) {
         guard reactionSnapshots.apply(messageID: event.messageId, seq: event.seq, reactions: event.reactions) else { return }
@@ -1496,7 +1579,7 @@ public final class ChatModel {
     private func renderReactions() {
         let authorID = session?.author.id
         messages = messages.map { message in
-            var result = reactionSnapshots.overlay(message)
+            var result = overlaySnapshots(message)
             guard let authorID, let pending = pendingReactions[message.id], !pending.isEmpty else { return result }
             var reactions = result.reactions ?? []
             for (emoji, intent) in pending {
@@ -1554,14 +1637,15 @@ public final class ChatModel {
     public func checkUploadAvailability() async {
         do {
             let usage = try await api.assetUsage()
-            attachmentCompression = usage.compression
+            maxUploadBytes = usage.maxUploadBytes
             uploadsEnabled = true
         } catch {
             uploadsEnabled = false
         }
     }
 
-    /// Prepares and uploads staged files for the next message, up to 10.
+    /// Uploads staged originals unchanged for the next message, up to 10.
+    /// The server compresses them after upload.
     public func addAttachments(_ files: [LocalAttachmentFile]) {
         guard canAttach, let channelID, !files.isEmpty else {
             files.forEach { AttachmentStaging.remove($0.url) }
@@ -1576,26 +1660,22 @@ public final class ChatModel {
         attachmentNotice = files.count > room ? "Only \(room) more file\(room == 1 ? "" : "s") can be attached." : nil
         files.dropFirst(room).forEach { AttachmentStaging.remove($0.url) }
         if error == "Write a message first." || error == "Wait for files to finish uploading." { error = nil }
-        let settings = attachmentCompression
         let expectedGeneration = uploadGeneration
         for file in files.prefix(room) {
             let id = UUID().uuidString
-            attachmentDrafts.append(AttachmentDraft(id: id, name: file.name, kind: AttachmentKind(contentType: file.contentType),
-                                                    localURL: file.url, sourceSize: file.size))
+            var draft = AttachmentDraft(id: id, name: file.name, kind: AttachmentKind.local(contentType: file.contentType),
+                                        localURL: file.url, size: file.size)
+            if let tooLarge = AttachmentPolicy.tooLargeMessage(size: file.size, maxUploadBytes: maxUploadBytes) {
+                // Never reserved: the API would refuse it after the user waited.
+                draft.error = tooLarge
+                attachmentDrafts.append(draft)
+                continue
+            }
+            attachmentDrafts.append(draft)
             uploadTasks[id] = Task { [weak self, api] in
-                let prepared = await AttachmentPreparer.prepare(file, settings: settings)
-                guard let self, self.uploadGeneration == expectedGeneration, !Task.isCancelled,
-                      self.attachmentDrafts.contains(where: { $0.id == id }) else {
-                    AttachmentStaging.remove(prepared.fileURL)
-                    if prepared.fileURL != file.url { AttachmentStaging.remove(file.url) }
-                    return
-                }
-                if prepared.fileURL != file.url { AttachmentStaging.remove(file.url) }
-                self.updateDraft(id) {
-                    $0.name = prepared.name; $0.kind = prepared.kind; $0.storedSize = prepared.byteSize; $0.localURL = prepared.fileURL
-                }
+                guard let self, self.uploadGeneration == expectedGeneration, !Task.isCancelled else { return }
                 do {
-                    let attachment = try await AttachmentUploader.upload(prepared, channelID: channelID, api: api) { fraction in
+                    let attachment = try await AttachmentUploader.upload(file, channelID: channelID, api: api) { fraction in
                         Task { @MainActor [weak self] in
                             guard let self, self.uploadGeneration == expectedGeneration else { return }
                             self.updateDraft(id) { if $0.attachment == nil && $0.error == nil { $0.progress = fraction } }
@@ -1638,7 +1718,7 @@ public final class ChatModel {
     /// expiring or failed to load. Each stale URL is refreshed at most once.
     public func requestFreshAttachmentURLs(ids: [String]) {
         for id in ids {
-            guard let current = attachment(id: id)?.url, !current.hasPrefix("file:"), urlRefreshAttempts[id] != current else { continue }
+            guard let current = signedURL(id: id), !current.hasPrefix("file:"), urlRefreshAttempts[id] != current else { continue }
             urlRefreshQueue.insert(id)
         }
         guard !urlRefreshQueue.isEmpty, urlRefreshTask == nil else { return }
@@ -1653,7 +1733,7 @@ public final class ChatModel {
         urlRefreshTask = nil
         let ids = Array(urlRefreshQueue.prefix(100))
         urlRefreshQueue.subtract(ids)
-        for id in ids { urlRefreshAttempts[id] = attachment(id: id)?.url ?? "" }
+        for id in ids { urlRefreshAttempts[id] = signedURL(id: id) ?? "" }
         if !urlRefreshQueue.isEmpty { requestFreshAttachmentURLs(ids: []) }
         guard !ids.isEmpty else { return }
         let requestChannel = channelID
@@ -1681,17 +1761,26 @@ public final class ChatModel {
         return nil
     }
 
+    /// The delivery URL a refresh replaces: the file, or a processing file's preview.
+    private func signedURL(id: String) -> String? {
+        guard let attachment = attachment(id: id) else { return nil }
+        return attachment.url ?? attachment.previewUrl
+    }
+
     private func applyFreshAttachmentURLs(_ urls: [String: AttachmentURLs]) {
+        func refresh(_ attachment: ChatAttachment) -> ChatAttachment {
+            guard let fresh = urls[attachment.id], !attachment.unavailable else { return attachment }
+            var refreshed = attachment
+            // Only ready files have `url`; never clear a URL the response omits.
+            refreshed.url = fresh.url ?? attachment.url
+            refreshed.previewUrl = fresh.previewUrl ?? attachment.previewUrl
+            return refreshed
+        }
+        attachmentSnapshots.updateAttachments(refresh)
         messages = messages.map { message in
             guard let attachments = message.content.attachments, attachments.contains(where: { urls[$0.id] != nil }) else { return message }
             var updated = message
-            updated.content.attachments = attachments.map { attachment in
-                guard let fresh = urls[attachment.id], !attachment.unavailable else { return attachment }
-                var refreshed = attachment
-                refreshed.url = fresh.url
-                refreshed.previewUrl = fresh.previewUrl
-                return refreshed
-            }
+            updated.content.attachments = attachments.map(refresh)
             return updated
         }
     }

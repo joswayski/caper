@@ -15,7 +15,10 @@ private final class CachedAttachmentImage: NSObject {
 }
 
 /// Decoded attachment images cached by attachment id and variant, never by
-/// URL, so refreshed signatures reuse what is already on screen.
+/// URL, so refreshed signatures reuse what is already on screen. Decoding is
+/// ImageIO, which reads the server's AVIF and lossless WebP results (AVIF
+/// since iOS 16/macOS 13) and local HEIC originals; URLSession transparently
+/// removes any `Content-Encoding: gzip`.
 final class AttachmentImageLoader: @unchecked Sendable {
     static let shared = AttachmentImageLoader()
     private let cache = NSCache<NSString, CachedAttachmentImage>()
@@ -86,12 +89,23 @@ struct MessageAttachmentsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(attachments) { attachment in
-                if attachment.unavailable || attachment.url == nil {
+                if attachment.unavailable {
+                    AttachmentFileCard(attachment: attachment, action: nil)
+                } else if attachment.status == .failed {
+                    AttachmentFailedCard(attachment: attachment)
+                } else if attachment.status == .processing {
+                    AttachmentProcessingView(attachment: attachment, chat: chat)
+                } else if attachment.url == nil {
                     AttachmentFileCard(attachment: attachment, action: nil)
                 } else {
                     switch attachment.kind {
                     case .image: AttachmentImageView(attachment: attachment, chat: chat)
-                    case .video: AttachmentVideoView(attachment: attachment, chat: chat)
+                    case .video:
+                        if attachment.animated {
+                            AttachmentAnimationView(attachment: attachment, chat: chat)
+                        } else {
+                            AttachmentVideoView(attachment: attachment, chat: chat)
+                        }
                     case .audio: AttachmentAudioView(attachment: attachment, chat: chat)
                     case .file: AttachmentOpenCard(attachment: attachment, chat: chat)
                     }
@@ -319,9 +333,257 @@ struct AttachmentFileCard: View {
     }
 }
 
+// MARK: Server processing
+
+private func processingLabel(_ percent: Int?) -> String {
+    percent.map { "Processing… \($0)%" } ?? "Processing…"
+}
+
+/// A file the media worker is still compressing: sized from `width`/`height`
+/// when known, showing the server preview (a video poster appears first) or
+/// this device's own original, with a spinner and the latest percent.
+private struct AttachmentProcessingView: View {
+    let attachment: ChatAttachment
+    let chat: ChatModel?
+    @State private var preview: CGImage?
+
+    private var percent: Int? { chat?.attachmentProgress[attachment.id] }
+    private var localCopy: URL? { chat?.localCopy(for: attachment.id) }
+    private var visual: Bool {
+        attachment.kind == .image || attachment.kind == .video || attachment.previewUrl != nil
+            || AttachmentPolicy.displaySize(width: attachment.width, height: attachment.height) != nil
+            || AttachmentKind.local(contentType: attachment.contentType) == .image
+    }
+
+    var body: some View {
+        Group {
+            if visual {
+                ZStack {
+                    if let preview { Image(decorative: preview, scale: 1).resizable().scaledToFill() }
+                    VStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text(processingLabel(percent)).font(CaperTheme.font(11)).monospacedDigit()
+                    }
+                    .foregroundStyle(CaperTheme.text)
+                    .padding(.horizontal, 10).padding(.vertical, 8)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(preview == nil ? 0 : 0.6)))
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .modifier(AttachmentFrame(attachment: attachment, fallback: (240, 180)))
+            } else {
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(attachment.name).font(CaperTheme.font(13, weight: .bold)).lineLimit(1).truncationMode(.middle)
+                        Text(processingLabel(percent)).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).monospacedDigit()
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(10)
+                .frame(maxWidth: 360, alignment: .leading)
+                .background(CaperTheme.surface)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(attachment.name), processing")
+        .accessibilityValue(percent.map { "\($0) percent" } ?? "")
+        .task(id: attachment.previewUrl ?? localCopy?.path) {
+            guard visual else { return }
+            if attachment.previewUrl != nil {
+                if let loaded = await loadAttachmentImage(attachment, preview: true, chat: chat).image { preview = loaded }
+            } else if let localCopy, AttachmentKind.local(contentType: attachment.contentType) == .image {
+                // The sender sees its own original until the server's preview or result arrives.
+                if let loaded = try? await AttachmentImageLoader.shared.load(key: "local:\(attachment.id)", url: localCopy, maxPixelSize: 1200) {
+                    preview = loaded
+                }
+            }
+        }
+    }
+}
+
+private struct AttachmentFailedCard: View {
+    let attachment: ChatAttachment
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle").font(.system(size: 16)).foregroundStyle(CaperTheme.muted)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(attachment.name).font(CaperTheme.font(13, weight: .bold)).lineLimit(1).truncationMode(.middle)
+                    .foregroundStyle(CaperTheme.muted)
+                Text("Couldn’t process this file").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .frame(maxWidth: 360, alignment: .leading)
+        .background(CaperTheme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+        .accessibilityElement(children: .combine)
+    }
+}
+
+// MARK: Animations (GIFs stored as silent looping MP4)
+
+/// Keeps an `AVPlayerLooper` alive for as long as its player is shown.
+@MainActor
+private final class LoopingPlayback {
+    let player: AVQueuePlayer
+    private let looper: AVPlayerLooper
+
+    init(url: URL) {
+        let player = AVQueuePlayer()
+        player.isMuted = true
+        player.preventsDisplaySleepDuringVideoPlayback = false
+        self.player = player
+        looper = AVPlayerLooper(player: player, templateItem: AVPlayerItem(url: url))
+    }
+
+    func stop() {
+        player.pause()
+        looper.disableLooping()
+        player.removeAllItems()
+    }
+}
+
+#if os(iOS)
+private final class PlayerLayerUIView: UIView {
+    override class var layerClass: AnyClass { AVPlayerLayer.self }
+    var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+}
+
+/// A bare video surface: no controls, no audio, no hit testing.
+private struct PlayerSurface: UIViewRepresentable {
+    let player: AVPlayer
+
+    func makeUIView(context: Context) -> PlayerLayerUIView {
+        let view = PlayerLayerUIView()
+        view.isUserInteractionEnabled = false
+        view.playerLayer.videoGravity = .resizeAspectFill
+        view.playerLayer.player = player
+        return view
+    }
+
+    func updateUIView(_ view: PlayerLayerUIView, context: Context) {
+        if view.playerLayer.player !== player { view.playerLayer.player = player }
+    }
+}
+#else
+private final class PlayerLayerNSView: NSView {
+    let playerLayer = AVPlayerLayer()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        playerLayer.videoGravity = .resizeAspectFill
+        layer = playerLayer
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override func layout() {
+        super.layout()
+        playerLayer.frame = bounds
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+/// A bare video surface: no controls, no audio, no hit testing.
+private struct PlayerSurface: NSViewRepresentable {
+    let player: AVPlayer
+
+    func makeNSView(context: Context) -> PlayerLayerNSView {
+        let view = PlayerLayerNSView()
+        view.playerLayer.player = player
+        return view
+    }
+
+    func updateNSView(_ view: PlayerLayerNSView, context: Context) {
+        if view.playerLayer.player !== player { view.playerLayer.player = player }
+    }
+}
+#endif
+
+/// Plays inline, muted and looping without controls, like a GIF. With Reduce
+/// Motion it waits on the poster until tapped; a tap always pauses or resumes.
+private struct AttachmentAnimationView: View {
+    let attachment: ChatAttachment
+    let chat: ChatModel?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var playback: LoopingPlayback?
+    @State private var poster: CGImage?
+    @State private var playing = false
+    @State private var userPaused = false
+
+    var body: some View {
+        ZStack {
+            if let poster { Image(decorative: poster, scale: 1).resizable().scaledToFill() }
+            if let playback { PlayerSurface(player: playback.player) }
+            if !playing {
+                Image(systemName: "play.fill").font(.system(size: 14, weight: .bold)).foregroundStyle(.white)
+                    .frame(width: 36, height: 36).background(Circle().fill(Color.black.opacity(0.6)))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .modifier(AttachmentFrame(attachment: attachment, fallback: (240, 180)))
+        .contentShape(Rectangle())
+        .onTapGesture { toggle() }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Animation \(attachment.name)")
+        .accessibilityValue(playing ? "Playing" : "Paused")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { toggle() }
+        .task(id: attachment.previewUrl) {
+            guard attachment.previewUrl != nil else { return }
+            poster = await loadAttachmentImage(attachment, preview: true, chat: chat).image ?? poster
+        }
+        .task(id: reduceMotion) {
+            if reduceMotion || userPaused { pause() } else { await play() }
+        }
+        .onDisappear {
+            playback?.stop()
+            playback = nil
+            playing = false
+        }
+    }
+
+    @MainActor private func toggle() {
+        if playing {
+            userPaused = true
+            pause()
+        } else {
+            userPaused = false
+            Task { @MainActor in await play() }
+        }
+    }
+
+    @MainActor private func pause() {
+        playback?.player.pause()
+        playing = false
+    }
+
+    @MainActor private func play() async {
+        if let playback {
+            playback.player.play()
+            playing = true
+            return
+        }
+        let url: URL?
+        if let chat { url = await chat.currentURL(for: attachment) } else { url = attachment.url.flatMap { URL(string: $0) } }
+        guard let url, playback == nil, !Task.isCancelled else { return }
+        let created = LoopingPlayback(url: url)
+        playback = created
+        created.player.play()
+        playing = true
+    }
+}
+
 // MARK: Composer
 
-/// Draft files above the composer: thumbnail, name, size change, progress, remove.
+/// Draft files above the composer: thumbnail, name, size, upload progress, remove.
 struct AttachmentDraftsView: View {
     @Bindable var chat: ChatModel
 
