@@ -201,8 +201,13 @@ try {
   wait('pins-peer', `!document.querySelector('${row} .chat-pin-marker')`);
   menu(); action('pins-check', 'Pin message');
   wait('pins-check', `!!document.querySelector('${row} .chat-pin-marker')`);
-  browser('pins-check', 'click', '.chat-pins-toggle');
+  assert.equal(evaluate('pins-check', '!!document.querySelector(".chat-heading > .chat-pins-toggle")'), false, 'Mobile Pins belongs only in the channel menu');
+  browser('pins-check', 'click', '.chat-channel-menu summary');
+  screenshot('pins-check', 'pins-web-narrow-menu');
+  browser('pins-check', 'click', '.chat-channel-menu .chat-pins-toggle');
   wait('pins-check', '!!document.querySelector(".chat-pinned-message")');
+  assert.equal(evaluate('pins-check', 'document.querySelector(".chat-channel-menu").open'), false, 'Choosing Pins dismisses the mobile menu');
+  assert.equal(evaluate('pins-check', 'document.querySelector(".chat-pinned-message p").textContent'), message.content.text);
   assert.equal(evaluate('pins-check', 'document.documentElement.scrollWidth > innerWidth'), false);
   screenshot('pins-check', 'pins-web-narrow-list');
   // Explicit DOM-only layout mock: a maximum-length name must not overlap the avatar.
@@ -229,14 +234,43 @@ try {
   assert.ok(page.pinnedMessages.some(m => m.id === old.id));
   browser('pins-check', 'reload');
   wait('pins-check', 'document.querySelector(".chat-pins-toggle")?.getAttribute("aria-label") === "Pins, 2"');
-  browser('pins-check', 'click', '.chat-pins-toggle');
+  browser('pins-check', 'click', '.chat-channel-menu summary');
+  browser('pins-check', 'click', '.chat-channel-menu .chat-pins-toggle');
   wait('pins-check', `document.querySelector('.chat-pins')?.textContent.includes(${JSON.stringify(old.content.text)})`);
   browser('pins-check', 'set', 'viewport', '1280', '900', '2');
   action('pins-check', 'design Voice session duration');
   wait('pins-check', 'document.querySelector("#chat-heading")?.textContent === "# design"');
   assert.equal(evaluate('pins-check', '!!document.querySelector(".chat-pins")'), false, 'Channel changes must leave the previous pin view');
   assert.equal(evaluate('pins-check', 'document.querySelector(".chat-pins-toggle").getAttribute("aria-label")'), 'Pins, 0');
-  console.log('PASS: gold top attribution, content-following DMs, space-menu Browse, one-action pin/unpin, two-tab fanout, full pin history, reaction-details coexistence, pending/error/retry, touch drawer, narrow/wrapping layout and channel isolation.');
+  assert.equal(evaluate('pins-check', '!!document.querySelector(".chat-heading > .chat-pins-toggle") && !document.querySelector(".chat-channel-menu")'), true, 'Wide layouts retain their existing Pins control');
+
+  // DMs and unjoined previews still need Pins even though Members is unavailable.
+  const direct = await fetch(`${api}/api/dms`, { method: 'POST', headers: { authorization: 'Bearer fixture-owner-token', 'content-type': 'application/json', connection: 'close' }, body: JSON.stringify({ username: 'fixture_alex' }) });
+  assert.equal(direct.status, 200);
+  const conversation = await direct.json();
+  browser('pins-check', 'set', 'viewport', '390', '844', '2');
+  browser('pins-check', 'open', `${web}/spaces?dm=${conversation.id}`);
+  wait('pins-check', 'document.querySelector(".chat-channel-menu .chat-pins-toggle")?.getAttribute("aria-label") === "Pins, 0"');
+  assert.equal(evaluate('pins-check', 'document.querySelector("#chat-heading").textContent'), 'TEST FIXTURE Alex', 'Direct titles must not have a channel hash');
+  assert.equal(evaluate('pins-check', '!!document.querySelector(".chat-heading > .chat-pins-toggle") || !!document.querySelector(".chat-channel-menu .member-list-toggle")'), false);
+  browser('pins-check', 'click', '.chat-channel-menu summary');
+  screenshot('pins-check', 'pins-web-dm-menu');
+  browser('pins-check', 'click', '.chat-channel-menu .chat-pins-toggle');
+  wait('pins-check', 'document.querySelector(".chat-pins")?.textContent.includes("No pinned messages.")');
+  screenshot('pins-check', 'pins-web-dm-empty');
+
+  const leave = await fetch(`${api}/api/spaces/space0000001/channels/chan00000001/membership`, { method: 'DELETE', headers: { authorization: 'Bearer fixture-owner-token', connection: 'close' } });
+  assert.equal(leave.status, 204);
+  browser('pins-check', 'open', `${web}/spaces?space=space0000001&channel=chan00000001`);
+  wait('pins-check', '!!document.querySelector(".channel-preview") && document.querySelector(".chat-channel-menu .chat-pins-toggle")?.getAttribute("aria-label") === "Pins, 2"');
+  assert.equal(evaluate('pins-check', '!!document.querySelector(".chat-heading > .chat-pins-toggle") || !!document.querySelector(".chat-channel-menu .member-list-toggle")'), false);
+  browser('pins-check', 'click', '.chat-channel-menu summary');
+  screenshot('pins-check', 'pins-web-preview-menu');
+  browser('pins-check', 'click', '.chat-channel-menu .chat-pins-toggle');
+  wait('pins-check', 'document.querySelectorAll(".chat-pinned-message").length === 2');
+  assert.equal(evaluate('pins-check', 'document.querySelector(".chat-pins").textContent.includes("Unpin")'), false, 'Preview pins remain read-only');
+  screenshot('pins-check', 'pins-web-preview-list');
+  console.log('PASS: gold top attribution, content-following DMs, space-menu Browse, one-action pin/unpin, two-tab fanout, full pin history, reaction-details coexistence, pending/error/retry, touch drawer, mobile Pins menu for channels/DMs/read-only previews, narrow/wrapping layout and channel isolation.');
   console.log(process.env.MESSAGE_TEST_CHROME ? 'PASS: compact desktop hover/focus controls, 14px glyphs, 24px targets and 2px spacing.' : 'SKIP: desktop hover/focus assertions (set MESSAGE_TEST_CHROME to a fine-pointer Chromium wrapper).');
 } catch (error) {
   console.error(browser('pins-check', 'snapshot', '-i').snapshot);

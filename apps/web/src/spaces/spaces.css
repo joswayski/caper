@@ -133,6 +133,15 @@
 .space-sidebar-error button { display: block; margin-top: 8px; border: 0; padding: 0; background: none; color: var(--text); font: inherit; text-decoration: underline; cursor: pointer; }
 .navigation-toggle { display: none; align-items: center; gap: 6px; min-height: 34px; padding: 0 9px; border: 1px solid var(--border); border-radius: 6px; color: var(--text-muted); background: transparent; font: inherit; font-size: .7rem; font-weight: 750; cursor: pointer; }
 .navigation-toggle svg { width: 15px; }
+.chat-channel-menu { position: relative; min-width: 0; flex: 1; }
+.chat-channel-menu > summary { display: flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 6px; border-radius: 8px; cursor: pointer; list-style: none; }
+.chat-channel-menu > summary::-webkit-details-marker { display: none; }
+.chat-channel-menu > summary:hover, .chat-channel-menu[open] > summary { background: var(--surface-raised); }
+.chat-channel-menu > summary > svg { flex: 0 0 auto; width: 16px; height: 16px; color: var(--text-muted); }
+.chat-channel-menu[open] > summary > svg { transform: rotate(180deg); }
+.chat-channel-menu .space-actions { width: 200px; max-width: calc(100vw - 88px); }
+.chat-channel-menu .space-actions button { min-height: 44px; height: auto; }
+.chat-channel-menu > summary:focus-visible, .chat-channel-menu button:focus-visible, .navigation-toggle:focus-visible { outline: 2px solid var(--terracotta-bright); outline-offset: 2px; }
 
 .spaces-state, .spaces-empty { min-height: 100dvh; padding: 38px max(28px, calc((100vw - 1400px) / 2)); background: var(--blackout); }
 .spaces-state { display: grid; place-content: center; justify-items: center; gap: 18px; text-align: center; }
@@ -289,7 +298,9 @@
 }
 
 @media (max-width: 760px) {
-  .call-room.spaces-room { position: relative; grid-template: minmax(0, 1fr) / 1fr; }
+  .call-room.spaces-room { position: relative; grid-template: minmax(0, 1fr) / 1fr; touch-action: pan-y pinch-zoom; }
+  /* Touch-action must reach the nearest scroll container, not just the room. */
+  .spaces-room :is(.chat-scroller, .chat-pins, .channel-navigation, .channel-navigation ul, .sidebar-channels, .space-rail) { touch-action: pan-y pinch-zoom; }
   .spaces-room > .space-rail, .spaces-room > .people-panel { display: none; }
   .spaces-room > .space-member-presence { position: absolute; z-index: 8; top: 62px; right: 8px; bottom: 8px; width: min(280px, calc(100% - 64px)); border: 1px solid var(--border); border-radius: 16px; }
   .spaces-room > .member-list-backdrop { position: absolute; z-index: 7; inset: 54px 0 0; display: block; border: 0; background: rgb(0 0 0 / .25); cursor: pointer; }
@@ -326,9 +337,10 @@
   .spaces-room:not(.navigation-open) .channel-navigation > ul { margin: 0; }
   /* A collapsed channel section still shows the channel being viewed. */
   .spaces-room:not(.navigation-open) .channel-navigation > ul[data-collapsed] { display: grid; }
-  .navigation-toggle { display: inline-flex; }
-  .chat-channel-title { order: 2; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .spaces-room .chat-heading { gap: 10px; }
+  .navigation-toggle { display: inline-flex; justify-content: center; flex: 0 0 44px; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 8px; }
+  .navigation-toggle svg { width: 20px; height: 20px; }
+  .spaces-room .chat-heading { gap: 6px; padding: 4px 12px; }
+  .spaces-room .voice-actions:empty { display: none; }
   .spaces-room .chat-heading > .chat-offline { margin-left: auto; }
   .member-list-toggle { width: 44px; height: 44px; }
   /* iOS zooms focused inputs below 16px. Keep forms and keyboard entry stable. */
