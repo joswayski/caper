@@ -437,7 +437,8 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
     var channelQuery by remember(detail?.space?.id) { mutableStateOf("") }
     val activeChannel = voice.channelId.takeIf { voice.phase != VoiceState.Phase.IDLE && voice.phase != VoiceState.Phase.FAILED }
     Column(modifier.fillMaxHeight().background(SurfaceSidebar)) {
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp)) {
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+            Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 8.dp)) {
             Row(Modifier.fillMaxWidth().heightIn(min = 42.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (detail != null && !detail.space.demo) Box(Modifier.weight(1f)) {
                     // Web: the space name opens a menu with Space settings (owners) or Leave space….
@@ -451,6 +452,15 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
                         Icon(painterResource(R.drawable.lucide_chevron_down), null, Modifier.size(16.dp), tint = TextMuted)
                     }
                     DropdownMenu(spaceMenuOpen, { spaceMenuOpen = false }, containerColor = SurfaceRaised) {
+                        DropdownMenuItem(
+                            text = { Text(if (browsing) "Joined channels" else "Browse channels") },
+                            onClick = {
+                                browsing = !browsing
+                                channelQuery = ""
+                                spaceMenuOpen = false
+                            },
+                            leadingIcon = { Icon(painterResource(R.drawable.lucide_hash), null, Modifier.size(16.dp)) },
+                        )
                         if (owner) DropdownMenuItem({ Text("Space settings") }, { spaceMenuOpen = false; show(Overlay.ManageSpace) },
                             leadingIcon = { Icon(painterResource(R.drawable.lucide_settings), null, Modifier.size(16.dp)) })
                         else DropdownMenuItem({ Text("Leave space…", color = ErrorText) }, { spaceMenuOpen = false; show(Overlay.LeaveSpace) },
@@ -460,9 +470,6 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
                 if (closeNavigation != null) IconButton(closeNavigation) { Icon(painterResource(R.drawable.lucide_x), "Close navigation", tint = TextMuted) }
             }
             HorizontalDivider(color = Border)
-            OutlinedButton({ browsing = !browsing; channelQuery = "" }, Modifier.fillMaxWidth().padding(top = 10.dp), shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
-                Icon(painterResource(R.drawable.lucide_hash), null, Modifier.size(15.dp)); Spacer(Modifier.width(6.dp)); Text(if (browsing) "Joined channels" else "Browse channels")
-            }
             if (browsing) OutlinedTextField(channelQuery, { channelQuery = it }, Modifier.fillMaxWidth().padding(top = 8.dp), singleLine = true, label = { Text("Search channels") })
             Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Row(
@@ -606,8 +613,7 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
                     TextButton(viewModel::retryOpening) { Text("Retry opening", fontSize = 12.sp) }
                 }
             }
-        }
-        Column(Modifier.fillMaxWidth().heightIn(max = 340.dp).verticalScroll(rememberScrollState())) {
+            }
             if (state.account != null) {
                 HorizontalDivider(color = Border)
                 val invitePeople = owner && detail?.space?.demo == false
@@ -1212,15 +1218,15 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     val own = state.chatAuthorId ?: state.account?.id
     val canReact = state.selectedChannel?.joined == true && own != null
     val saves = state.reactionSaves.filterKeys { it.startsWith("${message.id}:") }.values
-    Column {
-        Box(Modifier.combinedClickable(
+    Column(Modifier.background(if (message.pin != null) PinGoldWash else Color.Transparent)) {
+        message.pin?.let { pin ->
+            Text("Pinned by ${pin.author.name}", Modifier.padding(start = 62.dp, end = 18.dp, top = 6.dp), color = PinGold, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+        }
+        Box(Modifier.heightIn(min = 48.dp).combinedClickable(
             onClick = {},
             onLongClick = { openActions(message) },
             onLongClickLabel = "Message actions for ${message.author.name}",
         )) { MessageRow(message) }
-        message.pin?.let { pin ->
-            Text("Pinned by ${pin.author.name}", Modifier.padding(start = 62.dp, end = 18.dp, top = 2.dp), color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-        }
         FlowRow(Modifier.padding(start = 62.dp, end = 18.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             message.reactions.forEach { reaction ->
                 val selected = own != null && own in reaction.authorIds
@@ -1283,10 +1289,10 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                                 this.selected = selected
                                 contentDescription = "$emoji quick reaction"
                             },
-                        ) { EmojiImage(emoji, null, Modifier.size(28.dp)) }
+                        ) { EmojiImage(emoji, null, Modifier.size(24.dp)) }
                     }
                     IconButton(openPicker, enabled = canReact, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
-                        Icon(painterResource(R.drawable.lucide_plus), "Add reaction", Modifier.size(24.dp), tint = TextMuted)
+                        Icon(painterResource(R.drawable.lucide_plus), "Add reaction", Modifier.size(18.dp), tint = TextMuted)
                     }
                 }
             }
@@ -1317,10 +1323,10 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
             Text("No pinned messages.", Modifier.fillMaxWidth().padding(24.dp), color = TextMuted, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
         }
         items(state.pinnedMessages, key = { "pin:${it.id}" }) { message ->
-            Column {
+            Column(Modifier.background(PinGoldWash)) {
+                message.pin?.let { Text("Pinned by ${it.author.name}", Modifier.padding(start = 62.dp, end = 18.dp, top = 4.dp), color = PinGold, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
                 Text(fullDateLabel(message.createdAt), Modifier.padding(start = 62.dp, end = 18.dp), color = TextMuted, fontSize = 10.sp)
                 MessageRow(message)
-                message.pin?.let { Text("Pinned by ${it.author.name}", Modifier.padding(start = 62.dp, end = 18.dp), color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
                 if (state.selectedChannel?.joined == true && (state.chatAuthorId ?: state.account?.id) != null) {
                     val saving = state.pinSaves[message.id]?.saving == true
                     TextButton({ viewModel.setPin(message.id, false) }, enabled = !saving, modifier = Modifier.padding(start = 62.dp).heightIn(min = 48.dp)) {

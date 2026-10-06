@@ -3722,98 +3722,6 @@ impl CaperApp {
                     .show_separator_line(false)
                     .frame(egui::Frame::NONE)
                     .show_inside(ui, |ui| self.account_bar(ui));
-                if self.account.is_some() {
-                    let account_id = self.account.as_ref().map(|account| account.id.as_str());
-                    let other_directs = self
-                        .directs
-                        .iter()
-                        .filter(|direct| Some(direct.peer.id.as_str()) != account_id)
-                        .count();
-                    let height = (40.0 + (other_directs + 2) as f32 * 30.0)
-                        .min(ui.available_height() * 0.45);
-                    egui::TopBottomPanel::bottom("native-directs")
-                        .exact_height(height)
-                        .show_separator_line(false)
-                        .frame(egui::Frame::NONE)
-                        .show_inside(ui, |ui| {
-                            ui.spacing_mut().interact_size.y = 28.0;
-                            full_bleed_separator(ui, ui.min_rect().top());
-                            ui.add_space(6.0);
-                            ui.horizontal(|ui| {
-                                let heading_hovered = ui.rect_contains_pointer(ui.max_rect());
-                                ui.label(bold("Direct messages").size(12.0).color(MUTED));
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    // Keep the target in the focus order even when its icon is hidden.
-                                    let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
-                                    let response = ui.interact(rect, egui::Id::new("direct-heading-plus"), egui::Sense::click());
-                                    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), "Start direct message"));
-                                    if heading_hovered || response.has_focus() {
-                                        if response.hovered() || response.has_focus() {
-                                            ui.painter().rect_filled(rect, 6.0, RAISED);
-                                        }
-                                        paint_icon(ui.painter(), rect.shrink(5.0), NavIcon::Plus, if response.hovered() { TEXT } else { MUTED });
-                                    }
-                                    if response.on_hover_text("Start direct message").clicked() {
-                                        self.member_username.clear();
-                                        self.error = None;
-                                        self.dialog = Some(Dialog::StartDirect);
-                                    }
-                                });
-                            });
-                            egui::ScrollArea::vertical().id_salt("directs-scroll").show(ui, |ui| {
-                                let account = self.account.clone().expect("account checked above");
-                                let self_direct = self.directs.iter().find(|direct| direct.peer.id == account.id).cloned();
-                                let self_active = self_direct.as_ref().is_some_and(|direct| self.selected_direct.as_deref() == Some(&direct.id));
-                                let self_unread = self_direct.as_ref().is_some_and(|direct| model::sequence(&direct.last_seq).unwrap_or(0) > model::sequence(&direct.read_seq).unwrap_or(0));
-                                ui.horizontal(|ui| {
-                                    let display_name = account.display_name.as_deref().or(account.username.as_deref()).unwrap_or("You");
-                                    let name = format!("{display_name} you");
-                                    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width() - 18.0, 28.0), egui::Sense::click());
-                                    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, ui.is_enabled(), self_active, &name));
-                                    if self_active || response.hovered() || response.has_focus() {
-                                        ui.painter().rect_filled(rect, 6.0, if self_active { Color32::from_rgba_unmultiplied(182, 77, 50, 40) } else { RAISED });
-                                    }
-                                    if response.has_focus() {
-                                        ui.painter().rect_stroke(rect, 6.0, Stroke::new(1.0, TERRACOTTA_BRIGHT), egui::StrokeKind::Inside);
-                                    }
-                                    paint_avatar(ui, egui::Rect::from_center_size(egui::pos2(rect.left() + 17.5, rect.center().y), egui::vec2(20.0, 20.0)), display_name, account.avatar_id);
-                                    let mut label = egui::text::LayoutJob::default();
-                                    label.append(display_name, 0.0, egui::TextFormat {
-                                        font_id: egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into())),
-                                        color: if self_active { TEXT } else { MUTED }, ..Default::default()
-                                    });
-                                    label.append(" you", 0.0, egui::TextFormat {
-                                        font_id: egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Medium".into())),
-                                        color: MUTED, ..Default::default()
-                                    });
-                                    let galley = ui.painter().layout_job(label);
-                                    ui.painter().with_clip_rect(rect).galley(egui::pos2(rect.left() + 35.0, rect.center().y - galley.size().y / 2.0 - 1.0), galley, TEXT);
-                                    if self_unread { ui.label(RichText::new("●").size(9.0).color(TERRACOTTA_BRIGHT)); }
-                                    if response.clicked() { self.select_or_create_self_direct(); }
-                                });
-                                ui.add_space(2.0);
-                                let directs = self.directs.clone();
-                                for direct in directs {
-                                    if direct.peer.id == account.id { continue; }
-                                    let active = self.selected_direct.as_deref() == Some(&direct.id);
-                                    let unread = model::sequence(&direct.last_seq).unwrap_or(0)
-                                        > model::sequence(&direct.read_seq).unwrap_or(0);
-                                    ui.horizontal(|ui| {
-                                        let (response, _, _) = channel_button(
-                                            ui, egui::vec2(ui.available_width() - 18.0, 28.0),
-                                            &direct.peer.display_name, NavIcon::Speech, active, None, None,
-                                        );
-                                        if unread { ui.label(RichText::new("●").size(9.0).color(TERRACOTTA_BRIGHT)); }
-                                        if response.clicked() { self.select_direct(direct.clone()); }
-                                    });
-                                    ui.add_space(2.0);
-                                }
-                                let action = if self.owner() { "Invite people" } else { "New message" };
-                                let (response, _, _) = channel_button(ui, egui::vec2(ui.available_width(), 28.0), action, NavIcon::Plus, false, None, None);
-                                if response.clicked() { self.open_direct_action(); }
-                            });
-                        });
-                }
                 egui::ScrollArea::vertical()
                     .id_salt("sidebar-scroll")
                     .show(ui, |ui| {
@@ -3874,6 +3782,11 @@ impl CaperApp {
                                         MUTED,
                                     );
                                     egui::Popup::menu(&actions).width(width).show(|ui| {
+                                        if ui.button("Browse channels").clicked() {
+                                            self.browse_channels = true;
+                                            self.channel_search.clear();
+                                            ui.close();
+                                        }
                                         if self.can_leave_space() {
                                             if ui
                                                 .button(RichText::new("Leave space…").color(ERROR))
@@ -4018,11 +3931,11 @@ impl CaperApp {
                             },
                         );
                         ui.add_space(4.0);
-                        if ui.button(if self.browse_channels { "Close Browse" } else { "Browse channels" }).clicked() {
-                            self.browse_channels = !self.browse_channels;
-                            self.channel_search.clear();
-                        }
                         if self.browse_channels {
+                            if ui.button("Close Browse").clicked() {
+                                self.browse_channels = false;
+                                self.channel_search.clear();
+                            }
                             ui.add(egui::TextEdit::singleline(&mut self.channel_search).hint_text("Search channels"));
                             let query = self.channel_search.to_lowercase();
                             let previews: Vec<_> = self.detail.as_ref().map_or_else(Vec::new, |detail| detail.channels.iter()
@@ -4132,8 +4045,203 @@ impl CaperApp {
                             ui.add_space(14.0);
                             self.voice_roster(ui, self.roster_for_active_call(), true);
                         }
+                        self.direct_navigation(ui);
                     });
             });
+    }
+
+    fn direct_navigation(&mut self, ui: &mut egui::Ui) {
+        let Some(account) = self.account.clone() else {
+            return;
+        };
+        ui.add_space(8.0);
+        full_bleed_separator(ui, ui.cursor().top());
+        ui.add_space(6.0);
+        ui.scope(|ui| {
+            ui.spacing_mut().interact_size.y = 28.0;
+            ui.horizontal(|ui| {
+                let heading_hovered = ui.rect_contains_pointer(ui.max_rect());
+                ui.label(bold("Direct messages").size(12.0).color(MUTED));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Keep the target in the focus order even when its icon is hidden.
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
+                    let response = ui.interact(
+                        rect,
+                        egui::Id::new("direct-heading-plus"),
+                        egui::Sense::click(),
+                    );
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            ui.is_enabled(),
+                            "Start direct message",
+                        )
+                    });
+                    if heading_hovered || response.has_focus() {
+                        if response.hovered() || response.has_focus() {
+                            ui.painter().rect_filled(rect, 6.0, RAISED);
+                        }
+                        paint_icon(
+                            ui.painter(),
+                            rect.shrink(5.0),
+                            NavIcon::Plus,
+                            if response.hovered() { TEXT } else { MUTED },
+                        );
+                    }
+                    if response.on_hover_text("Start direct message").clicked() {
+                        self.member_username.clear();
+                        self.error = None;
+                        self.dialog = Some(Dialog::StartDirect);
+                    }
+                });
+            });
+            let self_direct = self
+                .directs
+                .iter()
+                .find(|direct| direct.peer.id == account.id)
+                .cloned();
+            let self_active = self_direct
+                .as_ref()
+                .is_some_and(|direct| self.selected_direct.as_deref() == Some(&direct.id));
+            let self_unread = self_direct.as_ref().is_some_and(|direct| {
+                model::sequence(&direct.last_seq).unwrap_or(0)
+                    > model::sequence(&direct.read_seq).unwrap_or(0)
+            });
+            ui.horizontal(|ui| {
+                let display_name = account
+                    .display_name
+                    .as_deref()
+                    .or(account.username.as_deref())
+                    .unwrap_or("You");
+                let name = format!("{display_name} you");
+                let (rect, response) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width() - 18.0, 28.0),
+                    egui::Sense::click(),
+                );
+                response.widget_info(|| {
+                    egui::WidgetInfo::selected(
+                        egui::WidgetType::SelectableLabel,
+                        ui.is_enabled(),
+                        self_active,
+                        &name,
+                    )
+                });
+                if self_active || response.hovered() || response.has_focus() {
+                    ui.painter().rect_filled(
+                        rect,
+                        6.0,
+                        if self_active {
+                            Color32::from_rgba_unmultiplied(182, 77, 50, 40)
+                        } else {
+                            RAISED
+                        },
+                    );
+                }
+                if response.has_focus() {
+                    ui.painter().rect_stroke(
+                        rect,
+                        6.0,
+                        Stroke::new(1.0, TERRACOTTA_BRIGHT),
+                        egui::StrokeKind::Inside,
+                    );
+                }
+                paint_avatar(
+                    ui,
+                    egui::Rect::from_center_size(
+                        egui::pos2(rect.left() + 17.5, rect.center().y),
+                        egui::vec2(20.0, 20.0),
+                    ),
+                    display_name,
+                    account.avatar_id,
+                );
+                let mut label = egui::text::LayoutJob::default();
+                label.append(
+                    display_name,
+                    0.0,
+                    egui::TextFormat {
+                        font_id: egui::FontId::new(
+                            13.0,
+                            egui::FontFamily::Name("Satoshi Medium".into()),
+                        ),
+                        color: if self_active { TEXT } else { MUTED },
+                        ..Default::default()
+                    },
+                );
+                label.append(
+                    " you",
+                    0.0,
+                    egui::TextFormat {
+                        font_id: egui::FontId::new(
+                            12.0,
+                            egui::FontFamily::Name("Satoshi Medium".into()),
+                        ),
+                        color: MUTED,
+                        ..Default::default()
+                    },
+                );
+                let galley = ui.painter().layout_job(label);
+                ui.painter().with_clip_rect(rect).galley(
+                    egui::pos2(
+                        rect.left() + 35.0,
+                        rect.center().y - galley.size().y / 2.0 - 1.0,
+                    ),
+                    galley,
+                    TEXT,
+                );
+                if self_unread {
+                    ui.label(RichText::new("●").size(9.0).color(TERRACOTTA_BRIGHT));
+                }
+                if response.clicked() {
+                    self.select_or_create_self_direct();
+                }
+            });
+            ui.add_space(2.0);
+            let directs = self.directs.clone();
+            for direct in directs {
+                if direct.peer.id == account.id {
+                    continue;
+                }
+                let active = self.selected_direct.as_deref() == Some(&direct.id);
+                let unread = model::sequence(&direct.last_seq).unwrap_or(0)
+                    > model::sequence(&direct.read_seq).unwrap_or(0);
+                ui.horizontal(|ui| {
+                    let (response, _, _) = channel_button(
+                        ui,
+                        egui::vec2(ui.available_width() - 18.0, 28.0),
+                        &direct.peer.display_name,
+                        NavIcon::Speech,
+                        active,
+                        None,
+                        None,
+                    );
+                    if unread {
+                        ui.label(RichText::new("●").size(9.0).color(TERRACOTTA_BRIGHT));
+                    }
+                    if response.clicked() {
+                        self.select_direct(direct.clone());
+                    }
+                });
+                ui.add_space(2.0);
+            }
+            let action = if self.owner() {
+                "Invite people"
+            } else {
+                "New message"
+            };
+            let (response, _, _) = channel_button(
+                ui,
+                egui::vec2(ui.available_width(), 28.0),
+                action,
+                NavIcon::Plus,
+                false,
+                None,
+                None,
+            );
+            if response.clicked() {
+                self.open_direct_action();
+            }
+        });
     }
 
     fn roster_for_active_call(&self) -> Vec<model::VoiceOccupant> {
@@ -6091,31 +6199,42 @@ impl CaperApp {
         } else {
             display_time(&message.created_at)
         };
-        message_row(
-            ui,
-            &message.author.name,
-            message.author.avatar_id,
-            &time,
-            &message.content.text,
-            message.author.is_guest,
-            false,
-        );
-        if let Some(pin) = &message.pin {
-            egui::Frame::new()
-                .inner_margin(egui::Margin {
-                    left: 62,
-                    right: 18,
-                    top: 0,
-                    bottom: 2,
-                })
-                .show(ui, |ui| {
-                    ui.label(
-                        RichText::new(format!("Pinned by {}", pin.author.name))
-                            .size(11.0)
-                            .color(MUTED),
-                    );
-                });
-        }
+        let pinned = message.pin.as_ref();
+        let message_rect = egui::Frame::new()
+            .fill(if pinned.is_some() {
+                Color32::from_rgba_unmultiplied(228, 199, 106, 15)
+            } else {
+                Color32::TRANSPARENT
+            })
+            .show(ui, |ui| {
+                if let Some(pin) = pinned {
+                    egui::Frame::new()
+                        .inner_margin(egui::Margin {
+                            left: 62,
+                            right: 18,
+                            top: 6,
+                            bottom: 0,
+                        })
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new(format!("Pinned by {}", pin.author.name))
+                                    .size(11.0)
+                                    .color(Color32::from_rgb(228, 199, 106)),
+                            );
+                        });
+                }
+                message_row(
+                    ui,
+                    &message.author.name,
+                    message.author.avatar_id,
+                    &time,
+                    &message.content.text,
+                    message.author.is_guest,
+                    false,
+                );
+            })
+            .response
+            .rect;
         let author = self
             .session
             .as_ref()
@@ -6127,6 +6246,67 @@ impl CaperApp {
             &self.pending_reactions,
         );
         let can_react = self.selected_is_joined() && self.session.is_some();
+        if can_react {
+            let actions_rect = egui::Rect::from_min_size(
+                egui::pos2(message_rect.right() - 68.0, message_rect.top() + 4.0),
+                egui::vec2(50.0, 24.0),
+            );
+            // Overlay controls must not move the timeline cursor back into the message.
+            let mut actions_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .id_salt(("message-actions", &message.id))
+                    .max_rect(actions_rect),
+            );
+            actions_ui.spacing_mut().item_spacing.x = 2.0;
+            actions_ui.horizontal(|ui| {
+                let emoji_rect = ui.allocate_space(egui::vec2(24.0, 24.0)).1;
+                let emoji = ui.interact(
+                    emoji_rect,
+                    ui.id().with((&message.id, "reaction-action")),
+                    egui::Sense::click(),
+                );
+                let more_rect = ui.allocate_space(egui::vec2(24.0, 24.0)).1;
+                let more = ui.interact(
+                    more_rect,
+                    ui.id().with((&message.id, "more-action")),
+                    egui::Sense::click(),
+                );
+                let visible =
+                    ui.rect_contains_pointer(message_rect) || emoji.has_focus() || more.has_focus();
+                if visible {
+                    if let Some(entry) = emoji::find("🙂") {
+                        self.reaction_textures
+                            .image(ui, entry, 14.0)
+                            .paint_at(ui, emoji_rect.shrink(5.0));
+                    }
+                    paint_icon(ui.painter(), more_rect.shrink(5.0), NavIcon::More, MUTED);
+                }
+                emoji.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Add reaction")
+                });
+                more.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Message actions")
+                });
+                if emoji.on_hover_text("Add reaction").clicked() {
+                    self.reaction_picker = Some(message.id.clone());
+                    self.reaction_search.clear();
+                    self.reaction_search_focus = true;
+                }
+                let active = message.pin.is_some();
+                egui::Popup::menu(&more).show(|ui| {
+                    if ui
+                        .add_enabled(
+                            !self.pending_pins.contains(&message.id),
+                            egui::Button::new(if active { "Unpin" } else { "Pin" }),
+                        )
+                        .clicked()
+                    {
+                        self.set_pin(&message.id, !active);
+                        ui.close();
+                    }
+                });
+            });
+        }
         egui::Frame::new()
             .inner_margin(egui::Margin {
                 left: 62,
@@ -6184,35 +6364,16 @@ impl CaperApp {
                             self.set_reaction(&message.id, &reaction.emoji, !owned);
                         }
                     }
-                    if can_react && let Some(entry) = emoji::find("🙂") {
-                        let image = self.reaction_textures.image(ui, entry, 18.0);
-                        let add = ui
-                            .add(egui::Button::image(image).small())
-                            .on_hover_text("Add reaction");
-                        add.widget_info(|| {
-                            egui::WidgetInfo::labeled(
-                                egui::WidgetType::Button,
-                                true,
-                                "Add reaction",
-                            )
-                        });
-                        if add.clicked() {
-                            self.reaction_picker = Some(message.id.clone());
-                            self.reaction_search.clear();
-                            self.reaction_search_focus = true;
-                        }
-                    }
-                    if can_react {
-                        let active = message.pin.is_some();
-                        if ui
+                    if self.showing_pins
+                        && can_react
+                        && ui
                             .add_enabled(
                                 !self.pending_pins.contains(&message.id),
-                                egui::Button::new(if active { "Unpin" } else { "Pin" }).small(),
+                                egui::Button::new("Unpin").small(),
                             )
                             .clicked()
-                        {
-                            self.set_pin(&message.id, !active);
-                        }
+                    {
+                        self.set_pin(&message.id, false);
                     }
                 });
                 if let Some((active, error)) = self.pin_errors.get(&message.id).cloned() {
@@ -9020,6 +9181,129 @@ mod tests {
     }
 
     #[test]
+    fn pinned_message_has_gold_attribution_above_only_two_compact_hover_actions() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.session = Some(session());
+        let mut message = app.timeline.messages().next().unwrap().clone();
+        message.author.name = "Pinned original author".into();
+        message.content.text = "Pinned original text".into();
+        let mut pinner = message.author.clone();
+        pinner.name = "Fixture Pinner".into();
+        message.pin = Some(crate::model::Pin {
+            author: pinner,
+            created_at: message.created_at.clone(),
+        });
+        message.pin_seq = Some("7".into());
+        app.timeline.reset(vec![message.clone()], "7").unwrap();
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, vec![]);
+        context.enable_accesskit();
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            text_position(&output, "Pinned by Fixture Pinner").y
+                < text_position(&output, "Pinned original author").y
+        );
+        assert!(
+            text_position(&output, "Pinned original author").y
+                < text_position(&output, "Pinned original text").y
+        );
+        let gold = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "Pinned by Fixture Pinner" => {
+                    Some(&text.galley.job)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            gold.sections
+                .iter()
+                .all(|section| section.format.color == egui::Color32::from_rgb(228, 199, 106))
+        );
+        let nodes = &output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes;
+        let bounds = |label| {
+            nodes
+                .iter()
+                .find_map(|(_, node)| {
+                    (node.label() == Some(label))
+                        .then(|| node.bounds())
+                        .flatten()
+                })
+                .unwrap()
+        };
+        let emoji = bounds("Add reaction");
+        let more = bounds("Message actions");
+        for button in [emoji, more] {
+            assert_eq!((button.width(), button.height()), (24.0, 24.0));
+        }
+        assert_eq!(more.x0 - emoji.x1, 2.0);
+        assert!(
+            !nodes
+                .iter()
+                .any(|(_, node)| matches!(node.label(), Some("Pin" | "Unpin")))
+        );
+        let action_rect = egui::Rect::from_min_max(
+            egui::pos2(emoji.x0 as f32, emoji.y0 as f32),
+            egui::pos2(more.x1 as f32, more.y1 as f32),
+        );
+        let painted = |output: &egui::FullOutput| {
+            output.shapes.iter().any(|shape| match &shape.shape {
+                egui::Shape::Rect(rect) => {
+                    rect.brush.is_some() && action_rect.contains_rect(rect.rect)
+                }
+                egui::Shape::Mesh(mesh) => action_rect.contains_rect(mesh.calc_bounds()),
+                _ => false,
+            })
+        };
+        assert!(
+            !painted(&output),
+            "actions must not paint without hover or focus"
+        );
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerMoved(text_position(
+                &output,
+                "Pinned original text",
+            ))],
+        );
+        let started = std::time::Instant::now();
+        while context.has_pending_images() {
+            assert!(started.elapsed() < std::time::Duration::from_secs(10));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            render(&mut app, &context, vec![]);
+        }
+        assert!(
+            painted(&render(&mut app, &context, vec![])),
+            "hover reveals compact actions"
+        );
+        click(
+            &mut app,
+            &context,
+            action_rect.right_center() - egui::vec2(12.0, 0.0),
+        );
+        let opened = render(&mut app, &context, vec![]);
+        assert!(opened.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Unpin")));
+        egui::Popup::close_all(&context);
+        app.showing_pins = true;
+        app.timeline.reset_pins(vec![message]).unwrap();
+        let pins = render(&mut app, &context, vec![]);
+        assert!(pins.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Unpin")), "pin list retains direct Unpin");
+    }
+
+    #[test]
     fn update_download_button_opens_the_platform_installer() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -10946,7 +11230,6 @@ mod tests {
             "Channel options for design",
             "Join voice in #design",
             "Create space",
-            "Browse channels",
             "Mute microphone",
             "User Settings",
         ] {
@@ -11920,6 +12203,77 @@ mod tests {
             node.label()
                 .is_some_and(|label| label == "Fixture Owner you")
         }));
+    }
+
+    #[test]
+    fn direct_section_follows_channels_and_browse_lives_in_every_member_space_menu() {
+        for owner in [true, false] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-desktop"),
+            );
+            if !owner {
+                app.account.as_mut().unwrap().id = "fixture-member".into();
+            }
+            app.voice.participants.clear();
+            app.channel_rosters.clear();
+            render(&mut app, &context, vec![]);
+            render(&mut app, &context, vec![]);
+            context.enable_accesskit();
+            let output = render(&mut app, &context, vec![]);
+            let nodes = &output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes;
+            let bounds = |label: &str| {
+                nodes
+                    .iter()
+                    .find_map(|(_, node)| {
+                        (node.label() == Some(label))
+                            .then(|| node.bounds())
+                            .flatten()
+                    })
+                    .unwrap_or_else(|| panic!("missing {label}"))
+            };
+            let last_channel = bounds("Join voice in #planning");
+            let direct_y = text_position(&output, "Direct messages").y;
+            let gap = direct_y - last_channel.y1 as f32;
+            assert!(
+                (0.0..40.0).contains(&gap),
+                "DM heading should directly follow the last channel, not be above it or bottom-anchored: {gap}"
+            );
+            let direct_action = if owner {
+                "Invite people"
+            } else {
+                "New message"
+            };
+            assert!(bounds("Mute microphone").y0 > bounds(direct_action).y1);
+            assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Browse channels")));
+            let name = format!("{} actions", app.detail.as_ref().unwrap().space.name);
+            let menu = bounds(&name);
+            click(
+                &mut app,
+                &context,
+                egui::pos2(
+                    ((menu.x0 + menu.x1) / 2.0) as f32,
+                    ((menu.y0 + menu.y1) / 2.0) as f32,
+                ),
+            );
+            let opened = render(&mut app, &context, vec![]);
+            click(
+                &mut app,
+                &context,
+                text_position(&opened, "Browse channels"),
+            );
+            assert!(
+                app.browse_channels,
+                "Browse must be available to owners and members"
+            );
+        }
     }
 
     #[test]

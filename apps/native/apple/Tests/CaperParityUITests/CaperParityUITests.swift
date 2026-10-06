@@ -236,8 +236,11 @@ final class CaperParityUITests: XCTestCase {
         let add = try require(app.buttons["message-action-add-reaction"], timeout: 5,
                               "Holding \(messageID) did not offer Add reaction")
         #else
+        let row = try require(app.descendants(matching: .any)["message-row-\(messageID)"], timeout: 10,
+                              "Missing message-row-\(messageID)")
+        row.hover()
         let add = try require(app.buttons["add-reaction-\(messageID)"], timeout: 10,
-                              "Missing add-reaction-\(messageID)")
+                              "Hovering \(messageID) did not reveal Add reaction")
         #endif
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: add)
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
@@ -271,7 +274,11 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(other.exists)
         XCTAssertGreaterThanOrEqual(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "reaction,")).count, 20)
         #if os(macOS)
-        XCTAssertGreaterThanOrEqual(app.buttons.matching(NSPredicate(format: "label == %@", "Add reaction")).count, 2, "fixture includes long and empty reaction rows")
+        let hoverTargetID = "chan00000001m01"
+        let target = app.descendants(matching: .any)["message-row-\(hoverTargetID)"]
+        XCTAssertTrue(target.waitForExistence(timeout: 5))
+        target.hover()
+        XCTAssertTrue(app.buttons["add-reaction-\(hoverTargetID)"].waitForExistence(timeout: 2), "Message controls appear on hover")
         #else
         XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label == %@", "Add reaction")).count, 0, "iPhone must not show an add-reaction button under each message")
         #endif

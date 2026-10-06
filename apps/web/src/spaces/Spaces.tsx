@@ -1477,6 +1477,10 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
             <ChevronDown aria-hidden="true" />
           </summary>
           <div className="space-actions">
+            <button type="button" onClick={() => {
+              spaceMenu.current!.open = false;
+              setBrowseOpen(true);
+            }}><Search aria-hidden="true" />Browse channels</button>
             {owner ? (
               <>
                 <button
@@ -1603,12 +1607,11 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
           );
         })}
       </ul>
-      {directNavigation}
-      <button className="browse-channels" type="button" onClick={() => setBrowseOpen(true)}><Search aria-hidden="true" />Browse channels</button>
       {!!detail.channelInvitations?.length && <div className="pending-channel-invites">
         <h2>Invitations</h2>
         {detail.channelInvitations.map((item) => <button className="pending-channel-invite" key={item.channel.id} type="button" onClick={() => setChannelInvitation(item)}><LockKeyhole aria-hidden="true" /><span>{item.channel.name}</span><small>Invited</small></button>)}
       </div>}
+      {directNavigation}
       {error && (
         <p className="space-sidebar-error" role="alert">
           {error}

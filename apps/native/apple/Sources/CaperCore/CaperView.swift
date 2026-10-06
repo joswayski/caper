@@ -21,6 +21,7 @@ public enum CaperTheme {
     public static let terracottaBright = Color(red: 219/255, green: 104/255, blue: 73/255)
     public static let green = Color(red: 99/255, green: 122/255, blue: 67/255)
     public static let voiceSessionGreen = Color(red: 74/255, green: 168/255, blue: 107/255)
+    public static let pinGold = Color(red: 228/255, green: 199/255, blue: 106/255)
 
     public static func font(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         let name: String
@@ -539,6 +540,10 @@ private struct ChannelSidebar: View {
         VStack(spacing: 0) {
                     HStack(spacing: 6) {
                         Menu {
+                            Button(browsing ? "Exit Browse channels" : "Browse channels") {
+                                browsing.toggle()
+                                channelSearch = ""
+                            }
                             if model.isOwner { Button("Space settings") { sheet = .manageSpace } }
                             else if model.account != nil && model.detail?.space.demo != true { Button("Leave space…", role: .destructive) { sheet = .leaveSpace } }
                         } label: {
@@ -556,6 +561,7 @@ private struct ChannelSidebar: View {
                     .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
 
             ScrollView {
+                VStack(spacing: 0) {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack {
                         Button { channelsExpanded.toggle(); CaperEffects.shared.toggle(channelsExpanded) } label: {
@@ -588,9 +594,6 @@ private struct ChannelSidebar: View {
                         }
                     }
 
-                    Divider().overlay(CaperTheme.border).padding(.vertical, 10)
-                    Button(browsing ? "Close Browse" : "Browse channels") { browsing.toggle(); channelSearch = "" }
-                        .buttonStyle(.plain).font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted).modifier(ControlHover())
                     if browsing {
                     TextField("Search channels", text: $channelSearch).textFieldStyle(CaperTextFieldStyle()).padding(.vertical, 6)
                     ForEach((model.detail?.channels ?? []).filter { channelSearch.isEmpty || $0.name.localizedCaseInsensitiveContains(channelSearch) }) { channel in
@@ -620,7 +623,6 @@ private struct ChannelSidebar: View {
                         }.padding(.top, 8)
                     }
                 }.padding(.horizontal, 16)
-            }
             if model.account != nil {
                 #if os(macOS)
                 let directRowHeight: CGFloat = 28
@@ -643,7 +645,6 @@ private struct ChannelSidebar: View {
                         .contentShape(Rectangle())
                         .onHover { directHeadingHovered = $0 }
                         #endif
-                    ScrollView {
                         VStack(spacing: 2) {
                             if let account = model.account {
                                 let selfConversation = model.directMessages.first { $0.peer.id == account.id }
@@ -680,8 +681,7 @@ private struct ChannelSidebar: View {
                                     .modifier(ControlHover())
                                     .accessibilityValue(model.selectedDirectMessageID == conversation.id ? "Selected" : conversation.unread ? "Unread" : "")
                             }
-                        }.padding(.horizontal, 16)
-                    }.frame(height: min(180, CGFloat(model.directMessages.filter { $0.peer.id != model.account?.id }.count + 1) * (directRowHeight + 2) - 2)).padding(.top, 2)
+                        }.padding(.horizontal, 16).padding(.top, 2)
                     Button {
                         if model.isOwner, model.detail?.space.demo == false { sheet = .manageSpace }
                         else { sheet = .newDirectMessage }
@@ -705,6 +705,8 @@ private struct ChannelSidebar: View {
                     }
                 }.padding(.bottom, 8)
                     .overlay(alignment: .top) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+            }
+                }
             }
             if !narrow, model.voice.phase != .idle, model.voice.phase != .failed {
                 Divider().overlay(CaperTheme.border)
@@ -1862,10 +1864,22 @@ private struct MessageRow: View {
     @Bindable var chat: ChatModel
     let reactors: ReactorContext
     let showReactionPicker: () -> Void
+    #if os(macOS)
+    @State private var controlsHovered = false
+    @FocusState private var reactionFocused: Bool
+    @FocusState private var actionsFocused: Bool
+    #endif
     var body: some View {
-        let row = HStack(alignment: .top, spacing: 10) {
-            Avatar(name: message.author.name, size: 34, avatarID: message.author.avatarId)
-            VStack(alignment: .leading, spacing: 4) {
+        let row = VStack(alignment: .leading, spacing: 5) {
+            if let pin = message.pin {
+                Label("Pinned by \(pin.author.name)", systemImage: "pin.fill")
+                    .font(CaperTheme.font(10, weight: .medium)).foregroundStyle(CaperTheme.pinGold)
+                    .padding(.leading, 44)
+                    .accessibilityIdentifier("pinned-by-\(message.id)")
+            }
+            HStack(alignment: .top, spacing: 10) {
+                Avatar(name: message.author.name, size: 34, avatarID: message.author.avatarId)
+                VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
                     Text(message.author.name).font(CaperTheme.font(13, weight: .bold))
                     if message.author.isGuest { Text("GUEST").font(CaperTheme.font(9, weight: .bold)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 5).overlay(RoundedRectangle(cornerRadius: 4).stroke(CaperTheme.border)) }
@@ -1876,11 +1890,6 @@ private struct MessageRow: View {
                     #if os(macOS)
                     .textSelection(.enabled)
                     #endif
-                if let pin = message.pin {
-                    Label("Pinned by \(pin.author.name)", systemImage: "pin.fill")
-                        .font(CaperTheme.font(10, weight: .medium)).foregroundStyle(CaperTheme.muted)
-                        .accessibilityIdentifier("pinned-by-\(message.id)")
-                }
                 ReactionRow(message: message, chat: chat, reactors: reactors, showPicker: showReactionPicker)
                 if let error = chat.pinErrors[message.id] {
                     HStack(spacing: 8) {
@@ -1897,7 +1906,9 @@ private struct MessageRow: View {
                     }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.terracottaBright)
                 }
             }
+            }
         }.padding(.horizontal, 18).padding(.vertical, 10)
+            .background(message.pin == nil ? Color.clear : CaperTheme.pinGold.opacity(0.06))
             // An identifier on a plain container is copied onto every child,
             // replacing their own (add-reaction-…, reaction chips). Make the
             // row a containing element so children keep their identifiers.
@@ -1908,12 +1919,40 @@ private struct MessageRow: View {
             .onLongPressGesture(perform: showReactionPicker)
             .accessibilityAction(named: Text("Message actions")) { showReactionPicker() }
         #else
-        row.contextMenu {
-            Button(message.pin == nil ? "Pin message" : "Unpin message") {
-                Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
+        row.contentShape(Rectangle())
+            .onHover { controlsHovered = $0 }
+            .overlay(alignment: .topTrailing) {
+                HStack(spacing: 2) {
+                    Button(action: showReactionPicker) {
+                        Image(systemName: "face.smiling").font(.system(size: 14, weight: .medium)).frame(width: 24, height: 24)
+                    }.buttonStyle(.plain).focused($reactionFocused).accessibilityLabel("Add reaction")
+                        .disabled(chat.isPreview || chat.currentAuthor == nil)
+                        .accessibilityIdentifier("add-reaction-\(message.id)")
+                    Menu {
+                        Button(message.pin == nil ? "Pin message" : "Unpin message") {
+                            Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
+                        }.disabled(chat.isPreview || chat.currentAuthor == nil || chat.pendingPins.contains(message.id))
+                        Button("Copy message") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(message.content.text, forType: .string)
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis").font(.system(size: 14, weight: .medium)).frame(width: 24, height: 24)
+                    }.menuStyle(.borderlessButton).menuIndicator(.hidden).focused($actionsFocused)
+                        .accessibilityLabel("Message options")
+                }.opacity(controlsHovered || reactionFocused || actionsFocused ? 1 : 0)
+                    .allowsHitTesting(controlsHovered || reactionFocused || actionsFocused)
+                    .padding(.trailing, 18).padding(.top, 6)
             }
-            .disabled(chat.isPreview || chat.currentAuthor == nil || chat.pendingPins.contains(message.id))
-        }
+            .contextMenu {
+                Button(message.pin == nil ? "Pin message" : "Unpin message") {
+                    Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
+                }.disabled(chat.isPreview || chat.currentAuthor == nil || chat.pendingPins.contains(message.id))
+                Button("Copy message") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(message.content.text, forType: .string)
+                }
+            }
         #endif
     }
     private func timeLabel(_ value: String) -> String {
@@ -1935,21 +1974,6 @@ private struct ReactionRow: View {
             ForEach(message.reactions ?? []) { reaction in
                 ReactionChip(message: message, reaction: reaction, chat: chat, reactors: reactors)
             }
-            #if os(macOS)
-            Button(action: showPicker) {
-                Image(systemName: "face.smiling").font(.system(size: 16, weight: .medium))
-                    .frame(width: 28, height: 28)
-                    #if os(iOS)
-                    .frame(minWidth: 44, minHeight: 44)
-                    #endif
-            }
-            .buttonStyle(.plain)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
-            .modifier(ControlHover())
-            .disabled(chat.isPreview || chat.currentAuthor == nil)
-            .accessibilityLabel("Add reaction")
-            .accessibilityIdentifier("add-reaction-\(message.id)")
-            #endif
         }
         // Without .contain this identifier replaces add-reaction-<id> on the
         // button inside the row.
@@ -2375,35 +2399,40 @@ private struct PinnedMessagesView: View {
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(chat.pinnedMessages) { message in
-                            HStack(alignment: .top, spacing: 10) {
-                                Avatar(name: message.author.name, size: 34, avatarID: message.author.avatarId)
-                                VStack(alignment: .leading, spacing: 5) {
-                                    Text(message.author.name).font(CaperTheme.font(13, weight: .bold))
-                                    if let date = ChatDateDivider.date(message.createdAt) {
-                                        Text(date.formatted(date: .abbreviated, time: .shortened))
-                                            .font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
+                            VStack(alignment: .leading, spacing: 5) {
+                                if let pin = message.pin {
+                                    Label("Pinned by \(pin.author.name)", systemImage: "pin.fill")
+                                        .font(CaperTheme.font(10, weight: .medium)).foregroundStyle(CaperTheme.pinGold)
+                                        .padding(.leading, 44)
+                                        .accessibilityIdentifier("pinned-by-\(message.id)")
+                                }
+                                HStack(alignment: .top, spacing: 10) {
+                                    Avatar(name: message.author.name, size: 34, avatarID: message.author.avatarId)
+                                    VStack(alignment: .leading, spacing: 5) {
+                                        Text(message.author.name).font(CaperTheme.font(13, weight: .bold))
+                                        if let date = ChatDateDivider.date(message.createdAt) {
+                                            Text(date.formatted(date: .abbreviated, time: .shortened))
+                                                .font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
+                                        }
+                                        Text(message.content.text).font(CaperTheme.font(14))
+                                        if let error = chat.pinErrors[message.id] {
+                                            HStack {
+                                                Text(error)
+                                                Button("Retry") { Task { await chat.retryPin(messageID: message.id) } }
+                                                    .disabled(chat.pendingPins.contains(message.id))
+                                            }.font(CaperTheme.font(11)).foregroundStyle(CaperTheme.terracottaBright)
+                                        }
+                                    }.frame(maxWidth: .infinity, alignment: .leading)
+                                    if !chat.isPreview && chat.currentAuthor != nil {
+                                        Button(chat.pendingPins.contains(message.id) ? "Unpinning…" : "Unpin") {
+                                            Task { await chat.setPin(messageID: message.id, active: false) }
+                                        }.buttonStyle(.plain).font(CaperTheme.font(11, weight: .medium))
+                                            .disabled(chat.pendingPins.contains(message.id))
+                                            .frame(minHeight: 44)
                                     }
-                                    Text(message.content.text).font(CaperTheme.font(14))
-                                    if let pin = message.pin {
-                                        Label("Pinned by \(pin.author.name)", systemImage: "pin.fill")
-                                            .font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
-                                    }
-                                    if let error = chat.pinErrors[message.id] {
-                                        HStack {
-                                            Text(error)
-                                            Button("Retry") { Task { await chat.retryPin(messageID: message.id) } }
-                                                .disabled(chat.pendingPins.contains(message.id))
-                                        }.font(CaperTheme.font(11)).foregroundStyle(CaperTheme.terracottaBright)
-                                    }
-                                }.frame(maxWidth: .infinity, alignment: .leading)
-                                if !chat.isPreview && chat.currentAuthor != nil {
-                                    Button(chat.pendingPins.contains(message.id) ? "Unpinning…" : "Unpin") {
-                                        Task { await chat.setPin(messageID: message.id, active: false) }
-                                    }.buttonStyle(.plain).font(CaperTheme.font(11, weight: .medium))
-                                        .disabled(chat.pendingPins.contains(message.id))
-                                        .frame(minHeight: 44)
                                 }
                             }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 18).padding(.vertical, 12)
+                                .background(CaperTheme.pinGold.opacity(0.06))
                                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
                                 .accessibilityIdentifier("pinned-message-\(message.id)")
                         }

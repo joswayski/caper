@@ -332,7 +332,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     const divider = hydrated ? dateDivider(message.createdAt, messages[index - 1]?.createdAt) : undefined;
     return <div key={message.clientMessageId}>
       {divider && <div className="chat-date-divider"><time dateTime={message.createdAt}>{divider}</time></div>}
-      <article className={`chat-message${pending ? " chat-message-pending" : ""}`} data-message-key={message.clientMessageId}
+      <article className={`chat-message${pending ? " chat-message-pending" : ""}${"content" in message && message.pin ? " chat-message-pinned" : ""}`} data-message-key={message.clientMessageId}
         onPointerDown={(event) => {
           cancelPress();
           if (!("content" in message) || event.pointerType === "mouse" || !event.isPrimary || (event.target as HTMLElement).closest("button, a")) return;
@@ -356,13 +356,13 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
           openActions(message.id, event.currentTarget);
         }}
         tabIndex={pending ? undefined : -1}>
+      {"content" in message && message.pin && <div className="chat-pin-marker"><Pin size={12} aria-hidden="true" />Pinned by {message.pin.author.name}</div>}
       <div className="chat-avatar"><Avatar avatarId={author?.avatarId} name={author?.name ?? name} /></div>
       <div>
         <header><strong>{author?.name ?? name}</strong>{author?.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt, timeFormatter) : ""}</time></header>
         <p>{"content" in message ? message.content.text : message.text}</p>
-        {"content" in message && message.pin && <div className="chat-pin-marker"><Pin size={13} aria-hidden="true" />Pinned by {message.pin.author.name}</div>}
         {"content" in message && <>
-          <button type="button" className="chat-message-actions-trigger" aria-label={`Message actions for ${message.author.name}`} aria-haspopup="dialog" aria-expanded={actionTarget?.messageId === message.id && actionTarget.mode === "actions"} onClick={(event) => openActions(message.id, event.currentTarget)}><MoreHorizontal size={18} aria-hidden="true" /></button>
+          <button type="button" className="chat-message-actions-trigger" aria-label={`Message actions for ${message.author.name}`} aria-haspopup="dialog" aria-expanded={actionTarget?.messageId === message.id && actionTarget.mode === "actions"} onClick={(event) => openActions(message.id, event.currentTarget)}><MoreHorizontal size={14} aria-hidden="true" /></button>
           <MessageReactions message={message} channelId={state.channelId} authorId={state.author?.id} readOnly={readOnly} save={reactionSaves[message.id]} onReact={react}
             onShowReactors={(emoji, anchor) => showReactors(message.id, emoji, anchor)}
             pickerOpen={actionTarget?.messageId === message.id && actionTarget.mode === "emoji"}
@@ -398,10 +398,10 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       {showPins && state.phase === "ready" && <div className="chat-pins" role="region" aria-label={`Pinned messages in ${channelName}`}>
         <h3>Pinned messages</h3>
         {!state.pinnedMessages.length ? <p className="chat-state">No pinned messages.</p> : state.pinnedMessages.map((message) => <article className="chat-pinned-message" key={message.id}>
+          {message.pin && <small className="chat-pin-marker"><Pin size={12} aria-hidden="true" />Pinned by {message.pin.author.name}</small>}
           <div className="chat-avatar chat-pinned-avatar"><Avatar avatarId={message.author.avatarId} name={message.author.name} /></div>
           <header><strong>{message.author.name}</strong><time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt, pinTimeFormatter) : ""}</time></header>
           <p>{message.content.text}</p>
-          {message.pin && <small><Pin size={12} aria-hidden="true" />Pinned by {message.pin.author.name}</small>}
           {!readOnly && !!state.author && <button type="button" disabled={pinning.has(message.id)} onClick={() => void pin(message.id, false)}>{pinning.has(message.id) ? "Unpinning…" : "Unpin"}</button>}
         </article>)}
       </div>}

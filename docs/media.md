@@ -1263,6 +1263,11 @@ or unpin another member's message; the two participants can do the same in a DM.
 Private-channel grants and active space membership still apply. Preview readers
 can see pins but cannot change them, including no-op writes. Actions do not ask
 for confirmation. Inline “Pinned by …” attribution updates for other readers.
+Attribution appears above the author/message in warm gold with a subtle gold wash.
+Desktop message controls appear on hover or keyboard focus: two 14px glyphs in
+24px targets, separated by 2px. Touch clients retain long-press actions and large
+targets. Browse channels lives in the space-name menu, and the DM divider follows
+the channel list; the account/audio dock stays fixed.
 The central channel header has a Pins button with a count; web, Android and Rust
 desktop show pins in the central conversation area. Apple uses a platform sheet.
 Each list shows the original author, avatar, date/time, text, and shared attribution,
@@ -1294,8 +1299,8 @@ are pruned. Pins do not send system messages, play message sounds, or create pus
 | Platform | Evidence and remaining gap |
 | --- | --- |
 | API/gateway | Disposable Postgres/Valkey tests cover two authenticated readers, live delivery/replay, persistence, concurrent no-ops, reactions, transaction rollback, old-message pins, limits and retained-but-revoked membership/grants. No production write or deployment |
-| Web | Build/unit tests plus `scripts/test-message-pins.mjs`: two tabs, remote attribution, one-action pin/unpin, original metadata, old pins, pending/error/retry, channel isolation and desktop/narrow layouts. Chromium touch input with `(pointer:coarse)` verified; screenshots inspected. Not Safari or a physical phone |
-| Rust desktop | Linux build/tests/Clippy and disposable HTTP fixture rendering/interactions. Windows build/runtime and production cross-client checks remain release validation |
+| Web | Build/unit tests plus `scripts/test-message-pins.mjs`: two tabs, gold top attribution, compact hover/focus controls, content-following/collapsed sidebar, space-menu Browse, one-action pin/unpin, original metadata, old pins, pending/error/retry, channel isolation and desktop/narrow/wrapping layouts. Chromium touch input with `(pointer:coarse)` verified; screenshots inspected. Not Safari or a physical phone |
+| Rust desktop | Linux build/tests/Clippy and disposable HTTP fixture rendering/interactions; regression tests cover gold attribution, compact hidden/hover controls, direct Unpin and owner/member Browse placement. Windows build/runtime and production cross-client checks remain release validation |
 | Android | Models, gateway, Compose actions/list and JVM regressions implemented. JDK/Android SDK unavailable in this orb; compilation, rendered states and physical-device checks require CI/a native runner |
 | Apple | Models, gateway, SwiftUI actions/list and protocol regressions implemented. Swift/Xcode unavailable in this Linux orb; macOS/iOS builds, rendered states and devices require CI/a native runner |
 | Containers/live | Docker has no running daemon. Validate web/API build stages directly; no container-image, live account/SFU or physical-device acceptance is inferred from fixtures |
@@ -1309,6 +1314,12 @@ CHAT_TEST_DATABASE_URL=postgres://user@127.0.0.1:55432/postgres \
 CHAT_TEST_VALKEY_URL=redis://127.0.0.1:6379 \
   cargo test --locked -p caper-api pins_are_shared -- --ignored --nocapture
 ```
+
+For desktop hover assertions, set `MESSAGE_TEST_CHROME` to a Chromium executable
+wrapper that adds
+`--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4`.
+Stock headless Chromium reports no hover device. The script verifies the fine
+pointer before checking hover and later switches to real Chromium touch input.
 
 ### Deployment order for pins
 
