@@ -1,5 +1,5 @@
 [workspace]
-members = ["apps/api"]
+members = ["apps/api", "apps/media-worker"]
 resolver = "2"
 
 [workspace.package]

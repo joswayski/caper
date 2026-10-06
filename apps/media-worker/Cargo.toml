@@ -1,0 +1,34 @@
+[package]
+name = "caper-media-worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "caper-media-worker"
+path = "src/main.rs"
+
+[dependencies]
+async-trait = "0.1"
+aws-config = "=1.8.14"
+# Keep the modern HTTPS client without the SDKs' legacy rustls 0.21 feature.
+# 1.135.0 shares the smithy runtime already locked for the API.
+aws-sdk-s3 = { version = "=1.135.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-secretsmanager = { version = "=1.108.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws_lambda_events = { version = "=1.2.0", default-features = false, features = ["sqs"] }
+flate2 = "1"
+lambda_runtime = "=1.4.0"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["net"] }
+
+[lints]
+workspace = true
