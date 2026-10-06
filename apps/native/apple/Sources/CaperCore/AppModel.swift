@@ -967,6 +967,7 @@ public enum ReactorsState: Equatable, Sendable {
 @MainActor @Observable
 public final class ChatModel {
     public var messages: [ChatMessage] = []
+    public var pinnedMessages: [ChatMessage] = []
     public var channelName = "general"
     public var spaceName = "Caper"
     public var draft = ""
@@ -979,6 +980,8 @@ public final class ChatModel {
     public var hasMore = false
     public var typingNames: [String] = []
     public var reactionErrors: [String: String] = [:]
+    public var pinErrors: [String: String] = [:]
+    public var pendingPins: Set<String> = []
     public var currentAuthor: ChatAuthor? { session?.author }
     public private(set) var isPreview = false
     /// Web's failed first load: no conversation to show, only the error.
@@ -997,6 +1000,8 @@ public final class ChatModel {
     private var generation = 0
     private var delivery = ChatDeliveryState()
     private var reactionSnapshots = ReactionSnapshots()
+    private var pinSnapshots = PinSnapshots()
+    private var failedPinActions: [String: Bool] = [:]
     private struct PendingReaction: Equatable {
         let active: Bool
         let intent: Int
@@ -1049,7 +1054,8 @@ public final class ChatModel {
         return ChatHistory(
             space: HistoryIdentity(id: spaceID, name: spaceName),
             channel: HistoryIdentity(id: channelID, name: channelName),
-            messages: messages.map { reactionSnapshots.overlay($0) },
+            messages: messages.map { pinSnapshots.overlay(reactionSnapshots.overlay($0)) },
+            pinnedMessages: pinnedMessages.map { pinSnapshots.overlay($0) },
             cursor: delivery.cursor,
             hasMore: hasMore
         )
@@ -1075,7 +1081,9 @@ public final class ChatModel {
         guard generation == requestGeneration else { return }
         channelID = history.channel?.id; spaceID = history.space?.id
         reactionSnapshots.seed(history.messages)
-        messages = history.messages.map { reactionSnapshots.overlay($0) }
+        pinSnapshots.replace(history.messages + history.pinnedMessages, cursor: history.cursor)
+        messages = history.messages.map { pinSnapshots.overlay(reactionSnapshots.overlay($0)) }
+        pinnedMessages = history.pinnedMessages.map { pinSnapshots.overlay($0) }
         delivery.reset(cursor: history.cursor); hasMore = history.hasMore
         channelName = history.channel?.name ?? "general"; spaceName = history.space?.name ?? "Caper"
         session = nil; loading = false; loadFailed = false; sessionError = nil
@@ -1127,7 +1135,9 @@ public final class ChatModel {
         if let prepared {
             self.channelID = prepared.channel?.id; spaceID = prepared.space?.id
             reactionSnapshots.seed(prepared.messages)
-            messages = prepared.messages.map { reactionSnapshots.overlay($0) }
+            pinSnapshots.replace(prepared.messages + prepared.pinnedMessages, cursor: prepared.cursor)
+            messages = prepared.messages.map { pinSnapshots.overlay(reactionSnapshots.overlay($0)) }
+            pinnedMessages = prepared.pinnedMessages.map { pinSnapshots.overlay($0) }
             delivery.reset(cursor: prepared.cursor); hasMore = prepared.hasMore
             channelName = prepared.channel?.name ?? "general"
             spaceName = prepared.space?.name ?? "Caper"
@@ -1160,6 +1170,12 @@ public final class ChatModel {
                 through: history.cursor
             )
             if prepared == nil {
+                // The latest history response is authoritative for the channel-wide
+                // pin list. Older pagination responses are deliberately ignored.
+                pinSnapshots.replace(history.messages + history.pinnedMessages, cursor: history.cursor)
+                let candidates = Dictionary((pinnedMessages + history.pinnedMessages).map { ($0.id, $0) }, uniquingKeysWith: { _, next in next })
+                pinnedMessages = candidates.values.map { pinSnapshots.overlay($0) }.filter { $0.pin != nil }
+                    .sorted { (try? Sequence.compare($0.pinSeq ?? "0", $1.pinSeq ?? "0")) == .orderedDescending }
                 if canRetain {
                     // Include HTTP confirmations received while refresh was pending.
                     merge(history.messages) // The refreshed representation wins overlapping IDs.
@@ -1167,7 +1183,7 @@ public final class ChatModel {
                     // Preserve a newer reaction revision on overlapping rows, but
                     // discard snapshots for rows no longer in the fresh window.
                     reactionSnapshots.seed(history.messages)
-                    messages = history.messages.map { reactionSnapshots.overlay($0) }
+                    messages = history.messages.map { pinSnapshots.overlay(reactionSnapshots.overlay($0)) }
                     reactionSnapshots.reset()
                     reactionSnapshots.seed(messages)
                 }
@@ -1422,6 +1438,31 @@ public final class ChatModel {
         return ReactorList(messageId: message.id, reactionSeq: message.reactionSeq ?? "0", reactions: groups)
     }
 
+    public func setPin(messageID: String, active: Bool) async {
+        guard !isPreview, let channelID, let session, !pendingPins.contains(messageID) else { return }
+        pendingPins.insert(messageID); pinErrors[messageID] = nil
+        failedPinActions[messageID] = nil
+        let requestGeneration = generation
+        defer { if generation == requestGeneration { pendingPins.remove(messageID) } }
+        do {
+            let event = try await api.setPin(channelID: channelID, messageID: messageID, sessionToken: session.token, active: active)
+            guard generation == requestGeneration, self.channelID == channelID else { return }
+            applyPin(event.message)
+        } catch {
+            guard generation == requestGeneration, self.channelID == channelID else { return }
+            if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status) {
+                onAccessRevoked?(channelID); await stop(); return
+            }
+            failedPinActions[messageID] = active
+            pinErrors[messageID] = "Couldn’t \(active ? "pin" : "unpin") message. Try again."
+        }
+    }
+
+    public func retryPin(messageID: String) async {
+        guard let active = failedPinActions[messageID] else { return }
+        await setPin(messageID: messageID, active: active)
+    }
+
     @discardableResult public func discardRejected(edit: Bool = false) -> Bool {
         guard !sending, delivery.rejected, !edit || draft.isEmpty else { return false }
         guard let text = delivery.discardRejected() else { return false }
@@ -1456,6 +1497,7 @@ public final class ChatModel {
         guard let type = event["type"] as? String else { return }
         if type == "subscription.error", let status = event["status"] as? Int, [401, 403, 404].contains(status) {
             messages = []; session = nil; delivery.reset(); error = event["error"] as? String ?? "Channel access ended."
+            pinnedMessages = []; pinSnapshots.reset(); pendingPins = []; pinErrors = [:]; failedPinActions = [:]
             onAccessRevoked?(eventChannelID)
             return
         }
@@ -1484,6 +1526,20 @@ public final class ChatModel {
                 requestResync(generation: eventGeneration, channelID: eventChannelID)
                 return
             }
+            if let subscriptionID {
+                let cursor = delivery.cursor
+                Task { await gateway.updateCursor(subscription: subscriptionID, after: cursor) }
+            }
+            return
+        }
+        if type == "message.pin" {
+            guard let data = try? JSONSerialization.data(withJSONObject: event),
+                  let pinEvent = try? JSONDecoder().decode(MessagePinEvent.self, from: data), pinEvent.isValid,
+                  let seq = PinEvent.sequence(event, channelID: eventChannelID), delivery.receive(seq: seq) else {
+                requestResync(generation: eventGeneration, channelID: eventChannelID); return
+            }
+            applyPin(pinEvent.message)
+            onReadCursor?()
             if let subscriptionID {
                 let cursor = delivery.cursor
                 Task { await gateway.updateCursor(subscription: subscriptionID, after: cursor) }
@@ -1542,6 +1598,8 @@ public final class ChatModel {
         delivery.reset(preservingPending: preservingPending)
         reactionSnapshots.reset(); pendingReactions = [:]; reactionWorkers = []; reactionErrors = [:]; failedReactions = [:]
         reactorCache = [:]; reactorRequests = [:]; reactorFailures = []
+        pinSnapshots.reset(); pinnedMessages = []; pendingPins = []; pinErrors = [:]
+        failedPinActions = [:]
         isPreview = false
         session = nil; channelID = nil; spaceID = nil; messages = []; draft = ""; hasMore = false
         channelName = "general"; spaceName = "Caper"; error = nil
@@ -1551,11 +1609,23 @@ public final class ChatModel {
 
     private func merge(_ incoming: [ChatMessage]) {
         reactionSnapshots.seed(incoming)
+        pinSnapshots.seed(incoming)
         var byID = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) })
-        incoming.forEach { byID[$0.id] = reactionSnapshots.overlay($0) }
-        byID = byID.mapValues { reactionSnapshots.overlay($0) }
+        incoming.forEach { byID[$0.id] = pinSnapshots.overlay(reactionSnapshots.overlay($0)) }
+        byID = byID.mapValues { pinSnapshots.overlay(reactionSnapshots.overlay($0)) }
         messages = byID.values.sorted { (try? Sequence.compare($0.seq, $1.seq)) == .orderedAscending }
         renderReactions()
+    }
+
+    private func applyPin(_ message: ChatMessage) {
+        guard pinSnapshots.apply(message) else { return }
+        messages = messages.map { pinSnapshots.overlay($0) }
+        pinnedMessages.removeAll { $0.id == message.id }
+        let updated = pinSnapshots.overlay(message)
+        if updated.pin != nil {
+            pinnedMessages.append(updated)
+            pinnedMessages.sort { (try? Sequence.compare($0.pinSeq ?? "0", $1.pinSeq ?? "0")) == .orderedDescending }
+        }
     }
 
     private func applyReactions(_ event: MessageReactionsEvent) {

@@ -238,8 +238,11 @@ final class CaperParityUITests: XCTestCase {
         let add = try require(app.buttons["message-action-add-reaction"], timeout: 5,
                               "Holding \(messageID) did not offer Add reaction")
         #else
+        let row = try require(app.descendants(matching: .any)["message-row-\(messageID)"], timeout: 10,
+                              "Missing message-row-\(messageID)")
+        row.hover()
         let add = try require(app.buttons["add-reaction-\(messageID)"], timeout: 10,
-                              "Missing add-reaction-\(messageID)")
+                              "Hovering \(messageID) did not reveal Add reaction")
         #endif
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: add)
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
@@ -273,7 +276,11 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(other.exists)
         XCTAssertGreaterThanOrEqual(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "reaction,")).count, 20)
         #if os(macOS)
-        XCTAssertGreaterThanOrEqual(app.buttons.matching(NSPredicate(format: "label == %@", "Add reaction")).count, 2, "fixture includes long and empty reaction rows")
+        let hoverTargetID = "chan00000001m01"
+        let target = app.descendants(matching: .any)["message-row-\(hoverTargetID)"]
+        XCTAssertTrue(target.waitForExistence(timeout: 5))
+        target.hover()
+        XCTAssertTrue(app.buttons["add-reaction-\(hoverTargetID)"].waitForExistence(timeout: 2), "Message controls appear on hover")
         #else
         XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label == %@", "Add reaction")).count, 0, "iPhone must not show an add-reaction button under each message")
         #endif
@@ -357,8 +364,6 @@ final class CaperParityUITests: XCTestCase {
                               timeout: 5, "Missing selected fixture chip")
         let other = try require(reactions.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "❤️ reaction")).firstMatch,
                                 timeout: 5, "Missing unselected fixture chip")
-        let unrelatedAdd = try require(app.buttons["add-reaction-chan00000001m02"], timeout: 5,
-                                       "Missing another message's add-reaction button")
         XCTAssertTrue(own.label.hasSuffix(", selected by you"))
         XCTAssertTrue(other.label.hasSuffix(", not selected by you"))
         try openReactionPicker(for: targetID, in: app)
@@ -366,6 +371,11 @@ final class CaperParityUITests: XCTestCase {
         let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),
                                                object: app.descendants(matching: .any)["reaction-picker"])
         XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
+        let unrelatedRow = try require(app.descendants(matching: .any)["message-row-chan00000001m02"], timeout: 5,
+                                       "Missing unrelated hover target")
+        unrelatedRow.hover()
+        let unrelatedAdd = try require(app.buttons["add-reaction-chan00000001m02"], timeout: 5,
+                                       "Hovering another message did not reveal Add reaction")
 
         // Accessibility focus alone cannot detect the bug: the old modifier
         // painted inherited timeline focus around every otherwise valid button.

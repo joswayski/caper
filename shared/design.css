@@ -12,6 +12,8 @@
   --terracotta-bright: #db6849;
   --caper: #637a43;
   --voice-session-green: #4aa86b;
+  --pin-gold: #e4c76a;
+  --pin-wash: rgb(228 199 106 / 6%);
   --radius: 6px;
   /* Avatars are squircles: rounded squares that match the 8px control corners. */
   --radius-avatar: 30%;

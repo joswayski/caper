@@ -10,6 +10,10 @@ Signed-in accounts can start persistent, private one-to-one messages by username
 The Direct messages list is shared across spaces. Mobile push is deferred;
 when needed, the server will integrate directly with APNs for iOS and FCM for Android.
 
+Channel pins are shared with everyone who can read the channel. Joined members
+can pin or unpin in one action; the channel header opens the complete pins list.
+Native implementation and validation status are tracked in [the runbook](docs/media.md#message-pins).
+
 Mac release downloads use a signed, notarized disk image: open it, drag Caper onto
 Applications, eject the image, then launch Caper from Applications. `~/Applications`
 also works without administrator access. Release copies outside these folders or

@@ -119,6 +119,14 @@ pub enum Command {
         emoji: String,
         active: bool,
     },
+    Pin {
+        generation: u64,
+        token: Option<String>,
+        chat_token: String,
+        channel: String,
+        message: String,
+        active: bool,
+    },
     Typing {
         token: Option<String>,
         chat_token: String,
@@ -352,6 +360,13 @@ pub enum Event {
         message: String,
         revision: String,
         result: Result<crate::model::Reactors, String>,
+    },
+    Pinned {
+        generation: u64,
+        channel: String,
+        message: String,
+        active: bool,
+        result: Result<crate::model::PinUpdate, SendFailure>,
     },
     Credential {
         generation: u64,
@@ -956,6 +971,25 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             channel,
             message,
             revision,
+        },
+        Command::Pin {
+            generation,
+            token,
+            chat_token,
+            channel,
+            message,
+            active,
+        } => Event::Pinned {
+            generation,
+            channel: channel.clone(),
+            message: message.clone(),
+            active,
+            result: api
+                .pin(token.as_deref(), &chat_token, &channel, &message, active)
+                .map_err(|error| SendFailure {
+                    status: error.status.map(|status| status.as_u16()),
+                    message: error.to_string(),
+                }),
         },
         Command::Admin {
             generation,

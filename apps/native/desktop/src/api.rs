@@ -467,6 +467,23 @@ impl Api {
         )
     }
 
+    pub fn pin(
+        &self,
+        token: Option<&str>,
+        chat_token: &str,
+        channel: &str,
+        message: &str,
+        active: bool,
+    ) -> Result<crate::model::PinUpdate, ApiError> {
+        self.request(
+            Method::PUT,
+            &format!("api/chat/channels/{channel}/messages/{message}/pin"),
+            token,
+            Some(chat_token),
+            Some(json!({"active":active})),
+        )
+    }
+
     /// Whether voice is enabled for the General demo (`channel` None, no
     /// credentials) or for one account channel, as web reads it.
     pub fn media_status(&self, token: Option<&str>, channel: Option<&str>) -> bool {

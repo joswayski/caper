@@ -65,6 +65,7 @@ class CaperApi(
         require(Regex("^(0|[1-9][0-9]*)$").matches(history.cursor) && history.cursor.toLongOrNull() != null) { "Invalid history cursor." }
         val channel = requireNotNull(expectedChannel) { "History channel is missing." }
         history.messages.forEach { it.validated(channel) }
+        history.pinnedMessages.forEach { it.validated(channel) }
         return history
     }
     suspend fun chatSession(token: String?, name: String): ChatSession = post(
@@ -101,6 +102,15 @@ class CaperApi(
         require(messageId.matches(message)) { "Invalid message ID." }
         val list: ReactorList = get("/api/chat/channels/${channel.pathId()}/messages/$message/reactions", token)
         return list.validated(message)
+    }
+
+    suspend fun setPin(token: String?, chatToken: String, channel: String, message: String, active: Boolean): PinUpdate {
+        require(messageId.matches(message)) { "Invalid message ID." }
+        val update: PinUpdate = request(
+            "/api/chat/channels/${channel.pathId()}/messages/$message/pin", "PUT", token,
+            buildJsonObject { put("active", active) }.toString(), mapOf("x-caper-chat-token" to chatToken),
+        )
+        return update.validated(channel, message)
     }
 
     suspend fun createSpace(token: String, name: String): Space = post(

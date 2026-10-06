@@ -185,6 +185,11 @@ public struct ChatContent: Codable, Equatable, Sendable {
     public let text: String
 }
 
+public struct MessagePin: Codable, Equatable, Sendable {
+    public let author: ChatAuthor
+    public let createdAt: String
+}
+
 public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
     public let id: String
     public let channelId: String
@@ -195,6 +200,8 @@ public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
     public let clientMessageId: String
     public var reactions: [MessageReaction]? = nil
     public var reactionSeq: String? = nil
+    public var pin: MessagePin? = nil
+    public var pinSeq: String? = nil
 }
 
 public struct MessageReaction: Codable, Equatable, Sendable, Identifiable {
@@ -333,12 +340,43 @@ public struct MessageReactionsEvent: Codable, Equatable, Sendable {
     }
 }
 
+public struct MessagePinEvent: Codable, Equatable, Sendable {
+    public let type: String
+    public let schemaVersion: Int
+    public let channelId: String
+    public let seq: String
+    public let message: ChatMessage
+
+    public var isValid: Bool {
+        type == "message.pin" && schemaVersion == 1 && !channelId.isEmpty
+            && message.channelId == channelId && message.pinSeq == seq
+            && (try? Sequence.compare(seq, "0")) != nil
+            && (try? Sequence.compare(message.seq, "0")) != nil
+    }
+}
+
 public struct ChatHistory: Codable, Sendable {
     public let space: HistoryIdentity?
     public let channel: HistoryIdentity?
     public let messages: [ChatMessage]
+    public let pinnedMessages: [ChatMessage]
     public let cursor: String
     public let hasMore: Bool
+
+    private enum CodingKeys: String, CodingKey { case space, channel, messages, pinnedMessages, cursor, hasMore }
+    public init(space: HistoryIdentity?, channel: HistoryIdentity?, messages: [ChatMessage], pinnedMessages: [ChatMessage] = [], cursor: String, hasMore: Bool) {
+        self.space = space; self.channel = channel; self.messages = messages; self.pinnedMessages = pinnedMessages
+        self.cursor = cursor; self.hasMore = hasMore
+    }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        space = try values.decodeIfPresent(HistoryIdentity.self, forKey: .space)
+        channel = try values.decodeIfPresent(HistoryIdentity.self, forKey: .channel)
+        messages = try values.decode([ChatMessage].self, forKey: .messages)
+        pinnedMessages = try values.decodeIfPresent([ChatMessage].self, forKey: .pinnedMessages) ?? []
+        cursor = try values.decode(String.self, forKey: .cursor)
+        hasMore = try values.decode(Bool.self, forKey: .hasMore)
+    }
 }
 
 public struct HistoryIdentity: Codable, Equatable, Sendable {
@@ -495,6 +533,18 @@ enum ReactionEvent {
     }
 }
 
+enum PinEvent {
+    static func sequence(_ event: [String: Any], channelID: String) -> String? {
+        guard event["schemaVersion"] as? Int == 1, event["channelId"] as? String == channelID,
+              let raw = event["message"], let data = try? JSONSerialization.data(withJSONObject: raw),
+              let message = try? JSONDecoder().decode(ChatMessage.self, from: data),
+              let seq = event["seq"] as? String,
+              MessagePinEvent(type: event["type"] as? String ?? "", schemaVersion: 1,
+                              channelId: channelID, seq: seq, message: message).isValid else { return nil }
+        return seq
+    }
+}
+
 /// Keeps each message's reaction snapshot monotonic independently of the
 /// channel delivery cursor. This lets delayed HTTP acknowledgements and older
 /// history pages fill missing messages without reverting a newer replay.
@@ -541,6 +591,40 @@ struct ReactionSnapshots: Sendable {
         knownMessageIDs.removeAll(keepingCapacity: false)
         unseenOverflowed = false
     }
+}
+
+struct PinSnapshots: Sendable {
+    private var values: [String: (seq: String, pin: MessagePin?)] = [:]
+    private var snapshotCursor: String?
+
+    mutating func apply(_ message: ChatMessage) -> Bool {
+        guard let seq = message.pinSeq, (try? Sequence.compare(seq, "0")) != nil else { return false }
+        if let snapshotCursor, (try? Sequence.compare(seq, snapshotCursor)) != .orderedDescending { return false }
+        if let current = values[message.id], (try? Sequence.compare(seq, current.seq)) != .orderedDescending { return false }
+        values[message.id] = (seq, message.pin)
+        return true
+    }
+
+    mutating func replace(_ messages: [ChatMessage], cursor: String) {
+        let newer = values.filter { (try? Sequence.compare($0.value.seq, cursor)) == .orderedDescending }
+        values.removeAll(keepingCapacity: true)
+        snapshotCursor = nil
+        seed(messages)
+        values.merge(newer) { _, next in next }
+        snapshotCursor = cursor
+    }
+
+    mutating func seed(_ messages: [ChatMessage]) { messages.forEach { _ = apply($0) } }
+    func overlay(_ message: ChatMessage) -> ChatMessage {
+        var result = message
+        if let value = values[message.id] {
+            result.pin = value.pin; result.pinSeq = value.seq
+        } else if let snapshotCursor, (try? Sequence.compare(message.pinSeq ?? "0", snapshotCursor)) != .orderedDescending {
+            result.pin = nil; result.pinSeq = snapshotCursor
+        }
+        return result
+    }
+    mutating func reset() { values.removeAll(keepingCapacity: false); snapshotCursor = nil }
 }
 
 /// Accepts only snapshots that cannot move an already-versioned view

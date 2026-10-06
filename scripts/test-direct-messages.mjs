@@ -25,7 +25,7 @@ const screenshot = name => {
 };
 const checkSidebarAlignment = () => {
   const rows = evaluate(`(() => {
-    const selectors = ['.direct-section-title', '.direct-self', '.direct-action', '.browse-channels'];
+    const selectors = ['.direct-section-title', '.direct-self', '.direct-action'];
     if (innerWidth > 760) selectors.push('.account-profile');
     return selectors.map(selector => {
       const row = document.querySelector(selector), icon = row.firstElementChild;
@@ -198,6 +198,8 @@ try {
   wait('!document.querySelector(".chat-initial-messages") && document.querySelector(".chat-reaction")?.getAttribute("aria-label") === "🎉, 1 reaction"');
   wait('fetch("/api/dms").then(r => r.json()).then(v => v.conversations[0].readSeq === "4")');
   assert.equal((await conversations()).conversations[0].readSeq, '4', 'Reactions advance read receipts even though the newest message is still sequence 3');
+  browser('scrollintoview', '.chat-reaction');
+  evaluate('new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))');
   browser('click', '.chat-reaction');
   wait('document.querySelector(".chat-reaction")?.getAttribute("aria-pressed") === "true" && document.querySelector(".chat-reaction").getAttribute("aria-disabled") !== "true"');
   assert.equal(evaluate('document.querySelector(".chat-reaction").textContent'), '2');

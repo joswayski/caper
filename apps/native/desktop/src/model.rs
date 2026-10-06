@@ -264,6 +264,24 @@ pub struct ReactionUpdate {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct Pin {
+    pub author: Author,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PinUpdate {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub schema_version: u8,
+    pub channel_id: String,
+    pub seq: String,
+    pub message: Message,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct Message {
     pub id: String,
     pub channel_id: String,
@@ -276,6 +294,10 @@ pub struct Message {
     pub reactions: Vec<Reaction>,
     #[serde(default)]
     pub reaction_seq: Option<String>,
+    #[serde(default)]
+    pub pin: Option<Pin>,
+    #[serde(default)]
+    pub pin_seq: Option<String>,
 }
 
 impl Message {
@@ -285,6 +307,9 @@ impl Message {
             return Err("unsupported message content".into());
         }
         if let Some(revision) = &self.reaction_seq {
+            sequence(revision)?;
+        }
+        if let Some(revision) = &self.pin_seq {
             sequence(revision)?;
         }
         if !valid_reactions(&self.reactions) {
@@ -304,6 +329,8 @@ pub struct HistoryPlace {
 #[serde(rename_all = "camelCase")]
 pub struct History {
     pub messages: Vec<Message>,
+    #[serde(default)]
+    pub pinned_messages: Vec<Message>,
     pub cursor: String,
     pub has_more: bool,
     pub space: HistoryPlace,
@@ -333,10 +360,13 @@ pub struct Members {
 #[derive(Default)]
 pub struct Timeline {
     cursor: u64,
+    pin_snapshot_cursor: u64,
     messages: BTreeMap<u64, Message>,
     ids: BTreeSet<String>,
     buffered: BTreeMap<u64, Message>,
     unseen_reactions: BTreeMap<String, ReactionUpdate>,
+    unseen_pins: BTreeMap<String, Message>,
+    pinned: BTreeMap<u64, Message>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -350,10 +380,13 @@ pub enum Apply {
 impl Timeline {
     pub fn reset(&mut self, messages: Vec<Message>, cursor: &str) -> Result<(), String> {
         self.cursor = sequence(cursor)?;
+        self.pin_snapshot_cursor = 0;
         self.messages.clear();
         self.ids.clear();
         self.buffered.clear();
         self.unseen_reactions.clear();
+        self.unseen_pins.clear();
+        self.pinned.clear();
         for message in messages {
             self.merge(message)?;
         }
@@ -419,6 +452,106 @@ impl Timeline {
             self.unseen_reactions.clear();
             Err("too many reactions for unloaded messages".into())
         }
+    }
+
+    pub fn reset_pins(&mut self, messages: Vec<Message>) -> Result<(), String> {
+        self.pin_snapshot_cursor = self.cursor;
+        self.pinned.clear();
+        for message in messages {
+            self.merge_pin_message(message)?;
+        }
+        // HTTP confirmations newer than the captured history survive refresh.
+        let retained: Vec<_> = self.messages.values().cloned().collect();
+        for message in &retained {
+            if message
+                .pin_seq
+                .as_deref()
+                .map(sequence)
+                .transpose()?
+                .is_some_and(|seq| seq > self.pin_snapshot_cursor)
+            {
+                self.merge_pin_message(message.clone())?;
+            }
+        }
+        for message in retained {
+            self.merge(message)?;
+        }
+        Ok(())
+    }
+
+    pub fn apply_pin(&mut self, update: PinUpdate) -> Result<Apply, String> {
+        self.merge_pin_update(update.clone())?;
+        self.apply_sequence(&update.seq)
+    }
+
+    /// Merge an HTTP acknowledgement without moving the gateway replay cursor.
+    pub fn merge_pin_ack(&mut self, update: PinUpdate) -> Result<(), String> {
+        self.merge_pin_update(update)
+    }
+
+    fn merge_pin_update(&mut self, update: PinUpdate) -> Result<(), String> {
+        if update.kind != "message.pin"
+            || update.schema_version != 1
+            || update.channel_id != update.message.channel_id
+            || update.message.pin_seq.as_deref() != Some(update.seq.as_str())
+        {
+            return Err("invalid pin update".into());
+        }
+        update.message.validate()?;
+        let revision = sequence(&update.seq)?;
+        if revision <= self.pin_snapshot_cursor {
+            return Ok(());
+        }
+        let mut accepted = false;
+        if let Some(existing) = self
+            .messages
+            .values_mut()
+            .find(|item| item.id == update.message.id)
+        {
+            let current = existing
+                .pin_seq
+                .as_deref()
+                .map(sequence)
+                .transpose()?
+                .unwrap_or(0);
+            if revision > current {
+                existing.pin.clone_from(&update.message.pin);
+                existing.pin_seq.clone_from(&update.message.pin_seq);
+                accepted = true;
+            }
+        } else {
+            let replace = self
+                .unseen_pins
+                .get(&update.message.id)
+                .and_then(|message| message.pin_seq.as_deref())
+                .map(sequence)
+                .transpose()?
+                .is_none_or(|current| revision > current);
+            if replace {
+                self.unseen_pins
+                    .insert(update.message.id.clone(), update.message.clone());
+                accepted = true;
+            }
+        }
+        if accepted {
+            self.merge_pin_message(update.message)?;
+        }
+        Ok(())
+    }
+
+    fn merge_pin_message(&mut self, message: Message) -> Result<(), String> {
+        message.validate()?;
+        self.pinned.retain(|_, item| item.id != message.id);
+        if message.pin.is_some() {
+            let revision = message
+                .pin_seq
+                .as_deref()
+                .map(sequence)
+                .transpose()?
+                .unwrap_or(0);
+            self.pinned.insert(revision, message);
+        }
+        Ok(())
     }
 
     fn merge_reactions(&mut self, update: &ReactionUpdate) -> Result<bool, String> {
@@ -494,8 +627,47 @@ impl Timeline {
         self.messages.values()
     }
 
+    pub fn pinned_messages(&self) -> impl DoubleEndedIterator<Item = &Message> {
+        self.pinned.values().rev()
+    }
+
     fn merge(&mut self, mut message: Message) -> Result<(), String> {
         message.validate()?;
+        if self.pin_snapshot_cursor > 0
+            && message
+                .pin_seq
+                .as_deref()
+                .map(sequence)
+                .transpose()?
+                .unwrap_or(0)
+                <= self.pin_snapshot_cursor
+        {
+            if let Some(snapshot) = self.pinned.values().find(|pin| pin.id == message.id) {
+                message.pin.clone_from(&snapshot.pin);
+                message.pin_seq.clone_from(&snapshot.pin_seq);
+            } else {
+                message.pin = None;
+                message.pin_seq = Some(self.pin_snapshot_cursor.to_string());
+            }
+        }
+        if let Some(update) = self.unseen_pins.remove(&message.id) {
+            let incoming = update
+                .pin_seq
+                .as_deref()
+                .map(sequence)
+                .transpose()?
+                .unwrap_or(0);
+            let current = message
+                .pin_seq
+                .as_deref()
+                .map(sequence)
+                .transpose()?
+                .unwrap_or(0);
+            if incoming > current {
+                message.pin = update.pin;
+                message.pin_seq = update.pin_seq;
+            }
+        }
         if let Some(update) = self.unseen_reactions.remove(&message.id) {
             if update.channel_id != message.channel_id {
                 return Err("reaction update is for another channel".into());
@@ -533,6 +705,22 @@ impl Timeline {
             if old_revision > new_revision {
                 message.reactions = std::mem::take(&mut existing.reactions);
                 message.reaction_seq = existing.reaction_seq.take();
+            }
+            let old_pin = existing
+                .pin_seq
+                .as_deref()
+                .map(sequence)
+                .transpose()?
+                .unwrap_or(0);
+            let new_pin = message
+                .pin_seq
+                .as_deref()
+                .map(sequence)
+                .transpose()?
+                .unwrap_or(0);
+            if old_pin > new_pin {
+                message.pin = existing.pin.take();
+                message.pin_seq = existing.pin_seq.take();
             }
             *existing = message;
         } else if !self.messages.contains_key(&seq) && self.ids.insert(message.id.clone()) {
@@ -640,6 +828,8 @@ mod tests {
             },
             reactions: Vec::new(),
             reaction_seq: None,
+            pin: None,
+            pin_seq: None,
         }
     }
 
@@ -787,6 +977,107 @@ mod tests {
                 author_ids: vec![author.into()],
             }],
         }
+    }
+
+    fn pin_update(mut message: Message, seq: u64, active: bool) -> PinUpdate {
+        message.pin = active.then(|| Pin {
+            author: message.author.clone(),
+            created_at: "2026-01-02T00:00:00Z".into(),
+        });
+        message.pin_seq = Some(seq.to_string());
+        PinUpdate {
+            kind: "message.pin".into(),
+            schema_version: 1,
+            channel_id: "channel".into(),
+            seq: seq.to_string(),
+            message,
+        }
+    }
+
+    #[test]
+    fn old_pins_stay_separate_and_gateway_sequence_advances() {
+        let mut timeline = Timeline::default();
+        timeline.reset(vec![message("new", 10)], "10").unwrap();
+        let update = pin_update(message("old", 1), 11, true);
+        assert_eq!(timeline.apply_pin(update), Ok(Apply::Applied));
+        assert_eq!(timeline.cursor(), "11");
+        assert_eq!(
+            timeline.messages().count(),
+            1,
+            "an old pin does not enter paginated history"
+        );
+        assert_eq!(timeline.pinned_messages().next().unwrap().id, "old");
+    }
+
+    #[test]
+    fn stale_history_cannot_resurrect_an_unpin() {
+        let mut timeline = Timeline::default();
+        timeline.reset(vec![message("new", 10)], "10").unwrap();
+        timeline
+            .merge_pin_ack(pin_update(message("old", 1), 15, false))
+            .unwrap();
+        let mut stale = message("old", 1);
+        stale.pin = Some(Pin {
+            author: stale.author.clone(),
+            created_at: stale.created_at.clone(),
+        });
+        stale.pin_seq = Some("12".into());
+        timeline.prepend(vec![stale]).unwrap();
+        let old = timeline
+            .messages()
+            .find(|message| message.id == "old")
+            .unwrap();
+        assert!(old.pin.is_none());
+        assert_eq!(old.pin_seq.as_deref(), Some("15"));
+        assert_eq!(timeline.pinned_messages().count(), 0);
+    }
+
+    #[test]
+    fn pin_http_ack_does_not_advance_gateway_cursor() {
+        let mut timeline = Timeline::default();
+        timeline.reset(vec![message("one", 1)], "1").unwrap();
+        timeline
+            .merge_pin_ack(pin_update(message("one", 1), 3, true))
+            .unwrap();
+        assert_eq!(timeline.cursor(), "1");
+        assert_eq!(timeline.apply_sequence("2"), Ok(Apply::Applied));
+        assert_eq!(
+            timeline.apply_pin(pin_update(message("one", 1), 3, true)),
+            Ok(Apply::Applied)
+        );
+        assert_eq!(timeline.cursor(), "3");
+    }
+
+    #[test]
+    fn complete_pin_snapshot_rejects_old_ack_and_stale_page() {
+        let mut timeline = Timeline::default();
+        let stale = pin_update(message("old", 1), 4, true);
+        timeline.reset(vec![message("new", 50)], "60").unwrap();
+        timeline.reset_pins(vec![]).unwrap();
+        timeline.merge_pin_ack(stale.clone()).unwrap();
+        assert_eq!(timeline.pinned_messages().count(), 0);
+        timeline.prepend(vec![stale.message]).unwrap();
+        assert!(
+            timeline
+                .messages()
+                .find(|message| message.id == "old")
+                .unwrap()
+                .pin
+                .is_none()
+        );
+        assert_eq!(
+            timeline.apply_pin(pin_update(message("old", 1), 61, true)),
+            Ok(Apply::Applied)
+        );
+        assert!(
+            timeline
+                .messages()
+                .find(|message| message.id == "old")
+                .unwrap()
+                .pin
+                .is_some()
+        );
+        assert_eq!(timeline.pinned_messages().count(), 1);
     }
 
     #[test]

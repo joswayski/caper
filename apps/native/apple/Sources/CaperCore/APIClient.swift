@@ -32,6 +32,7 @@ private struct VerifyInput: Encodable { let challengeId: String; let code: Strin
 private struct ProfileInput: Encodable { let username: String; let displayName: String }
 private struct SendInput: Encodable { let clientMessageId: String; let text: String }
 private struct ReactionInput: Encodable { let emoji: String; let active: Bool }
+private struct PinInput: Encodable { let active: Bool }
 private struct SpaceInput: Encodable { let name: String }
 private struct ChannelInput: Encodable {
     let name: String
@@ -234,6 +235,10 @@ public actor APIClient {
                   ($0.channelId == history.channel?.id || history.channel == nil)
                       && $0.content.version == 1 && $0.content.type == "text"
                       && (try? Sequence.compare($0.seq, "0")) != nil
+              }), history.pinnedMessages.count <= 100,
+              history.pinnedMessages.allSatisfy({
+                  ($0.channelId == history.channel?.id || history.channel == nil) && $0.pin != nil
+                      && (try? Sequence.compare($0.pinSeq ?? "", "0")) != nil
               }) else {
             throw APIError(status: 502, message: "The chat service returned invalid history.")
         }
@@ -270,6 +275,17 @@ public actor APIClient {
             throw APIError(status: 502, message: "The chat service returned invalid reactions.")
         }
         return list
+    }
+
+    public func setPin(channelID: String, messageID: String, sessionToken: String, active: Bool) async throws -> MessagePinEvent {
+        let event: MessagePinEvent = try await request(
+            "api/chat/channels/\(try pathID(channelID))/messages/\(try messagePathID(messageID))/pin",
+            method: "PUT", body: PinInput(active: active), extraHeaders: ["x-caper-chat-token": sessionToken]
+        )
+        guard event.isValid, event.channelId == channelID, event.message.id == messageID else {
+            throw APIError(status: 502, message: "The chat service returned an invalid pin.")
+        }
+        return event
     }
 
     public func media<T: Decodable, B: Encodable>(channelID: String?, operation: String, token mediaToken: String? = nil, body: B) async throws -> T {

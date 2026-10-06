@@ -264,6 +264,44 @@ test('DM reaction fixture advances stream and read heads without changing messag
   assert.equal((await request(root, { auth: true })).value.messages.at(-1).seq, '4');
 });
 
+test('pins are channel-wide, replayable, idempotent and separate from history pagination', async (t) => {
+  const { request, fixture } = await setup(t);
+  const root = `/api/chat/channels/${ids.demo}/messages`;
+  const target = (await request(root, { auth: true })).value.messages[0];
+  const session = await request('/api/chat/session', { auth: true, method: 'POST', body: { name: 'Fixture Owner' } });
+  const stream = socket(`ws://127.0.0.1:${fixture.gatewayPort}/api/chat/events`);
+  t.after(() => stream.ws.close());
+  await stream.opened; await stream.next();
+  stream.ws.send(JSON.stringify({ type: 'subscribe', id: 'pins', kind: 'chat', channelId: ids.demo, after: '4' }));
+  assert.equal((await stream.next()).event.cursor, '4'); await stream.next();
+  const mutation = { auth: true, method: 'PUT', headers: { 'x-caper-chat-token': session.value.token }, body: { active: true } };
+  const path = `${root}/${target.id}/pin`;
+  const pinned = await request(path, mutation);
+  assert.equal(pinned.value.seq, '5');
+  assert.equal(pinned.value.message.seq, '1');
+  assert.equal(pinned.value.message.pinSeq, '5');
+  assert.equal(pinned.value.message.pin.author.id, ids.owner);
+  assert.deepEqual((await stream.next()).event, pinned.value);
+  assert.deepEqual((await request(path, mutation)).value, pinned.value, 'no-op does not allocate another sequence');
+  for (let index = 0; index < 51; index++) await request('/__fixture/control', { method: 'POST', body: { incomingMessage: { channelId: ids.demo, text: `after old pin ${index}` } } });
+  const history = (await request(root, { auth: true })).value;
+  assert.equal(history.messages.length, 50);
+  assert.ok(history.messages.every(message => message.id !== target.id));
+  assert.equal(history.pinnedMessages[0].id, target.id);
+  assert.equal(history.cursor, '56');
+  await request('/__fixture/control', { method: 'POST', body: { incomingPin: { channelId: ids.demo, messageId: target.id, active: false } } });
+  const unpinned = (await request(root, { auth: true })).value;
+  assert.equal(unpinned.cursor, '57');
+  assert.deepEqual(unpinned.pinnedMessages, []);
+  const older = (await request(`${root}?before=${history.messages[0].seq}`, { auth: true })).value;
+  assert.equal(older.messages[0].pin, null);
+  assert.equal(older.messages[0].pinSeq, '57');
+  const previewRoot = `/api/chat/channels/${ids.general}/messages`;
+  const previewTarget = (await request(previewRoot, { auth: true })).value.messages[0].id;
+  await request(`/api/spaces/${ids.space}/channels/${ids.general}/membership`, { auth: true, method: 'DELETE' });
+  assert.equal((await request(`${previewRoot}/${previewTarget}/pin`, mutation)).response.status, 404, 'previews cannot mutate pins');
+});
+
 test('message IDs match the API shape native clients accept for reaction paths', async (t) => {
   const { request } = await setup(t);
   const root = `/api/chat/channels/${ids.general}/messages`;

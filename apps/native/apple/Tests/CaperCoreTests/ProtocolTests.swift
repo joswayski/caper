@@ -184,6 +184,49 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(snapshots.overlay(old).reactions?.first?.authorIds, ["self", "other"], "an older page must retain an unseen newer reaction")
     }
 
+    func testPinProtocolAndSnapshotsKeepUnpinNewerThanStaleHistory() throws {
+        let author = ChatAuthor(id: "other", name: "Other", isGuest: false)
+        let oldPin = MessagePin(author: author, createdAt: "2026-10-01T00:00:00Z")
+        var old = ChatMessage(id: "Message00000001", channelId: "Channel12345", seq: "1", author: author,
+                              content: ChatContent(version: 1, type: "text", text: "old"), createdAt: "now",
+                              clientMessageId: "client", pin: oldPin, pinSeq: "4")
+        var unpinned = old; unpinned.pin = nil; unpinned.pinSeq = "8"
+        var snapshots = PinSnapshots()
+        XCTAssertTrue(snapshots.apply(unpinned))
+        XCTAssertFalse(snapshots.apply(old), "an older page must not resurrect a newer unpin")
+        XCTAssertNil(snapshots.overlay(old).pin)
+        XCTAssertEqual(snapshots.overlay(old).pinSeq, "8")
+
+        let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(unpinned)) as! [String: Any]
+        let event: [String: Any] = ["type": "message.pin", "schemaVersion": 1, "channelId": old.channelId,
+                                    "seq": "8", "message": encoded]
+        XCTAssertEqual(PinEvent.sequence(event, channelID: old.channelId), "8")
+        var mismatch = event; mismatch["seq"] = "9"
+        XCTAssertNil(PinEvent.sequence(mismatch, channelID: old.channelId), "event sequence must equal message.pinSeq")
+    }
+
+    func testCompletePinHistoryRejectsOldAcknowledgementsAndPreservesNewerHTTP() {
+        let author = ChatAuthor(id: "other", name: "Other", isGuest: false)
+        let old = ChatMessage(id: "Message00000001", channelId: "Channel12345", seq: "1", author: author,
+                              content: ChatContent(version: 1, type: "text", text: "old"), createdAt: "now",
+                              clientMessageId: "client", pin: MessagePin(author: author, createdAt: "now"), pinSeq: "4")
+        var snapshots = PinSnapshots()
+        snapshots.replace([], cursor: "60")
+        XCTAssertFalse(snapshots.apply(old), "absence from complete history covers unloaded messages")
+        var boundary = old; boundary.pinSeq = "60"
+        XCTAssertFalse(snapshots.apply(boundary))
+        snapshots.seed([old])
+        XCTAssertNil(snapshots.overlay(old).pin, "a stale page cannot restore the inline marker")
+        XCTAssertEqual(snapshots.overlay(old).pinSeq, "60")
+        var newer = old; newer.pinSeq = "61"
+        XCTAssertTrue(snapshots.apply(newer))
+        snapshots.replace([], cursor: "60")
+        XCTAssertEqual(snapshots.overlay(old).pinSeq, "61", "an acknowledgement after snapshot capture survives refresh")
+        XCTAssertEqual(snapshots.overlay(old).pin, newer.pin)
+        snapshots.replace([], cursor: "62")
+        XCTAssertNil(snapshots.overlay(old).pin, "an offline unpin supersedes the retained acknowledgement")
+    }
+
     func testBundledEmojiCatalogHasCanonicalSelectableArtwork() {
         XCTAssertEqual(EmojiArtwork.choices.count, 1_870)
         XCTAssertEqual(EmojiArtwork.id(for: "❤️"), "2764")

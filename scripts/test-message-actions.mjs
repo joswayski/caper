@@ -367,7 +367,8 @@ try {
   browser('reload');
   wait('!!document.querySelector(".chat-message") && !document.querySelector(".chat-initial-messages")');
   browser('click', '.navigation-toggle');
-  browser('click', '.browse-channels');
+  browser('click', '.space-menu summary');
+  action('Browse channels');
   wait('!!document.querySelector(".channel-directory")');
   action('Preview #design');
   wait('!!document.querySelector(".channel-preview") && !document.querySelector(".chat-initial-messages")');

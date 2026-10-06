@@ -90,10 +90,11 @@ try {
   browser('open', 'about:blank');
   browser('set', 'viewport', '1280', '900', '2');
   browser('open', url);
-  wait('!!document.querySelector(".browse-channels")');
+  wait('!!document.querySelector(".space-menu summary")');
   wait('channelFixture.statusRequests.length > 0');
   assert.equal(evaluate('document.querySelector("#space-channel-list").textContent.includes("design")'), false);
-  browser('click', '.browse-channels');
+  browser('click', '.space-menu summary');
+  browser('find', 'role', 'button', 'click', '--name', 'Browse channels', '--exact');
   wait('!!document.querySelector(".channel-directory")');
   browser('fill', '.channel-directory input', 'des');
   browser('find', 'role', 'button', 'click', '--name', 'Preview #design', '--exact');
@@ -129,7 +130,7 @@ try {
   wait('!document.querySelector(".chat-initial-messages") && !!document.querySelector(\'.chat-reaction:not([aria-disabled="true"])\')');
   browser('find', 'first', '.chat-reaction', 'click');
   wait('!!document.querySelector(".chat-send-error")');
-  const reactionWrites = evaluate('channelFixture.requests.filter(r => r.path.endsWith("/reactions")).length');
+  const reactionWrites = evaluate('channelFixture.requests.filter(r => r.path.endsWith("/reactions") && r.method === "PUT").length');
   assert.equal(reactionWrites, 1, 'Joined channel can attempt a reaction; mock intentionally rejects to expose retry');
   browser('find', 'first', '.chat-add-reaction', 'click');
   wait('!!document.querySelector(".chat-reaction-picker")');
@@ -140,7 +141,7 @@ try {
   assert.equal(evaluate('document.querySelector(".chat-reaction-picker") === null'), true);
   assert.equal(evaluate('[...document.querySelectorAll("button")].filter(button => button.textContent === "Retry reaction").every(button => button.disabled)'), true);
   evaluate('[...document.querySelectorAll(".chat-reaction,.chat-add-reaction, .chat-send-error button")].filter(button => button.textContent !== "Dismiss").forEach(button => button.click())');
-  assert.equal(evaluate('channelFixture.requests.filter(r => r.path.endsWith("/reactions")).length'), reactionWrites);
+  assert.equal(evaluate('channelFixture.requests.filter(r => r.path.endsWith("/reactions") && r.method === "PUT").length'), reactionWrites);
   browser('find', 'role', 'button', 'click', '--name', 'Join channel', '--exact');
   wait('!!document.querySelector("#chat-message") && channelFixture.state.joined.includes("other1234567")');
   assert.equal(evaluate('document.querySelector(".chat-heading").textContent.includes("Leave channel")'), false, 'Leaving is not a chat-header action');
