@@ -20,10 +20,10 @@ full-screen view. **Also send to channel** shows the same reply in both places,
 sharing its reactions. Native release and validation gaps are tracked in
 [the runbook](docs/media.md#message-threads).
 
-On the web, authors can edit messages, including thread roots/replies and DMs.
-Edited messages show an indicator and retained version history with a text diff;
-broadcast replies update in both places. Native clients consume edits and show
-edited status, but editing/history controls remain web-only. See
+Authors can edit messages on web, Android, Apple and Rust desktop, including
+thread roots/replies and DMs. The edited indicator opens retained history with
+the previous/current versions side by side and older changes selectable below;
+broadcast replies update in both places. See platform validation gaps and
 [editing and rollout details](docs/media.md#message-editing).
 
 Mac release downloads use a signed, notarized disk image: open it, drag Caper onto

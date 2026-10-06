@@ -1507,23 +1507,26 @@ commands that have been run against shared systems.
 
 ## Message editing
 
-Web message actions and the pins list offer **Edit message** to the original
-author account while it can participate in the conversation. This includes
+Web, Android, Apple (iOS/macOS) and Rust desktop message actions and pins offer
+**Edit message** to the original author account while it can participate in
+the conversation. This includes
 channel messages, thread roots, hidden replies, broadcast replies and DMs.
 Ownership follows the original session's account, so rotating a chat capability
 does not lose authorship. There is no age limit or space-owner override.
-Save uses the normal 4,000-code-point, nonblank text rules; Ctrl/Cmd+Enter saves.
+Save uses the normal 4,000-code-point, nonblank text rules; desktop Ctrl/Cmd+Enter saves.
 Conflicts and failed saves keep the draft. **Discard draft and load latest**
 explicitly replaces it. Channel/account/access changes close obsolete dialogs.
 
 An **edited** indicator opens retained versions, also available from message
 actions and pins. Everyone with current read access can inspect the original
 and later versions, including members previewing an unjoined channel. Editing
-does not erase information: the dialog explains this before saving. The diff
-shows unchanged word-token edges and the changed span with removed/added marks;
-it is not a minimal multi-hunk diff. There is no automatic version purge or
-restore-to-version action. Native clients consume edits and show edited status;
-native editing/history controls are intentionally not included in this release.
+does not erase information: the dialog explains this before saving. History
+prominently shows the previous version on the left and current version on the
+right, with word-level changes highlighted. **View previous versions** below
+selects an older change without replacing that latest pair; the original has
+no fabricated predecessor. Web uses Pierre Diffs (`@pierre/diffs`); native
+clients render native word diffs with equivalent capabilities. There is no
+automatic version purge or restore-to-version action.
 
 ### Editing API and durable delivery
 
@@ -1557,10 +1560,11 @@ native editing/history controls are intentionally not included in this release.
 
 | Platform | Evidence and limits |
 | --- | --- |
-| API | 159 workspace tests, none ignored, including disposable Postgres/Valkey tests: author vs owner, rotated capability, preview/revocation, roots/hidden/broadcast replies/self-DM, concurrent stale drafts, original send retry, rollback, immutable creation events, publisher, rate boundary, 53-version paging and append-only runtime grants. fmt/Clippy and locked API release build passed |
-| Web | Production build/typechecks, 382 web tests, 15 fixture tests and `scripts/test-message-edits.mjs`: real click/save, pins, changed-span diff, 390px conflict/draft/reload, ownership controls, hidden/shared broadcast edits, unchanged summary, Escape isolation, 55-version paging and history retry/rejected save. Existing threads and pins browser regressions passed, including explicit desktop hover/focus and touch pin controls; one default-pointer pins run timed out opening its menu before passing on retry. Inspected 2x desktop/pins/narrow captures. Narrow edit-dialog Chromium is not a touch/physical-device or Safari check |
-| Rust desktop | Independent gateway/timeline content merge and edited marker. Linux build, fmt, 217 tests (9 existing device/integration tests ignored) and package Clippy with `--no-deps` passed. Unscoped Clippy is blocked by existing vendored `webrtc-sys` missing-safety-doc warnings. Actual 1500px/480px Linux fixture captures show readable edited content/markers and were inspected. Tests cover stale pages/pins, independent revisions, no ghost rows and edit-vs-creation cursor. Native authoring/history UI is web-only; Windows/runtime and cross-client acceptance still require validation |
-| Android / Apple | Independent edit-event consumers, content overlays, indicators and new source tests, including unloaded-cache bounds and refresh recovery. No Java/Android SDK or Swift/Xcode toolchain in this orb: compilation, platform unit suites and rendered native checks remain prerequisites. No native editor/history UI |
+| API | Initial editing baseline: 159 workspace tests, none ignored, including disposable Postgres/Valkey tests for ownership, rotated capability, permissions, roots/replies/DMs, stale drafts, retries, rollback, publisher, rate/paging boundaries and append-only grants. Locked release build passed. Backend is unchanged in the UI/parity follow-up; its default workspace run passed 124 tests with 35 database/integration tests ignored (disposable servers were not running), plus fmt/Clippy |
+| Web | Production build/typechecks, 382 web tests, 15 fixture tests and `scripts/test-message-edits.mjs` passed: real saves, pins, rendered split diffs with separate word highlights, fixed latest pair while browsing older changes, original selection, 390px history/conflict/draft/reload, ownership, hidden/broadcast edits, independent summaries, Escape isolation, 55-version paging and retry/rejected saves. Initial threads/pins regressions also passed (one default-pointer pins run needed retry). Inspected 2x desktop/narrow captures. Chromium fixtures do not prove touch devices, Safari or live multi-account acceptance |
+| Rust desktop | Native editor/history, cursor-neutral HTTP snapshots and independent gateway merge. Linux build, fmt and 221 tests (9 existing device/integration tests ignored); package Clippy uses `--no-deps` because vendored `webrtc-sys` has existing missing-safety-doc warnings. Actual wide/480px history, original selection and editor captures were inspected; resize/selection repaint fixes keep contents visible. Tests cover retained drafts, late results, author changes, HTTP/replay isolation, stale projections and selected-original placement. Windows and cross-client live acceptance remain prerequisites |
+| Android | Native author editor/history from timelines, threads and pins, with retained conflicts, latest/older comparisons and paginated history. Java 17/SDK 36 Kotlin main/test compilation and all 142 JVM unit tests passed, including edit headers/revision/identity, Unicode word diffs and bounded history. Orb setup now includes Java; install the Android SDK separately. No APK/native-audio build, rendered Compose/device or live cross-client acceptance is inferred from compilation/unit tests |
+| Apple iOS/macOS | Native SwiftUI editor/history from rows/actions, threads and pins. Linux Swift 6 typechecked Foundation models and executed 10 history/diff/Unicode assertions; changed SwiftUI/API/model sources passed iOS 17 and macOS 14 syntax parsing. These checks do not typecheck SwiftUI/UIKit/AppKit or replace platform XCTest. Xcode compilation, rendered UI, physical devices and cross-client live acceptance remain prerequisites |
 | Containers / live | No Docker daemon; API release and web production build stages passed directly, not as container images. Staging secrets check could not authenticate the staging AWS profile; no secret/configuration changes are required. No live multi-account, physical-device or SFU evidence is inferred from fixture checks |
 
 With the disposable fixture and Vite running:
@@ -1571,6 +1575,17 @@ MESSAGE_TEST_WEB_URL=http://127.0.0.1:5174 node scripts/test-message-edits.mjs
 CHAT_TEST_DATABASE_URL=postgres://user@127.0.0.1:55432/postgres \
   CHAT_TEST_VALKEY_URL=redis://127.0.0.1:56379 \
   cargo test --workspace chat::editing -- --ignored
+```
+
+For Android source/unit validation, use JDK 17 and set `ANDROID_HOME` to an SDK
+with platform/build-tools 36 (the repository's native build also needs its pinned
+NDK/CMake). The smaller Gradle heap below fits a 4 GB orb:
+
+```sh
+apps/native/android/prepare-fonts.sh
+apps/native/android/gradlew -p apps/native/android --no-daemon --max-workers=1 \
+  '-Dorg.gradle.jvmargs=-Xmx768m -XX:MaxMetaspaceSize=384m -Dfile.encoding=UTF-8' \
+  :app:compileDebugKotlin :app:testDebugUnitTest
 ```
 
 ### Deployment order for editing
@@ -1600,10 +1615,10 @@ actions performed during development.
    gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
    kubectl -n default rollout status deployment/caper-chat-gateway --timeout=15m
    ```
-4. **Clients:** validate Android/Apple/Windows and release native edit consumers
-   before exposing web editors to testers who use those clients. The clients are
-   technically independent after server readiness; native editing/history remains
-   web-only. Wait for each exact workflow outcome before accepting a release.
+4. **Clients:** validate and release the editors/history on Android, iOS/macOS,
+   Windows/Linux and web. Clients can deploy independently after server readiness,
+   but coordinate release acceptance so users receive equivalent editing/history
+   capabilities. Wait for each exact workflow outcome before accepting a release.
    ```sh
    gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
    gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"

@@ -344,6 +344,38 @@ pub struct ThreadHistory {
     pub has_more: bool,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageVersion {
+    pub revision: u32,
+    pub content: Content,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageVersions {
+    pub message_id: String,
+    pub versions: Vec<MessageVersion>,
+    pub has_more: bool,
+}
+
+impl MessageVersions {
+    pub fn valid(&self, message: &str, before: Option<u32>) -> bool {
+        self.message_id == message
+            && self.versions.len() <= 50
+            && self.versions.iter().enumerate().all(|(index, version)| {
+                version.revision > 0
+                    && before.is_none_or(|before| version.revision < before)
+                    && (index == 0 || version.revision < self.versions[index - 1].revision)
+                    && version.content.version == 1
+                    && version.content.kind == "text"
+                    && crate::edits::valid_text(&version.content.text)
+                    && chrono::DateTime::parse_from_rfc3339(&version.created_at).is_ok()
+            })
+    }
+}
+
 impl Message {
     pub fn is_channel_message(&self) -> bool {
         self.thread_root_id.is_none() || self.broadcast
@@ -586,9 +618,25 @@ impl Timeline {
         {
             return Err("invalid edit update".into());
         }
-        update.message.validate()?;
-        if !self.ids.contains(&update.message.id)
-            && !self.edits.contains_key(&update.message.id)
+        if !self.merge_edit_snapshot(update.message)? {
+            return Ok(Apply::Resync);
+        }
+        self.apply_sequence(&update.seq)
+    }
+
+    /// HTTP confirmations merge content only, never gateway/read position or unloaded rows.
+    pub fn merge_edit_ack(&mut self, message: Message) -> Result<(), String> {
+        if self.merge_edit_snapshot(message)? {
+            Ok(())
+        } else {
+            Err("too many edits for unloaded messages".into())
+        }
+    }
+
+    fn merge_edit_snapshot(&mut self, message: Message) -> Result<bool, String> {
+        message.validate()?;
+        if !self.ids.contains(&message.id)
+            && !self.edits.contains_key(&message.id)
             && self
                 .edits
                 .keys()
@@ -596,9 +644,9 @@ impl Timeline {
                 .count()
                 >= 256
         {
-            return Ok(Apply::Resync);
+            return Ok(false);
         }
-        let message = self.remember_edit(update.message);
+        let message = self.remember_edit(message);
         for loaded in self
             .messages
             .values_mut()
@@ -607,7 +655,7 @@ impl Timeline {
         {
             loaded.merge_edit(&message);
         }
-        self.apply_sequence(&update.seq)
+        Ok(true)
     }
 
     fn remember_edit(&mut self, mut message: Message) -> Message {
@@ -1020,6 +1068,39 @@ mod tests {
             seq: seq.to_string(),
             message,
         }
+    }
+
+    #[test]
+    fn http_edit_snapshots_do_not_skip_replay_or_insert_unloaded_rows() {
+        let original = message("one", 3);
+        let mut timeline = Timeline::default();
+        timeline.reset(vec![original.clone()], "10").unwrap();
+        let corrected = edit_update(original.clone(), 12, 2).message;
+        timeline.merge_edit_ack(corrected).unwrap();
+        assert_eq!(timeline.cursor(), "10");
+        assert_eq!(
+            timeline.messages().next().unwrap().content.text,
+            "corrected"
+        );
+        timeline.merge_edit_ack(original).unwrap();
+        assert_eq!(timeline.messages().next().unwrap().revision, 2);
+        let unloaded = message("unloaded", 2);
+        timeline
+            .merge_edit_ack(edit_update(unloaded.clone(), 13, 3).message)
+            .unwrap();
+        assert_eq!(timeline.messages().count(), 1);
+        timeline.prepend(vec![unloaded]).unwrap();
+        assert_eq!(timeline.messages().next().unwrap().revision, 3);
+        assert_eq!(timeline.cursor(), "10");
+        assert_eq!(
+            timeline.apply_edit(edit_update(message("earlier", 5), 11, 2)),
+            Ok(Apply::Applied)
+        );
+        assert_eq!(
+            timeline.cursor(),
+            "11",
+            "The earlier event must remain replayable after the HTTP snapshot"
+        );
     }
 
     #[test]

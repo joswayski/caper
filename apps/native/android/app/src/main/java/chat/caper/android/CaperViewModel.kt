@@ -831,17 +831,50 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (update.channelId != mutable.value.selectedChannel?.id) return
         durableReplayCursor = update.seq
         if (mutable.value.selectedDirectId == update.channelId) markDirectRead(update.channelId, update.seq)
+        applyEditSnapshot(update.message)
+    }
+
+    // HTTP confirmations update content only; they are not delivery/read cursors.
+    private fun applyEditSnapshot(message: ChatMessage) {
         val loadedIds = (mutable.value.messages + mutable.value.pinnedMessages).map { it.id }.toSet()
-        if (!cacheEditSnapshot(editSnapshots, update.message, loadedIds)) {
-            resyncChannel(update.channelId)
+        if (!cacheEditSnapshot(editSnapshots, message, loadedIds)) {
+            resyncChannel(message.channelId)
             return
         }
-        authoritativeReactionMessages[update.message.id]?.let { authoritativeReactionMessages[update.message.id] = mergeEdit(it, update.message) }
-        pinSnapshots[update.message.id]?.let { pinSnapshots[update.message.id] = mergeEdit(it, update.message) }
+        authoritativeReactionMessages[message.id]?.let { authoritativeReactionMessages[message.id] = mergeEdit(it, message) }
+        pinSnapshots[message.id]?.let { pinSnapshots[message.id] = mergeEdit(it, message) }
         mutable.value = mutable.value.copy(
-            messages = mutable.value.messages.map { mergeEdit(it, update.message) },
-            pinnedMessages = mutable.value.pinnedMessages.map { mergeEdit(it, update.message) },
+            messages = mutable.value.messages.map { mergeEdit(it, message) },
+            pinnedMessages = mutable.value.pinnedMessages.map { mergeEdit(it, message) },
         )
+    }
+
+    fun canEdit(message: ChatMessage): Boolean = mutable.value.selectedChannel?.let { it.id == message.channelId && it.joined } == true &&
+        chatAuthor?.let { !it.isGuest && it.id == message.author.id } == true
+
+    suspend fun editMessage(message: ChatMessage, text: String): Unit {
+        check(canEdit(message)) { "Only the author can edit while participating." }
+        val request = generation
+        val authorId = requireNotNull(chatAuthor).id
+        val result = api.editMessage(accountToken, requireNotNull(chatToken), message.channelId, message.id, text, message.revision)
+        if (request != generation || !canEdit(message)) throw kotlinx.coroutines.CancellationException()
+        require(result.author.id == authorId) { "Message author mismatch." }
+        applyEditSnapshot(result)
+    }
+
+    suspend fun reloadMessage(message: ChatMessage): ChatMessage {
+        val request = generation
+        val result = api.loadMessage(accountToken, message.channelId, message.id)
+        if (request != generation || mutable.value.selectedChannel?.id != message.channelId) throw kotlinx.coroutines.CancellationException()
+        applyEditSnapshot(result)
+        return result
+    }
+
+    suspend fun messageVersions(message: ChatMessage, before: Int? = null): MessageVersions {
+        val request = generation
+        val result = api.messageVersions(accountToken, message.channelId, message.id, before)
+        if (request != generation || mutable.value.selectedChannel?.id != message.channelId) throw kotlinx.coroutines.CancellationException()
+        return result
     }
 
     private fun receivePin(update: PinUpdate, sequenced: Boolean = true) {

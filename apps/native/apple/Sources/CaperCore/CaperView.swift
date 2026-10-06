@@ -1751,7 +1751,7 @@ private struct ChatView: View {
             }
             #if os(iOS)
             .sheet(item: $reactionMessage) { message in
-                MessageActionsSheet(message: message, showingEmojiPicker: $showingEmojiPicker,
+                MessageActionsSheet(message: message, chat: chat, showingEmojiPicker: $showingEmojiPicker,
                                     canReact: !chat.isPreview && chat.currentAuthor != nil,
                                     canPin: !chat.isPreview && chat.currentAuthor != nil && !chat.pendingPins.contains(message.id),
                                     togglePin: {
@@ -1811,6 +1811,7 @@ private struct NativeThreadView: View {
     @Bindable var chat: ChatModel
     @StateObject private var emojiComposer = EmojiComposerController()
     @State private var reactionMessage: ChatMessage?
+    @State private var showingEmojiPicker = false
     @State private var reactorsTarget: ReactorsTarget?
     private var replies: [ChatMessage] { chat.messages.filter { $0.threadRootId == chat.threadRootID && $0.threadRootId != nil } }
     private var reactors: ReactorContext {
@@ -1863,8 +1864,24 @@ private struct NativeThreadView: View {
             }.padding(12) }
         }.background(CaperTheme.conversation)
             .overlay(alignment: .leading) { Rectangle().fill(CaperTheme.border).frame(width: 1) }
-            .sheet(item: $reactionMessage) { message in ReactionPicker { emoji in reactionMessage = nil; Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) } } }
+            .sheet(item: $reactionMessage) { message in
+                #if os(iOS)
+                MessageActionsSheet(message: message, chat: chat, showingEmojiPicker: $showingEmojiPicker,
+                    canReact: !chat.isPreview && chat.currentAuthor != nil,
+                    canPin: !chat.isPreview && chat.currentAuthor != nil && !chat.pendingPins.contains(message.id),
+                    togglePin: { reactionMessage = nil; Task { await chat.setPin(messageID: message.id, active: message.pin == nil) } },
+                    reply: { reactionMessage = nil; Task { await chat.openThread(rootID: message.threadRootId ?? message.id) } },
+                    quickReaction: { emoji in
+                        let own = message.reactions?.first { $0.emoji == emoji }?.authorIds.contains(chat.currentAuthor?.id ?? "") == true
+                        reactionMessage = nil; Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: !own) }
+                    }, selectReaction: { emoji in reactionMessage = nil; Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) } })
+                #else
+                ReactionPicker { emoji in reactionMessage = nil; Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) } }
+                #endif
+            }
             .sheet(item: $reactorsTarget) { target in ReactorsSheet(chat: chat, messageID: target.messageID, emoji: target.emoji, viewerID: chat.currentAuthor?.id) }
+            .onChange(of: reactionMessage?.id) { _, _ in showingEmojiPicker = false }
+            .onChange(of: chat.editingContext) { _, _ in reactionMessage = nil; reactorsTarget = nil }
             .accessibilityIdentifier("message-thread")
     }
 }
@@ -1952,6 +1969,8 @@ private struct MessageRow: View {
     let reactors: ReactorContext
     var inThread = false
     let showReactionPicker: () -> Void
+    @State private var editing = false
+    @State private var history = false
     #if os(macOS)
     @State private var controlsHovered = false
     @FocusState private var replyFocused: Bool
@@ -1976,7 +1995,7 @@ private struct MessageRow: View {
                     Text(message.author.name).font(CaperTheme.font(13, weight: .bold))
                     if message.author.isGuest { Text("GUEST").font(CaperTheme.font(9, weight: .bold)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 5).overlay(RoundedRectangle(cornerRadius: 4).stroke(CaperTheme.border)) }
                     Text(timeLabel(message.createdAt)).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
-                    if (message.revision ?? 1) > 1 { Text("(edited)").font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted) }
+                    if (message.revision ?? 1) > 1 { Button("(edited)") { history = true }.buttonStyle(.plain).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).accessibilityLabel("View edit history") }
                 }
                 #if os(macOS)
                 .padding(.trailing, 56)
@@ -2020,6 +2039,8 @@ private struct MessageRow: View {
             // row a containing element so children keep their identifiers.
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("message-row-\(message.id)")
+            .sheet(isPresented: $editing) { MessageEditorView(chat: chat, message: message) { editing = false } }
+            .sheet(isPresented: $history) { MessageHistoryView(chat: chat, message: message) { history = false } }
         #if os(iOS)
         row.contentShape(Rectangle())
             .onLongPressGesture(perform: showReactionPicker)
@@ -2042,6 +2063,8 @@ private struct MessageRow: View {
                         .disabled(chat.isPreview || chat.currentAuthor == nil)
                         .accessibilityIdentifier("add-reaction-\(message.id)")
                     Menu {
+                        if chat.canEdit(message) { Button("Edit message") { editing = true } }
+                        if (message.revision ?? 1) > 1 { Button("View edit history") { history = true } }
                         Button(message.pin == nil ? "Pin message" : "Unpin message") {
                             Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
                         }.disabled(chat.isPreview || chat.currentAuthor == nil || chat.pendingPins.contains(message.id))
@@ -2058,6 +2081,8 @@ private struct MessageRow: View {
                     .padding(.trailing, 18).padding(.top, 6)
             }
             .contextMenu {
+                if chat.canEdit(message) { Button("Edit message") { editing = true } }
+                if (message.revision ?? 1) > 1 { Button("View edit history") { history = true } }
                 Button(message.pin == nil ? "Pin message" : "Unpin message") {
                     Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
                 }.disabled(chat.isPreview || chat.currentAuthor == nil || chat.pendingPins.contains(message.id))
@@ -2423,7 +2448,10 @@ private struct ParityPasteboardProbe: View {
 private struct MessageActionsSheet: View {
     @Environment(\.dismiss) private var dismiss
     let message: ChatMessage
+    @Bindable var chat: ChatModel
     @Binding var showingEmojiPicker: Bool
+    @State private var editing = false
+    @State private var history = false
     let canReact: Bool
     let canPin: Bool
     let togglePin: () -> Void
@@ -2460,6 +2488,14 @@ private struct MessageActionsSheet: View {
                     }
 
                     VStack(spacing: 0) {
+                        if chat.canEdit(message) {
+                            Button("Edit message", systemImage: "pencil") { editing = true }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                            Divider()
+                        }
+                        if (message.revision ?? 1) > 1 {
+                            Button("View edit history", systemImage: "clock") { history = true }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                            Divider()
+                        }
                         Button(action: togglePin) {
                             Label(message.pin == nil ? "Pin message" : "Unpin message", systemImage: message.pin == nil ? "pin" : "pin.slash")
                                 .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
@@ -2496,8 +2532,11 @@ private struct MessageActionsSheet: View {
             }
         }
         .presentationBackground(CaperTheme.raised)
-        .presentationDetents(showingEmojiPicker ? [.medium, .large] : [.height(330)])
+        .presentationDetents(showingEmojiPicker ? [.medium, .large] : [.height(330 + (chat.canEdit(message) ? 44 : 0) + ((message.revision ?? 1) > 1 ? 44 : 0)), .large])
         .presentationDragIndicator(.visible)
+        .sheet(isPresented: $editing) { MessageEditorView(chat: chat, message: message) { editing = false; dismiss() } }
+        .sheet(isPresented: $history) { MessageHistoryView(chat: chat, message: message) { history = false } }
+        .onChange(of: chat.editingContext) { _, _ in editing = false; history = false; dismiss() }
     }
 }
 #endif
@@ -2505,6 +2544,8 @@ private struct MessageActionsSheet: View {
 private struct PinnedMessagesView: View {
     @Bindable var chat: ChatModel
     let close: () -> Void
+    @State private var editTarget: ChatMessage?
+    @State private var historyTarget: ChatMessage?
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -2536,8 +2577,9 @@ private struct PinnedMessagesView: View {
                                             Text(date.formatted(date: .abbreviated, time: .shortened))
                                                 .font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
                                         }
-                                        if (message.revision ?? 1) > 1 { Text("(edited)").font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted) }
+                                        if (message.revision ?? 1) > 1 { Button("(edited)") { historyTarget = message }.buttonStyle(.plain).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).accessibilityLabel("View edit history") }
                                         Text(message.content.text).font(CaperTheme.font(14))
+                                        if chat.canEdit(message) { Button("Edit message") { editTarget = message }.buttonStyle(.plain).font(CaperTheme.font(11)) }
                                         if let error = chat.pinErrors[message.id] {
                                             HStack {
                                                 Text(error)
@@ -2563,6 +2605,9 @@ private struct PinnedMessagesView: View {
                 }
             }
         }.background(CaperTheme.conversation)
+            .sheet(item: $editTarget) { target in MessageEditorView(chat: chat, message: target) { editTarget = nil } }
+            .sheet(item: $historyTarget) { target in MessageHistoryView(chat: chat, message: target) { historyTarget = nil } }
+            .onChange(of: chat.editingContext) { _, _ in editTarget = nil; historyTarget = nil; close() }
             .accessibilityIdentifier("pinned-messages")
     }
 }

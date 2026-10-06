@@ -5,6 +5,34 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class EditsTest {
+    @Test fun `word diffs preserve separate changes Unicode and whitespace`() {
+        val before = "Meet Friday 🙂\nKeep this unchanged\nAt 9"
+        val after = "Meet Saturday 🚀\nKeep this unchanged\nAt 11"
+        val (old, next) = messageDiff(before, after)
+        assertEquals(before, old.joinToString("") { it.text })
+        assertEquals(after, next.joinToString("") { it.text })
+        assertEquals("Friday🙂9", old.filter { it.changed }.joinToString("") { it.text })
+        assertEquals("Saturday🚀11", next.filter { it.changed }.joinToString("") { it.text })
+        assertTrue(old.filter { it.text in listOf("Keep", "this", "unchanged") }.all { !it.changed })
+        assertTrue(validEditText("🙂".repeat(4000)))
+        assertFalse(validEditText("🙂".repeat(4001)))
+        assertFalse(validEditText(" \n\t"))
+        assertFalse(validEditText("Text\u0000"))
+        assertTrue(validEditText("Text\n\t🙂"))
+    }
+
+    @Test fun `history pages are descending bounded and identity checked`() {
+        val first = MessageVersion(1, ChatContent(1, "text", "original"), "2026-10-01T00:00:00Z")
+        val second = first.copy(revision = 2)
+        val page = MessageVersions("message", listOf(second, first), false)
+        assertEquals(page, page.validated("message", null))
+        for (invalid in listOf(
+            page.copy(messageId = "another"), page.copy(versions = listOf(first, second)),
+            page.copy(versions = listOf(second, second)), page.copy(versions = listOf(second.copy(createdAt = "invalid"))),
+        )) assertTrue(runCatching { invalid.validated("message", null) }.isFailure)
+        assertTrue(runCatching { page.validated("message", 2) }.isFailure)
+    }
+
     private val author = ChatAuthor("author", "Author", false)
     private val original = ChatMessage(
         "message00000001", "channel00001", "3", author, ChatContent(1, "text", "original"),

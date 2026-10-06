@@ -1,18 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { textChange } from "../chat/edits.ts";
+import { parseDiffFromFile } from "@pierre/diffs";
 import { ChatTimeline } from "../chat/timeline.ts";
 import { isChatEditEvent, isChatMessage, type ChatEditEvent, type ChatMessage } from "../chat/types.ts";
 
-test("changed-span diffs preserve Unicode, asymmetric insertions/deletions and unchanged edges", () => {
-  assert.deepEqual(textChange("Meet 🙂 Friday at 9", "Meet 🚀 Saturday at 9"), {
-    prefix: "Meet ", removed: "🙂 Friday", added: "🚀 Saturday", suffix: " at 9",
-  });
-  assert.deepEqual(textChange("at 9", "at 19"), { prefix: "at ", removed: "9", added: "19", suffix: "" });
-  assert.deepEqual(textChange("a\nb\tc", "a\tc"), { prefix: "a", removed: "\nb", added: "", suffix: "\tc" });
-  assert.deepEqual(textChange("same", "same"), { prefix: "same", removed: "", added: "", suffix: "" });
-  assert.deepEqual(textChange("🙂x", "🙂"), { prefix: "🙂", removed: "x", added: "", suffix: "" });
-  assert.deepEqual(textChange("", "new"), { prefix: "", removed: "", added: "new", suffix: "" });
+test("code diffs retain full before/after Unicode text and separate changes around unchanged lines", () => {
+  const before = "Meet Friday 🙂\nKeep this unchanged\nAt 9";
+  const after = "Meet Saturday 🚀\nKeep this unchanged\nAt 11";
+  const diff = parseDiffFromFile({ name: "message.txt", contents: before }, { name: "message.txt", contents: after });
+  assert.equal(diff.deletionLines.join(""), before);
+  assert.equal(diff.additionLines.join(""), after);
+  const chunks = diff.hunks.flatMap((hunk) => hunk.hunkContent);
+  assert.equal(chunks.filter((chunk) => chunk.type === "change").length, 2);
+  assert.ok(chunks.some((chunk) => chunk.type === "context" && diff.additionLines[chunk.additionLineIndex] === "Keep this unchanged\n"));
 });
 
 const root: ChatMessage = {

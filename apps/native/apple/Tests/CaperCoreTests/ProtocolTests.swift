@@ -6,6 +6,22 @@ import CaperRTCBridge
 #endif
 
 final class ProtocolTests: XCTestCase {
+    func testMessageHistoryDiffPreservesSeparateEditsAndUnicode() {
+        let before = "Meet Friday 🙂\nKeep this unchanged\nAt 9"
+        let after = "Meet Saturday 🚀\nKeep this unchanged\nAt 11"
+        let (old, new) = messageDiff(before: before, after: after)
+        XCTAssertEqual(old.map(\.text).joined(), before)
+        XCTAssertEqual(new.map(\.text).joined(), after)
+        XCTAssertEqual(old.filter(\.changed).map(\.text).joined(), "Friday🙂9")
+        XCTAssertEqual(new.filter(\.changed).map(\.text).joined(), "Saturday🚀11")
+        XCTAssertTrue(old.filter { ["Keep", "this", "unchanged"].contains($0.text) }.allSatisfy { !$0.changed })
+        let original = MessageVersion(revision: 1, content: ChatContent(version: 1, type: "text", text: before), createdAt: "2026-10-01T00:00:00Z")
+        let revised = MessageVersion(revision: 2, content: original.content, createdAt: "2026-10-02T00:00:00Z")
+        XCTAssertTrue(MessageVersions(messageId: "message", versions: [revised, original], hasMore: false).isValid(messageID: "message", before: nil))
+        XCTAssertFalse(MessageVersions(messageId: "message", versions: [original, revised], hasMore: false).isValid(messageID: "message", before: nil))
+        XCTAssertFalse(MessageVersions(messageId: "message", versions: [revised], hasMore: false).isValid(messageID: "message", before: 2))
+    }
+
     func testContentEditsPreserveIndependentMetadataAndOverlayStalePages() throws {
         let author = ChatAuthor(id: "author", name: "Author", isGuest: false)
         var original = ChatMessage(id: "message", channelId: "channel", seq: "3", author: author,

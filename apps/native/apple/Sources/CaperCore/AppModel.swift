@@ -1002,6 +1002,8 @@ public final class ChatModel {
     }
     public var currentAuthor: ChatAuthor? { session?.author }
     public private(set) var isPreview = false
+    /// Changes when account/channel access or its generation changes.
+    var editingContext: String { "\(generation):\(channelID ?? ""):\(currentAuthor?.id ?? ""):\(isPreview)" }
     /// Web's failed first load: no conversation to show, only the error.
     public private(set) var loadFailed = false
     /// Web's session error: history loaded but sending needs a new chat session.
@@ -1047,6 +1049,44 @@ public final class ChatModel {
     }
 
     public init(api: APIClient) { self.api = api }
+
+    func canEdit(_ message: ChatMessage) -> Bool {
+        !isPreview && channelID == message.channelId && currentAuthor?.isGuest == false && currentAuthor?.id == message.author.id
+    }
+
+    func editMessage(_ message: ChatMessage, text: String) async throws {
+        guard canEdit(message), let session else { throw UserFacingError(message: "Only the author can edit while participating.") }
+        let request = generation
+        let result = try await api.editMessage(channelID: message.channelId, messageID: message.id, sessionToken: session.token, text: text, expectedRevision: message.revision ?? 1)
+        guard request == generation, canEdit(message) else { throw CancellationError() }
+        guard result.author.id == session.author.id else { throw UserFacingError(message: "Message author mismatch.") }
+        if !applyEditSnapshot(result) { requestResync(generation: request, channelID: message.channelId) }
+    }
+
+    func reloadMessage(_ message: ChatMessage) async throws -> ChatMessage {
+        let request = generation
+        let result = try await api.loadMessage(channelID: message.channelId, messageID: message.id)
+        guard request == generation, channelID == message.channelId else { throw CancellationError() }
+        if !applyEditSnapshot(result) { requestResync(generation: request, channelID: message.channelId) }
+        return result
+    }
+
+    func messageVersions(_ message: ChatMessage, before: Int? = nil) async throws -> MessageVersions {
+        let request = generation
+        let result = try await api.messageVersions(channelID: message.channelId, messageID: message.id, before: before)
+        guard request == generation, channelID == message.channelId else { throw CancellationError() }
+        return result
+    }
+
+    /// HTTP snapshots never advance delivery/read cursors, insert rows or chime.
+    private func applyEditSnapshot(_ message: ChatMessage) -> Bool {
+        editSnapshots.seed(messages + pinnedMessages)
+        editSnapshots.apply(message)
+        guard !editSnapshots.unseenOverflowed else { return false }
+        messages = messages.map { editSnapshots.overlay($0) }
+        pinnedMessages = pinnedMessages.map { editSnapshots.overlay($0) }
+        return true
+    }
 
     func receiveGatewayState(_ state: GatewayState, error: String?) {
         // Actor callbacks queued before unsubscribe must not revive stopped chat.
@@ -1598,13 +1638,9 @@ public final class ChatModel {
                   let seq = message.editSeq, delivery.receive(seq: seq) else {
                 requestResync(generation: eventGeneration, channelID: eventChannelID); return
             }
-            editSnapshots.seed(messages + pinnedMessages)
-            editSnapshots.apply(message)
-            if editSnapshots.unseenOverflowed {
+            if !applyEditSnapshot(message) {
                 requestResync(generation: eventGeneration, channelID: eventChannelID); return
             }
-            messages = messages.map { editSnapshots.overlay($0) }
-            pinnedMessages = pinnedMessages.map { editSnapshots.overlay($0) }
             onReadCursor?()
             if let subscriptionID {
                 let cursor = delivery.cursor

@@ -79,9 +79,24 @@ try {
   screenshot('message-edit-pins-desktop');
   browser('click', '.chat-pinned-message .chat-edited');
   wait('document.querySelectorAll("#chat-version-select option").length === 3');
-  assert.equal(evaluate('document.querySelector(".chat-version-diff del").textContent'), 'Friday at 9');
-  assert.equal(evaluate('document.querySelector(".chat-version-diff ins").textContent'), 'Saturday at 11');
+  const latest = 'document.querySelector(".chat-version-comparison diffs-container").shadowRoot';
+  wait(`${latest}?.querySelector('[data-content] [data-line]')?.textContent.includes('Meet Friday')`);
+  assert.equal(evaluate(`${latest}.querySelector('[data-deletions] [data-content] [data-line]').textContent`), 'TEST FIXTURE — Meet Friday at 9.');
+  assert.equal(evaluate(`${latest}.querySelector('[data-additions] [data-content] [data-line]').textContent`), 'TEST FIXTURE — Meet Saturday at 11.');
+  assert.deepEqual(evaluate(`Array.from(${latest}.querySelectorAll('[data-deletions] [data-diff-span]')).map(span => span.textContent)`), ['Friday', '9']);
+  assert.deepEqual(evaluate(`Array.from(${latest}.querySelectorAll('[data-additions] [data-diff-span]')).map(span => span.textContent)`), ['Saturday', '11']);
+  assert.equal(evaluate(`${latest}.querySelector('pre').getAttribute('data-diff-type')`), 'split');
+  browser('select', '#chat-version-select', '2');
+  wait('!!document.querySelector(".chat-version-older diffs-container")?.shadowRoot?.querySelector("[data-content] [data-line]")');
+  assert.equal(evaluate('document.querySelectorAll(".chat-version-comparison").length'), 2);
+  assert.equal(evaluate(`${latest}.querySelector('[data-additions] [data-content] [data-line]').textContent`), 'TEST FIXTURE — Meet Saturday at 11.', 'Browsing older versions must not replace the latest pair');
   screenshot('message-history-desktop');
+  browser('select', '#chat-version-select', '1');
+  assert.equal(evaluate('document.querySelector(".chat-version-original").textContent'), root.content.text);
+  browser('set', 'viewport', '390', '844', '2');
+  assert.equal(evaluate('document.documentElement.scrollWidth <= innerWidth && document.querySelector(".chat-version-dialog").scrollWidth <= document.querySelector(".chat-version-dialog").clientWidth'), true);
+  screenshot('message-history-narrow');
+  browser('set', 'viewport', '1440', '900', '2');
   browser('press', 'Escape');
   action('Messages');
 
@@ -140,7 +155,7 @@ try {
   action('Load older versions');
   wait('document.querySelectorAll("#chat-version-select option").length === 55');
   browser('select', '#chat-version-select', '1');
-  assert.equal(evaluate('document.querySelector(".chat-version-text").textContent'), root.content.text);
+  assert.equal(evaluate('document.querySelector(".chat-version-original").textContent'), root.content.text);
   browser('press', 'Escape');
 
   // A rejected edit preserves the draft and does not mutate the message.

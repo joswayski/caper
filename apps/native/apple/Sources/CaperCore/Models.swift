@@ -185,6 +185,54 @@ public struct ChatContent: Codable, Equatable, Sendable {
     public let text: String
 }
 
+public struct MessageVersion: Codable, Equatable, Identifiable, Sendable {
+    public let revision: Int
+    public let content: ChatContent
+    public let createdAt: String
+    public var id: Int { revision }
+}
+
+public struct MessageVersions: Codable, Sendable {
+    public let messageId: String
+    public let versions: [MessageVersion]
+    public let hasMore: Bool
+
+    func isValid(messageID: String, before: Int?) -> Bool {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return messageId == messageID && versions.count <= 50 && versions.enumerated().allSatisfy { index, version in
+            version.revision > 0 && (before == nil || version.revision < before!)
+                && (index == 0 || version.revision < versions[index - 1].revision)
+                && version.content.version == 1 && version.content.type == "text"
+                && MessageValidation.error(for: version.content.text) == nil
+                && (fractional.date(from: version.createdAt) != nil || ISO8601DateFormatter().date(from: version.createdAt) != nil)
+        }
+    }
+}
+
+struct MessageDiffToken: Equatable {
+    let text: String
+    let changed: Bool
+}
+
+/// A word-level Myers diff preserving whitespace, Unicode and separate edits.
+func messageDiff(before: String, after: String) -> ([MessageDiffToken], [MessageDiffToken]) {
+    let pattern = try! NSRegularExpression(pattern: "\\s+|[\\p{L}\\p{N}_]+|[^\\s\\p{L}\\p{N}_]+")
+    func tokens(_ text: String) -> [String] {
+        pattern.matches(in: text, range: NSRange(text.startIndex..., in: text)).map { (text as NSString).substring(with: $0.range) }
+    }
+    let old = tokens(before), new = tokens(after)
+    var removed = Set<Int>(), added = Set<Int>()
+    for change in new.difference(from: old) {
+        switch change {
+        case .remove(let offset, _, _): removed.insert(offset)
+        case .insert(let offset, _, _): added.insert(offset)
+        }
+    }
+    return (old.enumerated().map { MessageDiffToken(text: $0.element, changed: removed.contains($0.offset)) },
+            new.enumerated().map { MessageDiffToken(text: $0.element, changed: added.contains($0.offset)) })
+}
+
 public struct MessagePin: Codable, Equatable, Sendable {
     public let author: ChatAuthor
     public let createdAt: String
