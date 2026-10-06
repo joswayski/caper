@@ -195,7 +195,7 @@ try {
   const dmHistory = await (await fetch(`${api}/api/chat/channels/dm0000000001/messages`, { headers: { authorization: 'Bearer fixture-owner-token', connection: 'close' } })).json();
   const reactionMessage = dmHistory.messages[0].id;
   await control({ incomingReaction: { channelId: 'dm0000000001', messageId: reactionMessage, emoji: '🎉' } });
-  wait('document.querySelector(".chat-reaction")?.getAttribute("aria-label") === "🎉, 1 reaction"');
+  wait('!document.querySelector(".chat-initial-messages") && document.querySelector(".chat-reaction")?.getAttribute("aria-label") === "🎉, 1 reaction"');
   wait('fetch("/api/dms").then(r => r.json()).then(v => v.conversations[0].readSeq === "4")');
   assert.equal((await conversations()).conversations[0].readSeq, '4', 'Reactions advance read receipts even though the newest message is still sequence 3');
   browser('click', '.chat-reaction');
@@ -307,6 +307,60 @@ try {
   const saved = (await conversations()).conversations;
   assert.equal(saved.length, 2, 'Reopening self notes must reuse the same conversation');
   assert.equal(saved.find(item => item.peer.id === 'owner0000001').id, 'dm0000000002');
+  // Instrument only history reads; the real local fixture still supplies data.
+  evaluate(`(() => {
+    const fetch = window.fetch.bind(window);
+    const f = window.historyFixture = { requests: [], hold: false, fail: false };
+    window.fetch = async (input, options = {}) => {
+      const path = new URL(typeof input === 'string' ? input : input.url, location.href).pathname;
+      if (options.method || !/^\\/api\\/chat\\/channels\\/[^/]+\\/messages$/.test(path)) return fetch(input, options);
+      const request = { path, aborted: false };
+      f.requests.push(request);
+      options.signal?.addEventListener('abort', () => { request.aborted = true; request.reason = options.signal.reason.name; }, { once: true });
+      if (f.hold) await new Promise((resolve, reject) => {
+        request.release = resolve;
+        options.signal?.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+      });
+      if (f.fail) return Response.json({ error: 'TEST FIXTURE: history unavailable' }, { status: 503 });
+      return fetch(input, options);
+    };
+  })()`);
+  for (const width of [1440, 390]) {
+    browser('set', 'viewport', String(width), '844', '2');
+    const select = selector => {
+      if (width === 390) {
+        browser('click', '.navigation-toggle');
+        wait('!!document.querySelector(".spaces-room.navigation-open")');
+      }
+      browser('click', selector);
+    };
+    evaluate('historyFixture.requests = []');
+    select('.direct-select:not(.direct-self)');
+    wait('document.querySelector(".chat-messages")?.textContent.includes("A live reply from Alex.")');
+    // Development StrictMode replays mount effects; its abandoned read must be
+    // cancelled. Production has exactly one read, with no replay to ignore.
+    assert.equal(evaluate('historyFixture.requests.filter(r => !r.aborted).length'), 1, 'Opening a DM leaves only one history read');
+    evaluate('historyFixture.requests = []; historyFixture.hold = true');
+    select('.direct-self');
+    wait('historyFixture.requests.length > 0 && document.querySelector(".chat-messages [role=status]")?.textContent === "Loading messages…"');
+    evaluate('historyFixture.hold = false');
+    select('.direct-select:not(.direct-self)');
+    wait('document.querySelector(".chat-messages")?.textContent.includes("A live reply from Alex.")');
+    assert.equal(evaluate('historyFixture.requests.filter(r => r.path.includes("dm0000000002")).every(r => r.aborted && r.reason === "AbortError")'), true, 'All abandoned history reads are cancelled by navigation, not timeout');
+    assert.deepEqual(evaluate('historyFixture.requests.filter(r => !r.aborted).map(r => r.path)'), ['/api/chat/channels/dm0000000001/messages'], 'The current history read stays alive');
+    evaluate('historyFixture.requests.forEach(r => r.release?.())');
+    assert.equal(evaluate('document.querySelector(".chat-messages").textContent.includes("private notes that survive a reload.")'), false);
+    evaluate('historyFixture.requests = []; historyFixture.fail = true');
+    select('.direct-self');
+    wait('document.querySelector(".chat-state[role=alert]")?.textContent.includes("history unavailable")');
+    assert.equal(evaluate('historyFixture.requests.filter(r => !r.aborted).length'), 1, 'A failed load does not trigger a second implicit history read');
+    evaluate('historyFixture.fail = false');
+    browser('find', 'role', 'button', 'click', '--name', 'Try again', '--exact');
+    wait('document.querySelector(".chat-messages")?.textContent.includes("private notes that survive a reload.")');
+    assert.equal(evaluate('historyFixture.requests.filter(r => !r.aborted).length'), 2, 'Retry issues exactly one fresh history read');
+    assert.equal(evaluate('document.querySelector("vite-error-overlay")'), null);
+    console.log(`PASS: one uncancelled DM history read per open, cancellation on rapid switch, isolated current history, and explicit failure/retry at ${width}px.`);
+  }
   browser('set', 'viewport', '390', '844', '2');
   browser('click', '.navigation-toggle');
   wait('!!document.querySelector(".spaces-room.navigation-open")');
