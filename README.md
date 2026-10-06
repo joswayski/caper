@@ -14,6 +14,14 @@ Channel pins are shared with everyone who can read the channel. Joined members
 can pin or unpin in one action; the channel header opens the complete pins list.
 Native implementation and validation status are tracked in [the runbook](docs/media.md#message-pins).
 
+Packaged Mac, Windows, and Linux apps check for updates 20 seconds after launch
+and every minute, using signed metadata cached on Caper's server for 60 seconds.
+Check manually with **Caper → Check for Updates…** on Mac or
+**User Settings → Settings… → Updates → Check for updates** on Windows/Linux.
+Installing requires confirmation and a restart; protected installs offer a download
+instead. Existing apps keep their previous schedule until updated once.
+Android APK updates remain manual; iPhone builds use TestFlight.
+
 ## Development
 
 You'll need Node.js 24, npm 11+, Docker Compose, and AWS CLI access to the `staging` profile.

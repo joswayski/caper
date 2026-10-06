@@ -471,6 +471,17 @@ impl CaperApp {
             Some("login") => app.dialog = Some(Dialog::SignIn),
             Some(name) if name.starts_with("parity") => {
                 app.install_fixture();
+                if name.starts_with("parity-settings") {
+                    app.dialog = Some(Dialog::Settings);
+                    app.updates = updates::Updates::preview_status(match name {
+                        "parity-settings-checking" => updates::Status::Checking,
+                        "parity-settings-current" => updates::Status::UpToDate,
+                        "parity-settings-offline" => {
+                            updates::Status::Failed("Offline. Try again when connected.".into())
+                        }
+                        _ => updates::Status::Idle,
+                    });
+                }
                 if name == "parity-reactions" {
                     app.session = Some(ChatSession {
                         token: "fixture-token".into(),
@@ -2984,7 +2995,7 @@ impl CaperApp {
                             context.open_url(egui::OpenUrl::new_tab(updates::DOWNLOAD_URL));
                         }
                         if secondary_button(ui, "Later", true).clicked() {
-                            self.updates.dismissed = true;
+                            self.updates.dismiss();
                         }
                     });
                 });
@@ -6695,7 +6706,7 @@ impl CaperApp {
         } else if matches!(dialog, Dialog::Profile) {
             460.0
         } else if settings {
-            400.0
+            560.0
         } else if matches!(
             dialog,
             Dialog::ConfirmDelete { .. } | Dialog::LeaveSpace { .. }
@@ -6952,6 +6963,51 @@ impl CaperApp {
                 self.effects.play(Effect::ToggleOn);
             }
         }
+        ui.add_space(18.0);
+        ui.separator();
+        ui.add_space(18.0);
+        ui.label(bold("Updates").size(12.0).color(MUTED));
+        ui.add_space(6.0);
+        let status = self.updates.status();
+        let checking = status == updates::Status::Checking;
+        let label = if checking {
+            "Checking…"
+        } else {
+            "Check for updates"
+        };
+        if secondary_button(ui, label, self.updates.can_check() && !checking).clicked() {
+            self.updates.check_now();
+        }
+        match &status {
+            updates::Status::UpToDate => {
+                ui.label(RichText::new("Caper is up to date.").color(MUTED));
+            }
+            updates::Status::Available => {
+                ui.label(
+                    RichText::new(if self.updates.available().is_some() {
+                        "An update is available above the window."
+                    } else {
+                        "An update is available. Check again to show it."
+                    })
+                    .color(MUTED),
+                );
+            }
+            updates::Status::Failed(error) => {
+                ui.colored_label(ERROR, format!("Could not check for updates: {error}"));
+            }
+            updates::Status::Idle | updates::Status::Checking => {}
+        }
+        ui.label(
+            RichText::new(
+                if !self.updates.can_check() && status == updates::Status::Idle {
+                    "Update checks are available in packaged release builds."
+                } else {
+                    "Checks automatically every minute."
+                },
+            )
+            .size(12.0)
+            .color(MUTED),
+        );
     }
 
     fn profile_dialog(&mut self, ui: &mut egui::Ui) {
