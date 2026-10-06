@@ -1524,6 +1524,16 @@ private struct ChatView: View {
                 }
             }.padding(.leading, narrow ? 13 : 18).padding(.trailing, 18).frame(height: 50)
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+                #if os(macOS)
+                // Use the fixed header as the native anchor. A point inside the
+                // timeline can resolve to a lazy row that live delivery removes.
+                .popover(item: $reactionMessage, attachmentAnchor: .point(.bottom), arrowEdge: .top) { message in
+                    ReactionPicker { emoji in
+                        reactionMessage = nil
+                        Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) }
+                    }
+                }
+                #endif
 
             ScrollViewReader { proxy in
                 ScrollView {
@@ -1727,15 +1737,6 @@ private struct ChatView: View {
                                         reactionMessage = nil
                                         Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) }
                                     })
-            }
-            #else
-            // A native popover dismisses on outside clicks. Anchor it to the
-            // stable conversation, not a lazy row that live delivery can remove.
-            .popover(item: $reactionMessage, attachmentAnchor: .point(.center)) { message in
-                ReactionPicker { emoji in
-                    reactionMessage = nil
-                    Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) }
-                }
             }
             #endif
             .onChange(of: chat.isPreview) { _, preview in
@@ -2341,56 +2342,65 @@ private struct ReactionPicker: View {
         return EmojiArtwork.choices.filter { $0.name.lowercased().contains(term) || $0.keywords.lowercased().contains(term) }
     }
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                // Keep search inside the picker, including when macOS presents
-                // it in a popover rather than a window with a search toolbar.
-                TextField("Search emoji", text: $query)
-                    .textFieldStyle(.roundedBorder)
-                    .accessibilityIdentifier("reaction-picker-search")
-                    .padding(12)
-                if choices.isEmpty {
-                    ContentUnavailableView("No emoji found", systemImage: "magnifyingglass", description: Text("Try another search."))
-                        .accessibilityIdentifier("reaction-picker-empty")
-                } else {
-                    ScrollView {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 42), spacing: 8)], spacing: 8) {
-                            ForEach(choices) { entry in
-                                Button { select(entry.emoji) } label: {
-                                    EmojiArtworkView(emoji: entry.emoji, size: 30).frame(width: 42, height: 42)
-                                }
-                                .buttonStyle(.plain)
-                                #if os(macOS)
-                                .focused($focusedEmoji, equals: entry.id)
-                                .modifier(ControlHover(isFocused: focusedEmoji == entry.id))
-                                #else
-                                .modifier(ControlHover())
-                                #endif
-                                .accessibilityLabel(entry.name)
-                            }
-                        }.padding(12)
-                    }.accessibilityIdentifier("reaction-picker-grid")
-                }
-            }
-            .navigationTitle("Add reaction")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                        #if os(macOS)
-                        .keyboardShortcut(.cancelAction)
-                        #endif
-                }
-            }
-        }
         #if os(macOS)
-        // Bound the whole picker, not just the grid's minimum size: otherwise
-        // the NavigationStack can ask the sheet to grow with the full catalog.
+        // NavigationStack's cancellation toolbar is not shown in a macOS
+        // popover. Keep both the header and accessible bounds in its content.
+        VStack(spacing: 0) {
+            HStack {
+                Text("Add reaction").font(CaperTheme.font(14, weight: .bold))
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }.padding(.horizontal, 12).padding(.top, 12)
+            content
+        }
         .frame(width: 352, height: 420)
-        #else
-        .frame(minWidth: 320, minHeight: 420)
-        #endif
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("reaction-picker")
+        #else
+        NavigationStack {
+            content
+                .navigationTitle("Add reaction")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { dismiss() }
+                    }
+                }
+        }
+        .frame(minWidth: 320, minHeight: 420)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("reaction-picker")
+        #endif
+    }
+    private var content: some View {
+        VStack(spacing: 0) {
+            TextField("Search emoji", text: $query)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityIdentifier("reaction-picker-search")
+                .padding(12)
+            if choices.isEmpty {
+                ContentUnavailableView("No emoji found", systemImage: "magnifyingglass", description: Text("Try another search."))
+                    .accessibilityIdentifier("reaction-picker-empty")
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 42), spacing: 8)], spacing: 8) {
+                        ForEach(choices) { entry in
+                            Button { select(entry.emoji) } label: {
+                                EmojiArtworkView(emoji: entry.emoji, size: 30).frame(width: 42, height: 42)
+                            }
+                            .buttonStyle(.plain)
+                            #if os(macOS)
+                            .focused($focusedEmoji, equals: entry.id)
+                            .modifier(ControlHover(isFocused: focusedEmoji == entry.id))
+                            #else
+                            .modifier(ControlHover())
+                            #endif
+                            .accessibilityLabel(entry.name)
+                        }
+                    }.padding(12)
+                }.accessibilityIdentifier("reaction-picker-grid")
+            }
+        }
     }
 }
 

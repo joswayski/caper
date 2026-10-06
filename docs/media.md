@@ -873,6 +873,16 @@ pickers, counted chips, own-contribution highlighting, add/remove, and save-erro
 retry. Clients preserve per-message reaction revisions independently of the
 channel replay cursor.
 
+On macOS, the reaction picker is a 352 × 420-point native popover anchored to
+the fixed conversation header, not the scrolling timeline. Its Cancel button
+lives in the popover content; Escape and outside clicks also dismiss it. The
+Apple parity suite checks catalog/empty-result bounds, accessible Cancel,
+isolated focus styling, and preserving search and the original message target
+during live scrolling. iPhone retains its message-actions sheet and navigation
+toolbar. These are fixture-backed UI checks, not physical-device or live SFU
+validation. No server, schema, infrastructure, or configuration change is needed;
+macOS users receive the fix only after an updated native binary is released.
+
 `node scripts/test-message-actions.mjs` uses the disposable
 `native-parity-fixture.mjs` server and Vite, with Chromium touch input and verified
 coarse-pointer emulation. It covers hold versus tap/scroll/cancel, clipboard
