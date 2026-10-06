@@ -74,45 +74,141 @@ enum EmojiAutocomplete {
     }
 }
 
-@MainActor final class EmojiComposerController: ObservableObject {
-    @Published var match: EmojiAutocompleteMatch?
-    @Published var selected = 0
-    var acceptAction: ((EmojiCatalogEntry) -> Void)?
-    func update(_ match: EmojiAutocompleteMatch?) {
-        if self.match != match { self.match = match; selected = 0 }
+/// The composer's active token. Emoji (`:`) and mention (`@`) tokens can never
+/// both be active, so they share one popup with a row type per kind.
+enum ComposerAutocompleteMatch: Equatable {
+    case emoji(EmojiAutocompleteMatch)
+    case mention(MentionAutocompleteMatch)
+
+    var count: Int {
+        switch self {
+        case let .emoji(match): return match.choices.count
+        case let .mention(match): return match.choices.count
+        }
     }
-    func accept(_ entry: EmojiCatalogEntry) { acceptAction?(entry) }
+    var isMention: Bool {
+        if case .mention = self { return true }
+        return false
+    }
+    /// Row identities for scrolling the selected row into view.
+    var ids: [String] {
+        switch self {
+        case let .emoji(match): return match.choices.map(\.id)
+        case let .mention(match): return match.choices.map(\.id)
+        }
+    }
 }
 
-struct EmojiSuggestionsView: View {
-    @ObservedObject var controller: EmojiComposerController
+enum ComposerAutocomplete {
+    static func match(text: String, selection: NSRange, markedText: Bool, mentions: MentionSource) -> ComposerAutocompleteMatch? {
+        if let mention = MentionAutocomplete.match(text: text, selection: selection, markedText: markedText, source: mentions) {
+            return .mention(mention)
+        }
+        return EmojiAutocomplete.match(text: text, selection: selection, markedText: markedText).map { ComposerAutocompleteMatch.emoji($0) }
+    }
+
+    /// Accepts the row at `index`, enforcing the same 4,000-scalar limit for both kinds.
+    static func inserting(choice index: Int, in text: String, match: ComposerAutocompleteMatch) -> (text: String, selection: NSRange)? {
+        switch match {
+        case let .emoji(emoji):
+            guard emoji.choices.indices.contains(index) else { return nil }
+            return EmojiAutocomplete.inserting(emoji.choices[index], in: text, match: emoji)
+        case let .mention(mention):
+            guard mention.choices.indices.contains(index) else { return nil }
+            return MentionAutocomplete.inserting(mention.choices[index], in: text, match: mention)
+        }
+    }
+}
+
+@MainActor final class ComposerAutocompleteController: ObservableObject {
+    @Published var match: ComposerAutocompleteMatch?
+    @Published var selected = 0
+    var acceptAction: ((Int) -> Void)?
+    func update(_ match: ComposerAutocompleteMatch?) {
+        if self.match != match { self.match = match; selected = 0 }
+    }
+    func accept(_ index: Int) { acceptAction?(index) }
+    func move(down: Bool) {
+        guard let count = match?.count, count > 0 else { return }
+        selected = (selected + (down ? 1 : count - 1)) % count
+    }
+}
+
+struct ComposerSuggestionsView: View {
+    @ObservedObject var controller: ComposerAutocompleteController
     var body: some View {
         if let match = controller.match {
+            let ids = match.ids
             ScrollViewReader { proxy in
             ScrollView {
             VStack(spacing: 0) {
-                ForEach(Array(match.choices.enumerated()), id: \.element.id) { index, entry in
-                    Button { controller.accept(entry) } label: {
-                        HStack(spacing: 12) {
-                            EmojiArtworkView(emoji: entry.emoji, size: 24)
-                            Text(":\(entry.name.replacingOccurrences(of: " ", with: "_")):").font(CaperTheme.font(13, weight: .medium)).lineLimit(1)
-                            Spacer()
-                        }.padding(.horizontal, 10).frame(minHeight: 44)
-                            .background(index == controller.selected ? CaperTheme.terracotta.opacity(0.32) : Color.clear)
-                            .contentShape(Rectangle())
-                    }.buttonStyle(.plain).accessibilityLabel("\(entry.name), emoji")
-                        .accessibilityIdentifier("emoji-suggestion-\(entry.id)")
-                        .id(entry.id)
+                switch match {
+                case let .emoji(emoji):
+                    ForEach(Array(emoji.choices.enumerated()), id: \.element.id) { index, entry in
+                        Button { controller.accept(index) } label: {
+                            HStack(spacing: 12) {
+                                EmojiArtworkView(emoji: entry.emoji, size: 24)
+                                Text(":\(entry.name.replacingOccurrences(of: " ", with: "_")):").font(CaperTheme.font(13, weight: .medium)).lineLimit(1)
+                                Spacer()
+                            }.modifier(SuggestionRow(selected: index == controller.selected))
+                        }.buttonStyle(.plain).accessibilityLabel("\(entry.name), emoji")
+                            .accessibilityIdentifier("emoji-suggestion-\(entry.id)")
+                            .id(entry.id)
+                    }
+                case let .mention(mention):
+                    ForEach(Array(mention.choices.enumerated()), id: \.element.id) { index, candidate in
+                        Button { controller.accept(index) } label: {
+                            let member = candidate.kind == .member
+                            HStack(spacing: 12) {
+                                if member {
+                                    Avatar(name: candidate.displayName, size: 24, avatarID: candidate.avatarId)
+                                } else {
+                                    Image(systemName: "at").font(.system(size: 13, weight: .semibold)).foregroundStyle(CaperTheme.muted)
+                                        .frame(width: 24, height: 24)
+                                }
+                                // Member: display name, then a muted @username.
+                                // Special: @everyone/@here, then its muted description.
+                                HStack(spacing: 6) {
+                                    Text(member ? candidate.displayName : "@\(candidate.username)")
+                                        .font(CaperTheme.font(13, weight: .medium)).lineLimit(1)
+                                    Text(member ? "@\(candidate.username)" : candidate.displayName)
+                                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).lineLimit(1)
+                                }
+                                Spacer(minLength: 0)
+                            }.modifier(SuggestionRow(selected: index == controller.selected))
+                        }.buttonStyle(.plain)
+                            .accessibilityLabel(Self.mentionLabel(candidate))
+                            .accessibilityIdentifier("mention-suggestion-\(candidate.username.lowercased())")
+                            .id(candidate.id)
+                    }
                 }
             }
-            }.frame(height: min(CGFloat(match.choices.count) * 44, 176))
-                .onChange(of: controller.selected) { _, index in proxy.scrollTo(match.choices[index].id, anchor: .center) }
+            }.frame(height: min(CGFloat(match.count) * 44, 176))
+                .onChange(of: controller.selected) { _, index in
+                    if ids.indices.contains(index) { proxy.scrollTo(ids[index], anchor: .center) }
+                }
             }.frame(maxWidth: 260)
                 .background(CaperTheme.surface).clipShape(RoundedRectangle(cornerRadius: 6))
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(CaperTheme.border))
-                .accessibilityIdentifier("emoji-suggestions")
+                .accessibilityIdentifier(match.isMention ? "mention-suggestions" : "emoji-suggestions")
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+}
+
+extension ComposerSuggestionsView {
+    static func mentionLabel(_ candidate: MentionCandidate) -> String {
+        candidate.kind == .member ? "\(candidate.displayName), @\(candidate.username)" : "@\(candidate.username), \(candidate.displayName)"
+    }
+}
+
+/// Flat, borderless 44pt rows; the selected row gets the terracotta tint.
+private struct SuggestionRow: ViewModifier {
+    let selected: Bool
+    func body(content: Content) -> some View {
+        content.padding(.horizontal, 10).frame(minHeight: 44)
+            .background(selected ? CaperTheme.terracotta.opacity(0.32) : Color.clear)
+            .contentShape(Rectangle())
     }
 }
 
@@ -134,7 +230,9 @@ final class ComposerTextView: UITextView {
 struct NativeMessageComposer: UIViewRepresentable {
     @Binding var text: String
     let placeholder: String
-    let controller: EmojiComposerController
+    let controller: ComposerAutocompleteController
+    /// Who `@` may suggest in this conversation.
+    let mentions: MentionSource
     let submit: () -> Void
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> UITextView {
@@ -148,8 +246,11 @@ struct NativeMessageComposer: UIViewRepresentable {
         context.coordinator.view = view; context.coordinator.refresh(view); return view
     }
     func updateUIView(_ view: UITextView, context: Context) {
+        let mentionsChanged = context.coordinator.parent.mentions != mentions
         context.coordinator.parent = self
         if view.text != text { view.text = text; context.coordinator.dismissed = false; context.coordinator.refresh(view) }
+        // Members can finish loading while an `@` query is open.
+        else if mentionsChanged { context.coordinator.refresh(view) }
         view.accessibilityValue = text; view.accessibilityHint = "Use the Send button when composing with the iPhone keyboard."
     }
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
@@ -165,20 +266,20 @@ struct NativeMessageComposer: UIViewRepresentable {
         func textViewDidChange(_ textView: UITextView) { parent.text = textView.text; dismissed = false; refresh(textView) }
         func textViewDidChangeSelection(_ textView: UITextView) { dismissed = false; refresh(textView) }
         func refresh(_ textView: UITextView) {
-            let match = dismissed || !textView.isFirstResponder ? nil : EmojiAutocomplete.match(text: textView.text, selection: textView.selectedRange, markedText: textView.markedTextRange != nil)
+            let match = dismissed || !textView.isFirstResponder ? nil : ComposerAutocomplete.match(text: textView.text, selection: textView.selectedRange, markedText: textView.markedTextRange != nil, mentions: parent.mentions)
             parent.controller.update(match)
-            parent.controller.acceptAction = { [weak self] entry in self?.accept(entry) }
+            parent.controller.acceptAction = { [weak self] index in self?.accept(index) }
         }
         func handle(_ key: String) {
-            guard let match = parent.controller.match, view?.markedTextRange == nil else { return }
+            guard parent.controller.match != nil, view?.markedTextRange == nil else { return }
             if key == UIKeyCommand.inputUpArrow || key == UIKeyCommand.inputDownArrow {
-                parent.controller.selected = (parent.controller.selected + (key == UIKeyCommand.inputDownArrow ? 1 : match.choices.count - 1)) % match.choices.count
+                parent.controller.move(down: key == UIKeyCommand.inputDownArrow)
             } else if key == UIKeyCommand.inputEscape { dismissed = true; parent.controller.update(nil) }
-            else { accept(match.choices[parent.controller.selected]) }
+            else { accept(parent.controller.selected) }
         }
-        func accept(_ entry: EmojiCatalogEntry) {
+        func accept(_ index: Int) {
             guard let view, let match = parent.controller.match,
-                  let result = EmojiAutocomplete.inserting(entry, in: view.text, match: match) else { return }
+                  let result = ComposerAutocomplete.inserting(choice: index, in: view.text, match: match) else { return }
             view.text = result.text; view.selectedRange = result.selection; parent.text = result.text
             parent.controller.update(nil); view.becomeFirstResponder()
         }
@@ -196,7 +297,9 @@ final class ComposerTextView: NSTextView {
 struct NativeMessageComposer: NSViewRepresentable {
     @Binding var text: String
     let placeholder: String
-    let controller: EmojiComposerController
+    let controller: ComposerAutocompleteController
+    /// Who `@` may suggest in this conversation.
+    let mentions: MentionSource
     let submit: () -> Void
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSScrollView {
@@ -216,9 +319,12 @@ struct NativeMessageComposer: NSViewRepresentable {
         context.coordinator.refresh(view); return scroll
     }
     func updateNSView(_ scroll: NSScrollView, context: Context) {
+        let mentionsChanged = context.coordinator.parent.mentions != mentions
         context.coordinator.parent = self
         guard let view = scroll.documentView as? ComposerTextView else { return }
         if view.string != text { view.string = text; context.coordinator.dismissed = false; context.coordinator.refresh(view) }
+        // Members can finish loading while an `@` query is open.
+        else if mentionsChanged { context.coordinator.refresh(view) }
         view.setAccessibilityValue(text); view.setAccessibilityHelp("Return sends. Shift-Return adds a new line.")
     }
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
@@ -236,23 +342,23 @@ struct NativeMessageComposer: NSViewRepresentable {
         func textDidChange(_ notification: Notification) { guard let view else { return }; parent.text = view.string; dismissed = false; refresh(view) }
         func textViewDidChangeSelection(_ notification: Notification) { guard let view else { return }; dismissed = false; refresh(view) }
         func refresh(_ view: ComposerTextView) {
-            let match = dismissed || view.window?.firstResponder !== view ? nil : EmojiAutocomplete.match(text: view.string, selection: view.selectedRange(), markedText: view.hasMarkedText())
+            let match = dismissed || view.window?.firstResponder !== view ? nil : ComposerAutocomplete.match(text: view.string, selection: view.selectedRange(), markedText: view.hasMarkedText(), mentions: parent.mentions)
             parent.controller.update(match); parent.controller.acceptAction = { [weak self] in self?.accept($0) }
         }
         func handle(_ event: NSEvent) -> Bool {
             guard let view, !view.hasMarkedText() else { return false }
             let key = event.keyCode
-            if let match = parent.controller.match {
-                if key == 125 || key == 126 { parent.controller.selected = (parent.controller.selected + (key == 125 ? 1 : match.choices.count - 1)) % match.choices.count; return true }
-                if (key == 36 || key == 48) && !event.modifierFlags.contains(.shift) { accept(match.choices[parent.controller.selected]); return true }
+            if parent.controller.match != nil {
+                if key == 125 || key == 126 { parent.controller.move(down: key == 125); return true }
+                if (key == 36 || key == 48) && !event.modifierFlags.contains(.shift) { accept(parent.controller.selected); return true }
                 if key == 53 { dismissed = true; parent.controller.update(nil); return true }
             }
             if key == 36 && !event.modifierFlags.contains(.shift) { parent.submit(); return true }
             return false
         }
-        func accept(_ entry: EmojiCatalogEntry) {
+        func accept(_ index: Int) {
             guard let view, let match = parent.controller.match,
-                  let result = EmojiAutocomplete.inserting(entry, in: view.string, match: match) else { return }
+                  let result = ComposerAutocomplete.inserting(choice: index, in: view.string, match: match) else { return }
             view.string = result.text; view.setSelectedRange(result.selection); parent.text = result.text
             parent.controller.update(nil); view.window?.makeFirstResponder(view)
         }

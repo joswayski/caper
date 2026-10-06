@@ -15,7 +15,8 @@ phased design for review.
   plus DMs), *Mentions & DMs*, and *Off*. Spaces, channels and DMs can also be
   turned off or muted individually.
 - **Order.** Build @mentions before push, so *Mentions & DMs* is a real option
-  from the start.
+  from the start. Anyone who can post may use `@everyone` / `@here`; spam
+  permissions come later.
 - **Cleanup.** Drop the unused SNS-era `push_*` tables in the first push
   migration.
 
@@ -570,14 +571,14 @@ Either can be added later without changing the preference model.
 
 ## Phases
 
-0. **@mentions (prerequisite, no external setup).**
-   - `@username` autocomplete in the composer on all four clients, reusing the
-     `:` emoji autocomplete pattern.
-   - Highlighted mentions in messages.
-   - The server resolves mentions to accounts that can see the channel and
-     stores them, so push can target them.
-   - `@everyone` / `@here` for space owners.
-   - This can be built while the Apple and Firebase setup below happens.
+0. **@mentions (prerequisite, no external setup).** Built; see
+   [media.md](media.md#scope-and-architecture) for the contract and validation.
+   - `@username`, `@everyone` and `@here` autocomplete in the composer on all
+     four clients, reusing the `:` emoji autocomplete pattern.
+   - Highlighted mentions in messages, and a tint on messages that mention you.
+   - The server resolves names to accounts that can read the conversation and
+     records them in the message's `content.mentions`, so push can target them.
+     Phase 1 reads that list; it needs no separate mentions table.
 1. **Mobile push for DMs and channels, with per-space/channel/DM controls.**
    - **Server:**
      - new migration;
@@ -690,4 +691,3 @@ Federation (see [Android](#android-fcm-http-v1)).
 **Open decisions**
 
 - Whether the Windows/Linux desktop app should gain "keep running in the tray".
-- `@everyone` / `@here` limited to space owners (proposed) or open to everyone.

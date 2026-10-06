@@ -263,6 +263,31 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertFalse(app.buttons["emoji-suggestion-1f345"].exists)
     }
 
+    func testAtMentionSuggestionsInsertUsernameWithoutSending() throws {
+        let app = launch()
+        let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 30,
+                                   "Missing message composer")
+        XCTAssertTrue(focus(composer))
+        composer.typeText("Hi @")
+        _ = try require(app.buttons["mention-suggestion-everyone"], timeout: 5,
+                        "A space channel must offer @everyone")
+        XCTAssertTrue(app.buttons["mention-suggestion-here"].exists)
+        XCTAssertTrue(app.buttons["mention-suggestion-alex"].exists, "Space members are suggested")
+        XCTAssertFalse(app.buttons["mention-suggestion-fixture_owner"].exists, "The signed-in account is never suggested")
+        composer.typeText("ma")
+        let maya = try require(app.buttons["mention-suggestion-maya"], timeout: 5,
+                               "Typing @ma must offer the space member maya")
+        capture("mention-composer-suggestions", app: app)
+        maya.tap()
+        let inserted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Hi @maya "), object: composer)
+        XCTAssertEqual(XCTWaiter.wait(for: [inserted], timeout: 3), .completed,
+                       "Selecting a member must insert @username and a space without sending")
+        XCTAssertTrue(hasKeyboardFocus(composer))
+        composer.typeText("there")
+        XCTAssertEqual(composer.value as? String, "Hi @maya there", "Insertion must leave the caret after the space")
+        XCTAssertFalse(app.buttons["mention-suggestion-maya"].exists)
+    }
+
     func testReactionChipsPickerAndEmptySearchState() throws {
         let app = launch(fixture: "reaction-chips")
         let own = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "selected by you")).firstMatch

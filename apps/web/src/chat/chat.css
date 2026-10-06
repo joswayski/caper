@@ -84,6 +84,8 @@
 .chat-message time { color: var(--text-muted); font-size: .65rem; }
 .chat-message p { margin: 4px 0 0; overflow-wrap: anywhere; color: #dedfe0; font-size: .86rem; line-height: 1.5; white-space: pre-wrap; }
 .chat-message-pending p { color: var(--text-muted); }
+.chat-mention { padding: 0 2px; border-radius: 4px; background: rgb(182 77 50 / 24%); color: var(--text); font-weight: 600; }
+.chat-message-mentioned, .chat-message-mentioned:hover, .chat-message-mentioned:focus-within { background: rgb(182 77 50 / 8%); box-shadow: inset 2px 0 0 var(--terracotta); }
 .chat-send-status { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin-top: 5px; color: var(--text-muted); font-size: .7rem; }
 .chat-send-error { color: #ff9b82; }
 .chat-send-status button { padding: 3px 7px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface-raised); font: inherit; font-weight: 700; cursor: pointer; }
@@ -96,6 +98,9 @@
 .chat-emoji-suggestions img { flex: 0 0 24px; }
 .chat-emoji-suggestions span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-emoji-suggestions p { margin: 0; padding: 10px; color: var(--text-muted); font-size: .8rem; }
+.chat-mention-suggestions small { flex: 0 1 auto; min-width: 0; margin-left: auto; overflow: hidden; color: var(--text-muted); font-size: .72rem; text-overflow: ellipsis; white-space: nowrap; }
+.chat-mention-avatar { display: grid; flex: 0 0 24px; place-items: center; width: 24px; height: 24px; overflow: hidden; border-radius: var(--radius-avatar); font-style: normal; font-size: .7rem; }
+.chat-mention-special { background: var(--surface-composer); color: var(--text); font-weight: 700; }
 .chat-typing { display: flex; height: 20px; padding: 0 18px 4px; margin: 0; color: var(--text-muted); font-size: .7rem; line-height: 16px; }
 .chat-typing-content { display: inline-flex; align-items: center; gap: 7px; opacity: 0; transform: translateY(2px); transition: opacity 180ms ease-out, transform 180ms ease-out; }
 .chat-typing-content[data-visible="true"] { opacity: 1; transform: translateY(0); }

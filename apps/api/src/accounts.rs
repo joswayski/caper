@@ -55,6 +55,9 @@ impl Default for ReservedUsernames {
                 "caperchat",
                 "aaron",
                 "joswayski",
+                // Special @mentions; an account with these names could never be mentioned.
+                "everyone",
+                "here",
             ]
             .map(str::to_owned)
             .into(),

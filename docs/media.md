@@ -29,6 +29,46 @@ data. This is not native keyboard/device coverage. Android and Apple tests requi
 their platform toolchains; physical touch/IME, software keyboard viewport changes
 and Windows rendering remain separate acceptance checks.
 
+Composers also suggest people after `@` on web, Android, Apple and Rust desktop.
+An `@` at the start of a draft, after whitespace or after an opening bracket
+starts a name of up to 32 ASCII letters, digits or underscores; emails such as
+`bob@maya.com` and `x/@maya` do not. Space channels suggest the open space's
+loaded members except you, then `@everyone` ("Everyone in this channel") and
+`@here` ("Everyone online in this channel"); DMs suggest only the other
+participant. Selecting inserts `@username ` without sending; keys and limits match
+emoji. Anyone who can post may use `@everyone`/`@here`; permissions are deferred.
+
+On send, `chat::persist` resolves names inside the message transaction (shared
+grammar in `apps/api/src/mentions.rs`) to non-deleted accounts that can read the
+conversation: space members who own the space, or the channel is public, or hold a
+private grant; DM participants. The message's `content.mentions` lists resolved
+users (`{"type":"user","id","username"}`) and, in space channels only,
+`{"type":"everyone"}` / `{"type":"here"}`, in first-appearance order with at most
+20 distinct names. Unresolved names stay plain text and the field is omitted when
+empty. `content.version` stays `1`; history, live gateway events and replay carry
+the same payload. Clients ignore unknown entry types, render resolved tokens as
+terracotta pills, and tint messages that mention the reader (their id, or
+`@everyone`/`@here` from someone else). `everyone` and `here` are reserved
+usernames. A suggested space member without access to a private channel does not
+resolve. Mentions do not notify anyone; see [notifications.md](notifications.md).
+
+No migration, gateway, infrastructure or secret change is required. The API and
+clients deploy independently in either order: older clients ignore
+`content.mentions`, and newer clients render plain text from an older API. Rolling
+the API back only stops resolving new mentions. Validation:
+- API: unit grammar tests and a Postgres test of reader-only resolution (public,
+  private, DM, deleted and non-member accounts, history and outbox payloads), plus
+  the full ignored Postgres/Valkey suite.
+- Web: unit tests, and a real Chromium check against the fixture at 1280px and
+  390px (suggestion order, Enter inserts without sending, Escape, no overlap with
+  emoji, pills, mentioned-row tint).
+- Fixture: `native-parity-fixture.mjs` resolves mentions on send like the API and
+  seeds one message mentioning `fixture_owner`.
+- Android: JVM unit tests and lint; no device, emulator or IME check.
+- Apple: the pure mention logic and its 13 tests ran with a Linux Swift toolchain;
+  SwiftUI/UIKit/AppKit code and the parity UI test need Apple CI. SwiftUI and
+  Android inline pills are square-cornered background spans.
+
 Web channel names and `⋯` actions have a separate row above voice
 activity. Join, Joining and Switch here use one fixed-width action slot;
 connected channels reserve that space without an inline Leave action.

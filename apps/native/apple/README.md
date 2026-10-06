@@ -9,6 +9,7 @@ Native SwiftUI clients backed by AppKit on macOS and UIKit on iPhone. They conta
 - Space/channel/member owner workflows: create/delete/rename spaces and channels, add/remove existing accounts by username, private-channel toggle and grants.
 - HTTP chat history and pagination, idempotent sends, ordered gateway delivery/replay, reconnect/error state, typing, and paginated member presence.
 - Account-global one-to-one direct messages, including exact-username creation, unread/read cursors, space-independent navigation, and the existing ordered chat/gateway pipeline.
+- `@mention` autocomplete in the shared `:` emoji popup (loaded space members except you, then `@everyone`/`@here`; only the other participant in DMs), pills for names the server resolved in `content.mentions`, and an 8% terracotta row tint with a 2pt leading edge on messages that mention you. SwiftUI `Text` cannot pad or round an inline run, so pills are square-cornered background spans without the 2pt padding/4pt corners. Mentions do not notify anyone.
 - Generation fences for account/channel transitions, immediate revoked-data clearing, separate in-memory chat/media capabilities, and same-origin-only credential redirects.
 
 The native UI and platform projects still require exact-head Apple CI before they are considered build-verified. The Linux orb used for implementation has no Swift or Xcode installation.

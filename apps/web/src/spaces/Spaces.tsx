@@ -1733,6 +1733,7 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
         initialHistory={directView ? directView.history : view?.history?.channel.id === channel.id ? view.history : undefined}
         initialHistoryError={directView ? directView.error : view?.channelId === channel.id ? view.historyError : undefined}
         onReadCursor={directView ? readDirect : undefined}
+        mentionMembers={directView ? [directView.conversation.peer] : view?.detail ? detail.members : undefined}
         onHistoryChange={navigation.current.rememberHistory}
         spaceRail={rail}
         channelNavigation={channelNavigation}

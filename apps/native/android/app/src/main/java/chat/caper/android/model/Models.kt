@@ -4,6 +4,8 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonTransformingSerializer
 
@@ -36,7 +38,34 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val channelInvitations: List<ChannelInvitation> = emptyList(),
 )
 @Serializable data class ChatAuthor(val id: String, val name: String, val isGuest: Boolean, val avatarId: Int? = null)
-@Serializable data class ChatContent(val version: Int, val type: String, val text: String)
+/**
+ * One `content.mentions` entry: `user` (with `id` and `username`), `everyone` or `here`.
+ * Other types decode too and are ignored where mentions are used.
+ */
+@Serializable data class MessageMention(val type: String, val id: String? = null, val username: String? = null)
+@Serializable data class ChatContent(
+    val version: Int,
+    val type: String,
+    val text: String,
+    /** Absent on older messages and servers. */
+    @Serializable(with = MentionListSerializer::class) val mentions: List<MessageMention> = emptyList(),
+)
+
+/** Keeps a malformed or future-shaped mention entry from failing the whole message. */
+object MentionListSerializer : JsonTransformingSerializer<List<MessageMention>>(ListSerializer(MessageMention.serializer())) {
+    override fun transformDeserialize(element: JsonElement): JsonElement =
+        JsonArray((element as? JsonArray).orEmpty().mapNotNull { entry ->
+            val fields = entry as? JsonObject ?: return@mapNotNull null
+            val type = fields.string("type") ?: return@mapNotNull null
+            JsonObject(buildMap {
+                put("type", JsonPrimitive(type))
+                fields.string("id")?.let { put("id", JsonPrimitive(it)) }
+                fields.string("username")?.let { put("username", JsonPrimitive(it)) }
+            })
+        })
+
+    private fun JsonObject.string(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+}
 @Serializable data class MessageReaction(val emoji: String, val authorIds: List<String>)
 @Serializable data class ReactionUpdate(
     val type: String,

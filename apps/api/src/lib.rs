@@ -62,6 +62,7 @@ mod email;
 mod environment;
 pub mod gateway;
 mod media_store;
+mod mentions;
 mod notifications;
 mod presence;
 mod push;
