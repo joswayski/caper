@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Re-sign dist/Caper.app with a Developer ID identity and the hardened runtime,
 # notarize it with an App Store Connect API key, staple the ticket, and write
-# dist/Caper-macOS-<label>.zip. Run after `build.sh macos`.
+# dist/Caper-macOS-<label>.dmg (installer) and .zip (self-update payload).
+# Run after `build.sh macos`; requires dmgbuild 1.6.7.
 #
 # Environment: APPLE_SIGNING_IDENTITY (a Developer ID Application identity in an
 # unlocked keychain), NOTARY_KEY_PATH (.p8), NOTARY_KEY_ID, NOTARY_ISSUER.
@@ -44,18 +45,21 @@ codesign -d --entitlements - "$APP" 2>/dev/null | grep -q 'com.apple.security.de
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
+notarize() {
+  xcrun notarytool submit "$1" \
+    --key "$NOTARY_KEY_PATH" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" \
+    --wait --timeout 30m --output-format json >"$work/notary.json"
+  status="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$work/notary.json")"
+  if [[ "$status" != "Accepted" ]]; then
+    submission="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$work/notary.json")"
+    xcrun notarytool log "$submission" \
+      --key "$NOTARY_KEY_PATH" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" || true
+    echo "Notarization of $1 finished with status $status." >&2
+    exit 1
+  fi
+}
 ditto -c -k --keepParent "$APP" "$work/Caper.zip"
-xcrun notarytool submit "$work/Caper.zip" \
-  --key "$NOTARY_KEY_PATH" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" \
-  --wait --timeout 30m --output-format json >"$work/notary.json"
-status="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$work/notary.json")"
-if [[ "$status" != "Accepted" ]]; then
-  submission="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$work/notary.json")"
-  xcrun notarytool log "$submission" \
-    --key "$NOTARY_KEY_PATH" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" || true
-  echo "Notarization finished with status $status." >&2
-  exit 1
-fi
+notarize "$work/Caper.zip"
 
 xcrun stapler staple "$APP"
 xcrun stapler validate "$APP"
@@ -66,4 +70,16 @@ grep -q 'source=Notarized Developer ID' "$work/spctl.txt"
 out="$ROOT/dist/Caper-macOS-$LABEL.zip"
 rm -f "$out"
 ditto -c -k --keepParent "$APP" "$out"
-echo "$out"
+
+# Copy the already-stapled app into a read-only, drag-to-Applications image.
+# Keep the ZIP above unchanged: older installed apps still update from it.
+dmg="$ROOT/dist/Caper-macOS-$LABEL.dmg"
+rm -f "$dmg"
+dmgbuild -s "$ROOT/dmg-settings.py" -D "app=$APP" "Caper" "$dmg"
+codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$dmg"
+codesign --verify --strict "$dmg"
+notarize "$dmg"
+xcrun stapler staple "$dmg"
+xcrun stapler validate "$dmg"
+spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg"
+printf '%s\n%s\n' "$dmg" "$out"

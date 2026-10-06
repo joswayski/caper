@@ -27,9 +27,9 @@ import Foundation
 
     // Match the running app's architecture, including Intel builds under Rosetta.
     #if arch(arm64)
-    static let downloadURL = URL(string: "https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Apple-Silicon.zip")!
+    static let downloadURL = URL(string: "https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Apple-Silicon.dmg")!
     #else
-    static let downloadURL = URL(string: "https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Intel.zip")!
+    static let downloadURL = URL(string: "https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Intel.dmg")!
     #endif
 
     init(bundle: Bundle = .main, environment: [String: String] = ProcessInfo.processInfo.environment) {
@@ -44,6 +44,64 @@ import Foundation
     }
 
     var isAvailable: Bool { updater != nil }
+
+    /// Signed downloads must be installed before opening the account UI. Finder
+    /// owns the move and Gatekeeper handling; never strip quarantine or guess
+    /// the original path of an app running from a translocated read-only copy.
+    func prepareInstallation() -> Bool {
+        guard isAvailable else { return true } // Development and UI fixtures.
+        let manager = FileManager.default
+        let bundle = Bundle.main.bundleURL
+        // Like caper-updater's eligibility check, test an actual write in the
+        // parent that must hold the staged replacement, not just permission bits.
+        let probe = bundle.deletingLastPathComponent()
+            .appendingPathComponent(".caper-install-probe-\(UUID().uuidString)")
+        let parentWritable = manager.createFile(atPath: probe.path, contents: Data())
+        if parentWritable { try? manager.removeItem(at: probe) }
+        guard !Self.needsInstallation(bundle, home: manager.homeDirectoryForCurrentUser,
+                                      parentWritable: parentWritable) else {
+            let alert = NSAlert()
+            alert.messageText = "Install Caper before opening it"
+            alert.informativeText = "Open the Caper disk image and drag Caper onto Applications. Eject the disk image, then open Caper from Applications. This keeps you on the installed copy that can receive updates.\n\nIf Applications requires administrator access, use your home folder's Applications instead."
+            alert.addButton(withTitle: "Open Applications")
+            alert.addButton(withTitle: "Download Installer")
+            alert.addButton(withTitle: "Quit")
+            NSApp.activate(ignoringOtherApps: true)
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                var destination = URL(fileURLWithPath: "/Applications", isDirectory: true)
+                if !manager.isWritableFile(atPath: destination.path) {
+                    destination = manager.homeDirectoryForCurrentUser.appendingPathComponent("Applications", isDirectory: true)
+                    do {
+                        try manager.createDirectory(at: destination, withIntermediateDirectories: true)
+                    } catch {
+                        inform("Could not open Applications", error.localizedDescription)
+                        NSApp.terminate(nil)
+                        return false
+                    }
+                }
+                NSWorkspace.shared.open(destination)
+            case .alertSecondButtonReturn:
+                NSWorkspace.shared.open(Self.downloadURL)
+            default:
+                break
+            }
+            NSApp.terminate(nil)
+            return false
+        }
+        return true
+    }
+
+    nonisolated static func needsInstallation(_ bundle: URL, home: URL, parentWritable: Bool) -> Bool {
+        let path = bundle.standardizedFileURL.resolvingSymlinksInPath().pathComponents
+        let locations = [URL(fileURLWithPath: "/Applications", isDirectory: true),
+                         home.appendingPathComponent("Applications", isDirectory: true)]
+        let installed = locations.contains { location in
+            let root = location.standardizedFileURL.resolvingSymlinksInPath().pathComponents
+            return path.count > root.count && path.starts(with: root)
+        }
+        return !installed || !parentWritable
+    }
 
     func start() {
         guard isAvailable, timer == nil else { return }
@@ -95,7 +153,7 @@ import Foundation
         alert.messageText = "Caper \(update.version) is available"
         let detail = update.canApply
             ? "Caper restarts to install it and leaves any voice call."
-            : "Caper can't update this copy in place. Download the new version, or move Caper to Applications so updates install automatically."
+            : "Caper can't update this copy in place. Download the installer and drag Caper into a writable Applications folder."
         alert.informativeText = update.notes.isEmpty ? detail : "\(update.notes)\n\n\(detail)"
         alert.addButton(withTitle: update.canApply ? "Restart to Update" : "Download")
         alert.addButton(withTitle: "Later")

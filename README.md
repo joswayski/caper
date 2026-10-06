@@ -10,6 +10,15 @@ Signed-in accounts can start persistent, private one-to-one messages by username
 The Direct messages list is shared across spaces. Mobile push is deferred;
 when needed, the server will integrate directly with APNs for iOS and FCM for Android.
 
+Mac release downloads use a signed, notarized disk image: open it, drag Caper onto
+Applications, eject the image, then launch Caper from Applications. `~/Applications`
+also works without administrator access. Release copies outside these folders or
+in a non-writable folder show installation instructions and quit instead of leaving
+you using a copy that cannot reliably update. Windows Setup installs per-user and
+creates Start/Desktop shortcuts. Linux `.deb` installs use the package manager;
+only writable, self-contained Linux archive installs support in-app installation
+of updates. See [native installation details](apps/native/README.md#signed-builds-for-testers).
+
 Packaged Mac, Windows, and Linux apps check for updates 20 seconds after launch
 and every minute, using signed metadata cached on Caper's server for 60 seconds.
 Check manually with **Caper → Check for Updates…** on Mac or
