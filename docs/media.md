@@ -4368,10 +4368,13 @@ mobile push is implemented, not treated as current supported functionality.
 ### Mobile Browse navigation and channel menu (October 6, 2026)
 
 On narrow layouts, **Back to Browse** replaces the conversation's Browse label.
-Tap the channel name to open **Members**; it uses the existing member panel,
-including Close and outside-tap dismissal. No new settings are implied. Direct
-messages and unjoined channel previews have no member dropdown. Wide layouts
-retain their existing header/member controls.
+Tap the channel name for **Pins** and **Members**; neither has a dedicated mobile
+header button. Pins opens the existing pinned-message view; web/Android offer
+**Messages** in the dropdown to return, while Apple retains its sheet's Messages
+control. Members uses the existing member panel, including Close and outside-tap
+dismissal. Direct messages and unjoined previews keep Pins but omit Members;
+preview pins remain read-only. No new settings are implied. Wide layouts retain
+their existing Pins/member controls.
 
 Swiping right opens the existing space/channel browser; swiping left returns to
 the selected conversation without selecting a different channel. Web keeps the
@@ -4381,9 +4384,9 @@ CSS pixels/native points of mostly horizontal travel and reject vertical drags.
 
 | Platform | Intentional behavior and validation boundary |
 | --- | --- |
-| Web ≤760px | Touch swipes on content and channel rows; inputs, sliders, buttons other than channel selection, text selection, multi-touch, and open menus/dialogs/member overlays do not navigate. Build/type checks and 369 web tests pass. Disposable Chromium touch regression covers both directions, threshold/direction/cancellation/vertical/multi-touch guards, composer and overlay exclusion, channel-row release-click protection, draft/history retention, Back and menu keyboard dismissal. Desktop, 390px and 320px captures were inspected. This is not physical-device or Safari validation. |
+| Web ≤760px | Touch swipes on content and channel rows; inputs, sliders, buttons other than channel selection, text selection, multi-touch, and open menus/dialogs/member overlays do not navigate. Build/type checks and 369 web tests pass. Disposable Chromium touch regression covers both directions, threshold/direction/cancellation/vertical/multi-touch guards, composer and overlay exclusion, channel-row release-click protection, draft/history retention, Back and menu keyboard dismissal. Pin regression covers Pins/Messages/Members menu placement, empty/populated pins, count updates, DMs, read-only previews and unchanged wide controls. Desktop, 390px and 320px captures were inspected. This is not physical-device or Safari validation. |
 | Android narrow | Swipes are scoped to the timeline and channel sidebar; composer/account audio controls keep native gestures. Child-consumed drags and member overlays do not trigger navigation. Draft and lazy-list state survive Browse via saved conversation state. No Android build or device run in this orb: Java/Android toolchain is unavailable. Native CI and physical-device acceptance remain required. |
-| Apple narrow | Right swipe starts within 24 points of the timeline's left edge; return swipe starts within 24 points of the joined-channel browser's right edge. Search/Browse-channels mode retains Close navigation instead of swipes, to avoid its text field. Composer/account controls and member/reaction overlays are excluded. Updated iOS UI test covers both edge directions, vertical scrolling, draft retention and the channel menu. No Xcode/Swift build or UI test run in this Linux orb; macOS/iOS CI and devices remain required. |
+| Apple narrow | Right swipe starts within 24 points of the timeline's left edge; return swipe starts within 24 points of the joined-channel browser's right edge. Search/Browse-channels mode retains Close navigation instead of swipes, to avoid its text field. Composer/account controls and member/reaction overlays are excluded. Updated iOS UI test covers both edge directions, vertical scrolling, draft retention, Members and Pins menu/sheet dismissal. No Xcode/Swift build or UI test run in this Linux orb; macOS/iOS CI and devices remain required. |
 | Rust desktop | No navigation behavior change or client release required. The shared icon exporter also bundles the new back glyph here; existing desktop icon packaging tests pass. |
 | Containers/live voice | Docker daemon unavailable; the web build stage passed directly. No production deployment, shared data writes or live SFU validation performed. |
 
@@ -4409,9 +4412,10 @@ CSS pixels/native points of mostly horizontal travel and reject vertical drags.
    `bash apps/native/android/build.sh`, `bash apps/native/apple/build.sh ios`, and
    `bash apps/native/apple/build.sh macos`. Build output is not an app-store release.
 4. Verify swipe out/back with an unsent draft, vertical message/channel scrolling,
-   Members menu/Close, keyboard dismissal, long-press message actions, and audio
-   slider drags on real Android/iPhone devices and mobile Safari. Check wide
-   desktop controls remain unchanged. Roll back web by running the deployment
+   Members menu/Close, Pins/Messages in channels/DMs/previews, keyboard dismissal,
+   long-press message actions, and audio slider drags on real Android/iPhone
+   devices and mobile Safari. Check wide desktop controls remain unchanged.
+   Roll back web by running the deployment
    command with the previous known-good web image SHA; stop native distribution
    and release a corrected higher-build-number client if needed. No data rollback
    or migration reversal is required.

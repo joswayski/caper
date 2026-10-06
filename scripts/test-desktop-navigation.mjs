@@ -129,6 +129,8 @@ try {
   wait('!document.querySelector(".space-member-presence")');
   assert.equal(evaluate('document.body.textContent.includes("TEST FIXTURE design history")'), true);
   assert.equal(evaluate('document.querySelector(".chat-heading > .voice-actions .member-list-toggle")'), null, 'Mobile members belongs in the channel menu');
+  assert.equal(evaluate('document.querySelector(".chat-heading > .chat-pins-toggle")'), null, 'Mobile Pins must not have a dedicated header button');
+  assert.equal(evaluate('document.querySelectorAll(".chat-channel-menu .chat-pins-toggle").length'), 1, 'Pins remains available inside the channel menu');
   assert.equal(evaluate('document.querySelector(".navigation-toggle").getAttribute("aria-label")'), 'Back to Browse');
   assert.equal(evaluate('document.querySelector(".navigation-toggle").getBoundingClientRect().width'), 44);
 
@@ -205,6 +207,18 @@ try {
   assert.equal(evaluate('document.querySelector(".chat-channel-menu").open'), false);
   assert.equal(evaluate('document.activeElement === document.querySelector(".chat-channel-menu summary")'), true);
   browser('click', '.chat-channel-menu summary');
+  assert.equal(evaluate('document.querySelector(".chat-channel-menu .chat-pins-toggle").getAttribute("aria-label")'), 'Pins, 0');
+  browser('click', '.chat-channel-menu .chat-pins-toggle');
+  wait('document.querySelector(".chat-pins")?.textContent.includes("No pinned messages.")');
+  assert.equal(evaluate('document.querySelector(".chat-channel-menu").open'), false, 'Choosing Pins closes the menu');
+  screenshot('mobile-empty-pins');
+  browser('click', '.chat-channel-menu summary');
+  assert.equal(evaluate('document.querySelector(".chat-channel-menu .chat-pins-toggle").textContent'), 'Messages');
+  browser('click', '.chat-channel-menu .chat-pins-toggle');
+  wait('!document.querySelector(".chat-pins") && !!document.querySelector(".chat-message")');
+  assert.equal(evaluate('document.querySelector(".chat-channel-menu").open'), false, 'Choosing Messages closes the menu');
+  assert.equal(evaluate('document.querySelector("#chat-message").value'), 'mobile draft survives both swipe directions', 'Pins must preserve the conversation draft');
+  browser('click', '.chat-channel-menu summary');
   browser('click', '.chat-channel-menu .member-list-toggle');
   wait('!!document.querySelector(".space-member-presence")');
   assert.equal(evaluate('document.querySelector(".chat-channel-menu").open'), false, 'Choosing Members closes the menu');
@@ -225,7 +239,7 @@ try {
   browser('press', 'Escape');
   browser('set', 'viewport', '390', '844', '2');
   if (process.env.NAVIGATION_TEST_NARROW_SCREENSHOT) browser('screenshot', process.env.NAVIGATION_TEST_NARROW_SCREENSHOT);
-  console.log('PASS: desktop navigation/presence; Chromium touch: bidirectional Browse swipes, threshold/direction/vertical/cancel guards, composer and overlays, row release-click protection, draft/history retention, Back button, channel dropdown and 320px layout.');
+  console.log('PASS: desktop navigation/presence; Chromium touch: bidirectional Browse swipes, threshold/direction/vertical/cancel guards, composer and overlays, row release-click protection, draft/history retention, Back button, Pins/Messages/Members dropdown, empty pins and 320px layout.');
 } finally {
   socket?.close();
   try { browser('close'); } catch {}

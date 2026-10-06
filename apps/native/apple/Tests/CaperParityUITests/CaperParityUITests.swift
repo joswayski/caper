@@ -1505,6 +1505,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertGreaterThan(channel.frame.minX, navigation.frame.maxX, "Back arrow leads the channel menu")
         XCTAssertGreaterThanOrEqual(navigation.frame.width, 44, "Keep the back touch target accessible")
         XCTAssertFalse(app.buttons["Show member list"].exists, "Mobile Members belongs in the channel dropdown")
+        XCTAssertFalse(app.buttons["channel-pins"].exists, "Mobile Pins belongs in the channel dropdown")
         let composer = app.descendants(matching: .any)["message-composer"]
         composer.tap(); composer.typeText("Draft survives Browse")
         let timeline = app.descendants(matching: .any)["chat-timeline"]
@@ -1528,6 +1529,17 @@ final class CaperParityUITests: XCTestCase {
         capture("narrow-members", app: app)
         app.buttons["Close member list"].tap()
         XCTAssertEqual(staticTexts("Members", in: app).count, 0)
+        channel.tap()
+        let pins = app.buttons["channel-pins"]
+        XCTAssertTrue(pins.waitForExistence(timeout: 2))
+        pins.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["pinned-messages"].waitForExistence(timeout: 3))
+        assertStaticText("No pinned messages", in: app, timeout: 2)
+        capture("narrow-empty-pins", app: app)
+        app.buttons["Messages"].tap()
+        XCTAssertTrue(navigation.waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["channel-pins"].exists, "Dismissing Pins restores the clean header")
+        XCTAssertEqual(composer.value as? String, "Draft survives Browse")
         channel.tap()
         members.tap()
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.5)).tap()

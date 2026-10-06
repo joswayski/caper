@@ -958,20 +958,22 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             if (narrow) IconButton(openNavigation, Modifier.size(44.dp)) {
                 Icon(painterResource(R.drawable.lucide_arrow_right), "Back to Browse", Modifier.size(20.dp).graphicsLayer { rotationZ = 180f }, tint = TextMuted)
             }
-            if (narrow && !channel.direct && joined) Box(Modifier.weight(1f)) {
+            if (narrow) Box(Modifier.weight(1f)) {
                 Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
                     .clickable(role = Role.Button) { channelMenuOpen = true }
-                    .semantics(mergeDescendants = true) { contentDescription = "# ${channel.name} channel menu" }, verticalAlignment = Alignment.CenterVertically) {
-                    Text("# ${channel.name}", Modifier.weight(1f, fill = false), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    .semantics(mergeDescendants = true) { contentDescription = "${if (channel.direct) "" else "# "}${channel.name} channel menu" }, verticalAlignment = Alignment.CenterVertically) {
+                    Text(if (channel.direct) channel.name else "# ${channel.name}", Modifier.weight(1f, fill = false), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Icon(painterResource(R.drawable.lucide_chevron_down), null, Modifier.size(16.dp), tint = TextMuted)
                 }
                 DropdownMenu(channelMenuOpen, { channelMenuOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
-                    DropdownMenuItem(text = { Text(if (membersVisible) "Hide member list" else "Members") },
+                    DropdownMenuItem(text = { Text(if (showingPins) "Messages" else "Pins (${state.pinnedMessages.size})") },
+                        onClick = { channelMenuOpen = false; showingPins = !showingPins })
+                    if (!channel.direct && joined) DropdownMenuItem(text = { Text(if (membersVisible) "Hide member list" else "Members") },
                         leadingIcon = { Icon(painterResource(R.drawable.lucide_users), null) },
                         onClick = { channelMenuOpen = false; toggleMembers() })
                 }
             } else Text(if (channel.direct) channel.name else "# ${channel.name}", Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            TextButton({ showingPins = !showingPins }, Modifier.heightIn(min = 48.dp)) {
+            if (!narrow) TextButton({ showingPins = !showingPins }, Modifier.heightIn(min = 48.dp)) {
                 Text(if (showingPins) "Messages" else "Pins (${state.pinnedMessages.size})", fontSize = 11.sp, fontWeight = FontWeight.Bold)
             }
             if (!channel.direct && !joined) Button({ viewModel.joinChannel(channel) }, enabled = !state.busy, shape = MaterialTheme.shapes.small) { Text("Join channel") }

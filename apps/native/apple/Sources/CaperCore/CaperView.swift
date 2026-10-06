@@ -1539,16 +1539,20 @@ private struct ChatView: View {
                     Button(action: browse) { CaperIcon(name: "arrow-left", size: 20).frame(width: 44, height: 44).contentShape(Rectangle()) }
                         .buttonStyle(.plain).foregroundStyle(CaperTheme.muted).modifier(ControlHover()).accessibilityLabel("Back to Browse")
                 }
-                if narrow && model.selectedDirectMessageID == nil && !model.previewingChannel {
+                if narrow {
                     Menu {
-                        Button(membersVisible ? "Hide member list" : "Members", action: toggleMembers)
+                        Button(chat.pinnedMessages.isEmpty ? "Pins" : "Pins \(chat.pinnedMessages.count)") { showingPins = true }
+                            .accessibilityIdentifier("channel-pins")
+                        if model.selectedDirectMessageID == nil && !model.previewingChannel {
+                            Button(membersVisible ? "Hide member list" : "Members", action: toggleMembers)
+                        }
                     } label: {
                         HStack(spacing: 6) {
-                            Text("# \(chat.channelName.lowercased())").font(CaperTheme.font(14, weight: .medium)).lineLimit(1)
+                            Text(model.selectedDirectMessageID == nil ? "# \(chat.channelName.lowercased())" : chat.channelName).font(CaperTheme.font(14, weight: .medium)).lineLimit(1)
                             CaperIcon(name: "chevron-down")
                         }.frame(minHeight: 44).contentShape(Rectangle())
                     }.menuStyle(.borderlessButton).menuIndicator(.hidden).foregroundStyle(CaperTheme.text)
-                        .accessibilityLabel("# \(chat.channelName.lowercased())")
+                        .accessibilityLabel(model.selectedDirectMessageID == nil ? "# \(chat.channelName.lowercased())" : "Direct message with \(chat.channelName)")
                         .accessibilityHint("Open channel menu")
                         .accessibilityIdentifier("selected-channel-name")
                 } else {
@@ -1557,11 +1561,13 @@ private struct ChatView: View {
                         .accessibilityIdentifier("selected-channel-name")
                 }
                 Spacer()
-                Button { showingPins = true } label: {
-                    Label(chat.pinnedMessages.isEmpty ? "Pins" : "Pins \(chat.pinnedMessages.count)", systemImage: "pin").font(CaperTheme.font(11, weight: .bold))
+                if !narrow {
+                    Button { showingPins = true } label: {
+                        Label(chat.pinnedMessages.isEmpty ? "Pins" : "Pins \(chat.pinnedMessages.count)", systemImage: "pin").font(CaperTheme.font(11, weight: .bold))
+                    }
+                    .buttonStyle(.plain).foregroundStyle(CaperTheme.muted).frame(minHeight: 44)
+                    .accessibilityIdentifier("channel-pins")
                 }
-                .buttonStyle(.plain).foregroundStyle(CaperTheme.muted).frame(minHeight: 44)
-                .accessibilityIdentifier("channel-pins")
                 if chat.liveState != .connected && showConnectionStatus {
                     Text(chat.liveState == .disconnected ? "Offline" : "Connecting…").font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.muted)
                         .accessibilityIdentifier("chat-connection-status")

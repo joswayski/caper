@@ -392,6 +392,9 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     </article></div>;
   };
 
+  const pinsToggle = state.phase === "ready" && (showPins ? <button type="button" className="chat-pins-toggle" onClick={() => setShowPins(false)}><ArrowLeft size={16} aria-hidden="true" />Messages</button>
+    : <button type="button" className="chat-pins-toggle" onClick={() => setShowPins(true)} aria-label={`Pins, ${state.pinnedMessages.length}`}><Pin size={16} aria-hidden="true" />Pins{state.pinnedMessages.length ? ` ${state.pinnedMessages.length}` : ""}</button>);
+
   return <section className="chat-panel" aria-labelledby="chat-heading">
     <header className="chat-heading">
       {headerLeading}
@@ -406,10 +409,9 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
         <summary aria-label={`${direct ? "" : "# "}${channelName} channel menu`}><h2 id="chat-heading" className="chat-channel-title">{direct ? "" : "# "}{channelName}</h2><ChevronDown aria-hidden="true" /></summary>
         <div className="space-actions" onClick={(event) => {
           if ((event.target as HTMLElement).closest("button")) channelMenuRef.current!.open = false;
-        }}>{channelMenu}</div>
+        }}>{pinsToggle}{channelMenu}</div>
       </details> : <h2 id="chat-heading" className={showTitle ? "chat-channel-title" : "sr-only"}>{direct ? "" : "# "}{channelName}</h2>}
-      {state.phase === "ready" && (showPins ? <button type="button" className="chat-pins-toggle" onClick={() => setShowPins(false)}><ArrowLeft size={16} aria-hidden="true" />Messages</button>
-        : <button type="button" className="chat-pins-toggle" onClick={() => setShowPins(true)} aria-label={`Pins, ${state.pinnedMessages.length}`}><Pin size={16} aria-hidden="true" />Pins{state.pinnedMessages.length ? ` ${state.pinnedMessages.length}` : ""}</button>)}
+      {!channelMenu && pinsToggle}
       {headerActions}
       {!state.online && showConnectionStatus && <span className="chat-offline" role="status">{state.phase === "error" ? "Offline" : "Connecting…"}</span>}
       {state.phase === "ready" && state.error && <div className="chat-refresh-error" role="alert">{state.error} <button type="button" onClick={() => clientRef.current?.retryLoad()}>Retry</button></div>}
