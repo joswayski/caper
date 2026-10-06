@@ -125,6 +125,15 @@ pub enum Command {
         channel: String,
         typing: bool,
     },
+    /// Who reacted to one message, read like history. `revision` is the
+    /// snapshot's `reactionSeq` the result is cached under.
+    LoadReactors {
+        generation: u64,
+        token: Option<String>,
+        channel: String,
+        message: String,
+        revision: String,
+    },
     Admin {
         generation: u64,
         token: String,
@@ -336,6 +345,13 @@ pub enum Event {
         emoji: String,
         active: bool,
         result: Result<crate::model::ReactionUpdate, SendFailure>,
+    },
+    Reactors {
+        generation: u64,
+        channel: String,
+        message: String,
+        revision: String,
+        result: Result<crate::model::Reactors, String>,
     },
     Credential {
         generation: u64,
@@ -925,6 +941,21 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                     status: error.status.map(|status| status.as_u16()),
                     message: error.to_string(),
                 }),
+        },
+        Command::LoadReactors {
+            generation,
+            token,
+            channel,
+            message,
+            revision,
+        } => Event::Reactors {
+            generation,
+            result: api
+                .reactors(token.as_deref(), &channel, &message)
+                .map_err(|error| error.to_string()),
+            channel,
+            message,
+            revision,
         },
         Command::Admin {
             generation,
