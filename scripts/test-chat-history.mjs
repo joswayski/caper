@@ -16,10 +16,13 @@ if (artifacts) mkdirSync(artifacts, { recursive: true });
 function fixture() {
   if (location.protocol === 'about:') return;
   const base = 9007199254740992n;
-  const author = { id: 'history-fixture', name: 'History fixture', isGuest: true };
-  const ownAuthor = { id: 'local-fixture', name: 'Local fixture', isGuest: true };
+  const author = { id: 'historyfixture', name: 'TEST FIXTURE history', isGuest: false };
+  const ownAuthor = { id: 'localfixture', name: 'TEST FIXTURE local', isGuest: false };
+  const account = { id: ownAuthor.id, username: 'fixture_local', displayName: ownAuthor.name };
+  const space = { id: 'space1234567', name: 'TEST FIXTURE history', ownerId: author.id };
+  const channel = { id: 'general12345', spaceId: space.id, name: 'general', private: false, joined: true };
   const message = (index, text, id, sender = author) => ({
-    id: `message-${index}`, clientMessageId: id ?? `command-${index}`, channelId: 'general',
+    id: `message-${index}`, clientMessageId: id ?? `command-${index}`, channelId: channel.id,
     seq: String(base + BigInt(index)), author: sender, createdAt: '2026-09-21T12:00:00Z',
     content: { version: 1, type: 'text', text: text ?? `Fixture message ${index}. ${index % 7 === 0 ? '\nA second line.\nAnd a third line.' : ''}${index % 11 === 0 ? 'Variable-length text for wrapping. '.repeat(20) : ''}` },
   });
@@ -27,11 +30,15 @@ function fixture() {
   const sockets = [];
   const control = window.chatHistoryFixture = {
     requests: [], completed: 0, failNext: false, holdNext: false, release: undefined,
-    initialFrames: [],
+    initialFrames: [], latestKey: messages.at(-1)?.clientMessageId,
     append(text = 'Fixture live arrival', id, sender) {
       const next = message(messages.length + 1, text, id, sender);
       messages.push(next);
-      for (const socket of sockets) socket.frame({ type: 'message.created', channelId: 'general', seq: next.seq, message: next });
+      control.latestKey = next.clientMessageId;
+      for (const socket of sockets) for (const request of socket.subscriptions.values()) {
+        if (request.kind === 'chat') socket.frame({ type: 'event', id: request.id,
+          event: { type: 'message.created', channelId: channel.id, seq: next.seq, message: next } });
+      }
       return next;
     },
   };
@@ -42,16 +49,21 @@ function fixture() {
   const originalFetch = window.fetch;
   window.fetch = async (input, options) => {
     const path = new URL(typeof input === 'string' ? input : input.url, location.href);
-    if (path.pathname === '/api/account/me') return new Response(null, { status: 401 });
-    if (path.pathname === '/api/chat/general') return Response.json({ ...page(), space: { id: 'fixture', name: 'History fixture' }, channel: { id: 'general', name: 'General' } });
+    if (!path.pathname.startsWith('/api/')) return originalFetch(input, options);
+    if (path.pathname === '/api/account/me') return Response.json(account);
+    if (path.pathname === '/api/spaces') return Response.json({ spaces: [space], invitations: [] });
+    if (path.pathname === `/api/spaces/${space.id}`) return Response.json({ space, channels: [channel], members: [{ ...account, owner: false }] });
+    if (path.pathname === '/api/dms') return Response.json({ conversations: [] });
+    if (path.pathname.endsWith('/media/status')) return Response.json({ enabled: false });
     if (path.pathname === '/api/chat/session') return Response.json({ token: 'local-test-only', author: ownAuthor });
     if (path.pathname.endsWith('/typing')) return new Response(null, { status: 204 });
-    if (path.pathname === '/api/chat/channels/general/messages') {
+    if (path.pathname === `/api/chat/channels/${channel.id}/messages`) {
       if (options?.method === 'POST') {
         const body = JSON.parse(options.body);
         await new Promise(resolve => setTimeout(resolve, 250));
         return Response.json(control.append(body.text, body.clientMessageId, ownAuthor));
       }
+      if (!path.searchParams.has('before')) return Response.json({ ...page(), space, channel });
       control.requests.push(path.searchParams.get('before'));
       const response = page(Number(BigInt(path.searchParams.get('before')) - base));
       if (control.holdNext) {
@@ -64,15 +76,28 @@ function fixture() {
       if (control.failNext) { control.failNext = false; return Response.json({ error: 'Fixture history outage' }, { status: 503 }); }
       return Response.json(response);
     }
-    return originalFetch(input, options);
+    return Response.json({ error: 'TEST FIXTURE: disabled endpoint' }, { status: 503 });
   };
   const OriginalSocket = window.WebSocket;
   window.WebSocket = class extends EventTarget {
+    subscriptions = new Map();
     constructor(address, protocols) {
       super();
       if (!String(address).includes('/api/chat/events')) return new OriginalSocket(address, protocols);
       sockets.push(this);
-      setTimeout(() => this.frame({ type: 'ready', cursor: new URL(address).searchParams.get('after') }), 0);
+      queueMicrotask(() => this.frame({ type: 'hello', idleTimeoutSeconds: 600, serverTime: Date.now() }));
+    }
+    send(data) {
+      const request = JSON.parse(data);
+      if (request.type === 'heartbeat') this.frame({ type: 'heartbeat' });
+      if (request.type === 'unsubscribe') this.subscriptions.delete(request.id);
+      if (request.type !== 'subscribe') return;
+      this.subscriptions.set(request.id, request);
+      const event = request.kind === 'chat' ? { type: 'ready', cursor: request.after ?? '0' }
+        : request.kind === 'presence' ? { type: 'snapshot', members: request.userIds.map(userId => ({ userId, status: 'online' })) }
+          : { type: 'snapshot', participants: [], revision: 1 };
+      this.frame({ type: 'event', id: request.id, event });
+      this.frame({ type: 'subscribed', id: request.id });
     }
     frame(event) { this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(event) })); }
     close() { const index = sockets.indexOf(this); if (index >= 0) sockets.splice(index, 1); }
@@ -121,13 +146,35 @@ try {
   browser('open', url);
   wait('!!document.querySelector(".chat-message") && !document.querySelector(".chat-offline")');
   evaluate('document.fonts.ready.then(() => true)');
-  wait('(() => { const s = document.querySelector(".chat-scroller"); return s.scrollHeight - s.clientHeight - s.scrollTop < 2; })()');
+  // Integer scroll extents can differ by two CSS pixels at the list's end.
+  wait('(() => { const s = document.querySelector(".chat-scroller"); return s.scrollHeight - s.clientHeight - s.scrollTop <= 2; })()');
   settle();
   assert.ok(metrics().rows < 35);
   assert.ok(evaluate('chatHistoryFixture.initialFrames.length > 0 && chatHistoryFixture.initialFrames.every(Boolean)'), 'History must be visible on every ready frame, including virtualizer positioning');
-  assert.ok(metrics().bottom < 2, JSON.stringify(metrics()));
+  assert.ok(metrics().bottom <= 2, JSON.stringify(metrics()));
   assert.equal(evaluate('chatHistoryFixture.requests.length'), 0, 'Initial positioning must not fetch older pages');
   screenshot('chat-history-latest');
+
+  // Measure this range before the race so height-estimate corrections from
+  // newly visible wrapped rows do not get mistaken for an append stealing it.
+  evaluate('document.querySelector(".chat-scroller").scrollTop -= 450');
+  settle();
+  evaluate('(() => { const s = document.querySelector(".chat-scroller"); s.scrollTop = s.scrollHeight; })()');
+  settle();
+  // Deliver within the 50ms atBottomStateChange throttle window. Waiting for
+  // settled scroll state hides the race in a separate scroll-to-latest effect.
+  const rapidScroll = evaluate(`(() => {
+    const s = document.querySelector('.chat-scroller');
+    s.scrollTop -= 450;
+    s.dispatchEvent(new Event('scroll'));
+    const top = s.getBoundingClientRect().top;
+    const row = [...document.querySelectorAll('.chat-message')].find(row => row.getBoundingClientRect().bottom > top);
+    const anchor = { key: row.dataset.messageKey, offset: row.getBoundingClientRect().top - top };
+    chatHistoryFixture.append('TEST FIXTURE immediate arrival after upward scroll');
+    return anchor;
+  })()`);
+  settle();
+  assert.ok(Math.abs(anchorOffset(rapidScroll.key) - rapidScroll.offset) < 2, 'Immediate live delivery stole the reader’s scroll position');
 
   evaluate('chatHistoryFixture.holdNext = true; document.querySelector(".chat-scroller").scrollTop = 0');
   wait('typeof chatHistoryFixture.release === "function"');
@@ -177,6 +224,7 @@ try {
   screenshot('chat-history-beginning');
 
   browser('set', 'viewport', '390', '844', '2');
+  browser('click', 'button[aria-label="Hide member list"]');
   settle();
   assert.ok(metrics().rows < 40);
   assert.equal(evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
@@ -186,20 +234,20 @@ try {
 
   evaluate('document.querySelector(".chat-scroller").focus()');
   browser('press', 'End');
-  wait('(() => { const s = document.querySelector(".chat-scroller"); return s.scrollHeight - s.clientHeight - s.scrollTop < 2 && !!document.querySelector("[data-message-key=command-3001]"); })()');
+  wait('(() => { const s = document.querySelector(".chat-scroller"); return s.scrollHeight - s.clientHeight - s.scrollTop <= 2 && [...document.querySelectorAll(".chat-message")].some(row => row.dataset.messageKey === chatHistoryFixture.latestKey); })()');
   settle();
   evaluate('chatHistoryFixture.append("Fixture arrival at the bottom")');
   settle();
-  assert.ok(metrics().bottom < 2, 'Following live messages at bottom must still work: ' + JSON.stringify(metrics()));
+  assert.ok(metrics().bottom <= 2, 'Following live messages at bottom must still work: ' + JSON.stringify(metrics()));
   evaluate('document.querySelector(".chat-scroller").scrollTop = 0');
   settle();
   browser('fill', '#chat-message', 'Fixture optimistic message');
   browser('press', 'Enter');
-  wait('!!document.querySelector("[data-message-key=command-3002]") && !document.querySelector(".chat-message-pending") && document.querySelector("#chat-message").value === ""');
+  wait('[...document.querySelectorAll(".chat-message p")].some(p => p.textContent === "Fixture optimistic message") && !document.querySelector(".chat-message-pending") && document.querySelector("#chat-message").value === ""');
   settle();
   assert.equal(evaluate('[...document.querySelectorAll(".chat-message p")].filter(p => p.textContent === "Fixture optimistic message").length'), 1);
-  assert.ok(metrics().bottom < 2);
-  console.log(`PASS: 3,000-message history; 50-message cursor pages; stable prepend/live anchors; ${metrics().rows} mounted rows at latest; retry; narrow layout; optimistic reconciliation after sending from history.`);
+  assert.ok(metrics().bottom <= 2);
+  console.log(`PASS: 3,000-message history; 50-message cursor pages; immediate/settled live delivery preserves readers; stable prepend anchors; ${metrics().rows} mounted rows at latest; retry; narrow layout; optimistic reconciliation after sending from history.`);
 
   const emptyUrl = new URL(url);
   emptyUrl.searchParams.set('fixtureCount', '0');
@@ -213,6 +261,15 @@ try {
   assert.equal(evaluate('chatHistoryFixture.requests.length'), 0);
   console.log('PASS: empty history mounts a virtual list on first send without duplication or pagination.');
   assert.ok(evaluate('chatHistoryFixture.initialFrames.length > 0 && chatHistoryFixture.initialFrames.every(Boolean)'), 'First-message mount must not flash empty');
+} catch (error) {
+  console.error('History fixture failure state:', evaluate(`(() => {
+    const s = document.querySelector('.chat-scroller');
+    return { bottom: s && s.scrollHeight - s.clientHeight - s.scrollTop, top: s?.scrollTop,
+      visibleHeight: s?.clientHeight, rows: document.querySelectorAll('.chat-message').length,
+      requests: chatHistoryFixture.requests, completed: chatHistoryFixture.completed };
+  })()`));
+  screenshot('chat-history-failure');
+  throw error;
 } finally {
   try { browser('close'); } finally { rmSync(directory, { recursive: true, force: true }); }
 }

@@ -110,6 +110,9 @@ export class ChatClient {
   private readonly channelId?: string;
   private sounds: boolean;
   private spaceId?: string;
+  private channel?: GeneralChatHistory["channel"];
+  private readonly reactionIntents = new Map<string, Map<string, { active: boolean; authorId: string; generation: number }>>();
+  private readonly reactionRequests = new Map<string, Promise<void>>();
 
   constructor(changed: (state: ChatViewState) => void, channelId?: string, options: { sounds?: boolean } = {}) {
     this.changed = changed;
@@ -126,10 +129,10 @@ export class ChatClient {
   setSounds(enabled: boolean) { this.sounds = enabled; }
 
   snapshotHistory(): GeneralChatHistory | undefined {
-    if (this.state.phase !== "ready" || this.spaceId === undefined || !this.state.channelId) return;
+    if (this.state.phase !== "ready" || this.spaceId === undefined || !this.channel) return;
     return {
       space: { id: this.spaceId, name: this.state.spaceName },
-      channel: { id: this.state.channelId, name: this.state.channelName },
+      channel: this.channel,
       messages: this.timeline.messages, cursor: this.timeline.cursor, hasMore: this.state.hasMore,
     };
   }
@@ -235,7 +238,7 @@ export class ChatClient {
   }
 
   async send(text: string): Promise<boolean> {
-    if (this.sending || this.state.sendRejected) return false;
+    if (this.controller.signal.aborted || this.sending || this.state.sendRejected) return false;
     // A timeout is an unknown outcome. Enter/Send must retry the same command,
     // just like the explicit retry button, before allowing a new command.
     const pending = {
@@ -252,6 +255,9 @@ export class ChatClient {
       this.update({ pendingSend: pending, sendError: "Your guest session is unavailable. Retry the session, then send again." });
       return false;
     }
+    // A refresh may revoke access while HTTP is in flight. Successful refreshes
+    // of the same channel still allow the acknowledgement to confirm the send.
+    const current = () => !this.controller.signal.aborted && this.state.channelId === channelId;
     this.setTyping(false);
     this.sending = true;
     const confirmation = new Promise<ChatMessage>((resolve) => { this.confirmSend = resolve; });
@@ -269,7 +275,7 @@ export class ChatClient {
         });
         if (!response.ok) {
           rejected = [400, 404, 409, 413, 422].includes(response.status);
-          if ((response.status === 401 || response.status === 403) && this.state.pendingSend?.clientMessageId === pending.clientMessageId) {
+          if (current() && (response.status === 401 || response.status === 403) && this.state.pendingSend?.clientMessageId === pending.clientMessageId) {
             try { localStorage.removeItem(SESSION_KEY); } catch { /* Storage is optional. */ }
             this.session = undefined;
             void this.createSession();
@@ -282,10 +288,12 @@ export class ChatClient {
         return message;
       })();
       const message = await Promise.race([request, confirmation]);
+      if (!current()) return false;
       this.timeline.mergeSent(message);
       this.update({ messages: this.timeline.messages, pendingSend: undefined, sendError: undefined, sendRejected: undefined });
       return true;
     } catch (error) {
+      if (!current()) return false;
       // Confirmation can clear the command while an HTTP rejection is already
       // propagating through Promise.race, before this continuation runs.
       if (!this.state.pendingSend) return true;
@@ -302,24 +310,50 @@ export class ChatClient {
     const channelId = this.state.channelId;
     const session = this.session;
     if (this.controller.signal.aborted || !channelId || !session) throw new Error("Your chat session is unavailable. Retry the session, then react again.");
-    const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/reactions`, {
-      method: "PUT", headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
-      body: JSON.stringify({ emoji, active }),
-      signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
-    });
-    if (this.controller.signal.aborted || generation !== this.generation || session !== this.session) return;
-    if (!response.ok) {
-      if (response.status === 401 || response.status === 403) {
-        this.session = undefined;
-        void this.createSession();
-      }
-      throw await apiError(response, "Reaction could not be saved. Try again.");
-    }
-    const event: unknown = await response.json();
-    if (!isChatReactionEvent(event) || event.channelId !== channelId || event.messageId !== messageId) throw new Error("The chat service returned an invalid reaction.");
-    if (this.controller.signal.aborted || generation !== this.generation || session !== this.session) return;
-    this.timeline.mergeReactions(event);
+    const intents = this.reactionIntents.get(messageId) ?? new Map();
+    const intent = { active, authorId: session.author.id, generation };
+    intents.set(emoji, intent);
+    this.reactionIntents.set(messageId, intents);
     this.update({ messages: this.timeline.messages });
+    const current = () => !this.controller.signal.aborted && generation === this.generation && session === this.session;
+    const save = async () => {
+      try {
+        if (!current() || intents.get(emoji) !== intent) return;
+        const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/reactions`, {
+          method: "PUT", headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
+          body: JSON.stringify({ emoji, active }),
+          signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
+        });
+        if (!current()) return;
+        if (!response.ok) {
+          const error = await apiError(response, "Reaction could not be saved. Try again.");
+          if (response.status === 401 || response.status === 403) {
+            this.session = undefined;
+            void this.createSession();
+          }
+          throw error;
+        }
+        const event: unknown = await response.json();
+        if (!isChatReactionEvent(event) || event.channelId !== channelId || event.messageId !== messageId) throw new Error("The chat service returned an invalid reaction.");
+        if (!current()) return;
+        this.timeline.mergeReactions(event);
+      } catch (error) {
+        // An older failed toggle must not report failure for a newer intent.
+        if (!this.controller.signal.aborted && generation === this.generation && intents.get(emoji) === intent) throw error;
+      } finally {
+        if (intents.get(emoji) === intent) {
+          intents.delete(emoji);
+          if (!intents.size) this.reactionIntents.delete(messageId);
+        }
+        if (!this.controller.signal.aborted && generation === this.generation) this.update({ messages: this.timeline.messages });
+      }
+    };
+    // Keep full-message acknowledgements ordered; taps still project immediately.
+    const previous = this.reactionRequests.get(messageId);
+    const request = previous ? previous.catch(() => {}).then(save) : save();
+    this.reactionRequests.set(messageId, request);
+    try { await request; }
+    finally { if (this.reactionRequests.get(messageId) === request) this.reactionRequests.delete(messageId); }
   }
 
   private receiveEvent(event: ChatMessage | ChatReactionEvent) {
@@ -339,6 +373,7 @@ export class ChatClient {
   }
 
   private async loadInitial(prepared?: GeneralChatHistory) {
+    if (this.controller.signal.aborted) return;
     const generation = ++this.generation;
     this.loadingHistory = true;
     const previous = this.state.phase === "ready" ? this.snapshotHistory() : undefined;
@@ -356,6 +391,7 @@ export class ChatClient {
       if (history.messages.some((message) => message.channelId !== history.channel.id)) throw new Error("The chat service returned messages from another channel.");
       if (generation !== this.generation) return;
       this.spaceId = history.space.id;
+      this.channel = history.channel;
       // Retain older pages only when every missing event is a fresh message.
       // An unaccounted sequence may be a reaction on an older cached row.
       const applied = sequence(previous?.cursor ?? "0");
@@ -429,6 +465,21 @@ export class ChatClient {
   }
 
   private update(change: Partial<ChatViewState>) {
+    if (change.messages && this.reactionIntents.size) {
+      change = { ...change, messages: change.messages.map((message) => {
+        const intents = this.reactionIntents.get(message.id);
+        if (!intents) return message;
+        const reactions = new Map((message.reactions ?? []).map((reaction) => [reaction.emoji, reaction]));
+        for (const [emoji, intent] of intents) {
+          if (intent.generation !== this.generation || intent.authorId !== this.session?.author.id) continue;
+          const authorIds = reactions.get(emoji)?.authorIds.filter((id) => id !== intent.authorId) ?? [];
+          if (intent.active) authorIds.push(intent.authorId);
+          if (authorIds.length) reactions.set(emoji, { emoji, authorIds });
+          else reactions.delete(emoji);
+        }
+        return { ...message, reactions: [...reactions.values()] };
+      }) };
+    }
     this.state = { ...this.state, ...change };
     if (change.author) {
       this.typers.delete(change.author.id);

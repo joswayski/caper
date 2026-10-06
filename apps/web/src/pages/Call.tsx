@@ -227,7 +227,6 @@ interface CallProps {
   onReadCursor?: (seq: string) => void;
   channelActions?: ReactNode;
   membersPanel?: (onClose: () => void) => ReactNode;
-  onVoiceChannelOpen?: (channelId: string, spaceId?: string) => void;
   spaceRail?: ReactNode;
   /** Channels in the current space, whose voice rosters appear under them. */
   voiceChannels?: Array<{ id: string; name: string }>;
@@ -249,7 +248,7 @@ interface CallProps {
   onChatOnlineChange?: (online: boolean) => void;
 }
 
-export default function Call({ channel, onReadCursor, channelActions, voiceChannels, spaceRail, channelNavigation, membersPanel, onVoiceChannelOpen, navigationOpen = false, onNavigationToggle, initialAccount, initialHistory, initialHistoryError, onHistoryChange, embedded = false, engaged = true, onChatOnlineChange }: CallProps = {}) {
+export default function Call({ channel, onReadCursor, channelActions, voiceChannels, spaceRail, channelNavigation, membersPanel, navigationOpen = false, onNavigationToggle, initialAccount, initialHistory, initialHistoryError, onHistoryChange, embedded = false, engaged = true, onChatOnlineChange }: CallProps = {}) {
   const systemSounds = useSyncExternalStore(subscribeSystemSounds, getSystemSoundsEnabled, () => true);
   const [state, setState] = useState(initialState);
   const [name, setName] = useState(initialAccount?.displayName ?? "");
@@ -767,16 +766,13 @@ export default function Call({ channel, onReadCursor, channelActions, voiceChann
           <div className="voice-panel">
           {((!idle && !pendingJoin) || (voiceError && !audioPanel)) && <div className="voice-dock">
             {!idle && !pendingJoin && <div className="connected-channel" data-phase={state.phase} role="status">
-              <button type="button" className="voice-dock-channel" onClick={() => {
-                if (voiceChannel && onVoiceChannelOpen) onVoiceChannelOpen(voiceChannel.id, voiceChannel.spaceId);
-                else setAudioPanel("connection");
-              }}>
+              <div className="voice-dock-channel">
                 <AudioLines aria-hidden="true" />
                 <span>
                   <strong>{connected ? "Voice connected" : state.phase === "joining" ? "Connecting…" : "Reconnecting…"}</strong>
                   <small>{voiceChannel?.name ?? initialHistory?.channel.name ?? "general"} / {voiceChannel?.spaceName ?? initialHistory?.space.name ?? "Public demo"}</small>
                 </span>
-              </button>
+              </div>
               <Tooltip content={connected ? "Disconnect" : "Cancel"}><button type="button" className="voice-hangup" aria-label={connected ? "Leave voice" : "Cancel joining voice"} onClick={leave}><PhoneOff aria-hidden="true" /></button></Tooltip>
             </div>}
             {voiceError && !audioPanel && <p className="voice-error" role="alert">

@@ -1,24 +1,7 @@
 name: Native development builds
 
+# Runs on main only; pull requests get no CI. Use "Run workflow" to test a branch.
 on:
-  pull_request:
-    paths:
-      - apps/native/**
-      - apps/api/src/**
-      - apps/web/public/caper-face.svg
-      - scripts/generate-favicons.mjs
-      - tests/desktop-icons.test.mjs
-      - shared/design.css
-      - shared/emoji/**
-      - scripts/native-emoji.mjs
-      - shared/fonts/**
-      - scripts/native_fonts.py
-      - scripts/native-parity-fixture.mjs
-      - tests/native-parity-fixture.test.mjs
-      - scripts/native_artifacts.py
-      - tests/test_native_artifacts.py
-      - tests/test_apple_release_signing.py
-      - .github/workflows/native.yml
   push:
     branches: [main]
     paths:
@@ -40,16 +23,17 @@ on:
       - .github/workflows/native.yml
   workflow_dispatch:
 
-# PRs never receive signing credentials. No release, store upload, or deploy.
+# No signing credentials, release, store upload, or deploy.
 permissions:
   contents: read
+  actions: write
 
-# PRs cancel superseded runs. On main, the running build always finishes and
-# only the newest waiting push runs next (GitHub replaces older pending runs in
-# the group), so fast pushes neither starve main of finished builds nor pile up.
+# The running build always finishes and only the newest waiting push runs next
+# (GitHub replaces older pending runs in the group), so fast pushes neither
+# starve main of finished builds nor pile up.
 concurrency:
   group: native-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 jobs:
   route:
@@ -74,6 +58,18 @@ jobs:
       - run: node --test tests/desktop-icons.test.mjs
       - name: Verify bundled Apple emoji match the shared artwork and licenses
         run: diff -qr shared/emoji apps/native/apple/Sources/CaperCore/EmojiAssets
+      - name: Stop the rest of this run after a failure
+        # One failed job already fails the run; cancel the other jobs instead of
+        # letting them hold runners (and block newer pushes) until they finish.
+        if: failure()
+        shell: bash
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel" >/dev/null \
+            || echo "::warning::Could not cancel the rest of this run"
 
   updater:
     name: Updater / ${{ matrix.os }}
@@ -100,6 +96,18 @@ jobs:
       - run: cargo fmt -- --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
+      - name: Stop the rest of this run after a failure
+        # One failed job already fails the run; cancel the other jobs instead of
+        # letting them hold runners (and block newer pushes) until they finish.
+        if: failure()
+        shell: bash
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel" >/dev/null \
+            || echo "::warning::Could not cancel the rest of this run"
 
   desktop:
     name: Desktop / ${{ matrix.target }}
@@ -185,6 +193,18 @@ jobs:
           path: dist/native/${{ matrix.target }}/
           if-no-files-found: error
           retention-days: 14
+      - name: Stop the rest of this run after a failure
+        # One failed job already fails the run; cancel the other jobs instead of
+        # letting them hold runners (and block newer pushes) until they finish.
+        if: failure()
+        shell: bash
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel" >/dev/null \
+            || echo "::warning::Could not cancel the rest of this run"
 
   apple:
     name: Apple / ${{ matrix.target }}
@@ -202,8 +222,10 @@ jobs:
           - os: macos-15
             platform: ios
             target: ios-simulator-arm64
-    # Intel builds stay on GitHub-hosted macos-15-intel.
-    runs-on: ${{ needs.route.outputs.mac == 'true' && matrix.os == 'macos-15' && fromJSON('["self-hosted","josemac"]') || matrix.os }}
+    # Intel builds stay on GitHub-hosted macos-15-intel. On the self-hosted Mac
+    # the macOS UI tests (josemac-ui) and the iOS simulator (josemac-sim) run in
+    # different VMs so the two jobs run at the same time.
+    runs-on: ${{ needs.route.outputs.mac == 'true' && matrix.os == 'macos-15' && (matrix.platform == 'ios' && fromJSON('["self-hosted","josemac-sim"]') || fromJSON('["self-hosted","josemac-ui"]')) || matrix.os }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -247,6 +269,15 @@ jobs:
           fi
           sleep 3
           system_profiler SPDisplaysDataType
+      - name: Clear macOS notices off the self-hosted VM's screen
+        # Starting the runner's launchd service posts an "App Background Activity"
+        # notice that sits over the top-right of the screen, where UI tests click
+        # dialog close buttons, and clicking it opens System Settings.
+        if: runner.environment == 'self-hosted' && matrix.platform == 'macos'
+        run: |
+          osascript -e 'quit app "System Settings"' 2>/dev/null || true
+          killall NotificationCenter 2>/dev/null || true
+          sleep 2
       - name: Exercise native UI against the loopback parity fixture
         env:
           PLATFORM: ${{ matrix.platform }}
@@ -260,6 +291,18 @@ jobs:
             apps/native/apple/ParityResults.xcresult/
           if-no-files-found: warn
           retention-days: 14
+      - name: Stop the rest of this run after a failure
+        # One failed job already fails the run; cancel the other jobs instead of
+        # letting them hold runners (and block newer pushes) until they finish.
+        if: failure()
+        shell: bash
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel" >/dev/null \
+            || echo "::warning::Could not cancel the rest of this run"
 
   android:
     name: Android / development APK
@@ -279,7 +322,7 @@ jobs:
           distribution: temurin
           java-version: '17'
       # Caches the Gradle user home (wrapper, dependencies). Writes only from
-      # main; pull requests restore read-only.
+      # main; manual runs on other branches restore read-only.
       - uses: gradle/actions/setup-gradle@v4
       - uses: android-actions/setup-android@v3
         with:
@@ -347,3 +390,15 @@ jobs:
           if [[ -f "$RUNNER_TEMP/caper-fixture.pid" ]]; then
             kill "$(cat "$RUNNER_TEMP/caper-fixture.pid")" 2>/dev/null || true
           fi
+      - name: Stop the rest of this run after a failure
+        # One failed job already fails the run; cancel the other jobs instead of
+        # letting them hold runners (and block newer pushes) until they finish.
+        if: failure()
+        shell: bash
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel" >/dev/null \
+            || echo "::warning::Could not cancel the rest of this run"

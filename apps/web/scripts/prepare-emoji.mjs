@@ -18,8 +18,11 @@ for (const emoji of Object.values(data.emojis).flat().filter((emoji) => Number(e
   if (existsSync(new URL(filename, target))) continue;
   await copyFile(join(source, filename.replaceAll("-fe0f", "")), new URL(filename, target));
 }
-// Cover the opening grid and its overscan, including the wider mobile drawer,
-// without sending the entire catalog when a user merely hovers the trigger.
-await writeFile(new URL("preload.json", target), JSON.stringify(
-  data.emojis.smileys_people.filter((emoji) => Number(emoji.a) <= 15).slice(0, 128).map((emoji) => emoji.u),
-));
+// Cover each category's opening grid and overscan, including the wider mobile
+// drawer, without sending the whole catalog on trigger or category intent.
+for (const [category, emojis] of Object.entries(data.emojis)) {
+  const manifest = category === "smileys_people" ? "preload" : `preload-${category}`;
+  await writeFile(new URL(`${manifest}.json`, target), JSON.stringify(
+    emojis.filter((emoji) => Number(emoji.a) <= 15).slice(0, 128).map((emoji) => emoji.u),
+  ));
+}

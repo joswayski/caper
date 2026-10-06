@@ -83,10 +83,10 @@ class ReactionUiTest {
         compose.runOnIdle { assertEquals(Triple(message.id, "🚀", true), submitted) }
         compose.onNodeWithText("Search emoji").assertDoesNotExist()
         compose.runOnIdle { state.value = state.value.copy(reactionSaves = mapOf("${message.id}:🚀" to ReactionSaveUi("🚀", true))) }
-        compose.onNodeWithContentDescription("👍 reaction, 2").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("👍 reaction, 2").assertIsEnabled()
         compose.onNodeWithText(message.content.text).performTouchInput { longClick() }
-        compose.onNodeWithContentDescription("👍 quick reaction").assertIsNotEnabled()
-        compose.onNodeWithContentDescription("Add reaction").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("👍 quick reaction").assertIsEnabled()
+        compose.onNodeWithContentDescription("Add reaction").assertIsEnabled()
         compose.onNodeWithText("Copy text").assertIsEnabled()
         // The sheet holds window focus; Espresso.pressBack targets the unfocused activity root.
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)

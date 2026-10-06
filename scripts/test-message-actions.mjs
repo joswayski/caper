@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { emojiAsset } from '../apps/web/src/chat/emoji.ts';
 
 const web = process.env.MESSAGE_TEST_WEB_URL ?? 'http://127.0.0.1:5174';
 const api = process.env.MESSAGE_TEST_API_URL ?? 'http://127.0.0.1:3001';
@@ -44,17 +45,55 @@ function checkEmojiCategories(layout) {
   }
   assert.ok(evaluate('document.querySelectorAll(".epr-body img").length') < 200, 'Eager loading must retain the virtualized window, not mount the whole catalog');
 }
+
+function checkEmojiNames(layout) {
+  for (const [unified, name] of [['1f600', 'grinning-face'], ['1f62d', 'loudly-crying-face']]) {
+    for (const query of [name, name.replaceAll('-', '_'), name.replaceAll('-', ' ')]) {
+      browser('fill', '.chat-reaction-picker input', 'definitely-no-such-emoji');
+      wait('document.querySelector(".epr-status-search-results")?.textContent.startsWith("No results")');
+      browser('fill', '.chat-reaction-picker input', query);
+      // Exclude the invisible sizing button outside the virtualized grid.
+      const selector = `.chat-reaction-picker .epr-emoji-category-content button[data-unified="${unified}"]`;
+      wait(`document.querySelector('${selector}')?.getClientRects().length > 0`);
+      assert.equal(evaluate(`document.querySelector('${selector}').getAttribute('aria-label')`), name);
+      assert.equal(evaluate(`document.querySelector('${selector} img').alt`), name);
+    }
+  }
+  browser('fill', '.chat-reaction-picker input', 'grinning-face');
+  wait(`!!document.querySelector('.chat-reaction-picker .epr-emoji-category-content button[aria-label="grinning-face"]')`);
+  wait(`${visibleEmojiImages}.length > 0 && ${visibleEmojiImages}.every(image => image.complete && image.naturalWidth > 0)`);
+  screenshot(`emoji-${layout}-dash-search`);
+  browser('click', '.epr-btn-clear-search');
+  wait('!document.querySelector(".EmojiPickerReact").classList.contains("epr-search-active")');
+  wait(`${visibleEmojiImages}.length >= 24 && ${visibleEmojiImages}.every(image => image.complete && image.naturalWidth > 0)`);
+}
+
 async function control(body) {
-  const response = await fetch(`${api}/__fixture/control`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const response = await fetch(`${api}/__fixture/control`, { method: 'POST', headers: { 'content-type': 'application/json', connection: 'close' }, body: JSON.stringify(body) });
   assert.equal(response.status, 200);
 }
-async function history() {
-  return (await fetch(`${api}/api/chat/channels/chan00000001/messages`, { headers: { authorization: 'Bearer fixture-owner-token' } })).json();
+async function history(channelId = 'chan00000001') {
+  // Long browser interactions can outlive the fixture's idle socket timeout.
+  return (await fetch(`${api}/api/chat/channels/${channelId}/messages`, { headers: { authorization: 'Bearer fixture-owner-token', connection: 'close' } })).json();
+}
+
+function holdReactions() {
+  // Hold before fixture delivery: server pushes cannot make a pessimistic
+  // client pass the immediate-render checks.
+  evaluate(`(() => {
+    const original = window.fetch.bind(window);
+    window.heldReactions = [];
+    window.holdReactions = true;
+    window.fetch = (input, init) => window.holdReactions && String(input).endsWith('/reactions')
+      ? new Promise(resolve => window.heldReactions.push(status => resolve(status
+        ? Response.json({ error: 'TEST FIXTURE: reaction failed' }, { status }) : original(input, init))))
+      : original(input, init);
+  })()`);
 }
 
 let socket;
 try {
-  assert.equal((await (await fetch(`${api}/health`)).json()).fixture, true);
+  assert.equal((await (await fetch(`${api}/health`, { headers: { connection: 'close' } })).json()).fixture, true);
   await control({ reset: true });
   browser('open', 'about:blank');
   browser('set', 'viewport', '1280', '900', '2');
@@ -85,6 +124,66 @@ try {
     await delay(100);
     assert.equal(evaluate(`${preloadedImages}.length`), 128, 'Repeated intent must not issue duplicate image requests');
   }
+
+  browser('find', 'first', '.chat-add-reaction:not(:disabled)', 'click');
+  wait('!!document.querySelector(".chat-reaction-picker input")');
+  wait(`${visibleEmojiImages}.length >= 24 && ${visibleEmojiImages}.every(image => image.complete && image.naturalWidth > 0)`);
+  // The library itself warms some off-screen assets. Chromium can reuse them
+  // without a new Resource Timing entry, so count only genuinely cold assets.
+  const loadedAssets = new Set(evaluate(`${preloadedImages}.map(resource => new URL(resource.name).pathname)`));
+  for (const [category, firstEmoji, count, intent] of [
+    ['travel_places', '1f30d', 128, 'hover'], ['flags', '1f3c1', 128, 'focus'],
+    ['animals_nature', '1f435', 128, 'hover'], ['food_drink', '1f347', 128, 'focus'],
+    ['activities', '1f383', 85, 'hover'], ['objects', '1f453', 128, 'focus'],
+    ['symbols', '1f3e7', 128, 'hover'],
+  ]) {
+    const response = await fetch(`${web}/emoji/twemoji-15/preload-${category}.json`);
+    assert.equal(response.status, 200);
+    const codes = await response.json();
+    assert.equal(codes.length, count);
+    assert.equal(codes[0], firstEmoji);
+    const assets = codes.map(emojiAsset);
+    const coldAssets = assets.filter(asset => !loadedAssets.has(asset));
+    evaluate('performance.clearResourceTimings()');
+    // Hover the nested SVG, not just the button, to exercise target resolution.
+    browser(intent, `.epr-icn-${category}${intent === 'hover' ? ' svg' : ''}`);
+    wait(`${JSON.stringify(coldAssets)}.every(asset => ${preloadedImages}.some(resource => new URL(resource.name).pathname === asset && resource.responseEnd > 0 && resource.responseStatus === 200))`);
+    const requestedAssets = evaluate(`${preloadedImages}.map(resource => new URL(resource.name).pathname)`);
+    assert.ok(requestedAssets.length <= count && requestedAssets.every(asset => assets.includes(asset)), 'Category intent must fetch only its bounded manifest');
+    requestedAssets.forEach(asset => loadedAssets.add(asset));
+    assert.ok(assets.every(asset => loadedAssets.has(asset)), 'Every prefetched asset must be loaded before selection');
+    const manifests = `performance.getEntriesByType('resource').filter(resource => resource.name.includes('/emoji/twemoji-15/preload-') && resource.name.endsWith('.json'))`;
+    assert.deepEqual(evaluate(`${manifests}.map(resource => new URL(resource.name).pathname)`), [`/emoji/twemoji-15/preload-${category}.json`]);
+    assert.equal(evaluate(`document.querySelector('.epr-cat-btn[aria-selected="true"]').classList.contains('epr-icn-smileys_people')`), true, 'Category intent must not select or scroll away from smileys');
+    assert.equal(evaluate('document.querySelector(".epr-body").scrollTop'), 0);
+    browser('mouse', 'move', '10', '10');
+    browser('focus', '.chat-reaction-picker input');
+    browser(intent, `.epr-icn-${category}`);
+    await delay(100);
+    assert.equal(evaluate(`${preloadedImages}.length`), requestedAssets.length, 'Repeated category intent must reuse loaded images');
+    assert.equal(evaluate(`${manifests}.length`), 1, 'Repeated category intent must reuse its manifest');
+  }
+  evaluate('performance.clearResourceTimings()');
+  browser('hover', '.chat-reaction-picker input');
+  browser('focus', '.chat-reaction-picker input');
+  await delay(100);
+  assert.equal(evaluate(`${preloadedImages}.length`), 0, 'Unrelated picker controls must not preload categories');
+  browser('click', '.epr-icn-travel_places');
+  wait(`document.querySelector('.epr-icn-travel_places').getAttribute('aria-selected') === 'true' && !!document.querySelector('.epr-body button[data-unified="1f30d"]')`);
+  wait(`${visibleEmojiImages}.length >= 24 && ${visibleEmojiImages}.every(image => image.complete && image.naturalWidth > 0)`);
+  screenshot('emoji-desktop-prefetched-travel');
+  browser('press', 'Escape');
+  browser('find', 'first', '.chat-add-reaction:not(:disabled)', 'click');
+  wait('!!document.querySelector(".chat-reaction-picker input")');
+  wait(`${visibleEmojiImages}.length >= 24 && ${visibleEmojiImages}.every(image => image.complete && image.naturalWidth > 0)`);
+  evaluate('performance.clearResourceTimings()');
+  browser('hover', '.epr-icn-travel_places svg');
+  browser('focus', '.epr-icn-flags');
+  await delay(100);
+  assert.equal(evaluate(`performance.getEntriesByType('resource').filter(resource => resource.name.includes('/emoji/twemoji-15/')).length`), 0, 'Reopening must preserve completed category preloads');
+  checkEmojiNames('desktop');
+  browser('press', 'Escape');
+
   browser('set', 'viewport', '390', '844', '2');
   // Initialize the narrow layout instead of carrying the desktop members pane
   // into its mobile overlay while checking unrelated touch gestures.
@@ -178,21 +277,47 @@ try {
   wait('!document.querySelector(".chat-message-actions")');
   assert.equal(browser('clipboard', 'read').text, message.id);
 
+  holdReactions();
   await openTarget();
   action('React with 👍');
   wait(`document.querySelector(${JSON.stringify(row + ' .chat-reaction')})?.getAttribute('aria-pressed') === 'true' && !document.querySelector(${JSON.stringify(row + ' .chat-reaction')}).disabled`);
-  assert.deepEqual((await history()).messages.at(-1).reactions, [{ emoji: '👍', authorIds: ['owner0000001'] }]);
+  assert.deepEqual((await history()).messages.at(-1).reactions ?? [], [], 'Own chip must appear before the server sees the write');
+  assert.equal(evaluate('document.body.textContent.includes("Saving reaction")'), false);
+  browser('scrollintoview', row + ' .chat-reaction');
+  screenshot('reaction-mobile-optimistic');
   await openTarget();
-  assert.deepEqual((await history()).messages.at(-1).reactions, [{ emoji: '👍', authorIds: ['owner0000001'] }], 'Opening the drawer must preserve the existing reaction snapshot');
   assert.equal(evaluate('document.querySelector(".chat-quick-reactions button").getAttribute("aria-pressed")'), 'true');
   action('React with 👍');
   wait(`!document.querySelector(${JSON.stringify(row + ' .chat-reaction')})`);
+  assert.equal(evaluate('window.heldReactions.length'), 1, 'Rapid toggles serialize writes while updating instantly');
+  evaluate('window.heldReactions[0]()');
+  wait('window.heldReactions.length === 2');
+  assert.equal(evaluate(`!!document.querySelector(${JSON.stringify(row + ' .chat-reaction')})`), false, 'The older add acknowledgement must not flash the removed chip');
+  evaluate('window.heldReactions[1]()');
+  for (let attempt = 0; attempt < 100 && (await history()).messages.at(-1).reactions?.length; attempt++) await delay(50);
   assert.deepEqual((await history()).messages.at(-1).reactions, []);
+
+  await openTarget();
+  action('React with 👍');
+  wait('window.heldReactions.length === 3');
+  evaluate('window.heldReactions[2](503)');
+  wait(`!!document.querySelector(${JSON.stringify(row + ' [role="alert"]')}) && !document.querySelector(${JSON.stringify(row + ' .chat-reaction')})`);
+  browser('scrollintoview', row + ' .chat-send-error');
+  screenshot('reaction-mobile-error');
+  browser('click', row + ' .chat-send-error button:first-of-type');
+  wait(`window.heldReactions.length === 4 && !document.querySelector(${JSON.stringify(row + ' [role="alert"]')}) && !!document.querySelector(${JSON.stringify(row + ' .chat-reaction[aria-pressed="true"]')})`);
+  evaluate('window.holdReactions = false; window.heldReactions[3]()');
+  for (let attempt = 0; attempt < 100 && !(await history()).messages.at(-1).reactions?.length; attempt++) await delay(50);
+  assert.deepEqual((await history()).messages.at(-1).reactions, [{ emoji: '👍', authorIds: ['owner0000001'] }]);
+  browser('scrollintoview', row + ' .chat-reaction');
+  browser('click', row + ' .chat-reaction');
+  for (let attempt = 0; attempt < 100 && (await history()).messages.at(-1).reactions?.length; attempt++) await delay(50);
 
   await openTarget();
   action('Add reaction');
   wait('!!document.querySelector(".chat-reaction-picker input")');
   checkEmojiCategories('mobile');
+  checkEmojiNames('mobile');
   screenshot('message-actions-mobile-picker');
   const emojiBody = '.chat-reaction-picker .epr-body';
   assert.equal(evaluate(`(() => { const body = document.querySelector(${JSON.stringify(emojiBody)}); return body.scrollHeight > body.clientHeight; })()`), true);
@@ -237,7 +362,7 @@ try {
   browser('click', '.chat-actions-overlay');
   wait('!document.querySelector(".chat-message-actions")');
 
-  const left = await fetch(`${api}/api/spaces/space0000001/channels/chan00000002/membership`, { method: 'DELETE', headers: { authorization: 'Bearer fixture-owner-token' } });
+  const left = await fetch(`${api}/api/spaces/space0000001/channels/chan00000002/membership`, { method: 'DELETE', headers: { authorization: 'Bearer fixture-owner-token', connection: 'close' } });
   assert.equal(left.status, 204);
   browser('reload');
   wait('!!document.querySelector(".chat-message") && !document.querySelector(".chat-initial-messages")');
@@ -252,7 +377,7 @@ try {
   screenshot('message-actions-mobile-read-only');
   action('Copy message ID');
   wait('!document.querySelector(".chat-message-actions")');
-  assert.ok(browser('clipboard', 'read').text.startsWith('message-chan00000002-'));
+  assert.ok(browser('clipboard', 'read').text.startsWith('chan00000002m'));
 
   await cdp('Emulation.setTouchEmulationEnabled', { enabled: false }, sessionId);
   browser('set', 'viewport', '1280', '900', '2');
@@ -282,8 +407,34 @@ try {
   wait(`${visibleEmojiImages}.length >= 24 && ${visibleEmojiImages}.every(image => image.complete && image.naturalWidth > 0)`);
   screenshot('emoji-desktop-reopened');
   browser('press', 'Escape');
-  console.log('PASS: Chromium touch gestures (tap/scroll/cancel/hold), hidden inline emoji controls, modal focus/dismissal, exact clipboard text/ID, quick toggles, picker code warmup without artwork fetches, hover/focus image preload without opening or duplicate requests, eager virtualized category jumps/reopen, underline/no click ring, keyboard tabs, search/live-target retention, clipboard failure, read-only copying, desktop picker.');
+  holdReactions();
+  browser('find', 'first', '.chat-add-reaction:not(:disabled)', 'click');
+  wait('!!document.querySelector(".chat-reaction-picker input")');
+  browser('fill', '.chat-reaction-picker input', 'grinning-face');
+  wait(`!!document.querySelector('.chat-reaction-picker .epr-emoji-category-content button[data-unified="1f600"]')`);
+  const targetKey = evaluate('document.querySelector(".chat-message:has(.chat-add-reaction:not(:disabled))").dataset.messageKey');
+  browser('click', '.chat-reaction-picker .epr-emoji-category-content button[data-unified="1f600"]');
+  wait(`!!document.querySelector('.chat-reaction[aria-pressed="true"]:not(:disabled)')`);
+  assert.equal(evaluate(`document.querySelector('[data-message-key="${targetKey}"] .chat-reaction img').getAttribute('src')`), '/emoji/twemoji-15/1f600.svg');
+  assert.equal(evaluate('document.body.textContent.includes("Saving reaction")'), false);
+  screenshot('reaction-desktop-optimistic');
+  evaluate('window.holdReactions = false; window.heldReactions.at(-1)()');
+  let dashReaction;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    // The preceding preview/join checks switched from General to Design.
+    dashReaction = (await history('chan00000002')).messages.find(item => item.clientMessageId === targetKey)?.reactions;
+    if (dashReaction?.some(reaction => reaction.emoji === '😀')) break;
+    await delay(50);
+  }
+  assert.deepEqual(dashReaction, [{ emoji: '😀', authorIds: ['owner0000001'] }], 'Dash-name selection must still persist standard Unicode, not the name');
+  console.log('PASS: dash-separated labels/image alt text, dash/underscore/space search on desktop and narrow web, and Unicode reaction persistence after dash-name selection.');
+  console.log('PASS: Chromium touch gestures (tap/scroll/cancel/hold), hidden inline emoji controls, modal focus/dismissal, exact clipboard text/ID, quick toggles, picker code warmup without artwork fetches, trigger and all seven category hover/focus preloads without duplicate requests or selection, category cache across reopen, eager virtualized category jumps/reopen, underline/no click ring, keyboard tabs, search/live-target retention, clipboard failure, read-only copying, desktop picker.');
+  console.log('PASS: optimistic mobile/desktop reactions before request delivery, enabled chips, no saving status, rapid add/remove without stale-ack flicker, error rollback and immediate retry.');
 } catch (error) {
+  console.error('Emoji requests at failure:', evaluate(`(() => {
+    const resources = performance.getEntriesByType('resource').filter(resource => resource.name.includes('/emoji/twemoji-15/'));
+    return { images: resources.filter(resource => resource.name.endsWith('.svg')).length, manifests: resources.filter(resource => resource.name.endsWith('.json')).map(resource => new URL(resource.name).pathname) };
+  })()`));
   browser('screenshot', '/tmp/message-actions-failure.png');
   throw error;
 } finally {

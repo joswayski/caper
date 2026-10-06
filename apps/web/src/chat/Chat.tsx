@@ -12,9 +12,9 @@ import "./chat.css";
 // Virtuoso's prepend index is local bookkeeping, never the bigint server cursor.
 const INITIAL_ITEM_INDEX = 1_000_000_000;
 
-function timeLabel(value: string) {
+function timeLabel(value: string, formatter: Intl.DateTimeFormat) {
   const date = new Date(value);
-  return Number.isNaN(date.valueOf()) ? "" : new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(date);
+  return Number.isNaN(date.valueOf()) ? "" : formatter.format(date);
 }
 
 interface HistoryContext {
@@ -55,7 +55,6 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   const [actionTarget, setActionTarget] = useState<MessageActionTarget>();
   const [actionStatus, setActionStatus] = useState("");
   const [reactionSaves, setReactionSaves] = useState<Record<string, ReactionSave | undefined>>({});
-  const reactionBusy = useRef(new Set<string>());
   const press = useRef<{ timer: ReturnType<typeof setTimeout>; x: number; y: number; pointerId: number }>(undefined);
   const suppressClick = useRef(false);
   const cancelPress = () => { clearTimeout(press.current?.timer); press.current = undefined; };
@@ -63,7 +62,6 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     setActionTarget(undefined);
     setActionStatus("");
     setReactionSaves({});
-    reactionBusy.current.clear();
     // The drawer can appear under the held finger. Its release click must not
     // activate a newly rendered action, even though that action is in a portal.
     const resetClick = () => { suppressClick.current = false; };
@@ -92,15 +90,13 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   const openActions = (messageId: string, anchor: HTMLElement) => setActionTarget({ messageId, anchor, mode: "actions", drawer: true });
   const react = async (messageId: string, emoji: string, active: boolean) => {
     const client = clientRef.current;
-    if (readOnly || !state.author || !client || reactionBusy.current.has(messageId)) return;
-    reactionBusy.current.add(messageId);
-    setReactionSaves((current) => ({ ...current, [messageId]: { emoji, active, saving: true } }));
+    if (readOnly || !state.author || !client) return;
+    setReactionSaves((current) => ({ ...current, [messageId]: undefined }));
     try {
       await client.setReaction(messageId, emoji, active);
-      if (clientRef.current === client) setReactionSaves((current) => ({ ...current, [messageId]: undefined }));
     } catch (error) {
-      if (clientRef.current === client) setReactionSaves((current) => ({ ...current, [messageId]: { emoji, active, saving: false, error: error instanceof Error ? error.message : "Reaction could not be saved." } }));
-    } finally { if (clientRef.current === client) reactionBusy.current.delete(messageId); }
+      if (clientRef.current === client) setReactionSaves((current) => ({ ...current, [messageId]: { emoji, active, error: error instanceof Error ? error.message : "Reaction could not be saved." } }));
+    }
   };
   const actionMessage = state.messages.find((message) => message.id === actionTarget?.messageId);
   const listRef = useRef<VirtuosoHandle>(null);
@@ -211,8 +207,10 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   }, [state.author, onAuthorChange]);
 
   useEffect(() => {
-    if (followLatest.current) listRef.current?.scrollToIndex({ index: "LAST", align: "end" });
-  }, [state.pendingSend?.clientMessageId, latestMessage?.clientMessageId]);
+    // Only local sends override the reader's position. Virtuoso follows incoming
+    // messages using its immediate bottom state; atBottomStateChange is delayed.
+    if (state.pendingSend) listRef.current?.scrollToIndex({ index: "LAST", align: "end" });
+  }, [state.pendingSend?.clientMessageId]);
 
   const loadOlder = () => { void clientRef.current?.loadOlder(); };
 
@@ -250,6 +248,8 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     }
   };
 
+  // Share the formatter across visible rows, but refresh locale/timezone on render.
+  const timeFormatter = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
   const renderMessage = (index: number, message: (typeof messages)[number]) => {
     const pending = !("content" in message);
     const author = message.author;
@@ -282,7 +282,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
         tabIndex={pending ? undefined : -1}>
       <div className="chat-avatar"><Avatar avatarId={author?.avatarId} name={author?.name ?? name} /></div>
       <div>
-        <header><strong>{author?.name ?? name}</strong>{author?.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt) : ""}</time></header>
+        <header><strong>{author?.name ?? name}</strong>{author?.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt, timeFormatter) : ""}</time></header>
         <p>{"content" in message ? message.content.text : message.text}</p>
         {"content" in message && <>
           <button type="button" className="chat-message-actions-trigger sr-only" aria-haspopup="dialog" onClick={(event) => openActions(message.id, event.currentTarget)}>Message actions for {message.author.name}</button>
@@ -355,7 +355,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     </div>
 
     {actionTarget && actionMessage && <MessageActions key={actionMessage.id} message={actionMessage} target={actionTarget} authorId={state.author?.id}
-      canReact={!readOnly && !!state.author && !reactionSaves[actionMessage.id]?.saving} onReact={react} onClose={() => setActionTarget(undefined)} onCopied={setActionStatus} />}
+      canReact={!readOnly && !!state.author} onReact={react} onClose={() => setActionTarget(undefined)} onCopied={setActionStatus} />}
 
     <p className="chat-typing" role="status" aria-atomic="true">
       <span className="chat-typing-content" data-visible={!!typingLabel} aria-hidden={!typingLabel}>

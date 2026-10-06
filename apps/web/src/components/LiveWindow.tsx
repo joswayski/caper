@@ -178,7 +178,7 @@ export default function LiveWindow() {
                         <span className="channel-voice">
                           <span className="voice-stack" aria-label={`${voicePeople.length} in demo voice`}>
                             <ChevronDown aria-hidden="true" />
-                            <span className="voice-stack-faces" aria-hidden="true">{voicePeople.slice(0, 1).map((person) => <span className={`voice-stack-avatar${person.speaking ? " speaking" : ""}`} key={person.name}><Avatar person={person} /></span>)}{voicePeople.length > 1 && <small>+{voicePeople.length - 1}</small>}</span>
+                            <span className="voice-stack-faces" aria-hidden="true">{voicePeople.map((person) => <span className={`voice-stack-avatar${person.speaking ? " speaking" : ""}`} key={person.name}><Avatar person={person} /></span>)}</span>
                             <span className="voice-stack-count">{voicePeople.length} in voice</span>
                           </span>
                         </span>

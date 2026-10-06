@@ -88,8 +88,8 @@ import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val viewModel: CaperViewModel by viewModels()
-    private val launcherAvatar by lazy { LauncherAvatarRotator(applicationContext) }
-    private var launcherAvatarJob: Job? = null
+    private val dailyBranding by lazy { DailyBrandingAvatar(applicationContext) }
+    private var brandingJob: Job? = null
     private var brandingAvatar by mutableStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -104,10 +104,10 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         viewModel.setForeground(true)
         if (BuildConfig.FIXTURE_MODE) return
-        launcherAvatarJob?.cancel()
-        launcherAvatarJob = lifecycleScope.launch {
+        brandingJob?.cancel()
+        brandingJob = lifecycleScope.launch {
             while (isActive) {
-                brandingAvatar = launcherAvatar.update()
+                brandingAvatar = dailyBranding.update()
                 delay(15 * 60 * 1000L)
             }
         }
@@ -115,8 +115,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onPause() {
         viewModel.setForeground(false)
-        launcherAvatarJob?.cancel()
-        launcherAvatarJob = null
+        brandingJob?.cancel()
+        brandingJob = null
         super.onPause()
     }
 }
@@ -611,7 +611,7 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
                     .background(if (selfSelected) TerracottaWash else Color.Transparent)
                     .clickable(enabled = !state.busy) { viewModel.openSelfDirect(); closeNavigation?.invoke() }.padding(horizontal = 9.dp),
                     verticalAlignment = Alignment.CenterVertically) {
-                    Avatar(state.account.displayName ?: state.account.username ?: "You", 26.dp, avatarId = state.account.avatarId)
+                    Avatar(state.account.displayName ?: state.account.username ?: "You", 20.dp, modifier = Modifier.padding(horizontal = 3.dp), avatarId = state.account.avatarId)
                     Spacer(Modifier.width(9.dp))
                     Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
                         Text(state.account.displayName ?: state.account.username ?: "You", Modifier.weight(1f, fill = false), color = if (selfSelected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -627,7 +627,7 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
                         .background(if (selected) TerracottaWash else Color.Transparent)
                         .clickable { viewModel.selectDirect(direct); closeNavigation?.invoke() }.padding(horizontal = 9.dp),
                         verticalAlignment = Alignment.CenterVertically) {
-                        Avatar(direct.peer.displayName, 26.dp)
+                        Avatar(direct.peer.displayName, 20.dp, modifier = Modifier.padding(horizontal = 3.dp))
                         Spacer(Modifier.width(9.dp))
                         Column(Modifier.weight(1f)) {
                             Text(direct.peer.displayName, color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -1125,7 +1125,6 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     val own = state.chatAuthorId ?: state.account?.id
     val canReact = state.selectedChannel?.joined == true && own != null
     val saves = state.reactionSaves.filterKeys { it.startsWith("${message.id}:") }.values
-    val saving = saves.firstOrNull { it.saving }
     Column {
         Box(Modifier.combinedClickable(
             onClick = {},
@@ -1136,7 +1135,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             message.reactions.forEach { reaction ->
                 val selected = own != null && own in reaction.authorIds
                 OutlinedButton(
-                    onClick = { setReaction(message.id, reaction.emoji, !selected) }, enabled = canReact && saving == null,
+                    onClick = { setReaction(message.id, reaction.emoji, !selected) }, enabled = canReact,
                     shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, if (selected) Terracotta else Border),
                     colors = ButtonDefaults.outlinedButtonColors(containerColor = if (selected) Terracotta.copy(alpha = .18f) else Color.Transparent),
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
@@ -1147,7 +1146,6 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 ) { EmojiImage(reaction.emoji, null, Modifier.size(19.dp)); Spacer(Modifier.width(5.dp)); Text(reaction.authorIds.size.toString()) }
             }
         }
-        if (saving != null) Text("Saving ${saving.emoji} reaction…", Modifier.padding(start = 62.dp, top = 4.dp), color = TextMuted, fontSize = 11.sp)
         saves.filter { it.error != null }.forEach { save ->
             Column(Modifier.padding(start = 62.dp, end = 18.dp, top = 4.dp)) {
                 Text(save.error ?: "Reaction could not be saved.", color = Terracotta, fontSize = 11.sp)
@@ -1174,7 +1172,6 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     val clipboard = context.getSystemService(ClipboardManager::class.java)
     val own = state.chatAuthorId ?: state.account?.id
     val canReact = state.selectedChannel?.joined == true && own != null
-    val saving = state.reactionSaves.any { (key, save) -> key.startsWith("${message.id}:") && save.saving }
     fun copy(label: String, value: String) {
         clipboard.setPrimaryClip(ClipData.newPlainText(label, value))
         onDismiss()
@@ -1188,14 +1185,14 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                         val selected = message.reactions.firstOrNull { it.emoji == emoji }?.authorIds?.contains(own) == true
                         IconButton(
                             onClick = { setReaction(message.id, emoji, !selected); onDismiss() },
-                            enabled = !saving,
+                            enabled = canReact,
                             modifier = Modifier.weight(1f).heightIn(min = 48.dp).background(if (selected) TerracottaWash else Color.Transparent, MaterialTheme.shapes.small).semantics {
                                 this.selected = selected
                                 contentDescription = "$emoji quick reaction"
                             },
                         ) { EmojiImage(emoji, null, Modifier.size(28.dp)) }
                     }
-                    IconButton(openPicker, enabled = !saving, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
+                    IconButton(openPicker, enabled = canReact, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
                         Icon(painterResource(R.drawable.lucide_plus), "Add reaction", Modifier.size(24.dp), tint = TextMuted)
                     }
                 }

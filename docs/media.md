@@ -824,8 +824,14 @@ Reactions appear below the message with counts; your own
 chips have a terracotta tint and `aria-pressed=true`. Clicking a chip adds or
 removes your contribution, as does a quick reaction. Choosing an emoji in the
 picker only adds it. Pending messages cannot be reacted to or have their
-unconfirmed IDs copied. Failed saves show an explicit retry of the same
-desired state rather than an ambiguous toggle.
+unconfirmed IDs copied. Web (desktop/mobile), Android, iOS/macOS, and Rust desktop
+apply reaction additions/removals immediately, without a saving label, spinner,
+or disabled controls. Requests serialize per message while the newest local
+choice stays visible over incoming server snapshots. A failed current choice
+rolls back only your contribution to the latest server state and shows an explicit
+retry of that desired state. Superseded failures do not undo a newer choice.
+Cached history and replay cursors contain authoritative state, not optimistic
+counts; a full resync reconciles abandoned in-flight choices from server history.
 
 Android, iOS/macOS, and Rust desktop also provide searchable standard-emoji
 pickers, counted chips, own-contribution highlighting, add/remove, and save-error
@@ -836,16 +842,28 @@ channel replay cursor.
 `native-parity-fixture.mjs` server and Vite, with Chromium touch input and verified
 coarse-pointer emulation. It covers hold versus tap/scroll/cancel, clipboard
 content/ID, quick toggles, search, live-scroll target retention, focus/dismissal,
-clipboard errors, read-only previews and the desktop picker. This is browser
-fixture evidence, not native or physical-device acceptance. The native reaction
+clipboard errors, read-only previews and the desktop picker. It also holds
+reaction requests before fixture delivery to verify immediate selection/removal,
+enabled controls, no saving status, rapid-toggle ordering, failure rollback and
+retry. This is browser fixture evidence, not native or physical-device
+acceptance. The native reaction
 UI suites cover the new drawer but require Android instrumentation and Xcode;
 run them and inspect iPhone/Android drawers before releasing those clients.
 No API, gateway, migration, infrastructure or secret change is needed for this
-client-only menu update. Web, Android and iPhone can release independently;
-desktop clients do not need an update for the drawer. Roll back web by restoring
+client-only update. Web, Android, Apple and Rust desktop can release independently;
+each needs an updated client to get optimistic reactions. Roll back web by restoring
 the previous image. For mobile, release a revert build with a higher build/version
 number instead of attempting an installed-app downgrade. No database rollback
 is needed.
+
+Optimistic reaction validation: web build and 336 unit tests passed; Chromium
+desktop and touch-emulated narrow layouts exercised held requests and failures,
+and captures were inspected. Rust desktop passed 189 tests (9 ignored), fmt,
+Clippy and a Linux build; its rendered fixture showed immediate removal and
+rollback after a delayed mock 503. Android and shared iOS/macOS tests were added
+but not executed in the Linux orb (no Java/Android SDK or Swift/Xcode). Run their
+unit/UI suites before release. Linux/browser fixtures do not establish Windows,
+native phone, macOS, multi-client production or physical-device acceptance.
 
 The picker offers standard Emoji 15.0 artwork, self-hosted from `@twemoji/svg`
 and attributed at `/emoji/NOTICE.txt` (Twemoji graphics, CC BY 4.0). The web
@@ -855,7 +873,13 @@ it does not mount the picker or fetch the artwork catalog. Hovering or focusing
 **Add reaction** also warms the code and preloads/decodes the first 128 Emoji 15.0
 smileys/people images, generated from the picker catalog at build time. This
 covers the opening grid, not the full catalog, and does not open the picker.
-Preloads are shared across message buttons; failures allow the next intent to retry.
+Hovering or keyboard-focusing a category tab preloads/decodes its first 128
+Emoji 15.0 images (or the full category when smaller), without selecting it or
+scrolling the grid. Category manifests are also generated at build time.
+Preloads are shared per category across message buttons and picker reopenings;
+failures evict only that category so the next intent can retry. Images beyond
+the prefetched window still load on demand; immediate clicks on a cold network
+can still precede completion.
 The virtualized grid loads its mounted image window eagerly, including after
 category jumps. Versioned
 `/emoji/twemoji-15/**` artwork is served with a one-year immutable browser cache;
@@ -864,7 +888,8 @@ on hover/selection, and underline the selected category in terracotta. Pointer
 clicks have no circular ring; keyboard focus retains a separate outline.
 `node scripts/test-message-actions.mjs` checks warmup without artwork requests,
 hover/focus preloading without opening or duplicate image requests,
-populated category jumps/reopening, eager loading with virtualization, selected
+all seven non-opening category preloads without selection/scrolling, cache reuse
+across reopening, populated category jumps, eager loading with virtualization, selected
 tab styling, and keyboard navigation on desktop and Chromium touch-emulated web.
 Native picker loading/styling is intentionally unchanged: those independent
 clients use bundled sprite sheets, not browser image loading or this library.
@@ -873,8 +898,19 @@ look consistent across all clients. Native apps bundle raster sprite sheets from
 artwork with `node scripts/native-emoji.mjs` (requires npm dependencies and
 ImageMagick 7). Android and Rust read `shared/emoji`; SwiftPM requires a generated
 copy inside its target, checked byte-for-byte by CI, including licenses.
+Picker names use dashes (for example, `grinning-face`). Web and all native
+catalogs also include underscore and spaced search aliases (`grinning_face` and
+`grinning face`). Names are labels/search terms, not stored reaction identifiers:
+selecting any spelling still sends the same Unicode emoji. Existing reactions
+need no migration. The browser fixture checks all three search spellings,
+dash-separated accessible names/image alt text, and Unicode persistence.
 Message-body emoji are unchanged. Custom uploads, frequently used/top-five lists,
-and a skin-tone selector are deferred.
+and a skin-tone selector are deferred. Message text does not currently convert
+`:name:` shortcodes into emoji. Dashes are not a restriction on future custom
+emoji: the web picker supports named custom images, but uploads alone will not
+enable them. Custom reactions also need an authorized emoji catalog, stable asset
+IDs, API/protocol support alongside Unicode, and image rendering in every client;
+the current API deliberately accepts only standard Unicode emoji.
 
 `PUT /api/chat/channels/{channel}/messages/{message}/reactions` accepts
 `{emoji,active}` and `X-Caper-Chat-Token`. It checks the same channel/member/private
@@ -3113,6 +3149,7 @@ not URLs, cookies, or persistent storage. Possession authorizes that call sessio
 | Method | Public endpoint | Purpose |
 | --- | --- | --- |
 | GET | `/health`, `/api/health` | Unauthenticated health checks |
+| GET | `/api/updates/native` | Unauthenticated cached, signed desktop update metadata |
 | POST | `/api/auth/email/request` | Request a 6-digit, 10-minute email code; returns a challenge ID |
 | POST | `/api/auth/email/verify` | Consume a challenge and create a 30-day session |
 | POST | `/api/auth/logout` | Revoke the current session |
@@ -3143,6 +3180,37 @@ revealing signup order or the internal sequence. Stored as `external_id` for
 integrations and external references, the API returns this value as `id`, alongside
 `username` and `displayName`. Usernames are globally unique, changeable handles;
 changing a username or email does not change either account ID.
+
+### Desktop update metadata cache
+
+`GET https://caper.chat/api/updates/native` returns an envelope with `manifest`
+(base64 of the exact `latest.json` bytes) and `signature` (the detached base64
+Ed25519 signature). It only fetches the fixed GitHub `native-latest` release;
+request parameters cannot select an upstream URL. No account, new secret, database
+migration, gateway change, or CDN rule is needed.
+
+The Rust API keeps one in-memory entry for 60 seconds **per API process**. It
+coalesces concurrent misses, bounds each upstream request to five seconds, and
+limits the manifest to 64 KiB and signature to 1 KiB. Successful responses send
+`Cache-Control: public, max-age=60` and `Age`; this cache works even if Cloudflare
+bypasses `/api/*`. These headers permit HTTP caching but do not establish that an
+edge or desktop client caches responses. Restarting a process empties its cache.
+After a failed refresh, the API returns `502` with `no-store` and waits 60 seconds
+before retrying. It does not serve expired metadata indefinitely.
+
+Desktop release builds check about 20 seconds after launch and every hour. They
+verify the envelope's signature against their compiled-in public key before
+using any metadata, and fall back to GitHub's manifest/signature on site errors,
+malformed data, or signature mismatch (including a rolling-release upload race).
+Archive downloads and checksum verification remain unchanged. Android and iOS
+distribution is unchanged. Existing desktop builds keep their old check schedule
+until they install a new native release.
+
+Deploy the API before publishing the native release to use the cache immediately;
+either component can roll back independently because GitHub remains a fallback.
+Verify the deployed endpoint returns `200`, the documented cache headers, and a
+verifiable envelope; then test **Check for Updates…** on a packaged Mac build and
+the automatic check on Windows/Linux. Merging does not deploy or release them.
 
 ### Native distribution and acceptance
 
@@ -3453,19 +3521,59 @@ Run the focused browser regression against local Vite with
 The native parity fixture now supplies saved avatar IDs in account, member, chat
 and voice responses rather than testing only initials.
 
-### Rotating site and runtime app icons
+### Client performance and motion validation (October 5, 2026)
 
-Supported icon surfaces choose one of the 800 bundled v3 avatars per UTC day,
-remember it locally, and exclude the preceding choice. This cosmetic choice does
-not change account avatars. Rotation runs on launch/resume or while the client is
-running; it is not an exact midnight job while closed, suspended or throttled.
-There are no alarms, background services, icon-change prompts or new dependencies.
+Windows/Linux chat no longer deep-clones every loaded message, author, text and
+reaction on each UI frame. It retains the same variable-height rendering and
+paging anchors; layout work still grows with loaded history. This is an allocation
+reduction, not full timeline virtualization or a measured FPS/battery claim.
+
+Web speaking indicators allocate no sampling loop for missing/muted streams or
+failed analyser setup. Visible indicators sample every 32 ms rather than wake on
+every display frame. Hidden tabs stop UI sampling and clear speaking rings without
+stopping capture/playback; visibility restores sampling. The RMS threshold and
+180 ms release are unchanged. Chat timestamps share one formatter per render,
+retaining locale/timezone refresh. Audio popovers/profile dialogs have a 140 ms
+opacity/4px entrance, disabled by reduced motion; typing labels fade/translate
+without a blur filter. Incoming messages no longer consult a delayed bottom-state
+callback to force scrolling; Virtuoso owns append-follow, while local sends still
+reveal the pending message.
+
+| Platform/check | Coverage for this pass |
+| --- | --- |
+| Web | Production build and 340 tests passed. The 3,000-message browser regression passed rapid/settled incoming delivery, prepend anchors, retry, narrow layout, own sends and empty history, with nine rows mounted at latest. Other Chromium fixture checks covered desktop/narrow popover bounds, dialog focus, normal/reduced motion, typing appearance/removal, and synthetic-audio indicator cleanup. Inspected 1440×900 and 390×844 captures; narrow emulation is not physical touch or Safari evidence. |
+| Windows/Linux desktop | Linux: 192 tests passed, nine opt-in tests ignored; format and Clippy passed. The added render regression retains authoritative messages/reactions/cursor across 1440/840/390px widths. No Windows execution or live SFU/hardware-audio validation. |
+| Apple/Android | Source audit only; no changes in this pass. Apple still forcibly follows incoming messages, and Android lacks explicit latest-message scroll ownership. Safe reader anchoring, tall/pending rows and platform UI tests remain follow-up work. |
+
+An orb Chromium microbenchmark of 100 renders × 30 timestamps took 514 ms with
+one formatter per message versus 23 ms with one per render; four rendered fixture
+timestamps matched independently formatted expectations. These numbers describe
+only formatting work, not end-to-end app speed. Desktop history virtualization,
+native reader-aware scrolling, and physical-device resource/voice checks remain
+separate work. No server, migration, infrastructure, or secret changes are needed;
+web and Windows/Linux client releases can deploy independently. Roll back their
+respective image/client build if needed.
+
+With local Vite running, repeat the long-history check using
+`CHAT_TEST_WEB_URL=http://localhost:5174/spaces node scripts/test-chat-history.mjs`
+(substitute the configured port). Its account/history/gateway are explicit test
+mocks; no production data or SFU is used.
+
+### Fixed app icons and rotating site characters
+
+Clickable app identities (Dock, launcher, taskbar/window, installed shortcuts and
+package icons) use the original plain green Caper. Browser favicons and in-app
+wordmarks still choose one of the 800 bundled v3 characters per UTC day, remember
+it locally, and exclude the preceding choice. This does not change account
+avatars. Rotation runs on launch/resume or while the client is running; it is not
+an exact midnight job while closed, suspended or throttled. There are no alarms,
+background services, icon-change prompts or new dependencies.
 
 In-app wordmarks keep the original lettering and replace its plain dot with the
 same installation-local daily character. Web shares one React selection with the
-favicon (including blocked storage); Rust desktop reuses its runtime-icon state;
-macOS shares persisted state with the Dock; Android uses the applied launcher
-choice. iOS and standalone web rotate only the in-app character, leaving their
+favicon (including blocked storage). Native clients retain their existing local
+selection keys for in-app branding only; those keys no longer replace app icons.
+iOS and standalone web also rotate only the in-app character, leaving their
 packaged/installed icons original. Different installations may choose different
 characters. Native test fixtures use design 0 for deterministic wordmarks.
 The [character catalog](../assets/avatars/README.md) names all 100 designs and
@@ -3477,16 +3585,16 @@ explains their eight hues; it does not add mascot reactions to the chat protocol
 | Desktop/mobile browser tabs | SVG plus generated 32/192px PNG favicons; localStorage persists the daily choice across reloads and tabs. Checks every minute and on focus/visibility/storage events. Clock-controlled Chromium tests cover UTC rollover, timer refresh, same-day reload/SPA navigation, shared-tab assignment, PNG/SVG pixels and desktop/narrow asset inspection. Safari/Firefox and physical mobile browsers remain unverified. |
 | Website home-screen shortcuts | Dedicated original-mascot Apple touch and manifest PNGs at 180/192/512px. Explicit standalone launches skip favicon rotation. Browsers/OSes cache installed icons; no reliable scheduled refresh is available. The manifest uses `display: browser`; no offline service worker or background capability is added. Existing shortcuts may need re-adding, and browser-specific icon selection needs device validation. |
 | Native iOS | Original packaged dark-green icon; no alternate-icon calls or alerts. No iOS icon behavior is changed. |
-| Native Android | Switches bundled launcher aliases on resume and every 15 minutes while foregrounded. Android 13+ switches atomically; older supported versions enable the new entry before disabling the old one. The original default alias and application icon remain available. Generation checks all 800 resources; Kotlin tests and APK/physical-launcher checks are pending because this orb has no Java/Android SDK. OEM icon caches, duplicate-entry transitions and upgrades require device acceptance. |
-| Native macOS | The running Dock icon rotates through `NSApplication.applicationIconImage`, checking activation and every 15 minutes. Finder/package icons remain original. Swift tests are added but require Apple CI/Xcode and a real Dock check; neither is available in this Linux orb. |
-| Rust desktop | Runtime window icons rotate, with a 60-second check and eframe persistence. Windows/taskbar and Linux X11 surfaces depend on the shell honoring runtime icons; installer, pinned-shortcut and Wayland package identities remain original. Rust tests cover rollover, all IDs, nonrepeat and straight-alpha pixels. An actual X11/Openbox window published the expected 256px saved-avatar icon and retained it across a same-day restart. Windows/Wayland remain unverified. |
+| Native Android | Application/default launcher and all 800 legacy aliases use the original green mascot. Keep alias component names and enabled state for existing entries and pinned shortcuts; the app no longer switches launcher components. An instrumented fixture test covers a same-day upgrade state and next-day branding-only rotation without changing the enabled entry; it requires Android CI/device execution. Signed upgrade/rollback and OEM icon caches remain device acceptance gates. |
+| Native macOS | Dock/Finder/package icons use the original AppIcon; no runtime `applicationIconImage` replacement. Swift daily-choice tests cover only in-app branding. Bundle compilation and a real Dock check require Apple CI/Xcode/macOS, unavailable in a Linux orb. |
+| Rust desktop | Runtime window icons retain the bundled original-mascot PNG; installer, pinned-shortcut and Wayland package identities also stay original. Daily selection/persistence affects only in-app wordmarks. An actual X11/Openbox window's 128px RGBA icon exactly matched the original PNG on fresh launch and restart with saved character 799; its in-app choice remained 799. Inspected the rendered window and icon on light/dark backgrounds. Windows taskbar/Wayland shell caching need platform acceptance. |
 
 Deterministic native parity/Android fixture runs retain the original icon. The web
 test uses a labelled clock/storage fixture, not a physical home-screen test:
 `node scripts/test-favicons.mjs http://localhost:31095 .amp/in/artifacts`.
 Static fallback exports use `node scripts/generate-favicons.mjs` (ImageMagick 7 and
 librsvg); launcher declarations use
-`node scripts/generate-android-launcher-aliases.mjs --check`. Native clients reuse
+`node scripts/generate-android-launcher-aliases.mjs --check`. Native wordmarks reuse
 their already-bundled vector resources. `node scripts/generate-wordmark.mjs`
 exports dot-free lettering to web/Rust, Apple and Android without changing the
 original full-logo source; `--check` runs in web tests to detect drift.
@@ -3495,32 +3603,34 @@ build stages and the Rust desktop build were checked directly. Application-only
 desktop Clippy passes with `--no-deps`; full native-workspace Clippy still fails on
 existing vendored WebRTC safety-documentation warnings.
 
-#### Rotating-icon deployment order
+#### Fixed-app-icon rollout order
 
 1. No infrastructure, secrets/configuration, database migration, API/gateway or
-   SFU deployment is needed. Saved avatar assignments and vector artwork stay
-   unchanged. Orb renderer/X11 packages are development-only prerequisites.
-2. After merge and the merged commit's immutable web image is available, deploy
-   web explicitly; merging does not deploy it:
+   SFU deployment is needed. No web deployment or iOS release is needed for this
+   revert: web favicons, installed website icons and the iOS AppIcon are unchanged.
+   Saved profile avatars and vector artwork stay unchanged.
+2. Require native platform builds/tests before release. Run the Android fixture
+   launcher regression on API 33+ and a supported older version. Test a signed
+   upgrade from a rotating build with an enabled avatar alias, including an
+   existing pinned shortcut; check that one clickable original-mascot entry
+   remains. Verify the running macOS Dock and Windows/Linux window/taskbar icons,
+   including an installation with an existing daily-character preference.
+3. Release Android, macOS and Rust desktop through the existing native process.
+   Platforms can roll out independently; merging does not publish a release.
+   After approval, use the Discord release button or run:
    ```sh
    MERGED_SHA=REPLACE_WITH_FULL_40_CHARACTER_MERGE_SHA
-   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
-   # Wait for the workflow to succeed, then:
-   kubectl -n default rollout status deployment/caper-web --timeout=15m
-   curl -I https://caper.chat/site.webmanifest
-   curl -I https://caper.chat/icons/caper-main-v3-180.png
-   curl -I https://caper.chat/images/avatars/v3/799.svg
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
    ```
-   Expect HTTP 200 and correct MIME types. Verify a tab keeps its avatar on
-   reload, and newly added iOS/Android shortcuts use the original mascot.
-3. Release Android, macOS and Rust desktop independently through the normal
-   native workflows only after platform build/device checks. No iOS release is
-   required for icon behavior; its shared tests may run with the Apple build.
-   Native rotation does not depend on web deploying first.
-4. Roll back only the affected web image or native release if needed. Re-run the
-   web workflow with the previous known-good SHA and wait for rollout; there is
-   no database/configuration rollback. Icon caches can outlive a rollout. Test
-   Android upgrade/rollback from an enabled avatar alias before releasing.
+   The workflow packages all native targets; unchanged iOS needs no icon-specific
+   distribution. Install/update each affected client through its normal channel,
+   quit/reopen, and verify the plain green icon while in-app characters still
+   rotate. Shell caches may require refreshing the shortcut or signing out/in.
+4. Roll back only the affected native release using the same approved workflow
+   with the prior known-good revision and a newer build number. No service,
+   database or configuration rollback is needed. Test Android enabled aliases
+   and pinned shortcuts across rollback; returning to a rotating build restores
+   its old icon behavior. No deployment or release command was run for this revert.
 
 ### Saved default avatars
 

@@ -46,25 +46,37 @@ const nextMoments = count => evaluate(`for (let i = 0; i < ${count}; i++) { wind
 const members = () => evaluate('return [...document.querySelectorAll(".sim-member strong")].map(el => el.textContent)');
 const voices = () => evaluate('return [...document.querySelectorAll(".sim-person strong")].map(el => el.textContent)');
 const speakers = () => evaluate('return [...document.querySelectorAll(".sim-person[data-speaking] strong")].map(el => el.textContent)');
-const checkVoiceSummary = total => {
+const checkVoiceSummary = people => {
   const summary = evaluate(`
     const stack = document.querySelector('.sim-sidebar .voice-stack');
     const count = stack.querySelector('.voice-stack-count');
+    const frames = [...stack.querySelectorAll('.voice-stack-avatar'), ...document.querySelectorAll('.sim-voice-avatar')].map(el => ({
+      style: getComputedStyle(el),
+      speaking: el.classList.contains('speaking'),
+    }));
     return {
-      avatars: [...stack.querySelectorAll('.voice-stack-avatar')].filter(el => el.getClientRects().length > 0).length,
+      avatars: [...stack.querySelectorAll('.voice-stack-avatar')].filter(el => el.getClientRects().length > 0).map(el => el.querySelector('.sim-avatar').getAttribute('aria-label')),
       overflow: stack.querySelector('.voice-stack-faces small')?.textContent ?? '',
       label: count.textContent,
       accessibleLabel: stack.getAttribute('aria-label'),
       clipped: count.scrollWidth > count.clientWidth,
+      transparentBackgrounds: frames.every(({ style }) => style.backgroundColor === 'rgba(0, 0, 0, 0)'),
+      roundFrames: frames.every(({ style }) => style.borderRadius === '50%'),
+      unframedIdleAvatars: frames.filter(({ speaking }) => !speaking).every(({ style }) => style.borderColor === 'rgba(0, 0, 0, 0)' && style.boxShadow === 'none'),
+      speakingRings: frames.filter(({ speaking }) => speaking).every(({ style }) => style.borderColor === 'rgb(99, 122, 67)' && style.boxShadow !== 'none'),
     };
   `);
   assert.deepEqual(summary, {
-    avatars: 1,
-    overflow: `+${total - 1}`,
-    label: `${total} in voice`,
-    accessibleLabel: `${total} in demo voice`,
+    avatars: people.map(name => `${name}'s caper avatar`),
+    overflow: '',
+    label: `${people.length} in voice`,
+    accessibleLabel: `${people.length} in demo voice`,
     clipped: false,
-  }, 'One preview avatar plus the remaining people must match the full, unclipped voice total');
+    transparentBackgrounds: true,
+    roundFrames: true,
+    unframedIdleAvatars: true,
+    speakingRings: true,
+  }, 'Every voice avatar must be visible without a gray frame; round speaking rings and the full voice total remain');
 };
 const pointFor = selector => evaluate(`
     const element = document.querySelector(${JSON.stringify(selector)});
@@ -152,7 +164,7 @@ try {
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-members")).width'), '220px');
   assert.equal(evaluate('return document.querySelectorAll(".sim-member .presence-dot[data-status=online]").length'), 3);
   assert.deepEqual(evaluate('return [".sim-sidebar .channel-navigation > header", ".sim-chat > header"].map(s => document.querySelector(s).offsetHeight)'), [54, 54], 'Sidebar and chat header dividers align');
-  checkVoiceSummary(3);
+  checkVoiceSummary(['Maya', 'Theo', 'June']);
   const [accountBounds, composerBounds] = evaluate(`
     const geometry = selector => {
       let element = document.querySelector(selector), top = 0;
@@ -163,6 +175,15 @@ try {
     return [geometry('.sim-account'), geometry('.sim-composer')];
   `);
   assert.deepEqual(accountBounds, composerBounds, 'Account controls and single-line composer align');
+  assert.equal(evaluate(`
+    const leftOf = selector => {
+      let element = document.querySelector(selector), left = 0;
+      while (element) { left += element.offsetLeft + (element.offsetParent?.clientLeft ?? 0); element = element.offsetParent; }
+      return left;
+    };
+    return leftOf('.sim-direct .direct-select > span:nth-child(2)') - leftOf('.sim-account .account-name');
+  `), 0, 'Simulation profile name aligns with the direct-message name above it, independent of the scene tilt');
+  assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-direct .direct-avatar > .sim-avatar")).transform'), 'none', 'Simulation avatar artwork is not shifted into its clipping edge');
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-sidebar .channel-select")).cursor'), 'grab');
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".live-invite")).cursor'), 'pointer');
   checkReadOnlyHover(['.sim-message:last-of-type', '.sim-reaction', '.sim-avatar', '.sim-person', '.sim-channel-list > li:last-child .channel-line', '.sim-channel-list > li:last-child .channel-select', '.channel-manage', '.channel-join', '.direct-select', '.direct-action', '.browse-channels', '.voice-dock-channel', '.voice-hangup', '.account-profile', '.voice-icon-button', '.call-settings-trigger', '.member-list-toggle']);
@@ -213,7 +234,7 @@ try {
   assert.deepEqual(speakers(), ['Maya', 'Theo']);
   nextMoments(2); // 10
   assert.ok(voices().includes('Leo'));
-  checkVoiceSummary(4);
+  checkVoiceSummary(['Maya', 'Theo', 'June', 'Leo']);
   nextMoments(1); // 11
   assert.deepEqual(speakers(), ['June', 'Leo']);
   nextMoments(1); // 12: two messages arrive in the same second
@@ -231,27 +252,27 @@ try {
   assert.ok(members().includes('Maya'));
   assert.ok(!voices().includes('Maya'));
   assert.equal(evaluate('return document.querySelector(".sim-sidebar .voice-dock")'), null, 'The voice dock reflects Maya leaving voice');
-  checkVoiceSummary(4);
+  checkVoiceSummary(['Theo', 'June', 'Leo', 'Noor']);
   assert.equal(evaluate('return document.querySelector(".sim-messages").scrollTop'), 0, 'Reading older messages is not interrupted by new posts');
   evaluate('const el = document.querySelector(".sim-messages"); el.scrollTop = el.scrollHeight; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));');
   nextMoments(16); // 38
   assert.equal(voices().length, 6);
-  checkVoiceSummary(6);
+  checkVoiceSummary(['Maya', 'Theo', 'June', 'Leo', 'Noor', 'Sam']);
   nextMoments(1); // 39
   assert.ok(!members().includes('June'));
   assert.ok(!voices().includes('June'));
-  checkVoiceSummary(5);
+  checkVoiceSummary(['Maya', 'Theo', 'Leo', 'Noor', 'Sam']);
   nextMoments(6); // 45
   assert.equal(members().length, 6);
   assert.equal(voices().length, 6);
-  checkVoiceSummary(6);
+  checkVoiceSummary(['Maya', 'Theo', 'June', 'Leo', 'Noor', 'Sam']);
   assert.equal(evaluate('return document.querySelectorAll(".sim-person .participant-country").length'), 0, 'Joining/rejoining demo participants have no flags');
   assert.ok(evaluate('return document.querySelector(".sim-messages").textContent.includes("back with cookies. let’s gooo")'));
   assert.equal(evaluate('return document.querySelectorAll(".sim-message").length'), 24);
   nextMoments(4); // 0: new loop, but the previous conversation stays
   assert.deepEqual(members(), ['Maya', 'Theo', 'June']);
   assert.deepEqual(voices(), ['Maya', 'Theo', 'June']);
-  checkVoiceSummary(3);
+  checkVoiceSummary(['Maya', 'Theo', 'June']);
   assert.equal(evaluate('return document.querySelectorAll(".sim-message").length'), 25);
   assert.ok(evaluate('return window.firstDemoMessage === document.querySelector(".sim-message")'), 'Keep the same message nodes through the loop boundary');
   assert.equal(evaluate('return document.querySelectorAll(".sim-message:last-of-type .sim-reaction").length'), 0, 'New loop message starts without reactions');
@@ -269,6 +290,16 @@ try {
   console.log('PASS: 17 of 24 messages never receive reactions; seven standout posts get 1–3 delayed reactions');
   console.log('PASS: full message history persists across two loops; auto-follow and reading older messages work; reactions remain delayed and read-only');
   console.log('PASS: general/feedback channels, no join notices/hints/actions, nested voice roster, simultaneous speakers, burst messages and multi-person typing');
+
+  // Resize after history checks: changing the scroll viewport can stop following.
+  nextMoments(35); // 38: all six people are in voice
+  for (const width of [320, 390]) {
+    browser('set', 'viewport', String(width), '844', '2');
+    evaluate('await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));');
+    checkVoiceSummary(['Maya', 'Theo', 'June', 'Leo', 'Noor', 'Sam']);
+  }
+  browser('set', 'viewport', '1280', '800', '2');
+  evaluate('await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));');
 
   // Mock only clipboard rejection: browsers may deny it, and we must not claim success.
   evaluate('navigator.clipboard.writeText = async () => { throw new Error("Test denial"); };');
@@ -318,8 +349,8 @@ try {
   browser('open', origin.href);
   wait('document.querySelector(".live-stage[data-ready]") && typeof window.advanceDemoClock === "function" && !window.demoClockActive');
   evaluate('await document.fonts.ready; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));');
-  checkVoiceSummary(3);
-  console.log('PASS: one avatar plus remaining participants matches 3–6 voice occupants through joins, leaves and loop resets; desktop and narrow totals are not clipped');
+  checkVoiceSummary(['Maya', 'Theo', 'June']);
+  console.log('PASS: all 3–6 voice avatars stay visible through joins, leaves and loop resets; desktop, 320px and 390px totals are not clipped');
   browser('scrollintoview', '.sim-message:last-of-type p');
   checkReadOnlyHover(['.sim-message:last-of-type', '.sim-reaction', '.sim-person', '.account-profile', '.voice-icon-button', '.call-settings-trigger', '.member-list-toggle']);
   drag('.sim-message:last-of-type p');

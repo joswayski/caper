@@ -1,12 +1,5 @@
 name: API image
 on:
-  pull_request:
-    paths:
-      - apps/api/**
-      - Cargo.toml
-      - Cargo.lock
-      - .github/workflows/api-image.yml
-      - tests/api-image-notifications.sh
   push:
     branches: [main]
     paths:
@@ -17,11 +10,11 @@ on:
       - tests/api-image-notifications.sh
 permissions:
   contents: read
-# A newer push to a pull request supersedes its in-progress run. Pushes to main
-# get a unique group (the run id), so publishing is never cancelled or queued.
+# Runs on main only. Each push gets a unique group (the run id), so publishing
+# is never cancelled or queued.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.run_id }}
+  cancel-in-progress: false
 jobs:
   api:
     runs-on: ubuntu-24.04-arm
@@ -45,8 +38,7 @@ jobs:
           tags: caper-api:test
           cache-from: type=gha,scope=api
           # Only main exports the layer cache (mode=max uploads take up to a
-          # minute). Pull-request entries are readable by that PR alone and
-          # compete with main's entries for the repository's cache quota.
+          # minute).
           cache-to: ${{ github.event_name == 'push' && 'type=gha,scope=api,mode=max' || '' }}
       - name: Verify public health, protected accounts, and retired demo routes
         run: |
