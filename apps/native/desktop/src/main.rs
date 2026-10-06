@@ -48,6 +48,7 @@ const TERRACOTTA_BRIGHT: Color32 = Color32::from_rgb(219, 104, 73);
 const CAPER: Color32 = Color32::from_rgb(99, 122, 67);
 const VOICE_SESSION_GREEN: Color32 = Color32::from_rgb(74, 168, 107);
 const ERROR: Color32 = Color32::from_rgb(255, 155, 130);
+const MESSAGE_TEXT: Color32 = Color32::from_rgb(222, 223, 224);
 const MEMBER_PAGE_SIZE: usize = 25;
 
 #[derive(Clone, Copy)]
@@ -149,6 +150,26 @@ impl ComposerToken {
 enum Suggestion {
     Emoji(&'static emoji::Entry),
     Mention(mentions::Candidate),
+}
+
+/// A person pill that was clicked or activated with Enter/Space.
+#[derive(Clone, Debug)]
+struct PillClick {
+    /// The pill's focusable widget, which takes focus back on Escape.
+    id: egui::Id,
+    rect: egui::Rect,
+    entry: model::Mention,
+}
+
+/// The profile card opened from a person's mention pill.
+#[derive(Clone, Debug)]
+struct MentionCard {
+    pill: PillClick,
+    /// The `CreateDirect` navigation while **Message** is opening a DM.
+    opening: Option<u64>,
+    error: Option<String>,
+    /// Opened this pass: the click that opened it is not "outside".
+    fresh: bool,
 }
 
 #[derive(Clone)]
@@ -330,6 +351,7 @@ struct CaperApp {
     suggestion_dismissed: Option<(String, usize)>,
     ime_composing: bool,
     pending: Option<PendingSend>,
+    mention_card: Option<MentionCard>,
     reaction_picker: Option<String>,
     reaction_search: String,
     reaction_search_focus: bool,
@@ -443,6 +465,7 @@ impl CaperApp {
             suggestion_dismissed: None,
             ime_composing: false,
             pending: None,
+            mention_card: None,
             reaction_picker: None,
             reaction_search: String::new(),
             reaction_search_focus: false,
@@ -1162,6 +1185,17 @@ impl CaperApp {
                     result,
                 } if generation == self.generation => {
                     self.loading = false;
+                    // A mention card's Message keeps its own pending state and
+                    // error; opening the DM closes the card with the old channel.
+                    let card = self
+                        .mention_card
+                        .as_mut()
+                        .filter(|card| card.opening == Some(navigation));
+                    let from_card = card.is_some();
+                    if let Some(card) = card {
+                        card.opening = None;
+                        card.error = result.as_ref().err().cloned();
+                    }
                     match result {
                         Ok(direct) => {
                             self.directs.retain(|item| item.id != direct.id);
@@ -1171,7 +1205,9 @@ impl CaperApp {
                                 self.select_direct(direct);
                             }
                         }
-                        Err(error) if navigation == self.navigation => self.error = Some(error),
+                        Err(error) if navigation == self.navigation && !from_card => {
+                            self.error = Some(error)
+                        }
                         Err(_) => {}
                     }
                 }
@@ -2030,6 +2066,7 @@ impl CaperApp {
         self.older_anchor = None;
         self.load_error = None;
         self.pending = None;
+        self.mention_card = None;
         self.reaction_picker = None;
         self.pending_reactions.clear();
         self.reaction_errors.clear();
@@ -2501,6 +2538,7 @@ impl CaperApp {
         self.older_anchor = None;
         self.load_error = None;
         self.pending = None;
+        self.mention_card = None;
         self.reaction_picker = None;
         self.pending_reactions.clear();
         self.reaction_errors.clear();
@@ -5915,7 +5953,9 @@ impl CaperApp {
                             |session| session.author.name.clone(),
                         );
                         let avatar_id = self.session.as_ref().and_then(|session| session.author.avatar_id);
-                        message_row(ui, &author, avatar_id, "Now", message_text(&pending.text, &[], MUTED), false);
+                        message_row(ui, &author, avatar_id, "Now", false, |ui| {
+                            ui.label(RichText::new(&pending.text).size(14.0).color(MUTED));
+                        });
                         if let Some(rejection) = &pending.rejection {
                             egui::Frame::new().inner_margin(egui::Margin { left: 62, right: 18, top: 0, bottom: 8 }).show(ui, |ui| {
                                 ui.colored_label(ERROR, format!("Not sent. {rejection}"));
@@ -5959,6 +5999,7 @@ impl CaperApp {
                     }
                 });
             self.emoji_picker(ui.ctx());
+            self.mention_card(ui.ctx());
             self.after_history(ui, &history, heading.response.rect);
         });
     }
@@ -6108,18 +6149,37 @@ impl CaperApp {
         );
         // Reserved beneath the row so the tint can be sized after drawing.
         let tint = ui.painter().add(egui::Shape::Noop);
-        let row = message_row(
+        let (row, pill) = message_row(
             ui,
             &message.author.name,
             message.author.avatar_id,
             &time,
-            message_text(
-                &message.content.text,
-                &message.content.mentions,
-                Color32::from_rgb(222, 223, 224),
-            ),
             message.author.is_guest,
+            |ui| {
+                message_body(
+                    ui,
+                    &message.id,
+                    &message.content.text,
+                    &message.content.mentions,
+                    |entry| {
+                        let name = self.mention_profile(entry).map_or_else(
+                            || format!("@{}", entry.username.as_deref().unwrap_or_default()),
+                            |profile| profile.title(),
+                        );
+                        format!("Open profile for {name}")
+                    },
+                )
+            },
         );
+        if let Some(pill) = pill {
+            // Opening another pill replaces the card.
+            self.mention_card = Some(MentionCard {
+                pill,
+                opening: None,
+                error: None,
+                fresh: true,
+            });
+        }
         let author = self
             .session
             .as_ref()
@@ -6619,6 +6679,155 @@ impl CaperApp {
                     .collect()
             });
         (people, true)
+    }
+
+    /// A person pill's card data from what is already loaded.
+    fn mention_profile(&self, entry: &model::Mention) -> Option<mentions::Profile> {
+        mentions::profile(
+            entry,
+            self.account.as_ref().map(|account| account.id.as_str()),
+            self.detail
+                .as_ref()
+                .map_or(&[][..], |detail| detail.members.as_slice()),
+            self.people.as_deref().unwrap_or_default(),
+            &self.directs,
+        )
+    }
+
+    /// The card for a clicked person pill: below the pill, or above it when
+    /// there is no room. Escape, a click outside, or opening the DM closes it.
+    fn mention_card(&mut self, context: &egui::Context) {
+        let Some(card) = self.mention_card.clone() else {
+            return;
+        };
+        let Some(profile) = self.mention_profile(&card.pill.entry) else {
+            self.mention_card = None;
+            return;
+        };
+        let id = egui::Id::new("mention-card");
+        let height = context
+            .memory(|memory| memory.area_rect(id))
+            .map_or(190.0, |rect| rect.height());
+        // Follow the pill while the history scrolls.
+        let anchor = context
+            .read_response(card.pill.id)
+            .map_or(card.pill.rect, |pill| pill.rect);
+        let (pivot, position) =
+            if anchor.bottom() + 6.0 + height <= context.content_rect().bottom() - 8.0 {
+                (
+                    egui::Align2::LEFT_TOP,
+                    anchor.left_bottom() + egui::vec2(0.0, 6.0),
+                )
+            } else {
+                (
+                    egui::Align2::LEFT_BOTTOM,
+                    anchor.left_top() - egui::vec2(0.0, 6.0),
+                )
+            };
+        let mut message = false;
+        let shown = egui::Area::new(id)
+            .order(egui::Order::Foreground)
+            .pivot(pivot)
+            .fixed_pos(position)
+            .constrain(true)
+            .show(context, |ui| {
+                egui::Frame::new()
+                    .fill(SURFACE)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .corner_radius(8)
+                    .inner_margin(16)
+                    .show(ui, |ui| {
+                        // 280px including the padding and the border.
+                        ui.set_width(246.0);
+                        ui.spacing_mut().item_spacing.y = 12.0;
+                        let initial = profile.display_name.as_ref().unwrap_or(&profile.username);
+                        avatar(ui, initial, profile.avatar_id, 48.0, false);
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 2.0;
+                            ui.label(bold(profile.title()).size(15.0).color(TEXT));
+                            if profile.display_name.is_some() {
+                                ui.label(
+                                    RichText::new(format!("@{}", profile.username))
+                                        .size(12.0)
+                                        .color(MUTED),
+                                );
+                            }
+                        });
+                        if profile.me {
+                            ui.label(RichText::new("You").size(12.0).color(MUTED));
+                            return;
+                        }
+                        let opening = card.opening.is_some();
+                        // Full width with a centered label.
+                        let button = ui
+                            .vertical_centered_justified(|ui| {
+                                ui.add_enabled(
+                                    !opening,
+                                    egui::Button::new(
+                                        bold(if opening { "Opening…" } else { "Message" })
+                                            .size(12.0),
+                                    )
+                                    .fill(TERRACOTTA)
+                                    .stroke(Stroke::new(1.0, TERRACOTTA))
+                                    .corner_radius(7)
+                                    .min_size(egui::vec2(0.0, 36.0)),
+                                )
+                            })
+                            .inner;
+                        if card.fresh {
+                            button.request_focus();
+                        }
+                        message = button.clicked();
+                        if let Some(error) = &card.error {
+                            ui.label(RichText::new(error).size(12.0).color(ERROR));
+                        }
+                    });
+            });
+        let escape =
+            context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        if escape || (!card.fresh && shown.response.clicked_elsewhere()) {
+            self.mention_card = None;
+            if escape {
+                context.memory_mut(|memory| memory.request_focus(card.pill.id));
+            }
+            return;
+        }
+        if let Some(open) = &mut self.mention_card {
+            open.fresh = false;
+        }
+        if message {
+            self.message_from_card(&card.pill.entry, &profile.username);
+        }
+    }
+
+    /// **Message** opens the existing DM with this person, or creates one by
+    /// username through the same request as the Start conversation dialog.
+    fn message_from_card(&mut self, entry: &model::Mention, username: &str) {
+        if let Some(direct) = self
+            .directs
+            .iter()
+            .find(|direct| entry.id.as_deref() == Some(direct.peer.id.as_str()))
+            .cloned()
+        {
+            self.select_direct(direct);
+            return;
+        }
+        let Some(token) = self.token.clone() else {
+            return;
+        };
+        self.navigation += 1;
+        self.opening = false;
+        self.navigation_target = None;
+        if let Some(card) = &mut self.mention_card {
+            card.opening = Some(self.navigation);
+            card.error = None;
+        }
+        self.worker.send(Command::CreateDirect {
+            generation: self.generation,
+            navigation: self.navigation,
+            token,
+            username: username.to_owned(),
+        });
     }
 
     /// Web's `canCreateSpace`: needs the server's limits.
@@ -8062,15 +8271,15 @@ fn users_button(ui: &mut egui::Ui, active: bool) -> egui::Response {
     })
 }
 
-fn message_row(
+fn message_row<R>(
     ui: &mut egui::Ui,
     author: &str,
     avatar_id: Option<i32>,
     time: &str,
-    text: egui::WidgetText,
     guest: bool,
-) -> egui::Rect {
-    egui::Frame::new()
+    body: impl FnOnce(&mut egui::Ui) -> R,
+) -> (egui::Rect, R) {
+    let row = egui::Frame::new()
         .inner_margin(egui::Margin::symmetric(18, 10))
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(10.0, 4.0);
@@ -8084,46 +8293,136 @@ fn message_row(
                         }
                         ui.label(RichText::new(time).size(10.0).color(MUTED));
                     });
-                    ui.label(text);
-                });
-            });
-        })
-        .response
-        .rect
+                    body(ui)
+                })
+                .inner
+            })
+            .inner
+        });
+    (row.response.rect, row.inner)
 }
 
 /// Message text with resolved mentions drawn as pills: one weight bolder,
-/// primary text color and a 24% terracotta background with 2px side padding.
-/// egui `LayoutJob` backgrounds are plain rectangles, so pills have square
-/// corners here rather than the 4px corners other clients draw.
-fn message_text(text: &str, mentions: &[model::Mention], color: Color32) -> egui::WidgetText {
+/// primary text color and a terracotta background (24%, or 32% while hovered
+/// or focused) with 2px side padding. egui `LayoutJob` backgrounds are plain
+/// rectangles, so pills have square corners rather than the 4px corners other
+/// clients draw.
+///
+/// The text stays one selectable label, so wrapping and drag-selection are
+/// unchanged. Person pills get click targets on top of it from the laid-out
+/// glyphs, one per wrapped row; only the first takes keyboard focus. The
+/// hover/focus state of the last pass picks each pill's fill.
+fn message_body(
+    ui: &mut egui::Ui,
+    message: &str,
+    text: &str,
+    mentions: &[model::Mention],
+    describe: impl Fn(&model::Mention) -> String,
+) -> Option<PillClick> {
     let pills = mentions::highlights(text, mentions);
     if pills.is_empty() {
-        return RichText::new(text).size(14.0).color(color).into();
+        ui.label(RichText::new(text).size(14.0).color(MESSAGE_TEXT));
+        return None;
     }
-    let plain = egui::TextFormat::simple(egui::FontId::proportional(14.0), color);
-    let pill = egui::TextFormat {
+    let ids: Vec<_> = (0..pills.len())
+        .map(|index| ui.make_persistent_id(("mention-pill", message, index)))
+        .collect();
+    let hot: Vec<bool> = ids
+        .iter()
+        .map(|id| ui.data(|data| data.get_temp::<bool>(*id)).unwrap_or(false))
+        .collect();
+    let plain = egui::TextFormat::simple(egui::FontId::proportional(14.0), MESSAGE_TEXT);
+    let pill = |hot: bool| egui::TextFormat {
         font_id: egui::FontId::new(14.0, egui::FontFamily::Name("Satoshi Medium".into())),
         color: TEXT,
-        background: TERRACOTTA.gamma_multiply(0.24),
+        background: TERRACOTTA.gamma_multiply(if hot { 0.32 } else { 0.24 }),
         // Grow the background into the 2px gaps left on either side.
         expand_bg: 2.0,
         ..Default::default()
     };
     let mut job = egui::text::LayoutJob::default();
     let mut written = 0;
-    for range in pills {
+    for ((range, _), hot) in pills.iter().zip(&hot) {
         if range.start > written {
             let gap = if written == 0 { 0.0 } else { 2.0 };
             job.append(&text[written..range.start], gap, plain.clone());
         }
-        job.append(&text[range.clone()], 2.0, pill.clone());
+        job.append(&text[range.clone()], 2.0, pill(*hot));
         written = range.end;
     }
     if written < text.len() {
         job.append(&text[written..], 2.0, plain);
     }
-    job.into()
+    let (position, galley, response) = egui::Label::new(job).layout_in_ui(ui);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), galley.text())
+    });
+    if ui.is_rect_visible(response.rect) {
+        egui::text_selection::LabelSelectionState::label_text_selection(
+            ui,
+            &response,
+            position,
+            galley.clone(),
+            ui.visuals().text_color(),
+            Stroke::NONE,
+        );
+    }
+    let mut clicked = None;
+    for (((range, entry), id), was_hot) in pills.iter().zip(&ids).zip(&hot) {
+        if entry.kind != "user" {
+            continue;
+        }
+        let characters = text[..range.start].chars().count()..text[..range.end].chars().count();
+        let mut is_hot = false;
+        for (row, rect) in pill_rects(&galley, characters).into_iter().enumerate() {
+            let rect = rect.translate(position.to_vec2()).expand(2.0);
+            let (piece, sense) = if row == 0 {
+                (*id, egui::Sense::click())
+            } else {
+                (id.with(row), egui::Sense::CLICK)
+            };
+            let target = ui
+                .interact(rect, piece, sense)
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            if row == 0 {
+                target.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, describe(entry))
+                });
+            }
+            is_hot |= target.hovered() || target.has_focus();
+            if target.clicked() {
+                clicked = Some(PillClick {
+                    id: *id,
+                    rect,
+                    entry: (*entry).clone(),
+                });
+            }
+        }
+        if is_hot != *was_hot {
+            ui.data_mut(|data| data.insert_temp(*id, is_hot));
+            ui.ctx().request_repaint();
+        }
+    }
+    clicked
+}
+
+/// Galley-relative bounds of the characters in `range`, one rect per row.
+fn pill_rects(galley: &egui::Galley, range: std::ops::Range<usize>) -> Vec<egui::Rect> {
+    let mut rects = Vec::new();
+    let mut offset = 0;
+    for placed in &galley.rows {
+        let mut rect = egui::Rect::NOTHING;
+        for (index, glyph) in placed.row.glyphs.iter().enumerate() {
+            if range.contains(&(offset + index)) {
+                rect = rect.union(glyph.logical_rect().translate(placed.pos.to_vec2()));
+            }
+        }
+        if rect.is_positive() {
+            rects.push(rect);
+        }
+        offset += placed.row.char_count_including_newline();
+    }
+    rects
 }
 
 /// One `@` row in the shared suggestion popup, laid out like an emoji row:
@@ -8918,7 +9217,7 @@ mod tests {
     use super::{
         CaperApp, ComposerToken, ConnectionReport, Dialog, GatewayEvent, NavigationTarget,
         PendingReaction, PendingSend, Phase, SelfDirectTarget, Suggestion, TERRACOTTA, TEXT,
-        endpoint, media, member_page_ids, normalize_channel, permanent_send_rejection,
+        endpoint, media, member_page_ids, normalize_channel, permanent_send_rejection, pill_rects,
         projected_reactions, take_date_divider, timestamp_parts, voice,
     };
     use crate::{mentions, navigation};
@@ -11916,6 +12215,379 @@ mod tests {
             ["everyone", "here"],
             "only specials until members load"
         );
+    }
+
+    const ALEX_MESSAGE: &str =
+        "Keep the space rail and audio controls in their usual places, @alex. @nobody stays plain.";
+    const OWNER_MESSAGE: &str =
+        "@fixture_owner, the same conversation should feel familiar on every platform.";
+    const EVERYONE_MESSAGE: &str =
+        "Agreed, @everyone. Let’s check the narrow layout and the management dialogs too.";
+
+    /// Screen center of `token`'s pill in the rendered message `text`.
+    fn pill_center(output: &egui::FullOutput, text: &str, token: &str) -> egui::Pos2 {
+        pill_rect(output, text, token).center()
+    }
+
+    fn pill_rect(output: &egui::FullOutput, text: &str, token: &str) -> egui::Rect {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(shape) if shape.galley.job.text == text => {
+                    let start = text.find(token)?;
+                    let range =
+                        text[..start].chars().count()..text[..start + token.len()].chars().count();
+                    pill_rects(&shape.galley, range)
+                        .first()
+                        .map(|rect| rect.translate(shape.pos.to_vec2()))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{token} is not drawn"))
+    }
+
+    fn text_center(output: &egui::FullOutput, text: &str) -> egui::Pos2 {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(shape) if shape.galley.job.text == text => {
+                    Some(shape.pos + shape.galley.rect.center().to_vec2())
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{text} is not drawn"))
+    }
+
+    fn click_at(app: &mut CaperApp, context: &egui::Context, pos: egui::Pos2) -> egui::FullOutput {
+        let mut output = None;
+        for pressed in [true, false] {
+            output = Some(render(
+                app,
+                context,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            ));
+        }
+        output.unwrap()
+    }
+
+    fn pill_fill(output: &egui::FullOutput, text: &str, token: &str) -> Option<egui::Color32> {
+        output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::epaint::Shape::Text(shape) if shape.galley.job.text == text => shape
+                .galley
+                .job
+                .sections
+                .iter()
+                .find(|section| &text[section.byte_range.clone()] == token)
+                .map(|section| section.format.background),
+            _ => None,
+        })
+    }
+
+    fn card_entry(app: &CaperApp) -> Option<&str> {
+        app.mention_card
+            .as_ref()
+            .and_then(|card| card.pill.entry.id.as_deref())
+    }
+
+    #[test]
+    fn person_pills_open_profile_cards_that_close_on_escape_or_outside_click() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-mentions"),
+        );
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let alex = pill_center(&output, ALEX_MESSAGE, "@alex");
+        let unhovered = TERRACOTTA.gamma_multiply(0.24);
+        assert_eq!(pill_fill(&output, ALEX_MESSAGE, "@alex"), Some(unhovered));
+
+        let hovered = render(&mut app, &context, vec![egui::Event::PointerMoved(alex)]);
+        assert_eq!(
+            hovered.platform_output.cursor_icon,
+            egui::CursorIcon::PointingHand
+        );
+        let hovered = render(&mut app, &context, vec![]);
+        assert_eq!(
+            pill_fill(&hovered, ALEX_MESSAGE, "@alex"),
+            Some(TERRACOTTA.gamma_multiply(0.32))
+        );
+        assert_eq!(
+            pill_fill(&hovered, ALEX_MESSAGE, "@nobody"),
+            None,
+            "unresolved names stay plain"
+        );
+
+        click_at(&mut app, &context, alex);
+        assert_eq!(card_entry(&app), Some("fixture-alex"));
+        // New egui areas spend their first pass measuring, invisibly.
+        let output = render(&mut app, &context, vec![]);
+        for label in ["Alex", "@alex", "Message"] {
+            assert!(shows(&output, label), "{label}: {:?}", text_shapes(&output));
+        }
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            shows(&output, "Message"),
+            "the opening click is not outside"
+        );
+        let pill = app.mention_card.as_ref().unwrap().pill.id;
+
+        render(&mut app, &context, press(egui::Key::Escape));
+        assert!(app.mention_card.is_none());
+        render(&mut app, &context, vec![]);
+        assert!(
+            context.memory(|memory| memory.has_focus(pill)),
+            "focus returns to the pill"
+        );
+        render(&mut app, &context, press(egui::Key::Enter));
+        assert_eq!(
+            card_entry(&app),
+            Some("fixture-alex"),
+            "Enter on a focused pill opens its card"
+        );
+        assert!(app.pending.is_none());
+
+        let output = render(&mut app, &context, vec![]);
+        let owner = pill_center(&output, OWNER_MESSAGE, "@fixture_owner");
+        click_at(&mut app, &context, owner);
+        assert_eq!(
+            card_entry(&app),
+            Some("fixture-owner"),
+            "another pill replaces the card"
+        );
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Fixture Owner") && shows(&output, "You"));
+        assert!(!shows(&output, "Message"), "no Message for yourself");
+
+        let outside = text_center(&output, "Beginning of conversation");
+        click_at(&mut app, &context, outside);
+        assert!(
+            app.mention_card.is_none(),
+            "a click outside closes the card"
+        );
+
+        let output = render(&mut app, &context, vec![]);
+        let everyone = pill_center(&output, EVERYONE_MESSAGE, "@everyone");
+        click_at(&mut app, &context, everyone);
+        assert!(
+            app.mention_card.is_none(),
+            "@everyone stays non-interactive"
+        );
+    }
+
+    #[test]
+    fn mention_card_opens_below_its_pill_or_above_it_near_the_bottom() {
+        let card_beside_pill = |height: f32, text: &str, token: &str| {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-mentions"),
+            );
+            // The last message sits just above the composer.
+            let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+            messages[3].content.text = "Thanks @maya".into();
+            messages[3].content.mentions = vec![model::Mention {
+                kind: "user".into(),
+                id: Some("fixture-maya".into()),
+                username: Some("maya".into()),
+            }];
+            app.timeline.reset(messages, "4").unwrap();
+            let frame = |app: &mut CaperApp, events| {
+                context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1440.0, height),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |context| app.page(context),
+                )
+            };
+            frame(&mut app, vec![]);
+            let output = frame(&mut app, vec![]);
+            let pill = pill_rect(&output, text, token);
+            for pressed in [true, false] {
+                frame(
+                    &mut app,
+                    vec![
+                        egui::Event::PointerMoved(pill.center()),
+                        egui::Event::PointerButton {
+                            pos: pill.center(),
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            }
+            frame(&mut app, vec![]);
+            frame(&mut app, vec![]);
+            let card = context
+                .memory(|memory| memory.area_rect(egui::Id::new("mention-card")))
+                .unwrap();
+            (pill, card)
+        };
+        let (pill, card) = card_beside_pill(900.0, ALEX_MESSAGE, "@alex");
+        assert!(card.top() >= pill.bottom(), "{pill:?} {card:?}");
+        assert!(card.width() <= 280.0 + 0.5, "{card:?}");
+        let (pill, card) = card_beside_pill(560.0, "Thanks @maya", "@maya");
+        assert!(card.bottom() <= pill.top(), "{pill:?} {card:?}");
+    }
+
+    #[test]
+    fn mention_card_message_opens_an_existing_dm_or_shows_a_creation_error() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-mentions"),
+        );
+        app.token = Some("account-token".into());
+        let existing = model::DirectConversation {
+            id: "dm0000000009".into(),
+            peer: model::DirectPeer {
+                id: "fixture-alex".into(),
+                username: "alex".into(),
+                display_name: "Alex".into(),
+            },
+            last_seq: "0".into(),
+            read_seq: "0".into(),
+        };
+        app.directs.push(existing.clone());
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        click_at(
+            &mut app,
+            &context,
+            pill_center(&output, ALEX_MESSAGE, "@alex"),
+        );
+        // New egui areas spend their first pass measuring, invisibly.
+        let output = render(&mut app, &context, vec![]);
+        click_at(&mut app, &context, text_center(&output, "Message"));
+        assert_eq!(app.selected_direct.as_deref(), Some("dm0000000009"));
+        assert!(app.mention_card.is_none(), "opening the DM closes the card");
+
+        // Without a DM, Message creates one by username; this API is unreachable.
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-mentions"),
+        );
+        app.token = Some("account-token".into());
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        click_at(
+            &mut app,
+            &context,
+            pill_center(&output, ALEX_MESSAGE, "@alex"),
+        );
+        // New egui areas spend their first pass measuring, invisibly.
+        let output = render(&mut app, &context, vec![]);
+        click_at(&mut app, &context, text_center(&output, "Message"));
+        assert_eq!(
+            app.mention_card.as_ref().unwrap().opening,
+            Some(app.navigation)
+        );
+        assert!(shows(&render(&mut app, &context, vec![]), "Opening…"));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.mention_card.as_ref().unwrap().opening.is_some() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+            app.receive();
+        }
+        let card = app
+            .mention_card
+            .as_ref()
+            .expect("a failure keeps the card open");
+        let error = card
+            .error
+            .clone()
+            .expect("the API error is shown in the card");
+        assert!(app.error.is_none(), "not duplicated outside the card");
+        assert!(app.selected_direct.is_none());
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, &error) && shows(&output, "Message"));
+    }
+
+    #[test]
+    fn mention_card_message_creates_the_dm_by_username_and_navigates() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api =
+            crate::api::Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
+        let requests = std::thread::spawn(move || {
+            loop {
+                let (stream, _) = server.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                let (mut length, mut bearer) = (0, false);
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    let lower = line.to_ascii_lowercase();
+                    if let Some(value) = lower.strip_prefix("content-length:") {
+                        length = value.trim().parse().unwrap();
+                    }
+                    bearer |= lower == "authorization: bearer account-token\r\n";
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).unwrap();
+                if request != "POST /api/dms HTTP/1.1\r\n" {
+                    write!(reader.get_mut(), "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}").unwrap();
+                    continue;
+                }
+                let direct = r#"{"id":"dm0000000002","peer":{"id":"fixture-alex","username":"alex","displayName":"Alex"},"lastSeq":"0","readSeq":"0"}"#;
+                write!(reader.get_mut(), "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{direct}", direct.len()).unwrap();
+                return (
+                    bearer,
+                    serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+                );
+            }
+        });
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(&context, api, Some("parity-mentions"));
+        app.token = Some("account-token".into());
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        click_at(
+            &mut app,
+            &context,
+            pill_center(&output, ALEX_MESSAGE, "@alex"),
+        );
+        // New egui areas spend their first pass measuring, invisibly.
+        let output = render(&mut app, &context, vec![]);
+        click_at(&mut app, &context, text_center(&output, "Message"));
+        let (bearer, body) = requests.join().unwrap();
+        assert!(bearer);
+        assert_eq!(body, serde_json::json!({"username": "alex"}));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.selected_direct.is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+            app.receive();
+        }
+        assert_eq!(app.selected_direct.as_deref(), Some("dm0000000002"));
+        assert!(app.directs.iter().any(|direct| direct.id == "dm0000000002"));
+        assert!(app.mention_card.is_none());
     }
 
     #[test]
