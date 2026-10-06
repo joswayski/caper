@@ -1003,7 +1003,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                                 .semantics { contentDescription = "Insert emoji ${emojiShortcodeLabel(entry.name)}" }
                                 .padding(horizontal = 12.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
                             EmojiImage(entry.emoji, null, Modifier.size(28.dp))
                             Text(emojiShortcodeLabel(entry.name), color = if (index == selectedSuggestion) Text else TextMuted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)

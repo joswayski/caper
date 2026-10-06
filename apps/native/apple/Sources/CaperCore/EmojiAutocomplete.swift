@@ -93,7 +93,7 @@ struct EmojiSuggestionsView: View {
             VStack(spacing: 0) {
                 ForEach(Array(match.choices.enumerated()), id: \.element.id) { index, entry in
                     Button { controller.accept(entry) } label: {
-                        HStack(spacing: 10) {
+                        HStack(spacing: 12) {
                             EmojiArtworkView(emoji: entry.emoji, size: 24)
                             Text(":\(entry.name.replacingOccurrences(of: " ", with: "_")):").font(CaperTheme.font(13, weight: .medium)).lineLimit(1)
                             Spacer()

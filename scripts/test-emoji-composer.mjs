@@ -51,6 +51,8 @@ try {
     const popupStyle = evaluate('const popup=document.querySelector(".chat-emoji-suggestions"); return {width:popup.getBoundingClientRect().width,borderless:[...popup.querySelectorAll("button")].every(row => ["borderTopWidth","borderRightWidth","borderBottomWidth","borderLeftWidth"].every(side => getComputedStyle(row)[side] === "0px"))};');
     assert.ok(popupStyle.width <= 260, `Popup must remain compact: ${popupStyle.width}px`);
     assert.ok(popupStyle.borderless, 'Suggestion rows must not have individual borders');
+    const labelGaps = evaluate('return [...document.querySelectorAll("#chat-emoji-options button")].map(row => row.querySelector("span").getBoundingClientRect().left - row.querySelector("img").getBoundingClientRect().right);');
+    assert.ok(labelGaps.every(gap => Math.abs(gap - 12) < 0.1), `Emoji/label gaps must be 12px: ${labelGaps}`);
     assert.equal(evaluate('return document.querySelector("#chat-emoji-1f44d span").textContent;'), ':thumbs-up:', 'Merged dash-separated names must remain visible');
     wait('[...document.querySelectorAll(".chat-emoji-suggestions img")].every(image => image.complete && image.naturalWidth > 0)');
     if (artifacts) browser('screenshot', `${artifacts}/emoji-flat-${layout}.png`);

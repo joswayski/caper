@@ -5558,6 +5558,7 @@ impl CaperApp {
                                     egui::Frame::new().fill(COMPOSER).stroke(Stroke::new(1.0, BORDER)).corner_radius(8).inner_margin(4).show(ui, |ui| {
                                         let width = response.rect.width().min(260.0) - 8.0;
                                         ui.set_width(width);
+                                        ui.spacing_mut().icon_spacing = 12.0;
                                         ui.spacing_mut().item_spacing.y = 0.0;
                                         for (index, entry) in choices.iter().enumerate() {
                                             let image = self.reaction_textures.image(ui, entry, 24.0);
