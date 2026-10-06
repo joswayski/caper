@@ -19,7 +19,7 @@ async fn member_channel(
 ) -> Result<(i64, i64, String, bool, bool), ApiError> {
     let (space_id, owner): (i64,i64) = sqlx::query_as("SELECT id,owner_id FROM public.spaces WHERE external_id=$1 AND deleted_at IS NULL AND NOT demo FOR UPDATE")
         .bind(space).fetch_optional(&mut **tx).await.map_err(database_error)?.ok_or_else(not_found)?;
-    let row: (i64,String,bool) = sqlx::query_as("SELECT c.id,c.name,c.private FROM public.channels c WHERE c.space_id=$1 AND c.external_id=$2 AND c.deleted_at IS NULL AND EXISTS(SELECT 1 FROM public.space_members WHERE space_id=$1 AND user_id=$3) FOR UPDATE OF c")
+    let row: (i64,String,bool) = sqlx::query_as("SELECT c.id,c.name,c.private FROM public.channels c WHERE c.space_id=$1 AND c.external_id=$2 AND c.deleted_at IS NULL AND EXISTS(SELECT 1 FROM public.space_members WHERE space_id=$1 AND user_id=$3 AND deleted_at IS NULL) FOR UPDATE OF c")
         .bind(space_id).bind(channel).bind(user).fetch_optional(&mut **tx).await.map_err(database_error)?.ok_or_else(not_found)?;
     Ok((space_id, row.0, row.1, row.2, owner == user))
 }
@@ -33,7 +33,7 @@ pub(super) async fn join_channel(
     let (_, id, name, private, owner) =
         member_channel(&mut tx, &space, &channel, principal.user.id).await?;
     if private && !owner {
-        let granted: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM public.channel_members WHERE channel_id=$1 AND user_id=$2)")
+        let granted: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM public.channel_members WHERE channel_id=$1 AND user_id=$2 AND deleted_at IS NULL)")
             .bind(id).bind(principal.user.id).fetch_one(&mut *tx).await.map_err(database_error)?;
         if !granted {
             return Err(not_found());
@@ -66,20 +66,20 @@ pub(super) async fn leave_channel(
     let (_, id, _, private, owner) =
         member_channel(&mut tx, &space, &channel, principal.user.id).await?;
     if private && !owner {
-        let granted: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM public.channel_members WHERE channel_id=$1 AND user_id=$2)")
+        let granted: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM public.channel_members WHERE channel_id=$1 AND user_id=$2 AND deleted_at IS NULL)")
             .bind(id).bind(principal.user.id).fetch_one(&mut *tx).await.map_err(database_error)?;
         if !granted {
             return Err(not_found());
         }
     }
-    sqlx::query("DELETE FROM public.channel_joins WHERE channel_id=$1 AND user_id=$2")
+    sqlx::query("UPDATE public.channel_joins SET deleted_at=now() WHERE channel_id=$1 AND user_id=$2 AND deleted_at IS NULL")
         .bind(id)
         .bind(principal.user.id)
         .execute(&mut *tx)
         .await
         .map_err(database_error)?;
     if private && !owner {
-        sqlx::query("DELETE FROM public.channel_members WHERE channel_id=$1 AND user_id=$2")
+        sqlx::query("UPDATE public.channel_members SET deleted_at=now() WHERE channel_id=$1 AND user_id=$2 AND deleted_at IS NULL")
             .bind(id)
             .bind(principal.user.id)
             .execute(&mut *tx)
@@ -117,7 +117,7 @@ pub(super) async fn add_channel_member(
     }
     let member = find_user_for_update(&mut tx, &input.username).await?;
     let belongs: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM public.space_members WHERE space_id=$1 AND user_id=$2)",
+        "SELECT EXISTS(SELECT 1 FROM public.space_members WHERE space_id=$1 AND user_id=$2 AND deleted_at IS NULL)",
     )
     .bind(space_id)
     .bind(member.0)
@@ -128,7 +128,7 @@ pub(super) async fn add_channel_member(
         return Err(conflict("user must join the space first"));
     }
     let granted: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM public.channel_members WHERE channel_id=$1 AND user_id=$2)",
+        "SELECT EXISTS(SELECT 1 FROM public.channel_members WHERE channel_id=$1 AND user_id=$2 AND deleted_at IS NULL)",
     )
     .bind(id)
     .bind(member.0)
@@ -188,7 +188,7 @@ pub(super) async fn remove_channel_member(
         return Err(conflict("owner cannot be removed"));
     }
     let changed =
-        sqlx::query("DELETE FROM public.channel_members WHERE channel_id=$1 AND user_id=$2")
+        sqlx::query("UPDATE public.channel_members SET deleted_at=now() WHERE channel_id=$1 AND user_id=$2 AND deleted_at IS NULL")
             .bind(id)
             .bind(target)
             .execute(&mut *tx)
@@ -199,7 +199,7 @@ pub(super) async fn remove_channel_member(
     if changed.rows_affected() == 0 && pending.rows_affected() == 0 {
         return Err(not_found());
     }
-    sqlx::query("DELETE FROM public.channel_joins WHERE channel_id=$1 AND user_id=$2")
+    sqlx::query("UPDATE public.channel_joins SET deleted_at=now() WHERE channel_id=$1 AND user_id=$2 AND deleted_at IS NULL")
         .bind(id)
         .bind(target)
         .execute(&mut *tx)

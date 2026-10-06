@@ -183,7 +183,7 @@ async fn reactions_are_durable_idempotent_authorized_and_transactional() {
     )
     .await
     .unwrap();
-    sqlx::query("DELETE FROM public.channel_joins WHERE channel_id=$1 AND user_id=$2")
+    sqlx::query("UPDATE public.channel_joins SET deleted_at=now() WHERE channel_id=$1 AND user_id=$2 AND deleted_at IS NULL")
         .bind(preview_channel_id)
         .bind(reader)
         .execute(&pool)
@@ -233,7 +233,7 @@ async fn reactions_are_durable_idempotent_authorized_and_transactional() {
             .fetch_one(&mut *leaving)
             .await
             .unwrap();
-    sqlx::query("DELETE FROM public.channel_joins WHERE channel_id=$1 AND user_id=$2")
+    sqlx::query("UPDATE public.channel_joins SET deleted_at=now() WHERE channel_id=$1 AND user_id=$2 AND deleted_at IS NULL")
         .bind(preview_channel_id)
         .bind(reader)
         .execute(&mut *leaving)
@@ -531,7 +531,7 @@ async fn reactions_are_durable_idempotent_authorized_and_transactional() {
         .await
         .is_ok()
     );
-    sqlx::query("DELETE FROM public.space_members WHERE space_id=$1 AND user_id=$2")
+    sqlx::query("UPDATE public.space_members SET deleted_at=now() WHERE space_id=$1 AND user_id=$2 AND deleted_at IS NULL")
         .bind(space)
         .bind(user)
         .execute(&pool)
@@ -587,10 +587,10 @@ async fn reactions_are_durable_idempotent_authorized_and_transactional() {
         .await
         .unwrap();
     let bounded_id = bounded["id"].as_str().unwrap();
-    let kinds = [
-        "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "😊", "😇", "🙂", "🙃", "😉", "😌", "😍",
-        "🥰", "😘", "😗", "😙", "😚",
-    ];
+    // 50 distinct kinds, U+1F600 (😀) through U+1F631; 👍 is not among them.
+    let kinds: Vec<String> = (0x1F600..0x1F632)
+        .map(|code| char::from_u32(code).unwrap().to_string())
+        .collect();
     sqlx::query("INSERT INTO public.message_reactions(message_id,emoji,user_id) SELECT m.id,emoji,$3 FROM public.messages m CROSS JOIN unnest($2::text[]) AS emoji WHERE m.external_id=$1")
         .bind(bounded_id).bind(kinds.as_slice()).bind(reader).execute(&pool).await.unwrap();
     assert!(
@@ -605,7 +605,7 @@ async fn reactions_are_durable_idempotent_authorized_and_transactional() {
             .status,
         StatusCode::CONFLICT
     );
-    sqlx::query("DELETE FROM public.message_reactions WHERE message_id=(SELECT id FROM public.messages WHERE external_id=$1)")
+    sqlx::query("UPDATE public.message_reactions SET deleted_at=now() WHERE message_id=(SELECT id FROM public.messages WHERE external_id=$1) AND deleted_at IS NULL")
         .bind(bounded_id).execute(&pool).await.unwrap();
     sqlx::query("WITH actors AS (INSERT INTO public.users(external_id) SELECT 'fixture-'||n FROM generate_series(1,999) AS n RETURNING id) INSERT INTO public.message_reactions(message_id,emoji,user_id) SELECT m.id,'👍',actors.id FROM public.messages m CROSS JOIN actors WHERE m.external_id=$1")
         .bind(bounded_id).execute(&pool).await.unwrap();
@@ -721,10 +721,12 @@ async fn direct_reactions_require_participants_and_preserve_history_sequences(po
         .unwrap();
     assert_eq!(removed["seq"], "3");
     assert_eq!(removed["reactions"], json!([]));
-    let (head, events, activity, reactions): (i64, i64, i64, i64) = sqlx::query_as(
+    // The removed reaction stops counting but its record is retained.
+    let (head, events, activity, reactions, retained): (i64, i64, i64, i64, i64) = sqlx::query_as(
         "SELECT last_seq,
             (SELECT count(*) FROM public.channel_events WHERE channel_id=c.id),
             (SELECT count(*) FROM public.message_reaction_activity),
+            (SELECT count(*) FROM public.message_reactions WHERE deleted_at IS NULL),
             (SELECT count(*) FROM public.message_reactions)
          FROM public.channels c WHERE external_id=$1",
     )
@@ -732,7 +734,10 @@ async fn direct_reactions_require_participants_and_preserve_history_sequences(po
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!((head, events, activity, reactions), (3, 3, 2, 0));
+    assert_eq!(
+        (head, events, activity, reactions, retained),
+        (3, 3, 2, 0, 1)
+    );
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM public.channel_joins")
             .fetch_one(&pool)
@@ -1587,7 +1592,7 @@ async fn account_channels_isolate_sequences_and_gateway_revokes_live_access() {
         .unwrap()["seq"],
         "1"
     );
-    sqlx::query("DELETE FROM public.channel_joins WHERE channel_id=(SELECT id FROM public.channels WHERE external_id=$1) AND user_id=$2")
+    sqlx::query("UPDATE public.channel_joins SET deleted_at=now() WHERE channel_id=(SELECT id FROM public.channels WHERE external_id=$1) AND user_id=$2 AND deleted_at IS NULL")
         .bind(&public).bind(member).execute(&pool).await.unwrap();
     assert!(
         history_page(&pool, &public, None, Some(member))
@@ -1644,7 +1649,7 @@ async fn account_channels_isolate_sequences_and_gateway_revokes_live_access() {
             .fetch_one(&mut *removal)
             .await
             .unwrap();
-    sqlx::query("DELETE FROM public.channel_members WHERE channel_id=$1 AND user_id=$2")
+    sqlx::query("UPDATE public.channel_members SET deleted_at=now() WHERE channel_id=$1 AND user_id=$2 AND deleted_at IS NULL")
         .bind(first_id)
         .bind(member)
         .execute(&mut *removal)
@@ -1709,7 +1714,7 @@ async fn account_channels_isolate_sequences_and_gateway_revokes_live_access() {
 
     // Removing the private grant closes an already-established subscription on
     // the next periodic authorization tick, without requiring another event.
-    sqlx::query("DELETE FROM public.channel_members WHERE channel_id=$1 AND user_id=$2")
+    sqlx::query("UPDATE public.channel_members SET deleted_at=now() WHERE channel_id=$1 AND user_id=$2 AND deleted_at IS NULL")
         .bind(first_id)
         .bind(member)
         .execute(&pool)

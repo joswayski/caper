@@ -176,16 +176,11 @@ impl AuthVerifier {
                 .await
                 .map_err(database_unavailable)?;
         }
+        // Single-use codes are pruned after a week. Expired and revoked
+        // sessions are kept as sign-in history.
         sqlx::query(
             "DELETE FROM public.auth_email_challenges
              WHERE created_at < now() - interval '7 days'",
-        )
-        .execute(&mut *transaction)
-        .await
-        .map_err(database_unavailable)?;
-        sqlx::query(
-            "DELETE FROM public.account_sessions
-             WHERE expires_at < now() - interval '7 days'",
         )
         .execute(&mut *transaction)
         .await
@@ -732,10 +727,39 @@ mod tests {
         assert_eq!(session.user.email.as_deref(), Some("person@caper.chat"));
         assert!(session.user.username.is_none());
 
+        // The next request prunes week-old codes but keeps expired sessions.
+        let stale = Uuid::new_v4();
+        sqlx::query(
+            r"INSERT INTO public.auth_email_challenges
+                (id, email, code_hash, request_ip_hash, attempts_remaining, expires_at, created_at)
+              VALUES ($1, 'stale@caper.chat', '\x00', '\x00', 5,
+                      now() - interval '8 days', now() - interval '8 days')",
+        )
+        .bind(stale)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r"INSERT INTO public.account_sessions (token_hash, user_id, expires_at)
+              VALUES ('\x00', $1, now() - interval '30 days')",
+        )
+        .bind(session.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
         let repeat_challenge = verifier
             .request_code(Some(&pool), "person@caper.chat", ip)
             .await
             .unwrap();
+        let retained: (i64, i64) = sqlx::query_as(
+            r"SELECT (SELECT count(*) FROM public.auth_email_challenges WHERE id = $1),
+                     (SELECT count(*) FROM public.account_sessions WHERE token_hash = '\x00')",
+        )
+        .bind(stale)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(retained, (0, 1));
         let repeat_code = sender.deliveries.lock().unwrap().last().unwrap().1.clone();
         let repeat_session = verifier
             .verify_code(Some(&pool), repeat_challenge, &repeat_code)

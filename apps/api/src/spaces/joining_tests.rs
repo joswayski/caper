@@ -429,11 +429,13 @@ async fn joining_consent_and_migration_preserve_access_without_silent_joins() {
     .await
     .unwrap();
     assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM public.channel_joins WHERE user_id=$1")
-            .bind(newcomer.user.id)
-            .fetch_one(&pool)
-            .await
-            .unwrap(),
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM public.channel_joins WHERE user_id=$1 AND deleted_at IS NULL"
+        )
+        .bind(newcomer.user.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
         0
     );
     pool.close().await;

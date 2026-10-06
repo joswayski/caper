@@ -156,11 +156,11 @@ async fn grant_runtime_access(pool: &PgPool, runtime_role: &str) -> Result<(), S
             "GRANT SELECT, INSERT, UPDATE ON public.spaces, public.channels, public.chat_sessions, public.messages, public.channel_events TO {role}"
         ),
         format!(
-            "GRANT SELECT, INSERT, DELETE ON public.message_reactions, public.message_reaction_activity TO {role}"
+            "GRANT SELECT, INSERT, UPDATE, DELETE ON public.message_reactions, public.message_reaction_activity TO {role}"
         ),
         format!("GRANT SELECT, INSERT, UPDATE ON public.assets TO {role}"),
         format!(
-            "GRANT SELECT, INSERT, DELETE ON public.space_members, public.channel_members, public.channel_joins TO {role}"
+            "GRANT SELECT, INSERT, UPDATE, DELETE ON public.space_members, public.channel_members, public.channel_joins TO {role}"
         ),
         format!(
             "GRANT SELECT, INSERT, UPDATE ON public.space_invitations, public.space_invite_limits, public.channel_invitations TO {role}"
@@ -172,7 +172,7 @@ async fn grant_runtime_access(pool: &PgPool, runtime_role: &str) -> Result<(), S
             "GRANT USAGE ON SEQUENCE public.push_devices_id_seq, public.push_notifications_id_seq TO {role}"
         ),
         format!(
-            "GRANT USAGE ON SEQUENCE public.spaces_id_seq, public.channels_id_seq, public.chat_sessions_id_seq, public.messages_id_seq, public.message_reaction_activity_id_seq, public.assets_id_seq TO {role}"
+            "GRANT USAGE ON SEQUENCE public.spaces_id_seq, public.channels_id_seq, public.chat_sessions_id_seq, public.messages_id_seq, public.message_reaction_activity_id_seq, public.message_reactions_id_seq, public.space_members_id_seq, public.channel_members_id_seq, public.channel_joins_id_seq, public.assets_id_seq TO {role}"
         ),
     ] {
         sqlx::query(&statement)
@@ -396,6 +396,9 @@ mod tests {
             ("public.users", "UPDATE"),
             ("public.auth_email_challenges", "DELETE"),
             ("public.account_sessions", "DELETE"),
+            ("public.space_members", "UPDATE"),
+            ("public.channel_joins", "UPDATE"),
+            ("public.message_reactions", "UPDATE"),
         ] {
             assert!(
                 sqlx::query_scalar::<_, bool>("SELECT has_table_privilege($1, $2, $3)")

@@ -180,8 +180,8 @@ pub(crate) async fn history_with(
         "SELECT c.id,c.last_seq,c.space_id FROM public.channels c LEFT JOIN public.spaces s ON s.id=c.space_id
          WHERE c.external_id=$1 AND c.deleted_at IS NULL AND $2::bigint IS NOT NULL
            AND ((s.deleted_at IS NULL AND NOT s.demo
-                 AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=$2)
-                 AND (s.owner_id=$2 OR NOT c.private OR EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=c.id AND cm.user_id=$2)))
+                 AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=$2 AND sm.deleted_at IS NULL)
+                 AND (s.owner_id=$2 OR NOT c.private OR EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=c.id AND cm.user_id=$2 AND cm.deleted_at IS NULL)))
                 OR (c.space_id IS NULL AND EXISTS(SELECT 1 FROM public.direct_conversations d
                     JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
                     WHERE d.channel_id=c.id AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL)))
@@ -519,9 +519,9 @@ pub(crate) async fn persist_message(
         "SELECT c.id,c.last_seq FROM public.channels c LEFT JOIN public.spaces s ON s.id=c.space_id
          WHERE c.external_id=$1 AND c.deleted_at IS NULL AND $2::bigint IS NOT NULL
            AND ((s.deleted_at IS NULL AND NOT s.demo
-                 AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=$2)
-                 AND (s.owner_id=$2 OR NOT c.private OR EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=c.id AND cm.user_id=$2))
-                 AND EXISTS(SELECT 1 FROM public.channel_joins cj WHERE cj.channel_id=c.id AND cj.user_id=$2))
+                 AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=$2 AND sm.deleted_at IS NULL)
+                 AND (s.owner_id=$2 OR NOT c.private OR EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=c.id AND cm.user_id=$2 AND cm.deleted_at IS NULL))
+                 AND EXISTS(SELECT 1 FROM public.channel_joins cj WHERE cj.channel_id=c.id AND cj.user_id=$2 AND cj.deleted_at IS NULL))
                 OR (c.space_id IS NULL AND EXISTS(SELECT 1 FROM public.direct_conversations d
                     JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
                     WHERE d.channel_id=c.id AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL)))
@@ -623,9 +623,9 @@ async fn persist_reaction(
         "SELECT c.id,c.last_seq FROM public.channels c LEFT JOIN public.spaces s ON s.id=c.space_id
          WHERE c.external_id=$1 AND c.deleted_at IS NULL AND $2::bigint IS NOT NULL
            AND ((s.deleted_at IS NULL AND NOT s.demo
-                 AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=$2)
-                 AND (s.owner_id=$2 OR NOT c.private OR EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=c.id AND cm.user_id=$2))
-                 AND EXISTS(SELECT 1 FROM public.channel_joins cj WHERE cj.channel_id=c.id AND cj.user_id=$2))
+                 AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=$2 AND sm.deleted_at IS NULL)
+                 AND (s.owner_id=$2 OR NOT c.private OR EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=c.id AND cm.user_id=$2 AND cm.deleted_at IS NULL))
+                 AND EXISTS(SELECT 1 FROM public.channel_joins cj WHERE cj.channel_id=c.id AND cj.user_id=$2 AND cj.deleted_at IS NULL))
                 OR (c.space_id IS NULL AND EXISTS(SELECT 1 FROM public.direct_conversations d
                     JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
                     WHERE d.channel_id=c.id AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL)))
@@ -643,7 +643,7 @@ async fn persist_reaction(
     .map_err(database_error)?;
     let (message_id, mut payload) =
         row.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "message not found"))?;
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM public.message_reactions WHERE message_id=$1 AND emoji=$2 AND user_id=$3)")
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM public.message_reactions WHERE message_id=$1 AND emoji=$2 AND user_id=$3 AND deleted_at IS NULL)")
         .bind(message_id).bind(emoji).bind(user_id).fetch_one(&mut *tx).await.map_err(database_error)?;
 
     if exists != active {
@@ -659,9 +659,9 @@ async fn persist_reaction(
         }
         if active {
             let (kinds, actors, total): (i64, i64, i64) = sqlx::query_as(
-                "SELECT count(DISTINCT emoji),count(*) FILTER (WHERE emoji=$2),count(*) FROM public.message_reactions WHERE message_id=$1")
+                "SELECT count(DISTINCT emoji),count(*) FILTER (WHERE emoji=$2),count(*) FROM public.message_reactions WHERE message_id=$1 AND deleted_at IS NULL")
                 .bind(message_id).bind(emoji).fetch_one(&mut *tx).await.map_err(database_error)?;
-            if (actors == 0 && kinds >= 20) || total >= 1000 {
+            if (actors == 0 && kinds >= 50) || total >= 1000 {
                 return Err(ApiError::new(
                     StatusCode::CONFLICT,
                     "reaction limit reached",
@@ -677,7 +677,7 @@ async fn persist_reaction(
             .await
             .map_err(database_error)?;
         } else {
-            sqlx::query("DELETE FROM public.message_reactions WHERE message_id=$1 AND emoji=$2 AND user_id=$3")
+            sqlx::query("UPDATE public.message_reactions SET deleted_at=now() WHERE message_id=$1 AND emoji=$2 AND user_id=$3 AND deleted_at IS NULL")
                 .bind(message_id).bind(emoji).bind(user_id).execute(&mut *tx).await.map_err(database_error)?;
         }
         sqlx::query(
@@ -691,7 +691,7 @@ async fn persist_reaction(
     }
 
     let rows: Vec<(String, Vec<String>)> = sqlx::query_as(
-        "SELECT r.emoji,array_agg(u.external_id ORDER BY u.external_id) FROM public.message_reactions r JOIN public.users u ON u.id=r.user_id WHERE r.message_id=$1 GROUP BY r.emoji ORDER BY r.emoji")
+        "SELECT r.emoji,array_agg(u.external_id ORDER BY u.external_id) FROM public.message_reactions r JOIN public.users u ON u.id=r.user_id WHERE r.message_id=$1 AND r.deleted_at IS NULL GROUP BY r.emoji ORDER BY r.emoji")
         .bind(message_id).fetch_all(&mut *tx).await.map_err(database_error)?;
     let reactions: Vec<Value> = rows
         .into_iter()
