@@ -249,7 +249,7 @@ async fn isolation_and_revocation(shared: bool) {
     );
 
     // Leaving an otherwise public channel gates the existing voice capability.
-    sqlx::query("DELETE FROM public.channel_joins WHERE channel_id=(SELECT id FROM public.channels WHERE external_id='ChannelBravo') AND user_id=$1")
+    sqlx::query("UPDATE public.channel_joins SET deleted_at=now() WHERE channel_id=(SELECT id FROM public.channels WHERE external_id='ChannelBravo') AND user_id=$1 AND deleted_at IS NULL")
         .bind(users[1]).execute(&pool).await.unwrap();
     assert_eq!(
         request(
@@ -364,7 +364,7 @@ async fn isolation_and_revocation(shared: bool) {
     let mut events = response.into_body().into_data_stream();
     assert!(events.next().await.unwrap().is_ok()); // ready
     assert!(events.next().await.unwrap().is_ok()); // initial snapshot
-    sqlx::query("DELETE FROM public.space_members WHERE space_id=$1 AND user_id=$2")
+    sqlx::query("UPDATE public.space_members SET deleted_at=now() WHERE space_id=$1 AND user_id=$2 AND deleted_at IS NULL")
         .bind(space)
         .bind(users[1])
         .execute(&pool)

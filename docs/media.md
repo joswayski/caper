@@ -615,7 +615,10 @@ Existing memberships are unchanged; the migration does not retroactively ask
 existing members to accept. There are no invite links, custom roles, ownership
 transfers or public space discovery yet.
 Non-owner members can leave a space themselves. Removing a space member also
-removes their private-channel grants. The owner cannot be removed.
+removes their private-channel grants. The owner cannot be removed. Removal is a
+soft delete: space memberships, private-channel grants and channel joins get
+`deleted_at` and stay in Postgres. Rejoining inserts a new row, so earlier periods
+are kept; it does not restore old private-channel grants.
 Counts include active resources only. Defaults are 20 owned spaces per
 account (`SPACE_OWNED_LIMIT`), 100 total memberships including owned spaces
 (`SPACE_MEMBERSHIP_LIMIT`), and 100 channels per space (`SPACE_CHANNEL_LIMIT`).
@@ -919,8 +922,10 @@ require one of the two active participants, not space membership or a channel
 join. History holds the channel lock through snapshot reads for both channel
 types. Unicode qualification variants are
 canonicalized; arbitrary text, multiple emoji, and emoji newer than 15.0 are
-rejected. Membership is unique by internal message ID, canonical emoji, and
+rejected. Active membership is unique by internal message ID, canonical emoji, and
 internal user ID; separate account chat sessions therefore cannot inflate counts.
+Removing a reaction sets `deleted_at` and keeps the row; adding it again inserts a
+new row. Reactions no longer cascade from messages.
 Both reaction membership and rate-limit activity use `user_id` foreign keys to
 `users.id`. Snapshot/event generation joins those keys to `users.external_id`;
 only public IDs appear in `authorIds`, including the stored history/outbox payloads.
@@ -944,7 +949,7 @@ during native gateway handoffs. A visible direct conversation marks sequenced
 reaction events read; HTTP snapshots do not advance that read cursor. Reactions
 do not generate push notifications.
 
-Limits are 20 emoji kinds and 1,000 total contributions per message, plus 60
+Limits are 50 emoji kinds and 1,000 total contributions per message, plus 60
 mutations per actor/channel/minute. No-op retries do not consume that budget.
 Expired rate records are removed when that actor next mutates. Reactions,
 message snapshots, sequence allocation, and outbox commit together.
@@ -1084,6 +1089,7 @@ join/leave uses POST/DELETE
 `/api/spaces/{space}/channels/{channel}/membership`. Public leave removes the
 sidebar entry but preserves preview/rejoin access. Private non-owner leave also
 removes the authorization grant and warns that another invitation is required;
+both leaves set `deleted_at` rather than deleting rows.
 the owner keeps implicit administration and can rejoin from the directory.
 Leaving a channel stops its local call, not an unrelated call. SFU cleanup after
 authorization ends is asynchronous, as above.
@@ -3119,7 +3125,9 @@ only as HMAC-SHA-256 values. Session tokens contain 256 random bits and only the
 SHA-256 hashes are stored. Request limits are enforced in PostgreSQL across API
 replicas: three sends per address per 15 minutes, ten per address per day, twenty
 per keyed IP hash per hour, and a 500-email global hourly budget. Throttled requests
-return an indistinguishable synthetic challenge ID and do not call SES.
+return an indistinguishable synthetic challenge ID and do not call SES. Challenges
+are pruned a week after creation; expired and revoked sessions are kept as sign-in
+history.
 
 External-provider middleware, callbacks, token verification, key fetching, session
 hooks, and browser forwarding remain removed. Server functions retain CSRF middleware.
