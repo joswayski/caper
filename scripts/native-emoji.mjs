@@ -5,7 +5,7 @@ import { cp, mkdir, readdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { basename, join } from "node:path";
-import { emojiAsset } from "../apps/web/src/chat/emoji.ts";
+import { emojiAsset, emojiNames } from "../apps/web/src/chat/emoji.ts";
 import "../apps/web/scripts/prepare-emoji.mjs";
 
 const require = createRequire(import.meta.url);
@@ -17,7 +17,8 @@ const offered = new Map();
 for (const [category, entries] of Object.entries(data.emojis)) {
   for (const entry of entries.filter((item) => Number(item.a) <= 15)) {
     const id = basename(emojiAsset(entry.u), ".svg");
-    offered.set(id, { name: entry.n.at(-1), keywords: entry.n.join(" "), category });
+    const names = emojiNames(entry.n);
+    offered.set(id, { name: names.at(-1), keywords: names.join(" "), category });
   }
 }
 const files = (await readdir(source)).filter((name) => name.endsWith(".svg")).sort();
