@@ -236,6 +236,74 @@ async function sendingFixture(t: TestContext) {
   };
 }
 
+for (const lifecycle of ["stopped", "denied"] as const) {
+  test(`a late send acknowledgement cannot restore a ${lifecycle} chat`, async (t) => {
+    const f = await sendingFixture(t);
+    const sending = f.client.send("In flight before departure");
+    if (lifecycle === "stopped") f.client.stop();
+    else {
+      t.mock.method(globalThis, "fetch", async () => Response.json({ error: "Access removed" }, { status: 403 }));
+      f.client.retryLoad();
+      await tick();
+      assert.equal(f.state.phase, "error");
+      assert.equal(f.state.channelId, undefined);
+    }
+    const departed = f.state;
+    f.posts[0].resolve(Response.json(committed(f.posts[0].body, "1")));
+    assert.equal(await sending, false, "an obsolete acknowledgement must not update the departed view");
+    assert.equal(f.state, departed);
+    assert.deepEqual(f.state.messages, []);
+  });
+
+  test(`a late send rejection cannot reset the session of a ${lifecycle} chat`, async (t) => {
+    const f = await sendingFixture(t);
+    const sending = f.client.send("In flight before departure");
+    const fetch = t.mock.method(globalThis, "fetch", async () => Response.json({ error: "Access removed" }, { status: 403 }));
+    if (lifecycle === "stopped") f.client.stop();
+    else { f.client.retryLoad(); await tick(); }
+    const departed = f.state;
+    const session = localStorage.getItem("caper.chat.session");
+    const requests = fetch.mock.callCount();
+    f.posts[0].resolve(Response.json({ error: "Obsolete rejection" }, { status: 401 }));
+    assert.equal(await sending, false);
+    await tick();
+    assert.equal(f.state, departed);
+    assert.equal(localStorage.getItem("caper.chat.session"), session);
+    assert.equal(fetch.mock.callCount(), requests, "obsolete sends cannot mint new sessions");
+  });
+}
+
+for (const status of [200, 503]) {
+  test(`a send acknowledgement remains valid after a same-channel refresh returns ${status}`, async (t) => {
+    const f = await sendingFixture(t);
+    const sending = f.client.send("Still in this channel");
+    const snapshot = f.client.snapshotHistory();
+    t.mock.method(globalThis, "fetch", async () => status === 200
+      ? Response.json(snapshot)
+      : Response.json({ error: "Temporary outage" }, { status }));
+    f.client.retryLoad();
+    await tick();
+    const accepted = committed(f.posts[0].body, "1");
+    f.posts[0].resolve(Response.json(accepted));
+    assert.equal(await sending, true);
+    assert.deepEqual(f.state.messages, [accepted]);
+    assert.equal(f.state.pendingSend, undefined);
+    assert.equal(f.client.snapshotHistory()?.cursor, "0", "HTTP still cannot advance the replay cursor");
+  });
+}
+
+test("stopped clients cannot send or retry history", async (t) => {
+  const f = await sendingFixture(t);
+  f.client.stop();
+  const departed = f.state;
+  const fetch = t.mock.method(globalThis, "fetch", async () => { throw new Error("Unexpected request after stop"); });
+  assert.equal(await f.client.send("Too late"), false);
+  f.client.retryLoad();
+  await tick();
+  assert.equal(fetch.mock.callCount(), 0);
+  assert.equal(f.state, departed);
+});
+
 test("reaction HTTP snapshots and sequenced delivery agree without skipping messages", async (t) => {
   const f = await sendingFixture(t);
   const target = committed({ clientMessageId: "target", text: "React here" }, "1");
@@ -847,6 +915,7 @@ test("unscoped direct-message history can be retained in a timeline snapshot", a
   client.start(history);
   assert.equal(client.snapshotHistory()?.space.id, "");
   assert.equal(client.snapshotHistory()?.channel.name, "Mira");
+  assert.deepEqual(client.snapshotHistory(), history, "snapshots preserve direct-message channel metadata");
 });
 
 test("resync retains visible messages through transient failures but clears them on access denial", async (t) => {
