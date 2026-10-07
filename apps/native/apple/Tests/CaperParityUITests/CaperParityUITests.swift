@@ -614,7 +614,7 @@ final class CaperParityUITests: XCTestCase {
     func testStableChannelRowsAndOwnerSettingsMenu() {
         let app = launch()
         #if os(iOS)
-        app.buttons["Browse"].tap()
+        app.buttons["Back to Browse"].tap()
         #endif
         let general = app.buttons["channel-chan00000001"]
         let design = app.buttons["channel-chan00000002"]
@@ -670,7 +670,7 @@ final class CaperParityUITests: XCTestCase {
         assertElement("selected-channel-name", label: "# general", in: app)
         XCTAssertFalse(app.buttons["Leave channel"].exists, "Leave must not appear in the chat header")
         #if os(iOS)
-        app.buttons["Browse"].tap()
+        app.buttons["Back to Browse"].tap()
         #endif
         let options = app.descendants(matching: .any)["channel-options-chan00000002"]
         XCTAssertTrue(options.waitForExistence(timeout: 10))
@@ -692,7 +692,7 @@ final class CaperParityUITests: XCTestCase {
         let app = launch()
         assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app)
         #if os(iOS)
-        app.buttons["Browse"].tap()
+        app.buttons["Back to Browse"].tap()
         #endif
         let stack = app.buttons["voice-stack-chan00000002"]
         XCTAssertTrue(stack.waitForExistence(timeout: 10), "The fixture's design-channel occupants must be visible without joining")
@@ -744,7 +744,7 @@ final class CaperParityUITests: XCTestCase {
     func testCompactActiveRosterAudioMenuAndCollapsedCallContextFixture() {
         let app = launch(fixture: "voice-roster")
         #if os(iOS)
-        app.buttons["Browse"].tap()
+        app.buttons["Back to Browse"].tap()
         #endif
         let context = app.descendants(matching: .any)["active-voice-context"]
         XCTAssertTrue(context.waitForExistence(timeout: 10))
@@ -1131,7 +1131,7 @@ final class CaperParityUITests: XCTestCase {
         assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app)
         XCTAssertFalse(app.buttons["join-voice-button"].exists, "Web joins voice from the channel list, not the chat header")
         #if os(iOS)
-        app.buttons["Browse"].tap()
+        app.buttons["Back to Browse"].tap()
         #endif
         let join = app.buttons["join-voice-chan00000001"]
         XCTAssertTrue(join.waitForExistence(timeout: 5))
@@ -1269,7 +1269,7 @@ final class CaperParityUITests: XCTestCase {
     func testProfileEditRetainsRejectedValuesAndRetries() async throws {
         let app = launch()
         #if os(iOS)
-        app.buttons["Browse"].tap()
+        app.buttons["Back to Browse"].tap()
         #endif
         let account = app.buttons["account-profile"]
         XCTAssertTrue(account.waitForExistence(timeout: 10))
@@ -1386,7 +1386,7 @@ final class CaperParityUITests: XCTestCase {
             ("audio-statistics", "TEST FIXTURE — synthetic statistics layout; no voice connection.", "ios-audio-statistics-fixture"),
         ] {
             let app = launch(fixture: fixture)
-            app.buttons["Browse"].tap()
+            app.buttons["Back to Browse"].tap()
             let settings = app.descendants(matching: .any)["account-settings-menu"]
             XCTAssertTrue(settings.waitForExistence(timeout: 5))
             let frame = settings.frame, window = app.windows.firstMatch.frame
@@ -1498,7 +1498,7 @@ final class CaperParityUITests: XCTestCase {
         capture("manage-space-pending-invitation", app: app)
         app.buttons["Close"].firstMatch.tap()
         XCTAssertFalse(app.textFields["Exact username"].exists)
-        XCTAssertTrue(app.buttons["Browse"].exists || app.buttons["account-profile"].isHittable)
+        XCTAssertTrue(app.buttons["Back to Browse"].exists || app.buttons["account-profile"].isHittable)
     }
 
     func testManageSpaceCanDismissOnOutsideTap() {
@@ -1523,23 +1523,49 @@ final class CaperParityUITests: XCTestCase {
     #if os(iOS)
     func testNarrowConversationAndBrowse() {
         let app = launch()
-        let navigation = app.buttons["Browse"]
+        let navigation = app.buttons["Back to Browse"]
         XCTAssertTrue(navigation.waitForExistence(timeout: 10))
         assertStaticText("Fixture Owner", in: app)
         let channel = app.descendants(matching: .any)["selected-channel-name"]
-        XCTAssertGreaterThan(channel.frame.minX, navigation.frame.maxX, "Web's labelled Browse toggle leads the channel title")
-        XCTAssertGreaterThanOrEqual(navigation.frame.width, 44, "Keep the menu touch target accessible")
-        let members = app.buttons["Show member list"]
-        XCTAssertTrue(members.exists)
-        XCTAssertGreaterThan(members.frame.minX, app.frame.midX, "Members belongs on the right of the header")
+        XCTAssertGreaterThan(channel.frame.minX, navigation.frame.maxX, "Back arrow leads the channel menu")
+        XCTAssertGreaterThanOrEqual(navigation.frame.width, 44, "Keep the back touch target accessible")
+        XCTAssertFalse(app.buttons["Show member list"].exists, "Mobile Members belongs in the channel dropdown")
+        XCTAssertFalse(app.buttons["channel-pins"].exists, "Mobile Pins belongs in the channel dropdown")
+        let composer = app.descendants(matching: .any)["message-composer"]
+        composer.tap(); composer.typeText("Draft survives Browse")
+        let timeline = app.descendants(matching: .any)["chat-timeline"]
+        let start = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.5))
+        start.press(forDuration: 0.01, thenDragTo: timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.2)), withVelocity: .fast, thenHoldForDuration: 0)
+        XCTAssertTrue(navigation.isHittable, "A vertical scroll must stay in chat")
+        start.press(forDuration: 0.01, thenDragTo: timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
+        XCTAssertTrue(app.buttons["Close navigation"].waitForExistence(timeout: 3), "Swipe right from the timeline edge opens Browse")
+        let browser = app.descendants(matching: .any)["channel-browser"]
+        browser.coordinate(withNormalizedOffset: CGVector(dx: 0.97, dy: 0.5)).press(forDuration: 0.01,
+            thenDragTo: browser.coordinate(withNormalizedOffset: CGVector(dx: 0.4, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
+        XCTAssertTrue(navigation.waitForExistence(timeout: 3), "Swipe left from Browse's edge returns to chat")
+        XCTAssertEqual(composer.value as? String, "Draft survives Browse")
         capture("narrow-conversation", app: app)
+        channel.tap()
+        let members = app.buttons["Members"]
+        XCTAssertTrue(members.waitForExistence(timeout: 2))
+        capture("narrow-channel-menu", app: app)
         members.tap()
         assertStaticText("Members", in: app, timeout: 2)
         capture("narrow-members", app: app)
-        let hideMembers = app.buttons["Hide member list"]
-        XCTAssertTrue(hideMembers.isHittable, "The open member panel must leave its toggle accessible")
         app.buttons["Close member list"].tap()
         XCTAssertEqual(staticTexts("Members", in: app).count, 0)
+        channel.tap()
+        let pins = app.buttons["channel-pins"]
+        XCTAssertTrue(pins.waitForExistence(timeout: 2))
+        pins.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["pinned-messages"].waitForExistence(timeout: 3))
+        assertStaticText("No pinned messages", in: app, timeout: 2)
+        capture("narrow-empty-pins", app: app)
+        app.buttons["Messages"].tap()
+        XCTAssertTrue(navigation.waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["channel-pins"].exists, "Dismissing Pins restores the clean header")
+        XCTAssertEqual(composer.value as? String, "Draft survives Browse")
+        channel.tap()
         members.tap()
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.5)).tap()
         XCTAssertEqual(staticTexts("Members", in: app).count, 0)

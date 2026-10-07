@@ -899,7 +899,7 @@ committed message to open a bottom drawer with five fixed quick reactions
 **Copy message ID**. Copy uses the exact text or globally unique public message
 `id`, never the client retry UUID or channel-local sequence. Read-only previews
 allow copying but not reaction mutations. Message links and unsupported actions
-(forward, bookmarks, reminders, delete) are not exposed. Threads and pins are
+(bookmarks, reminders, delete) are not exposed. Threads, pins and live forwarding are
 described below.
 Web offers a keyboard/screen-reader message-actions button; iPhone provides a
 VoiceOver action and Android a labelled long-click action. Desktop Apple/Rust
@@ -1553,6 +1553,136 @@ commands that have been run against shared systems.
    migration and thread read/event filtering while disabling new replies. Keep
    all messages, outbox records, columns and indexes; never delete conversation
    data or migration records as rollback.
+
+## Live message forwarding
+
+**Forward message** is one action, always live. Signed-in readers can forward a
+readable message into a joined, writable channel in any of their spaces or an
+existing DM, with an optional note. The picker discloses that sharing includes
+future edits, reactions and replies and that destination readers can re-forward
+it. There is no snapshot/live choice or source-owner consent step.
+
+Destination readers see a read-only original and its direct conversation replies
+without source membership. This is an intentional disclosure boundary, not a
+grant to the source channel: ordinary source history, threads, reaction mutation
+and edit/version routes keep their existing access requirements. Sharing a
+single reply does not expose its parent or siblings. Destination replies are an
+independent thread; they never join or increment the original thread. Re-forwarding
+flattens to the canonical original, rather than including intermediate notes or
+destination replies. Future source replies share automatically, including replies
+from people who did not create the forward. Do not assume a private channel's
+content stays inside that channel once a member forwards it.
+
+The API stores `messages.forward_source_id`, retaining both records. It does not
+copy the original content into an independently editable message. The destination
+wrapper has its own author, optional note, creation sequence, reactions, pins
+and thread summary. Shared source snapshots omit source pins and parent linkage.
+Removing destination membership/grants revokes the scoped read; an independently
+re-forwarded DM remains authorized by that DM, not the intermediate space.
+Deleted source spaces/channels render an unavailable original without exposing
+their retained history. Individual message deletion is not implemented.
+
+### Forwarding API and replay
+
+- `GET /api/chat/forward-destinations` returns writable joined channels and existing
+  DMs for the signed-in account.
+- `POST /api/chat/channels/{destination}/forwards` uses `X-Caper-Chat-Token` and
+  `{sourceChannelId,sourceMessageId,clientMessageId,text?}`. The source must be
+  readable and the destination writable. Same-session retries reuse the exact
+  UUID and note; ambiguous failures freeze that intent. Conflicting UUID reuse
+  returns 409. Shared payloads are always loaded by the server, never accepted
+  from client input.
+- The returned message has `forward:{message,seq}` (original or null and source
+  snapshot cursor) and `forwardSeq` (destination projection revision).
+- `GET /api/chat/channels/{destination}/forwards/{wrapper}/thread?before={seq}`
+  authorizes through the destination wrapper and returns
+  `{root,messages,cursor,hasMore}`, with 50 ascending replies and exclusive
+  `before`. Its source cursor must not advance destination replay.
+- The outbox publisher projects source creation/reactions/edits into durable
+  destination `message.forward` events, with schema version 1 and
+  `event.seq == message.forwardSeq`. Projection and publisher completion commit
+  together; replay is idempotent. Normal source events/subscriptions are never
+  granted to destination-only readers. Original creation sequences stay fixed.
+- Clients merge source snapshots and destination event revisions independently,
+  including unloaded and pinned wrappers. An open shared view refetches its
+  loaded reply range on source updates, so old-reply edits/reactions remain visible.
+
+Editing from PR #337 is integrated. The API author predicate rejects
+`messages.forward_source_id IS NOT NULL`, and web, Android, Apple and desktop
+edit gates exclude wrappers, including their notes. Source originals remain
+author-editable; destination readers see projected live edits but do not gain
+source edit history. Content revisions and forward projection cursors merge
+independently from reactions, pins and destination thread summaries.
+
+### Forwarding validation boundary
+
+| Platform | Evidence and remaining gap |
+| --- | --- |
+| API | Workspace tests/Clippy plus disposable Postgres/Valkey checks: private cross-space/DM reads, canonical re-forwarding, authorization denial/revocation, stable retry/conflict, 54-reply pagination, separate destination thread, real edit handler, wrapper edit rejection, source-version denial, real outbox Pub/Sub and replay deduplication. The existing editing database regression also passes |
+| Web | Production build, 387 unit tests, 15 fixture tests and both `scripts/test-message-forwarding.mjs` and `scripts/test-message-edits.mjs`: lost response after commit/retry, destination-only live edit/reaction/future reply, read-only original/wrapper controls, independent destination reply, editing/history regression and inspected 2x desktop/narrow/retry captures. Chromium narrow layout is not Safari, a physical phone or native acceptance |
+| Rust desktop | Full libwebrtc-linked Linux build/tests and package Clippy; 224 tests pass, 9 existing opt-in tests ignored, including wrapper-author edit/history rejection. Native picker/card/read-only conversation implemented. Disposable HTTP fixture rendering is separate from production/Windows/device acceptance |
+| Android | Compose picker/card/read-only view, protocol/gateway/merge and regression tests implemented. JDK/Android SDK unavailable in this orb; compilation, native rendering and device checks remain required |
+| Apple | SwiftUI picker/card/read-only view, protocol/gateway/merge and regression tests implemented. Swift/Xcode unavailable in this Linux orb; iOS/macOS compilation, sheet transitions and device checks remain required |
+| Containers/live | No Docker daemon; build stages validated directly. No deployed multi-account/cross-client or physical-device acceptance is claimed |
+
+With the disposable fixture/Vite and a disposable local Postgres/Valkey running:
+
+```sh
+npm run check
+npm test --workspace @caper/web
+node --test tests/native-parity-fixture.test.mjs
+MESSAGE_TEST_WEB_URL=http://127.0.0.1:5174 node scripts/test-message-forwarding.mjs
+MESSAGE_TEST_WEB_URL=http://127.0.0.1:5174 node scripts/test-message-edits.mjs
+DATABASE_URL=postgres://user@127.0.0.1:55432/postgres \
+FORWARD_TEST_VALKEY_URL=redis://127.0.0.1:6388 \
+  cargo test --locked -p caper-api --lib forwarding -- --include-ignored
+```
+
+### Deployment order for forwarding
+
+Merging does not deploy. Run these only after review/merge against a cumulative
+revision; do not deploy an isolated feature branch that omits applied migrations.
+
+1. **Prerequisites/infrastructure/secrets:** ensure main contains threads (PR #335)
+   and editing (PR #337), then merge forwarding; set `MERGED_SHA` to the resulting
+   full merged revision. The current main baseline contains both features;
+   this PR includes that baseline and preserves subsequent client fixes.
+   No new infrastructure, service, secret/configuration or SFU/Valkey reset is needed.
+   Keep existing database/migration/Valkey/chat configuration and one API replica.
+   Wait for backend/web images and native build checks. Use the cumulative
+   migration history and the integrated wrapper rejection above.
+2. **Database/API first:** API startup applies embedded
+   `202610060010_message_forwards.sql` after the threads/editing migrations, adding the
+   nullable retained source reference, self-reference check and lookup index.
+   No data backfill or separate manual migration is required. Verify normal
+   send/history and cross-space forward before clients.
+   ```sh
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
+3. **Gateway:** deploy the same cumulative backend after API readiness. Existing
+   durable destination delivery carries the new event; no source subscription
+   or gateway grant is added. Do not change replicas or close healthy voice tracks.
+   ```sh
+   gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-chat-gateway --timeout=15m
+   ```
+4. **Clients:** deploy web after servers. Android/Apple builds, rendering and
+   device checks remain release prerequisites; clients can then deploy
+   independently. Older clients may display only the note; upgrade before
+   relying on forwarding.
+   ```sh
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
+   ```
+5. **Verification/rollback:** use separate source/destination accounts and a DM
+   recipient without source access. Forward, re-forward, edit/react/reply at
+   source, reply independently at destination, reload/reconnect/page and revoke
+   destination membership. Verify wrapper edits and source version reads remain
+   denied. Prefer a forward fix. Rollback builds must retain all applied migrations,
+   content, versions, outbox records and read/projection compatibility while
+   disabling new forwards. Never delete retained data or applied migration history.
 
 ## Message editing
 
@@ -4659,3 +4789,58 @@ push. Android/Apple compilation and physical device layouts remain native releas
 acceptance requirements. APNs/FCM credential validation, physical-device delivery,
 offline behavior and registration lifecycle/pruning must be covered when direct
 mobile push is implemented, not treated as current supported functionality.
+
+### Mobile Browse navigation and channel menu (October 6, 2026)
+
+On narrow layouts, **Back to Browse** replaces the conversation's Browse label.
+Tap the channel name for **Pins** and **Members**; neither has a dedicated mobile
+header button. Pins opens the existing pinned-message view; web/Android offer
+**Messages** in the dropdown to return, while Apple retains its sheet's Messages
+control. Members uses the existing member panel, including Close and outside-tap
+dismissal. Direct messages and unjoined previews keep Pins but omit Members;
+preview pins remain read-only. No new settings are implied. Wide layouts retain
+their existing Pins/member controls.
+
+Swiping right opens the existing space/channel browser; swiping left returns to
+the selected conversation without selecting a different channel. Web keeps the
+chat mounted, Apple keeps the draft in its chat model, and Android saves the
+conversation state while Browse replaces it. Gestures require at least 64
+CSS pixels/native points of mostly horizontal travel and reject vertical drags.
+
+| Platform | Intentional behavior and validation boundary |
+| --- | --- |
+| Web ≤760px | Touch swipes on content and channel rows; inputs, sliders, buttons other than channel selection, text selection, multi-touch, and open menus/dialogs/member overlays do not navigate. Build/type checks and 369 web tests pass. Disposable Chromium touch regression covers both directions, threshold/direction/cancellation/vertical/multi-touch guards, composer and overlay exclusion, channel-row release-click protection, draft/history retention, Back and menu keyboard dismissal. Pin regression covers Pins/Messages/Members menu placement, empty/populated pins, count updates, DMs, read-only previews and unchanged wide controls. Desktop, 390px and 320px captures were inspected. This is not physical-device or Safari validation. |
+| Android narrow | Swipes are scoped to the timeline and channel sidebar; composer/account audio controls keep native gestures. Child-consumed drags and member overlays do not trigger navigation. Draft and lazy-list state survive Browse via saved conversation state. No Android build or device run in this orb: Java/Android toolchain is unavailable. Native CI and physical-device acceptance remain required. |
+| Apple narrow | Right swipe starts within 24 points of the timeline's left edge; return swipe starts within 24 points of the joined-channel browser's right edge. Search/Browse-channels mode retains Close navigation instead of swipes, to avoid its text field. Composer/account controls and member/reaction overlays are excluded. Updated iOS UI test covers both edge directions, vertical scrolling, draft retention, Members and Pins menu/sheet dismissal. No Xcode/Swift build or UI test run in this Linux orb; macOS/iOS CI and devices remain required. |
+| Rust desktop | No navigation behavior change or client release required. The shared icon exporter also bundles the new back glyph here; existing desktop icon packaging tests pass. |
+| Containers/live voice | Docker daemon unavailable; the web build stage passed directly. No production deployment, shared data writes or live SFU validation performed. |
+
+#### Deployment order
+
+1. No infrastructure, secret/configuration, database migration, API, gateway or
+   Valkey change is necessary. Wait for the merged revision's immutable web image
+   and native build checks. Set `MERGED_SHA` to that full merged commit SHA;
+   merging publishes build artifacts but does not deploy services or release apps.
+2. Deploy web through the existing operator workflow from an authenticated
+   checkout with the production Kubernetes context:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # Wait for this SHA's deployment workflow to succeed, then:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+
+3. Build/release Android and Apple through their existing native workflows after
+   native checks and device acceptance. Web and native clients can deploy
+   independently; no server-first compatibility requirement is introduced.
+   Native build commands on suitable machines are
+   `bash apps/native/android/build.sh`, `bash apps/native/apple/build.sh ios`, and
+   `bash apps/native/apple/build.sh macos`. Build output is not an app-store release.
+4. Verify swipe out/back with an unsent draft, vertical message/channel scrolling,
+   Members menu/Close, Pins/Messages in channels/DMs/previews, keyboard dismissal,
+   long-press message actions, and audio slider drags on real Android/iPhone
+   devices and mobile Safari. Check wide desktop controls remain unchanged.
+   Roll back web by running the deployment
+   command with the previous known-good web image SHA; stop native distribution
+   and release a corrected higher-build-number client if needed. No data rollback
+   or migration reversal is required.

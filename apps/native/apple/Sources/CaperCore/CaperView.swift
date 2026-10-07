@@ -199,6 +199,38 @@ private struct CaperIcon: View {
     }
 }
 
+// Native edge swipes leave text selection and inline controls in the center
+// alone. Attach only to scrolling content, never the composer or account dock.
+private struct BrowseSwipe: ViewModifier {
+    let open: Bool
+    let enabled: Bool
+    let navigate: () -> Void
+    @State private var width: CGFloat = 0
+    @State private var startedAt: Date?
+    @State private var vertical = false
+    @GestureState private var dragging = false
+
+    func body(content: Content) -> some View {
+        content.onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+            .simultaneousGesture(DragGesture(minimumDistance: 12)
+                .updating($dragging) { _, active, _ in active = true }
+                .onChanged { value in
+                    if startedAt == nil { startedAt = value.time }
+                    if abs(value.translation.height) > max(12, abs(value.translation.width)) { vertical = true }
+                }
+                .onEnded { value in
+                    defer { startedAt = nil; vertical = false }
+                    guard enabled, !vertical, value.time.timeIntervalSince(startedAt ?? value.time) < 0.6,
+                          open ? value.startLocation.x >= width - 24 : value.startLocation.x <= 24,
+                          abs(value.translation.width) >= 64,
+                          abs(value.translation.width) > abs(value.translation.height) * 2,
+                          open ? value.translation.width < 0 : value.translation.width > 0 else { return }
+                    navigate()
+                }, including: enabled ? .all : .subviews)
+            .onChange(of: dragging) { _, active in if !active { startedAt = nil; vertical = false } }
+    }
+}
+
 private enum WorkspaceSheet: Identifiable {
     case login, profile, createSpace, createChannel, newDirectMessage, manageSpace, manageChannel(Channel), invitation(Space), channelInvitation(ChannelInvitation), leaveSpace, audio, connection, diagnostics
     var id: String {
@@ -708,6 +740,8 @@ private struct ChannelSidebar: View {
             }
                 }
             }
+            .modifier(BrowseSwipe(open: true, enabled: narrow && !browsing && sheet == nil && (model.selectedChannel != nil || model.selectedDirectMessageID != nil), navigate: close))
+            .accessibilityIdentifier("channel-browser")
             if !narrow, model.voice.phase != .idle, model.voice.phase != .failed {
                 Divider().overlay(CaperTheme.border)
             }
@@ -1500,6 +1534,7 @@ private struct ChatView: View {
         self.membersVisible = membersVisible; self.toggleMembers = toggleMembers
     }
     var body: some View {
+        Group {
         #if os(iOS)
         HStack(spacing: 0) {
             channelBody
@@ -1513,35 +1548,51 @@ private struct ChatView: View {
             if chat.threadRootID != nil { NativeThreadView(chat: chat, viewerID: viewerID, mentions: mentionSource).frame(maxWidth: narrow ? .infinity : 380) }
         }
         #endif
+        }
+        .sheet(item: $chat.forwardTarget) { message in ForwardPickerView(chat: chat, message: message) }
+        .sheet(item: $chat.forwardConversationTarget) { message in ForwardConversationView(chat: chat, messageID: message.id) }
     }
     private var channelBody: some View {
         VStack(spacing: 0) {
             HStack(spacing: narrow ? 5 : 10) {
                 if narrow {
-                    // Web's narrow toggle: the menu icon with a visible "Browse" label.
-                    Button(action: browse) {
+                    Button(action: browse) { CaperIcon(name: "arrow-left", size: 20).frame(width: 44, height: 44).contentShape(Rectangle()) }
+                        .buttonStyle(.plain).foregroundStyle(CaperTheme.muted).modifier(ControlHover()).accessibilityLabel("Back to Browse")
+                }
+                if narrow {
+                    Menu {
+                        Button(chat.pinnedMessages.isEmpty ? "Pins" : "Pins \(chat.pinnedMessages.count)") { showingPins = true }
+                            .accessibilityIdentifier("channel-pins")
+                        if model.selectedDirectMessageID == nil && !model.previewingChannel {
+                            Button(membersVisible ? "Hide member list" : "Members", action: toggleMembers)
+                        }
+                    } label: {
                         HStack(spacing: 6) {
-                            CaperIcon(name: "menu", size: 15)
-                            Text("Browse").font(CaperTheme.font(11, weight: .bold))
-                        }.foregroundStyle(CaperTheme.muted).padding(.horizontal, 9).frame(height: 34)
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(CaperTheme.border, lineWidth: 1))
-                            .frame(minHeight: 44).contentShape(Rectangle())
-                    }.buttonStyle(.plain).modifier(ControlHover()).accessibilityLabel("Browse")
+                            Text(model.selectedDirectMessageID == nil ? "# \(chat.channelName.lowercased())" : chat.channelName).font(CaperTheme.font(14, weight: .medium)).lineLimit(1)
+                            CaperIcon(name: "chevron-down")
+                        }.frame(minHeight: 44).contentShape(Rectangle())
+                    }.menuStyle(.borderlessButton).menuIndicator(.hidden).foregroundStyle(CaperTheme.text)
+                        .accessibilityLabel(model.selectedDirectMessageID == nil ? "# \(chat.channelName.lowercased())" : "Direct message with \(chat.channelName)")
+                        .accessibilityHint("Open channel menu")
+                        .accessibilityIdentifier("selected-channel-name")
+                } else {
+                    Text(model.selectedDirectMessageID == nil ? "# \(chat.channelName.lowercased())" : chat.channelName).font(CaperTheme.font(14, weight: .medium)).lineLimit(1)
+                        .accessibilityLabel(model.selectedDirectMessageID == nil ? "# \(chat.channelName.lowercased())" : "Direct message with \(chat.channelName)")
+                        .accessibilityIdentifier("selected-channel-name")
                 }
-                Text(model.selectedDirectMessageID == nil ? "# \(chat.channelName.lowercased())" : chat.channelName).font(CaperTheme.font(14, weight: .medium)).lineLimit(1)
-                    .accessibilityLabel(model.selectedDirectMessageID == nil ? "# \(chat.channelName.lowercased())" : "Direct message with \(chat.channelName)")
-                    .accessibilityIdentifier("selected-channel-name")
                 Spacer()
-                Button { showingPins = true } label: {
-                    Label(chat.pinnedMessages.isEmpty ? "Pins" : "Pins \(chat.pinnedMessages.count)", systemImage: "pin").font(CaperTheme.font(11, weight: .bold))
+                if !narrow {
+                    Button { showingPins = true } label: {
+                        Label(chat.pinnedMessages.isEmpty ? "Pins" : "Pins \(chat.pinnedMessages.count)", systemImage: "pin").font(CaperTheme.font(11, weight: .bold))
+                    }
+                    .buttonStyle(.plain).foregroundStyle(CaperTheme.muted).frame(minHeight: 44)
+                    .accessibilityIdentifier("channel-pins")
                 }
-                .buttonStyle(.plain).foregroundStyle(CaperTheme.muted).frame(minHeight: 44)
-                .accessibilityIdentifier("channel-pins")
                 if chat.liveState != .connected && showConnectionStatus {
                     Text(chat.liveState == .disconnected ? "Offline" : "Connecting…").font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.muted)
                         .accessibilityIdentifier("chat-connection-status")
                 }
-                if model.selectedDirectMessageID == nil {
+                if !narrow && model.selectedDirectMessageID == nil {
                     Button(action: toggleMembers) { CaperIcon(name: "users", size: 20) }
                         .buttonStyle(SidebarIconButton()).help(membersVisible ? "Hide member list" : "Show member list")
                         .accessibilityLabel(membersVisible ? "Hide member list" : "Show member list")
@@ -1626,6 +1677,7 @@ private struct ChatView: View {
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { _ in revealPending(proxy) }
                 }
                 .accessibilityIdentifier("chat-timeline")
+                .modifier(BrowseSwipe(open: false, enabled: narrow && !membersVisible && reactionMessage == nil && reactorsTarget == nil && !showingEmojiPicker, navigate: browse))
                 #if os(macOS)
                 // Web: End in the message list jumps to the latest message.
                 .focusable().focusEffectDisabled()
@@ -1760,6 +1812,8 @@ private struct ChatView: View {
                                         Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
                                     },
                                     reply: { reactionMessage = nil; Task { await chat.openThread(message.threadRootId ?? message.id) } },
+                                    canForward: chat.canForward,
+                                    forward: { reactionMessage = nil; chat.forwardTarget = message },
                                     quickReaction: { emoji in
                                         guard !chat.isPreview, let author = chat.currentAuthor,
                                               let current = chat.messages.first(where: { $0.id == message.id }) else { return }
@@ -1886,7 +1940,9 @@ private struct NativeThreadView: View {
                     canReact: !chat.isPreview && chat.currentAuthor != nil,
                     canPin: !chat.isPreview && chat.currentAuthor != nil && !chat.pendingPins.contains(message.id),
                     togglePin: { reactionMessage = nil; Task { await chat.setPin(messageID: message.id, active: message.pin == nil) } },
-                    reply: { reactionMessage = nil; Task { await chat.openThread(rootID: message.threadRootId ?? message.id) } },
+                    reply: { reactionMessage = nil; Task { await chat.openThread(message.threadRootId ?? message.id) } },
+                    // Thread actions don't forward: the forward sheets belong to the conversation under this cover.
+                    canForward: false, forward: {},
                     quickReaction: { emoji in
                         let own = message.reactions?.first { $0.emoji == emoji }?.authorIds.contains(chat.currentAuthor?.id ?? "") == true
                         reactionMessage = nil; Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: !own) }
@@ -2013,7 +2069,7 @@ private struct MessageRow: View {
                     Text(message.author.name).font(CaperTheme.font(13, weight: .bold))
                     if message.author.isGuest { Text("GUEST").font(CaperTheme.font(9, weight: .bold)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 5).overlay(RoundedRectangle(cornerRadius: 4).stroke(CaperTheme.border)) }
                     Text(timeLabel(message.createdAt)).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
-                    if (message.revision ?? 1) > 1 { Button("(edited)") { history = true }.buttonStyle(.plain).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).accessibilityLabel("View edit history") }
+                    if message.forward == nil && (message.revision ?? 1) > 1 { Button("(edited)") { history = true }.buttonStyle(.plain).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).accessibilityLabel("View edit history") }
                 }
                 #if os(macOS)
                 .padding(.trailing, 56)
@@ -2023,6 +2079,7 @@ private struct MessageRow: View {
                     #if os(macOS)
                     .textSelection(.enabled)
                     #endif
+                ForwardCardView(message: message) { chat.forwardConversationTarget = message }
                 ReactionRow(message: message, chat: chat, reactors: reactors)
                 if let error = chat.pinErrors[message.id] {
                     HStack(spacing: 8) {
@@ -2087,8 +2144,9 @@ private struct MessageRow: View {
                         .disabled(chat.isPreview || chat.currentAuthor == nil)
                         .accessibilityIdentifier("add-reaction-\(message.id)")
                     Menu {
+                        if chat.canForward { Button("Forward message") { chat.forwardTarget = message } }
                         if chat.canEdit(message) { Button("Edit message") { editing = true } }
-                        if (message.revision ?? 1) > 1 { Button("View edit history") { history = true } }
+                        if message.forward == nil && (message.revision ?? 1) > 1 { Button("View edit history") { history = true } }
                         Button(message.pin == nil ? "Pin message" : "Unpin message") {
                             Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
                         }.disabled(chat.isPreview || chat.currentAuthor == nil || chat.pendingPins.contains(message.id))
@@ -2112,8 +2170,9 @@ private struct MessageRow: View {
             .contentShape(Rectangle())
             .onHover { controlsHovered = $0 }
             .contextMenu {
+                if chat.canForward { Button("Forward message") { chat.forwardTarget = message } }
                 if chat.canEdit(message) { Button("Edit message") { editing = true } }
-                if (message.revision ?? 1) > 1 { Button("View edit history") { history = true } }
+                if message.forward == nil && (message.revision ?? 1) > 1 { Button("View edit history") { history = true } }
                 Button(message.pin == nil ? "Pin message" : "Unpin message") {
                     Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
                 }.disabled(chat.isPreview || chat.currentAuthor == nil || chat.pendingPins.contains(message.id))
@@ -2455,7 +2514,7 @@ private struct ReactorRow: View {
     }
 }
 
-private struct ReactionFlowLayout: Layout {
+struct ReactionFlowLayout: Layout {
     let spacing: CGFloat
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
@@ -2512,6 +2571,8 @@ private struct MessageActionsSheet: View {
     let canPin: Bool
     let togglePin: () -> Void
     let reply: () -> Void
+    let canForward: Bool
+    let forward: () -> Void
     let quickReaction: (String) -> Void
     let selectReaction: (String) -> Void
 
@@ -2548,7 +2609,7 @@ private struct MessageActionsSheet: View {
                             Button("Edit message", systemImage: "pencil") { editing = true }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                             Divider()
                         }
-                        if (message.revision ?? 1) > 1 {
+                        if message.forward == nil && (message.revision ?? 1) > 1 {
                             Button("View edit history", systemImage: "clock") { history = true }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                             Divider()
                         }
@@ -2559,6 +2620,12 @@ private struct MessageActionsSheet: View {
                         Divider()
                         Button(action: reply) {
                             Label("Reply in thread", systemImage: "bubble.right").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        }
+                        if canForward {
+                            Divider()
+                            Button(action: forward) {
+                                Label("Forward message", systemImage: "arrowshape.turn.up.right").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                            }
                         }
                         Divider()
                         Button {
@@ -2588,7 +2655,7 @@ private struct MessageActionsSheet: View {
             }
         }
         .presentationBackground(CaperTheme.raised)
-        .presentationDetents(showingEmojiPicker ? [.medium, .large] : [.height(330 + (chat.canEdit(message) ? 44 : 0) + ((message.revision ?? 1) > 1 ? 44 : 0)), .large])
+        .presentationDetents(showingEmojiPicker ? [.medium, .large] : [.height(330 + (canForward ? 50 : 0) + (chat.canEdit(message) ? 44 : 0) + ((message.revision ?? 1) > 1 && message.forward == nil ? 44 : 0)), .large])
         .presentationDragIndicator(.visible)
         .sheet(isPresented: $editing) { MessageEditorView(chat: chat, message: message) { editing = false; dismiss() } }
         .sheet(isPresented: $history) { MessageHistoryView(chat: chat, message: message) { history = false } }
@@ -2633,8 +2700,9 @@ private struct PinnedMessagesView: View {
                                             Text(date.formatted(date: .abbreviated, time: .shortened))
                                                 .font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
                                         }
-                                        if (message.revision ?? 1) > 1 { Button("(edited)") { historyTarget = message }.buttonStyle(.plain).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).accessibilityLabel("View edit history") }
+                                        if message.forward == nil && (message.revision ?? 1) > 1 { Button("(edited)") { historyTarget = message }.buttonStyle(.plain).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).accessibilityLabel("View edit history") }
                                         Text(message.content.text).font(CaperTheme.font(14))
+                                        ForwardCardView(message: message) { chat.forwardConversationTarget = message }
                                         if chat.canEdit(message) { Button("Edit message") { editTarget = message }.buttonStyle(.plain).font(CaperTheme.font(11)) }
                                         if let error = chat.pinErrors[message.id] {
                                             HStack {
@@ -3400,7 +3468,7 @@ private struct ControlHover: ViewModifier {
     }
 }
 
-private struct CaperSecondaryButton: ButtonStyle {
+struct CaperSecondaryButton: ButtonStyle {
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.font(CaperTheme.font(12, weight: .medium))

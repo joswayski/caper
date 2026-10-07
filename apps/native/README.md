@@ -39,6 +39,13 @@ history and offer Unpin without confirmation. Preview readers cannot mutate pins
 See [pin validation and rollout](../../docs/media.md#message-pins); implementation
 does not establish native build, device, or production acceptance.
 
+Live forwarding is implemented in the native clients: a channel/DM picker with
+an optional note, a live original card, and a read-only shared conversation.
+Replies to the destination wrapper remain independent. Rust desktop exposes
+Forward through message context/reaction menus; Apple/Android use their message
+actions. See [forwarding validation and rollout](../../docs/media.md#live-message-forwarding)
+for editing integration and the remaining Apple/Android build/device checks.
+
 Message composers on web, Android, iOS/macOS and Rust desktop also offer emoji
 suggestions after `:` at the cursor. Search by name or keyword (`:tomato`,
 `:thumbs_up`, `:+1`); selecting replaces that token without sending or changing
