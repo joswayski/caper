@@ -1215,6 +1215,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 @Composable private fun MessageTimeline(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, inThread: Boolean = false, pendingStatus: @Composable () -> Unit = {}) {
     var actionTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var pickerTarget by remember { mutableStateOf<ChatMessage?>(null) }
+    var forwardTarget by remember { mutableStateOf<ChatMessage?>(null) }
+    var conversationTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var editTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var historyTarget by remember { mutableStateOf<ChatMessage?>(null) }
     // Message ID and the pressed chip's emoji.
@@ -1224,6 +1226,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         actionTarget = null
         pickerTarget = null
         reactorsTarget = null
+        forwardTarget = null
+        conversationTarget = null
         editTarget = null
         historyTarget = null
     }
@@ -1264,6 +1268,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
                 openReactors = { target, emoji -> reactorsTarget = target.id to emoji },
                 openActions = { actionTarget = it },
+                openConversation = { conversationTarget = it },
                 openHistory = { historyTarget = it },
                 retryPin = viewModel::retryPin,
                 dismissPinError = viewModel::dismissPinError,
@@ -1299,6 +1304,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             openPicker = { actionTarget = null; pickerTarget = presented },
             setPin = { id, active -> viewModel.setPin(id, active); actionTarget = null },
             onReply = { actionTarget = null; viewModel.openThread(presented.threadRootId ?: presented.id) },
+            forward = { actionTarget = null; forwardTarget = presented },
             onEdit = if (viewModel.canEdit(presented)) ({ actionTarget = null; editTarget = presented }) else null,
             onHistory = { actionTarget = null; historyTarget = presented },
         )
@@ -1306,6 +1312,11 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     editTarget?.let { target ->
         if (viewModel.canEdit(target)) MessageEditorDialog(target, viewModel) { editTarget = null }
         else LaunchedEffect(target.id) { editTarget = null }
+    }
+    forwardTarget?.let { target -> key(target.id) { ForwardPickerSheet(target, viewModel) { forwardTarget = null } } }
+    conversationTarget?.let { target ->
+        val current = state.messages.firstOrNull { it.id == target.id }
+        if (current != null) key(target.id) { ForwardConversationSheet(current, viewModel) { conversationTarget = null } }
     }
     historyTarget?.let { target ->
         MessageHistoryDialog(state.messages.find { it.id == target.id } ?: target, viewModel) { historyTarget = null }
@@ -1349,6 +1360,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     openReactors: (ChatMessage, String) -> Unit,
     retryPin: (String) -> Unit = {},
     dismissPinError: (String) -> Unit = {},
+    openConversation: (ChatMessage) -> Unit = {},
     openHistory: (ChatMessage) -> Unit = {},
     openActions: (ChatMessage) -> Unit,
 ) {
@@ -1363,7 +1375,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             onClick = {},
             onLongClick = { openActions(message) },
             onLongClickLabel = "Message actions for ${message.author.name}",
-        )) { MessageRow(message) { openHistory(message) } }
+        )) { MessageRow(message) { if (message.forward == null) openHistory(message) } }
+        ForwardCard(message) { openConversation(message) }
         FlowRow(Modifier.padding(start = 62.dp, end = 18.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             message.reactions.forEach { reaction ->
                 val selected = own != null && own in reaction.authorIds
@@ -1404,6 +1417,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     openPicker: () -> Unit,
     setPin: (String, Boolean) -> Unit = { _, _ -> },
     onReply: (() -> Unit)? = null,
+    forward: () -> Unit = {},
     onEdit: (() -> Unit)? = null,
     onHistory: (() -> Unit)? = null,
 ) {
@@ -1438,6 +1452,10 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
             }
             Surface(shape = MaterialTheme.shapes.small, color = Surface) {
                 Column {
+                    if (state.account != null && (message.forward == null || message.forward.message != null)) {
+                        TextButton(forward, Modifier.fillMaxWidth().heightIn(min = 48.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) { Text("Forward message", Modifier.fillMaxWidth()) }
+                        HorizontalDivider(color = Border)
+                    }
                     if (canReact) {
                         val saving = state.pinSaves[message.id]?.saving == true
                         TextButton({ setPin(message.id, message.pin == null) }, enabled = !saving, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) {
@@ -1447,7 +1465,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                     }
                     onReply?.let { TextButton(it, Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("Reply in thread", Modifier.fillMaxWidth()) }; HorizontalDivider(color = Border) }
                     onEdit?.let { TextButton(it, Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("Edit message", Modifier.fillMaxWidth()) }; HorizontalDivider(color = Border) }
-                    if (message.revision > 1) onHistory?.let { TextButton(it, Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("View edit history", Modifier.fillMaxWidth()) }; HorizontalDivider(color = Border) }
+                    if (message.forward == null && message.revision > 1) onHistory?.let { TextButton(it, Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("View edit history", Modifier.fillMaxWidth()) }; HorizontalDivider(color = Border) }
                     TextButton({ copy("Message text", message.content.text) }, Modifier.fillMaxWidth().heightIn(min = 48.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) { Text("Copy text", Modifier.fillMaxWidth()) }
                     HorizontalDivider(color = Border)
                     TextButton({ copy("Message ID", message.id) }, Modifier.fillMaxWidth().heightIn(min = 48.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) { Text("Copy message ID", Modifier.fillMaxWidth()) }
@@ -1458,9 +1476,10 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
 }
 
 @Composable private fun PinnedMessages(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier) {
+    var conversationTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var editTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var historyTarget by remember { mutableStateOf<ChatMessage?>(null) }
-    LaunchedEffect(state.account?.id, state.selectedChannel?.id, state.selectedDirectId) { editTarget = null; historyTarget = null }
+    LaunchedEffect(state.account?.id, state.selectedChannel?.id, state.selectedDirectId) { conversationTarget = null; editTarget = null; historyTarget = null }
     LazyColumn(modifier.fillMaxWidth(), contentPadding = PaddingValues(vertical = 10.dp)) {
         item {
             Text("Pinned messages", Modifier.padding(horizontal = 18.dp, vertical = 8.dp), fontWeight = FontWeight.Bold, fontSize = 15.sp)
@@ -1472,7 +1491,8 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
             Column(Modifier.background(PinGoldWash)) {
                 message.pin?.let { Text("Pinned by ${it.author.name}", Modifier.padding(start = 62.dp, end = 18.dp, top = 4.dp), color = PinGold, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
                 Text(fullDateLabel(message.createdAt), Modifier.padding(start = 62.dp, end = 18.dp), color = TextMuted, fontSize = 10.sp)
-                MessageRow(message) { historyTarget = message }
+                MessageRow(message) { if (message.forward == null) historyTarget = message }
+                ForwardCard(message) { conversationTarget = message }
                 if (viewModel.canEdit(message)) TextButton({ editTarget = message }, Modifier.padding(start = 62.dp)) { Text("Edit message") }
                 if (state.selectedChannel?.joined == true && (state.chatAuthorId ?: state.account?.id) != null) {
                     val saving = state.pinSaves[message.id]?.saving == true
@@ -1488,6 +1508,11 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                     }
                 }
             }
+        }
+    }
+    conversationTarget?.let { target ->
+        state.pinnedMessages.firstOrNull { it.id == target.id }?.let { current ->
+            key(target.id) { ForwardConversationSheet(current, viewModel) { conversationTarget = null } }
         }
     }
     editTarget?.let { target ->
@@ -1520,7 +1545,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
         }
     }
 }
-@Composable private fun MessageRow(message: ChatMessage, openHistory: () -> Unit = {}) = MessageRow(message.author.name, message.author.isGuest, message.createdAt, message.content.text, false, message.author.avatarId, message.revision > 1, openHistory)
+@Composable private fun MessageRow(message: ChatMessage, openHistory: () -> Unit = {}) = MessageRow(message.author.name, message.author.isGuest, message.createdAt, message.content.text, false, message.author.avatarId, message.forward == null && message.revision > 1, openHistory)
 @Composable private fun MessageRow(author: String, guest: Boolean, createdAt: String, text: String, pending: Boolean, avatarId: Int? = null, edited: Boolean = false, openHistory: () -> Unit = {}) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp)) {
         Avatar(author, 34.dp, avatarId = avatarId)
