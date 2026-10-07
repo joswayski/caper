@@ -424,3 +424,463 @@ async fn two_person_privacy_durability_read_cursors_and_gateway_replay(pool: PgP
     gateway.begin_shutdown();
     server.abort();
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
+async fn message_requests_blocks_and_privacy(pool: PgPool) {
+    let mut users = std::collections::HashMap::new();
+    let mut ids = std::collections::HashMap::new();
+    let mut names: Vec<String> = ["alice", "bob", "carol", "dave", "eve", "frank"]
+        .map(String::from)
+        .to_vec();
+    names.extend((0..13).map(|n| format!("target{n}")));
+    for name in &names {
+        let external = random_id(12);
+        let user: i64 = sqlx::query_scalar(
+            "INSERT INTO users (external_id,username,display_name) VALUES ($1,$2,$2) RETURNING id",
+        )
+        .bind(&external)
+        .bind(name)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let account = Sha256::digest(name.as_bytes()).to_vec();
+        sqlx::query("INSERT INTO account_sessions (token_hash,user_id,expires_at) VALUES ($1,$2,now()+interval '1 day')")
+            .bind(&account).bind(user).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO chat_sessions (external_id,token_hash,user_id,account_session_hash,name) VALUES ($1,$2,$3,$4,$5)")
+            .bind(random_id(12)).bind(Sha256::digest(format!("chat-{name}").as_bytes()).to_vec()).bind(user).bind(account).bind(name).execute(&pool).await.unwrap();
+        users.insert(name.clone(), user);
+        ids.insert(name.clone(), external);
+    }
+    let space: i64 = sqlx::query_scalar(
+        "INSERT INTO spaces (external_id,name,owner_id) VALUES ('shared','Shared',$1) RETURNING id",
+    )
+    .bind(users["alice"])
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    for name in ["alice", "carol"] {
+        sqlx::query("INSERT INTO space_members (space_id,user_id) VALUES ($1,$2)")
+            .bind(space)
+            .bind(users[name])
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let mut config = Config::test(false);
+    config.auth_fixture = false;
+    let mut state =
+        AppState::with_database(config, Arc::new(Cloudflare::new()), Some(pool.clone()));
+    state.chat = Some(chat::Chat {
+        pool: pool.clone(),
+        broker: redis::Client::open(std::env::var("CHAT_TEST_VALKEY_URL").unwrap()).unwrap(),
+        wake: Arc::new(Notify::new()),
+    });
+    let app = crate::app(state);
+    let open = |from: &'static str, to: &'static str| {
+        let app = app.clone();
+        async move {
+            request(
+                &app,
+                "POST",
+                "/api/dms",
+                Some(from),
+                None,
+                json!({ "username": to }),
+            )
+            .await
+        }
+    };
+    let send = |from: &'static str, conversation: String| {
+        let app = app.clone();
+        async move {
+            request(
+                &app,
+                "POST",
+                &format!("/api/chat/channels/{conversation}/messages"),
+                None,
+                Some(&format!("chat-{from}")),
+                json!({"clientMessageId":Uuid::new_v4(),"text":format!("hi from {from}")}),
+            )
+            .await
+        }
+    };
+    let status = |name: &'static str, conversation: String| {
+        let pool = pool.clone();
+        let user = users[name];
+        async move {
+            conversations(&pool, user)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|c| c["id"] == conversation.as_str())
+                .map(|c| c["status"].as_str().unwrap().to_owned())
+        }
+    };
+
+    // Privacy defaults to requests from anyone and only takes the three values.
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            "/api/account/privacy",
+            Some("bob"),
+            None,
+            Value::Null
+        )
+        .await,
+        (StatusCode::OK, json!({"directMessages":"anyone"}))
+    );
+    for body in [
+        json!({"directMessages":"friends"}),
+        json!({"directMessages":"anyone","extra":1}),
+    ] {
+        assert!(
+            request(&app, "PUT", "/api/account/privacy", Some("bob"), None, body)
+                .await
+                .0
+                .is_client_error()
+        );
+    }
+
+    // People who share a space skip the request.
+    let (code, shared) = open("alice", "carol").await;
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(shared["status"], "accepted");
+    assert!(shared["peer"]["avatarId"].is_number());
+    let shared = shared["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        status("carol", shared.clone()).await.as_deref(),
+        Some("accepted")
+    );
+
+    // A stranger's DM is a request until the recipient answers it. The sender
+    // can keep writing; a decline hides it from the recipient only.
+    let (code, request_dm) = open("alice", "bob").await;
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(request_dm["status"], "outgoing");
+    let request_dm = request_dm["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        status("bob", request_dm.clone()).await.as_deref(),
+        Some("incoming")
+    );
+    assert_eq!(send("alice", request_dm.clone()).await.0, StatusCode::OK);
+    assert_eq!(
+        status("bob", request_dm.clone()).await.as_deref(),
+        Some("incoming")
+    );
+    let decline_path = format!("/api/dms/{request_dm}/decline");
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            &decline_path,
+            Some("alice"),
+            None,
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND,
+        "only the recipient answers a request"
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            request(&app, "POST", &decline_path, Some("bob"), None, Value::Null)
+                .await
+                .0,
+            StatusCode::NO_CONTENT
+        );
+    }
+    assert_eq!(status("bob", request_dm.clone()).await, None);
+    assert_eq!(
+        status("alice", request_dm.clone()).await.as_deref(),
+        Some("outgoing")
+    );
+    assert_eq!(send("alice", request_dm.clone()).await.0, StatusCode::OK);
+    assert_eq!(
+        status("bob", request_dm.clone()).await,
+        None,
+        "new messages don't resurface it"
+    );
+    // Choosing to message the sender accepts it.
+    let (code, reopened) = open("bob", "alice").await;
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(
+        (reopened["id"].as_str(), reopened["status"].as_str()),
+        (Some(request_dm.as_str()), Some("accepted"))
+    );
+    assert_eq!(
+        status("alice", request_dm.clone()).await.as_deref(),
+        Some("accepted")
+    );
+    assert_eq!(
+        request(&app, "POST", &decline_path, Some("bob"), None, Value::Null)
+            .await
+            .0,
+        StatusCode::NOT_FOUND,
+        "an accepted conversation can't be declined"
+    );
+
+    // Accept explicitly, or by replying.
+    let (_, accepted) = open("frank", "target0").await;
+    let accepted = accepted["id"].as_str().unwrap().to_owned();
+    let (code, body) = request(
+        &app,
+        "POST",
+        &format!("/api/dms/{accepted}/accept"),
+        Some("target0"),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        (code, body["status"].as_str()),
+        (StatusCode::OK, Some("accepted"))
+    );
+    assert_eq!(
+        status("frank", accepted.clone()).await.as_deref(),
+        Some("accepted")
+    );
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            &format!("/api/dms/{accepted}/accept"),
+            Some("dave"),
+            None,
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    let (_, replied) = open("frank", "target1").await;
+    let replied = replied["id"].as_str().unwrap().to_owned();
+    assert_eq!(send("target1", replied.clone()).await.0, StatusCode::OK);
+    assert_eq!(
+        status("frank", replied.clone()).await.as_deref(),
+        Some("accepted")
+    );
+    // Ten new requests an hour; accepted ones don't count.
+    for n in 2..12 {
+        let target: &'static str = Box::leak(format!("target{n}").into_boxed_str());
+        assert_eq!(open("frank", target).await.0, StatusCode::OK, "{target}");
+    }
+    let (code, body) = open("frank", "target12").await;
+    assert_eq!(code, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["error"], "too many message requests; try again later");
+
+    // Privacy: spaces only, then nobody new. Existing conversations stay.
+    assert_eq!(
+        request(
+            &app,
+            "PUT",
+            "/api/account/privacy",
+            Some("dave"),
+            None,
+            json!({"directMessages":"spaces"})
+        )
+        .await,
+        (StatusCode::OK, json!({"directMessages":"spaces"}))
+    );
+    let (code, body) = open("alice", "dave").await;
+    assert_eq!(
+        (code, body["code"].as_str()),
+        (StatusCode::FORBIDDEN, Some("dm_not_accepted"))
+    );
+    sqlx::query("INSERT INTO space_members (space_id,user_id) VALUES ($1,$2)")
+        .bind(space)
+        .bind(users["dave"])
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (code, body) = open("alice", "dave").await;
+    assert_eq!(
+        (code, body["status"].as_str()),
+        (StatusCode::OK, Some("accepted"))
+    );
+    let alice_dave = body["id"].as_str().unwrap().to_owned();
+    request(
+        &app,
+        "PUT",
+        "/api/account/privacy",
+        Some("dave"),
+        None,
+        json!({"directMessages":"nobody"}),
+    )
+    .await;
+    assert_eq!(open("carol", "dave").await.1["code"], "dm_not_accepted");
+    assert_eq!(open("alice", "dave").await.1["id"], alice_dave.as_str());
+    assert_eq!(send("alice", alice_dave).await.0, StatusCode::OK);
+
+    // Blocks are idempotent, listed, stop both sides sending and survive reopening.
+    let alice = ids["alice"].clone();
+    for _ in 0..2 {
+        assert_eq!(
+            request(
+                &app,
+                "PUT",
+                &format!("/api/blocks/{alice}"),
+                Some("bob"),
+                None,
+                Value::Null
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM user_blocks")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        1
+    );
+    let (_, listed) = request(&app, "GET", "/api/blocks", Some("bob"), None, Value::Null).await;
+    assert_eq!(listed["blocks"][0]["id"], alice.as_str());
+    assert_eq!(listed["blocks"][0]["username"], "alice");
+    let bob_view = conversations(&pool, users["bob"]).await.unwrap();
+    assert_eq!(
+        bob_view
+            .iter()
+            .find(|c| c["id"] == request_dm.as_str())
+            .unwrap()["blocked"],
+        true
+    );
+    assert_eq!(
+        conversations(&pool, users["alice"])
+            .await
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == request_dm.as_str())
+            .unwrap()["blocked"],
+        false,
+        "the blocked person is not told"
+    );
+    assert_eq!(
+        send("alice", request_dm.clone()).await.1["code"],
+        "dm_not_accepted"
+    );
+    assert_eq!(
+        send("bob", request_dm.clone()).await.1["code"],
+        "dm_blocked"
+    );
+    assert_eq!(open("alice", "bob").await.1["id"], request_dm.as_str());
+    assert_eq!(
+        request(
+            &app,
+            "PUT",
+            &format!("/api/blocks/{}", ids["bob"]),
+            Some("bob"),
+            None,
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        request(
+            &app,
+            "PUT",
+            "/api/blocks/missing",
+            Some("bob"),
+            None,
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            request(
+                &app,
+                "DELETE",
+                &format!("/api/blocks/{alice}"),
+                Some("bob"),
+                None,
+                Value::Null
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+    }
+    assert_eq!(
+        request(&app, "GET", "/api/blocks", Some("bob"), None, Value::Null)
+            .await
+            .1,
+        json!({"blocks":[]})
+    );
+    assert_eq!(send("alice", request_dm.clone()).await.0, StatusCode::OK);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM user_blocks WHERE deleted_at IS NOT NULL"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        1,
+        "unblocking keeps the record"
+    );
+
+    // Blocking a requester declines the request; a block stops new requests both ways.
+    let (_, from_carol) = open("carol", "bob").await;
+    let from_carol = from_carol["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        status("bob", from_carol.clone()).await.as_deref(),
+        Some("incoming")
+    );
+    request(
+        &app,
+        "PUT",
+        &format!("/api/blocks/{}", ids["carol"]),
+        Some("bob"),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status("bob", from_carol.clone()).await, None);
+    assert_eq!(
+        status("carol", from_carol.clone()).await.as_deref(),
+        Some("outgoing")
+    );
+    request(
+        &app,
+        "DELETE",
+        &format!("/api/blocks/{}", ids["carol"]),
+        Some("bob"),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        status("bob", from_carol).await,
+        None,
+        "unblocking doesn't restore the request"
+    );
+    request(
+        &app,
+        "PUT",
+        &format!("/api/blocks/{}", ids["eve"]),
+        Some("dave"),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(open("eve", "dave").await.1["code"], "dm_not_accepted");
+    request(
+        &app,
+        "PUT",
+        "/api/account/privacy",
+        Some("dave"),
+        None,
+        json!({"directMessages":"anyone"}),
+    )
+    .await;
+    assert_eq!(open("eve", "dave").await.1["code"], "dm_not_accepted");
+    assert_eq!(open("dave", "eve").await.1["code"], "dm_blocked");
+}

@@ -653,6 +653,9 @@ async fn persist_message(
     .map_err(database_error)?;
     let (channel_id, head) =
         row.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
+    if let (None, Some(user_id)) = (space_id, user_id) {
+        crate::direct::authorize_send(&mut tx, channel_id, user_id).await?;
+    }
     // Preserve existing normal-message retry hashes, but bind reply retries to
     // their destination and broadcast choice as well as their text.
     let hash = Sha256::digest(text.as_bytes()).to_vec();
