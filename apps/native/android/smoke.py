@@ -456,24 +456,30 @@ def main() -> None:
     viewport(390, 844)
     launch()
     wait_for(text="Fixture Owner")
-    narrow = capture("caper-android-narrow", "Browse")
+    narrow = capture("caper-android-narrow", "Back to Browse")
     assert find(narrow, text="caper") is None
     assert find(narrow, contains="Message #general") is not None
-    menu = find(narrow, text="Browse")
-    channel = find(narrow, text="# general")
-    assert menu is not None and channel is not None, "Narrow navigation shows the web's Menu + Browse toggle"
-    assert center(menu)[0] < center(channel)[0], "Browse must precede the channel title, as on the web"
+    back = find(narrow, description="Back to Browse")
+    channel = find(narrow, description="# general channel menu")
+    assert back is not None and channel is not None, "Narrow navigation shows a back arrow and the channel-name menu"
+    assert center(back)[0] < center(channel)[0], "The back arrow must precede the channel name, as on the web"
     send = find(narrow, description="Send")
     assert send is not None and send.get("enabled") == "false", "Empty composer must not send"
-    tap(description="Show member list")
-    members_open = capture("caper-android-narrow-members", "Hide member list")
-    members_toggle = find(members_open, description="Hide member list")
+    # Phones keep Pins and Members in the channel-name menu, not header buttons.
+    tap(description="# general channel menu")
+    tap(text="Members")
+    members_open = capture("caper-android-narrow-members", "Members")
+    channel = find(members_open, description="# general channel menu")
     members_title = find(members_open, text="Members")
-    assert members_toggle is not None and members_title is not None
-    assert center(members_toggle)[1] < center(members_title)[1], "Member overlay must leave the header toggle exposed"
-    tap(description="Hide member list")
-    wait_for(description="Show member list")
-    tap(text="Browse")
+    assert channel is not None and members_title is not None
+    assert center(channel)[1] < center(members_title)[1], "Member overlay must leave the channel menu exposed"
+    tap(description="# general channel menu")
+    tap(text="Hide member list")
+    deadline = time.monotonic() + 10
+    while find(hierarchy(), text="Members") is not None:
+        assert time.monotonic() < deadline, "Hide member list must close the member overlay"
+        time.sleep(0.5)
+    tap(description="Back to Browse")
     tap(description="Fixture Studio")
     wait_for(text="Fixture Studio")
     browse = capture("caper-android-browse", "Fixture Studio")
@@ -482,7 +488,7 @@ def main() -> None:
     wait_for(description="Expand channels")
     tap(description="Close navigation")
     wait_for(contains="Message #general")
-    tap(text="Browse")
+    tap(description="Back to Browse")
     collapsed_browse = capture("caper-android-browse-collapsed", "Expand channels")
     assert find(collapsed_browse, text="planning") is None, "Browse must retain the collapsed state"
     tap(description="Channel options")
@@ -535,7 +541,7 @@ def main() -> None:
         fixture({"mediaAccessDenied": {"channelId": "chan00000002", "denied": False}})
     tap(description="Close navigation")
     assert find(hierarchy(), contains="Message #general") is not None, "Spectator updates changed selected chat"
-    tap(text="Browse")
+    tap(description="Back to Browse")
 
     # Run after parity captures so the stable seeded reference conversation is
     # unchanged. This crosses the real Compose input -> HTTP send -> gateway UI
@@ -582,7 +588,7 @@ def main() -> None:
     # through the system UI. The loopback fixture rejects join, never fakes audio.
     # Web joins voice from the channel list only; the chat header has no Join voice.
     assert find(delivered, contains="Join voice") is None, "Chat header must not duplicate the channel-list Join voice"
-    tap(text="Browse")
+    tap(description="Back to Browse")
     join = "Join voice in #general"
     voice_ready = capture("caper-android-voice-ready", join)
     assert find(voice_ready, description=join) is not None
