@@ -6733,18 +6733,28 @@ impl CaperApp {
             .response
             .rect;
         if let Some(token) = self.token.clone() {
-            ui.interact(
+            // Hover only: sensing clicks here, above the row, would swallow
+            // clicks inside it (the edited marker). Right-clicks still open it.
+            let row = ui.interact(
                 message_rect,
                 ui.id().with((&message.id, "forward-context")),
-                egui::Sense::click(),
-            )
-            .context_menu(|ui| {
-                if ui.button("Forward message").clicked() {
-                    self.forwarding
-                        .picker(&self.worker, self.generation, token, message.clone());
-                    ui.close();
-                }
-            });
+                egui::Sense::hover(),
+            );
+            let opened = row.contains_pointer() && ui.input(|i| i.pointer.secondary_clicked());
+            egui::Popup::menu(&row)
+                .open_memory(opened.then_some(egui::SetOpenCommand::Bool(true)))
+                .at_pointer_fixed()
+                .show(|ui| {
+                    if ui.button("Forward message").clicked() {
+                        self.forwarding.picker(
+                            &self.worker,
+                            self.generation,
+                            token,
+                            message.clone(),
+                        );
+                        ui.close();
+                    }
+                });
         }
         if let Some(forward) = &message.forward {
             egui::Frame::new()
@@ -14800,6 +14810,66 @@ mod tests {
         app.open_edit_history(&wrapper);
         assert!(app.message_editor.is_none());
         assert!(app.edit_history.is_none());
+    }
+
+    /// A signed-in `parity-edits` timeline, so rows carry the forward menu.
+    fn signed_in_edits(context: &egui::Context) -> (CaperApp, egui::FullOutput) {
+        let mut app = CaperApp::new(
+            context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-edits"),
+        );
+        app.token = Some("account-token".into());
+        render(&mut app, context, vec![]);
+        let output = render(&mut app, context, vec![]);
+        (app, output)
+    }
+
+    fn text_ending(output: &egui::FullOutput, suffix: &str) -> egui::Pos2 {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text.ends_with(suffix) => {
+                    Some(text.pos + text.galley.rect.center().to_vec2())
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("nothing ending in {suffix} is drawn"))
+    }
+
+    #[test]
+    fn signed_in_edited_marker_opens_history_beneath_the_forward_menu() {
+        let context = egui::Context::default();
+        let (mut app, output) = signed_in_edits(&context);
+        click(&mut app, &context, text_ending(&output, "(edited)"));
+        assert!(app.edit_history.is_some());
+    }
+
+    #[test]
+    fn right_clicking_signed_in_message_text_offers_forwarding() {
+        let context = egui::Context::default();
+        let (mut app, output) = signed_in_edits(&context);
+        let pos = text_ending(&output, "feel familiar on every platform.");
+        for pressed in [true, false] {
+            render(
+                &mut app,
+                &context,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Secondary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        // New egui areas spend their first pass measuring, invisibly.
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(texts(&output).contains(&"Forward message"));
     }
 
     #[test]
