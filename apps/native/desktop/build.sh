@@ -34,7 +34,12 @@ cargo fmt --manifest-path "$native/Cargo.toml" --package caper-desktop -- --chec
 cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-desktop
 cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-desktop native_inference_is_finite_and_owns_fresh_state -- --ignored
 cargo clippy --manifest-path "$native/Cargo.toml" --locked --package caper-desktop --all-targets --no-deps -- -D warnings
-cargo build --manifest-path "$native/Cargo.toml" --locked --release --package caper-desktop
+# rav1e's assembly halves AVIF photo encode time when NASM is available.
+release_features=()
+if command -v nasm >/dev/null 2>&1; then
+  release_features=(--features avif-asm)
+fi
+cargo build --manifest-path "$native/Cargo.toml" --locked --release --package caper-desktop "${release_features[@]}"
 # The self-updater ships beside the app. Release builds set CAPER_BUILD_NUMBER
 # and CAPER_UPDATE_PUBLIC_KEY; without the key it never offers updates.
 cargo build --manifest-path "$root/apps/native/updater/Cargo.toml" --locked --release

@@ -532,7 +532,8 @@ mod tests {
 
     #[test]
     fn compressed_still_uploads_preview_then_file_and_retries_complete() {
-        // A large few-colour screenshot: an exact palette PNG with a preview.
+        // A large few-colour screenshot: lossless WebP (smaller than its
+        // exact palette PNG) with a preview.
         let scratch = Scratch::new("still");
         let image = image::RgbaImage::from_fn(1280, 720, |x, y| {
             image::Rgba(if (x / 40 + y / 40) % 2 == 0 {
@@ -550,8 +551,8 @@ mod tests {
             .unwrap();
         let path = scratch.file("Screenshot.bmp", &source);
         let prepared = prepare_path(&path, &Compression::default()).unwrap();
-        assert_eq!(prepared.content_type, "image/png");
-        assert_eq!(prepared.name, "Screenshot.png");
+        assert_eq!(prepared.content_type, "image/webp");
+        assert_eq!(prepared.name, "Screenshot.webp");
         assert_eq!(prepared.kind, AttachmentKind::Image);
         assert_eq!(prepared.source_size, source.len() as u64);
         assert!(prepared.size < prepared.source_size);
@@ -569,8 +570,8 @@ mod tests {
                 "id": "asset0001",
                 "kind": "image",
                 "upload": {"method": "PUT", "url": format!("{base}/r2/original/asset0001?X-Amz-Signature=s"), "headers": {
-                    "content-type": "image/png",
-                    "content-disposition": "inline; filename=\"Screenshot.png\""
+                    "content-type": "image/webp",
+                    "content-disposition": "inline; filename=\"Screenshot.webp\""
                 }},
                 "previewUpload": {"method": "PUT", "url": format!("{base}/r2/preview/asset0001?X-Amz-Signature=p"), "headers": {
                     "content-type": "image/jpeg"
@@ -584,7 +585,7 @@ mod tests {
                 (409, r#"{"error":"upload not finished"}"#.into()),
                 (
                     200,
-                    completed("image", "image/png", "Screenshot.png", stored.len()),
+                    completed("image", "image/webp", "Screenshot.webp", stored.len()),
                 ),
             ]
         });
@@ -622,7 +623,7 @@ mod tests {
         assert_eq!(
             reservation,
             json!({
-                "channelId": "chan00000001", "filename": "Screenshot.png", "contentType": "image/png",
+                "channelId": "chan00000001", "filename": "Screenshot.webp", "contentType": "image/webp",
                 "byteSize": stored.len(), "sourceByteSize": source.len(),
                 "width": 1280, "height": 720,
                 "preview": {"contentType": "image/jpeg", "byteSize": preview.len()}
@@ -643,11 +644,11 @@ mod tests {
         );
         let original = &requests[2];
         assert_eq!(original.body, stored);
-        assert_eq!(original.headers["content-type"], "image/png");
+        assert_eq!(original.headers["content-type"], "image/webp");
         assert_eq!(original.headers["content-length"], stored.len().to_string());
         assert_eq!(
             original.headers["content-disposition"],
-            "inline; filename=\"Screenshot.png\""
+            "inline; filename=\"Screenshot.webp\""
         );
         for put in [put_preview, original] {
             assert_no_credentials(put);

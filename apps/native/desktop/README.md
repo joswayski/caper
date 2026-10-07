@@ -52,13 +52,18 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
 - Sending up to 10 files per message from the paperclip file dialog (Win32 on
   Windows; on Linux the XDG desktop portal, which needs a file-chooser backend
   such as xdg-desktop-portal-gtk, -gnome or -kde) or by dropping files on the
-  window. Files are compressed on the device with the server's
-  `GET /api/assets/usage` `compression` settings, in pure Rust: lossless
-  stills (PNG, BMP, TIFF, lossless WebP) stay pixel-exact at full size, as an
-  exact-palette indexed PNG when the colours fit `paletteColors`, else
-  lossless WebP, kept only when smaller; photos (JPEG, lossy WebP) become JPEG
-  at `imageQuality` scaled to `imageMaxEdge`, upright, without EXIF/GPS, kept
-  only when at least 10% smaller (no lossy WebP encoder). HEIC, AVIF, GIF,
+  window. Files are compressed on the device, off the UI thread, with the
+  server's `GET /api/assets/usage` `compression` settings: lossless stills
+  (PNG, BMP, TIFF, lossless WebP) stay pixel-exact at full size, as the
+  smaller of an exact-palette indexed PNG (when the colours fit
+  `paletteColors`) and lossless WebP (libwebp, `method` 3 like the web
+  client), kept only when smaller; photos (JPEG, lossy WebP) are scaled to
+  `imageMaxEdge`, upright, without EXIF/GPS, and become AVIF at `avifQuality`
+  when `imageFormat` is `"avif"` (rav1e, 8-bit 4:2:0, sRGB or Display P3
+  signalled in `nclx`), else lossy WebP at `imageQuality` (libwebp), kept
+  only when at least 10% smaller. AVIF falls back to WebP for translucent
+  photos, other colour profiles and encoder errors, and WebP to JPEG. A
+  missing `imageFormat` means WebP. HEIC, AVIF, GIF,
   SVG, audio, documents and videos upload as the original (no transcoder;
   MP4/QuickTime size and duration come from the header). Originals lose their
   metadata losslessly: JPEG APPn/comments except JFIF, ICC and Adobe (a

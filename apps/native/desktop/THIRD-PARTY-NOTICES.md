@@ -24,9 +24,18 @@ Apache-2.0), and keyring (MIT OR Apache-2.0).
 
 Attachment images are decoded with the pure-Rust `image` crate codecs
 (`png`, `zune-jpeg`, `image-webp`, `gif`, `tiff`, BMP; MIT OR Apache-2.0,
-zune-jpeg also Zlib) and encoded with `png` and `image-webp` (lossless WebP)
-(MIT OR Apache-2.0) and `jpeg-encoder` ((MIT OR Apache-2.0) AND IJG: this
-software is based in part on the work of the Independent JPEG Group). The
+zune-jpeg also Zlib) and encoded with `png` (MIT OR Apache-2.0),
+`jpeg-encoder` ((MIT OR Apache-2.0) AND IJG: this software is based in part
+on the work of the Independent JPEG Group), WebP through
+[libwebp](https://chromium.googlesource.com/webm/libwebp) 1.6.0
+(BSD-3-Clause, Copyright (c) 2010, Google Inc.; with Google's additional
+WebM patent grant), compiled from the source vendored in `libwebp-sys` 0.14.4
+(MIT) and called through `webpx` 0.4.0 (MIT OR Apache-2.0), and AVIF through
+[rav1e](https://github.com/xiph/rav1e) 0.8.1 (BSD-2-Clause, Copyright (c)
+2017-2023, the rav1e contributors; with the Alliance for Open Media Patent
+License 1.0) and `avif-serialize` 0.8.9 (BSD-3-Clause, Copyright (c) 2020,
+Cloudflare, Inc.). Their full licence texts ship beside the app as
+`libwebp-LICENSE.txt`, `rav1e-LICENSE.txt` and `avif-serialize-LICENSE.txt`. The
 exact-palette indexed PNG writer and JPEG settings are adapted from Caper's
 sibling project Captures (`joswayski/captures`, Apache-2.0). The file dialog
 uses `rfd` (MIT).

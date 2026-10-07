@@ -43,7 +43,10 @@ cargo test --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desk
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 cargo clippy --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop --target $Target --locked --all-targets --no-deps -- -D warnings
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-cargo build --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop --target $Target --locked --release
+# rav1e's assembly halves AVIF photo encode time when NASM is available.
+$ReleaseFeatures = @()
+if (Get-Command nasm -ErrorAction SilentlyContinue) { $ReleaseFeatures = @("--features", "avif-asm") }
+cargo build --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop --target $Target --locked --release @ReleaseFeatures
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 # The self-updater ships beside Caper.exe. Release builds set CAPER_BUILD_NUMBER
 # and CAPER_UPDATE_PUBLIC_KEY; without the key it never offers updates.

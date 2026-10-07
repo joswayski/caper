@@ -3,6 +3,7 @@
 mod api;
 mod attachments;
 mod avatar_images;
+mod avif;
 mod compress;
 mod credentials;
 mod daily_icon;

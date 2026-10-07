@@ -4,12 +4,15 @@
 //! verifies stored bytes; this saves storage and bandwidth without visible
 //! quality loss, and uploads the original whenever a rule cannot be met.
 //!
-//! - Lossless stills (PNG, BMP, TIFF, lossless WebP) stay lossless: an exact
-//!   indexed PNG when the colours fit `paletteColors`, otherwise lossless WebP
-//!   (the `image` crate's encoder), kept only when smaller.
-//! - Photos (JPEG, lossy WebP) become JPEG at `imageQuality`, scaled to
-//!   `imageMaxEdge`, kept only when at least 10% smaller. There is no lossy
-//!   WebP encoder in pure Rust; HEIC does not decode here and uploads as is.
+//! - Lossless stills (PNG, BMP, TIFF, lossless WebP) stay lossless: the
+//!   smaller of an exact indexed PNG (when the colours fit `paletteColors`)
+//!   and lossless WebP (libwebp, the web client's settings), kept only when
+//!   smaller than the original.
+//! - Photos (JPEG, lossy WebP) become AVIF at `avifQuality` when the server
+//!   asks for it (`imageFormat` "avif", see `avif`), else lossy WebP at
+//!   `imageQuality` (libwebp); AVIF falls back to WebP, and WebP to JPEG, on
+//!   any failure. Scaled to `imageMaxEdge`, kept only when at least 10%
+//!   smaller. HEIC does not decode here and uploads as is.
 //! - Video, GIF, SVG, AVIF, audio and other files upload unchanged, except
 //!   that JPEG, PNG and MP4/QuickTime originals lose their metadata
 //!   (`metadata`).
@@ -35,7 +38,13 @@ const PHOTO_KEEP_RATIO: f64 = 0.9;
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Compression {
-    /// Lossy photo quality, 1–100. 100 disables lossy re-encoding.
+    /// Photo format: only "avif" selects AVIF; anything else (and older
+    /// servers, which omit it) means WebP.
+    pub image_format: String,
+    /// AVIF photo quality on libavif's `quality` scale (`avifenc -q`), 1–100.
+    pub avif_quality: u8,
+    /// WebP/JPEG photo quality, 1–100, also used when AVIF cannot be encoded.
+    /// 100 disables lossy re-encoding in either format.
     pub image_quality: u8,
     /// Longest photo edge in pixels; 0 keeps the original size.
     pub image_max_edge: u32,
@@ -53,6 +62,8 @@ pub struct Compression {
 impl Default for Compression {
     fn default() -> Self {
         Self {
+            image_format: "webp".into(),
+            avif_quality: 85,
             image_quality: 92,
             image_max_edge: 4096,
             palette_colors: 256,
@@ -166,7 +177,7 @@ pub fn content_type_for(name: &str, head: &[u8]) -> String {
 pub enum StillClass {
     /// PNG, BMP, TIFF, lossless WebP: only lossless encodings.
     Lossless,
-    /// JPEG, lossy WebP: JPEG at the server quality.
+    /// JPEG, lossy WebP: AVIF or lossy WebP at the server quality.
     Photo,
     /// GIF, SVG, AVIF, HEIC, animated PNG/WebP, anything else.
     Unchanged,
@@ -251,6 +262,7 @@ pub fn renamed(name: &str, content_type: &str) -> String {
     let extension = match content_type {
         "image/png" => "png",
         "image/webp" => "webp",
+        "image/avif" => "avif",
         "image/jpeg" => "jpg",
         _ => return name.into(),
     };
@@ -276,12 +288,14 @@ pub fn fit_within(width: u32, height: u32, edge: u32) -> (u32, u32) {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum StillEncoding {
-    /// Exact-palette indexed PNG: lossless.
+    /// The smaller of an exact-palette indexed PNG and lossless WebP.
     Palette,
     /// Lossless WebP (VP8L).
     LosslessWebp,
-    /// Lossy JPEG at the server quality: photos only.
-    Jpeg,
+    /// AVIF at `avifQuality`, falling back to lossy WebP: photos only.
+    Avif,
+    /// Lossy WebP at `imageQuality`, falling back to JPEG: photos only.
+    LossyWebp,
     /// Upload the original.
     None,
 }
@@ -298,7 +312,10 @@ pub fn still_encoding(
             StillEncoding::Palette
         }
         StillClass::Lossless => StillEncoding::LosslessWebp,
-        StillClass::Photo if settings.image_quality < 100 => StillEncoding::Jpeg,
+        StillClass::Photo if settings.image_quality < 100 && settings.image_format == "avif" => {
+            StillEncoding::Avif
+        }
+        StillClass::Photo if settings.image_quality < 100 => StillEncoding::LossyWebp,
         StillClass::Photo | StillClass::Unchanged => StillEncoding::None,
     }
 }
@@ -363,14 +380,16 @@ fn scaled(image: &DynamicImage, edge: u32) -> DynamicImage {
     }
 }
 
-/// The exact pixels in an 8-bit layout the lossless encoders accept, or
-/// `None` for deeper or float images (re-encoding those would lose precision).
+/// The exact pixels as 8-bit RGB or RGBA (grey widens exactly), or `None`
+/// for deeper or float images (re-encoding those would lose precision).
 fn lossless_pixels(image: &DynamicImage) -> Option<(Vec<u8>, ExtendedColorType)> {
     match image.color() {
-        ColorType::L8 => Some((image.as_bytes().to_vec(), ExtendedColorType::L8)),
-        ColorType::La8 => Some((image.as_bytes().to_vec(), ExtendedColorType::La8)),
-        ColorType::Rgb8 => Some((image.as_bytes().to_vec(), ExtendedColorType::Rgb8)),
-        ColorType::Rgba8 => Some((image.as_bytes().to_vec(), ExtendedColorType::Rgba8)),
+        ColorType::L8 | ColorType::Rgb8 => {
+            Some((image.to_rgb8().into_raw(), ExtendedColorType::Rgb8))
+        }
+        ColorType::La8 | ColorType::Rgba8 => {
+            Some((image.to_rgba8().into_raw(), ExtendedColorType::Rgba8))
+        }
         _ => None,
     }
 }
@@ -386,17 +405,66 @@ fn lossless_candidate(
     let exact = (limit > 0)
         .then(|| exact_indexed_rgba(&rgba, limit))
         .flatten();
-    match still_encoding(StillClass::Lossless, settings, exact.is_some()) {
-        StillEncoding::Palette => {
-            let (palette, indices) = exact?;
+    let palette = match (
+        still_encoding(StillClass::Lossless, settings, exact.is_some()),
+        exact,
+    ) {
+        (StillEncoding::Palette, Some((palette, indices))) => {
             encode_indexed_png(rgba.width(), rgba.height(), &palette, &indices, icc)
                 .ok()
                 .map(|bytes| (bytes, "image/png"))
         }
-        _ => encode_lossless_webp(&pixels, image.width(), image.height(), color, icc)
-            .ok()
-            .map(|bytes| (bytes, "image/webp")),
+        _ => None,
+    };
+    let webp = encode_lossless_webp(&pixels, image.width(), image.height(), color, icc)
+        .ok()
+        .map(|bytes| (bytes, "image/webp"));
+    // Both are pixel-exact: keep the smaller.
+    [palette, webp]
+        .into_iter()
+        .flatten()
+        .min_by_key(|(bytes, _)| bytes.len())
+}
+
+/// A photo at the server settings: AVIF when asked for and possible, else
+/// lossy WebP, else (opaque only) JPEG. `None` when lossy re-encoding is off
+/// or every encoder failed.
+fn photo_candidate(
+    image: &DynamicImage,
+    icc: Option<&[u8]>,
+    settings: &Compression,
+) -> Option<(Vec<u8>, &'static str)> {
+    let encoding = still_encoding(StillClass::Photo, settings, false);
+    if encoding == StillEncoding::None {
+        return None;
     }
+    let rgba = image.to_rgba8();
+    let opaque = rgba
+        .pixels()
+        .all(|pixel| pixel[3] == 255)
+        .then(|| image.to_rgb8());
+    // AVIF here carries no alpha and signals colour without an ICC profile;
+    // other photos, and any encoder error, take the WebP path.
+    if encoding == StillEncoding::Avif
+        && let Some(rgb) = &opaque
+        && let Some(primaries) = crate::avif::primaries(icc)
+        && let Ok(bytes) = crate::avif::encode(rgb, settings.avif_quality, primaries)
+    {
+        return Some((bytes, "image/avif"));
+    }
+    let (pixels, alpha) = match &opaque {
+        Some(rgb) => (rgb.as_raw(), false),
+        None => (rgba.as_raw(), true),
+    };
+    let (width, height) = rgba.dimensions();
+    if let Ok(bytes) = encode_lossy_webp(pixels, width, height, alpha, settings.image_quality, icc)
+    {
+        return Some((bytes, "image/webp"));
+    }
+    // JPEG has no alpha: translucent photos keep their original.
+    opaque
+        .and_then(|rgb| encode_jpeg(&rgb, settings.image_quality, icc).ok())
+        .map(|bytes| (bytes, "image/jpeg"))
 }
 
 /// Compress one still and draw its preview and local thumbnail. Undecodable
@@ -447,21 +515,9 @@ pub fn prepare_image(
                 .map(|(bytes, encoded)| (bytes, encoded, source.clone())),
             StillClass::Photo => {
                 let resized = scaled(&source, settings.image_max_edge);
-                let rgba = resized.to_rgba8();
-                // JPEG has no alpha: translucent photos keep their original.
-                let opaque = rgba.pixels().all(|pixel| pixel[3] == 255);
-                (opaque && still_encoding(class, settings, false) == StillEncoding::Jpeg)
-                    .then(|| {
-                        encode_jpeg(
-                            &composite_onto_white(&rgba),
-                            settings.image_quality,
-                            icc.as_deref(),
-                        )
-                        .ok()
-                    })
-                    .flatten()
-                    .filter(|bytes| keep_photo(original_size, bytes.len() as u64))
-                    .map(|bytes| (bytes, "image/jpeg", resized))
+                photo_candidate(&resized, icc.as_deref(), settings)
+                    .filter(|(bytes, _)| keep_photo(original_size, bytes.len() as u64))
+                    .map(|(bytes, encoded)| (bytes, encoded, resized))
             }
             StillClass::Unchanged => None,
         };
@@ -530,7 +586,9 @@ pub fn encode_jpeg(image: &RgbImage, quality: u8, icc: Option<&[u8]>) -> Result<
     Ok(bytes)
 }
 
-/// Lossless (VP8L) WebP, pixel-exact including alpha.
+/// Lossless (VP8L) WebP from 8-bit RGB or RGBA, pixel-exact including the
+/// colour under transparent pixels. libwebp with the web client's settings
+/// (`lossless: 1, method: 3, quality: 75, exact: 1`).
 pub fn encode_lossless_webp(
     pixels: &[u8],
     width: u32,
@@ -538,18 +596,44 @@ pub fn encode_lossless_webp(
     color: ExtendedColorType,
     icc: Option<&[u8]>,
 ) -> Result<Vec<u8>, String> {
-    use image::ImageEncoder;
-    let mut bytes = Vec::new();
-    let mut encoder = image::codecs::webp::WebPEncoder::new_lossless(&mut bytes);
-    if let Some(icc) = icc {
-        encoder
-            .set_icc_profile(icc.to_vec())
-            .map_err(|error| error.to_string())?;
+    let encoder = match color {
+        ExtendedColorType::Rgb8 => webpx::Encoder::new_rgb(pixels, width, height),
+        ExtendedColorType::Rgba8 => webpx::Encoder::new_rgba(pixels, width, height),
+        _ => return Err("lossless WebP takes 8-bit RGB or RGBA".into()),
+    };
+    with_icc(
+        encoder.lossless(true).method(3).quality(75.0).exact(true),
+        icc,
+    )
+    .encode(webpx::Unstoppable)
+    .map_err(|error| error.to_string())
+}
+
+/// Lossy (VP8) WebP from 8-bit RGB or RGBA at `quality`, otherwise libwebp's
+/// defaults (method 4), as browsers encode WebP.
+pub fn encode_lossy_webp(
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    alpha: bool,
+    quality: u8,
+    icc: Option<&[u8]>,
+) -> Result<Vec<u8>, String> {
+    let encoder = if alpha {
+        webpx::Encoder::new_rgba(pixels, width, height)
+    } else {
+        webpx::Encoder::new_rgb(pixels, width, height)
+    };
+    with_icc(encoder.quality(f32::from(quality.clamp(1, 100))), icc)
+        .encode(webpx::Unstoppable)
+        .map_err(|error| error.to_string())
+}
+
+fn with_icc<'a>(encoder: webpx::Encoder<'a>, icc: Option<&'a [u8]>) -> webpx::Encoder<'a> {
+    match icc {
+        Some(icc) => encoder.icc_profile(icc),
+        None => encoder,
     }
-    encoder
-        .write_image(pixels, width, height, color)
-        .map_err(|error| error.to_string())?;
-    Ok(bytes)
 }
 
 // From joswayski/captures `encoding.rs`: JPEG has no alpha, so flatten onto
@@ -942,6 +1026,7 @@ mod tests {
         assert_eq!(renamed("shot.final.PNG", "image/webp"), "shot.final.webp");
         assert_eq!(renamed("diagram", "image/png"), "diagram.png");
         assert_eq!(renamed(".hidden", "image/jpeg"), ".hidden.jpg");
+        assert_eq!(renamed("IMG_1.JPG", "image/avif"), "IMG_1.avif");
         assert_eq!(renamed("clip.mov", "video/mp4"), "clip.mov");
         assert_eq!(fit_within(8000, 4000, 4096), (4096, 2048));
         assert_eq!(fit_within(300, 200, 640), (300, 200));
@@ -958,9 +1043,44 @@ mod tests {
             still_encoding(lossless, &defaults, false),
             StillEncoding::LosslessWebp
         );
+        // Older servers send no imageFormat: WebP photos.
         assert_eq!(
             still_encoding(StillClass::Photo, &defaults, true),
-            StillEncoding::Jpeg
+            StillEncoding::LossyWebp
+        );
+        let avif = Compression {
+            image_format: "avif".into(),
+            ..Compression::default()
+        };
+        assert_eq!(
+            still_encoding(StillClass::Photo, &avif, false),
+            StillEncoding::Avif
+        );
+        // AVIF never applies to screenshots and graphics.
+        assert_eq!(
+            still_encoding(lossless, &avif, false),
+            StillEncoding::LosslessWebp
+        );
+        // Only the exact value selects AVIF.
+        for other in ["AVIF", "webp", "heic", ""] {
+            let settings = Compression {
+                image_format: other.into(),
+                ..Compression::default()
+            };
+            assert_eq!(
+                still_encoding(StillClass::Photo, &settings, false),
+                StillEncoding::LossyWebp,
+                "{other:?}"
+            );
+        }
+        // Quality 100 turns lossy re-encoding off in either format.
+        let avif_off = Compression {
+            image_quality: 100,
+            ..avif.clone()
+        };
+        assert_eq!(
+            still_encoding(StillClass::Photo, &avif_off, false),
+            StillEncoding::None
         );
         assert_eq!(
             still_encoding(StillClass::Unchanged, &defaults, true),
@@ -999,8 +1119,16 @@ mod tests {
         assert_eq!(parsed.palette_colors, 64);
         assert_eq!(parsed.preview_edge, 320);
         assert_eq!(parsed.video_max_height, 1080);
+        // Missing photo-format fields keep older servers on WebP.
+        assert_eq!(parsed.image_format, "webp");
+        assert_eq!(parsed.avif_quality, 85);
         let empty: Compression = serde_json::from_str("{}").unwrap();
         assert_eq!(empty, Compression::default());
+        let avif: Compression =
+            serde_json::from_str(r#"{"imageFormat":"avif","avifQuality":70}"#).unwrap();
+        assert_eq!(avif.image_format, "avif");
+        assert_eq!(avif.avif_quality, 70);
+        assert_eq!(avif.image_quality, 92);
     }
 
     fn png_bytes(image: &RgbaImage) -> Vec<u8> {
@@ -1047,7 +1175,7 @@ mod tests {
     }
 
     #[test]
-    fn screenshot_becomes_a_pixel_exact_palette_png() {
+    fn few_colour_screenshots_keep_the_smaller_exact_encoding() {
         // A UI-like still: flat regions, translucent and transparent pixels,
         // and few colours, with rows whose width does not fill a byte.
         let colors = [
@@ -1067,15 +1195,28 @@ mod tests {
             "image/png",
             &Compression::default(),
         );
-        assert_eq!(prepared.content_type, "image/png");
-        assert_eq!(prepared.name, "screen.png");
+        // Both lossless encodings are tried; the smaller wins (the palette
+        // PNG on a tie).
+        let (palette, indices) = exact_indexed_rgba(&image, 256).unwrap();
+        let indexed = encode_indexed_png(333, 211, &palette, &indices, None).unwrap();
+        let webp = lossless_webp(&image);
+        let (expected_type, expected_name) = if indexed.len() <= webp.len() {
+            ("image/png", "screen.png")
+        } else {
+            ("image/webp", "screen.webp")
+        };
+        assert_eq!(prepared.content_type, expected_type);
+        assert_eq!(prepared.name, expected_name);
+        assert_eq!(prepared.bytes.len(), indexed.len().min(webp.len()));
         assert!(prepared.bytes.len() < original.len());
-        let reader = png::Decoder::new(Cursor::new(&prepared.bytes))
+        let decoded = image::load_from_memory(&prepared.bytes).unwrap().to_rgba8();
+        assert_eq!(decoded, image, "lossless output must be pixel-exact");
+        // The indexed PNG itself is exact too.
+        let reader = png::Decoder::new(Cursor::new(&indexed))
             .read_info()
             .unwrap();
         assert_eq!(reader.info().color_type, png::ColorType::Indexed);
-        let decoded = image::load_from_memory(&prepared.bytes).unwrap().to_rgba8();
-        assert_eq!(decoded, image, "palette PNG must be pixel-exact");
+        assert_eq!(image::load_from_memory(&indexed).unwrap().to_rgba8(), image);
         assert_eq!((prepared.width, prepared.height), (Some(333), Some(211)));
         assert!(prepared.preview.is_none(), "small stills need no preview");
     }
@@ -1129,9 +1270,9 @@ mod tests {
             "image/webp",
             &Compression::default(),
         );
-        // The same encoder cannot beat itself, so the original is kept.
+        // Re-encoded only when smaller, and always exactly.
         assert_eq!(prepared.content_type, "image/webp");
-        assert_eq!(prepared.bytes, source);
+        assert!(prepared.bytes.len() <= source.len());
         assert_eq!((prepared.width, prepared.height), (Some(300), Some(200)));
         assert_eq!(
             image::load_from_memory(&prepared.bytes).unwrap().to_rgba8(),
@@ -1198,7 +1339,7 @@ mod tests {
     }
 
     #[test]
-    fn photos_become_smaller_jpegs_scaled_with_previews() {
+    fn photos_become_smaller_lossy_webps_scaled_with_previews() {
         let original = jpeg(&photo(1600, 900), 100);
         let settings = Compression {
             image_max_edge: 1200,
@@ -1206,8 +1347,9 @@ mod tests {
             ..Compression::default()
         };
         let prepared = prepare_image("photo.jpeg", original.clone(), "image/jpeg", &settings);
-        assert_eq!(prepared.content_type, "image/jpeg");
-        assert_eq!(prepared.name, "photo.jpg");
+        assert_eq!(prepared.content_type, "image/webp");
+        assert_eq!(prepared.name, "photo.webp");
+        assert_eq!(webp_bitstream(&prepared.bytes), Some(WebpBitstream::Lossy));
         assert_eq!((prepared.width, prepared.height), (Some(1200), Some(675)));
         assert!(prepared.bytes.len() < original.len() * 9 / 10);
         let decoded = image::load_from_memory(&prepared.bytes).unwrap();
@@ -1218,10 +1360,24 @@ mod tests {
         assert_eq!(prepared.thumbnail.unwrap().dimensions(), (720, 405));
     }
 
+    /// Deterministic noise: no encoder at a high quality can shrink it much.
+    fn noise(width: u32, height: u32) -> DynamicImage {
+        let mut state = 0x2545_f491_u32;
+        DynamicImage::ImageRgb8(RgbImage::from_fn(width, height, |_, _| {
+            let mut next = || {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                (state >> 24) as u8
+            };
+            Rgb([next(), next(), next()])
+        }))
+    }
+
     #[test]
     fn photos_that_do_not_shrink_by_ten_percent_upload_unchanged() {
         // Already well below the server quality: re-encoding saves < 10%.
-        let original = jpeg(&photo(800, 600), 40);
+        let original = jpeg(&noise(800, 600), 40);
         let prepared = prepare_image(
             "photo.jpg",
             original.clone(),
@@ -1279,7 +1435,7 @@ mod tests {
                 ..Compression::default()
             },
         );
-        assert_eq!(prepared.content_type, "image/jpeg");
+        assert_eq!(prepared.content_type, "image/webp");
         assert_eq!((prepared.width, prepared.height), (Some(200), Some(400)));
         let decoded = image::load_from_memory(&prepared.bytes).unwrap();
         assert_eq!((decoded.width(), decoded.height()), (200, 400));
@@ -1292,17 +1448,89 @@ mod tests {
         );
     }
 
+    /// An RGB ICC profile whose only tag is an ICC v2 `desc` with this text.
+    fn described_profile(description: &str) -> Vec<u8> {
+        let mut tag = b"desc\0\0\0\0".to_vec();
+        tag.extend_from_slice(&(description.len() as u32 + 1).to_be_bytes());
+        tag.extend_from_slice(description.as_bytes());
+        tag.push(0);
+        let mut icc = vec![0_u8; 128];
+        icc[16..20].copy_from_slice(b"RGB ");
+        icc.extend_from_slice(&1_u32.to_be_bytes());
+        icc.extend_from_slice(b"desc");
+        icc.extend_from_slice(&144_u32.to_be_bytes());
+        icc.extend_from_slice(&(tag.len() as u32).to_be_bytes());
+        icc.extend(tag);
+        icc
+    }
+
+    #[test]
+    fn photos_become_avif_when_the_server_asks() {
+        let avif = Compression {
+            image_format: "avif".into(),
+            image_max_edge: 300,
+            ..Compression::default()
+        };
+        let rotated = with_orientation(&jpeg(&photo(400, 200), 100), 6);
+        let prepared = prepare_image("IMG_1.JPG", rotated, "image/jpeg", &avif);
+        assert_eq!(prepared.content_type, "image/avif");
+        assert_eq!(prepared.name, "IMG_1.avif");
+        assert!(sniff("image/avif", &prepared.bytes));
+        // Upright, scaled to the maximum edge, without EXIF.
+        assert_eq!((prepared.width, prepared.height), (Some(150), Some(300)));
+        assert!(!prepared.bytes.windows(4).any(|window| window == b"Exif"));
+        // Previews stay displayable everywhere.
+        assert!(prepared.preview.is_none(), "small photos need no preview");
+        assert_eq!(prepared.thumbnail.unwrap().dimensions(), (150, 300));
+
+        // An sRGB profile is signalled without the profile; another profile
+        // cannot be, so that photo keeps WebP, which embeds it.
+        let srgb = described_profile("sRGB IEC61966-2.1");
+        let tagged = encode_jpeg(&photo(300, 200).to_rgb8(), 100, Some(&srgb)).unwrap();
+        let prepared = prepare_image("srgb.jpg", tagged, "image/jpeg", &avif);
+        assert_eq!(prepared.content_type, "image/avif");
+        let wide = described_profile("Adobe RGB (1998)");
+        let tagged = encode_jpeg(&photo(300, 200).to_rgb8(), 100, Some(&wide)).unwrap();
+        let prepared = prepare_image("wide.jpg", tagged, "image/jpeg", &avif);
+        assert_eq!(prepared.content_type, "image/webp");
+        assert_eq!(prepared.name, "wide.webp");
+        let mut decoder =
+            image::codecs::webp::WebPDecoder::new(Cursor::new(&prepared.bytes)).unwrap();
+        assert_eq!(decoder.icc_profile().unwrap(), Some(wide));
+
+        // AVIF here has no alpha: a translucent photo falls back to WebP,
+        // which keeps it.
+        let translucent = RgbaImage::from_fn(300, 200, |x, y| {
+            Rgba([(x * 7 % 251) as u8, (y * 11 % 241) as u8, 40, 128])
+        });
+        let source = encode_lossy_webp(translucent.as_raw(), 300, 200, true, 100, None).unwrap();
+        assert_eq!(classify("image/webp", &source), StillClass::Photo);
+        let prepared = prepare_image(
+            "glass.webp",
+            source,
+            "image/webp",
+            &Compression {
+                image_quality: 60,
+                ..avif.clone()
+            },
+        );
+        assert_eq!(prepared.content_type, "image/webp");
+        let decoded = image::load_from_memory(&prepared.bytes).unwrap().to_rgba8();
+        assert!(decoded.pixels().all(|pixel| pixel[3] < 255));
+
+        // Quality 100 keeps the original in either format.
+        let original = jpeg(&photo(300, 200), 100);
+        let off = Compression {
+            image_quality: 100,
+            ..avif
+        };
+        let prepared = prepare_image("photo.jpg", original.clone(), "image/jpeg", &off);
+        assert_eq!(prepared.content_type, "image/jpeg");
+        assert_eq!(prepared.bytes, original);
+    }
+
     #[test]
     fn gif_heic_avif_and_undecodable_stills_upload_unchanged() {
-        let tiny = png_bytes(&RgbaImage::from_pixel(2, 2, Rgba([1, 2, 3, 255])));
-        let prepared = prepare_image(
-            "dot.png",
-            tiny.clone(),
-            "image/png",
-            &Compression::default(),
-        );
-        assert_eq!(prepared.bytes, tiny);
-        assert_eq!(prepared.content_type, "image/png");
         let garbage = b"not an image".to_vec();
         for (name, content_type) in [("x.heic", "image/heic"), ("x.avif", "image/avif")] {
             let prepared =
