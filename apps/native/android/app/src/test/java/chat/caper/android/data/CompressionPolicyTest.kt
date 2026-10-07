@@ -1,11 +1,13 @@
 package chat.caper.android.data
 
 import chat.caper.android.data.AttachmentPolicy.LosslessEncoding
+import chat.caper.android.data.AttachmentPolicy.PhotoFormat
 import chat.caper.android.data.AttachmentPolicy.StillClass
 import chat.caper.android.data.AttachmentPolicy.VideoFacts
 import chat.caper.android.model.CompressionSettings
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import kotlinx.serialization.json.Json
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -69,6 +71,42 @@ class CompressionPolicyTest {
         assertEquals("photo.webp", AttachmentPolicy.renamed("photo.jpeg", "image/webp"))
         assertEquals("clip.mp4", AttachmentPolicy.renamed("clip.mov", "video/mp4"))
         assertEquals("doc.pdf", AttachmentPolicy.renamed("doc.pdf", "application/pdf"))
+        assertEquals("IMG_1.avif", AttachmentPolicy.renamed("IMG_1.HEIC", "image/avif"))
+    }
+
+    @Test fun `photos become avif only when the server asks for exactly avif and the encoder exists`() {
+        val avif = defaults.copy(imageFormat = "avif")
+        assertEquals(PhotoFormat.AVIF, AttachmentPolicy.photoFormat(avif, avifAvailable = true))
+        assertEquals("no encoder on this device", PhotoFormat.WEBP, AttachmentPolicy.photoFormat(avif, avifAvailable = false))
+        assertEquals(PhotoFormat.WEBP, AttachmentPolicy.photoFormat(defaults.copy(imageFormat = "webp"), avifAvailable = true))
+        for (other in listOf("AVIF", " avif", "jxl", "")) {
+            assertEquals(other, PhotoFormat.WEBP, AttachmentPolicy.photoFormat(defaults.copy(imageFormat = other), avifAvailable = true))
+        }
+        assertEquals(85, AttachmentPolicy.avifQuality(avif))
+        assertEquals(1, AttachmentPolicy.avifQuality(avif.copy(avifQuality = 0)))
+        assertEquals(100, AttachmentPolicy.avifQuality(avif.copy(avifQuality = 250)))
+        // imageQuality 100 disables lossy photo re-encoding in either format.
+        assertFalse(AttachmentPolicy.reencodePhoto(avif.copy(imageQuality = 100), resized = false, originalInline = true))
+    }
+
+    @Test fun `older servers without imageFormat keep webp, newer ones parse`() {
+        val json = Json { ignoreUnknownKeys = true }
+        val old = json.decodeFromString<CompressionSettings>("""{"imageQuality":90,"imageMaxEdge":2048}""")
+        assertEquals("webp", old.imageFormat)
+        assertEquals(85, old.avifQuality)
+        assertEquals(PhotoFormat.WEBP, AttachmentPolicy.photoFormat(old, avifAvailable = true))
+        val new = json.decodeFromString<CompressionSettings>("""{"imageFormat":"avif","avifQuality":70,"imageQuality":92,"someFutureField":1}""")
+        assertEquals(PhotoFormat.AVIF, AttachmentPolicy.photoFormat(new, avifAvailable = true))
+        assertEquals(70, AttachmentPolicy.avifQuality(new))
+        assertEquals(92, new.imageQuality)
+    }
+
+    @Test fun `avif output is recognised by the brands the api accepts`() {
+        fun box(brand: String) = bytes(0, 0, 0, 0x1c, "ftyp", brand, ByteArray(16))
+        for (brand in listOf("avif", "avis", "mif1", "msf1")) assertTrue(brand, AvifEncoder.isAvif(box(brand)))
+        assertFalse(AvifEncoder.isAvif(box("heic")))
+        assertFalse(AvifEncoder.isAvif(lossyWebp))
+        assertFalse(AvifEncoder.isAvif(ByteArray(8)))
     }
 
     @Test fun `sizing never enlarges and previews follow edge and byte limits`() {

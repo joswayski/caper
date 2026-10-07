@@ -48,3 +48,6 @@ if [[ ! -f "$RN/src/rnnoise_data.c" ]]; then
 fi
 test -s "$RN/COPYING"
 cp "$RN/COPYING" "$OUT/assets/LICENSE-RNNoise.txt"
+
+# The AVIF photo encoder's native inputs, built by the same CMake step (release.yml runs this script).
+bash "$ROOT/prepare-avif.sh"

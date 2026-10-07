@@ -109,13 +109,26 @@ object AttachmentPolicy {
     fun reencodePhoto(settings: CompressionSettings, resized: Boolean, originalInline: Boolean): Boolean =
         settings.imageQuality in 1..99 || resized || !originalInline
 
+    enum class PhotoFormat { AVIF, WEBP }
+
+    /**
+     * Photos become AVIF at `avifQuality` only when the server asks for exactly `avif` (older
+     * servers omit `imageFormat`) and this device has the encoder; otherwise, and whenever an AVIF
+     * encode fails, lossy WebP (JPEG below that) at `imageQuality`.
+     */
+    fun photoFormat(settings: CompressionSettings, avifAvailable: Boolean): PhotoFormat =
+        if (settings.imageFormat == "avif" && avifAvailable) PhotoFormat.AVIF else PhotoFormat.WEBP
+
+    /** libavif quality 1–100; out-of-range values clamp. */
+    fun avifQuality(settings: CompressionSettings): Int = settings.avifQuality.coerceIn(1, 100)
+
     /** A lossy photo replaces the original only when at least 10% smaller, or the original cannot render inline. */
     fun keepPhoto(originalType: String, originalSize: Long, encodedSize: Long): Boolean =
         encodedSize > 0 && (kind(originalType) != "image" || encodedSize <= originalSize * (1 - MIN_SAVING))
 
     fun renamed(name: String, contentType: String): String {
         val extension = when (contentType) {
-            "image/webp" -> "webp"; "image/jpeg" -> "jpg"; "image/png" -> "png"; "video/mp4" -> "mp4"
+            "image/webp" -> "webp"; "image/avif" -> "avif"; "image/jpeg" -> "jpg"; "image/png" -> "png"; "video/mp4" -> "mp4"
             else -> return name
         }
         val dot = name.lastIndexOf('.')

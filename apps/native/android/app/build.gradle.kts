@@ -102,7 +102,10 @@ android {
 
 tasks.configureEach {
     if (name.startsWith("configureCMake") || name.startsWith("merge") && name.endsWith("Assets")) {
-        doFirst { check(file("build/native-inputs/ort/headers/onnxruntime_cxx_api.h").isFile) { "Run prepare-audio.sh before Gradle." } }
+        doFirst {
+            check(file("build/native-inputs/ort/headers/onnxruntime_cxx_api.h").isFile) { "Run prepare-audio.sh before Gradle." }
+            check(file("build/native-inputs/avif/lib/arm64-v8a/libaom.a").isFile) { "Run prepare-audio.sh (which runs prepare-avif.sh) before Gradle." }
+        }
     }
 }
 
@@ -147,8 +150,9 @@ dependencies {
     implementation("androidx.media3:media3-effect:1.8.0")
     // Photo orientation, applied when re-encoding (which drops EXIF/GPS).
     implementation("androidx.exifinterface:exifinterface:1.4.1")
-    // AOMedia libavif (dav1d decoder, ~0.9 MB per ABI): AVIF attachments upload
-    // unchanged and Android only decodes them itself from API 31. Used below that.
+    // AOMedia libavif (dav1d decoder, ~0.9 MB per ABI): Android only decodes AVIF
+    // itself from API 31; used below that. Photos are encoded to AVIF by
+    // libcaper_avif.so (libavif + libaom encoder, prepare-avif.sh), not this.
     implementation("org.aomedia.avif.android:avif:1.3.0.841110fd")
     // Word-level diffs for message edit history.
     implementation("io.github.java-diff-utils:java-diff-utils:4.16")

@@ -114,6 +114,7 @@ object TolerantAttachmentsSerializer : KSerializer<List<ChatAttachment>> {
 
 /** Server-tunable client compression (`GET /api/assets/usage`, docs/media.md "Client compression and previews"). */
 @Serializable data class CompressionSettings(
+    /** WebP/JPEG photo quality, also the fallback when AVIF cannot be encoded; 100 disables lossy photo encoding. */
     val imageQuality: Int = 92,
     val imageMaxEdge: Int = 4096,
     val paletteColors: Int = 256,
@@ -121,6 +122,10 @@ object TolerantAttachmentsSerializer : KSerializer<List<ChatAttachment>> {
     val videoMaxHeight: Int = 1080,
     val videoBitrateKbps: Int = 6000,
     val audioBitrateKbps: Int = 128,
+    /** Photo format: only exactly `avif` selects AVIF; older servers omit it and keep WebP. */
+    val imageFormat: String = "webp",
+    /** AVIF photo quality on libavif's `quality` scale. */
+    val avifQuality: Int = 85,
 )
 /** `GET /api/assets/usage`: stored bytes, the allowance and the compression settings. */
 @Serializable data class AssetUsage(val used: Long, val limit: Long, val compression: CompressionSettings = CompressionSettings())

@@ -32,6 +32,7 @@ import androidx.media3.transformer.ProgressHolder
 import androidx.media3.transformer.Transformer
 import androidx.media3.transformer.VideoEncoderSettings
 import chat.caper.android.data.AttachmentPolicy.LosslessEncoding
+import chat.caper.android.data.AttachmentPolicy.PhotoFormat
 import chat.caper.android.data.AttachmentPolicy.StillClass
 import chat.caper.android.model.CompressionSettings
 import java.io.File
@@ -51,9 +52,10 @@ data class PickedFile(val source: File, val name: String, val contentType: Strin
 
 /**
  * Applies the server's compression settings on the device (docs/media.md "Client compression
- * and previews", web `prepareFile`). Lossless stills stay lossless, photos become lossy WebP
- * only when that saves 10%, videos are transcoded to H.264/AAC MP4 only when needed (HDR tone
- * mapped to SDR), and previews are drawn. Whenever a rule cannot be met the original uploads.
+ * and previews", web `prepareFile`). Lossless stills stay lossless, photos become AVIF (or
+ * lossy WebP) only when that saves 10%, videos are transcoded to H.264/AAC MP4 only when
+ * needed (HDR tone mapped to SDR), and previews are drawn. Whenever a rule cannot be met the
+ * original uploads.
  */
 class AttachmentPreparer(private val context: Context) {
     /** Copies the picked content into [directory] so its exact byte size is known. */
@@ -139,7 +141,7 @@ class AttachmentPreparer(private val context: Context) {
                 StillClass.LOSSLESS -> encodeLossless(bitmap, settings, inline, directory)
                     ?.takeIf { AttachmentPolicy.keepLossless(base.contentType, base.file.length(), it.first.length()) }
                 StillClass.PHOTO -> if (AttachmentPolicy.reencodePhoto(settings, resized, inline)) {
-                    lossy(bitmap, settings.imageQuality.coerceIn(1, 100), File(directory, "still"))
+                    photo(bitmap, settings, File(directory, "still"))
                         ?.takeIf { AttachmentPolicy.keepPhoto(base.contentType, base.file.length(), it.first.length()) }
                 } else null
                 StillClass.KEEP -> null
@@ -235,6 +237,21 @@ class AttachmentPreparer(private val context: Context) {
             copy.setPixels(row, 0, bitmap.width, 0, y, bitmap.width, 1)
         }
         return copy
+    }
+
+    /**
+     * AVIF at `avifQuality` when the server asks for it and the encoder works on this bitmap,
+     * else (silently, on any AVIF failure) lossy WebP or JPEG at `imageQuality`.
+     */
+    private fun photo(bitmap: Bitmap, settings: CompressionSettings, stem: File): Pair<File, String>? {
+        if (AttachmentPolicy.photoFormat(settings, AvifEncoder.available) == PhotoFormat.AVIF) {
+            AvifEncoder.encode(bitmap, AttachmentPolicy.avifQuality(settings))?.let { bytes ->
+                val file = File(stem.path + ".avif")
+                if (runCatching { file.writeBytes(bytes) }.isSuccess && file.length() > 0) return file to "image/avif"
+                file.delete()
+            }
+        }
+        return lossy(bitmap, settings.imageQuality.coerceIn(1, 100), stem)
     }
 
     /** Lossy WebP where the platform can encode it, else JPEG flattened onto white. */

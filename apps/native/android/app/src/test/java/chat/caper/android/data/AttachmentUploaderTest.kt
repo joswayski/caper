@@ -168,7 +168,7 @@ class AttachmentUploaderTest {
 
     @Test fun `usage parses compression settings with the api defaults when absent`() {
         val usage = Json { ignoreUnknownKeys = true }.decodeFromString<chat.caper.android.model.AssetUsage>("""{"used":1,"limit":2}""")
-        assertEquals(chat.caper.android.model.CompressionSettings(92, 4096, 256, 640, 1080, 6000, 128), usage.compression)
+        assertEquals(chat.caper.android.model.CompressionSettings(92, 4096, 256, 640, 1080, 6000, 128, "webp", 85), usage.compression)
     }
 
     @Test fun `usage and url refresh use bearer auth and ignore unrequested ids`() = runTest {
