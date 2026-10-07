@@ -55,7 +55,8 @@ pub fn diff(before: &str, after: &str) -> (DiffTokens, DiffTokens) {
 
 impl CaperApp {
     pub(crate) fn can_edit(&self, message: &Message) -> bool {
-        self.selected_channel.as_deref() == Some(&message.channel_id)
+        message.forward.is_none()
+            && self.selected_channel.as_deref() == Some(&message.channel_id)
             && self.selected_is_joined()
             && self.session.as_ref().is_some_and(|session| {
                 !session.author.is_guest && session.author.id == message.author.id
@@ -79,6 +80,9 @@ impl CaperApp {
     }
 
     pub(crate) fn open_edit_history(&mut self, message: &Message) {
+        if message.forward.is_some() {
+            return;
+        }
         self.message_editor = None;
         self.edit_history = Some(History {
             message: message.clone(),

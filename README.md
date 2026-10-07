@@ -20,6 +20,13 @@ full-screen view. **Also send to channel** shows the same reply in both places,
 sharing its reactions. Native release and validation gaps are tracked in
 [the runbook](docs/media.md#message-threads).
 
+**Forward message** shares a live, read-only conversation across spaces or into
+an existing DM, including edits, reactions and future replies. Destination readers do
+not need source membership; their replies stay in a separate destination thread.
+Native validation and rollout are tracked in
+[the runbook](docs/media.md#live-message-forwarding). This change is not deployed
+by merging alone.
+
 Authors can edit messages on web, Android, Apple and Rust desktop, including
 thread roots/replies and DMs. The edited indicator opens retained history with
 the previous/current versions side by side and older changes selectable below;

@@ -9,6 +9,11 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 pub enum Command {
+    Forward {
+        generation: u64,
+        request: u64,
+        operation: crate::forwarding::Operation,
+    },
     LoadDirects {
         generation: u64,
         token: String,
@@ -307,6 +312,11 @@ pub enum AdminResult {
 }
 
 pub enum Event {
+    Forward {
+        generation: u64,
+        request: u64,
+        result: Result<crate::forwarding::Response, SendFailure>,
+    },
     DirectsLoaded {
         generation: u64,
         result: Result<Vec<DirectConversation>, String>,
@@ -972,6 +982,15 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             result: api
                 .thread(token.as_deref(), &channel, &root, before.as_deref())
                 .map_err(LoadError::from),
+        },
+        Command::Forward {
+            generation,
+            request,
+            operation,
+        } => Event::Forward {
+            generation,
+            request,
+            result: operation.run(api),
         },
         Command::Send {
             generation,

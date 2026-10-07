@@ -41,7 +41,8 @@ jobs:
     secrets: inherit
 
   artifact-contract:
-    runs-on: ubuntu-24.04
+    needs: route
+    runs-on: ${{ needs.route.outputs.linux == 'true' && fromJSON('["self-hosted","joselinux"]') || 'ubuntu-24.04' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
@@ -78,7 +79,7 @@ jobs:
       matrix:
         os: [ubuntu-24.04, windows-2025, macos-15]
     needs: route
-    runs-on: ${{ needs.route.outputs.mac == 'true' && matrix.os == 'macos-15' && fromJSON('["self-hosted","josemac"]') || matrix.os }}
+    runs-on: ${{ needs.route.outputs.mac == 'true' && matrix.os == 'macos-15' && fromJSON('["self-hosted","josemac"]') || needs.route.outputs.windows == 'true' && startsWith(matrix.os, 'windows') && fromJSON('["self-hosted","josewin"]') || needs.route.outputs.linux == 'true' && startsWith(matrix.os, 'ubuntu') && fromJSON('["self-hosted","joselinux"]') || matrix.os }}
     timeout-minutes: 20
     defaults:
       run:
@@ -111,7 +112,7 @@ jobs:
 
   desktop:
     name: Desktop / ${{ matrix.target }}
-    needs: artifact-contract
+    needs: [artifact-contract, route]
     strategy:
       fail-fast: false
       matrix:
@@ -120,7 +121,7 @@ jobs:
             target: linux-x64
           - os: windows-2025
             target: windows-x64
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ needs.route.outputs.windows == 'true' && startsWith(matrix.os, 'windows') && fromJSON('["self-hosted","josewin"]') || needs.route.outputs.linux == 'true' && startsWith(matrix.os, 'ubuntu') && fromJSON('["self-hosted","joselinux"]') || matrix.os }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -237,8 +238,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+      # Runs alongside the build: it packages a fixture app in a temporary
+      # directory and shares nothing with build.sh.
       - name: Smoke-test the Mac drag-to-Applications disk image
         if: matrix.platform == 'macos'
+        background: true
         run: |
           python3 -m pip install dmgbuild==1.6.7
           python3 -m unittest discover -s tests -p test_apple_release_signing.py -v
@@ -246,6 +250,9 @@ jobs:
         env:
           PLATFORM: ${{ matrix.platform }}
         run: bash apps/native/apple/build.sh "$PLATFORM"
+      # wait-all rather than naming the smoke test: that step is skipped for iOS.
+      - name: Wait for the disk image smoke test
+        wait-all:
       - name: Record exact checked-out revision and checksums
         env:
           TARGET: ${{ matrix.target }}
@@ -313,8 +320,8 @@ jobs:
 
   android:
     name: Android / development APK
-    needs: artifact-contract
-    runs-on: ubuntu-24.04
+    needs: [artifact-contract, route]
+    runs-on: ${{ needs.route.outputs.linux == 'true' && fromJSON('["self-hosted","joselinux"]') || 'ubuntu-24.04' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4

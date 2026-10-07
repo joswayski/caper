@@ -8,6 +8,7 @@ import * as icons from 'lucide-react';
 
 const names = {
   'chevron-down': 'ChevronDown', 'chevron-right': 'ChevronRight',
+  'arrow-left': 'ArrowLeft',
   x: 'X', plus: 'Plus', ellipsis: 'Ellipsis',
   settings: 'Settings', hash: 'Hash', lock: 'Lock', users: 'Users',
   speech: 'Speech', mic: 'Mic', 'mic-off': 'MicOff',

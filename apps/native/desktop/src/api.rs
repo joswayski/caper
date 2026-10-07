@@ -177,6 +177,49 @@ impl Api {
         )
     }
 
+    pub fn forward_destinations(
+        &self,
+        token: &str,
+    ) -> Result<crate::model::ForwardDestinations, ApiError> {
+        self.request(
+            Method::GET,
+            "api/chat/forward-destinations",
+            Some(token),
+            None,
+            None,
+        )
+    }
+
+    pub fn forward(
+        &self,
+        token: &str,
+        chat_token: &str,
+        source: &Message,
+        destination: &str,
+        key: &str,
+        text: &str,
+    ) -> Result<Message, ApiError> {
+        self.request(Method::POST, &format!("api/chat/channels/{destination}/forwards"), Some(token), Some(chat_token),
+            Some(json!({"sourceChannelId":source.channel_id,"sourceMessageId":source.id,"clientMessageId":key,"text":text})))
+    }
+
+    pub fn forward_conversation(
+        &self,
+        token: &str,
+        wrapper: &Message,
+        before: Option<&str>,
+    ) -> Result<crate::model::ForwardConversation, ApiError> {
+        let path = format!(
+            "api/chat/channels/{}/forwards/{}/thread{}",
+            wrapper.channel_id,
+            wrapper.id,
+            before
+                .map(|seq| format!("?before={seq}"))
+                .unwrap_or_default()
+        );
+        self.request(Method::GET, &path, Some(token), None, None)
+    }
+
     pub fn typing(
         &self,
         token: Option<&str>,
