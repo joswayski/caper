@@ -1,4 +1,5 @@
 import type { ChatAttachment } from "./types.ts";
+import { compressionSettings, type CompressionSettings, type PreparedFile } from "./prepare.ts";
 
 export const MAX_ATTACHMENTS = 10;
 /** Waits between `/complete` attempts while the upload is not visible yet (409). */
@@ -44,36 +45,32 @@ function sleep(ms: number, signal: AbortSignal) {
   });
 }
 
-export interface UploadLimits {
-  /** Largest original the API accepts, when the server reports it. */
-  maxUploadBytes?: number;
-}
-
-/** Checked before reserving so an oversized file fails at once with a clear message. */
-export function uploadSizeError(size: number, limits: UploadLimits): string | undefined {
-  if (limits.maxUploadBytes !== undefined && size > limits.maxUploadBytes) {
-    return `This file is larger than the ${formatBytes(limits.maxUploadBytes)} upload limit.`;
-  }
-}
-
-/** Reserve, PUT the original straight to storage with exactly the signed
- * headers, then confirm. Files are never compressed here: the server's media
- * worker processes every upload. Returns the attachment (status "processing")
- * to send with a message. */
-export async function uploadFile(channelId: string, file: File, limits: UploadLimits, transport: UploadTransport, progress: (fraction: number) => void, signal: AbortSignal): Promise<ChatAttachment> {
-  const tooLarge = uploadSizeError(file.size, limits);
-  if (tooLarge) throw new UploadError(tooLarge);
+/** Reserve the prepared (compressed) file and its preview, PUT each straight
+ * to storage with exactly the signed headers (preview first), then confirm.
+ * Returns the attachment description to send with a message. */
+export async function uploadPrepared(channelId: string, file: PreparedFile, transport: UploadTransport, progress: (fraction: number) => void, signal: AbortSignal): Promise<ChatAttachment> {
   const created = await transport.fetch("/api/assets", {
     method: "POST",
     headers: { "content-type": "application/json" },
     credentials: "same-origin",
     signal,
-    body: JSON.stringify({ channelId, filename: file.name, contentType: file.type || "application/octet-stream", byteSize: file.size }),
+    body: JSON.stringify({
+      channelId, filename: file.name, contentType: file.contentType || "application/octet-stream", byteSize: file.blob.size,
+      sourceByteSize: file.sourceSize || undefined, width: file.width, height: file.height, durationMs: file.durationMs,
+      preview: file.preview ? { contentType: file.preview.type, byteSize: file.preview.size } : undefined,
+    }),
   });
   if (!created.ok) throw await failure(created, "This file could not be uploaded.");
-  const reservation = await created.json() as { id?: unknown; upload?: Partial<PresignedPut> };
+  const reservation = await created.json() as { id?: unknown; upload?: Partial<PresignedPut>; previewUpload?: Partial<PresignedPut> };
   if (typeof reservation.id !== "string" || typeof reservation.upload?.url !== "string") throw new UploadError("The upload service returned an invalid response.");
-  await transport.put(reservation.upload.url, reservation.upload.headers ?? {}, file, progress, signal);
+  // A reserved preview must be uploaded, or /complete rejects the asset.
+  if (file.preview && typeof reservation.previewUpload?.url !== "string") throw new UploadError("The upload service returned an invalid response.");
+  const preview = file.preview && reservation.previewUpload?.url ? { blob: file.preview, url: reservation.previewUpload.url, headers: reservation.previewUpload.headers ?? {} } : undefined;
+  const previewSize = preview?.blob.size ?? 0;
+  const total = file.blob.size + previewSize;
+  if (preview) await transport.put(preview.url, preview.headers, preview.blob, (fraction) => progress(fraction * previewSize / total), signal);
+  await transport.put(reservation.upload.url, reservation.upload.headers ?? {}, file.blob,
+    (fraction) => progress((previewSize + fraction * file.blob.size) / total), signal);
   const path = `/api/assets/${encodeURIComponent(reservation.id)}/complete`;
   for (let attempt = 0; ; attempt++) {
     const completed = await transport.fetch(path, { method: "POST", credentials: "same-origin", signal });
@@ -108,13 +105,12 @@ export const browserTransport: UploadTransport = {
 };
 
 /** Uploads are optional server configuration: undefined hides the control.
- * Otherwise returns the server's limits from `/api/assets/usage`. */
-export async function uploadSettings(fetcher: typeof fetch = fetch): Promise<UploadLimits | undefined> {
+ * Otherwise returns the server's compression settings from `/api/assets/usage`. */
+export async function uploadSettings(fetcher: typeof fetch = fetch): Promise<CompressionSettings | undefined> {
   const response = await fetcher("/api/assets/usage", { credentials: "same-origin", cache: "no-store" }).catch(() => undefined);
   if (!response?.ok) return;
-  const body = await response.json().catch(() => undefined) as { maxUploadBytes?: unknown } | undefined;
-  const max = body?.maxUploadBytes;
-  return typeof max === "number" && Number.isSafeInteger(max) && max > 0 ? { maxUploadBytes: max } : {};
+  const body = await response.json().catch(() => undefined) as { compression?: unknown } | undefined;
+  return compressionSettings(body?.compression);
 }
 
 /** Fresh URLs for attachments whose signed URLs expired in a long-open tab.

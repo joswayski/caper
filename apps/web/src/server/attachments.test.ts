@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { attachmentView, attachmentsOf, isChatAttachment, isChatAttachmentProgressEvent, isChatAttachmentsEvent, isChatMessage, type ChatAttachment, type ChatMessage } from "../chat/types.ts";
-import { formatBytes, refreshAttachmentUrls, uploadFile, uploadSettings, uploadSizeError, urlExpiry, UploadError, type UploadTransport } from "../chat/uploads.ts";
+import { formatBytes, refreshAttachmentUrls, uploadPrepared, uploadSettings, urlExpiry, UploadError, type UploadTransport } from "../chat/uploads.ts";
+import { DEFAULT_COMPRESSION, type PreparedFile } from "../chat/prepare.ts";
 
 const message = (content: unknown) => ({
   id: "m1", channelId: "c1", seq: "1", createdAt: "2026-10-01T00:00:00Z", clientMessageId: "x",
@@ -64,7 +65,7 @@ test("live attachment events are validated and unknown fields tolerated", () => 
   assert.ok(!isChatAttachmentProgressEvent({ ...progress, attachmentId: 3 }));
 });
 
-function transport(complete: Array<() => Response>) {
+function transport(complete: Array<() => Response>, withPreview = false) {
   const calls: string[] = [];
   const reserved: Array<Record<string, unknown>> = [];
   const puts: Array<{ url: string; headers: Record<string, string>; body: Blob }> = [];
@@ -76,7 +77,8 @@ function transport(complete: Array<() => Response>) {
         reserved.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
         return Response.json({
           id: "f1", kind: "image",
-          upload: { method: "PUT", url: "https://incoming.s3.test/incoming/f1?X-Amz-Signature=s", headers: { "content-type": "image/png" } },
+          upload: { method: "PUT", url: "https://r2.test/original/f1?X-Amz-Signature=s", headers: { "content-type": "image/webp", "content-disposition": "attachment; filename=\"shot.webp\"" } },
+          ...(withPreview ? { previewUpload: { method: "PUT", url: "https://r2.test/preview/f1?X-Amz-Signature=p", headers: { "content-type": "image/webp" } } } : {}),
           storage: { used: 0, limit: 10 },
         }, { status: 201 });
       }
@@ -84,63 +86,67 @@ function transport(complete: Array<() => Response>) {
       assert.ok(next, "unexpected extra /complete call");
       return next();
     }) as typeof fetch,
-    put: async (url, headers, body, report) => { puts.push({ url, headers, body }); report(0.5); report(1); },
+    put: async (url, headers, body, report) => { calls.push(`PUT ${url.split("?")[0]}`); puts.push({ url, headers, body }); report(0.5); report(1); },
     sleep: async (ms) => { sleeps.push(ms); },
   };
   return { value, calls, reserved, puts, sleeps };
 }
 
-const processing = () => Response.json({ id: "f1", kind: "image", contentType: "image/png", name: "shot.png", size: 1200, status: "processing" });
+const ready = () => Response.json({ id: "f1", kind: "image", contentType: "image/webp", name: "shot.webp", size: 300, preview: {} });
 
-test("uploads reserve the original's exact size and type, PUT it unchanged with exactly the signed headers, then confirm", async () => {
-  const t = transport([processing]);
-  const original = new File([new Uint8Array(1200)], "shot.png", { type: "image/png" });
+const prepared = (overrides: Partial<PreparedFile> = {}): PreparedFile => ({
+  blob: new Blob([new Uint8Array(300)], { type: "image/webp" }), name: "shot.webp", contentType: "image/webp", kind: "image", sourceSize: 1200, ...overrides,
+});
+
+test("uploads reserve the compressed size with source size and preview, PUT the preview then the file with exactly the signed headers, then confirm", async () => {
+  const t = transport([ready], true);
+  const file = prepared({ width: 40, height: 30, preview: new Blob([new Uint8Array(100)], { type: "image/webp" }) });
   const progress: number[] = [];
-  const attachment = await uploadFile("c1", original, { maxUploadBytes: 2 ** 31 }, t.value, (value) => progress.push(value), new AbortController().signal);
-  assert.equal(attachment.status, "processing");
-  assert.deepEqual(t.reserved, [{ channelId: "c1", filename: "shot.png", contentType: "image/png", byteSize: 1200 }], "no compression metadata or previews are reserved");
-  assert.deepEqual(t.calls, ["POST /api/assets", "POST /api/assets/f1/complete"]);
+  const attachment = await uploadPrepared("c1", file, t.value, (value) => progress.push(value), new AbortController().signal);
+  assert.equal(attachment.id, "f1");
+  assert.deepEqual(t.reserved, [{
+    channelId: "c1", filename: "shot.webp", contentType: "image/webp", byteSize: 300, sourceByteSize: 1200, width: 40, height: 30,
+    preview: { contentType: "image/webp", byteSize: 100 },
+  }]);
+  assert.deepEqual(t.calls, ["POST /api/assets", "PUT https://r2.test/preview/f1", "PUT https://r2.test/original/f1", "POST /api/assets/f1/complete"]);
+  assert.deepEqual(t.puts[0].headers, { "content-type": "image/webp" });
+  assert.deepEqual(t.puts[1].headers, { "content-type": "image/webp", "content-disposition": "attachment; filename=\"shot.webp\"" });
+  assert.equal(t.puts[0].body, file.preview);
+  assert.equal(t.puts[1].body, file.blob, "the prepared bytes go up untouched");
+  assert.deepEqual(progress, [0.125, 0.25, 0.625, 1, 1], "progress spans preview and file by size");
+});
+
+test("files without a preview or a browser type reserve only what they have", async () => {
+  const t = transport([ready]);
+  await uploadPrepared("c1", { blob: new Blob(["abc"]), name: "notes", contentType: "", kind: "file", sourceSize: 3 }, t.value, () => undefined, new AbortController().signal);
+  assert.deepEqual(t.reserved[0], { channelId: "c1", filename: "notes", contentType: "application/octet-stream", byteSize: 3, sourceByteSize: 3 });
   assert.equal(t.puts.length, 1);
-  assert.equal(t.puts[0].url, "https://incoming.s3.test/incoming/f1?X-Amz-Signature=s");
-  assert.deepEqual(t.puts[0].headers, { "content-type": "image/png" });
-  assert.equal(t.puts[0].body, original, "the original bytes go up untouched");
-  assert.deepEqual(progress, [0.5, 1, 1]);
 });
 
-test("files without a browser type are declared as application/octet-stream", async () => {
-  const t = transport([processing]);
-  await uploadFile("c1", new File(["abc"], "notes"), {}, t.value, () => undefined, new AbortController().signal);
-  assert.equal(t.reserved[0].contentType, "application/octet-stream");
-  assert.equal(t.reserved[0].byteSize, 3);
+test("a reserved preview without an upload URL is refused rather than left to fail verification", async () => {
+  const t = transport([]);
+  await assert.rejects(uploadPrepared("c1", prepared({ preview: new Blob(["p"], { type: "image/webp" }) }), t.value, () => undefined, new AbortController().signal),
+    /invalid response/);
+  assert.equal(t.puts.length, 0);
 });
 
-test("complete retries 409 with short backoff until the upload is visible", async () => {
-  const notYet = () => Response.json({ error: "upload not received" }, { status: 409 });
-  const t = transport([notYet, notYet, processing]);
-  const attachment = await uploadFile("c1", new File(["x"], "a.txt", { type: "text/plain" }), {}, t.value, () => undefined, new AbortController().signal);
+test("complete retries 409 with short backoff until the upload is visible; 422 is final", async () => {
+  const notYet = () => Response.json({ error: "upload not finished" }, { status: 409 });
+  const t = transport([notYet, notYet, ready]);
+  const attachment = await uploadPrepared("c1", prepared(), t.value, () => undefined, new AbortController().signal);
   assert.equal(attachment.id, "f1");
   assert.deepEqual(t.sleeps, [250, 500]);
   assert.equal(t.calls.filter((call) => call.endsWith("/complete")).length, 3);
 
   const stuck = transport(Array.from({ length: 5 }, () => notYet));
-  await assert.rejects(uploadFile("c1", new File(["x"], "a.txt"), {}, stuck.value, () => undefined, new AbortController().signal),
-    (error: unknown) => error instanceof UploadError && error.message === "upload not received");
+  await assert.rejects(uploadPrepared("c1", prepared(), stuck.value, () => undefined, new AbortController().signal),
+    (error: unknown) => error instanceof UploadError && error.message === "upload not finished");
   assert.equal(stuck.sleeps.length, 4, "gives up after a few attempts");
 
-  const mismatch = transport([() => Response.json({ error: "size mismatch" }, { status: 422 })]);
-  await assert.rejects(uploadFile("c1", new File(["x"], "a.txt"), {}, mismatch.value, () => undefined, new AbortController().signal),
+  const mismatch = transport([() => Response.json({ error: "file does not match its declared size or type" }, { status: 422 })]);
+  await assert.rejects(uploadPrepared("c1", prepared(), mismatch.value, () => undefined, new AbortController().signal),
     /did not arrive intact/);
   assert.deepEqual(mismatch.sleeps, [], "422 is final");
-});
-
-test("files over the server's upload limit fail before reserving", async () => {
-  const t = transport([]);
-  await assert.rejects(uploadFile("c1", new File([new Uint8Array(11)], "big.mov"), { maxUploadBytes: 10 }, t.value, () => undefined, new AbortController().signal),
-    (error: unknown) => error instanceof UploadError && /larger than the 10 B upload limit/.test(error.message));
-  assert.deepEqual(t.calls, []);
-  assert.equal(uploadSizeError(2 * 1024 ** 3, { maxUploadBytes: 2 * 1024 ** 3 }), undefined);
-  assert.equal(uploadSizeError(2 * 1024 ** 3 + 1, { maxUploadBytes: 2 * 1024 ** 3 }), "This file is larger than the 2.0 GB upload limit.");
-  assert.equal(uploadSizeError(10 ** 12, {}), undefined, "older servers enforce the limit themselves");
 });
 
 test("a full storage allowance surfaces a clear, typed error", async () => {
@@ -149,7 +155,7 @@ test("a full storage allowance surfaces a clear, typed error", async () => {
     put: async () => { throw new Error("must not upload"); },
   };
   await assert.rejects(
-    uploadFile("c1", new File(["x"], "x"), {}, value, () => undefined, new AbortController().signal),
+    uploadPrepared("c1", prepared(), value, () => undefined, new AbortController().signal),
     (error: unknown) => error instanceof UploadError && error.storageFull,
   );
 });
@@ -170,10 +176,11 @@ test("expired URLs can be refreshed, garbage is dropped, and expiry is readable"
   assert.deepEqual(await refreshAttachmentUrls(["f1"], (async () => new Response(null, { status: 503 })) as typeof fetch), {});
 });
 
-test("the attach control appears only when the API has uploads configured, with its upload limit", async () => {
-  assert.deepEqual(await uploadSettings((async () => Response.json({ used: 0, limit: 1, maxUploadBytes: 2147483648 })) as typeof fetch), { maxUploadBytes: 2147483648 });
-  assert.deepEqual(await uploadSettings((async () => Response.json({ used: 0, limit: 1, compression: { imageQuality: 1 } })) as typeof fetch), {}, "older servers still enable uploads");
-  assert.deepEqual(await uploadSettings((async () => Response.json({ used: 0, limit: 1, maxUploadBytes: "big" })) as typeof fetch), {});
+test("the attach control appears only when the API has uploads configured, with its compression settings", async () => {
+  const tuned = await uploadSettings((async () => Response.json({ used: 0, limit: 1, compression: { ...DEFAULT_COMPRESSION, imageQuality: 80, videoMaxHeight: 0 } })) as typeof fetch);
+  assert.equal(tuned?.imageQuality, 80);
+  assert.equal(tuned?.videoMaxHeight, 0);
+  assert.deepEqual(await uploadSettings((async () => Response.json({ used: 0, limit: 1 })) as typeof fetch), DEFAULT_COMPRESSION, "older servers get defaults");
   assert.equal(await uploadSettings((async () => Response.json({ error: "uploads unavailable" }, { status: 503 })) as typeof fetch), undefined);
   assert.equal(await uploadSettings((async () => { throw new TypeError("offline"); }) as typeof fetch), undefined);
 });

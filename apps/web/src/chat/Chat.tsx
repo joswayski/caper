@@ -13,7 +13,8 @@ import { ForwardCard, ForwardConversation, ForwardPicker, type ForwardTarget } f
 import { dateDivider } from "./dates.ts";
 import { attachmentsOf, isChannelMessage, type ChatAttachment, type ChatAuthor, type GeneralChatHistory } from "./types.ts";
 import { DraftAttachments, MessageAttachments, type DraftAttachment, type LocalPreview } from "./Attachments.tsx";
-import { MAX_ATTACHMENTS, browserTransport, refreshAttachmentUrls, uploadFile, uploadSettings, type UploadLimits } from "./uploads.ts";
+import { MAX_ATTACHMENTS, browserTransport, refreshAttachmentUrls, uploadPrepared, uploadSettings } from "./uploads.ts";
+import { prepareFile, type CompressionSettings } from "./prepare.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
 import Avatar from "../components/Avatar";
 import { emojiAsset } from "./emoji.ts";
@@ -193,9 +194,9 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   const [drafts, setDrafts] = useState<DraftAttachment[]>([]);
   const uploads = useRef(new Map<string, AbortController>());
   const objectUrls = useRef(new Set<string>());
-  // Present only when the API has uploads configured; carries its upload limit.
-  const [uploadLimits, setUploadLimits] = useState<UploadLimits>();
-  const uploadsEnabled = !!uploadLimits;
+  // Present only when the API has uploads configured; carries its compression settings.
+  const [compression, setCompression] = useState<CompressionSettings>();
+  const uploadsEnabled = !!compression;
   const [freshUrls, setFreshUrls] = useState<Record<string, { url?: string; previewUrl?: string }>>({});
   // The sender's local copies of sent files, shown while the server processes them.
   const [localPreviews, setLocalPreviews] = useState<Record<string, LocalPreview>>({});
@@ -333,9 +334,9 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   useEffect(() => { clientRef.current?.setSounds(messageSounds); }, [messageSounds]);
 
   useEffect(() => {
-    if (!signedIn) { setUploadLimits(undefined); return; }
+    if (!signedIn) { setCompression(undefined); return; }
     let active = true;
-    void uploadSettings().then((limits) => { if (active) setUploadLimits(limits); });
+    void uploadSettings().then((settings) => { if (active) setCompression(settings); });
     return () => { active = false; };
   }, [signedIn]);
 
@@ -353,8 +354,8 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
 
   const addFiles = (files: File[]) => {
     const channel = state.channelId;
-    const limits = uploadLimits;
-    if (!signedIn || !limits || !channel || !files.length) return;
+    const settings = compression;
+    if (!signedIn || !settings || !channel || !files.length) return;
     const room = MAX_ATTACHMENTS - drafts.length;
     if (room <= 0) { setValidationError(`You can attach up to ${MAX_ATTACHMENTS} files.`); return; }
     setValidationError(files.length > room ? `Only ${room} more file${room === 1 ? "" : "s"} can be attached.` : undefined);
@@ -365,11 +366,14 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       if (localUrl) objectUrls.current.add(localUrl);
       const controller = new AbortController();
       uploads.current.set(key, controller);
-      setDrafts((current) => [...current, { key, name: file.name, localUrl, localKind, size: file.size, progress: 0 }]);
+      setDrafts((current) => [...current, { key, name: file.name, localUrl, localKind, sourceSize: file.size, progress: 0 }]);
       void (async () => {
         try {
-          // The original goes up unchanged; the server's media worker compresses it.
-          const attachment = await uploadFile(channel, file, limits, browserTransport, (progress) => updateDraft(key, { progress }), controller.signal);
+          // Compressed in the browser first; the API only verifies what is stored.
+          const prepared = await prepareFile(file, settings, (compressing) => updateDraft(key, { compressing }), controller.signal);
+          if (controller.signal.aborted) return;
+          updateDraft(key, { name: prepared.name, storedSize: prepared.blob.size });
+          const attachment = await uploadPrepared(channel, prepared, browserTransport, (progress) => updateDraft(key, { progress }), controller.signal);
           updateDraft(key, { attachment, progress: 1 });
         } catch (error) {
           if (!controller.signal.aborted) updateDraft(key, { error: error instanceof Error ? error.message : "Upload failed." });

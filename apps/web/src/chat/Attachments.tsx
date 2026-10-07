@@ -130,7 +130,11 @@ export interface DraftAttachment {
   /** Local thumbnail for the chip, and the sender's preview while processing. */
   localUrl?: string;
   localKind?: "image" | "video";
-  size: number;
+  sourceSize: number;
+  /** Size after browser compression; unset while preparing. */
+  storedSize?: number;
+  /** Set while a video is being re-encoded before upload. */
+  compressing?: number;
   progress: number;
   error?: string;
   attachment?: ChatAttachment;
@@ -143,7 +147,10 @@ export function DraftAttachments({ drafts, onRemove }: { drafts: DraftAttachment
       {draft.localUrl && draft.localKind === "image" ? <img src={draft.localUrl} alt="" /> : <FileText aria-hidden="true" size={18} />}
       <span>
         <strong title={draft.name}>{draft.name}</strong>
-        <small>{draft.error ?? (draft.attachment ? formatBytes(draft.size) : `Uploading… ${Math.round(draft.progress * 100)}%`)}</small>
+        <small>{draft.error ?? (draft.attachment
+          ? draft.storedSize !== undefined && draft.storedSize < draft.sourceSize ? `${formatBytes(draft.sourceSize)} → ${formatBytes(draft.storedSize)}` : formatBytes(draft.storedSize ?? draft.sourceSize)
+          : draft.storedSize === undefined ? draft.compressing !== undefined ? `Compressing… ${Math.round(draft.compressing * 100)}%` : "Preparing…"
+          : `Uploading… ${Math.round(draft.progress * 100)}%`)}</small>
       </span>
       {!draft.attachment && !draft.error && <progress max={1} value={draft.progress} aria-label={`Uploading ${draft.name}`} />}
       <button type="button" aria-label={`Remove ${draft.name}`} onClick={() => onRemove(draft.key)}><X size={14} aria-hidden="true" /></button>
