@@ -4460,9 +4460,10 @@ account's message, and from a request. Clients confirm first. A block:
   participant avatars still list them.
 - isn't visible to the blocked person, whose DM list doesn't change.
 
-Unblocking keeps the record (`deleted_at`). Edit profile (web), User settings
-(Android, Apple, Rust desktop) and `/profile` list **Blocked accounts** with
-**Unblock**, and hold the setting **Who can start a DM with you**:
+Unblocking keeps the record (`deleted_at`). The web Edit profile dialog and
+`/profile`, and the native clients' user settings ("Privacy and blocked accounts"
+on Android and Apple, Settings on Rust desktop), list **Blocked accounts** with
+**Unblock** and hold the setting **Who can start a DM with you**:
 
 - **Anyone** (default): people outside your spaces send a request.
 - **People in my spaces**: only people who share an active space with you.
