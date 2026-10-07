@@ -109,8 +109,8 @@ export default defineConfig(async () => {
   },
   // Module workers may code-split (libwebp loads its SIMD or plain WASM build on demand).
   worker: { format: "es" as const },
-  // Pre-bundling would move libwebp away from the .wasm files it locates via import.meta.url.
-  optimizeDeps: { exclude: ["@jsquash/webp"] },
+  // Pre-bundling would move libwebp and libavif away from the .wasm files they locate via import.meta.url.
+  optimizeDeps: { exclude: ["@jsquash/webp", "@jsquash/avif"] },
   plugins: [
     tailwindcss(),
     tanstackStart({

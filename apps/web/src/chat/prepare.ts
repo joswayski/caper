@@ -5,6 +5,7 @@
 import type { ChatAttachmentKind } from "./types.ts";
 import { encodeIndexedPng, exactPalette } from "./png.ts";
 import { stripMetadata } from "./metadata.ts";
+import { encodeAvif } from "./avif.ts";
 import { encodeLosslessWebp, iccProfile, pngBitDepth, pngChunks, webpWithIcc } from "./webp.ts";
 import type { HdrTransfer } from "./hdr.ts";
 
@@ -21,6 +22,12 @@ const MAX_COMPRESS_PIXELS = 50_000_000;
 
 /** Server-tunable (`ASSET_*` settings), delivered with `/api/assets/usage`. */
 export interface CompressionSettings {
+  /** Photo format. Clients that cannot encode AVIF use WebP (or JPEG). */
+  imageFormat: "avif" | "webp";
+  /** AVIF photo quality on libavif's `quality` scale (`avifenc -q`). */
+  avifQuality: number;
+  /** WebP/JPEG photo quality, and the AVIF fallback's. 100 disables lossy
+   * photo re-encoding in either format. */
   imageQuality: number;
   imageMaxEdge: number;
   paletteColors: number;
@@ -32,19 +39,22 @@ export interface CompressionSettings {
 
 /** Mirrors `Compression::default()` in `apps/api/src/assets.rs`. */
 export const DEFAULT_COMPRESSION: CompressionSettings = {
-  imageQuality: 92, imageMaxEdge: 4096, paletteColors: 256, previewEdge: 640,
+  imageFormat: "avif", avifQuality: 85, imageQuality: 92, imageMaxEdge: 4096, paletteColors: 256, previewEdge: 640,
   videoMaxHeight: 1080, videoBitrateKbps: 6000, audioBitrateKbps: 128,
 };
 
-/** Unknown or invalid fields fall back to defaults, so older servers work. */
+/** Unknown or invalid fields fall back to defaults, so older servers work.
+ * The exception is `imageFormat`: servers from before AVIF do not send it,
+ * and keep getting WebP photos as they always have. */
 export function compressionSettings(value: unknown): CompressionSettings {
   const input = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
-  const pick = (key: keyof CompressionSettings, min: number, max: number) => {
+  const pick = (key: Exclude<keyof CompressionSettings, "imageFormat">, min: number, max: number) => {
     const v = input[key];
     return typeof v === "number" && Number.isInteger(v) && v >= min && v <= max ? v : DEFAULT_COMPRESSION[key];
   };
   return {
-    imageQuality: pick("imageQuality", 1, 100), imageMaxEdge: pick("imageMaxEdge", 0, 32_768),
+    imageFormat: input.imageFormat === "avif" ? "avif" : "webp",
+    avifQuality: pick("avifQuality", 1, 100), imageQuality: pick("imageQuality", 1, 100), imageMaxEdge: pick("imageMaxEdge", 0, 32_768),
     paletteColors: pick("paletteColors", 0, 256), previewEdge: pick("previewEdge", 64, 2048),
     videoMaxHeight: pick("videoMaxHeight", 0, 4320), videoBitrateKbps: pick("videoBitrateKbps", 250, 50_000),
     audioBitrateKbps: pick("audioBitrateKbps", 32, 320),
@@ -66,7 +76,7 @@ export function fitWithin(width: number, height: number, edge: number) {
 }
 
 export function renamed(name: string, contentType: string) {
-  const extension = ({ "image/webp": "webp", "image/jpeg": "jpg", "image/png": "png", "video/mp4": "mp4" } as Record<string, string>)[contentType];
+  const extension = ({ "image/avif": "avif", "image/webp": "webp", "image/jpeg": "jpg", "image/png": "png", "video/mp4": "mp4" } as Record<string, string>)[contentType];
   if (!extension) return name;
   const dot = name.lastIndexOf(".");
   return `${dot > 0 ? name.slice(0, dot) : name}.${extension}`;
@@ -85,7 +95,8 @@ export function declaredType(file: { type: string; name: string }) {
 /**
  * - `lossless`: PNG, BMP, TIFF, lossless WebP. Never lossy-encoded. (16-bit
  *   PNG is kept: a canvas holds 8 bits per channel.)
- * - `photo`: JPEG, HEIC/HEIF, lossy WebP. Re-encoded at `imageQuality`.
+ * - `photo`: JPEG, HEIC/HEIF, lossy WebP. Re-encoded as AVIF at
+ *   `avifQuality`, or WebP/JPEG at `imageQuality`.
  * - `keep`: everything else, including GIF, SVG, AVIF and animated PNG/WebP
  *   (a canvas would keep only the first frame).
  */
@@ -137,7 +148,8 @@ export function stillSource(contentType: string, head: Uint8Array): StillSource 
   }
 }
 
-export type StillPlan = "indexed-png" | "lossless-webp" | "lossless-png" | "lossy" | "keep";
+/** `avif` falls back to `lossy` (WebP, else JPEG) when AVIF cannot be encoded. */
+export type StillPlan = "indexed-png" | "lossless-webp" | "lossless-png" | "avif" | "lossy" | "keep";
 
 export interface StillPixels {
   /** At most `paletteColors` exact colours (and no partial transparency). */
@@ -153,7 +165,8 @@ export interface StillPixels {
  * accepts wins, and none means the original. Lossless sources stay lossless:
  * an exact indexed PNG when the colours fit, lossless WebP (libwebp), and a
  * canvas PNG for opaque formats browsers cannot show (BMP, TIFF) in case WebP
- * is unavailable. HEIC is converted even at quality 100. */
+ * is unavailable. Photos become AVIF or WebP as the server asks, never
+ * screenshots. HEIC is converted even at quality 100. */
 export function stillPlans(source: StillSource, contentType: string, settings: CompressionSettings, pixels: StillPixels): StillPlan[] {
   if (source === "lossless") {
     const plans: StillPlan[] = [];
@@ -162,7 +175,7 @@ export function stillPlans(source: StillSource, contentType: string, settings: C
     if (attachmentKind(contentType) === "file" && pixels.opaque) plans.push("lossless-png");
     return plans;
   }
-  if (source === "photo") return settings.imageQuality < 100 || isHeic(contentType) ? ["lossy"] : [];
+  if (source === "photo") return settings.imageQuality < 100 || isHeic(contentType) ? [settings.imageFormat === "avif" ? "avif" : "lossy"] : [];
   return [];
 }
 
@@ -174,7 +187,7 @@ const isHeic = (contentType: string) => contentType === "image/heic" || contentT
 export function keepStill(plan: StillPlan, original: { type: string; size: number }, encodedSize: number) {
   if (plan === "keep") return false;
   if (attachmentKind(original.type) === "file") return true;
-  if (plan === "lossy") return encodedSize <= original.size * (1 - MIN_SAVING);
+  if (plan === "avif" || plan === "lossy") return encodedSize <= original.size * (1 - MIN_SAVING);
   return encodedSize < original.size;
 }
 
@@ -263,6 +276,16 @@ async function encodeStill(plan: StillPlan, drawn: { canvas: Surface; context: C
       return new Blob([(icc ? webpWithIcc(webp, icc, width, height) : webp) as BlobPart], { type: "image/webp" });
     }
     case "lossless-png": return encode(drawn.canvas, "image/png");
+    case "avif": {
+      // Photos are drawn in sRGB like the WebP fallback; any failure falls back.
+      let avif: Uint8Array | undefined;
+      try {
+        avif = await encodeAvif(drawn.context.getImageData(0, 0, width, height).data, width, height, settings.avifQuality);
+      } catch {
+        avif = undefined;
+      }
+      return avif ? new Blob([avif as BlobPart], { type: "image/avif" }) : webpOrJpeg(drawn.canvas, settings.imageQuality / 100);
+    }
     case "lossy": return webpOrJpeg(drawn.canvas, settings.imageQuality / 100);
     case "keep": return;
   }

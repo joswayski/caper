@@ -21,15 +21,29 @@ test("inline kinds match the API allowlist and SVG/HEIC never render inline", ()
   assert.equal(declaredType({ type: "", name: "notes" }), "application/octet-stream");
   assert.equal(renamed("Screenshot 2026.png", "image/webp"), "Screenshot 2026.webp");
   assert.equal(renamed("noext", "image/jpeg"), "noext.jpg");
+  assert.equal(renamed("IMG_0001.HEIC", "image/avif"), "IMG_0001.avif");
   assert.deepEqual(fitWithin(3840, 2160, 640), { width: 640, height: 360 });
   assert.deepEqual(fitWithin(300, 200, 640), { width: 300, height: 200 }, "never upscales");
 });
 
 test("server compression settings are validated field by field, defaults match the API", () => {
   assert.deepEqual(compressionSettings({ imageQuality: 0, paletteColors: 999, previewEdge: 320, videoBitrateKbps: "fast" }),
-    { ...DEFAULT_COMPRESSION, previewEdge: 320 });
-  assert.deepEqual(compressionSettings(null), DEFAULT_COMPRESSION);
+    { ...DEFAULT_COMPRESSION, imageFormat: "webp", previewEdge: 320 });
   assert.equal(DEFAULT_COMPRESSION.videoBitrateKbps, 6000);
+  assert.equal(DEFAULT_COMPRESSION.imageFormat, "avif");
+  assert.equal(DEFAULT_COMPRESSION.avifQuality, 85);
+  assert.equal(DEFAULT_COMPRESSION.imageQuality, 92);
+  assert.deepEqual(compressionSettings(DEFAULT_COMPRESSION), DEFAULT_COMPRESSION);
+  assert.deepEqual(compressionSettings({ ...DEFAULT_COMPRESSION, imageFormat: "webp", avifQuality: 70 }), { ...DEFAULT_COMPRESSION, imageFormat: "webp", avifQuality: 70 });
+  assert.deepEqual(compressionSettings({ ...DEFAULT_COMPRESSION, avifQuality: 101, futureField: true }), DEFAULT_COMPRESSION, "invalid quality, unknown fields ignored");
+  assert.equal(compressionSettings({ ...DEFAULT_COMPRESSION, avifQuality: 0 }).avifQuality, 85);
+  assert.equal(compressionSettings({ ...DEFAULT_COMPRESSION, avifQuality: 1 }).avifQuality, 1);
+  // Servers from before AVIF send no imageFormat (or no settings) and keep WebP.
+  const { imageFormat: _, ...older } = DEFAULT_COMPRESSION;
+  assert.deepEqual(compressionSettings(older), { ...DEFAULT_COMPRESSION, imageFormat: "webp" });
+  assert.deepEqual(compressionSettings(null), { ...DEFAULT_COMPRESSION, imageFormat: "webp" });
+  assert.equal(compressionSettings({ imageFormat: "AVIF" }).imageFormat, "webp", "unknown formats get WebP");
+  assert.equal(compressionSettings({ imageFormat: "jxl" }).imageFormat, "webp");
 });
 
 test("container sniffing tells lossless from lossy WebP and finds animation", () => {
@@ -79,7 +93,7 @@ test("lossless stays lossless: indexed PNG and lossless WebP compete, otherwise 
 });
 
 test("photos re-encode lossily and keep the result only when at least 10% smaller; HEIC always converts", () => {
-  const s = DEFAULT_COMPRESSION;
+  const s = { ...DEFAULT_COMPRESSION, imageFormat: "webp" as const };
   assert.deepEqual(stillPlans("photo", "image/jpeg", s, px()), ["lossy"]);
   assert.deepEqual(stillPlans("photo", "image/jpeg", { ...s, imageQuality: 100 }, px()), []);
   assert.deepEqual(stillPlans("photo", "image/heic", { ...s, imageQuality: 100 }, px()), ["lossy"], "HEIC must convert to be viewable");
@@ -89,6 +103,21 @@ test("photos re-encode lossily and keep the result only when at least 10% smalle
   assert.ok(!keepStill("lossy", { type: "image/webp", size: 1000 }, 950));
   assert.ok(keepStill("lossy", { type: "image/heic", size: 1000 }, 1400));
   assert.ok(!keepStill("keep", { type: "image/heic", size: 1000 }, 10));
+});
+
+test("photos become AVIF when the server asks (WebP when encoding fails), never screenshots", () => {
+  const s = DEFAULT_COMPRESSION;
+  for (const type of ["image/jpeg", "image/heic", "image/heif"]) assert.deepEqual(stillPlans("photo", type, s, px()), ["avif"], type);
+  assert.deepEqual(stillPlans("photo", "image/webp", s, px()), ["avif"], "lossy WebP");
+  assert.deepEqual(stillPlans("photo", "image/jpeg", { ...s, imageQuality: 100 }, px()), [], "quality 100 disables lossy re-encoding in either format");
+  assert.deepEqual(stillPlans("photo", "image/heic", { ...s, imageQuality: 100 }, px()), ["avif"], "HEIC still converts");
+  assert.deepEqual(stillPlans("photo", "image/jpeg", { ...s, avifQuality: 100 }, px()), ["avif"], "AVIF quality alone never disables");
+  assert.deepEqual(stillPlans("lossless", "image/png", s, px({ fitsPalette: true })), ["indexed-png", "lossless-webp"]);
+  assert.deepEqual(stillPlans("lossless", "image/bmp", s, px()), ["lossless-webp", "lossless-png"]);
+  assert.deepEqual(stillPlans("keep", "image/avif", s, px()), [], "AVIF sources stay as they are");
+  assert.ok(keepStill("avif", { type: "image/jpeg", size: 1000 }, 900));
+  assert.ok(!keepStill("avif", { type: "image/jpeg", size: 1000 }, 901), "same 10% rule as WebP");
+  assert.ok(keepStill("avif", { type: "image/heic", size: 1000 }, 1400));
 });
 
 const probe = (overrides: Partial<VideoProbe> = {}): VideoProbe => ({ width: 1920, height: 1080, codec: "avc", bitrateKbps: 6000, hdr: false, inlineContainer: true, ...overrides });

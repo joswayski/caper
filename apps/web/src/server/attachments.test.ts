@@ -180,7 +180,8 @@ test("the attach control appears only when the API has uploads configured, with 
   const tuned = await uploadSettings((async () => Response.json({ used: 0, limit: 1, compression: { ...DEFAULT_COMPRESSION, imageQuality: 80, videoMaxHeight: 0 } })) as typeof fetch);
   assert.equal(tuned?.imageQuality, 80);
   assert.equal(tuned?.videoMaxHeight, 0);
-  assert.deepEqual(await uploadSettings((async () => Response.json({ used: 0, limit: 1 })) as typeof fetch), DEFAULT_COMPRESSION, "older servers get defaults");
+  assert.deepEqual(await uploadSettings((async () => Response.json({ used: 0, limit: 1 })) as typeof fetch), { ...DEFAULT_COMPRESSION, imageFormat: "webp" }, "older servers get defaults and WebP photos");
+  assert.equal((await uploadSettings((async () => Response.json({ used: 0, limit: 1, compression: DEFAULT_COMPRESSION })) as typeof fetch))?.imageFormat, "avif");
   assert.equal(await uploadSettings((async () => Response.json({ error: "uploads unavailable" }, { status: 503 })) as typeof fetch), undefined);
   assert.equal(await uploadSettings((async () => { throw new TypeError("offline"); }) as typeof fetch), undefined);
 });
