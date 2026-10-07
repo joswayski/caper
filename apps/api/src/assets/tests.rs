@@ -239,26 +239,32 @@ fn compression_settings_default_and_validate_from_configuration() {
     assert_eq!(defaults, Compression::default());
     assert_eq!(
         serde_json::to_value(&defaults).unwrap(),
-        json!({"imageQuality":92,"imageMaxEdge":4096,"paletteColors":256,"previewEdge":640,
+        json!({"imageFormat":"avif","avifQuality":85,"imageQuality":92,"imageMaxEdge":4096,"paletteColors":256,"previewEdge":640,
                "videoMaxHeight":1080,"videoBitrateKbps":6000,"audioBitrateKbps":128})
     );
     let tuned = Compression::from_env(&E::from_values_for_test([
         ("ASSET_IMAGE_QUALITY", "80"),
+        ("ASSET_IMAGE_FORMAT", " WebP "),
+        ("ASSET_AVIF_QUALITY", "70"),
         ("ASSET_VIDEO_MAX_HEIGHT", "0"),
         ("ASSET_PALETTE_COLORS", "0"),
     ]))
     .unwrap();
     assert_eq!(
         (
+            tuned.image_format,
+            tuned.avif_quality,
             tuned.image_quality,
             tuned.video_max_height,
             tuned.palette_colors
         ),
-        (80, 0, 0)
+        ("webp", 70, 80, 0, 0)
     );
     for (name, value) in [
         ("ASSET_IMAGE_QUALITY", "0"),
         ("ASSET_IMAGE_QUALITY", "high"),
+        ("ASSET_IMAGE_FORMAT", "jxl"),
+        ("ASSET_AVIF_QUALITY", "101"),
         ("ASSET_PALETTE_COLORS", "257"),
         ("ASSET_VIDEO_BITRATE_KBPS", "10"),
     ] {

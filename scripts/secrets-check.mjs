@@ -26,6 +26,8 @@ const definitions = [
   ["R2_ACCESS_KEY_ID", "required for uploads"],
   ["R2_SECRET_ACCESS_KEY", "required for uploads"],
   ["ASSET_QUOTA_BYTES", "default: 10737418240"],
+  ["ASSET_IMAGE_FORMAT", "default: avif"],
+  ["ASSET_AVIF_QUALITY", "default: 85"],
   ["ASSET_IMAGE_QUALITY", "default: 92"],
   ["ASSET_IMAGE_MAX_EDGE", "default: 4096"],
   ["ASSET_PALETTE_COLORS", "default: 256"],

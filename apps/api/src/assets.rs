@@ -423,7 +423,13 @@ fn sign_one(attachment: &mut Map<String, Value>, signer: &CdnSigner, now: i64) {
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Compression {
-    /// Lossy still quality, 1–100. 100 disables lossy re-encoding.
+    /// Photo format: `avif`, or `webp` (also every client's fallback when it
+    /// cannot encode AVIF).
+    pub image_format: &'static str,
+    /// AVIF photo quality (libavif scale), 1–100.
+    pub avif_quality: u8,
+    /// WebP (or JPEG fallback) photo quality, 1–100. 100 disables lossy
+    /// re-encoding in either format.
     pub image_quality: u8,
     /// Longest still edge in pixels; 0 keeps the original size.
     pub image_max_edge: u32,
@@ -441,6 +447,8 @@ pub(crate) struct Compression {
 impl Default for Compression {
     fn default() -> Self {
         Self {
+            image_format: "avif",
+            avif_quality: 85,
             image_quality: 92,
             image_max_edge: 4096,
             palette_colors: 256,
@@ -472,7 +480,20 @@ fn setting<T: std::str::FromStr + PartialOrd>(
 impl Compression {
     pub(crate) fn from_env(environment: &RuntimeEnvironment) -> Result<Self, String> {
         let d = Self::default();
+        let image_format = match environment
+            .get("ASSET_IMAGE_FORMAT")
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .as_deref()
+        {
+            None => d.image_format,
+            Some("avif") => "avif",
+            Some("webp") => "webp",
+            Some(_) => return Err("ASSET_IMAGE_FORMAT must be avif or webp".into()),
+        };
         Ok(Self {
+            image_format,
+            avif_quality: setting(environment, "ASSET_AVIF_QUALITY", d.avif_quality, 1..=100)?,
             image_quality: setting(environment, "ASSET_IMAGE_QUALITY", d.image_quality, 1..=100)?,
             image_max_edge: setting(
                 environment,

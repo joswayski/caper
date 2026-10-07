@@ -925,7 +925,9 @@ uploads the original instead of a worse file.
 | Setting | Default | Effect |
 | --- | --- | --- |
 | `ASSET_PALETTE_COLORS` | 256 | Stills with at most this many distinct colours become a **lossless** indexed PNG (the exact-palette path from Captures). 0 disables. |
-| `ASSET_IMAGE_QUALITY` | 92 | Photos: lossy WebP (JPEG where WebP encoding is unavailable). 100 disables lossy encoding. |
+| `ASSET_IMAGE_FORMAT` | avif | Photo format: `avif`, or `webp`. Clients that cannot encode AVIF use WebP. |
+| `ASSET_AVIF_QUALITY` | 85 | AVIF photo quality (libavif scale). 85 matches WebP q92 on SSIMULACRA2 at 19% fewer bytes on 12 MP photos. |
+| `ASSET_IMAGE_QUALITY` | 92 | WebP photo quality (JPEG where WebP encoding is unavailable). 100 disables lossy photo encoding in either format. |
 | `ASSET_IMAGE_MAX_EDGE` | 4096 | Longest still edge; 0 keeps the original size. Never upscales. |
 | `ASSET_PREVIEW_EDGE` | 640 | Preview size for images and video posters (≤ 512 KiB). |
 | `ASSET_VIDEO_MAX_HEIGHT` | 1080 | Short-edge cap for videos ("1080p", so portrait phone video keeps its detail); 0 uploads videos unchanged. |
@@ -1016,7 +1018,7 @@ the owner's assets when that flow lands.
 | `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | API | Bucket-scoped R2 Object Read & Write key. All four or none; none leaves upload routes returning 503. |
 | `R2_ENDPOINT` | API, local only | Loopback S3-compatible fake (`http://127.0.0.1:…`). Rejected otherwise. |
 | `ASSET_QUOTA_BYTES` | API | Per-person stored bytes. Default `10737418240` (10 GiB). |
-| `ASSET_IMAGE_QUALITY`, `ASSET_IMAGE_MAX_EDGE`, `ASSET_PALETTE_COLORS`, `ASSET_PREVIEW_EDGE`, `ASSET_VIDEO_MAX_HEIGHT`, `ASSET_VIDEO_BITRATE_KBPS`, `ASSET_AUDIO_BITRATE_KBPS` | API | Client compression settings above; invalid values stop startup. |
+| `ASSET_IMAGE_FORMAT`, `ASSET_AVIF_QUALITY`, `ASSET_IMAGE_QUALITY`, `ASSET_IMAGE_MAX_EDGE`, `ASSET_PALETTE_COLORS`, `ASSET_PREVIEW_EDGE`, `ASSET_VIDEO_MAX_HEIGHT`, `ASSET_VIDEO_BITRATE_KBPS`, `ASSET_AUDIO_BITRATE_KBPS` | API | Client compression settings above; invalid values stop startup. |
 | `ASSET_CDN_ORIGIN`, `ASSET_CDN_SIGNING_SECRET` | API **and** gateway | Worker origin and shared HMAC secret (≥ 32 characters). Without them messages carry attachment metadata but no URLs. |
 
 The bucket needs a CORS rule allowing `PUT` from the web origin with the
