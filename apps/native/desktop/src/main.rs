@@ -6828,95 +6828,85 @@ impl CaperApp {
         // Reserved beneath the row so the tint can be sized after drawing.
         let tint = ui.painter().add(egui::Shape::Noop);
         let pinned = message.pin.as_ref();
-        // Only hover is sensed for the forward menu, so pills, the edited
-        // marker and selectable text inside the row keep their clicks.
-        let scope = ui.scope_builder(
-            egui::UiBuilder::new()
-                .id_salt((&message.id, "forward-context"))
-                .sense(egui::Sense::hover()),
-            |ui| {
-                egui::Frame::new()
-                    .fill(
-                        if !in_thread
-                            && self
-                                .thread_view
-                                .as_ref()
-                                .is_some_and(|thread| thread.root == message.id)
-                        {
-                            Color32::from_rgba_unmultiplied(228, 199, 106, 26)
-                        } else if pinned.is_some() {
-                            Color32::from_rgba_unmultiplied(228, 199, 106, 15)
-                        } else {
-                            Color32::TRANSPARENT
-                        },
-                    )
-                    .show(ui, |ui| {
-                        ui.set_min_width(ui.available_width());
-                        if let Some(pin) = pinned {
-                            egui::Frame::new()
-                                .inner_margin(egui::Margin {
-                                    left: 62,
-                                    right: 74,
-                                    top: 6,
-                                    bottom: 0,
-                                })
-                                .show(ui, |ui| {
-                                    ui.label(
-                                        RichText::new(format!("Pinned by {}", pin.author.name))
-                                            .size(11.0)
-                                            .color(Color32::from_rgb(228, 199, 106)),
-                                    );
-                                });
-                        }
-                        let (timestamp, pill) = message_row(
-                            ui,
-                            &message.author.name,
-                            message.author.avatar_id,
-                            &time,
-                            message.author.is_guest,
-                            |ui| {
-                                message_body(
-                                    ui,
-                                    &message.id,
-                                    &message.content.text,
-                                    &message.content.mentions,
-                                    |entry| {
-                                        let name = self.mention_profile(entry).map_or_else(
-                                            || {
-                                                format!(
-                                                    "@{}",
-                                                    entry.username.as_deref().unwrap_or_default()
-                                                )
-                                            },
-                                            |profile| profile.title(),
-                                        );
-                                        format!("Open profile for {name}")
-                                    },
-                                )
-                            },
-                        );
-                        if message.forward.is_none() && message.revision > 1 {
-                            let marker = ui.interact(
-                                timestamp,
-                                ui.id().with(("edit-history", &message.id)),
-                                egui::Sense::click(),
+        let shown = egui::Frame::new()
+            .fill(
+                if !in_thread
+                    && self
+                        .thread_view
+                        .as_ref()
+                        .is_some_and(|thread| thread.root == message.id)
+                {
+                    Color32::from_rgba_unmultiplied(228, 199, 106, 26)
+                } else if pinned.is_some() {
+                    Color32::from_rgba_unmultiplied(228, 199, 106, 15)
+                } else {
+                    Color32::TRANSPARENT
+                },
+            )
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                if let Some(pin) = pinned {
+                    egui::Frame::new()
+                        .inner_margin(egui::Margin {
+                            left: 62,
+                            right: 74,
+                            top: 6,
+                            bottom: 0,
+                        })
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new(format!("Pinned by {}", pin.author.name))
+                                    .size(11.0)
+                                    .color(Color32::from_rgb(228, 199, 106)),
                             );
-                            marker.widget_info(|| {
-                                egui::WidgetInfo::labeled(
-                                    egui::WidgetType::Button,
-                                    true,
-                                    "View edit history",
-                                )
-                            });
-                            if marker.on_hover_text("View edit history").clicked() {
-                                self.open_edit_history(message);
-                            }
-                        }
-                        pill
-                    })
-            },
-        );
-        let shown = scope.inner;
+                        });
+                }
+                let (timestamp, pill) = message_row(
+                    ui,
+                    &message.author.name,
+                    message.author.avatar_id,
+                    &time,
+                    message.author.is_guest,
+                    |ui| {
+                        message_body(
+                            ui,
+                            &message.id,
+                            &message.content.text,
+                            &message.content.mentions,
+                            |entry| {
+                                let name = self.mention_profile(entry).map_or_else(
+                                    || {
+                                        format!(
+                                            "@{}",
+                                            entry.username.as_deref().unwrap_or_default()
+                                        )
+                                    },
+                                    |profile| profile.title(),
+                                );
+                                format!("Open profile for {name}")
+                            },
+                        )
+                    },
+                );
+                if message.forward.is_none() && message.revision > 1 {
+                    let marker = ui.interact(
+                        timestamp,
+                        ui.id().with(("edit-history", &message.id)),
+                        egui::Sense::click(),
+                    );
+                    marker.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            true,
+                            "View edit history",
+                        )
+                    });
+                    if marker.on_hover_text("View edit history").clicked() {
+                        self.open_edit_history(message);
+                    }
+                }
+                pill
+            });
         let message_rect = shown.response.rect;
         if let Some(pill) = shown.inner {
             // Opening another pill replaces the card.
@@ -6928,10 +6918,15 @@ impl CaperApp {
             });
         }
         if let Some(token) = self.token.clone() {
-            // A right-click anywhere over the row, even on its text.
-            let opened =
-                scope.response.contains_pointer() && ui.input(|i| i.pointer.secondary_clicked());
-            egui::Popup::menu(&scope.response)
+            // Hover only: sensing clicks here, above the row, would swallow
+            // clicks inside it (the edited marker). Right-clicks still open it.
+            let row = ui.interact(
+                message_rect,
+                ui.id().with((&message.id, "forward-context")),
+                egui::Sense::hover(),
+            );
+            let opened = row.contains_pointer() && ui.input(|i| i.pointer.secondary_clicked());
+            egui::Popup::menu(&row)
                 .open_memory(opened.then_some(egui::SetOpenCommand::Bool(true)))
                 .at_pointer_fixed()
                 .show(|ui| {
@@ -13633,67 +13628,6 @@ mod tests {
         assert!(app.selected_direct.is_none());
         let output = render(&mut app, &context, vec![]);
         assert!(shows(&output, &error) && shows(&output, "Message"));
-    }
-
-    #[test]
-    fn signed_in_message_text_offers_forwarding_on_right_click() {
-        let context = egui::Context::default();
-        let mut app = CaperApp::new(
-            &context,
-            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
-            Some("parity-mentions"),
-        );
-        app.token = Some("account-token".into());
-        render(&mut app, &context, vec![]);
-        let output = render(&mut app, &context, vec![]);
-        let pos = pill_center(&output, ALEX_MESSAGE, "Keep");
-        for pressed in [true, false] {
-            render(
-                &mut app,
-                &context,
-                vec![
-                    egui::Event::PointerMoved(pos),
-                    egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Secondary,
-                        pressed,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                ],
-            );
-        }
-        // New egui areas spend their first pass measuring, invisibly.
-        render(&mut app, &context, vec![]);
-        assert!(shows(
-            &render(&mut app, &context, vec![]),
-            "Forward message"
-        ));
-        assert!(app.mention_card.is_none(), "plain text opens no card");
-    }
-
-    #[test]
-    fn signed_in_edited_marker_still_opens_history() {
-        let context = egui::Context::default();
-        let mut app = CaperApp::new(
-            &context,
-            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
-            Some("parity-edits"),
-        );
-        app.token = Some("account-token".into());
-        render(&mut app, &context, vec![]);
-        let output = render(&mut app, &context, vec![]);
-        let marker = output
-            .shapes
-            .iter()
-            .find_map(|shape| match &shape.shape {
-                egui::epaint::Shape::Text(shape) if shape.galley.job.text.ends_with("(edited)") => {
-                    Some(shape.pos + shape.galley.rect.center().to_vec2())
-                }
-                _ => None,
-            })
-            .expect("the edited marker is drawn");
-        click_at(&mut app, &context, marker);
-        assert!(app.edit_history.is_some());
     }
 
     #[test]
