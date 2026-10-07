@@ -137,14 +137,18 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
     implementation("com.squareup.okhttp3:okhttp:5.1.0")
     // Attachments: images keyed by attachment ID (so re-signed URLs reuse the
-    // cache) over the app's OkHttp; Media3 plays video/audio. Originals upload
-    // unchanged: the server's media worker does all compression.
+    // cache) over the app's OkHttp; Media3 plays video/audio and transcodes
+    // video to H.264/AAC (with HDR tone mapping) before upload.
     implementation("io.coil-kt.coil3:coil-compose:3.3.0")
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.3.0")
     implementation("androidx.media3:media3-exoplayer:1.8.0")
     implementation("androidx.media3:media3-ui:1.8.0")
-    // AOMedia libavif (dav1d decoder, ~0.9 MB per ABI): stored photos are mostly
-    // AVIF, which Android only decodes itself from API 31. Used below that.
+    implementation("androidx.media3:media3-transformer:1.8.0")
+    implementation("androidx.media3:media3-effect:1.8.0")
+    // Photo orientation, applied when re-encoding (which drops EXIF/GPS).
+    implementation("androidx.exifinterface:exifinterface:1.4.1")
+    // AOMedia libavif (dav1d decoder, ~0.9 MB per ABI): AVIF attachments upload
+    // unchanged and Android only decodes them itself from API 31. Used below that.
     implementation("org.aomedia.avif.android:avif:1.3.0.841110fd")
     // Word-level diffs for message edit history.
     implementation("io.github.java-diff-utils:java-diff-utils:4.16")

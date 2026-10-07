@@ -112,10 +112,20 @@ object TolerantAttachmentsSerializer : KSerializer<List<ChatAttachment>> {
 @Serializable data class AttachmentUrls(val url: String? = null, val previewUrl: String? = null)
 @Serializable data class AttachmentUrlsResponse(val urls: Map<String, AttachmentUrls> = emptyMap())
 
-/** `GET /api/assets/usage`. Unknown fields (such as retired client compression settings) are ignored. */
-@Serializable data class AssetUsage(val used: Long, val limit: Long, val maxUploadBytes: Long? = null)
+/** Server-tunable client compression (`GET /api/assets/usage`, docs/media.md "Client compression and previews"). */
+@Serializable data class CompressionSettings(
+    val imageQuality: Int = 92,
+    val imageMaxEdge: Int = 4096,
+    val paletteColors: Int = 256,
+    val previewEdge: Int = 640,
+    val videoMaxHeight: Int = 1080,
+    val videoBitrateKbps: Int = 6000,
+    val audioBitrateKbps: Int = 128,
+)
+/** `GET /api/assets/usage`: stored bytes, the allowance and the compression settings. */
+@Serializable data class AssetUsage(val used: Long, val limit: Long, val compression: CompressionSettings = CompressionSettings())
 @Serializable data class PresignedUpload(val method: String = "PUT", val url: String, val headers: Map<String, String> = emptyMap())
-@Serializable data class AssetReservation(val id: String, val kind: String = "file", val upload: PresignedUpload)
+@Serializable data class AssetReservation(val id: String, val kind: String = "file", val upload: PresignedUpload, val previewUpload: PresignedUpload? = null)
 @Serializable data class MessageVersion(val revision: Int, val content: ChatContent, val createdAt: String)
 @Serializable data class MessageVersions(val messageId: String, val versions: List<MessageVersion>, val hasMore: Boolean)
 @Serializable data class MessageReaction(val emoji: String, val authorIds: List<String>)
@@ -346,18 +356,25 @@ data class PendingMessageUi(
     val rejected: Boolean = false,
     val threadRootId: String? = null,
     val broadcast: Boolean = false,
-    /** Uploaded files, shown from the picked content until the server confirms. */
+    /** Uploaded files with local `file://` copies until the server confirms. */
     val attachments: List<ChatAttachment> = emptyList(),
 )
 
-/** A file in the composer: uploading, ready to send, or failed. */
+/** A file in the composer: preparing (compressing), uploading, ready to send, or failed. */
 data class DraftAttachmentUi(
     val key: String,
     val name: String,
     val kind: String,
-    val size: Long = 0,
-    /** The picked `content://` image itself, shown as the chip thumbnail and by the pending message. */
+    val sourceSize: Long = 0,
+    /** Bytes actually uploaded, once compression finished. */
+    val storedSize: Long? = null,
+    /** Local `file://` thumbnail (the stored image or its preview, a poster for video). */
     val thumbnail: String? = null,
+    /** Local `file://` copy of the bytes being uploaded, shown by the pending message. */
+    val localUrl: String? = null,
+    /** The picked `content://` image, kept for the (dormant) server-processing placeholder. */
+    val pickedImage: String? = null,
+    val compressing: Boolean = true,
     val progress: Float = 0f,
     val error: String? = null,
     val attachment: ChatAttachment? = null,

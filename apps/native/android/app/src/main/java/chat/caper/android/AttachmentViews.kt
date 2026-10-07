@@ -350,8 +350,8 @@ internal fun durationLabel(durationMs: Long?): String? {
                     Column(Modifier.weight(1f)) {
                         Text(draft.name, color = Text, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         val status = draft.error ?: when {
-                            draft.attachment != null -> AttachmentPolicy.formatBytes(draft.size)
-                            draft.size <= 0 -> "Preparing…"
+                            draft.attachment != null -> AttachmentPolicy.sizeLabel(draft.sourceSize, draft.storedSize)
+                            draft.compressing -> if (draft.progress > 0f) "Compressing… ${(draft.progress * 100).toInt()}%" else "Preparing…"
                             else -> "Uploading… ${(draft.progress * 100).toInt()}%"
                         }
                         Text(status, color = if (draft.error != null) ErrorText else TextMuted, fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)

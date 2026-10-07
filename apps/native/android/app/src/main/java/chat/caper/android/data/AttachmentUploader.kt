@@ -1,41 +1,51 @@
 package chat.caper.android.data
 
 import chat.caper.android.model.ChatAttachment
-import java.io.InputStream
+import java.io.File
 import kotlinx.coroutines.delay
 
 /**
- * A picked original, uploaded byte for byte. [size] is exact (the presigned PUT signs it) and
- * [open] returns a fresh stream each time, so a retried request can resend from the start.
+ * A file ready to upload: the compressed (or unchanged original) bytes in a local working copy,
+ * measured metadata and an optional preview (docs/media.md "Client compression and previews").
  */
-interface UploadSource {
-    val name: String
-    /** Declared MIME type; `application/octet-stream` when unknown. */
-    val contentType: String
-    val size: Long
-    fun open(): InputStream
-}
+data class PreparedAttachment(
+    val file: File,
+    val name: String,
+    val contentType: String,
+    val kind: String,
+    /** Size of the picked file before compression (`sourceByteSize`). */
+    val sourceSize: Long,
+    val width: Int? = null,
+    val height: Int? = null,
+    val durationMs: Long? = null,
+    val preview: File? = null,
+    val previewContentType: String? = null,
+)
 
 /**
- * Reserve, upload the original straight to storage, confirm, then send its ID with a message
- * (docs/media.md "Client upload flow"). Bytes never pass through the API and are never
- * re-encoded here: the server's media worker compresses every file.
+ * Reserve, upload the preview then the file straight to storage, confirm (web `uploadPrepared`).
+ * Bytes never pass through the API and storage receives only the presigned headers. Returns the
+ * attachment description whose ID is sent with a message.
  */
 class AttachmentUploader(
     private val api: CaperApi,
     /** Waits between `/complete` attempts while storage reports the upload has not arrived (409). */
     private val completeRetryDelaysMs: List<Long> = listOf(500, 1_000, 2_000, 4_000),
 ) {
-    suspend fun upload(
-        token: String, channelId: String, source: UploadSource, maxUploadBytes: Long? = null, progress: (Float) -> Unit = {},
-    ): ChatAttachment {
-        val size = source.size
+    suspend fun upload(token: String, channelId: String, file: PreparedAttachment, progress: (Float) -> Unit = {}): ChatAttachment {
+        val size = file.file.length()
         if (size < 1) throw UploadException("This file is empty.")
-        if (maxUploadBytes != null && maxUploadBytes > 0 && size > maxUploadBytes) {
-            throw UploadException("Files can be up to ${AttachmentPolicy.formatBytes(maxUploadBytes)}.")
-        }
-        val reservation = api.createAsset(token, channelId, source.name, AttachmentPolicy.normalizedType(source.contentType), size)
-        api.putUpload(reservation.upload, size, source::open) { sent -> progress(sent.toFloat() / size) }
+        val preview = file.preview?.takeIf { file.previewContentType != null && it.length() in 1..AttachmentPolicy.PREVIEW_MAX_BYTES }
+        val reservation = api.createAsset(
+            token, channelId, file.name, AttachmentPolicy.normalizedType(file.contentType), size,
+            sourceByteSize = file.sourceSize.takeIf { it > 0 }, width = file.width, height = file.height, durationMs = file.durationMs,
+            previewContentType = preview?.let { file.previewContentType }, previewByteSize = preview?.length(),
+        )
+        val previewUpload = reservation.previewUpload?.takeIf { preview != null }
+        val previewSize = if (preview != null && previewUpload != null) preview.length() else 0L
+        val total = (size + previewSize).toFloat()
+        if (preview != null && previewUpload != null) api.putUpload(previewUpload, previewSize, preview::inputStream)
+        api.putUpload(reservation.upload, size, file.file::inputStream) { sent -> progress((previewSize + sent) / total) }
         val attachment = complete(token, reservation.id)
         if (attachment.id != reservation.id) throw UploadException("The upload service returned an invalid response.")
         progress(1f)

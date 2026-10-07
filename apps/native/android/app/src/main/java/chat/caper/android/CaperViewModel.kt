@@ -61,20 +61,24 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var pendingDirectIntent: String? = null
     private var foreground = false
     private val uploader = AttachmentUploader(api)
-    /** `maxUploadBytes` from `GET /api/assets/usage`, enforced before reserving. */
-    private var maxUploadBytes: Long? = null
+    private val preparer by lazy { AttachmentPreparer(application) }
+    /** Client compression settings from `GET /api/assets/usage`. */
+    private var compression = CompressionSettings()
     private val uploadJobs = mutableMapOf<String, Job>()
+    private val draftDirectories = mutableMapOf<String, File>()
     /** Drafts moved into the pending message; restored by Edit, deleted once confirmed. */
     private var pendingDrafts: List<DraftAttachmentUi> = emptyList()
     private val urlRefresh = AttachmentUrlRefresh()
     private val urlQueue = linkedSetOf<String>()
     private var urlBatch: Job? = null
     private var threadRequest = 0L
+    private val uploadRoot = File(application.cacheDir, "attachment-uploads")
+    private val uploadSession = File(uploadRoot, UUID.randomUUID().toString())
 
     init {
         loadHome()
-        // Uploads now stream from the picked content; drop working copies left by older versions.
-        viewModelScope.launch(Dispatchers.IO) { File(application.cacheDir, "attachment-uploads").deleteRecursively() }
+        // Working copies only matter to this process; drop any left by an earlier one.
+        viewModelScope.launch(Dispatchers.IO) { uploadRoot.listFiles()?.filter { it != uploadSession }?.forEach { it.deleteRecursively() } }
         // Signed URLs live 24-48 hours; an app left open for days refreshes them before expiry.
         viewModelScope.launch { while (true) { delay(10 * 60_000L); if (foreground) refreshExpiringUrls() } }
     }
@@ -698,16 +702,17 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     if (drafts.any { it.error != null }) "Remove files that failed to upload first." else "Wait for files to finish uploading.")
                 return false
             }
-            // Pending messages show the picked images until the server's message arrives.
-            drafts.mapNotNull { draft -> draft.attachment?.copy(status = "ready", url = draft.thumbnail, previewUrl = draft.thumbnail) }
+            // Pending messages show the local compressed copies until the server's message arrives.
+            drafts.mapNotNull { draft -> draft.attachment?.copy(status = "ready", url = draft.localUrl, previewUrl = draft.thumbnail) }
         }
         if (retry == null && text.isBlank() && files.isEmpty()) return false
         val request = generation
         val operation = pendingSends.begin(channel.id, author, text, files.map { it.id }, threadRootId, broadcast, confirmed)
         if (retry == null) pendingDrafts = drafts
         if (retry == null && threadRootId == null) {
-            // While the server processes them, this device keeps showing its own picked images.
-            val local = drafts.mapNotNull { draft -> draft.attachment?.id?.let { id -> draft.thumbnail?.let { id to it } } }
+            // If a server ever reports these as processing, this device shows its own picked images
+            // (the working copies are deleted once the send is confirmed; the picked URI is not).
+            val local = drafts.mapNotNull { draft -> draft.attachment?.id?.let { id -> draft.pickedImage?.let { id to it } } }
             mutable.value = mutable.value.copy(
                 drafts = emptyList(), attachmentError = null,
                 localAttachmentPreviews = (mutable.value.localAttachmentPreviews + local).entries.toList().takeLast(64).associate { it.key to it.value },
@@ -764,12 +769,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val usage = try { api.assetUsage(token) } catch (cancelled: CancellationException) { throw cancelled } catch (_: Throwable) { null }
             if (request != accountGeneration) return@launch
-            maxUploadBytes = usage?.maxUploadBytes?.takeIf { it > 0 }
+            usage?.let { compression = it.compression }
             mutable.value = mutable.value.copy(uploadsEnabled = usage != null)
         }
     }
 
-    /** Picked photos, videos or documents: upload the originals unchanged and hold them as composer drafts. */
+    /** Picked photos, videos or documents: compress on the device, upload, and hold as composer drafts. */
     fun addAttachments(uris: List<Uri>) {
         val current = mutable.value
         val channel = current.selectedChannel?.takeIf { it.joined } ?: return
@@ -781,25 +786,37 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         mutable.value = current.copy(attachmentError = if (uris.size > room) "Only $room more file${if (room == 1) "" else "s"} can be attached." else null)
-        val limit = maxUploadBytes
-        val resolver = getApplication<Application>().contentResolver
+        val settings = compression
         uris.take(room).forEach { uri ->
             val key = UUID.randomUUID().toString()
+            val directory = File(uploadSession, key)
+            draftDirectories[key] = directory
             mutable.value = mutable.value.copy(drafts = mutable.value.drafts + DraftAttachmentUi(key, "File", "file"))
-            val report = progressReporter(key)
             uploadJobs[key] = viewModelScope.launch {
                 try {
-                    val picked = PickedContent.resolve(resolver, uri)
-                    val kind = AttachmentPolicy.kind(picked.contentType)
+                    val picked = preparer.copy(uri, directory)
+                    val image = picked.contentType.startsWith("image/")
                     updateDraft(key) {
-                        it.copy(name = picked.name, kind = kind, size = picked.size, thumbnail = if (kind == "image") uri.toString() else null)
+                        it.copy(
+                            name = picked.name, kind = AttachmentPolicy.kind(picked.contentType), sourceSize = picked.source.length(),
+                            thumbnail = if (image) Uri.fromFile(picked.source).toString() else null, pickedImage = if (image) uri.toString() else null,
+                        )
                     }
-                    val attachment = uploader.upload(token, channel.id, picked, limit, report)
+                    val prepared = preparer.prepare(picked, settings, directory, progressReporter(key))
+                    updateDraft(key) {
+                        it.copy(
+                            name = prepared.name, kind = prepared.kind, storedSize = prepared.file.length(), compressing = false, progress = 0f,
+                            thumbnail = (prepared.preview ?: prepared.file.takeIf { prepared.kind == "image" })?.let { file -> Uri.fromFile(file).toString() } ?: it.thumbnail,
+                            localUrl = Uri.fromFile(prepared.file).toString(),
+                        )
+                    }
+                    // A fresh reporter: upload progress restarts from zero after compression.
+                    val attachment = uploader.upload(token, channel.id, prepared, progressReporter(key))
                     updateDraft(key) { it.copy(attachment = attachment, progress = 1f) }
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (error: Throwable) {
-                    updateDraft(key) { it.copy(error = AttachmentPolicy.uploadErrorMessage(error)) }
+                    updateDraft(key) { it.copy(error = AttachmentPolicy.uploadErrorMessage(error), compressing = false) }
                 } finally {
                     uploadJobs.remove(key)
                 }
@@ -812,16 +829,17 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value = mutable.value.copy(drafts = mutable.value.drafts.filter { it.key != key }, attachmentError = null)
     }
 
-    /** Stops an unfinished upload; the API expires reservations that are never sent. */
+    /** Stops an unfinished upload and deletes its working copies; the API expires reservations never sent. */
     private fun discardDraftFiles(key: String) {
         uploadJobs.remove(key)?.cancel()
+        draftDirectories.remove(key)?.let { directory -> viewModelScope.launch(Dispatchers.IO) { directory.deleteRecursively() } }
     }
 
     private fun updateDraft(key: String, change: (DraftAttachmentUi) -> DraftAttachmentUi) {
         mutable.value = mutable.value.copy(drafts = mutable.value.drafts.map { if (it.key == key) change(it) else it })
     }
 
-    /** Upload progress arrives off the main thread; post at most every 1%. */
+    /** Compression/upload progress arrives off the main thread; post at most every 1%. */
     private fun progressReporter(key: String): (Float) -> Unit {
         var last = -1f
         return { fraction ->

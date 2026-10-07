@@ -12,6 +12,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.putJsonObject
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
@@ -132,13 +133,26 @@ class CaperApi(
     /** Succeeds only when uploads are configured; anything else hides the attach control. */
     suspend fun assetUsage(token: String): AssetUsage = get("/api/assets/usage", token)
 
-    /** Reserves an upload of the original: its exact size and declared type, nothing else. */
-    suspend fun createAsset(token: String, channel: String, filename: String, contentType: String, byteSize: Long): AssetReservation {
+    /**
+     * Reserves one upload of the bytes this device will store (after compression): their exact
+     * size, the picked file's size, measured dimensions/duration and an optional preview.
+     */
+    suspend fun createAsset(
+        token: String, channel: String, filename: String, contentType: String, byteSize: Long,
+        sourceByteSize: Long? = null, width: Int? = null, height: Int? = null, durationMs: Long? = null,
+        previewContentType: String? = null, previewByteSize: Long? = null,
+    ): AssetReservation {
         val reservation: AssetReservation = post("/api/assets", buildJsonObject {
             put("channelId", channel.pathId()); put("filename", filename); put("contentType", contentType); put("byteSize", byteSize)
+            sourceByteSize?.let { put("sourceByteSize", it) }
+            width?.let { put("width", it) }; height?.let { put("height", it) }; durationMs?.let { put("durationMs", it) }
+            if (previewContentType != null && previewByteSize != null) putJsonObject("preview") {
+                put("contentType", previewContentType); put("byteSize", previewByteSize)
+            }
         }, token)
         reservation.id.assetPathId()
         require(reservation.upload.method == "PUT" && reservation.upload.url.isStorageUrl()) { "The upload service returned an invalid response." }
+        reservation.previewUpload?.let { require(it.method == "PUT" && it.url.isStorageUrl()) { "The upload service returned an invalid response." } }
         return reservation
     }
 
@@ -159,7 +173,7 @@ class CaperApi(
     }
 
     /**
-     * PUT the original straight to storage with exactly the presigned headers and a fixed
+     * PUT bytes straight to storage with exactly the presigned headers and a fixed
      * Content-Length of [size]. No account or chat credential is attached, and redirects are
      * never followed. The body streams from [open] without holding the file in memory.
      */
