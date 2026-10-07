@@ -41,7 +41,8 @@ jobs:
     secrets: inherit
 
   artifact-contract:
-    runs-on: ubuntu-24.04
+    needs: route
+    runs-on: ${{ needs.route.outputs.linux == 'true' && fromJSON('["self-hosted","joselinux"]') || 'ubuntu-24.04' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
@@ -78,7 +79,7 @@ jobs:
       matrix:
         os: [ubuntu-24.04, windows-2025, macos-15]
     needs: route
-    runs-on: ${{ needs.route.outputs.mac == 'true' && matrix.os == 'macos-15' && fromJSON('["self-hosted","josemac"]') || matrix.os }}
+    runs-on: ${{ needs.route.outputs.mac == 'true' && matrix.os == 'macos-15' && fromJSON('["self-hosted","josemac"]') || needs.route.outputs.windows == 'true' && startsWith(matrix.os, 'windows') && fromJSON('["self-hosted","josewin"]') || needs.route.outputs.linux == 'true' && startsWith(matrix.os, 'ubuntu') && fromJSON('["self-hosted","joselinux"]') || matrix.os }}
     timeout-minutes: 20
     defaults:
       run:
@@ -111,7 +112,7 @@ jobs:
 
   desktop:
     name: Desktop / ${{ matrix.target }}
-    needs: artifact-contract
+    needs: [artifact-contract, route]
     strategy:
       fail-fast: false
       matrix:
@@ -120,7 +121,7 @@ jobs:
             target: linux-x64
           - os: windows-2025
             target: windows-x64
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ needs.route.outputs.windows == 'true' && startsWith(matrix.os, 'windows') && fromJSON('["self-hosted","josewin"]') || needs.route.outputs.linux == 'true' && startsWith(matrix.os, 'ubuntu') && fromJSON('["self-hosted","joselinux"]') || matrix.os }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -319,8 +320,8 @@ jobs:
 
   android:
     name: Android / development APK
-    needs: artifact-contract
-    runs-on: ubuntu-24.04
+    needs: [artifact-contract, route]
+    runs-on: ${{ needs.route.outputs.linux == 'true' && fromJSON('["self-hosted","joselinux"]') || 'ubuntu-24.04' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
