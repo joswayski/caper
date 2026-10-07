@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { getAccount, getRememberedAccount, logout, type Account } from "../account/client";
 import ProfileForm from "../account/ProfileForm";
+import PrivacySettings from "../account/PrivacySettings";
 import Wordmark from "../components/Wordmark";
 
 export const Route = createFileRoute("/profile")({ component: Profile });
@@ -27,6 +28,7 @@ function Profile() {
       <h1 className="my-5 text-[clamp(2.2rem,7vw,3.1rem)] leading-[1.08] font-bold tracking-[-.055em]">{account.username ? "Make it yours." : "Choose how you show up."}</h1>
       <p className="leading-[1.65] text-content-muted">Your username is unique. Your display name is what people see in conversations.</p>
       <ProfileForm account={account} onSaved={() => navigate({ to: "/spaces" })} />
+      {account.username && <PrivacySettings />}
       <div className="mt-5 flex items-center justify-end text-[.85rem]">
         <button className="cursor-pointer border-0 bg-transparent p-0 text-content-muted focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4" type="button" onClick={() => void logout().then(() => window.location.assign("/"))}>Log out</button>
       </div>

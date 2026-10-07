@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, ChevronDown, MoreHorizontal, Pin } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ArrowLeft, Ban, ChevronDown, MoreHorizontal, Pin } from "lucide-react";
 import { Virtuoso, type VirtuosoHandle, type ListProps, type ContextProp } from "react-virtuoso";
 import { ChatClient, initialChatView } from "./client.ts";
 import MessageReactions, { type ReactionSave } from "./MessageReactions.tsx";
@@ -15,6 +15,8 @@ import { appGateway, type PresenceStatus } from "../gateway/client.ts";
 import Avatar from "../components/Avatar";
 import { emojiAsset } from "./emoji.ts";
 import { emojiToken, emojiSuggestions, insertEmoji, loadEmojiChoices, type EmojiChoice } from "./emoji-autocomplete.ts";
+import { blockedLabel, blockedRuns, type BlockedRun } from "./blocked.ts";
+import { unblock, useBlockedIds } from "../spaces/blocks.ts";
 import "./chat.css";
 
 // Virtuoso's prepend index is local bookkeeping, never the bigint server cursor.
@@ -53,7 +55,7 @@ function MessageList({ context, children, ...props }: ListProps & ContextProp<Hi
 const listComponents = { Header: HistoryHeader, List: MessageList };
 const measureItem = (element: HTMLElement, field: "offsetHeight" | "offsetWidth") => element[field];
 
-export default function Chat({ name, signedIn, identityReady, channelId, channelName: expectedChannelName, direct = false, onReadCursor, initialHistory, initialHistoryError, showTitle = false, headerLeading, channelMenu, headerActions, readOnly = false, composerNotice, messageSounds = true, onAuthorChange, onHistoryChange, onLocalPresenceChange, onOnlineChange }: { name: string; signedIn: boolean; identityReady: boolean; channelId?: string; channelName?: string; direct?: boolean; onReadCursor?: (seq: string) => void; initialHistory?: GeneralChatHistory; initialHistoryError?: string; showTitle?: boolean; headerLeading?: ReactNode; channelMenu?: ReactNode; headerActions?: ReactNode; readOnly?: boolean; composerNotice?: ReactNode; messageSounds?: boolean; onAuthorChange?: (author: ChatAuthor) => void; onHistoryChange?: (history: GeneralChatHistory) => void; onLocalPresenceChange?: (status: PresenceStatus) => void; onOnlineChange?: (online: boolean) => void }) {
+export default function Chat({ name, signedIn, identityReady, channelId, channelName: expectedChannelName, direct = false, onReadCursor, initialHistory, initialHistoryError, showTitle = false, headerLeading, channelMenu, headerActions, readOnly = false, composerNotice, composerBanner, onBlockAuthor, messageSounds = true, onAuthorChange, onHistoryChange, onLocalPresenceChange, onOnlineChange }: { name: string; signedIn: boolean; identityReady: boolean; channelId?: string; channelName?: string; direct?: boolean; onReadCursor?: (seq: string) => void; initialHistory?: GeneralChatHistory; initialHistoryError?: string; showTitle?: boolean; headerLeading?: ReactNode; channelMenu?: ReactNode; headerActions?: ReactNode; readOnly?: boolean; composerNotice?: ReactNode; /** Shown above an active composer. */ composerBanner?: ReactNode; /** Offers Block in message actions; the caller confirms. */ onBlockAuthor?: (author: ChatAuthor) => void; messageSounds?: boolean; onAuthorChange?: (author: ChatAuthor) => void; onHistoryChange?: (history: GeneralChatHistory) => void; onLocalPresenceChange?: (status: PresenceStatus) => void; onOnlineChange?: (online: boolean) => void }) {
   const [state, setState] = useState(() => initialChatView(initialHistory, initialHistoryError));
   const [showConnectionStatus, setShowConnectionStatus] = useState(false);
   const [firstItemIndex, setFirstItemIndex] = useState(INITIAL_ITEM_INDEX);
@@ -78,6 +80,9 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   const [showPins, setShowPins] = useState(false);
   const [pinning, setPinning] = useState<Set<string>>(() => new Set());
   const [pinError, setPinError] = useState<{ messageId: string; active: boolean; text: string }>();
+  // Runs of blocked messages the reader chose to show, by their first message.
+  const [revealedRuns, setRevealedRuns] = useState<ReadonlySet<string>>(() => new Set());
+  const blockedIds = useBlockedIds();
   const press = useRef<{ timer: ReturnType<typeof setTimeout>; x: number; y: number; pointerId: number }>(undefined);
   const suppressClick = useRef(false);
   const cancelPress = () => { clearTimeout(press.current?.timer); press.current = undefined; };
@@ -91,6 +96,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     setShowPins(false);
     setPinning(new Set());
     setPinError(undefined);
+    setRevealedRuns(new Set());
     // The drawer can appear under the held finger. Its release click must not
     // activate a newly rendered action, even though that action is in a portal.
     const resetClick = () => { suppressClick.current = false; };
@@ -280,6 +286,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       setState(next);
     }, channelId, { sounds: messageSounds });
     clientRef.current = client;
+    client.setSilencedAuthors(blockedIdsRef.current);
     client.start(initialHistory, initialHistoryError);
     return () => {
       const history = client.snapshotHistory();
@@ -288,6 +295,12 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       clientRef.current = undefined;
     };
   }, [channelId]);
+
+  const blockedIdsRef = useRef(blockedIds);
+  useEffect(() => {
+    blockedIdsRef.current = blockedIds;
+    clientRef.current?.setSilencedAuthors(blockedIds);
+  }, [blockedIds]);
 
   useEffect(() => {
     setShowConnectionStatus(false);
@@ -335,7 +348,21 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     const list = initialListRef.current;
     if (list) list.scrollTop = list.scrollHeight;
   }, [messages, listReady]);
-  const typingNames = state.typingAuthors.map((author) => author.name);
+  const typingNames = state.typingAuthors.filter((author) => !blockedIds.has(author.id)).map((author) => author.name);
+  const ownId = state.author?.id;
+  const channelRuns = useMemo(() => blockedRuns(messages, blockedIds, ownId), [messages, blockedIds, ownId]);
+  const threadRootId = state.thread?.rootId;
+  const threadRuns = useMemo(() => {
+    if (!threadRootId || !blockedIds.size) return new Map<string, BlockedRun>();
+    const root = state.messages.find((message) => message.id === threadRootId);
+    return new Map([...blockedRuns(root ? [root] : [], blockedIds, ownId),
+      ...blockedRuns(state.messages.filter((message) => message.threadRootId === threadRootId), blockedIds, ownId)]);
+  }, [state.messages, threadRootId, blockedIds, ownId]);
+  const toggleRun = (first: string, shown: boolean) => setRevealedRuns((current) => {
+    const next = new Set(current);
+    if (shown) next.add(first); else next.delete(first);
+    return next;
+  });
   const typingLabel = typingNames.length > 2 ? "Several people are typing…"
     : typingNames.length ? `${typingNames.join(" and ")} ${typingNames.length === 1 ? "is" : "are"} typing…` : "";
   const [displayedTypingLabel, setDisplayedTypingLabel] = useState("");
@@ -366,8 +393,21 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     const pending = !("content" in message);
     const author = message.author;
     const divider = hydrated && !inThread ? dateDivider(message.createdAt, messages[index - 1]?.createdAt) : undefined;
+    const run = pending ? undefined : (inThread ? threadRuns : channelRuns).get(message.clientMessageId);
+    const runShown = !!run && revealedRuns.has(run.first);
+    if (run && !runShown) {
+      // Every message stays one list item, so history paging is unchanged.
+      if (run.first !== message.clientMessageId) return <div key={message.clientMessageId} className="chat-blocked-hidden" />;
+      return <div key={message.clientMessageId}>
+        {divider && <div className="chat-date-divider"><time dateTime={message.createdAt}>{divider}</time></div>}
+        <div className="chat-blocked-run"><Ban size={16} aria-hidden="true" /><span>{blockedLabel(run.count)}</span>
+          <span aria-hidden="true">—</span><button type="button" onClick={() => toggleRun(run.first, true)} aria-label={`Show ${blockedLabel(run.count)}`}>Show</button></div>
+      </div>;
+    }
     return <div key={message.clientMessageId}>
       {divider && <div className="chat-date-divider"><time dateTime={message.createdAt}>{divider}</time></div>}
+      {run?.first === message.clientMessageId && <div className="chat-blocked-run"><Ban size={16} aria-hidden="true" /><span>{blockedLabel(run.count)}</span>
+        <span aria-hidden="true">—</span><button type="button" onClick={() => toggleRun(run.first, false)} aria-label={`Hide ${blockedLabel(run.count)}`}>Hide</button></div>}
       <article className={`chat-message${pending ? " chat-message-pending" : ""}${"content" in message && message.pin ? " chat-message-pinned" : ""}${!inThread && "id" in message && state.thread?.rootId === message.id ? " chat-message-thread-active" : ""}`} data-message-key={message.clientMessageId}
         onPointerDown={(event) => {
           cancelPress();
@@ -516,7 +556,12 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       onClose={() => setActionTarget(undefined)} onCopied={setActionStatus}
       onReply={() => openThread(actionMessage.threadRootId ?? actionMessage.id)}
       onEdit={() => openEdit(actionMessage.id)} onHistory={() => openHistory(actionMessage.id)}
-      onViewReactions={(emoji) => showReactors(actionMessage.id, emoji, actionTarget.anchor)} />}
+      onViewReactions={(emoji) => showReactors(actionMessage.id, emoji, actionTarget.anchor)}
+      block={onBlockAuthor && !actionMessage.author.isGuest && actionMessage.author.id !== state.author?.id ? {
+        blocked: blockedIds.has(actionMessage.author.id), name: actionMessage.author.name,
+        onBlock: () => onBlockAuthor(actionMessage.author),
+        onUnblock: () => unblock(actionMessage.author.id),
+      } : undefined} />}
     {reactorsTarget && reactorsMessage && state.channelId && <ReactorsPanel key={reactorsMessage.id} channelId={state.channelId}
       message={reactorsMessage} target={reactorsTarget} onClose={closeReactors} />}
 
@@ -527,6 +572,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     </p>
 
     {readOnly ? <div className="chat-composer channel-preview">{composerNotice}</div> : <div className="chat-composer">
+      {composerBanner}
       {state.pendingSend?.threadRootId && <p className="chat-inline-error">A thread reply is awaiting confirmation. <button type="button" onClick={() => openThread(state.pendingSend!.threadRootId!)}>Open thread</button></p>}
       {state.sessionError && <p className="chat-inline-error" role="alert">{state.sessionError} <button type="button" onClick={() => clientRef.current?.retrySession()}>Retry session</button></p>}
       {validationError && <p className="chat-inline-error" role="alert">{validationError}</p>}

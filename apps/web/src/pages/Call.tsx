@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useSy
 import { animals, colors, uniqueNamesGenerator } from "unique-names-generator";
 import { ArrowLeft, AudioLines, ChevronDown, Hash, HeadphoneOff, Headphones, Mic, MicOff, PhoneOff, Settings, Speech, Users, VolumeX, X } from "lucide-react";
 import ProfileForm from "../account/ProfileForm";
+import PrivacySettings from "../account/PrivacySettings";
 import { getAccount, logout, type Account } from "../account/client";
 import { routeOutput } from "../audio/output";
 import { rosterChanges } from "../audio/roster";
@@ -246,9 +247,13 @@ interface CallProps {
    */
   engaged?: boolean;
   onChatOnlineChange?: (online: boolean) => void;
+  /** A notice above the composer, such as a DM request still waiting. */
+  composerBanner?: ReactNode;
+  /** Offers "Block" in message actions; the caller confirms. */
+  onBlockAuthor?: (author: ChatAuthor) => void;
 }
 
-export default function Call({ channel, onReadCursor, channelActions, voiceChannels, spaceRail, channelNavigation, membersPanel, navigationOpen = false, onNavigationToggle, initialAccount, initialHistory, initialHistoryError, onHistoryChange, embedded = false, engaged = true, onChatOnlineChange }: CallProps = {}) {
+export default function Call({ channel, onReadCursor, channelActions, voiceChannels, spaceRail, channelNavigation, membersPanel, navigationOpen = false, onNavigationToggle, initialAccount, initialHistory, initialHistoryError, onHistoryChange, embedded = false, engaged = true, onChatOnlineChange, composerBanner, onBlockAuthor }: CallProps = {}) {
   const systemSounds = useSyncExternalStore(subscribeSystemSounds, getSystemSoundsEnabled, () => true);
   const [state, setState] = useState(initialState);
   const [name, setName] = useState(initialAccount?.displayName ?? "");
@@ -863,7 +868,7 @@ export default function Call({ channel, onReadCursor, channelActions, voiceChann
         </ChannelSidebar>
         <div className="stage">
           {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened || mutedParticipants.has(media.participantId)} output={output} volume={outputVolume * (participantVolumes[media.participantId] ?? 100) / 100} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
-          <Chat key={`${channel?.id ?? "general"}:${channelJoined}`} name={name} signedIn={!!account} identityReady={identityReady && engaged} direct={channel?.direct} onReadCursor={onReadCursor} readOnly={!channelJoined} composerNotice={channelActions} messageSounds={engaged && channelJoined} onOnlineChange={onChatOnlineChange} channelId={channel?.id} channelName={channel?.name} initialHistory={initialHistory} initialHistoryError={initialHistoryError} onHistoryChange={onHistoryChange} showTitle={!!channel || embedded} onAuthorChange={setChatAuthor} onLocalPresenceChange={accountPresence ? undefined : setLocalPresence}
+          <Chat key={`${channel?.id ?? "general"}:${channelJoined}`} name={name} signedIn={!!account} identityReady={identityReady && engaged} direct={channel?.direct} onReadCursor={onReadCursor} readOnly={!channelJoined} composerNotice={channelActions} composerBanner={composerBanner} onBlockAuthor={onBlockAuthor} messageSounds={engaged && channelJoined} onOnlineChange={onChatOnlineChange} channelId={channel?.id} channelName={channel?.name} initialHistory={initialHistory} initialHistoryError={initialHistoryError} onHistoryChange={onHistoryChange} showTitle={!!channel || embedded} onAuthorChange={setChatAuthor} onLocalPresenceChange={accountPresence ? undefined : setLocalPresence}
             headerLeading={onNavigationToggle && <button className="navigation-toggle" type="button" aria-label="Back to Browse" onClick={onNavigationToggle}><ArrowLeft aria-hidden="true" /></button>}
             channelMenu={narrow ? <>{membersPanel && <button type="button" className="member-list-toggle" aria-expanded={membersVisible} aria-controls={membersVisible ? "space-member-list" : undefined} onClick={() => setMembersVisible(!membersVisible)}><Users aria-hidden="true" />{membersVisible ? "Hide member list" : "Members"}</button>}</> : undefined}
             headerActions={<div className="voice-actions">
@@ -884,6 +889,7 @@ export default function Call({ channel, onReadCursor, channelActions, voiceChann
         </div>
         <p className="noise-status">Your username is unique. Your display name is what people see in conversations.</p>
         {profileOpen && account && <ProfileForm account={account} onSaved={(updated) => { setAccount(updated); setName(updated.displayName ?? ""); setProfileOpen(false); }} />}
+        {profileOpen && account?.username && <PrivacySettings />}
       </dialog>
       <dialog ref={audioDialog} className="audio-dialog" aria-labelledby="audio-dialog-title" onPointerDown={(event) => {
         if (event.target !== event.currentTarget) return;
