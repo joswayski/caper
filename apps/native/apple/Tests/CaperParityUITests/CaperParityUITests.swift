@@ -1436,6 +1436,48 @@ final class CaperParityUITests: XCTestCase {
         capture("login-error", app: app)
     }
 
+    /// Blocks an account through the fixture as the signed-in owner.
+    private nonisolated static func fixtureBlock(_ accountID: String) async throws {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:3001/api/blocks/\(accountID)")!)
+        request.httpMethod = "PUT"
+        request.setValue("Bearer fixture-owner-token", forHTTPHeaderField: "authorization")
+        let (_, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 204)
+    }
+
+    func testBlockedAuthorsCollapseUntilShown() async throws {
+        try await Self.fixtureControl(["reset": true])
+        addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+        // Maya wrote the second and third seeded messages in #general.
+        try await Self.fixtureBlock("member000001")
+        let app = launch()
+        let toggle = try require(app.buttons["blocked-run-toggle"], timeout: 30, "Maya's messages must collapse into one run")
+        XCTAssertEqual(toggle.label, "Show 2 blocked messages")
+        XCTAssertFalse(app.descendants(matching: .any)["message-row-chan00000001m02"].exists)
+        capture("blocked-messages-collapsed", app: app)
+        toggle.tap()
+        _ = try require(app.descendants(matching: .any)["message-row-chan00000001m02"], timeout: 5, "Show must reveal the run in place")
+        XCTAssertTrue(app.descendants(matching: .any)["message-row-chan00000001m03"].exists)
+        XCTAssertEqual(app.buttons["blocked-run-toggle"].label, "Hide 2 blocked messages")
+    }
+
+    #if os(macOS)
+    func testMessageRequestOpensReadOnlyAndDeclines() async throws {
+        try await Self.fixtureControl(["reset": true])
+        addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+        try await Self.fixtureControl(["messageRequest": [String: String]()])
+        let app = launch()
+        try require(app.buttons["message-requests"], timeout: 30, "An incoming request adds the Message requests row").tap()
+        try require(app.buttons["message-request-dm0000000003"], timeout: 5, "The list shows Jordan's request").tap()
+        _ = try require(app.descendants(matching: .any)["message-request-bar"], timeout: 10, "A request replaces the composer")
+        XCTAssertFalse(app.descendants(matching: .any)["message-composer"].exists, "Requests are read-only")
+        capture("message-request-bar", app: app)
+        app.buttons["message-request-decline"].tap()
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.buttons["message-requests"])
+        XCTAssertEqual(XCTWaiter.wait(for: [gone], timeout: 10), .completed, "Declining removes the last request")
+    }
+    #endif
+
     func testManageSpace() {
         let app = launch(fixture: "manage-space")
         assertStaticText("Manage space", in: app)
