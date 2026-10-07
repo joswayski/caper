@@ -306,26 +306,36 @@ public enum AttachmentPreparer {
         return AttachmentPolicy.webPAddingICCProfile(webP, profile: profile, width: pixels.width, height: pixels.height, hasAlpha: hasAlpha)
     }
 
-    /// libavif's encoder speed (0 slowest ... 10 fastest), with constant-quality
-    /// rate control (`end-usage=q`) so `quality` sets the AV1 quantizer exactly
-    /// as `avifenc -q` does.
-    ///
-    /// Not the usual 6: the bundled aom (libaom-Xcode 3.0.0) is plain C (no
-    /// NEON/SSE) and predates aom's all-intra mode, so its speed 6 took about
-    /// 10x longer than speed 7 for the same quality (22-48 s for a 6 MP photo
-    /// on a 4-core x86-64). Speed 7 selects aom's realtime mode, whose default
-    /// rate control would ignore `quality`; `end-usage=q` restores it. Measured
-    /// with this exact libavif/aom on the five 6-14 MP benchmark photos (4
-    /// threads, quality 85): mean SSIMULACRA2 83.62 against 83.28 for
-    /// `avifenc -q 85 -s 6 -y 420` (libavif 1.0.4, aom 3.8.2; per photo
-    /// -0.02...+1.15), 3% more bytes than it and 83% of WebP q92's bytes,
-    /// in about 3x avifenc's time. Speeds 7-9 give identical output here.
-    static let avifSpeed: Int32 = 7
+    /// libavif's encoder speed (0 slowest ... 10 fastest). At 6 libavif runs
+    /// aom in its all-intra still-image mode with constant-quality rate
+    /// control, so `quality` sets the quantizer exactly as `avifenc -q` does.
+    /// About 1.8 s for a 6-14 MP photo on 4 x86-64 cores with SIMD; speed 8
+    /// halves that for 0.7% more bytes and 0.17 lower SSIMULACRA2.
+    static let avifSpeed: Int32 = 6
 
-    /// libavif was built with an AV1 encoder (aom). ImageIO decodes AVIF
-    /// (iOS 16 / macOS 13 and later) but offers no AVIF destination, and any
-    /// future one would take a 0...1 quality unrelated to libavif's scale, so
-    /// photos are always encoded with libavif.
+    /// aom tuning for the colour planes. libavif 1.3+ with aom 3.13+ defaults
+    /// stills to `tune=iq`, whose different quality-to-quantizer table makes
+    /// quality 85 about 2 SSIMULACRA2 points better and 2-3% larger (and
+    /// slower) than the `avifenc -q 85` the server's `avifQuality` was chosen
+    /// with; `ssim` keeps that scale (and matches Android). Measured with this
+    /// exact libavif 1.4.2/aom 3.15.1 build (x86-64 SIMD, 4 threads, quality
+    /// 85, speed 6) on the five 6-14 MP benchmark photos: mean SSIMULACRA2
+    /// 83.35 and 6.33 MB against 83.27 and 6.32 MB for `avifenc -q 85 -s 6
+    /// -y 420` (libavif 1.0.4, aom 3.8.2), in about 0.9x its time.
+    static let avifColorTune = "ssim"
+
+    /// The bundled encoder's versions, e.g. "libavif 1.4.2 aom [enc]:v3.15.1".
+    static let avifLibraryVersions: String = {
+        var codecs = [CChar](repeating: 0, count: 256)
+        avifCodecVersions(&codecs)
+        let codecVersions = codecs.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
+        return "libavif \(String(cString: avifVersion())) \(codecVersions)"
+    }()
+
+    /// libavif was built with an AV1 encoder (aom, by build-libavif.sh).
+    /// ImageIO decodes AVIF (iOS 16 / macOS 13 and later) but offers no AVIF
+    /// destination, and any future one would take a 0...1 quality unrelated
+    /// to libavif's scale, so photos are always encoded with libavif.
     static let avifEncodable: Bool = avifCodecName(AVIF_CODEC_CHOICE_AUTO, avifCodecFlags(AVIF_CODEC_FLAG_CAN_ENCODE.rawValue)) != nil
 
     /// A photo as AVIF through libavif's C API: 8-bit YUV 4:2:0, full range,
@@ -371,7 +381,8 @@ public enum AttachmentPreparer {
         encoder.pointee.quality = Int32(quality)
         encoder.pointee.speed = avifSpeed
         encoder.pointee.maxThreads = Int32(max(1, ProcessInfo.processInfo.activeProcessorCount))
-        guard avifEncoderSetCodecSpecificOption(encoder, "end-usage", "q") == AVIF_RESULT_OK else { return nil }
+        // "c:" sets the colour planes only; a photo's alpha plane keeps libavif's default.
+        guard avifEncoderSetCodecSpecificOption(encoder, "c:tune", avifColorTune) == AVIF_RESULT_OK else { return nil }
         var output = avifRWData()
         defer { avifRWDataFree(&output) }
         guard avifEncoderWrite(encoder, image, &output) == AVIF_RESULT_OK, let bytes = output.data, output.size > 0 else { return nil }

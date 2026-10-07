@@ -68,6 +68,12 @@ if [[ ! -f "$RN_DIR/src/rnnoise_data.c" ]]; then
 fi
 test -f "$RN_DIR/COPYING"
 
+# AVIF photo encoding: libavif 1.4.2 and aom 3.15.1's encoder, built from
+# SHA-256-pinned upstream release tarballs into one static XCFramework
+# (skipped when this exact recipe is already built).
+"$ROOT/build-libavif.sh"
+test -f "$ROOT/.build/libavif-1.4.2/libavif.xcframework/Info.plist"
+
 XCODEGEN_COMMIT=21ac9944b0ab546a07422dbed86f33dd2ebd76f8
 XCODEGEN="$ROOT/.build/xcodegen-$XCODEGEN_COMMIT"
 if [[ ! -d "$XCODEGEN/.git" ]]; then

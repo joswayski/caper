@@ -993,10 +993,39 @@ final class AttachmentTests: XCTestCase {
 
     func testAVIFEncoderIsBundled() {
         XCTAssertTrue(AttachmentPreparer.avifEncodable, "libavif is built with the aom encoder")
+        // The pinned versions from build-libavif.sh, encoder only (no aom decoder).
+        XCTAssertEqual(AttachmentPreparer.avifLibraryVersions, "libavif 1.4.2 aom [enc]:v3.15.1")
+        XCTAssertEqual(AttachmentPreparer.avifSpeed, 6, "all-intra good-quality mode, as avifenc -s 6")
+        XCTAssertEqual(AttachmentPreparer.avifColorTune, "ssim", "keeps avifenc 1.0's quality scale instead of tune=iq")
+    }
+
+    func testAVIFEncodesALargePhoto() throws {
+        // A 3 MP opaque noisy gradient through the optimised build at the real settings.
+        let width = 2048, height = 1536
+        var bytes = [UInt8](repeating: 255, count: width * height * 4)
+        for y in 0..<height {
+            for x in 0..<width {
+                let offset = (y * width + x) * 4
+                bytes[offset] = UInt8(truncatingIfNeeded: x / 8 + (x &* 7 &+ y &* 13) % 5)
+                bytes[offset + 1] = UInt8(truncatingIfNeeded: y / 6)
+                bytes[offset + 2] = UInt8(truncatingIfNeeded: (x + y) / 14)
+            }
+        }
+        let provider = try XCTUnwrap(CGDataProvider(data: Data(bytes) as CFData))
+        let image = try XCTUnwrap(CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
+                                          space: try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB)),
+                                          bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue),
+                                          provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+        let pixels = try XCTUnwrap(AttachmentPreparer.rgbaPixels(image))
+        let avif = try XCTUnwrap(AttachmentPreparer.encodeAVIF(pixels, quality: 85))
+        let props = try properties(avif)
+        XCTAssertEqual((props[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue, width)
+        XCTAssertEqual((props[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue, height)
+        XCTAssertLessThan(avif.count, pixels.straight.count / 8)
     }
 
     func testAVIFRoundTripsThroughImageIO() throws {
-        // A smooth photo-like gradient; small because tests run unoptimised C.
+        // A smooth photo-like gradient.
         let image = rgbaImage(width: 96, height: 64) { x, y in [UInt8(x * 2), UInt8(y * 3), UInt8((x + y) % 256), 255] }
         let pixels = try XCTUnwrap(AttachmentPreparer.rgbaPixels(image))
         XCTAssertNil(pixels.iccProfile)

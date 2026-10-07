@@ -40,7 +40,7 @@ case "$MODE" in
     test -f "$ROOT/dist/Caper.app/Contents/Frameworks/CaperRTCBridge.framework/Resources/dpdfnet8_48khz_hr.onnx"
     test -f "$ROOT/dist/Caper.app/Contents/Resources/WebRTC-LICENSE.txt"
     test -f "$ROOT/dist/Caper.app/Contents/Resources/WebRTC-PATENTS.txt"
-    for license in libwebp libavif libaom libvmaf; do test -f "$ROOT/dist/Caper.app/Contents/Resources/$license-LICENSE.txt"; done
+    for license in libwebp-LICENSE libavif-LICENSE libaom-LICENSE libaom-PATENTS; do test -f "$ROOT/dist/Caper.app/Contents/Resources/$license.txt"; done
     test -f "$ROOT/dist/Caper.app/Contents/Resources/Satoshi-FFL.txt"
     for font in Regular Medium Bold Black; do test -f "$ROOT/dist/Caper.app/Contents/Resources/Satoshi-$font.otf"; done
     lipo -archs "$ROOT/dist/Caper.app/Contents/MacOS/Caper" | tr ' ' '\n' | grep -qx "$machine"
@@ -70,7 +70,7 @@ case "$MODE" in
     test -f "$ROOT/dist/Caper.app/Frameworks/CaperRTCBridgeIOS.framework/dpdfnet8_48khz_hr.onnx"
     test -f "$ROOT/dist/Caper.app/WebRTC-LICENSE.txt"
     test -f "$ROOT/dist/Caper.app/WebRTC-PATENTS.txt"
-    for license in libwebp libavif libaom libvmaf; do test -f "$ROOT/dist/Caper.app/$license-LICENSE.txt"; done
+    for license in libwebp-LICENSE libavif-LICENSE libaom-LICENSE libaom-PATENTS; do test -f "$ROOT/dist/Caper.app/$license.txt"; done
     test -f "$ROOT/dist/Caper.app/Satoshi-FFL.txt"
     for font in Regular Medium Bold Black; do test -f "$ROOT/dist/Caper.app/Satoshi-$font.otf"; done
     lipo -archs "$ROOT/dist/Caper.app/Caper" | tr ' ' '\n' | grep -qx arm64

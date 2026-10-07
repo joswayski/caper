@@ -13,19 +13,6 @@ packages:
   libwebp:
     url: https://github.com/SDWebImage/libwebp-Xcode.git
     exactVersion: 1.6.0
-  # AVIF photo attachments: libavif 1.0.0 with aom 3.0.0 (BSD;
-  # Resources/libavif-LICENSE.txt, libaom-LICENSE.txt, libvmaf-LICENSE.txt).
-  # Static, imported implementation-only by CaperCore. libaom and libvmaf are
-  # libavif's own dependencies, listed only to pin their exact versions.
-  libavif:
-    url: https://github.com/SDWebImage/libavif-Xcode.git
-    exactVersion: 1.0.0
-  libaom:
-    url: https://github.com/SDWebImage/libaom-Xcode.git
-    exactVersion: 3.0.0
-  libvmaf:
-    url: https://github.com/SDWebImage/libvmaf-Xcode.git
-    exactVersion: 2.3.1
 settings:
   base:
     SWIFT_VERSION: "5.0"
@@ -118,8 +105,11 @@ targets:
         product: libwebp
         link: true
         embed: false
-      - package: libavif
-        product: libavif
+      # AVIF photo attachments: libavif 1.4.2 + aom 3.15.1 encoder, a static
+      # XCFramework built from pinned sources by build-libavif.sh (BSD;
+      # Resources/libavif-LICENSE.txt, libaom-LICENSE.txt, libaom-PATENTS.txt).
+      # Imported implementation-only by CaperCore.
+      - framework: .build/libavif-1.4.2/libavif.xcframework
         link: true
         embed: false
     settings:
@@ -153,8 +143,11 @@ targets:
         product: libwebp
         link: true
         embed: false
-      - package: libavif
-        product: libavif
+      # AVIF photo attachments: libavif 1.4.2 + aom 3.15.1 encoder, a static
+      # XCFramework built from pinned sources by build-libavif.sh (BSD;
+      # Resources/libavif-LICENSE.txt, libaom-LICENSE.txt, libaom-PATENTS.txt).
+      # Imported implementation-only by CaperCore.
+      - framework: .build/libavif-1.4.2/libavif.xcframework
         link: true
         embed: false
     settings:
