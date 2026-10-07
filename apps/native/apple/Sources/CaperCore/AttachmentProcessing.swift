@@ -4,7 +4,9 @@ import CoreMedia
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
-// Implementation-only so importers of CaperCore (apps, tests) need no libwebp headers.
+// Implementation-only so importers of CaperCore (apps, tests) need no libwebp
+// or libavif headers.
+@_implementationOnly import libavif
 @_implementationOnly import libwebp
 
 public struct AttachmentPreviewImage: Equatable, Sendable {
@@ -152,7 +154,8 @@ public enum AttachmentPreparer {
                 palette = IndexedPNG.palette(width: image.width, height: image.height, rgba: drawn.straight, maxColors: settings.paletteColors)
             }
         }
-        let candidates = AttachmentPolicy.stillCandidates(contentType: contentType, source: stillSource, colorCount: palette?.colors.count, settings: settings)
+        let candidates = AttachmentPolicy.stillCandidates(contentType: contentType, source: stillSource, colorCount: palette?.colors.count,
+                                                          settings: settings, avifEncodable: avifEncodable)
         // Lossless means lossless: every lossless result must decode to the same pixels.
         var best: EncodedStill?
         for candidate in candidates {
@@ -163,16 +166,26 @@ public enum AttachmentPreparer {
                 if let palette, let pixels { data = IndexedPNG.encode(palette, iccProfile: pixels.iccProfile); type = "image/png" }
             case .losslessWebP:
                 if let pixels { data = encodeLosslessWebP(pixels); type = "image/webp" }
-            case .lossy:
+            case .avif, .lossy:
                 continue
             }
             guard let data, let pixels, data.count < (best?.data.count ?? Int.max), reproduces(data, pixels) else { continue }
             best = EncodedStill(data: data, contentType: type, width: image.width, height: image.height, lossless: true)
         }
         if let best { return best }
-        for case .lossy(let quality) in candidates {
-            guard let encoded = encodeLossy(image, quality: quality) else { return nil }
-            return EncodedStill(data: encoded.data, contentType: encoded.contentType, width: image.width, height: image.height, lossless: false)
+        for candidate in candidates {
+            switch candidate {
+            case .avif(let quality):
+                // Any AVIF failure falls through to the WebP/JPEG candidate.
+                if let data = encodeAVIF(pixels ?? rgbaPixels(image), quality: quality) {
+                    return EncodedStill(data: data, contentType: "image/avif", width: image.width, height: image.height, lossless: false)
+                }
+            case .lossy(let quality):
+                guard let encoded = encodeLossy(image, quality: quality) else { return nil }
+                return EncodedStill(data: encoded.data, contentType: encoded.contentType, width: image.width, height: image.height, lossless: false)
+            case .indexedPNG, .losslessWebP:
+                continue
+            }
         }
         return nil
     }
@@ -291,6 +304,78 @@ public enum AttachmentPreparer {
         var hasAlpha = false
         for offset in stride(from: 3, to: pixels.straight.count, by: 4) where pixels.straight[offset] != 255 { hasAlpha = true; break }
         return AttachmentPolicy.webPAddingICCProfile(webP, profile: profile, width: pixels.width, height: pixels.height, hasAlpha: hasAlpha)
+    }
+
+    /// libavif's encoder speed (0 slowest ... 10 fastest), with constant-quality
+    /// rate control (`end-usage=q`) so `quality` sets the AV1 quantizer exactly
+    /// as `avifenc -q` does.
+    ///
+    /// Not the usual 6: the bundled aom (libaom-Xcode 3.0.0) is plain C (no
+    /// NEON/SSE) and predates aom's all-intra mode, so its speed 6 took about
+    /// 10x longer than speed 7 for the same quality (22-48 s for a 6 MP photo
+    /// on a 4-core x86-64). Speed 7 selects aom's realtime mode, whose default
+    /// rate control would ignore `quality`; `end-usage=q` restores it. Measured
+    /// with this exact libavif/aom on the five 6-14 MP benchmark photos (4
+    /// threads, quality 85): mean SSIMULACRA2 83.62 against 83.28 for
+    /// `avifenc -q 85 -s 6 -y 420` (libavif 1.0.4, aom 3.8.2; per photo
+    /// -0.02...+1.15), 3% more bytes than it and 83% of WebP q92's bytes,
+    /// in about 3x avifenc's time. Speeds 7-9 give identical output here.
+    static let avifSpeed: Int32 = 7
+
+    /// libavif was built with an AV1 encoder (aom). ImageIO decodes AVIF
+    /// (iOS 16 / macOS 13 and later) but offers no AVIF destination, and any
+    /// future one would take a 0...1 quality unrelated to libavif's scale, so
+    /// photos are always encoded with libavif.
+    static let avifEncodable: Bool = avifCodecName(AVIF_CODEC_CHOICE_AUTO, avifCodecFlags(AVIF_CODEC_FLAG_CAN_ENCODE.rawValue)) != nil
+
+    /// A photo as AVIF through libavif's C API: 8-bit YUV 4:2:0, full range,
+    /// BT.601 matrix, `quality` passed straight to libavif (the same scale as
+    /// `avifenc -q`), no Exif/XMP. Colour matches the lossless WebP path: the
+    /// pixels are in the image's own RGB space with its ICC profile, or sRGB
+    /// signalled as CICP 1/13/6 (what avifenc writes for an untagged PNG).
+    /// HDR (PQ/HLG) photos return nil and take the WebP/JPEG path, like any
+    /// encoder error.
+    static func encodeAVIF(_ pixels: RGBAPixels?, quality: Int) -> Data? {
+        guard avifEncodable, let pixels, (1...100).contains(quality), pixels.width > 0, pixels.height > 0,
+              pixels.straight.count == pixels.width * pixels.height * 4, !CGColorSpaceUsesITUR_2100TF(pixels.space),
+              let image = avifImageCreate(UInt32(pixels.width), UInt32(pixels.height), 8, AVIF_PIXEL_FORMAT_YUV420) else { return nil }
+        defer { avifImageDestroy(image) }
+        image.pointee.yuvRange = AVIF_RANGE_FULL
+        image.pointee.matrixCoefficients = avifMatrixCoefficients(AVIF_MATRIX_COEFFICIENTS_BT601)
+        if let profile = pixels.iccProfile {
+            let set = profile.withUnsafeBytes { bytes -> avifResult in
+                avifImageSetProfileICC(image, bytes.bindMemory(to: UInt8.self).baseAddress, bytes.count)
+            }
+            guard set == AVIF_RESULT_OK else { return nil }
+        } else {
+            image.pointee.colorPrimaries = avifColorPrimaries(AVIF_COLOR_PRIMARIES_BT709)
+            image.pointee.transferCharacteristics = avifTransferCharacteristics(AVIF_TRANSFER_CHARACTERISTICS_SRGB)
+        }
+        var opaque = true
+        for offset in stride(from: 3, to: pixels.straight.count, by: 4) where pixels.straight[offset] != 255 { opaque = false; break }
+        var rgb = avifRGBImage()
+        avifRGBImageSetDefaults(&rgb, image)
+        rgb.depth = 8
+        rgb.format = AVIF_RGB_FORMAT_RGBA
+        rgb.alphaPremultiplied = avifBool(0)
+        // An opaque photo gets no alpha plane at all.
+        rgb.ignoreAlpha = avifBool(opaque ? 1 : 0)
+        rgb.rowBytes = UInt32(pixels.width * 4)
+        let converted = pixels.straight.withUnsafeBufferPointer { buffer -> avifResult in
+            rgb.pixels = UnsafeMutablePointer(mutating: buffer.baseAddress)
+            defer { rgb.pixels = nil }
+            return avifImageRGBToYUV(image, &rgb)
+        }
+        guard converted == AVIF_RESULT_OK, let encoder = avifEncoderCreate() else { return nil }
+        defer { avifEncoderDestroy(encoder) }
+        encoder.pointee.quality = Int32(quality)
+        encoder.pointee.speed = avifSpeed
+        encoder.pointee.maxThreads = Int32(max(1, ProcessInfo.processInfo.activeProcessorCount))
+        guard avifEncoderSetCodecSpecificOption(encoder, "end-usage", "q") == AVIF_RESULT_OK else { return nil }
+        var output = avifRWData()
+        defer { avifRWDataFree(&output) }
+        guard avifEncoderWrite(encoder, image, &output) == AVIF_RESULT_OK, let bytes = output.data, output.size > 0 else { return nil }
+        return Data(bytes: bytes, count: Int(output.size))
     }
 
     static let webPEncodable: Bool = {

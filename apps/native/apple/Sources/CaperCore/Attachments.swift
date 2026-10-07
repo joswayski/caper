@@ -148,10 +148,21 @@ extension KeyedDecodingContainer {
     }
 }
 
+/// Photo format the server asks for (`compression.imageFormat`; webp when absent).
+public enum AttachmentImageFormat: String, Codable, Equatable, Sendable { case avif, webp }
+
 /// Server-tunable client compression settings from `GET /api/assets/usage`
 /// (`docs/media.md`, "Client compression and previews"). Missing or
 /// out-of-range values fall back to the contract defaults.
 public struct AttachmentCompression: Codable, Equatable, Sendable {
+    /// `.avif` (only the exact value "avif") encodes photos as AVIF where this
+    /// device can, else WebP/JPEG at `imageQuality`. Missing or unknown means
+    /// WebP, so older servers behave as before.
+    public var imageFormat: AttachmentImageFormat = .webp
+    /// AVIF photo quality on libavif's `quality` scale (as `avifenc -q`).
+    public var avifQuality: Int = 85
+    /// WebP/JPEG photo quality and the fallback whenever AVIF is unavailable
+    /// or fails; 100 disables lossy photo re-encoding in either format.
     public var imageQuality: Int = 92
     public var imageMaxEdge: Int = 4096
     public var paletteColors: Int = 256
@@ -162,13 +173,18 @@ public struct AttachmentCompression: Codable, Equatable, Sendable {
 
     public init() {}
 
-    private enum CodingKeys: String, CodingKey { case imageQuality, imageMaxEdge, paletteColors, previewEdge, videoMaxHeight, videoBitrateKbps, audioBitrateKbps }
+    private enum CodingKeys: String, CodingKey {
+        case imageFormat, avifQuality, imageQuality, imageMaxEdge, paletteColors, previewEdge, videoMaxHeight, videoBitrateKbps, audioBitrateKbps
+    }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         func value(_ key: CodingKeys, _ range: ClosedRange<Int>, _ fallback: Int) -> Int {
             guard let decoded = try? values.decodeIfPresent(Int.self, forKey: key), range.contains(decoded) else { return fallback }
             return decoded
         }
+        let format: String? = try? values.decodeIfPresent(String.self, forKey: .imageFormat)
+        imageFormat = format == AttachmentImageFormat.avif.rawValue ? .avif : .webp
+        avifQuality = value(.avifQuality, 1...100, 85)
         imageQuality = value(.imageQuality, 1...100, 92)
         imageMaxEdge = value(.imageMaxEdge, 0...65_536, 4096)
         paletteColors = value(.paletteColors, 0...256, 256)
@@ -297,9 +313,10 @@ public enum AttachmentPolicy {
     }
 
     /// One way to re-encode a still. Lossless candidates are all tried and
-    /// the smallest verified one wins; a lossy candidate is used only when no
-    /// lossless candidate succeeded.
-    public enum StillCandidate: Equatable, Sendable { case indexedPNG, losslessWebP, lossy(quality: Double) }
+    /// the smallest verified one wins; lossy candidates are used only when no
+    /// lossless candidate succeeded, in order: AVIF (libavif `quality`, 1...100)
+    /// and, when the AVIF encoder fails, WebP/JPEG (`lossy`, 0...1).
+    public enum StillCandidate: Equatable, Sendable { case indexedPNG, losslessWebP, avif(quality: Int), lossy(quality: Double) }
 
     public enum WebPFormat: Equatable, Sendable { case lossy, lossless, animated }
 
@@ -352,7 +369,11 @@ public enum AttachmentPolicy {
     /// (or they were not counted). Lossless sources only ever get lossless
     /// candidates: indexed PNG when the palette fits, and lossless WebP.
     /// HEIC/HEIF must always convert because browsers cannot show it.
-    public static func stillCandidates(contentType: String, source: StillSource, colorCount: Int?, settings: AttachmentCompression) -> [StillCandidate] {
+    /// Photos try AVIF first when the server asks for it and this device can
+    /// encode it (`avifEncodable`). `imageQuality` 100 disables lossy encoding
+    /// in either format; HEIC then converts through WebP/JPEG at full quality.
+    public static func stillCandidates(contentType: String, source: StillSource, colorCount: Int?, settings: AttachmentCompression,
+                                       avifEncodable: Bool = false) -> [StillCandidate] {
         let paletteFits = settings.paletteColors > 0 && colorCount.map { $0 <= settings.paletteColors } == true
         switch source {
         case .unchanged:
@@ -362,6 +383,7 @@ public enum AttachmentPolicy {
         case .photo:
             var candidates: [StillCandidate] = paletteFits ? [.indexedPNG] : []
             if settings.imageQuality < 100 {
+                if settings.imageFormat == .avif, avifEncodable { candidates.append(.avif(quality: settings.avifQuality)) }
                 candidates.append(.lossy(quality: Double(settings.imageQuality) / 100))
             } else if AttachmentKind(contentType: contentType) != .image {
                 candidates.append(.lossy(quality: 1))
@@ -423,7 +445,7 @@ public enum AttachmentPolicy {
     }
 
     public static func renamed(_ name: String, contentType: String) -> String {
-        let extensions = ["image/webp": "webp", "image/jpeg": "jpg", "image/png": "png", "video/mp4": "mp4"]
+        let extensions = ["image/avif": "avif", "image/webp": "webp", "image/jpeg": "jpg", "image/png": "png", "video/mp4": "mp4"]
         guard let ext = extensions[contentType] else { return name }
         let base = (name as NSString).deletingPathExtension
         return "\(base.isEmpty ? name : base).\(ext)"

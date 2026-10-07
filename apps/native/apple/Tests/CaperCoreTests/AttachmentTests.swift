@@ -461,6 +461,72 @@ final class AttachmentTests: XCTestCase {
         XCTAssertEqual(AttachmentCompression().videoBitrateKbps, 6000, "matches the API default")
     }
 
+    func testAVIFSettingsDecodeWithDefaults() throws {
+        func compression(_ json: String) throws -> AttachmentCompression {
+            try JSONDecoder().decode(AssetUsage.self, from: Data(#"{"used":0,"limit":10,"compression":\#(json)}"#.utf8)).compression
+        }
+        let older = try compression(#"{"imageQuality":90}"#)
+        XCTAssertEqual(older.imageFormat, .webp, "an older server without imageFormat keeps WebP")
+        XCTAssertEqual(older.avifQuality, 85)
+        XCTAssertEqual(older.imageQuality, 90)
+        XCTAssertEqual(AttachmentCompression().imageFormat, .webp)
+        XCTAssertEqual(AttachmentCompression().avifQuality, 85)
+        let avif = try compression(#"{"imageFormat":"avif","avifQuality":60,"futureField":true}"#)
+        XCTAssertEqual(avif.imageFormat, .avif)
+        XCTAssertEqual(avif.avifQuality, 60)
+        XCTAssertEqual(try compression(#"{"imageFormat":"webp"}"#).imageFormat, .webp)
+        XCTAssertEqual(try compression(#"{"imageFormat":"avif","avifQuality":1}"#).avifQuality, 1)
+        XCTAssertEqual(try compression(#"{"imageFormat":"avif","avifQuality":100}"#).avifQuality, 100)
+        XCTAssertEqual(try compression(#"{"avifQuality":0}"#).avifQuality, 85, "out of range")
+        XCTAssertEqual(try compression(#"{"avifQuality":101}"#).avifQuality, 85, "out of range")
+        XCTAssertEqual(try compression(#"{"avifQuality":"high"}"#).avifQuality, 85)
+        XCTAssertEqual(try compression(#"{"imageFormat":"AVIF"}"#).imageFormat, .webp, "only the exact value avif enables AVIF")
+        XCTAssertEqual(try compression(#"{"imageFormat":"jxl"}"#).imageFormat, .webp)
+        XCTAssertEqual(try compression(#"{"imageFormat":7}"#).imageFormat, .webp)
+        XCTAssertEqual(try compression(#"{"imageFormat":null,"avifQuality":null}"#), AttachmentCompression())
+    }
+
+    func testPhotosTryAVIFThenWebP() {
+        var avifSettings = AttachmentCompression()
+        avifSettings.imageFormat = .avif
+        func candidates(_ type: String, _ source: AttachmentPolicy.StillSource, _ colors: Int? = nil,
+                        _ settings: AttachmentCompression? = nil, avif: Bool = true) -> [AttachmentPolicy.StillCandidate] {
+            AttachmentPolicy.stillCandidates(contentType: type, source: source, colorCount: colors, settings: settings ?? avifSettings, avifEncodable: avif)
+        }
+        XCTAssertEqual(candidates("image/jpeg", .photo), [.avif(quality: 85), .lossy(quality: 0.92)], "AVIF first, WebP/JPEG as the fallback")
+        XCTAssertEqual(candidates("image/heic", .photo), [.avif(quality: 85), .lossy(quality: 0.92)])
+        XCTAssertEqual(candidates("image/webp", .photo), [.avif(quality: 85), .lossy(quality: 0.92)])
+        XCTAssertEqual(candidates("image/jpeg", .photo, 12), [.indexedPNG, .avif(quality: 85), .lossy(quality: 0.92)],
+                       "a flat photo still tries the exact palette first")
+        XCTAssertEqual(candidates("image/jpeg", .photo, avif: false), [.lossy(quality: 0.92)], "no AVIF encoder: WebP/JPEG")
+        var webP = avifSettings
+        webP.imageFormat = .webp
+        XCTAssertEqual(candidates("image/jpeg", .photo, nil, webP), [.lossy(quality: 0.92)], "the server asked for WebP")
+        XCTAssertEqual(candidates("image/jpeg", .photo, nil, AttachmentCompression()), [.lossy(quality: 0.92)],
+                       "an older server that sends no imageFormat keeps WebP")
+        var custom = avifSettings
+        custom.avifQuality = 70
+        custom.imageQuality = 80
+        XCTAssertEqual(candidates("image/jpeg", .photo, nil, custom), [.avif(quality: 70), .lossy(quality: 0.8)])
+        var lossyOff = avifSettings
+        lossyOff.imageQuality = 100
+        XCTAssertEqual(candidates("image/jpeg", .photo, nil, lossyOff), [], "100 disables lossy re-encoding in either format")
+        XCTAssertEqual(candidates("image/heic", .photo, nil, lossyOff), [.lossy(quality: 1)], "HEIC still converts, through the WebP/JPEG path")
+        XCTAssertEqual(AttachmentPolicy.stillCandidates(contentType: "image/jpeg", source: .photo, colorCount: nil, settings: avifSettings),
+                       [.lossy(quality: 0.92)], "AVIF only when the caller says it can encode")
+        for format in [AttachmentImageFormat.avif, .webp] {
+            for colors in [nil, 2, 300] as [Int?] {
+                var settings = AttachmentCompression()
+                settings.imageFormat = format
+                XCTAssertFalse(candidates("image/png", .lossless, colors, settings).contains(.avif(quality: 85)), "screenshots never become AVIF")
+                XCTAssertEqual(candidates("image/gif", .unchanged, colors, settings), [])
+                XCTAssertEqual(candidates("image/avif", .unchanged, colors, settings), [], "AVIF originals upload unchanged")
+            }
+        }
+        XCTAssertEqual(AttachmentPolicy.renamed("IMG_0001.HEIC", contentType: "image/avif"), "IMG_0001.avif")
+        XCTAssertEqual(AttachmentKind(contentType: "image/avif"), .image)
+    }
+
     func testStillSourcesKeepLosslessFilesLossless() {
         XCTAssertEqual(AttachmentPolicy.stillSource(contentType: "image/png"), .lossless)
         XCTAssertEqual(AttachmentPolicy.stillSource(contentType: "image/bmp"), .lossless)
@@ -892,9 +958,12 @@ final class AttachmentTests: XCTestCase {
         XCTAssertNotNil(try properties(jpeg)[kCGImagePropertyGPSDictionary], "fixture carries a location")
         let original = try AttachmentStaging.stage(data: jpeg, filename: "IMG_0001.JPG")
         defer { AttachmentStaging.remove(original.url) }
-        let prepared = await AttachmentPreparer.prepare(original, settings: AttachmentCompression())
+        var avifSettings = AttachmentCompression()
+        avifSettings.imageFormat = .avif
+        let prepared = await AttachmentPreparer.prepare(original, settings: avifSettings)
         defer { AttachmentStaging.remove(prepared.fileURL) }
-        XCTAssertTrue(["image/webp", "image/jpeg"].contains(prepared.contentType), prepared.contentType)
+        XCTAssertEqual(prepared.contentType, "image/avif", "the server asked for AVIF")
+        XCTAssertEqual(prepared.name, "IMG_0001.avif")
         XCTAssertNotEqual(prepared.fileURL, original.url)
         XCTAssertLessThanOrEqual(Double(prepared.byteSize), Double(jpeg.count) * 0.9)
         XCTAssertEqual(prepared.width, 400, "orientation 6 is applied")
@@ -903,12 +972,83 @@ final class AttachmentTests: XCTestCase {
         XCTAssertNil(output[kCGImagePropertyGPSDictionary])
         XCTAssertEqual((output[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1, 1)
 
-        var capped = AttachmentCompression()
+        var capped = avifSettings
         capped.imageMaxEdge = 300
         let scaled = await AttachmentPreparer.prepare(original, settings: capped)
         defer { AttachmentStaging.remove(scaled.fileURL) }
         XCTAssertEqual(scaled.height, 300, "longest edge scaled to imageMaxEdge")
         XCTAssertEqual(scaled.width, 200)
+        XCTAssertEqual(scaled.contentType, "image/avif")
+        let scaledPixels = try decodedPixels(try Data(contentsOf: scaled.fileURL))
+        XCTAssertEqual(scaledPixels.width, 200, "ImageIO decodes the AVIF at its stored size")
+        XCTAssertEqual(scaledPixels.height, 300)
+
+        // Older servers send no imageFormat: WebP (or JPEG) as before.
+        let legacy = await AttachmentPreparer.prepare(original, settings: AttachmentCompression())
+        defer { AttachmentStaging.remove(legacy.fileURL) }
+        XCTAssertTrue(["image/webp", "image/jpeg"].contains(legacy.contentType), legacy.contentType)
+        XCTAssertEqual(legacy.width, 400)
+        XCTAssertEqual(legacy.height, 600)
+    }
+
+    func testAVIFEncoderIsBundled() {
+        XCTAssertTrue(AttachmentPreparer.avifEncodable, "libavif is built with the aom encoder")
+    }
+
+    func testAVIFRoundTripsThroughImageIO() throws {
+        // A smooth photo-like gradient; small because tests run unoptimised C.
+        let image = rgbaImage(width: 96, height: 64) { x, y in [UInt8(x * 2), UInt8(y * 3), UInt8((x + y) % 256), 255] }
+        let pixels = try XCTUnwrap(AttachmentPreparer.rgbaPixels(image))
+        XCTAssertNil(pixels.iccProfile)
+        let avif = try XCTUnwrap(AttachmentPreparer.encodeAVIF(pixels, quality: 85))
+        let bytes = [UInt8](avif)
+        XCTAssertEqual(Array(bytes[4..<12]), Array("ftypavif".utf8), "ISO BMFF with the avif major brand the API sniffs for")
+        XCTAssertNotNil(avif.range(of: Data("colrnclx".utf8)), "sRGB is signalled as CICP")
+        XCTAssertNil(avif.range(of: Data("Exif".utf8)))
+        let source = try XCTUnwrap(CGImageSourceCreateWithData(avif as CFData, nil))
+        XCTAssertEqual(CGImageSourceGetType(source) as String?, "public.avif")
+        let props = try properties(avif)
+        XCTAssertEqual((props[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue, 96)
+        XCTAssertEqual((props[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue, 64)
+        XCTAssertNil(props[kCGImagePropertyGPSDictionary])
+        XCTAssertEqual((props[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1, 1)
+        let decoded = try decodedPixels(avif)
+        XCTAssertEqual(decoded.width, 96)
+        XCTAssertEqual(decoded.height, 64)
+        var error = 0
+        for offset in stride(from: 0, to: decoded.rgba.count, by: 4) {
+            XCTAssertEqual(decoded.rgba[offset + 3], 255, "opaque photos have no alpha plane")
+            for channel in 0..<3 { error += abs(Int(decoded.rgba[offset + channel]) - Int(pixels.straight[offset + channel])) }
+        }
+        XCTAssertLessThan(Double(error) / Double(96 * 64 * 3), 4, "quality 85 stays close to the source")
+        let lower = try XCTUnwrap(AttachmentPreparer.encodeAVIF(AttachmentPreparer.rgbaPixels(noise(width: 64, height: 64)), quality: 40))
+        let higher = try XCTUnwrap(AttachmentPreparer.encodeAVIF(AttachmentPreparer.rgbaPixels(noise(width: 64, height: 64)), quality: 90))
+        XCTAssertLessThan(lower.count, higher.count, "quality is passed to libavif")
+    }
+
+    func testAVIFKeepsAWideGamutProfile() throws {
+        let p3 = try XCTUnwrap(CGColorSpace(name: CGColorSpace.displayP3))
+        let pixels = try XCTUnwrap(AttachmentPreparer.rgbaPixels(manyColours(width: 64, height: 48, space: p3)))
+        let profile = try XCTUnwrap(pixels.iccProfile, "drawn in its own Display P3 space")
+        let avif = try XCTUnwrap(AttachmentPreparer.encodeAVIF(pixels, quality: 85))
+        XCTAssertNotNil(avif.range(of: Data("colrprof".utf8)), "the ICC profile is embedded like the WebP path's")
+        XCTAssertNotNil(avif.range(of: profile))
+        let decoded = try XCTUnwrap(CGImageSourceCreateImageAtIndex(try XCTUnwrap(CGImageSourceCreateWithData(avif as CFData, nil)), 0, nil))
+        let decodedProfile = decoded.colorSpace?.copyICCData().map { $0 as Data }
+        let decodedName = decoded.colorSpace?.name.map { $0 as String }
+        XCTAssertTrue(decodedProfile == profile || decodedName == (CGColorSpace.displayP3 as String), "ImageIO decodes it as Display P3")
+    }
+
+    func testAVIFFailuresFallBack() throws {
+        XCTAssertNil(AttachmentPreparer.encodeAVIF(nil, quality: 85))
+        let pixels = try XCTUnwrap(AttachmentPreparer.rgbaPixels(noise(width: 16, height: 16)))
+        XCTAssertNil(AttachmentPreparer.encodeAVIF(pixels, quality: 0))
+        XCTAssertNil(AttachmentPreparer.encodeAVIF(pixels, quality: 101))
+        let pq = try XCTUnwrap(CGColorSpace(name: CGColorSpace.itur_2100_PQ))
+        let hdr = AttachmentPreparer.RGBAPixels(width: 16, height: 16, straight: pixels.straight, space: pq, iccProfile: nil)
+        XCTAssertNil(AttachmentPreparer.encodeAVIF(hdr, quality: 85), "HDR photos take the WebP/JPEG path")
+        let short = AttachmentPreparer.RGBAPixels(width: 16, height: 17, straight: pixels.straight, space: pixels.space, iccProfile: nil)
+        XCTAssertNil(AttachmentPreparer.encodeAVIF(short, quality: 85))
     }
 
     func testNonMediaFilesUploadUnchanged() async throws {
