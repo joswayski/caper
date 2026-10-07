@@ -210,6 +210,42 @@
   .chat-thread-back { display: grid !important; }
   .chat-thread-close { display: none !important; }
 }
+.chat-forward-card { max-width: 620px; margin-top: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.chat-forward-label { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; color: var(--text-muted); font-size: .72rem; }
+.chat-forward-original { padding-block: 8px; min-width: 0; }
+.chat-forward-original header { display: flex; align-items: center; gap: 8px; }
+.chat-forward-original .chat-avatar { position: static; flex: 0 0 24px; width: 24px; height: 24px; }
+.chat-forward-original strong { min-width: 0; overflow-wrap: anywhere; font-size: .85rem; }
+.chat-forward-original small { color: var(--text-muted); font-size: .7rem; }
+.chat-forward-original p { margin: 8px 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .85rem; line-height: 1.5; }
+.chat-forward-reactions { display: flex; flex-wrap: wrap; gap: 6px; }
+.chat-forward-reactions > span { display: inline-flex; align-items: center; gap: 6px; padding: 3px 7px; border: 1px solid var(--border); border-radius: 8px; font-size: .75rem; }
+.chat-forward-card > button, .chat-forward-body button { min-height: 36px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text); font: inherit; font-size: .8rem; cursor: pointer; }
+.chat-forward-unavailable { color: var(--text-muted); }
+.chat-forward-overlay { z-index: 1100; display: grid; place-items: center; padding: 16px; background: rgb(0 0 0 / 65%); }
+.chat-forward-dialog { display: flex; flex-direction: column; width: min(520px, 100%); max-height: calc(100dvh - 32px); overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); box-shadow: 0 12px 40px rgb(0 0 0 / 35%); }
+.chat-forward-body { display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow-y: auto; padding: 16px; }
+.chat-forward-body h3 { margin: 8px 0 0; font-size: .9rem; }
+.chat-forward-disclosure { margin: 0; color: var(--text-muted); font-size: .8rem; line-height: 1.5; }
+.chat-forward-body > label { display: grid; gap: 8px; font-size: .8rem; }
+.chat-forward-body input[type="search"], .chat-forward-body textarea { width: 100%; min-height: 40px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--blackout); color: var(--text); font: inherit; }
+.chat-forward-body textarea { resize: vertical; }
+.chat-forward-destinations { display: grid; gap: 4px; max-height: 220px; overflow-y: auto; }
+.chat-forward-destinations label { display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 8px; border-radius: 8px; cursor: pointer; }
+.chat-forward-destinations label:has(:checked) { background: rgb(182 77 50 / 15%); }
+.chat-forward-destinations input { accent-color: var(--terracotta); }
+.chat-forward-destinations label > span { display: grid; gap: 3px; min-width: 0; }
+.chat-forward-destinations strong { font-size: .85rem; overflow-wrap: anywhere; }
+.chat-forward-destinations small { color: var(--text-muted); font-size: .75rem; }
+.chat-forward-body .chat-forward-send { align-self: end; min-width: 100px; background: var(--terracotta); border-color: var(--terracotta); color: var(--text); font-weight: 700; }
+.chat-forward-dialog button:disabled { cursor: default; opacity: .5; }
+.chat-forward-dialog :focus-visible, .chat-forward-card > button:focus-visible { outline: 2px solid var(--terracotta); outline-offset: 2px; }
+.chat-forward-error { margin: 0; color: #ff9b82; font-size: .8rem; }
+.chat-forward-error button { margin-left: 8px; }
+@media (max-width: 760px) {
+  .chat-forward-overlay { align-items: end; padding: 8px; }
+  .chat-forward-dialog { max-height: calc(100dvh - 16px); padding-bottom: env(safe-area-inset-bottom); }
+}
 .chat-edited { padding: 0; border: 0; background: transparent; color: var(--text-muted); font: inherit; font-size: .68rem; cursor: pointer; }
 .chat-edited:hover { text-decoration: underline; }
 .chat-edit-dialog { width: min(560px, calc(100vw - 28px)); max-height: calc(100dvh - 28px); margin: auto; padding: 24px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; box-shadow: 0 20px 80px rgb(0 0 0 / 45%); }

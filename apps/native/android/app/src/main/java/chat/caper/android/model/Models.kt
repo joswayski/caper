@@ -65,6 +65,11 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 /** Who reacted to a message, per emoji in snapshot order and people in reaction order. */
 @Serializable data class ReactorList(val messageId: String, val reactionSeq: String, val reactions: List<ReactorGroup>)
 @Serializable data class MessagePin(val author: ChatAuthor, val createdAt: String)
+@Serializable data class MessageForward(val message: ChatMessage?, val seq: String)
+@Serializable data class ForwardDestination(val id: String, val name: String, val spaceName: String, val direct: Boolean)
+@Serializable data class ForwardDestinations(val destinations: List<ForwardDestination>)
+@Serializable data class ForwardConversation(val root: ChatMessage?, val messages: List<ChatMessage>, val cursor: String, val hasMore: Boolean)
+@Serializable data class ForwardUpdate(val type: String, val schemaVersion: Int, val channelId: String, val seq: String, val message: ChatMessage)
 @Serializable data class EditUpdate(
     val type: String,
     val schemaVersion: Int,
@@ -102,6 +107,8 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val threadRootId: String? = null,
     val broadcast: Boolean = false,
     val thread: ThreadSummary? = null,
+    val forward: MessageForward? = null,
+    val forwardSeq: String? = null,
     val revision: Int = 1,
     val editedAt: String? = null,
     val editSeq: String? = null,

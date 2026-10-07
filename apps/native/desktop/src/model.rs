@@ -373,12 +373,56 @@ pub struct Message {
     pub broadcast: bool,
     #[serde(default)]
     pub thread: Option<ThreadSummary>,
+    #[serde(default)]
+    pub forward: Option<Box<MessageForward>>,
+    #[serde(default)]
+    pub forward_seq: Option<String>,
     #[serde(default = "original_revision")]
     pub revision: u32,
     #[serde(default)]
     pub edited_at: Option<String>,
     #[serde(default)]
     pub edit_seq: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct MessageForward {
+    pub message: Option<Message>,
+    pub seq: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForwardDestination {
+    pub id: String,
+    pub name: String,
+    pub space_name: String,
+    pub direct: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ForwardDestinations {
+    pub destinations: Vec<ForwardDestination>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForwardConversation {
+    pub root: Option<Message>,
+    pub messages: Vec<Message>,
+    pub cursor: String,
+    pub has_more: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForwardUpdate {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub schema_version: u8,
+    pub channel_id: String,
+    pub seq: String,
+    pub message: Message,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -437,6 +481,18 @@ impl Message {
 
     pub fn validate(&self) -> Result<(), String> {
         sequence(&self.seq)?;
+        if let Some(forward) = &self.forward {
+            sequence(&forward.seq)?;
+            if let Some(original) = &forward.message {
+                if original.forward.is_some() {
+                    return Err("nested forward reference".into());
+                }
+                original.validate()?;
+            }
+        }
+        if let Some(revision) = &self.forward_seq {
+            sequence(revision)?;
+        }
         if self.revision == 0 {
             return Err("invalid content revision".into());
         }
@@ -546,6 +602,7 @@ pub struct Timeline {
     buffered: BTreeMap<u64, Message>,
     unseen_reactions: BTreeMap<String, ReactionUpdate>,
     unseen_pins: BTreeMap<String, Message>,
+    forward_updates: BTreeMap<String, Message>,
     pinned: BTreeMap<u64, Message>,
     thread_summaries: BTreeMap<String, ThreadSummary>,
     edits: BTreeMap<String, Message>,
@@ -568,6 +625,7 @@ impl Timeline {
         self.buffered.clear();
         self.unseen_reactions.clear();
         self.unseen_pins.clear();
+        self.forward_updates.clear();
         self.pinned.clear();
         self.thread_summaries.clear();
         self.edits.clear();
@@ -856,6 +914,43 @@ impl Timeline {
         self.merge(message)
     }
 
+    pub fn apply_forward(&mut self, update: ForwardUpdate) -> Result<Apply, String> {
+        update.message.validate()?;
+        if update.kind != "message.forward"
+            || update.schema_version != 1
+            || update.message.channel_id != update.channel_id
+            || update.message.forward.is_none()
+            || update.message.forward_seq.as_deref() != Some(&update.seq)
+        {
+            return Err("invalid forward event".into());
+        }
+        self.merge_forward(&update.message);
+        self.apply_sequence(&update.seq)
+    }
+
+    fn merge_forward(&mut self, message: &Message) {
+        if message.forward.is_none() {
+            return;
+        }
+        let mut snapshot = message.clone();
+        if let Some(previous) = self.forward_updates.get(&message.id) {
+            overlay_forward(&mut snapshot, previous);
+        }
+        if self.forward_updates.len() >= 256 && !self.forward_updates.contains_key(&message.id) {
+            self.forward_updates.pop_first();
+        }
+        self.forward_updates
+            .insert(message.id.clone(), snapshot.clone());
+        for visible in self
+            .messages
+            .values_mut()
+            .chain(self.pinned.values_mut())
+            .filter(|m| m.id == message.id)
+        {
+            overlay_forward(visible, &snapshot);
+        }
+    }
+
     pub fn prepend(&mut self, messages: Vec<Message>) -> Result<(), String> {
         for message in messages {
             self.merge(message)?;
@@ -877,6 +972,10 @@ impl Timeline {
 
     fn merge(&mut self, mut message: Message) -> Result<(), String> {
         message.validate()?;
+        self.merge_forward(&message);
+        if let Some(snapshot) = self.forward_updates.get(&message.id) {
+            overlay_forward(&mut message, snapshot);
+        }
         message = self.remember_edit(message);
         if self.pin_snapshot_cursor > 0
             && message
@@ -993,11 +1092,30 @@ impl Timeline {
                 message.pin = existing.pin.take();
                 message.pin_seq = existing.pin_seq.take();
             }
+            overlay_forward(&mut message, existing);
             *existing = message;
         } else if !self.messages.contains_key(&seq) && self.ids.insert(message.id.clone()) {
             self.messages.insert(seq, message);
         }
         Ok(())
+    }
+}
+
+fn overlay_forward(current: &mut Message, incoming: &Message) {
+    let Some(next) = &incoming.forward else {
+        return;
+    };
+    if current.forward.as_ref().is_none_or(|old| {
+        next.message.is_none()
+            || (old.message.is_some()
+                && sequence(&next.seq).unwrap_or(0) >= sequence(&old.seq).unwrap_or(0))
+    }) {
+        current.forward.clone_from(&incoming.forward);
+    }
+    if sequence(incoming.forward_seq.as_deref().unwrap_or("0")).unwrap_or(0)
+        > sequence(current.forward_seq.as_deref().unwrap_or("0")).unwrap_or(0)
+    {
+        current.forward_seq.clone_from(&incoming.forward_seq);
     }
 }
 
@@ -1104,6 +1222,8 @@ mod tests {
             thread_root_id: None,
             broadcast: false,
             thread: None,
+            forward: None,
+            forward_seq: None,
             revision: 1,
             edited_at: None,
             edit_seq: None,
@@ -1255,6 +1375,100 @@ mod tests {
                 .message
                 .validate()
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn forward_source_and_destination_revisions_merge_independently() {
+        let mut wrapper = message("wrapper", 1);
+        let mut source = message("original", 89);
+        source.channel_id = "private-source".into();
+        wrapper.forward = Some(Box::new(MessageForward {
+            message: Some(source.clone()),
+            seq: "9007199254740995".into(),
+        }));
+        wrapper.forward_seq = Some("1".into());
+        let mut timeline = Timeline::default();
+        timeline.reset(vec![wrapper.clone()], "1").unwrap();
+        let mut stale = wrapper.clone();
+        stale.forward.as_mut().unwrap().seq = "9007199254740993".into();
+        stale
+            .forward
+            .as_mut()
+            .unwrap()
+            .message
+            .as_mut()
+            .unwrap()
+            .content
+            .text = "stale".into();
+        stale.forward_seq = Some("2".into());
+        assert_eq!(
+            timeline
+                .apply_forward(ForwardUpdate {
+                    kind: "message.forward".into(),
+                    schema_version: 1,
+                    channel_id: "channel".into(),
+                    seq: "2".into(),
+                    message: stale
+                })
+                .unwrap(),
+            Apply::Applied
+        );
+        let visible = timeline.messages().next().unwrap();
+        assert_eq!(
+            visible
+                .forward
+                .as_ref()
+                .unwrap()
+                .message
+                .as_ref()
+                .unwrap()
+                .content
+                .text,
+            "original"
+        );
+        assert_eq!(visible.forward_seq.as_deref(), Some("2"));
+        assert_eq!(visible.seq, "1");
+        assert_eq!(timeline.cursor(), "2");
+        wrapper.id = "unloaded".into();
+        wrapper.forward_seq = Some("3".into());
+        timeline
+            .apply_forward(ForwardUpdate {
+                kind: "message.forward".into(),
+                schema_version: 1,
+                channel_id: "channel".into(),
+                seq: "3".into(),
+                message: wrapper.clone(),
+            })
+            .unwrap();
+        assert_eq!(timeline.messages().count(), 1);
+        let mut old_page = wrapper;
+        old_page.seq = "0".into();
+        old_page.forward.as_mut().unwrap().seq = "89".into();
+        old_page
+            .forward
+            .as_mut()
+            .unwrap()
+            .message
+            .as_mut()
+            .unwrap()
+            .content
+            .text = "old page".into();
+        timeline.prepend(vec![old_page]).unwrap();
+        assert_eq!(
+            timeline
+                .messages()
+                .next()
+                .unwrap()
+                .forward
+                .as_ref()
+                .unwrap()
+                .message
+                .as_ref()
+                .unwrap()
+                .content
+                .text,
+            "original"
         );
     }
 

@@ -59,6 +59,7 @@ public actor APIClient {
     private let session: URLSession
     private let tokenStore: TokenStore
     private var token: String?
+    public var isSignedIn: Bool { token != nil }
     private var authGeneration: UInt64 = 0
     private let decoder = JSONDecoder()
     private let encoder = JSONEncoder()
@@ -283,6 +284,36 @@ public actor APIClient {
             throw APIError(status: 502, message: "The chat service returned an invalid thread.")
         }
         return page
+    }
+
+    public func forwardDestinations() async throws -> [ForwardDestination] {
+        let result: ForwardDestinations = try await request("api/chat/forward-destinations")
+        return result.destinations
+    }
+
+    public func forward(source: ChatMessage, destinationID: String, sessionToken: String, clientMessageID: String, text: String) async throws -> ChatMessage {
+        struct Input: Encodable { let sourceChannelId: String; let sourceMessageId: String; let clientMessageId: String; let text: String }
+        let message: ChatMessage = try await request("api/chat/channels/\(try pathID(destinationID))/forwards", method: "POST",
+            body: Input(sourceChannelId: source.channelId, sourceMessageId: source.id, clientMessageId: clientMessageID, text: text), extraHeaders: ["x-caper-chat-token": sessionToken])
+        guard message.channelId == destinationID, message.clientMessageId == clientMessageID.lowercased(), message.forward != nil, message.isValidForward else {
+            throw APIError(status: 502, message: "Caper returned an invalid forward.")
+        }
+        return message
+    }
+
+    public func forwardedConversation(message: ChatMessage, before: String? = nil) async throws -> ForwardConversationHistory {
+        var path = "api/chat/channels/\(try pathID(message.channelId))/forwards/\(try messagePathID(message.id))/thread"
+        if let before {
+            guard (try? Sequence.compare(before, "0")) != nil else { throw APIError(status: 400, message: "Invalid cursor.") }
+            path += "?before=\(before)"
+        }
+        let history: ForwardConversationHistory = try await request(path)
+        guard (try? Sequence.compare(history.cursor, "0")) != nil,
+              (history.root.map { $0.content.version == 1 && $0.content.type == "text" && $0.isValidForward } ?? true),
+              history.messages.allSatisfy({ $0.content.version == 1 && $0.content.type == "text" && $0.isValidForward && (try? Sequence.compare($0.seq, "0")) != nil }) else {
+            throw APIError(status: 502, message: "Caper returned an invalid forwarded conversation.")
+        }
+        return history
     }
 
     public func send(channelID: String, sessionToken: String, clientMessageID: String, text: String, threadRootId: String? = nil, broadcast: Bool = false) async throws -> ChatMessage {

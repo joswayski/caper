@@ -109,7 +109,7 @@ async fn persist_edit(
     let (_, _, _, user, avatar) = authorize_sender(&mut tx, token).await?;
     let (channel_id, head) = locked_channel(&mut tx, channel, user, true).await?;
     let row: Option<(i64, Value, Option<i64>)> = sqlx::query_as(
-        "SELECT m.id,m.payload,cs.user_id FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id WHERE m.channel_id=$1 AND m.external_id=$2 FOR UPDATE OF m",
+        "SELECT m.id,m.payload,cs.user_id FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id WHERE m.channel_id=$1 AND m.external_id=$2 AND m.forward_source_id IS NULL FOR UPDATE OF m",
     )
     .bind(channel_id)
     .bind(message)

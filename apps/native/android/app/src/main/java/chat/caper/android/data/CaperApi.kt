@@ -88,6 +88,28 @@ class CaperApi(
     suspend fun chatSession(token: String?, name: String): ChatSession = post(
         "/api/chat/session", buildJsonObject { put("name", name) }, token,
     )
+    suspend fun forwardDestinations(token: String): ForwardDestinations = get("/api/chat/forward-destinations", token)
+
+    suspend fun forward(token: String, chatToken: String, source: ChatMessage, destination: String, key: UUID, text: String): ChatMessage {
+        val message: ChatMessage = post(
+            "/api/chat/channels/${destination.pathId()}/forwards",
+            buildJsonObject { put("sourceChannelId", source.channelId); put("sourceMessageId", source.id); put("clientMessageId", key.toString()); put("text", text) },
+            token, mapOf("x-caper-chat-token" to chatToken),
+        )
+        require(message.forward != null) { "Invalid forward." }
+        return message.validated(destination, expectedClientMessageId = key, expectedText = text)
+    }
+
+    suspend fun forwardedConversation(token: String, source: ChatMessage, before: String? = null): ForwardConversation {
+        require(messageId.matches(source.id)) { "Invalid message ID." }
+        before?.let { require(Regex("^(0|[1-9][0-9]*)$").matches(it)) { "Invalid cursor." } }
+        val conversation: ForwardConversation = get("/api/chat/channels/${source.channelId.pathId()}/forwards/${source.id}/thread" + (before?.let { "?before=$it" } ?: ""), token)
+        require(Regex("^(0|[1-9][0-9]*)$").matches(conversation.cursor)) { "Invalid source cursor." }
+        conversation.root?.let { it.validated(it.channelId) }
+        conversation.messages.forEach { it.validated(it.channelId) }
+        return conversation
+    }
+
     suspend fun sendMessage(
         token: String?,
         chatToken: String,

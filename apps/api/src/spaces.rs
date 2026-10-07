@@ -108,16 +108,16 @@ pub(crate) async fn session_user(pool: &PgPool, token_hash: &[u8]) -> Result<i64
     .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized"))
 }
 
-pub(crate) async fn channel_access(
-    pool: &PgPool,
+pub(crate) async fn channel_access<'e>(
+    pool: impl sqlx::Executor<'e, Database = Postgres>,
     channel: &str,
     user: Option<i64>,
 ) -> Result<ChannelAccess, ApiError> {
     check_channel_access(pool, channel, user, false).await
 }
 
-async fn check_channel_access(
-    pool: &PgPool,
+async fn check_channel_access<'e>(
+    pool: impl sqlx::Executor<'e, Database = Postgres>,
     channel: &str,
     user: Option<i64>,
     require_join: bool,

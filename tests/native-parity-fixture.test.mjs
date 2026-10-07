@@ -447,6 +447,7 @@ test('message requests, blocks and DM privacy follow the API contract', async (t
   assert.equal((await request(`/api/chat/channels/${ids.request}/messages`, { auth: true })).value.messages[0].author.id, ids.stranger);
   assert.equal((await request(`/api/dms/${ids.request}/decline`, { auth: true, method: 'POST' })).response.status, 204);
   assert.deepEqual((await request('/api/dms', { auth: true })).value.conversations, [], 'declined requests are hidden');
+  assert.ok(!(await request('/api/chat/forward-destinations', { auth: true })).value.destinations.some(({ id }) => id === ids.request), 'and not offered for forwarding');
   assert.equal((await request(`/api/dms/${ids.request}/accept`, { auth: true, method: 'POST' })).response.status, 404);
   const reopened = await request('/api/dms', { auth: true, method: 'POST', body: { username: 'jordan' } });
   assert.equal(reopened.value.status, 'accepted', 'messaging the sender accepts the request');
@@ -461,6 +462,9 @@ test('message requests, blocks and DM privacy follow the API contract', async (t
   const session = await request('/api/chat/session', { auth: true, method: 'POST', body: { name: 'Fixture Owner' } });
   const blockedSend = await request(`/api/chat/channels/${ids.direct}/messages`, { auth: true, method: 'POST', headers: { 'x-caper-chat-token': session.value.token }, body: { clientMessageId: randomUUID(), text: 'hello' } });
   assert.deepEqual([blockedSend.response.status, blockedSend.value.code], [403, 'dm_blocked']);
+  const [source] = (await request(`/api/chat/channels/${ids.request}/messages`, { auth: true })).value.messages;
+  const blockedForward = await request(`/api/chat/channels/${ids.direct}/forwards`, { auth: true, method: 'POST', headers: { 'x-caper-chat-token': session.value.token }, body: { sourceChannelId: ids.request, sourceMessageId: source.id, clientMessageId: randomUUID() } });
+  assert.deepEqual([blockedForward.response.status, blockedForward.value.code], [403, 'dm_blocked'], 'forwards are sends');
   assert.equal((await request(`/api/blocks/${ids.other}`, { auth: true, method: 'DELETE' })).response.status, 204);
   assert.deepEqual((await request('/api/blocks', { auth: true })).value, { blocks: [] });
 

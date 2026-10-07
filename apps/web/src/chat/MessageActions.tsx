@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ComponentType } from "react";
 import { autoUpdate, flip, FloatingFocusManager, FloatingOverlay, FloatingPortal, offset, shift, useDismiss, useFloating, useInteractions, useRole } from "@floating-ui/react";
-import { Ban, Copy, Hash, History, MessageSquare, Pencil, Pin, PinOff, SmilePlus, Users, X } from "lucide-react";
+import { Ban, Copy, Forward, Hash, History, MessageSquare, Pencil, Pin, PinOff, SmilePlus, Users, X } from "lucide-react";
 import type { ChatMessage } from "./types.ts";
 import { emojiAsset, emojiCode, preloadEmojiImages } from "./emoji.ts";
 
@@ -19,16 +19,18 @@ export function preloadReactionPicker() {
   void preloadEmojiImages();
 }
 
-export default function MessageActions({ message, target, authorId, canReact, canPin, canEdit, pinning, onReact, onPin, onClose, onCopied, onViewReactions, onReply, onEdit, onHistory, block }: {
+export default function MessageActions({ message, target, authorId, canReact, canPin, canForward = false, canEdit, pinning, onReact, onPin, onForward, onClose, onCopied, onViewReactions, onReply, onEdit, onHistory, block }: {
   message: ChatMessage;
   target: MessageActionTarget;
   authorId?: string;
   canReact: boolean;
   canPin: boolean;
+  canForward?: boolean;
   canEdit: boolean;
   pinning: boolean;
   onReact: (messageId: string, emoji: string, active: boolean) => Promise<void>;
   onPin: (messageId: string, active: boolean) => Promise<void>;
+  onForward?: () => void;
   onClose: () => void;
   onCopied: (status: string) => void;
   onViewReactions: (emoji: string) => void;
@@ -98,8 +100,9 @@ export default function MessageActions({ message, target, authorId, canReact, ca
         </div>}
         <div className="chat-copy-actions">
           <button type="button" onClick={onReply}><MessageSquare size={20} aria-hidden="true" />Reply in thread</button>
+          {canForward && <button type="button" onClick={onForward}><Forward size={16} aria-hidden="true" />Forward message</button>}
           {canEdit && <button type="button" onClick={onEdit}><Pencil size={16} aria-hidden="true" />Edit message</button>}
-          {(message.revision ?? 1) > 1 && <button type="button" onClick={onHistory}><History size={16} aria-hidden="true" />Message history</button>}
+          {!message.forward && (message.revision ?? 1) > 1 && <button type="button" onClick={onHistory}><History size={16} aria-hidden="true" />Message history</button>}
           {!!message.reactions?.length && <button type="button" onClick={() => onViewReactions(message.reactions![0].emoji)}>
             <Users size={16} aria-hidden="true" />View reactions</button>}
           {canPin && <button type="button" disabled={pinning} onClick={() => { onClose(); void onPin(message.id, !message.pin); }}>

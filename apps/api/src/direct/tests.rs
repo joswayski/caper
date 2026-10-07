@@ -597,6 +597,31 @@ async fn message_requests_blocks_and_privacy(pool: PgPool) {
         status("alice", request_dm.clone()).await.as_deref(),
         Some("outgoing")
     );
+    let destinations = |name: &'static str| {
+        let app = app.clone();
+        async move {
+            let (_, body) = request(
+                &app,
+                "GET",
+                "/api/chat/forward-destinations",
+                Some(name),
+                None,
+                Value::Null,
+            )
+            .await;
+            body["destinations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|d| d["id"].as_str().map(str::to_owned))
+                .collect::<Vec<_>>()
+        }
+    };
+    assert!(
+        !destinations("bob").await.contains(&request_dm),
+        "a declined request isn't offered for forwarding"
+    );
+    assert!(destinations("alice").await.contains(&request_dm));
     assert_eq!(send("alice", request_dm.clone()).await.0, StatusCode::OK);
     assert_eq!(
         status("bob", request_dm.clone()).await,
@@ -715,6 +740,24 @@ async fn message_requests_blocks_and_privacy(pool: PgPool) {
     assert_eq!(send("alice", alice_dave).await.0, StatusCode::OK);
 
     // Blocks are idempotent, listed, stop both sides sending and survive reopening.
+    let (_, source) = send("alice", request_dm.clone()).await;
+    let forward = |from: &'static str| {
+        let app = app.clone();
+        let conversation = request_dm.clone();
+        let source = source["id"].clone();
+        async move {
+            request(
+                &app,
+                "POST",
+                &format!("/api/chat/channels/{conversation}/forwards"),
+                None,
+                Some(&format!("chat-{from}")),
+                json!({"sourceChannelId":conversation,"sourceMessageId":source,"clientMessageId":Uuid::new_v4()}),
+            )
+            .await
+        }
+    };
+    assert_eq!(forward("bob").await.0, StatusCode::OK);
     let alice = ids["alice"].clone();
     for _ in 0..2 {
         assert_eq!(
@@ -767,6 +810,9 @@ async fn message_requests_blocks_and_privacy(pool: PgPool) {
         send("bob", request_dm.clone()).await.1["code"],
         "dm_blocked"
     );
+    // Forwards are sends too.
+    assert_eq!(forward("alice").await.1["code"], "dm_not_accepted");
+    assert_eq!(forward("bob").await.1["code"], "dm_blocked");
     assert_eq!(open("alice", "bob").await.1["id"], request_dm.as_str());
     assert_eq!(
         request(

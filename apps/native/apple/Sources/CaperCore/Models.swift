@@ -283,12 +283,21 @@ public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
     public var threadRootId: String? = nil
     public var broadcast: Bool? = nil
     public var thread: ThreadSummary? = nil
+    public var forward: MessageForward? = nil
+    public var forwardSeq: String? = nil
     public var revision: Int? = nil
     public var editedAt: String? = nil
     public var editSeq: String? = nil
     public var isChannelMessage: Bool { threadRootId == nil || broadcast == true }
 }
 
+/// Immutable reference breaks the recursive message/forward value layout.
+public final class MessageForward: Codable, Equatable, Sendable {
+    public let message: ChatMessage?
+    public let seq: String
+    public init(message: ChatMessage?, seq: String) { self.message = message; self.seq = seq }
+    public static func == (lhs: MessageForward, rhs: MessageForward) -> Bool { lhs.seq == rhs.seq && lhs.message == rhs.message }
+}
 public struct ThreadSummary: Codable, Equatable, Sendable {
     public let replyCount: Int
     public let participants: [ChatAuthor]
@@ -299,6 +308,39 @@ public struct ThreadHistory: Codable, Sendable {
     public let messages: [ChatMessage]
     public let cursor: String
     public let hasMore: Bool
+}
+public struct ForwardDestination: Codable, Identifiable, Sendable {
+    public let id: String
+    public let name: String
+    public let spaceName: String
+    public let direct: Bool
+}
+public struct ForwardDestinations: Decodable, Sendable { public let destinations: [ForwardDestination] }
+public struct ForwardConversationHistory: Decodable, Sendable {
+    public let root: ChatMessage?
+    public var messages: [ChatMessage]
+    public let cursor: String
+    public var hasMore: Bool
+}
+public struct MessageForwardEvent: Decodable, Sendable {
+    public let type: String
+    public let schemaVersion: Int
+    public let channelId: String
+    public let seq: String
+    public let message: ChatMessage
+    public var isValid: Bool {
+        type == "message.forward" && schemaVersion == 1 && channelId == message.channelId
+            && message.forward != nil && message.forwardSeq == seq && message.isValidForward
+            && (try? Sequence.compare(seq, "0")) != nil
+    }
+}
+extension ChatMessage {
+    var isValidForward: Bool {
+        guard let forward else { return true }
+        guard (try? Sequence.compare(forward.seq, "0")) != nil,
+              forward.message?.forward == nil else { return false }
+        return forward.message.map { $0.content.version == 1 && $0.content.type == "text" && (try? Sequence.compare($0.seq, "0")) != nil } ?? true
+    }
 }
 
 public struct MessageReaction: Codable, Equatable, Sendable, Identifiable {

@@ -1585,6 +1585,7 @@ private struct ChatView: View {
         self.membersVisible = membersVisible; self.toggleMembers = toggleMembers
     }
     var body: some View {
+        Group {
         #if os(iOS)
         HStack(spacing: 0) {
             channelBody
@@ -1598,6 +1599,9 @@ private struct ChatView: View {
             if chat.threadRootID != nil { NativeThreadView(chat: chat).frame(maxWidth: narrow ? .infinity : 380) }
         }
         #endif
+        }
+        .sheet(item: $chat.forwardTarget) { message in ForwardPickerView(chat: chat, message: message) }
+        .sheet(item: $chat.forwardConversationTarget) { message in ForwardConversationView(chat: chat, messageID: message.id) }
     }
     private var channelBody: some View {
         VStack(spacing: 0) {
@@ -1877,6 +1881,8 @@ private struct ChatView: View {
                                         Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
                                     },
                                     reply: { reactionMessage = nil; Task { await chat.openThread(message.threadRootId ?? message.id) } },
+                                    canForward: chat.canForward,
+                                    forward: { reactionMessage = nil; chat.forwardTarget = message },
                                     quickReaction: { emoji in
                                         guard !chat.isPreview, let author = chat.currentAuthor,
                                               let current = chat.messages.first(where: { $0.id == message.id }) else { return }
@@ -2016,6 +2022,8 @@ private struct NativeThreadView: View {
                     canPin: !chat.isPreview && chat.currentAuthor != nil && !chat.pendingPins.contains(message.id),
                     togglePin: { reactionMessage = nil; Task { await chat.setPin(messageID: message.id, active: message.pin == nil) } },
                     reply: { reactionMessage = nil; Task { await chat.openThread(message.threadRootId ?? message.id) } },
+                    // Thread actions don't forward: the forward sheets belong to the conversation under this cover.
+                    canForward: false, forward: {},
                     quickReaction: { emoji in
                         let own = message.reactions?.first { $0.emoji == emoji }?.authorIds.contains(chat.currentAuthor?.id ?? "") == true
                         reactionMessage = nil; Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: !own) }
@@ -2148,7 +2156,7 @@ private struct MessageRow: View {
                     Text(message.author.name).font(CaperTheme.font(13, weight: .bold))
                     if message.author.isGuest { Text("GUEST").font(CaperTheme.font(9, weight: .bold)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 5).overlay(RoundedRectangle(cornerRadius: 4).stroke(CaperTheme.border)) }
                     Text(timeLabel(message.createdAt)).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
-                    if (message.revision ?? 1) > 1 { Button("(edited)") { history = true }.buttonStyle(.plain).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).accessibilityLabel("View edit history") }
+                    if message.forward == nil && (message.revision ?? 1) > 1 { Button("(edited)") { history = true }.buttonStyle(.plain).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).accessibilityLabel("View edit history") }
                 }
                 #if os(macOS)
                 .padding(.trailing, 56)
@@ -2158,6 +2166,7 @@ private struct MessageRow: View {
                     #if os(macOS)
                     .textSelection(.enabled)
                     #endif
+                ForwardCardView(message: message) { chat.forwardConversationTarget = message }
                 ReactionRow(message: message, chat: chat, reactors: reactors)
                 if let error = chat.pinErrors[message.id] {
                     HStack(spacing: 8) {
@@ -2217,8 +2226,9 @@ private struct MessageRow: View {
                         .disabled(chat.isPreview || chat.currentAuthor == nil)
                         .accessibilityIdentifier("add-reaction-\(message.id)")
                     Menu {
+                        if chat.canForward { Button("Forward message") { chat.forwardTarget = message } }
                         if chat.canEdit(message) { Button("Edit message") { editing = true } }
-                        if (message.revision ?? 1) > 1 { Button("View edit history") { history = true } }
+                        if message.forward == nil && (message.revision ?? 1) > 1 { Button("View edit history") { history = true } }
                         Button(message.pin == nil ? "Pin message" : "Unpin message") {
                             Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
                         }.disabled(chat.isPreview || chat.currentAuthor == nil || chat.pendingPins.contains(message.id))
@@ -2246,8 +2256,9 @@ private struct MessageRow: View {
             .contentShape(Rectangle())
             .onHover { controlsHovered = $0 }
             .contextMenu {
+                if chat.canForward { Button("Forward message") { chat.forwardTarget = message } }
                 if chat.canEdit(message) { Button("Edit message") { editing = true } }
-                if (message.revision ?? 1) > 1 { Button("View edit history") { history = true } }
+                if message.forward == nil && (message.revision ?? 1) > 1 { Button("View edit history") { history = true } }
                 Button(message.pin == nil ? "Pin message" : "Unpin message") {
                     Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
                 }.disabled(chat.isPreview || chat.currentAuthor == nil || chat.pendingPins.contains(message.id))
@@ -2568,7 +2579,7 @@ private struct ReactorRow: View {
     }
 }
 
-private struct ReactionFlowLayout: Layout {
+struct ReactionFlowLayout: Layout {
     let spacing: CGFloat
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
@@ -2625,6 +2636,8 @@ private struct MessageActionsSheet: View {
     let canPin: Bool
     let togglePin: () -> Void
     let reply: () -> Void
+    let canForward: Bool
+    let forward: () -> Void
     let quickReaction: (String) -> Void
     let selectReaction: (String) -> Void
     /// Block the author, offered for other signed-in accounts. The parent
@@ -2665,7 +2678,7 @@ private struct MessageActionsSheet: View {
                             Button("Edit message", systemImage: "pencil") { editing = true }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                             Divider()
                         }
-                        if (message.revision ?? 1) > 1 {
+                        if message.forward == nil && (message.revision ?? 1) > 1 {
                             Button("View edit history", systemImage: "clock") { history = true }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                             Divider()
                         }
@@ -2676,6 +2689,12 @@ private struct MessageActionsSheet: View {
                         Divider()
                         Button(action: reply) {
                             Label("Reply in thread", systemImage: "bubble.right").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        }
+                        if canForward {
+                            Divider()
+                            Button(action: forward) {
+                                Label("Forward message", systemImage: "arrowshape.turn.up.right").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                            }
                         }
                         Divider()
                         Button {
@@ -2715,7 +2734,7 @@ private struct MessageActionsSheet: View {
             }
         }
         .presentationBackground(CaperTheme.raised)
-        .presentationDetents(showingEmojiPicker ? [.medium, .large] : [.height(330 + (chat.canEdit(message) ? 44 : 0) + ((message.revision ?? 1) > 1 ? 44 : 0) + (block == nil ? 0 : 44)), .large])
+        .presentationDetents(showingEmojiPicker ? [.medium, .large] : [.height(330 + (canForward ? 50 : 0) + (chat.canEdit(message) ? 44 : 0) + ((message.revision ?? 1) > 1 && message.forward == nil ? 44 : 0) + (block == nil ? 0 : 44)), .large])
         .onDisappear { if blockRequested { block?() } }
         .presentationDragIndicator(.visible)
         .sheet(isPresented: $editing) { MessageEditorView(chat: chat, message: message) { editing = false; dismiss() } }
@@ -2761,8 +2780,9 @@ private struct PinnedMessagesView: View {
                                             Text(date.formatted(date: .abbreviated, time: .shortened))
                                                 .font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
                                         }
-                                        if (message.revision ?? 1) > 1 { Button("(edited)") { historyTarget = message }.buttonStyle(.plain).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).accessibilityLabel("View edit history") }
+                                        if message.forward == nil && (message.revision ?? 1) > 1 { Button("(edited)") { historyTarget = message }.buttonStyle(.plain).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).accessibilityLabel("View edit history") }
                                         Text(message.content.text).font(CaperTheme.font(14))
+                                        ForwardCardView(message: message) { chat.forwardConversationTarget = message }
                                         if chat.canEdit(message) { Button("Edit message") { editTarget = message }.buttonStyle(.plain).font(CaperTheme.font(11)) }
                                         if let error = chat.pinErrors[message.id] {
                                             HStack {
@@ -3805,7 +3825,7 @@ private struct ControlHover: ViewModifier {
     }
 }
 
-private struct CaperSecondaryButton: ButtonStyle {
+struct CaperSecondaryButton: ButtonStyle {
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.font(CaperTheme.font(12, weight: .medium))

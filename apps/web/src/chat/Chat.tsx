@@ -9,6 +9,7 @@ import ThreadPanel from "./ThreadPanel.tsx";
 import MessageEditor from "./MessageEditor.tsx";
 import MessageHistory from "./MessageHistory.tsx";
 import { MessageSquare } from "lucide-react";
+import { ForwardCard, ForwardConversation, ForwardPicker, type ForwardTarget } from "./Forwarding.tsx";
 import { dateDivider } from "./dates.ts";
 import { isChannelMessage, type ChatAuthor, type GeneralChatHistory } from "./types.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
@@ -73,6 +74,8 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   const clientRef = useRef<ChatClient | undefined>(undefined);
   const [actionTarget, setActionTarget] = useState<MessageActionTarget>();
   const [reactorsTarget, setReactorsTarget] = useState<ReactorsTarget>();
+  const [forwardTarget, setForwardTarget] = useState<ForwardTarget>();
+  const [conversationTarget, setConversationTarget] = useState<ForwardTarget>();
   const [editTarget, setEditTarget] = useState<string>();
   const [historyTarget, setHistoryTarget] = useState<string>();
   const [actionStatus, setActionStatus] = useState("");
@@ -89,6 +92,8 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   useEffect(() => {
     setActionTarget(undefined);
     setReactorsTarget(undefined);
+    setForwardTarget(undefined);
+    setConversationTarget(undefined);
     setEditTarget(undefined);
     setHistoryTarget(undefined);
     setActionStatus("");
@@ -120,7 +125,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       window.removeEventListener("scroll", cancelPress, true);
     };
   }, [channelId]);
-  useEffect(() => { setActionTarget(undefined); setReactorsTarget(undefined); setEditTarget(undefined); setHistoryTarget(undefined); }, [state.author?.id, state.channelId]);
+  useEffect(() => { setActionTarget(undefined); setReactorsTarget(undefined); setForwardTarget(undefined); setConversationTarget(undefined); setEditTarget(undefined); setHistoryTarget(undefined); }, [state.author?.id, state.channelId]);
   useEffect(() => { if (readOnly) setEditTarget(undefined); }, [readOnly]);
   useEffect(() => { if (state.phase === "error") { setEditTarget(undefined); setHistoryTarget(undefined); } }, [state.phase]);
   const isTouchLayout = () => window.matchMedia("(max-width: 760px), (pointer: coarse)").matches;
@@ -153,10 +158,14 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   const findMessage = (id?: string) => state.messages.find((message) => message.id === id) ?? state.pinnedMessages.find((message) => message.id === id);
   const actionMessage = findMessage(actionTarget?.messageId);
   const reactorsMessage = state.messages.find((message) => message.id === reactorsTarget?.messageId);
+  const forwardMessage = state.messages.find((message) => message.id === forwardTarget?.messageId);
+  const conversationMessage = [...state.messages, ...state.pinnedMessages].find((message) => message.id === conversationTarget?.messageId);
+  const closeForward = useCallback(() => setForwardTarget(undefined), []);
+  const closeConversation = useCallback(() => setConversationTarget(undefined), []);
   const editMessage = findMessage(editTarget);
   const historyMessage = findMessage(historyTarget);
-  const openEdit = (messageId: string) => { setActionTarget(undefined); setHistoryTarget(undefined); setEditTarget(messageId); };
-  const openHistory = (messageId: string) => { setActionTarget(undefined); setEditTarget(undefined); setHistoryTarget(messageId); };
+  const openEdit = (messageId: string) => { if (findMessage(messageId)?.forward) return; setActionTarget(undefined); setHistoryTarget(undefined); setEditTarget(messageId); };
+  const openHistory = (messageId: string) => { if (findMessage(messageId)?.forward) return; setActionTarget(undefined); setEditTarget(undefined); setHistoryTarget(messageId); };
   const pin = async (messageId: string, active: boolean) => {
     const client = clientRef.current;
     if (!client || readOnly) return;
@@ -322,7 +331,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   useEffect(() => { onOnlineChange?.(state.online); }, [state.online, onOnlineChange]);
 
   useEffect(() => {
-    if (identityReady && !readOnly) clientRef.current?.identify(name, signedIn);
+    if (identityReady && (!readOnly || signedIn)) clientRef.current?.identify(name, signedIn);
   }, [identityReady, name, signedIn, readOnly]);
 
   useEffect(() => {
@@ -436,11 +445,12 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       <div className="chat-avatar"><Avatar avatarId={author?.avatarId} name={author?.name ?? name} /></div>
       <div>
         <header><strong>{author?.name ?? name}</strong>{author?.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt, timeFormatter) : ""}</time>
-          {"content" in message && (message.revision ?? 1) > 1 && <button type="button" className="chat-edited" title={message.editedAt ? `Edited ${new Date(message.editedAt).toLocaleString()}` : undefined} aria-label={`Message history, version ${message.revision}`} onClick={() => openHistory(message.id)}>edited</button>}
+          {"content" in message && !message.forward && (message.revision ?? 1) > 1 && <button type="button" className="chat-edited" title={message.editedAt ? `Edited ${new Date(message.editedAt).toLocaleString()}` : undefined} aria-label={`Message history, version ${message.revision}`} onClick={() => openHistory(message.id)}>edited</button>}
         </header>
         {!inThread && message.threadRootId && <button type="button" className="chat-thread-context" onClick={() => openThread(message.threadRootId!)}>Replied to a thread · View thread</button>}
-        <p>{"content" in message ? message.content.text : message.text}</p>
+        {(!("content" in message) || message.content.text) && <p>{"content" in message ? message.content.text : message.text}</p>}
         {"content" in message && <>
+          <ForwardCard message={message} onOpen={(anchor) => setConversationTarget({ messageId: message.id, anchor })} />
           <button type="button" className="chat-message-actions-trigger" aria-label={`Message actions for ${message.author.name}`} aria-haspopup="dialog" aria-expanded={actionTarget?.messageId === message.id && actionTarget.mode === "actions"} onClick={(event) => openActions(message.id, event.currentTarget)}><MoreHorizontal size={14} aria-hidden="true" /></button>
           {!inThread && <button type="button" className="chat-reply-thread" aria-label={`Reply in thread to ${message.author.name}`} title="Reply in thread" onClick={() => openThread(message.threadRootId ?? message.id)}><MessageSquare size={14} aria-hidden="true" /></button>}
           <MessageReactions message={message} channelId={state.channelId} authorId={state.author?.id} readOnly={readOnly} save={reactionSaves[message.id]} onReact={react}
@@ -501,7 +511,8 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
           <div className="chat-avatar chat-pinned-avatar"><Avatar avatarId={message.author.avatarId} name={message.author.name} /></div>
           <header><strong>{message.author.name}</strong><time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt, pinTimeFormatter) : ""}</time></header>
           <p>{message.content.text}</p>
-          {((message.revision ?? 1) > 1 || (!readOnly && state.author?.id === message.author.id)) && <div className="chat-pinned-edit-actions">
+          <ForwardCard message={message} onOpen={(anchor) => setConversationTarget({ messageId: message.id, anchor })} />
+          {!message.forward && ((message.revision ?? 1) > 1 || (!readOnly && state.author?.id === message.author.id)) && <div className="chat-pinned-edit-actions">
             {(message.revision ?? 1) > 1 && <button type="button" className="chat-edited" onClick={() => openHistory(message.id)}>edited · Message history</button>}
             {!readOnly && state.author?.id === message.author.id && <button type="button" onClick={() => openEdit(message.id)}>Edit message</button>}
           </div>}
@@ -552,7 +563,9 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
 
     {actionTarget && actionMessage && <MessageActions key={actionMessage.id} message={actionMessage} target={actionTarget} authorId={state.author?.id}
       canReact={!readOnly && !!state.author} canPin={!readOnly && !!state.author} pinning={pinning.has(actionMessage.id)} onReact={react} onPin={pin}
-      canEdit={!readOnly && !state.author?.isGuest && state.author?.id === actionMessage.author.id}
+      canForward={signedIn && !!state.author && !state.author.isGuest && actionMessage.forward?.message !== null}
+      onForward={() => { setForwardTarget({ messageId: actionMessage.id, anchor: actionTarget.anchor }); setActionTarget(undefined); }}
+      canEdit={!actionMessage.forward && !readOnly && !state.author?.isGuest && state.author?.id === actionMessage.author.id}
       onClose={() => setActionTarget(undefined)} onCopied={setActionStatus}
       onReply={() => openThread(actionMessage.threadRootId ?? actionMessage.id)}
       onEdit={() => openEdit(actionMessage.id)} onHistory={() => openHistory(actionMessage.id)}
@@ -564,6 +577,12 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       } : undefined} />}
     {reactorsTarget && reactorsMessage && state.channelId && <ReactorsPanel key={reactorsMessage.id} channelId={state.channelId}
       message={reactorsMessage} target={reactorsTarget} onClose={closeReactors} />}
+    {forwardTarget && forwardMessage && <ForwardPicker key={forwardMessage.id} message={forwardMessage} target={forwardTarget} onClose={closeForward}
+      onForward={(destination, messageId, key, text) => {
+        if (!clientRef.current) return Promise.reject(new Error("Chat session is unavailable."));
+        return clientRef.current.forward(destination, messageId, key, text);
+      }} onSent={(destination) => { setActionStatus(`Forwarded to ${destination.direct ? "" : "#"}${destination.name}.`); setForwardTarget(undefined); }} />}
+    {conversationTarget && conversationMessage && <ForwardConversation key={conversationMessage.id} message={conversationMessage} target={conversationTarget} onClose={closeConversation} />}
 
     <p className="chat-typing" role="status" aria-atomic="true">
       <span className="chat-typing-content" data-visible={!!typingLabel} aria-hidden={!typingLabel}>
