@@ -212,6 +212,7 @@ mod tests {
     fn history(id: usize, cursor: &str) -> History {
         History {
             messages: vec![],
+            pinned_messages: vec![],
             cursor: cursor.into(),
             has_more: false,
             space: HistoryPlace {

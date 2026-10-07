@@ -18,6 +18,46 @@ Signed-in accounts can start persistent, private one-to-one messages by username
 The Direct messages list is shared across spaces. Mobile push is deferred;
 when needed, the server will integrate directly with APNs for iOS and FCM for Android.
 
+Channel pins are shared with everyone who can read the channel. Joined members
+can pin or unpin in one action; the channel header opens the complete pins list.
+Native implementation and validation status are tracked in [the runbook](docs/media.md#message-pins).
+
+Channel messages support threads: replies stay with their parent, with reply counts
+and participant avatars in the channel. Desktop uses a right panel and mobile a
+full-screen view. **Also send to channel** shows the same reply in both places,
+sharing its reactions. Native release and validation gaps are tracked in
+[the runbook](docs/media.md#message-threads).
+
+**Forward message** shares a live, read-only conversation across spaces or into
+an existing DM, including edits, reactions and future replies. Destination readers do
+not need source membership; their replies stay in a separate destination thread.
+Native validation and rollout are tracked in
+[the runbook](docs/media.md#live-message-forwarding). This change is not deployed
+by merging alone.
+
+Authors can edit messages on web, Android, Apple and Rust desktop, including
+thread roots/replies and DMs. The edited indicator opens retained history with
+the previous/current versions side by side and older changes selectable below;
+broadcast replies update in both places. See platform validation gaps and
+[editing and rollout details](docs/media.md#message-editing).
+
+Mac release downloads use a signed, notarized disk image: open it, drag Caper onto
+Applications, eject the image, then launch Caper from Applications. `~/Applications`
+also works without administrator access. Release copies outside these folders or
+in a non-writable folder show installation instructions and quit instead of leaving
+you using a copy that cannot reliably update. Windows Setup installs per-user and
+creates Start/Desktop shortcuts. Linux `.deb` installs use the package manager;
+only writable, self-contained Linux archive installs support in-app installation
+of updates. See [native installation details](apps/native/README.md#signed-builds-for-testers).
+
+Packaged Mac, Windows, and Linux apps check for updates 20 seconds after launch
+and every minute, using signed metadata cached on Caper's server for 60 seconds.
+Check manually with **Caper → Check for Updates…** on Mac or
+**User Settings → Settings… → Updates → Check for updates** on Windows/Linux.
+Installing requires confirmation and a restart; protected installs offer a download
+instead. Existing apps keep their previous schedule until updated once.
+Android APK updates remain manual; iPhone builds use TestFlight.
+
 ## Development
 
 You'll need Node.js 24, npm 11+, Docker Compose, and AWS CLI access to the `staging` profile.

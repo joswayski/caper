@@ -48,6 +48,18 @@ class PendingSendTrackerTest {
         assertNotNull(tracker.confirm(message(pending.id.toString(), author = guest.id, guest = true)))
     }
 
+    @Test fun `reply retries freeze destination and broadcast and reject mismatched confirmation`() {
+        val tracker = PendingSendTracker()
+        val first = tracker.begin("channel", author(), "original", threadRootId = "root", broadcast = true) {}
+        val retry = tracker.begin("channel", author(), "edited", threadRootId = "different", broadcast = false) {}
+        assertEquals(first, retry)
+        val reply = message(first.id.toString()).copy(threadRootId = "root", broadcast = true)
+        assertNull(tracker.confirm(reply.copy(threadRootId = "different")))
+        assertNull(tracker.confirm(reply.copy(broadcast = false)))
+        assertNotNull(tracker.confirm(reply))
+        assertNull(tracker.confirm(reply))
+    }
+
     private fun author() = ChatAuthor("account", "Jose", false)
 
     private fun message(id: String, channel: String = "channel", author: String = "account", guest: Boolean = false) = ChatMessage(

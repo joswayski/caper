@@ -13,6 +13,11 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 pub enum Command {
+    Forward {
+        generation: u64,
+        request: u64,
+        operation: crate::forwarding::Operation,
+    },
     LoadDirects {
         generation: u64,
         token: String,
@@ -80,6 +85,14 @@ pub enum Command {
         channel: String,
         before: String,
     },
+    LoadThread {
+        generation: u64,
+        request: u64,
+        token: Option<String>,
+        channel: String,
+        root: String,
+        before: Option<String>,
+    },
     MediaStatus {
         generation: u64,
         root: String,
@@ -113,6 +126,8 @@ pub enum Command {
         channel: String,
         client_id: String,
         text: String,
+        thread_root_id: Option<String>,
+        broadcast: bool,
         /// Resent unchanged on retry: ids join the idempotency hash.
         attachment_ids: Vec<String>,
     },
@@ -142,11 +157,51 @@ pub enum Command {
         emoji: String,
         active: bool,
     },
+    Pin {
+        generation: u64,
+        token: Option<String>,
+        chat_token: String,
+        channel: String,
+        message: String,
+        active: bool,
+    },
+    EditMessage {
+        generation: u64,
+        request: u64,
+        token: Option<String>,
+        chat_token: String,
+        original: Box<Message>,
+        text: String,
+    },
+    ReloadMessage {
+        generation: u64,
+        request: u64,
+        token: Option<String>,
+        channel: String,
+        message: String,
+    },
+    MessageVersions {
+        generation: u64,
+        request: u64,
+        token: Option<String>,
+        channel: String,
+        message: String,
+        before: Option<u32>,
+    },
     Typing {
         token: Option<String>,
         chat_token: String,
         channel: String,
         typing: bool,
+    },
+    /// Who reacted to one message, read like history. `revision` is the
+    /// snapshot's `reactionSeq` the result is cached under.
+    LoadReactors {
+        generation: u64,
+        token: Option<String>,
+        channel: String,
+        message: String,
+        revision: String,
     },
     Admin {
         generation: u64,
@@ -280,6 +335,11 @@ pub enum AdminResult {
 }
 
 pub enum Event {
+    Forward {
+        generation: u64,
+        request: u64,
+        result: Result<crate::forwarding::Response, SendFailure>,
+    },
     DirectsLoaded {
         generation: u64,
         result: Result<Vec<DirectConversation>, String>,
@@ -334,6 +394,13 @@ pub enum Event {
         channel: String,
         result: Result<History, LoadError>,
     },
+    ThreadLoaded {
+        generation: u64,
+        request: u64,
+        channel: String,
+        root: String,
+        result: Result<crate::model::ThreadHistory, LoadError>,
+    },
     MediaStatus {
         generation: u64,
         root: String,
@@ -374,6 +441,35 @@ pub enum Event {
     Upload {
         key: u64,
         update: UploadUpdate,
+    },
+    Reactors {
+        generation: u64,
+        channel: String,
+        message: String,
+        revision: String,
+        result: Result<crate::model::Reactors, String>,
+    },
+    Pinned {
+        generation: u64,
+        channel: String,
+        message: String,
+        active: bool,
+        result: Result<crate::model::PinUpdate, SendFailure>,
+    },
+    EditSnapshot {
+        generation: u64,
+        request: u64,
+        channel: String,
+        message: String,
+        reloaded: bool,
+        result: Result<Box<Message>, String>,
+    },
+    MessageVersions {
+        generation: u64,
+        request: u64,
+        channel: String,
+        message: String,
+        result: Result<crate::model::MessageVersions, String>,
     },
     Credential {
         generation: u64,
@@ -1024,6 +1120,31 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                 .history(token.as_deref(), &channel, Some(&before))
                 .map_err(LoadError::from),
         },
+        Command::LoadThread {
+            generation,
+            request,
+            token,
+            channel,
+            root,
+            before,
+        } => Event::ThreadLoaded {
+            generation,
+            request,
+            channel: channel.clone(),
+            root: root.clone(),
+            result: api
+                .thread(token.as_deref(), &channel, &root, before.as_deref())
+                .map_err(LoadError::from),
+        },
+        Command::Forward {
+            generation,
+            request,
+            operation,
+        } => Event::Forward {
+            generation,
+            request,
+            result: operation.run(api),
+        },
         Command::Send {
             generation,
             token,
@@ -1032,6 +1153,8 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             client_id,
             text,
             attachment_ids,
+            thread_root_id,
+            broadcast,
         } => Event::Sent {
             generation,
             channel: channel.clone(),
@@ -1044,6 +1167,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                     &client_id,
                     &text,
                     &attachment_ids,
+                    (thread_root_id.as_deref(), broadcast),
                 )
                 .map_err(|error| SendFailure {
                     status: error.status.map(|status| status.as_u16()),
@@ -1086,6 +1210,91 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                     status: error.status.map(|status| status.as_u16()),
                     message: error.to_string(),
                 }),
+        },
+        Command::LoadReactors {
+            generation,
+            token,
+            channel,
+            message,
+            revision,
+        } => Event::Reactors {
+            generation,
+            result: api
+                .reactors(token.as_deref(), &channel, &message)
+                .map_err(|error| error.to_string()),
+            channel,
+            message,
+            revision,
+        },
+        Command::Pin {
+            generation,
+            token,
+            chat_token,
+            channel,
+            message,
+            active,
+        } => Event::Pinned {
+            generation,
+            channel: channel.clone(),
+            message: message.clone(),
+            active,
+            result: api
+                .pin(token.as_deref(), &chat_token, &channel, &message, active)
+                .map_err(|error| SendFailure {
+                    status: error.status.map(|status| status.as_u16()),
+                    message: error.to_string(),
+                }),
+        },
+        Command::EditMessage {
+            generation,
+            request,
+            token,
+            chat_token,
+            original,
+            text,
+        } => Event::EditSnapshot {
+            generation,
+            request,
+            channel: original.channel_id.clone(),
+            message: original.id.clone(),
+            reloaded: false,
+            result: api
+                .edit_message(token.as_deref(), &chat_token, &original, &text)
+                .map(Box::new)
+                .map_err(|error| error.to_string()),
+        },
+        Command::ReloadMessage {
+            generation,
+            request,
+            token,
+            channel,
+            message,
+        } => Event::EditSnapshot {
+            generation,
+            request,
+            channel: channel.clone(),
+            message: message.clone(),
+            reloaded: true,
+            result: api
+                .load_message(token.as_deref(), &channel, &message)
+                .map(Box::new)
+                .map_err(|error| error.to_string()),
+        },
+        Command::MessageVersions {
+            generation,
+            request,
+            token,
+            channel,
+            message,
+            before,
+        } => Event::MessageVersions {
+            generation,
+            request,
+            channel: channel.clone(),
+            message: message.clone(),
+            result: api
+                .message_versions(token.as_deref(), &channel, &message, before)
+                .map_err(|error| error.to_string()),
         },
         Command::Admin {
             generation,

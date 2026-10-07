@@ -153,6 +153,22 @@ fn only_ready_files_gain_download_urls_and_previews_show_while_processing() {
         Some(&signer),
     );
     assert!(updated["attachments"][0]["url"].is_string());
+    // A forward carries a snapshot of its source; its files are signed too.
+    let forwarded = sign_attachments(
+        json!({"type":"message.created","message":{"content":{"text":"look"},"forward":{"message":{"content":{"attachments":[{"id":"src","kind":"image","status":"ready"}]}}}}}),
+        Some(&signer),
+    );
+    assert!(
+        forwarded["message"]["forward"]["message"]["content"]["attachments"][0]["url"]
+            .as_str()
+            .unwrap()
+            .contains("/original/src?")
+    );
+    let page_row = sign_attachments(
+        json!({"content":{"text":""},"forward":{"message":{"content":{"attachments":[{"id":"src","kind":"file"}]}}}}),
+        Some(&signer),
+    );
+    assert!(page_row["forward"]["message"]["content"]["attachments"][0]["url"].is_string());
     assert_eq!(kind("image/svg+xml"), "file");
     assert_eq!(kind("image/heic"), "file");
     assert_eq!(kind("video/mp4"), "video");
@@ -638,13 +654,15 @@ async fn uploads_process_on_the_server_update_messages_and_purge() {
     put(&doc, b"hello").await;
     let doc_id = doc["id"].as_str().unwrap().to_owned();
     let _ = complete_as(&owner, &doc_id).await.unwrap();
-    let message = crate::chat::persist_message(
+    let message = crate::chat::send_message(
         &pool,
         &channel,
         "owner-chat",
         Uuid::new_v4(),
         "",
         &[shot_id.clone(), doc_id.clone()],
+        None,
+        false,
     )
     .await
     .unwrap();
@@ -658,13 +676,15 @@ async fn uploads_process_on_the_server_update_messages_and_purge() {
         "stored payloads never contain URLs"
     );
     assert_eq!(
-        crate::chat::persist_message(
+        crate::chat::send_message(
             &pool,
             &channel,
             "owner-chat",
             Uuid::new_v4(),
             "again",
-            std::slice::from_ref(&doc_id)
+            std::slice::from_ref(&doc_id),
+            None,
+            false
         )
         .await
         .unwrap_err()
@@ -672,13 +692,15 @@ async fn uploads_process_on_the_server_update_messages_and_purge() {
         StatusCode::CONFLICT
     );
     assert_eq!(
-        crate::chat::persist_message(
+        crate::chat::send_message(
             &pool,
             &channel,
             "owner-chat",
             Uuid::new_v4(),
             "",
-            std::slice::from_ref(&short_id)
+            std::slice::from_ref(&short_id),
+            None,
+            false
         )
         .await
         .unwrap_err()
@@ -880,13 +902,15 @@ async fn uploads_process_on_the_server_update_messages_and_purge() {
     put(&clip, &[1; 50]).await;
     let clip_id = clip["id"].as_str().unwrap().to_owned();
     let _ = complete_as(&owner, &clip_id).await.unwrap();
-    let second = crate::chat::persist_message(
+    let second = crate::chat::send_message(
         &pool,
         &channel,
         "owner-chat",
         Uuid::new_v4(),
         "clip",
         std::slice::from_ref(&clip_id),
+        None,
+        false,
     )
     .await
     .unwrap();
@@ -932,13 +956,15 @@ async fn uploads_process_on_the_server_update_messages_and_purge() {
     put(&stuck, &[2; 9]).await;
     let stuck_id = stuck["id"].as_str().unwrap().to_owned();
     let _ = complete_as(&owner, &stuck_id).await.unwrap();
-    let third = crate::chat::persist_message(
+    let third = crate::chat::send_message(
         &pool,
         &channel,
         "owner-chat",
         Uuid::new_v4(),
         "",
         std::slice::from_ref(&stuck_id),
+        None,
+        false,
     )
     .await
     .unwrap();

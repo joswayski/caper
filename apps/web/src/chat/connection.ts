@@ -1,5 +1,5 @@
 import { appGateway, type AppGateway, type GatewaySubscription } from "../gateway/client.ts";
-import { isChatAttachmentProgressEvent, isChatAttachmentsEvent, isChatAuthor, isChatMessage, isChatReactionEvent, sequence, type ChatAttachmentProgressEvent, type ChatAttachmentsEvent, type ChatEvent, type ChatMessage, type ChatReactionEvent, type ChatTypingEvent } from "./types.ts";
+import { isChatAttachmentProgressEvent, isChatAttachmentsEvent, isChatAuthor, isChatEditEvent, isChatForwardEvent, isChatMessage, isChatPinEvent, isChatReactionEvent, sequence, type ChatAttachmentProgressEvent, type ChatAttachmentsEvent, type ChatEditEvent, type ChatEvent, type ChatForwardEvent, type ChatMessage, type ChatPinEvent, type ChatReactionEvent, type ChatTypingEvent } from "./types.ts";
 
 type ApplyResult = "applied" | "buffered" | "duplicate" | "overflow";
 
@@ -12,6 +12,9 @@ export interface ChatConnectionCallbacks {
   reactions?: (event: ChatReactionEvent) => ApplyResult;
   attachments?: (event: ChatAttachmentsEvent) => ApplyResult;
   progress?: (event: ChatAttachmentProgressEvent) => void;
+  pin?: (event: ChatPinEvent) => ApplyResult;
+  forward?: (event: ChatForwardEvent) => ApplyResult;
+  edit?: (event: ChatEditEvent) => ApplyResult;
 }
 
 function parseEvent(value: unknown): ChatEvent {
@@ -23,6 +26,9 @@ function parseEvent(value: unknown): ChatEvent {
     return { type: "ready", cursor: event.cursor };
   }
   if (isChatReactionEvent(event) || isChatAttachmentsEvent(event) || isChatAttachmentProgressEvent(event)) return event;
+  if (isChatPinEvent(event)) return event;
+  if (isChatForwardEvent(event)) return event;
+  if (isChatEditEvent(event)) return event;
   if (event.type === "typing.updated" && typeof event.channelId === "string" && isChatAuthor(event.author)
     && typeof event.typing === "boolean" && typeof event.revision === "string") {
     sequence(event.revision);
@@ -85,6 +91,18 @@ export class ChatConnection {
         }
         if (event.type === "message.attachments" && event.channelId === this.channelId && this.callbacks.attachments) {
           if (this.callbacks.attachments(event) === "overflow") this.callbacks.resync();
+          return;
+        }
+        if (event.type === "message.pin" && event.channelId === this.channelId && this.callbacks.pin) {
+          if (this.callbacks.pin(event) === "overflow") this.callbacks.resync();
+          return;
+        }
+        if (event.type === "message.forward" && event.channelId === this.channelId && this.callbacks.forward) {
+          if (this.callbacks.forward(event) === "overflow") this.callbacks.resync();
+          return;
+        }
+        if (event.type === "message.edited" && event.channelId === this.channelId && this.callbacks.edit) {
+          if (this.callbacks.edit(event) === "overflow") this.callbacks.resync();
           return;
         }
         if (event.type !== "message.created" || event.channelId !== this.channelId) {

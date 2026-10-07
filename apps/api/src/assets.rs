@@ -517,19 +517,33 @@ pub(crate) fn sign_attachments(mut payload: Value, signer: Option<&CdnSigner>) -
         return payload;
     };
     let now = Utc::now().timestamp();
-    let pointer = if payload.get("type").and_then(Value::as_str) == Some("message.attachments") {
-        "/attachments"
-    } else if payload.get("message").is_some() {
-        "/message/content/attachments"
-    } else {
-        "/content/attachments"
-    };
-    if let Some(attachments) = payload.pointer_mut(pointer).and_then(Value::as_array_mut) {
-        for attachment in attachments.iter_mut().filter_map(Value::as_object_mut) {
-            sign_one(attachment, signer, now);
+    for pointer in attachment_pointers(&payload) {
+        if let Some(attachments) = payload.pointer_mut(pointer).and_then(Value::as_array_mut) {
+            for attachment in attachments.iter_mut().filter_map(Value::as_object_mut) {
+                sign_one(attachment, signer, now);
+            }
         }
     }
     payload
+}
+
+/// Where attachment lists live in a message, an event carrying one, or a
+/// forward's embedded snapshot of its source message (whose access the
+/// forward already authorizes).
+fn attachment_pointers(payload: &Value) -> &'static [&'static str] {
+    if payload.get("type").and_then(Value::as_str) == Some("message.attachments") {
+        &["/attachments"]
+    } else if payload.get("message").is_some() {
+        &[
+            "/message/content/attachments",
+            "/message/forward/message/content/attachments",
+        ]
+    } else {
+        &[
+            "/content/attachments",
+            "/forward/message/content/attachments",
+        ]
+    }
 }
 
 fn sign_one(attachment: &mut Map<String, Value>, signer: &CdnSigner, now: i64) {
@@ -1183,9 +1197,14 @@ pub(crate) async fn link(
 /// placeholder instead of a broken link before the objects are purged. Files
 /// that failed processing already say so through `status`.
 pub(crate) async fn mark_deleted(pool: &PgPool, messages: &mut [Value]) -> Result<(), ApiError> {
+    const LISTS: [&str; 2] = [
+        "/content/attachments",
+        "/forward/message/content/attachments",
+    ];
     let ids: Vec<String> = messages
         .iter()
-        .filter_map(|m| m.pointer("/content/attachments").and_then(Value::as_array))
+        .flat_map(|m| LISTS.iter().filter_map(|p| m.pointer(p)))
+        .filter_map(Value::as_array)
         .flatten()
         .filter_map(|a| a.get("id").and_then(Value::as_str).map(str::to_owned))
         .collect();
@@ -1202,21 +1221,20 @@ pub(crate) async fn mark_deleted(pool: &PgPool, messages: &mut [Value]) -> Resul
     if gone.is_empty() {
         return Ok(());
     }
-    for attachment in messages
-        .iter_mut()
-        .filter_map(|m| {
-            m.pointer_mut("/content/attachments")
-                .and_then(Value::as_array_mut)
-        })
-        .flatten()
-        .filter_map(Value::as_object_mut)
-    {
-        if attachment
-            .get("id")
-            .and_then(Value::as_str)
-            .is_some_and(|id| gone.iter().any(|g| g == id))
-        {
-            attachment.insert("unavailable".into(), Value::Bool(true));
+    for message in messages.iter_mut() {
+        for pointer in LISTS {
+            let Some(list) = message.pointer_mut(pointer).and_then(Value::as_array_mut) else {
+                continue;
+            };
+            for attachment in list.iter_mut().filter_map(Value::as_object_mut) {
+                if attachment
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| gone.iter().any(|g| g == id))
+                {
+                    attachment.insert("unavailable".into(), Value::Bool(true));
+                }
+            }
         }
     }
     Ok(())

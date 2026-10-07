@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { ChatTimeline } from "../chat/timeline.ts";
-import { isChatReactionEvent, type ChatAttachmentsEvent, type ChatMessage, type ChatReactionEvent } from "../chat/types.ts";
+import { isChatMessage, isChannelMessage, isChatPinEvent, isChatReactionEvent, type ChatAttachmentsEvent, type ChatMessage, type ChatPinEvent, type ChatReactionEvent } from "../chat/types.ts";
 import { emojiAsset, emojiCode, emojiNames, preloadEmojiImages } from "../chat/emoji.ts";
 
 function message(seq: string, id = `message-${seq}`): ChatMessage {
@@ -42,6 +42,70 @@ function reaction(seq: string, authorIds = ["other"], messageId = "message-1"): 
   return { type: "message.reactions", schemaVersion: 1, channelId: "general", messageId, seq,
     reactions: authorIds.length ? [{ emoji: "👍🏽", authorIds }] : [] };
 }
+
+function pin(seq: string, active = true, target = message("1")): ChatPinEvent {
+  const pinned = { ...target, pinSeq: seq, pin: active ? { author: { id: "moderator", name: "Mod", isGuest: false }, createdAt: "2026-09-21T13:00:00Z" } : null };
+  return { type: "message.pin", schemaVersion: 1, channelId: "general", seq, message: pinned };
+}
+
+test("pins interleave with messages and reactions without changing creation order", () => {
+  const timeline = new ChatTimeline();
+  timeline.reset([message("1")], "1", []);
+  assert.equal(timeline.applyEvent(pin("2")), "applied");
+  assert.equal(timeline.applyEvent(reaction("3")), "applied");
+  assert.equal(timeline.applyEvent(message("4")), "applied");
+  assert.equal(timeline.cursor, "4");
+  assert.deepEqual(timeline.messages.map((item) => item.seq), ["1", "4"]);
+  assert.deepEqual(timeline.pinnedMessages.map((item) => item.id), ["message-1"]);
+  assert.ok(isChatPinEvent(pin("9007199254740993")));
+});
+
+test("an old pin outside the loaded page updates live and stale snapshots cannot resurrect its unpin", () => {
+  const timeline = new ChatTimeline();
+  const old = message("1", "old-pin");
+  timeline.reset([message("10")], "10", [{ ...old, ...pin("8", true, old).message }]);
+  assert.deepEqual(timeline.messages.map((item) => item.id), ["message-10"], "pins do not enter timeline pagination");
+  timeline.applyEvent(pin("11", false, old));
+  assert.equal(timeline.pinnedMessages.length, 0);
+  timeline.prepend([{ ...old, ...pin("8", true, old).message }]);
+  assert.equal(timeline.messages[0].pin, null, "the newer unpin tombstone wins on the old page");
+  timeline.reset([message("10")], "11", [pin("8", true, old).message]);
+  assert.equal(timeline.pinnedMessages.length, 0, "a stale history snapshot cannot resurrect the pin");
+});
+
+test("authoritative reconnect removes offline unpins and independent pin revisions survive stale pages", () => {
+  const timeline = new ChatTimeline();
+  const old = pin("8").message;
+  timeline.reset([message("10")], "10", [old]);
+  timeline.applyEvent(pin("11"));
+  timeline.reset([message("14")], "14", []);
+  assert.equal(timeline.pinnedMessages.length, 0, "absence at a newer history cursor removes a pin changed while offline");
+  timeline.reset([old], "8", [old]);
+  timeline.prepend([{ ...pin("12", false).message, reactionSeq: "5", reactions: [] }]);
+  timeline.prepend([{ ...old, reactionSeq: "13", reactions: reaction("13").reactions }]);
+  assert.equal(timeline.messages[0].pin, null);
+  assert.equal(timeline.messages[0].reactionSeq, "13", "reaction and pin revisions merge independently");
+  assert.equal(timeline.pinnedMessages.length, 0);
+  timeline.reset([], "0");
+  assert.equal(timeline.pinnedMessages.length, 0, "access revocation clears every pin snapshot");
+});
+
+test("complete pin history rejects old acknowledgements and pages but preserves newer HTTP snapshots", () => {
+  const timeline = new ChatTimeline();
+  const old = message("1", "unloaded-pin");
+  timeline.reset([message("50")], "60", []);
+  timeline.mergePin(pin("4", true, old));
+  timeline.mergePin(pin("60", true, old));
+  assert.equal(timeline.pinnedMessages.length, 0, "absence from complete history supersedes acknowledgements through its cursor");
+  timeline.prepend([pin("4", true, old).message]);
+  assert.equal(timeline.messages[0].pin, null, "a stale page must not restore the inline marker either");
+  timeline.mergePin(pin("61", true, old));
+  assert.equal(timeline.cursor, "60", "HTTP must not advance replay");
+  timeline.reset([message("50")], "60", []);
+  assert.deepEqual(timeline.pinnedMessages.map(item => item.id), [old.id], "a newer acknowledgement survives a concurrently captured history");
+  assert.equal(timeline.applyEvent(pin("61", true, old)), "applied");
+  assert.equal(timeline.cursor, "61");
+});
 
 test("reactions fill sequence gaps without becoming messages or accepting stale acknowledgements", () => {
   const timeline = new ChatTimeline();
@@ -100,6 +164,30 @@ test("emoji names prefer dashes while retaining spaced and underscore search ali
   assert.equal(emojiNames(["face_with  big_eyes"]).at(-1), "face-with-big-eyes");
 });
 
+test("country flags prefer typeable country names and retain their original aliases", () => {
+  for (const [code, label, expected] of [
+    ["IL", "Israel", "israel"],
+    ["US", "United States", "united-states"],
+    ["BA", "Bosnia & Herzegovina", "bosnia-and-herzegovina"],
+    ["CI", "Côte d’Ivoire", "cote-divoire"],
+    ["UM", "U.S. Outlying Islands", "us-outlying-islands"],
+    ["MM", "Myanmar (Burma)", "myanmar-burma"],
+    ["TR", "Türkiye", "turkiye"],
+    ["GB", "England", "england"],
+  ]) {
+    const original = [code, "flag", `flag: ${label}`];
+    const aliases = emojiNames(original);
+    assert.equal(aliases.at(-1), expected);
+    for (const alias of [code, "flag", `flag: ${label}`, expected.replaceAll("-", "_"), expected.replaceAll("-", " ")]) {
+      assert.ok(aliases.includes(alias), alias);
+    }
+    assert.deepEqual(original, [code, "flag", `flag: ${label}`]);
+  }
+  for (const label of ["rainbow flag", "pirate flag", "chequered flag"]) {
+    assert.equal(emojiNames(["flag", label]).at(-1), label.replaceAll(" ", "-"));
+  }
+});
+
 test("bundled native emoji names and aliases match on Android, Apple and desktop", () => {
   const shared = readFileSync(new URL("../../../../shared/emoji/catalog.json", import.meta.url), "utf8");
   const apple = readFileSync(new URL("../../../native/apple/Sources/CaperCore/EmojiAssets/catalog.json", import.meta.url), "utf8");
@@ -110,6 +198,15 @@ test("bundled native emoji names and aliases match on Android, Apple and desktop
   assert.equal(grinning.name, "grinning-face");
   assert.equal(grinning.emoji, "😀");
   for (const query of ["grinning-face", "grinning_face", "grinning face"]) assert.ok(grinning.keywords.includes(query));
+  const flags = entries.filter((entry) => entry.selectable && entry.keywords.includes("flag:"));
+  assert.ok(flags.length > 250, "country and regional flags must be covered");
+  assert.ok(flags.every((entry) => /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(entry.name)), "every country name must be typeable in colon autocomplete");
+  for (const [id, emoji, name] of [["1f1ee-1f1f1", "🇮🇱", "israel"], ["1f1fa-1f1f8", "🇺🇸", "united-states"], ["1f1e8-1f1ee", "🇨🇮", "cote-divoire"]]) {
+    const flag = flags.find((entry) => entry.id === id)!;
+    assert.equal(flag.name, name);
+    assert.equal(flag.emoji, emoji);
+    assert.ok(flag.keywords.includes(name));
+  }
 });
 
 test("emoji preload shares decoding per category, retries failures, and stays warm across messages", async (t) => {
@@ -326,4 +423,68 @@ test("attachment updates for unloaded messages apply once the message arrives", 
   timeline.prepend([withFiles(message("1"), "processing")]);
   assert.equal(statusOf(timeline.messages[0]), "ready");
   assert.equal(timeline.cursor, "11");
+});
+
+test("thread summaries survive stale history, unloaded parents and duplicate broadcast replies", () => {
+  const timeline = new ChatTimeline();
+  const first = { replyCount: 1, participants: [message("1").author], seq: "12" };
+  const latest = { replyCount: 3, participants: [{ id: "other", name: "Other", isGuest: false }], seq: "15" };
+  timeline.reset([message("10")], "10");
+  const reply = { ...message("15"), threadRootId: "parent", broadcast: true, thread: latest };
+  timeline.mergeSent(reply);
+  assert.equal(timeline.cursor, "10");
+  timeline.prepend([{ ...message("1", "parent"), thread: first }]);
+  assert.deepEqual(timeline.messages[0].thread, latest, "a late parent page cannot lower the summary revision");
+  timeline.prepend([{ ...reply, thread: first, broadcast: true }]);
+  assert.equal(timeline.messages.filter((row) => row.id === reply.id).length, 1);
+  assert.deepEqual(timeline.messages[0].thread, latest);
+  assert.equal(isChannelMessage(reply), true);
+  assert.equal(isChannelMessage({ ...reply, broadcast: false }), false);
+  assert.equal(timeline.cursor, "10", "thread GET/HTTP ACK never advances channel replay");
+});
+
+test("thread metadata validators reject invalid roots, broadcasts and summary revisions", () => {
+  const root = message("1");
+  assert.ok(isChatMessage({ ...root, threadRootId: "root", broadcast: false }));
+  for (const invalid of [
+    { ...root, broadcast: true }, { ...root, threadRootId: "" },
+    { ...root, thread: { replyCount: 1, participants: [root.author], seq: "-1" } },
+    { ...root, thread: { replyCount: 0, participants: [root.author], seq: "2" } },
+    { ...root, thread: { replyCount: 2, participants: [root.author, root.author], seq: "2" } },
+  ]) assert.equal(isChatMessage(invalid), false);
+});
+
+test("attachment updates reach pinned copies, thread replies and survive pin snapshots", () => {
+  const timeline = new ChatTimeline();
+  const root = withFiles(message("1"), "processing");
+  timeline.reset([root], "1", []);
+  assert.equal(timeline.applyEvent(pin("2", true, root)), "applied");
+  assert.equal(timeline.applyEvent(attachmentsEvent("3", "ready")), "applied");
+  assert.equal(statusOf(timeline.pinnedMessages[0]), "ready", "the pins panel shows the processed file");
+  assert.equal(timeline.applyEvent(pin("4", true, root)), "applied");
+  assert.equal(statusOf(timeline.pinnedMessages[0]), "ready", "a later pin snapshot cannot restore processing");
+  assert.equal(timeline.messages[0].pinSeq, "4");
+  const reply = { ...withFiles(message("5", "reply"), "processing"), threadRootId: "message-1" };
+  assert.equal(timeline.applyEvent(reply), "applied");
+  assert.equal(timeline.applyEvent(attachmentsEvent("6", "failed", "reply")), "applied");
+  assert.equal(statusOf(timeline.messages.find((item) => item.id === "reply")!), "failed");
+  assert.equal(timeline.cursor, "6");
+});
+
+test("content edits never regress a newer attachment processing result", () => {
+  const timeline = new ChatTimeline();
+  const root = withFiles(message("1"), "processing");
+  timeline.reset([root], "1");
+  timeline.applyEvent(attachmentsEvent("2", "ready"));
+  // The edit committed before processing finished, so it still carries "processing".
+  const edited = { ...root, revision: 2, editSeq: "3", editedAt: "2026-10-06T13:00:00Z", content: { ...root.content, text: "edited" } };
+  assert.equal(timeline.applyEvent({ type: "message.edited", schemaVersion: 1, channelId: "general", seq: "3", message: edited }), "applied");
+  assert.equal(timeline.messages[0].content.text, "edited");
+  assert.equal(statusOf(timeline.messages[0]), "ready");
+  assert.equal(timeline.messages[0].attachmentsSeq, "2");
+  // A later edit snapshot that already reflects a newer result is taken whole.
+  timeline.mergeEdit({ ...withFiles(edited, "failed", "4"), revision: 3, editSeq: "5", content: { ...withFiles(edited, "failed").content, text: "again" } });
+  assert.equal(timeline.messages[0].content.text, "again");
+  assert.equal(statusOf(timeline.messages[0]), "failed");
+  assert.equal(timeline.messages[0].attachmentsSeq, "4");
 });

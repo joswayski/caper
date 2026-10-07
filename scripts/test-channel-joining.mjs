@@ -22,7 +22,7 @@ function fixture() {
   const empty = new URL(location.href).searchParams.has('empty');
   let state = JSON.parse(sessionStorage.getItem('channel-test-state') ?? 'null') ?? { joined: empty ? [] : [general.id], invited: true, granted: false };
   const save = () => sessionStorage.setItem('channel-test-state', JSON.stringify(state));
-  const control = window.channelFixture = { requests: [], microphones: 0, fail: false, state };
+  const control = window.channelFixture = { requests: [], statusRequests: [], holdStatus: true, microphones: 0, fail: false, state };
   if (navigator.mediaDevices) navigator.mediaDevices.getUserMedia = async () => { control.microphones++; throw new Error('TEST FIXTURE: microphone disabled'); };
   const originalFetch = window.fetch.bind(window);
   window.fetch = async (input, options = {}) => {
@@ -62,7 +62,18 @@ function fixture() {
       return Response.json({ space, channel, cursor: '1', hasMore: false, messages: [{ id: `message-${channel.id}`, channelId: channel.id, seq: '1', clientMessageId: '00000000-0000-4000-8000-000000000001', createdAt: '2026-10-01T14:00:00Z', author: { id: 'owner1234567', name: 'TEST FIXTURE Owner', isGuest: false }, reactions: [{ emoji: '👍', authorIds: [account.id, 'owner1234567'] }], reactionSeq: '1', content: { version: 1, type: 'text', text: `TEST FIXTURE — ${channel.name} conversation. Previewing does not join this channel.` } }] });
     }
     if (path === '/api/chat/session') return Response.json({ token: 'fixture-only', author: { id: account.id, name: account.displayName, isGuest: false } });
-    if (path.endsWith('/media/status')) return Response.json({ enabled: false });
+    if (path.endsWith('/media/status')) {
+      if (control.holdStatus) await new Promise((resolve, reject) => {
+        const request = { path, release: resolve, aborted: false };
+        control.statusRequests.push(request);
+        options.signal?.addEventListener('abort', () => {
+          request.aborted = true;
+          request.reason = options.signal.reason.name;
+          reject(options.signal.reason);
+        }, { once: true });
+      });
+      return Response.json({ enabled: false });
+    }
     return error(503, 'TEST FIXTURE: disabled endpoint');
   };
 }
@@ -79,13 +90,20 @@ try {
   browser('open', 'about:blank');
   browser('set', 'viewport', '1280', '900', '2');
   browser('open', url);
-  wait('!!document.querySelector(".browse-channels")');
+  wait('!!document.querySelector(".space-menu summary")');
+  wait('channelFixture.statusRequests.length > 0');
   assert.equal(evaluate('document.querySelector("#space-channel-list").textContent.includes("design")'), false);
-  browser('click', '.browse-channels');
+  browser('click', '.space-menu summary');
+  browser('find', 'role', 'button', 'click', '--name', 'Browse channels', '--exact');
   wait('!!document.querySelector(".channel-directory")');
   browser('fill', '.channel-directory input', 'des');
   browser('find', 'role', 'button', 'click', '--name', 'Preview #design', '--exact');
   wait('!!document.querySelector(".channel-preview")');
+  assert.equal(evaluate('channelFixture.statusRequests.at(-1).aborted'), true, 'Leaving a channel cancels its outstanding voice-status request');
+  assert.equal(evaluate('channelFixture.statusRequests.at(-1).reason'), 'AbortError', 'Cancellation must come from navigation, not the ten-second timeout');
+  evaluate('channelFixture.holdStatus = false; channelFixture.statusRequests.forEach(r => r.release())');
+  assert.equal(evaluate('document.querySelector(".chat-heading").textContent.includes("design")'), true, 'An abandoned status request cannot change the selected conversation');
+  console.log('PASS: channel navigation aborts obsolete voice-status reads without a timeout or visible error.');
   assert.equal(evaluate('document.querySelector("#chat-message") !== null'), false);
   assert.equal(evaluate('document.querySelector(".channel-preview span").previousElementSibling.textContent'), 'Preview');
   assert.equal(evaluate('document.querySelector(".channel-preview span").textContent'), 'Join #design to interact with people here');
@@ -96,7 +114,7 @@ try {
   assert.equal(evaluate('channelFixture.requests.some(r => r.path.includes("other1234567/media") || r.path.endsWith("membership"))'), false);
   assert.equal(evaluate('channelFixture.microphones'), 0);
   wait('!!document.querySelector(".chat-reaction")');
-  assert.equal(evaluate('[...document.querySelectorAll(".chat-reaction,.chat-add-reaction")].every(button => button.disabled)'), true);
+  assert.equal(evaluate('[...document.querySelectorAll(".chat-reaction,.chat-add-reaction")].every(button => button.disabled || button.getAttribute("aria-disabled") === "true")'), true);
   assert.equal(evaluate('document.querySelector(".chat-reaction").textContent'), '2');
   screenshot('public-channel-preview-1280');
   evaluate('channelFixture.fail = true');
@@ -109,21 +127,21 @@ try {
   assert.equal(evaluate('channelFixture.microphones'), 0);
   browser('reload');
   wait('document.querySelector("#space-channel-list").textContent.includes("design")');
-  wait('!document.querySelector(".chat-initial-messages") && !!document.querySelector(".chat-reaction:not(:disabled)")');
+  wait('!document.querySelector(".chat-initial-messages") && !!document.querySelector(\'.chat-reaction:not([aria-disabled="true"])\')');
   browser('find', 'first', '.chat-reaction', 'click');
   wait('!!document.querySelector(".chat-send-error")');
-  const reactionWrites = evaluate('channelFixture.requests.filter(r => r.path.endsWith("/reactions")).length');
+  const reactionWrites = evaluate('channelFixture.requests.filter(r => r.path.endsWith("/reactions") && r.method === "PUT").length');
   assert.equal(reactionWrites, 1, 'Joined channel can attempt a reaction; mock intentionally rejects to expose retry');
   browser('find', 'first', '.chat-add-reaction', 'click');
   wait('!!document.querySelector(".chat-reaction-picker")');
   evaluate('channelFixture.state.joined = channelFixture.state.joined.filter(id => id !== "other1234567"); window.dispatchEvent(new Event("focus"))');
   wait('!!document.querySelector(".channel-preview") && !document.querySelector("#chat-message")');
   assert.equal(evaluate('document.querySelector("#space-channel-list").textContent.includes("design")'), false);
-  assert.equal(evaluate('[...document.querySelectorAll(".chat-reaction,.chat-add-reaction")].every(button => button.disabled)'), true);
+  assert.equal(evaluate('[...document.querySelectorAll(".chat-reaction,.chat-add-reaction")].every(button => button.disabled || button.getAttribute("aria-disabled") === "true")'), true);
   assert.equal(evaluate('document.querySelector(".chat-reaction-picker") === null'), true);
   assert.equal(evaluate('[...document.querySelectorAll("button")].filter(button => button.textContent === "Retry reaction").every(button => button.disabled)'), true);
   evaluate('[...document.querySelectorAll(".chat-reaction,.chat-add-reaction, .chat-send-error button")].filter(button => button.textContent !== "Dismiss").forEach(button => button.click())');
-  assert.equal(evaluate('channelFixture.requests.filter(r => r.path.endsWith("/reactions")).length'), reactionWrites);
+  assert.equal(evaluate('channelFixture.requests.filter(r => r.path.endsWith("/reactions") && r.method === "PUT").length'), reactionWrites);
   browser('find', 'role', 'button', 'click', '--name', 'Join channel', '--exact');
   wait('!!document.querySelector("#chat-message") && channelFixture.state.joined.includes("other1234567")');
   assert.equal(evaluate('document.querySelector(".chat-heading").textContent.includes("Leave channel")'), false, 'Leaving is not a chat-header action');
@@ -164,7 +182,7 @@ try {
   wait('!!document.querySelector(".channel-preview")');
   assert.equal(evaluate('document.documentElement.scrollWidth > innerWidth'), false);
   wait('!!document.querySelector(".chat-reaction")');
-  assert.equal(evaluate('[...document.querySelectorAll(".chat-reaction,.chat-add-reaction")].every(button => button.disabled)'), true);
+  assert.equal(evaluate('[...document.querySelectorAll(".chat-reaction,.chat-add-reaction")].every(button => button.disabled || button.getAttribute("aria-disabled") === "true")'), true);
   screenshot('public-channel-preview-390');
   browser('find', 'role', 'button', 'click', '--name', 'Browse', '--exact');
   browser('click', '.pending-channel-invite');
@@ -175,6 +193,9 @@ try {
   assert.equal(evaluate('channelFixture.requests.some(r => r.path.includes("third1234567/messages"))'), false);
   assert.equal(evaluate('channelFixture.microphones'), 0);
   console.log('PASS: joined-only sidebar, search, read-only preview, explicit join, retry, reload persistence, focus reconciliation, public/private leave, private accept/decline privacy, no microphone; desktop + narrow Chromium.');
+} catch (error) {
+  console.error('Channel regression failed:', browser('snapshot'), evaluate('channelFixture.requests.slice(-20)'));
+  throw error;
 } finally {
   browser('close');
   rmSync(directory, { recursive: true, force: true });

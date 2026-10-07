@@ -32,6 +32,12 @@ export interface ChatAttachment {
   unavailable?: boolean;
 }
 
+export interface ChatThreadSummary {
+  replyCount: number;
+  participants: ChatAuthor[];
+  seq: string;
+}
+
 export interface ChatReaction {
   emoji: string;
   authorIds: string[];
@@ -67,6 +73,36 @@ export interface ChatAttachmentProgressEvent {
   percent: number;
 }
 
+export interface ChatPinEvent {
+  type: "message.pin";
+  schemaVersion: 1;
+  channelId: string;
+  seq: string;
+  message: ChatMessage;
+}
+
+export interface ChatForwardEvent {
+  type: "message.forward";
+  schemaVersion: 1;
+  channelId: string;
+  seq: string;
+  message: ChatMessage;
+}
+
+export interface ChatEditEvent {
+  type: "message.edited";
+  schemaVersion: 1;
+  channelId: string;
+  seq: string;
+  message: ChatMessage;
+}
+
+export interface MessageVersion {
+  revision: number;
+  content: ChatMessage["content"];
+  createdAt: string;
+}
+
 export interface ChatMessage {
   id: string;
   channelId: string;
@@ -79,12 +115,27 @@ export interface ChatMessage {
   reactionSeq?: string;
   /** Sequence of the latest `message.attachments` reflected in `content.attachments`. */
   attachmentsSeq?: string;
+  pin?: { author: ChatAuthor; createdAt: string } | null;
+  pinSeq?: string;
+  threadRootId?: string;
+  broadcast?: boolean;
+  thread?: ChatThreadSummary;
+  forward?: { message: ChatMessage | null; seq: string };
+  forwardSeq?: string;
+  revision?: number;
+  editedAt?: string;
+  editSeq?: string;
 }
 
 export interface ChatHistory {
   messages: ChatMessage[];
   cursor: string;
   hasMore: boolean;
+  pinnedMessages?: ChatMessage[];
+}
+
+export interface ChatThreadHistory extends ChatHistory {
+  root: ChatMessage;
 }
 
 export interface GeneralChatHistory extends ChatHistory {
@@ -110,6 +161,9 @@ export type ChatEvent =
   | ChatReactionEvent
   | ChatAttachmentsEvent
   | ChatAttachmentProgressEvent
+  | ChatPinEvent
+  | ChatForwardEvent
+  | ChatEditEvent
   | { type: "message.created"; channelId: string; seq: string; message: ChatMessage }
   | { type: "ready"; cursor: string }
   | { type: "migrating" }
@@ -132,9 +186,21 @@ export function isChatMessage(value: unknown): value is ChatMessage {
   return typeof message.id === "string" && typeof message.channelId === "string"
     && typeof message.seq === "string" && /^(0|[1-9]\d*)$/.test(message.seq)
     && typeof message.createdAt === "string" && typeof message.clientMessageId === "string"
+    && (message.revision === undefined || (Number.isSafeInteger(message.revision) && message.revision >= 1))
+    && (message.editedAt === undefined || typeof message.editedAt === "string")
+    && (message.editSeq === undefined || (typeof message.editSeq === "string" && /^(0|[1-9]\d*)$/.test(message.editSeq)))
+    && ((message.revision ?? 1) === 1 || (message.editedAt !== undefined && message.editSeq !== undefined))
+    && (message.threadRootId === undefined || (typeof message.threadRootId === "string" && !!message.threadRootId))
+    && (message.broadcast === undefined || (typeof message.broadcast === "boolean" && (!message.broadcast || !!message.threadRootId)))
+    && (message.thread === undefined || isChatThreadSummary(message.thread))
     && (message.reactions === undefined || isChatReactions(message.reactions))
     && (message.reactionSeq === undefined || (typeof message.reactionSeq === "string" && /^(0|[1-9]\d*)$/.test(message.reactionSeq)))
     && (message.attachmentsSeq === undefined || (typeof message.attachmentsSeq === "string" && /^(0|[1-9]\d*)$/.test(message.attachmentsSeq)))
+    && (message.pinSeq === undefined || (typeof message.pinSeq === "string" && /^(0|[1-9]\d*)$/.test(message.pinSeq)))
+    && (message.pin === undefined || message.pin === null || (typeof message.pin === "object" && isChatAuthor(message.pin.author) && typeof message.pin.createdAt === "string"))
+    && (message.forwardSeq === undefined || (typeof message.forwardSeq === "string" && /^(0|[1-9]\d*)$/.test(message.forwardSeq)))
+    && (message.forward === undefined || (!!message.forward && typeof message.forward.seq === "string" && /^(0|[1-9]\d*)$/.test(message.forward.seq)
+      && (message.forward.message === null || (!!message.forward.message && message.forward.message.forward === undefined && isChatMessage(message.forward.message)))))
     && isChatAuthor(message.author) && !!message.content
     && message.content.version === 1 && message.content.type === "text" && typeof message.content.text === "string"
     && (message.content.attachments === undefined || Array.isArray(message.content.attachments));
@@ -186,6 +252,44 @@ export function isChatAttachmentProgressEvent(value: unknown): value is ChatAtta
   return event.type === "attachment.progress" && typeof event.channelId === "string"
     && typeof event.messageId === "string" && typeof event.attachmentId === "string"
     && typeof event.percent === "number" && Number.isFinite(event.percent) && event.percent >= 0 && event.percent <= 100;
+}
+
+export function isChatEditEvent(value: unknown): value is ChatEditEvent {
+  if (!value || typeof value !== "object") return false;
+  const event = value as Partial<ChatEditEvent>;
+  return event.type === "message.edited" && event.schemaVersion === 1 && typeof event.channelId === "string"
+    && typeof event.seq === "string" && /^(0|[1-9]\d*)$/.test(event.seq) && isChatMessage(event.message)
+    && event.message.channelId === event.channelId && event.message.editSeq === event.seq && (event.message.revision ?? 1) > 1;
+}
+
+export function isChatPinEvent(value: unknown): value is ChatPinEvent {
+  if (!value || typeof value !== "object") return false;
+  const event = value as Partial<ChatPinEvent>;
+  return event.type === "message.pin" && event.schemaVersion === 1 && typeof event.channelId === "string"
+    && typeof event.seq === "string" && /^(0|[1-9]\d*)$/.test(event.seq) && isChatMessage(event.message)
+    && event.message.channelId === event.channelId && event.message.pinSeq === event.seq;
+}
+
+export function isChatThreadSummary(value: unknown): value is ChatThreadSummary {
+  if (!value || typeof value !== "object") return false;
+  const summary = value as Partial<ChatThreadSummary>;
+  return Number.isSafeInteger(summary.replyCount) && summary.replyCount! > 0
+    && typeof summary.seq === "string" && /^(0|[1-9]\d*)$/.test(summary.seq)
+    && Array.isArray(summary.participants) && summary.participants.length <= 5
+    && summary.participants.every(isChatAuthor)
+    && new Set(summary.participants.map((author) => author.id)).size === summary.participants.length;
+}
+
+export function isChannelMessage(message: ChatMessage): boolean {
+  return !message.threadRootId || message.broadcast === true;
+}
+
+export function isChatForwardEvent(value: unknown): value is ChatForwardEvent {
+  if (!value || typeof value !== "object") return false;
+  const event = value as Partial<ChatForwardEvent>;
+  return event.type === "message.forward" && event.schemaVersion === 1 && typeof event.channelId === "string"
+    && typeof event.seq === "string" && /^(0|[1-9]\d*)$/.test(event.seq) && isChatMessage(event.message)
+    && !!event.message.forward && event.message.channelId === event.channelId && event.message.forwardSeq === event.seq;
 }
 
 export function isChatReactions(value: unknown): value is ChatReaction[] {

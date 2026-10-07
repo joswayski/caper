@@ -280,7 +280,7 @@ try {
   holdReactions();
   await openTarget();
   action('React with 👍');
-  wait(`document.querySelector(${JSON.stringify(row + ' .chat-reaction')})?.getAttribute('aria-pressed') === 'true' && !document.querySelector(${JSON.stringify(row + ' .chat-reaction')}).disabled`);
+  wait(`document.querySelector(${JSON.stringify(row + ' .chat-reaction')})?.getAttribute('aria-pressed') === 'true' && document.querySelector(${JSON.stringify(row + ' .chat-reaction')}).getAttribute('aria-disabled') !== 'true'`);
   assert.deepEqual((await history()).messages.at(-1).reactions ?? [], [], 'Own chip must appear before the server sees the write');
   assert.equal(evaluate('document.body.textContent.includes("Saving reaction")'), false);
   browser('scrollintoview', row + ' .chat-reaction');
@@ -367,7 +367,8 @@ try {
   browser('reload');
   wait('!!document.querySelector(".chat-message") && !document.querySelector(".chat-initial-messages")');
   browser('click', '.navigation-toggle');
-  browser('click', '.browse-channels');
+  browser('click', '.space-menu summary');
+  action('Browse channels');
   wait('!!document.querySelector(".channel-directory")');
   action('Preview #design');
   wait('!!document.querySelector(".channel-preview") && !document.querySelector(".chat-initial-messages")');
@@ -414,7 +415,7 @@ try {
   wait(`!!document.querySelector('.chat-reaction-picker .epr-emoji-category-content button[data-unified="1f600"]')`);
   const targetKey = evaluate('document.querySelector(".chat-message:has(.chat-add-reaction:not(:disabled))").dataset.messageKey');
   browser('click', '.chat-reaction-picker .epr-emoji-category-content button[data-unified="1f600"]');
-  wait(`!!document.querySelector('.chat-reaction[aria-pressed="true"]:not(:disabled)')`);
+  wait(`!!document.querySelector('.chat-reaction[aria-pressed="true"]:not([aria-disabled="true"])')`);
   assert.equal(evaluate(`document.querySelector('[data-message-key="${targetKey}"] .chat-reaction img').getAttribute('src')`), '/emoji/twemoji-15/1f600.svg');
   assert.equal(evaluate('document.body.textContent.includes("Saving reaction")'), false);
   screenshot('reaction-desktop-optimistic');

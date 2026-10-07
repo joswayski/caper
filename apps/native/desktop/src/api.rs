@@ -1,7 +1,7 @@
 use crate::attachments::FreshUrl;
 use crate::model::{
     Account, Channel, ChatSession, DirectConversation, DirectConversations, History, Member,
-    Members, Message, ReactionUpdate, Space, SpaceDetail, Spaces,
+    Members, Message, ReactionUpdate, Reactors, Space, SpaceDetail, Spaces,
 };
 use crate::uploads::UploadError;
 use reqwest::blocking::{Client, Response};
@@ -191,6 +191,49 @@ impl Api {
             None,
             Some(json!({"name":name})),
         )
+    }
+
+    pub fn forward_destinations(
+        &self,
+        token: &str,
+    ) -> Result<crate::model::ForwardDestinations, ApiError> {
+        self.request(
+            Method::GET,
+            "api/chat/forward-destinations",
+            Some(token),
+            None,
+            None,
+        )
+    }
+
+    pub fn forward(
+        &self,
+        token: &str,
+        chat_token: &str,
+        source: &Message,
+        destination: &str,
+        key: &str,
+        text: &str,
+    ) -> Result<Message, ApiError> {
+        self.request(Method::POST, &format!("api/chat/channels/{destination}/forwards"), Some(token), Some(chat_token),
+            Some(json!({"sourceChannelId":source.channel_id,"sourceMessageId":source.id,"clientMessageId":key,"text":text})))
+    }
+
+    pub fn forward_conversation(
+        &self,
+        token: &str,
+        wrapper: &Message,
+        before: Option<&str>,
+    ) -> Result<crate::model::ForwardConversation, ApiError> {
+        let path = format!(
+            "api/chat/channels/{}/forwards/{}/thread{}",
+            wrapper.channel_id,
+            wrapper.id,
+            before
+                .map(|seq| format!("?before={seq}"))
+                .unwrap_or_default()
+        );
+        self.request(Method::GET, &path, Some(token), None, None)
     }
 
     pub fn typing(
@@ -431,6 +474,7 @@ impl Api {
         checked(self.raw(Method::DELETE, &path, Some(token), None, None)?).map(|_| ())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn send(
         &self,
         token: Option<&str>,
@@ -439,11 +483,16 @@ impl Api {
         client_id: &str,
         text: &str,
         attachment_ids: &[String],
+        thread: (Option<&str>, bool),
     ) -> Result<Message, ApiError> {
         let mut body = json!({"clientMessageId":client_id,"text":text});
         // Ids join the idempotency hash; the key is present only with files.
         if !attachment_ids.is_empty() {
             body["attachmentIds"] = json!(attachment_ids);
+        }
+        if let Some(root) = thread.0 {
+            body["threadRootId"] = json!(root);
+            body["broadcast"] = json!(thread.1);
         }
         self.request(
             Method::POST,
@@ -594,6 +643,22 @@ impl Api {
         Ok(bytes)
     }
 
+    pub fn thread(
+        &self,
+        token: Option<&str>,
+        channel: &str,
+        root: &str,
+        before: Option<&str>,
+    ) -> Result<crate::model::ThreadHistory, ApiError> {
+        let path = format!(
+            "api/chat/channels/{channel}/messages/{root}/thread{}",
+            before
+                .map(|cursor| format!("?before={cursor}"))
+                .unwrap_or_default()
+        );
+        self.request(Method::GET, &path, token, None, None)
+    }
+
     pub fn react(
         &self,
         token: Option<&str>,
@@ -609,6 +674,112 @@ impl Api {
             token,
             Some(chat_token),
             Some(json!({"emoji":emoji,"active":active})),
+        )
+    }
+
+    pub fn edit_message(
+        &self,
+        token: Option<&str>,
+        chat_token: &str,
+        original: &Message,
+        text: &str,
+    ) -> Result<Message, ApiError> {
+        let message: Message = self.request(
+            Method::PUT,
+            &format!(
+                "api/chat/channels/{}/messages/{}",
+                original.channel_id, original.id
+            ),
+            token,
+            Some(chat_token),
+            Some(json!({"text":text,"expectedRevision":original.revision})),
+        )?;
+        Self::edit_snapshot(message, &original.channel_id, &original.id)
+    }
+
+    pub fn load_message(
+        &self,
+        token: Option<&str>,
+        channel: &str,
+        message: &str,
+    ) -> Result<Message, ApiError> {
+        let snapshot: Message = self.request(
+            Method::GET,
+            &format!("api/chat/channels/{channel}/messages/{message}"),
+            token,
+            None,
+            None,
+        )?;
+        Self::edit_snapshot(snapshot, channel, message)
+    }
+
+    fn edit_snapshot(message: Message, channel: &str, id: &str) -> Result<Message, ApiError> {
+        if message.id != id || message.channel_id != channel || message.validate().is_err() {
+            return Err(ApiError {
+                status: None,
+                message: "Caper returned an invalid message snapshot.".into(),
+                attempts_remaining: None,
+            });
+        }
+        Ok(message)
+    }
+
+    pub fn message_versions(
+        &self,
+        token: Option<&str>,
+        channel: &str,
+        message: &str,
+        before: Option<u32>,
+    ) -> Result<crate::model::MessageVersions, ApiError> {
+        let path = format!(
+            "api/chat/channels/{channel}/messages/{message}/versions{}",
+            before
+                .map(|revision| format!("?before={revision}"))
+                .unwrap_or_default()
+        );
+        let page: crate::model::MessageVersions =
+            self.request(Method::GET, &path, token, None, None)?;
+        if !page.valid(message, before) {
+            return Err(ApiError {
+                status: None,
+                message: "Caper returned invalid message history.".into(),
+                attempts_remaining: None,
+            });
+        }
+        Ok(page)
+    }
+
+    /// Who reacted to one message, with the same read access (and account
+    /// token) as `history`.
+    pub fn reactors(
+        &self,
+        token: Option<&str>,
+        channel: &str,
+        message: &str,
+    ) -> Result<Reactors, ApiError> {
+        self.request(
+            Method::GET,
+            &format!("api/chat/channels/{channel}/messages/{message}/reactions"),
+            token,
+            None,
+            None,
+        )
+    }
+
+    pub fn pin(
+        &self,
+        token: Option<&str>,
+        chat_token: &str,
+        channel: &str,
+        message: &str,
+        active: bool,
+    ) -> Result<crate::model::PinUpdate, ApiError> {
+        self.request(
+            Method::PUT,
+            &format!("api/chat/channels/{channel}/messages/{message}/pin"),
+            token,
+            Some(chat_token),
+            Some(json!({"active":active})),
         )
     }
 
@@ -746,5 +917,69 @@ fn invalid(message: &str) -> ApiError {
         status: None,
         message: message.into(),
         attempts_remaining: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Api;
+    use std::io::{BufRead, BufReader, Write};
+
+    #[test]
+    fn reactor_list_uses_history_auth_and_decodes_people() {
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api = Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
+        let worker = std::thread::spawn(move || {
+            for (status, body) in [
+                (
+                    "200 OK",
+                    r#"{"messageId":"m1","reactionSeq":"12","reactions":[{"emoji":"👍","authors":[{"id":"bob","username":"bob","displayName":"Bob B","avatarId":101},{"id":"alice","username":"alice","displayName":null,"avatarId":100}]}]}"#,
+                ),
+                ("404 Not Found", r#"{"error":"message not found"}"#),
+            ] {
+                let (stream, _) = server.accept().unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                assert_eq!(
+                    request,
+                    "GET /api/chat/channels/c1/messages/m1/reactions HTTP/1.1\r\n"
+                );
+                let mut authorized = false;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    let lower = line.to_ascii_lowercase();
+                    authorized |= lower == "authorization: bearer account\r\n";
+                    assert!(
+                        !lower.starts_with("x-caper-chat-token"),
+                        "reading needs no chat session"
+                    );
+                }
+                assert!(authorized, "the account token authorizes the read");
+                write!(
+                    reader.get_mut(),
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+        });
+        let list = api.reactors(Some("account"), "c1", "m1").unwrap();
+        assert_eq!(list.message_id, "m1");
+        assert_eq!(list.reaction_seq, "12");
+        let names: Vec<_> = list.reactions[0]
+            .authors
+            .iter()
+            .map(|author| (author.id.as_str(), author.display_name.as_deref()))
+            .collect();
+        assert_eq!(names, [("bob", Some("Bob B")), ("alice", None)]);
+        assert_eq!(list.reactions[0].authors[1].avatar_id, Some(100));
+        let missing = api.reactors(Some("account"), "c1", "m1").unwrap_err();
+        assert_eq!(missing.status.map(|status| status.as_u16()), Some(404));
+        worker.join().unwrap();
     }
 }

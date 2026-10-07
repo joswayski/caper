@@ -7,6 +7,10 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
 
 - Signed-out first launch opens passwordless email request/verification and
   first-account profile onboarding, with no Guest/General fallback.
+- Packaged releases check for signed updates 20 seconds after launch and every
+  minute. **User Settings → Settings… → Updates → Check for updates** checks
+  immediately with progress and success/failure feedback. Writable installs
+  offer a restart to update; the `.deb` offers a download for manual installation.
 - Bearer sessions stored in Windows Credential Manager or the Linux Secret
   Service. If the vault is unavailable, the session remains in memory only and
   the UI warns that sign-in will not survive restart. There is no plaintext
@@ -62,6 +66,9 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
 - Global two-person direct messages, including exact-username conversation
   creation, unread state, account-wide read cursors, paging, typing, retry, and gateway
   replay. Desktop does not provide OS push notifications in this stage.
+- Message reactions. Hovering or keyboard-focusing a reaction chip shows who
+  reacted (large emoji plus the shared summary wording); names load on demand
+  with history's read access and are cached per message reaction revision.
 - Experimental native voice: raw Google libwebrtc with platform audio devices,
   Caper SFU offer/answer publication and subscription, voice roster, lease
   snapshots, TURN refresh and replay-safe ICE restart/ACK. Browsing leaves the
@@ -199,7 +206,7 @@ Linux packages carry the checked native runtime and licenses. Windows also
 stages the four Microsoft-signed app-local VC++ DLLs imported by ORT; these come
 from the active Visual Studio toolchain and are not immutable hash-pinned. Windows
 package execution remains an exact-head CI/platform acceptance requirement.
-No camera, screen sharing, native push notifications, installers, signing or updates.
+No camera, screen sharing, native push notifications, or Windows/Linux code signing.
 IME/accessibility and sustained multi-network voice need separate acceptance.
 The `.deb` and archives are unsigned release artifacts, not installers.
 
@@ -274,10 +281,15 @@ and the global list without any space membership.
 without a preview), failed, animated ("GIF") and removed files, file/audio
 cards and upload chips from synthetic local images; it never fetches media or
 uploads.
+`parity-reactions` adds reaction chips whose hover cards name the labelled
+fixture members locally instead of requesting who reacted.
 `parity-opening`, `parity-opening-narrow`, and `parity-opening-error` preview
 pending navigation and its retry state with retained conversation chrome and a
 labelled fixture draft; `parity-loading` previews the initial history skeleton.
 These previews do not start a navigation request or a media transport.
+`parity-settings`, `parity-settings-checking`, `parity-settings-current`, and
+`parity-settings-offline` preview the update control and check feedback. These
+are static states: their check buttons are disabled and no updater process runs.
 
 After `npm ci`, run `node scripts/native-icons.mjs --check` to verify the bundled
 vectors match the web client's pinned Lucide package. Omit `--check` to regenerate.

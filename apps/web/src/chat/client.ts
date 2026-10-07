@@ -2,7 +2,7 @@ import { ChatConnection } from "./connection.ts";
 import { playSound } from "../audio/effects.ts";
 import { appGateway } from "../gateway/client.ts";
 import { ChatTimeline, type ChatTimelineEvent } from "./timeline.ts";
-import { attachmentsOf, isChatMessage, isChatReactionEvent, sequence, type ChatAttachment, type ChatAttachmentProgressEvent, type ChatAuthor, type ChatHistory, type ChatMessage, type ChatSession, type ChatTypingEvent, type GeneralChatHistory } from "./types.ts";
+import { attachmentsOf, isChannelMessage, isChatMessage, isChatPinEvent, isChatReactionEvent, sequence, type ChatAttachment, type ChatAttachmentProgressEvent, type ChatAuthor, type ChatHistory, type ChatMessage, type ChatSession, type ChatThreadHistory, type ChatTypingEvent, type GeneralChatHistory, type MessageVersion } from "./types.ts";
 
 const SESSION_KEY = "caper.chat.session";
 
@@ -13,6 +13,17 @@ export interface PendingChatMessage {
   attachments?: ChatAttachment[];
   author?: ChatAuthor;
   createdAt: string;
+  threadRootId?: string;
+  broadcast?: boolean;
+}
+
+export interface ThreadViewState {
+  rootId: string;
+  loading: boolean;
+  loadingOlder: boolean;
+  hasMore: boolean;
+  before?: string;
+  error?: string;
 }
 
 export interface ChatViewState {
@@ -22,6 +33,8 @@ export interface ChatViewState {
   channelId?: string;
   channelName: string;
   messages: ChatMessage[];
+  pinnedMessages: ChatMessage[];
+  channelMessages?: ChatMessage[];
   typingAuthors: ChatAuthor[];
   hasMore: boolean;
   loadingOlder: boolean;
@@ -34,11 +47,12 @@ export interface ChatViewState {
   /** Latest `attachment.progress` percent per still-processing attachment id. */
   attachmentProgress: Record<string, number>;
   error?: string;
+  thread?: ThreadViewState;
 }
 
 const initialState: ChatViewState = {
   phase: "loading", online: false, spaceName: "Caper", channelName: "general",
-  messages: [], typingAuthors: [], hasMore: false, loadingOlder: false, attachmentProgress: {},
+  messages: [], pinnedMessages: [], typingAuthors: [], hasMore: false, loadingOlder: false, attachmentProgress: {},
 };
 
 /** Ids of attachments the server is still processing. */
@@ -53,11 +67,11 @@ export function initialChatView(history?: GeneralChatHistory, error?: string): C
   return history ? {
     ...initialState, phase: "ready", spaceName: history.space.name,
     channelId: history.channel.id, channelName: history.channel.name,
-    messages: history.messages, hasMore: history.hasMore,
+    messages: history.messages, pinnedMessages: history.pinnedMessages ?? [], hasMore: history.hasMore,
   } : initialState;
 }
 
-function apiError(response: Response, fallback: string) {
+export function apiError(response: Response, fallback: string) {
   return response.json().catch(() => undefined).then((body: { error?: unknown } | undefined) =>
     new Error(typeof body?.error === "string" ? body.error : fallback));
 }
@@ -68,7 +82,9 @@ function validHistory(value: unknown, general: boolean): value is ChatHistory | 
   if (!value || typeof value !== "object") return false;
   const history = value as Partial<GeneralChatHistory>;
   try { if (typeof history.cursor !== "string") return false; sequence(history.cursor); } catch { return false; }
-  return Array.isArray(history.messages) && history.messages.every(isChatMessage) && typeof history.hasMore === "boolean"
+  return Array.isArray(history.messages) && history.messages.every(isChatMessage)
+    && (history.pinnedMessages === undefined || (Array.isArray(history.pinnedMessages) && history.pinnedMessages.length <= 100 && history.pinnedMessages.every(isChatMessage)))
+    && typeof history.hasMore === "boolean"
     && (!general || (!!history.space && typeof history.space.id === "string" && typeof history.space.name === "string"
       && !!history.channel && typeof history.channel.id === "string" && typeof history.channel.name === "string"));
 }
@@ -86,7 +102,21 @@ export async function loadChatHistory(channelId?: string, signal?: AbortSignal):
   if (!validHistory(history, true)) throw new Error("The chat service returned invalid history.");
   if (channelId && history.channel.id !== channelId) throw new Error("The chat service returned the wrong channel.");
   if (history.messages.some((message) => message.channelId !== history.channel.id)) throw new Error("The chat service returned messages from another channel.");
+  if (history.pinnedMessages?.some((message) => message.channelId !== history.channel.id)) throw new Error("The chat service returned pins from another channel.");
   return history;
+}
+
+export async function loadMessageVersions(channelId: string, messageId: string, before?: number, signal?: AbortSignal): Promise<{ versions: MessageVersion[]; hasMore: boolean }> {
+  const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/versions${before ? `?before=${before}` : ""}`, {
+    cache: "no-store", signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(10_000)]),
+  });
+  if (!response.ok) throw await apiError(response, "Message history could not be loaded.");
+  const page = await response.json() as { messageId?: string; versions?: MessageVersion[]; hasMore?: boolean };
+  if (page.messageId !== messageId || typeof page.hasMore !== "boolean" || !Array.isArray(page.versions) || page.versions.length > 50
+    || !page.versions.every((version, index, all) => version && Number.isSafeInteger(version.revision) && version.revision >= 1
+      && (!before || version.revision < before) && (!index || version.revision < all[index - 1].revision)
+      && typeof version.createdAt === "string" && version.content?.version === 1 && version.content.type === "text" && typeof version.content.text === "string")) throw new Error("The chat service returned invalid message history.");
+  return { versions: page.versions, hasMore: page.hasMore };
 }
 
 function storedSession(): ChatSession | undefined {
@@ -124,6 +154,10 @@ export class ChatClient {
   private channel?: GeneralChatHistory["channel"];
   private readonly reactionIntents = new Map<string, Map<string, { active: boolean; authorId: string; generation: number }>>();
   private readonly reactionRequests = new Map<string, Promise<void>>();
+  private threadRequest?: AbortController;
+  // Fetching a thread's older rows must not insert them into the channel page
+  // or move the channel's exclusive pagination boundary past a history gap.
+  private readonly threadOnlyRows = new Set<string>();
 
   constructor(changed: (state: ChatViewState) => void, channelId?: string, options: { sounds?: boolean } = {}) {
     this.changed = changed;
@@ -141,10 +175,12 @@ export class ChatClient {
 
   snapshotHistory(): GeneralChatHistory | undefined {
     if (this.state.phase !== "ready" || this.spaceId === undefined || !this.channel) return;
+    const pinnedMessages = this.timeline.pinnedMessages;
     return {
       space: { id: this.spaceId, name: this.state.spaceName },
       channel: this.channel,
-      messages: this.timeline.messages, cursor: this.timeline.cursor, hasMore: this.state.hasMore,
+      messages: this.timeline.messages.filter((message) => isChannelMessage(message) && !this.threadOnlyRows.has(message.id)), cursor: this.timeline.cursor, hasMore: this.state.hasMore,
+      ...(pinnedMessages.length ? { pinnedMessages } : {}),
     };
   }
 
@@ -219,6 +255,63 @@ export class ChatClient {
 
   retrySession() { void this.createSession(); }
 
+  closeThread() {
+    this.threadRequest?.abort();
+    this.update({ thread: undefined });
+  }
+
+  async openThread(rootId: string) {
+    this.threadRequest?.abort();
+    this.update({ thread: { rootId, loading: true, loadingOlder: false, hasMore: false } });
+    await this.loadThreadPage();
+  }
+
+  async loadOlderThread() {
+    if (this.state.thread?.hasMore && !this.state.thread.loading && !this.state.thread.loadingOlder) await this.loadThreadPage(true);
+  }
+
+  private async loadThreadPage(older = false) {
+    const thread = this.state.thread;
+    const channelId = this.state.channelId;
+    if (!thread || !channelId || this.controller.signal.aborted) return;
+    const controller = new AbortController();
+    this.threadRequest = controller;
+    const generation = this.generation;
+    const current = () => !controller.signal.aborted && !this.controller.signal.aborted
+      && generation === this.generation && this.state.thread?.rootId === thread.rootId;
+    this.update({ thread: { ...thread, error: undefined, loading: !older, loadingOlder: older } });
+    try {
+      const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(thread.rootId)}/thread${older && thread.before ? `?before=${thread.before}` : ""}`, {
+        cache: "no-store", signal: AbortSignal.any([controller.signal, this.controller.signal, AbortSignal.timeout(10_000)]),
+      });
+      if (!response.ok) {
+        const error = await apiError(response, "Thread could not be loaded.");
+        if (current() && [401, 403, 404].includes(response.status)) {
+          this.closeThread();
+          this.retryLoad();
+          return;
+        }
+        throw error;
+      }
+      const page: unknown = await response.json();
+      if (!current()) return;
+      const history = page as ChatThreadHistory;
+      if (!validHistory(page, false) || !isChatMessage(history.root) || history.root.id !== thread.rootId
+        || history.root.channelId !== channelId || history.root.threadRootId
+        || history.messages.some((message) => message.channelId !== channelId || message.threadRootId !== thread.rootId)) throw new Error("The chat service returned an invalid thread.");
+      // Merge instead of replacing: live replies/reactions may arrive during GET.
+      const loaded = new Set(this.timeline.messages.map((message) => message.id));
+      const rows = [history.root, ...history.messages];
+      for (const message of rows) if (isChannelMessage(message) && !loaded.has(message.id)) this.threadOnlyRows.add(message.id);
+      this.timeline.prepend(rows);
+      this.update({ messages: this.timeline.messages, thread: { rootId: thread.rootId, loading: false, loadingOlder: false,
+        hasMore: history.hasMore, before: history.messages[0]?.seq ?? thread.before } });
+    } catch (error) {
+      if (current()) this.update({ thread: { ...this.state.thread!, loading: false, loadingOlder: false,
+        error: error instanceof Error ? error.message : "Thread could not be loaded." } });
+    }
+  }
+
   discardRejected(): string | undefined {
     if (this.sending || !this.state.sendRejected) return;
     const text = this.state.pendingSend?.text;
@@ -232,7 +325,8 @@ export class ChatClient {
     const channelId = this.state.channelId;
     this.update({ loadingOlder: true, olderError: undefined });
     try {
-      const before = this.state.messages[0].seq;
+      const before = this.state.channelMessages?.[0]?.seq;
+      if (!before) { this.update({ loadingOlder: false }); return; }
       const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages?before=${encodeURIComponent(before)}`, {
         cache: "no-store", signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
       });
@@ -241,6 +335,7 @@ export class ChatClient {
       if (!validHistory(history, false)) throw new Error("The chat service returned invalid history.");
       if (generation !== this.generation) return;
       if (history.messages.some((message) => message.channelId !== channelId)) throw new Error("The chat service returned messages from another channel.");
+      for (const message of history.messages) this.threadOnlyRows.delete(message.id);
       this.timeline.prepend(history.messages);
       this.update({ messages: this.timeline.messages, hasMore: history.hasMore, loadingOlder: false });
     } catch (error) {
@@ -248,12 +343,14 @@ export class ChatClient {
     }
   }
 
-  async send(text: string, attachments: ChatAttachment[] = []): Promise<boolean> {
+  async send(text: string, options: { threadRootId?: string; broadcast?: boolean; attachments?: ChatAttachment[] } = {}): Promise<boolean> {
     if (this.controller.signal.aborted || this.sending || this.state.sendRejected) return false;
+    if (this.state.pendingSend && this.state.pendingSend.threadRootId !== options.threadRootId) return false;
+    const { attachments = [], ...thread } = options;
     // A timeout is an unknown outcome. Enter/Send must retry the same command,
     // just like the explicit retry button, before allowing a new command.
     const pending = {
-      ...(this.state.pendingSend ?? { clientMessageId: crypto.randomUUID(), text, attachments: attachments.length ? attachments : undefined, createdAt: new Date().toISOString() }),
+      ...(this.state.pendingSend ?? { clientMessageId: crypto.randomUUID(), text, attachments: attachments.length ? attachments : undefined, createdAt: new Date().toISOString(), ...thread }),
       author: this.session?.author,
     };
     const count = Array.from(pending.text).length;
@@ -272,6 +369,7 @@ export class ChatClient {
     const current = () => !this.controller.signal.aborted && this.state.channelId === channelId;
     this.setTyping(false);
     this.sending = true;
+    const controller = new AbortController();
     const confirmation = new Promise<ChatMessage>((resolve) => { this.confirmSend = resolve; });
     this.update({ pendingSend: pending, sendError: undefined, sendRejected: undefined });
     let rejected = false;
@@ -282,8 +380,9 @@ export class ChatClient {
         const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages`, {
           method: "POST",
           headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
-          body: JSON.stringify({ clientMessageId: pending.clientMessageId, text: pending.text, ...(attachmentIds.length ? { attachmentIds } : {}) }),
-          signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
+          body: JSON.stringify({ clientMessageId: pending.clientMessageId, text: pending.text, ...(attachmentIds.length ? { attachmentIds } : {}),
+            ...(pending.threadRootId ? { threadRootId: pending.threadRootId, broadcast: pending.broadcast ?? false } : {}) }),
+          signal: AbortSignal.any([this.controller.signal, controller.signal, AbortSignal.timeout(10_000)]),
         });
         if (!response.ok) {
           rejected = [400, 404, 409, 413, 422].includes(response.status);
@@ -296,6 +395,7 @@ export class ChatClient {
         }
         const message: unknown = await response.json();
         if (!isChatMessage(message) || message.channelId !== channelId
+          || message.threadRootId !== pending.threadRootId || (message.broadcast ?? false) !== (pending.broadcast ?? false)
           || message.clientMessageId !== pending.clientMessageId || message.author.id !== session.author.id) throw new Error("The chat service returned an invalid message.");
         return message;
       })();
@@ -312,6 +412,9 @@ export class ChatClient {
       if (!this.controller.signal.aborted) this.update({ pendingSend: pending, sendRejected: rejected, sendError: error instanceof Error ? error.message : "Message could not be sent." });
       return false;
     } finally {
+      // Ordered replay/history may confirm delivery before HTTP responds.
+      // Release that request without aborting the client or its next command.
+      controller.abort();
       this.sending = false;
       this.confirmSend = undefined;
     }
@@ -371,12 +474,79 @@ export class ChatClient {
   /** Ephemeral, like typing: shown on the processing placeholder, dropped when
    * the attachment leaves processing. Unknown attachments are ignored. */
   private receiveProgress(event: ChatAttachmentProgressEvent) {
-    const message = this.timeline.messages.find((item) => item.id === event.messageId);
+    const message = this.timeline.messages.find((item) => item.id === event.messageId)
+      ?? this.timeline.pinnedMessages.find((item) => item.id === event.messageId);
     const attachment = message && attachmentsOf(message).find((item) => item.id === event.attachmentId);
     if (attachment?.status !== "processing") return;
     const percent = Math.round(event.percent);
     if (this.state.attachmentProgress[attachment.id] === percent) return;
     this.update({ attachmentProgress: { ...this.state.attachmentProgress, [attachment.id]: percent } });
+  }
+
+  async setPin(messageId: string, active: boolean): Promise<void> {
+    const generation = this.generation;
+    const channelId = this.state.channelId;
+    const session = this.session;
+    if (this.controller.signal.aborted || !channelId || !session) throw new Error("Your chat session is unavailable. Retry the session, then try again.");
+    const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/pin`, {
+      method: "PUT", headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
+      body: JSON.stringify({ active }), signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
+    });
+    if (!response.ok) throw await apiError(response, active ? "Message could not be pinned." : "Message could not be unpinned.");
+    const event: unknown = await response.json();
+    if (!isChatPinEvent(event) || event.channelId !== channelId || event.message.id !== messageId) throw new Error("The chat service returned an invalid pin.");
+    if (generation !== this.generation || this.controller.signal.aborted) return;
+    this.timeline.mergePin(event);
+    this.update({ messages: this.timeline.messages, pinnedMessages: this.timeline.pinnedMessages });
+  }
+
+  async forward(destination: string, messageId: string, clientMessageId: string, text: string): Promise<ChatMessage> {
+    const channelId = this.state.channelId;
+    const session = this.session;
+    if (this.controller.signal.aborted || !channelId || !session || session.author.isGuest) throw new Error("Your chat session is unavailable. Retry the session, then try again.");
+    const response = await fetch(`/api/chat/channels/${encodeURIComponent(destination)}/forwards`, {
+      method: "POST", headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
+      body: JSON.stringify({ sourceChannelId: channelId, sourceMessageId: messageId, clientMessageId, text }),
+      signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
+    });
+    if (!response.ok) throw new ChatHistoryError(response.status, (await apiError(response, "Forward could not be confirmed. Retry to check the same forward.")).message);
+    const message: unknown = await response.json();
+    if (!isChatMessage(message) || !message.forward || message.channelId !== destination || message.clientMessageId !== clientMessageId || message.author.id !== session.author.id) throw new Error("The chat service returned an invalid forward.");
+    if (!this.controller.signal.aborted && this.state.channelId === destination) {
+      this.timeline.mergeSent(message);
+      this.update({ messages: this.timeline.messages });
+    }
+    return message;
+  }
+
+  async editMessage(messageId: string, text: string, expectedRevision: number): Promise<void> {
+    const generation = this.generation, channelId = this.state.channelId, session = this.session;
+    if (this.controller.signal.aborted || !channelId || !session) throw new Error("Your chat session is unavailable. Retry the session, then edit again.");
+    const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}`, {
+      method: "PUT", headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
+      body: JSON.stringify({ text, expectedRevision }), signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
+    });
+    if (!response.ok) throw await apiError(response, "Edit could not be saved. Your draft is kept.");
+    const message: unknown = await response.json();
+    if (!isChatMessage(message) || message.channelId !== channelId || message.id !== messageId || message.author.id !== session.author.id) throw new Error("The chat service returned an invalid edit.");
+    if (generation !== this.generation || this.controller.signal.aborted || session !== this.session) throw new Error("The conversation changed. Reopen the message to edit it.");
+    this.timeline.mergeEdit(message);
+    this.update({ messages: this.timeline.messages, pinnedMessages: this.timeline.pinnedMessages });
+  }
+
+  async reloadMessage(messageId: string): Promise<ChatMessage> {
+    const generation = this.generation, channelId = this.state.channelId;
+    if (!channelId || this.controller.signal.aborted) throw new Error("The conversation is unavailable.");
+    const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}`, {
+      cache: "no-store", signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
+    });
+    if (!response.ok) throw await apiError(response, "The latest message could not be loaded.");
+    const message: unknown = await response.json();
+    if (!isChatMessage(message) || message.channelId !== channelId || message.id !== messageId) throw new Error("The chat service returned an invalid message.");
+    if (generation !== this.generation || this.controller.signal.aborted) throw new Error("The conversation changed. Reopen the message to edit it.");
+    this.timeline.mergeEdit(message);
+    this.update({ messages: this.timeline.messages, pinnedMessages: this.timeline.pinnedMessages });
+    return message;
   }
 
   private receiveEvent(event: ChatTimelineEvent) {
@@ -388,9 +558,9 @@ export class ChatClient {
     }
     if (result !== "buffered" && result !== "overflow") {
       const messages = this.timeline.messages;
-      this.update({ messages });
+      this.update({ messages, pinnedMessages: this.timeline.pinnedMessages });
       const ownAuthorId = this.session?.author.id ?? this.state.author?.id;
-      if (this.sounds && result === "applied" && messages.some((item) => !visible.has(item.id) && item.author.id !== ownAuthorId)) playSound("new-message");
+      if (this.sounds && (!("type" in event) || event.type !== "message.edited") && result === "applied" && messages.some((item) => !visible.has(item.id) && item.author.id !== ownAuthorId)) playSound("new-message");
     }
     return result;
   }
@@ -412,6 +582,7 @@ export class ChatClient {
       if (!validHistory(history, true)) throw new Error("The chat service returned invalid history.");
       if (this.channelId && history.channel.id !== this.channelId) throw new Error("The chat service returned the wrong channel.");
       if (history.messages.some((message) => message.channelId !== history.channel.id)) throw new Error("The chat service returned messages from another channel.");
+      if (history.pinnedMessages?.some((message) => message.channelId !== history.channel.id)) throw new Error("The chat service returned pins from another channel.");
       if (generation !== this.generation) return;
       this.spaceId = history.space.id;
       this.channel = history.channel;
@@ -433,11 +604,12 @@ export class ChatClient {
       // reset deduplicates by first occurrence: fresh author metadata wins.
       // Even across a gap, preserve newer HTTP reaction revisions on fresh rows.
       const freshIds = new Set(history.messages.map((message) => message.id));
-      const retained = this.timeline.messages.filter((message) => contiguous || freshIds.has(message.id));
-      this.timeline.reset([...history.messages, ...retained], history.cursor);
+      const retained = this.timeline.messages.filter((message) => (contiguous && isChannelMessage(message) && !this.threadOnlyRows.has(message.id)) || freshIds.has(message.id));
+      this.threadOnlyRows.clear();
+      this.timeline.reset([...history.messages, ...retained], history.cursor, history.pinnedMessages ?? []);
       this.update({
         phase: "ready", spaceName: history.space.name, channelId: history.channel.id,
-        channelName: history.channel.name, messages: this.timeline.messages, hasMore: retainedOlder ? previous.hasMore : history.hasMore,
+        channelName: history.channel.name, messages: this.timeline.messages, pinnedMessages: this.timeline.pinnedMessages, hasMore: retainedOlder ? previous.hasMore : history.hasMore,
       });
       this.connection = new ChatConnection(history.channel.id, {
         cursor: () => this.timeline.cursor,
@@ -445,6 +617,9 @@ export class ChatClient {
         reactions: (event) => this.receiveEvent(event),
         attachments: (event) => this.receiveEvent(event),
         progress: (event) => this.receiveProgress(event),
+        pin: (event) => this.receiveEvent(event),
+        forward: (event) => this.receiveEvent(event),
+        edit: (event) => this.receiveEvent(event),
         status: (online) => {
           if (!online) { this.typers.clear(); this.refreshTypers(); }
           this.update({ online });
@@ -453,13 +628,14 @@ export class ChatClient {
         resync: () => { if (generation === this.generation) void this.loadInitial(); },
       });
       this.connection.start();
+      if (this.state.thread) void this.openThread(this.state.thread.rootId);
     } catch (error) {
       if (!this.controller.signal.aborted && generation === this.generation) {
         const denied = error instanceof ChatHistoryError && [401, 403, 404].includes(error.status);
         if (denied) { this.timeline.reset([], "0"); this.spaceId = undefined; }
         this.update({
           phase: previous && !denied ? "ready" : "error", online: false,
-          ...(denied ? { messages: [], channelId: undefined } : {}),
+          ...(denied ? { messages: [], pinnedMessages: [], channelId: undefined, thread: undefined } : {}),
           error: error instanceof Error ? error.message : "Messages are unavailable.",
         });
       }
@@ -506,8 +682,9 @@ export class ChatClient {
       }) };
     }
     this.state = { ...this.state, ...change };
-    if (change.messages && Object.keys(this.state.attachmentProgress).length) {
-      const processing = processingIds(change.messages);
+    if (change.messages) this.state.channelMessages = change.messages.filter((message) => isChannelMessage(message) && !this.threadOnlyRows.has(message.id));
+    if ((change.messages || change.pinnedMessages) && Object.keys(this.state.attachmentProgress).length) {
+      const processing = processingIds([...this.state.messages, ...this.state.pinnedMessages]);
       const progress = Object.fromEntries(Object.entries(this.state.attachmentProgress).filter(([id]) => processing.has(id)));
       if (Object.keys(progress).length !== Object.keys(this.state.attachmentProgress).length) this.state = { ...this.state, attachmentProgress: progress };
     }
@@ -518,6 +695,7 @@ export class ChatClient {
     const pending = this.state.pendingSend;
     if (pending && change.messages) {
       const accepted = change.messages.find((message) => message.channelId === this.state.channelId
+        && message.threadRootId === pending.threadRootId && (message.broadcast ?? false) === (pending.broadcast ?? false)
         && message.clientMessageId === pending.clientMessageId && message.author.id === pending.author?.id);
       if (accepted) {
         this.confirmSend?.(accepted);

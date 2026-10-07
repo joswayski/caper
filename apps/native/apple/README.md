@@ -55,6 +55,19 @@ Each command first runs the macOS XCTest suite. Outputs are ignored and credenti
 
 The script verifies app/framework architectures, embedded WebRTC, runpaths/signature on macOS, and embedded font/WebRTC license resources. Bundle IDs default to `chat.caper.macos` and `chat.caper.ios` and may be overridden with `CAPER_MACOS_BUNDLE_ID` / `CAPER_IOS_BUNDLE_ID`.
 
+Signed Mac releases additionally use `dmgbuild==1.6.7` (installed by the release
+workflow) to create the standard app → Applications Finder window without GUI
+automation. `sign-and-notarize.sh` notarizes/staples the app first, preserves the
+ZIP self-update payload, then signs, notarizes, staples and assesses the DMG.
+No additional signing identity or production configuration is required.
+Both Mac development jobs also build/mount a disposable fixture DMG using
+`python3 -m unittest discover -s tests -p test_apple_release_signing.py -v`;
+the test skips the real disk-image check on non-Mac hosts. XCTest covers release
+installation eligibility and the existing parity suite covers development startup.
+Actual Finder layout, downloaded-app Gatekeeper behavior, the install prompt,
+and update/relaunch from `/Applications` and `~/Applications` still require Mac
+acceptance; Linux checks are not evidence for those states.
+
 macOS AppIcon PNGs use the same main `apps/web/public/caper-face.svg` artwork
 as the Windows and Linux installed icons. From the repository root, run
 `node scripts/generate-favicons.mjs` with ImageMagick 7 and librsvg installed to
@@ -74,7 +87,7 @@ The scripts launch only the explicit loopback fixture; fixture data can never be
 ./apps/native/apple/parity-screenshots.sh ios
 ```
 
-The macOS suite captures populated, members-hidden, login, actionable login error, Manage space, and private Channel overview states. The iOS suite adds narrow conversation and Browse-open states on an `iPhone 16` simulator. Screenshots are exported from the XCTest result into ignored `apps/native/apple/parity-artifacts/`. Tests also assert fixture content and required controls before capture.
+The macOS suite captures populated, members-hidden, login, actionable login error, Manage space, and private Channel overview states. The iOS suite adds narrow conversation and Browse-open states on an `iPhone 16` simulator. The `reaction-chips` fixture also captures who reacted: the hover card on macOS and the press-and-hold sheet on iOS. Its chips have local-only authors, so the app serves those reactor lists itself instead of calling the fixture server. Screenshots are exported from the XCTest result into ignored `apps/native/apple/parity-artifacts/`. Tests also assert fixture content and required controls before capture.
 
 ## Voice in development builds
 

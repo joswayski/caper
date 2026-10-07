@@ -671,11 +671,20 @@ mod tests {
                 "client",
                 "",
                 &["asset0001".into()],
+                (None, false),
             )
             .unwrap();
         assert_eq!(sent.content.attachments.len(), 1);
-        api.send(Some("token"), "chat", "chan", "client", "hi", &[])
-            .unwrap();
+        api.send(
+            Some("token"),
+            "chat",
+            "chan",
+            "client",
+            "hi",
+            &[],
+            (None, false),
+        )
+        .unwrap();
         let requests = server.join().unwrap();
         let first: Value = serde_json::from_slice(&requests[0].body).unwrap();
         assert_eq!(

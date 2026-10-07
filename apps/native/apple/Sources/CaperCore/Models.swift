@@ -201,6 +201,59 @@ public struct ChatContent: Codable, Equatable, Sendable {
     }
 }
 
+public struct MessageVersion: Codable, Equatable, Identifiable, Sendable {
+    public let revision: Int
+    public let content: ChatContent
+    public let createdAt: String
+    public var id: Int { revision }
+}
+
+public struct MessageVersions: Codable, Sendable {
+    public let messageId: String
+    public let versions: [MessageVersion]
+    public let hasMore: Bool
+
+    func isValid(messageID: String, before: Int?) -> Bool {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return messageId == messageID && versions.count <= 50 && versions.enumerated().allSatisfy { index, version in
+            version.revision > 0 && (before == nil || version.revision < before!)
+                && (index == 0 || version.revision < versions[index - 1].revision)
+                && version.content.version == 1 && version.content.type == "text"
+                && MessageValidation.error(for: version.content.text, attachmentCount: version.content.attachments?.count ?? 0) == nil
+                && (fractional.date(from: version.createdAt) != nil || ISO8601DateFormatter().date(from: version.createdAt) != nil)
+        }
+    }
+}
+
+struct MessageDiffToken: Equatable {
+    let text: String
+    let changed: Bool
+}
+
+/// A word-level Myers diff preserving whitespace, Unicode and separate edits.
+func messageDiff(before: String, after: String) -> ([MessageDiffToken], [MessageDiffToken]) {
+    let pattern = try! NSRegularExpression(pattern: "\\s+|[\\p{L}\\p{N}_]+|[^\\s\\p{L}\\p{N}_]+")
+    func tokens(_ text: String) -> [String] {
+        pattern.matches(in: text, range: NSRange(text.startIndex..., in: text)).map { (text as NSString).substring(with: $0.range) }
+    }
+    let old = tokens(before), new = tokens(after)
+    var removed = Set<Int>(), added = Set<Int>()
+    for change in new.difference(from: old) {
+        switch change {
+        case .remove(let offset, _, _): removed.insert(offset)
+        case .insert(let offset, _, _): added.insert(offset)
+        }
+    }
+    return (old.enumerated().map { MessageDiffToken(text: $0.element, changed: removed.contains($0.offset)) },
+            new.enumerated().map { MessageDiffToken(text: $0.element, changed: added.contains($0.offset)) })
+}
+
+public struct MessagePin: Codable, Equatable, Sendable {
+    public let author: ChatAuthor
+    public let createdAt: String
+}
+
 public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
     public let id: String
     public let channelId: String
@@ -214,12 +267,185 @@ public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
     /// The `message.attachments` event that produced `content.attachments`;
     /// absent until the media worker first updates this message's files.
     public var attachmentsSeq: String? = nil
+    public var pin: MessagePin? = nil
+    public var pinSeq: String? = nil
+    public var threadRootId: String? = nil
+    public var broadcast: Bool? = nil
+    public var thread: ThreadSummary? = nil
+    public var forward: MessageForward? = nil
+    public var forwardSeq: String? = nil
+    public var revision: Int? = nil
+    public var editedAt: String? = nil
+    public var editSeq: String? = nil
+    public var isChannelMessage: Bool { threadRootId == nil || broadcast == true }
+}
+
+/// Immutable reference breaks the recursive message/forward value layout.
+public final class MessageForward: Codable, Equatable, Sendable {
+    public let message: ChatMessage?
+    public let seq: String
+    public init(message: ChatMessage?, seq: String) { self.message = message; self.seq = seq }
+    public static func == (lhs: MessageForward, rhs: MessageForward) -> Bool { lhs.seq == rhs.seq && lhs.message == rhs.message }
+}
+public struct ThreadSummary: Codable, Equatable, Sendable {
+    public let replyCount: Int
+    public let participants: [ChatAuthor]
+    public let seq: String
+}
+public struct ThreadHistory: Codable, Sendable {
+    public let root: ChatMessage
+    public let messages: [ChatMessage]
+    public let cursor: String
+    public let hasMore: Bool
+}
+public struct ForwardDestination: Codable, Identifiable, Sendable {
+    public let id: String
+    public let name: String
+    public let spaceName: String
+    public let direct: Bool
+}
+public struct ForwardDestinations: Decodable, Sendable { public let destinations: [ForwardDestination] }
+public struct ForwardConversationHistory: Decodable, Sendable {
+    public let root: ChatMessage?
+    public var messages: [ChatMessage]
+    public let cursor: String
+    public var hasMore: Bool
+}
+public struct MessageForwardEvent: Decodable, Sendable {
+    public let type: String
+    public let schemaVersion: Int
+    public let channelId: String
+    public let seq: String
+    public let message: ChatMessage
+    public var isValid: Bool {
+        type == "message.forward" && schemaVersion == 1 && channelId == message.channelId
+            && message.forward != nil && message.forwardSeq == seq && message.isValidForward
+            && (try? Sequence.compare(seq, "0")) != nil
+    }
+}
+extension ChatMessage {
+    var isValidForward: Bool {
+        guard let forward else { return true }
+        guard (try? Sequence.compare(forward.seq, "0")) != nil,
+              forward.message?.forward == nil else { return false }
+        return forward.message.map { $0.content.version == 1 && $0.content.type == "text" && (try? Sequence.compare($0.seq, "0")) != nil } ?? true
+    }
 }
 
 public struct MessageReaction: Codable, Equatable, Sendable, Identifiable {
     public let emoji: String
     public let authorIds: [String]
     public var id: String { emoji }
+}
+
+/// One person in a who-reacted list. `id` is the public user ID used in
+/// snapshot `authorIds`; names may be missing.
+public struct ReactorPerson: Codable, Equatable, Identifiable, Sendable {
+    public let id: String
+    public let username: String?
+    public let displayName: String?
+    public let avatarId: Int?
+
+    public init(id: String, username: String? = nil, displayName: String? = nil, avatarId: Int? = nil) {
+        self.id = id; self.username = username; self.displayName = displayName; self.avatarId = avatarId
+    }
+
+    /// Display name, then username, then "Someone".
+    public var name: String {
+        if let displayName, !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return displayName }
+        if let username, !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return username }
+        return "Someone"
+    }
+}
+
+public struct ReactorGroup: Codable, Equatable, Sendable {
+    public let emoji: String
+    /// In reaction order: the first person to react comes first.
+    public let authors: [ReactorPerson]
+
+    public init(emoji: String, authors: [ReactorPerson]) { self.emoji = emoji; self.authors = authors }
+}
+
+/// `GET /api/chat/channels/{channel}/messages/{message}/reactions`.
+public struct ReactorList: Codable, Equatable, Sendable {
+    public let messageId: String
+    public let reactionSeq: String
+    public let reactions: [ReactorGroup]
+
+    public init(messageId: String, reactionSeq: String, reactions: [ReactorGroup]) {
+        self.messageId = messageId; self.reactionSeq = reactionSeq; self.reactions = reactions
+    }
+
+    func isValid(messageID: String) -> Bool {
+        messageId == messageID && (try? Sequence.compare(reactionSeq, "0")) != nil
+            && Set(reactions.map(\.emoji)).count == reactions.count
+            && reactions.allSatisfy { group in
+                !group.emoji.isEmpty && Set(group.authors.map(\.id)).count == group.authors.count
+                    && group.authors.allSatisfy { !$0.id.isEmpty }
+            }
+    }
+
+    /// The people behind `reaction` as the snapshot shows it now, in this
+    /// list's reaction order. The list only supplies names: people who have
+    /// since removed their reaction are left out, and the viewer's own newer
+    /// reaction is added. Returns nil when anyone else is missing, so callers
+    /// show the count-only summary and fetch again.
+    public func people(for reaction: MessageReaction, viewer: ReactorPerson?) -> [ReactorPerson]? {
+        let current = Set(reaction.authorIds)
+        var people = (reactions.first { $0.emoji == reaction.emoji }?.authors ?? []).filter { current.contains($0.id) }
+        let named = Set(people.map(\.id))
+        for id in reaction.authorIds where !named.contains(id) {
+            guard let viewer, id == viewer.id else { return nil }
+            people.append(reactions.flatMap(\.authors).first(where: { $0.id == id }) ?? viewer)
+        }
+        return people
+    }
+}
+
+/// Who reacted, in the wording every Caper client uses.
+public enum ReactionSummary {
+    /// "You, Alice A, Bob B and 2 others reacted with :thumbs-up:". The
+    /// viewer moves to the front as "You"; others keep reaction order.
+    public static func text(authors: [ReactorPerson], selfID: String?, emojiName: String?, emoji: String) -> String {
+        guard !authors.isEmpty else { return fallback(authorIDs: [], selfID: selfID, emojiName: emojiName, emoji: emoji) }
+        var names = authors.map(\.name)
+        if let selfID, let index = authors.firstIndex(where: { $0.id == selfID }) {
+            names.remove(at: index)
+            names.insert("You", at: 0)
+        }
+        return list(names) + reacted(emojiName: emojiName, emoji: emoji)
+    }
+
+    /// Before names load, or when loading fails: only the snapshot's count.
+    public static func fallback(authorIDs: [String], selfID: String?, emojiName: String?, emoji: String) -> String {
+        let count = authorIDs.count
+        let subject: String
+        if let selfID, authorIDs == [selfID] { subject = "You" }
+        else { subject = "\(count) \(count == 1 ? "person" : "people")" }
+        return subject + reacted(emojiName: emojiName, emoji: emoji)
+    }
+
+    /// ":thumbs-up:" for a catalog emoji, otherwise the emoji itself.
+    public static func emojiLabel(emojiName: String?, emoji: String) -> String {
+        guard let emojiName, !emojiName.isEmpty else { return emoji }
+        return ":\(emojiName):"
+    }
+
+    static func list(_ names: [String]) -> String {
+        switch names.count {
+        case 0: return ""
+        case 1: return names[0]
+        case 2: return "\(names[0]) and \(names[1])"
+        case 3: return "\(names[0]), \(names[1]) and \(names[2])"
+        default:
+            let others = names.count - 3
+            return "\(names[0]), \(names[1]), \(names[2]) and \(others) \(others == 1 ? "other" : "others")"
+        }
+    }
+
+    private static func reacted(emojiName: String?, emoji: String) -> String {
+        " reacted with \(emojiLabel(emojiName: emojiName, emoji: emoji))"
+    }
 }
 
 public struct MessageReactionsEvent: Codable, Equatable, Sendable {
@@ -239,6 +465,21 @@ public struct MessageReactionsEvent: Codable, Equatable, Sendable {
                     && Set($0.authorIds).count == $0.authorIds.count
                     && $0.authorIds.allSatisfy { !$0.isEmpty }
             }
+    }
+}
+
+public struct MessagePinEvent: Codable, Equatable, Sendable {
+    public let type: String
+    public let schemaVersion: Int
+    public let channelId: String
+    public let seq: String
+    public let message: ChatMessage
+
+    public var isValid: Bool {
+        type == "message.pin" && schemaVersion == 1 && !channelId.isEmpty
+            && message.channelId == channelId && message.pinSeq == seq
+            && (try? Sequence.compare(seq, "0")) != nil
+            && (try? Sequence.compare(message.seq, "0")) != nil
     }
 }
 
@@ -284,8 +525,24 @@ public struct ChatHistory: Codable, Sendable {
     public let space: HistoryIdentity?
     public let channel: HistoryIdentity?
     public let messages: [ChatMessage]
+    public let pinnedMessages: [ChatMessage]
     public let cursor: String
     public let hasMore: Bool
+
+    private enum CodingKeys: String, CodingKey { case space, channel, messages, pinnedMessages, cursor, hasMore }
+    public init(space: HistoryIdentity?, channel: HistoryIdentity?, messages: [ChatMessage], pinnedMessages: [ChatMessage] = [], cursor: String, hasMore: Bool) {
+        self.space = space; self.channel = channel; self.messages = messages; self.pinnedMessages = pinnedMessages
+        self.cursor = cursor; self.hasMore = hasMore
+    }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        space = try values.decodeIfPresent(HistoryIdentity.self, forKey: .space)
+        channel = try values.decodeIfPresent(HistoryIdentity.self, forKey: .channel)
+        messages = try values.decode([ChatMessage].self, forKey: .messages)
+        pinnedMessages = try values.decodeIfPresent([ChatMessage].self, forKey: .pinnedMessages) ?? []
+        cursor = try values.decode(String.self, forKey: .cursor)
+        hasMore = try values.decode(Bool.self, forKey: .hasMore)
+    }
 }
 
 public struct HistoryIdentity: Codable, Equatable, Sendable {
@@ -358,6 +615,8 @@ public enum MessageValidation {
             && message.content.version == 1
             && message.content.type == "text"
             && message.content.text == command.text
+            && message.threadRootId == command.threadRootId
+            && (message.broadcast ?? false) == command.broadcast
             && (try? Sequence.compare(message.seq, "0")) != nil
     }
 }
@@ -369,14 +628,19 @@ public struct PendingMessage: Equatable, Sendable {
     /// message, their `url` points at the local copy for previews.
     public let attachments: [ChatAttachment]
     public let createdAt: String
+    public let threadRootId: String?
+    public let broadcast: Bool
     /// Ids join the server's idempotency hash, so retries resend the same ids.
     public var attachmentIDs: [String] { attachments.map(\.id) }
 
-    public init(id: String, text: String, attachments: [ChatAttachment] = [], createdAt: String = ISO8601DateFormatter().string(from: Date())) {
+    public init(id: String, text: String, attachments: [ChatAttachment] = [], createdAt: String = ISO8601DateFormatter().string(from: Date()),
+                threadRootId: String? = nil, broadcast: Bool = false) {
         self.id = id
         self.text = text
         self.attachments = attachments
         self.createdAt = createdAt
+        self.threadRootId = threadRootId
+        self.broadcast = broadcast
     }
 }
 
@@ -390,10 +654,11 @@ public struct ChatDeliveryState: Sendable {
 
     public init(cursor: String = "0") { self.cursor = cursor }
 
-    public mutating func begin(text: String, attachments: [ChatAttachment] = [], makeID: () -> String = { UUID().uuidString }) -> PendingMessage {
+    public mutating func begin(text: String, attachments: [ChatAttachment] = [], threadRootId: String? = nil, broadcast: Bool = false,
+                               makeID: () -> String = { UUID().uuidString }) -> PendingMessage {
         if let pending { return pending }
         // Rust's UUID serialization returns lowercase in both HTTP and replay.
-        let command = PendingMessage(id: makeID().lowercased(), text: text, attachments: attachments)
+        let command = PendingMessage(id: makeID().lowercased(), text: text, attachments: attachments, threadRootId: threadRootId, broadcast: broadcast)
         pending = command
         return command
     }
@@ -445,6 +710,71 @@ enum ReactionEvent {
                   return Set(authorIDs).count == authorIDs.count && authorIDs.allSatisfy { !$0.isEmpty }
               }), Set(reactions.compactMap { $0["emoji"] as? String }).count == reactions.count,
               let seq = event["seq"] as? String, (try? Sequence.compare(seq, "0")) != nil else { return nil }
+        return seq
+    }
+}
+
+enum EditEvent {
+    static func message(_ event: [String: Any], channelID: String) -> ChatMessage? {
+        let timestamp = ISO8601DateFormatter()
+        timestamp.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard event["type"] as? String == "message.edited", event["schemaVersion"] as? Int == 1,
+              event["channelId"] as? String == channelID,
+              let raw = event["message"], let data = try? JSONSerialization.data(withJSONObject: raw),
+              let message = try? JSONDecoder().decode(ChatMessage.self, from: data),
+              message.channelId == channelID, (message.revision ?? 1) > 1,
+              message.content.version == 1, message.content.type == "text",
+              let editedAt = message.editedAt,
+              timestamp.date(from: editedAt) != nil || ISO8601DateFormatter().date(from: editedAt) != nil,
+              let seq = event["seq"] as? String, message.editSeq == seq,
+              (try? Sequence.compare(seq, message.seq)) == .orderedDescending else { return nil }
+        return message
+    }
+}
+
+/// Overlays only content. Never inserts an unloaded message into a timeline.
+struct EditSnapshots: Sendable {
+    private var values: [String: ChatMessage] = [:]
+    private var knownMessageIDs: Set<String> = []
+    private(set) var unseenOverflowed = false
+
+    mutating func apply(_ message: ChatMessage) {
+        guard (message.revision ?? 1) > 1 else { return }
+        if let current = values[message.id], (current.revision ?? 1) >= (message.revision ?? 1) { return }
+        guard knownMessageIDs.contains(message.id) || values[message.id] != nil || values.keys.filter({ !knownMessageIDs.contains($0) }).count < 256 else {
+            unseenOverflowed = true; return
+        }
+        values[message.id] = message
+    }
+
+    mutating func seed(_ messages: [ChatMessage]) {
+        knownMessageIDs.formUnion(messages.map(\.id))
+        messages.forEach { apply($0) }
+    }
+
+    func overlay(_ message: ChatMessage) -> ChatMessage {
+        guard let snapshot = values[message.id], snapshot.channelId == message.channelId,
+              (snapshot.revision ?? 1) > (message.revision ?? 1) else { return message }
+        var result = message
+        // Edits change text only; attachments stay governed by `attachmentsSeq`.
+        let attachments = message.content.attachments
+        result.content = snapshot.content; result.revision = snapshot.revision
+        if attachments != nil { result.content.attachments = attachments }
+        result.editedAt = snapshot.editedAt; result.editSeq = snapshot.editSeq
+        return result
+    }
+
+    mutating func reset() { values = [:]; knownMessageIDs = []; unseenOverflowed = false }
+}
+
+enum PinEvent {
+    static func sequence(_ event: [String: Any], channelID: String) -> String? {
+        guard event["schemaVersion"] as? Int == 1, event["channelId"] as? String == channelID,
+              let raw = event["message"], let data = try? JSONSerialization.data(withJSONObject: raw),
+              let message = try? JSONDecoder().decode(ChatMessage.self, from: data),
+              let seq = event["seq"] as? String,
+              MessagePinEvent(type: event["type"] as? String ?? "", schemaVersion: 1,
+                              channelId: channelID, seq: seq, message: message).isValid else { return nil }
         return seq
     }
 }
@@ -552,6 +882,40 @@ struct AttachmentSnapshots: Sendable {
         knownMessageIDs.removeAll(keepingCapacity: false)
         unseenOverflowed = false
     }
+}
+
+struct PinSnapshots: Sendable {
+    private var values: [String: (seq: String, pin: MessagePin?)] = [:]
+    private var snapshotCursor: String?
+
+    mutating func apply(_ message: ChatMessage) -> Bool {
+        guard let seq = message.pinSeq, (try? Sequence.compare(seq, "0")) != nil else { return false }
+        if let snapshotCursor, (try? Sequence.compare(seq, snapshotCursor)) != .orderedDescending { return false }
+        if let current = values[message.id], (try? Sequence.compare(seq, current.seq)) != .orderedDescending { return false }
+        values[message.id] = (seq, message.pin)
+        return true
+    }
+
+    mutating func replace(_ messages: [ChatMessage], cursor: String) {
+        let newer = values.filter { (try? Sequence.compare($0.value.seq, cursor)) == .orderedDescending }
+        values.removeAll(keepingCapacity: true)
+        snapshotCursor = nil
+        seed(messages)
+        values.merge(newer) { _, next in next }
+        snapshotCursor = cursor
+    }
+
+    mutating func seed(_ messages: [ChatMessage]) { messages.forEach { _ = apply($0) } }
+    func overlay(_ message: ChatMessage) -> ChatMessage {
+        var result = message
+        if let value = values[message.id] {
+            result.pin = value.pin; result.pinSeq = value.seq
+        } else if let snapshotCursor, (try? Sequence.compare(message.pinSeq ?? "0", snapshotCursor)) != .orderedDescending {
+            result.pin = nil; result.pinSeq = snapshotCursor
+        }
+        return result
+    }
+    mutating func reset() { values.removeAll(keepingCapacity: false); snapshotCursor = nil }
 }
 
 /// Accepts only snapshots that cannot move an already-versioned view

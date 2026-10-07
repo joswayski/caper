@@ -62,14 +62,19 @@ internal fun mergeMessages(
         merged[candidate.id] = if (current == null) candidate else {
             val candidateReaction = candidate.reactionSeq?.toBigIntegerOrNull() ?: BigInteger.valueOf(-1)
             val currentReaction = current.reactionSeq?.toBigIntegerOrNull() ?: BigInteger.valueOf(-1)
-            // Reactions and files advance independently: each side keeps its newer snapshot.
-            val (base, other) = if (candidateReaction > currentReaction) candidate to current else current to candidate
-            newerAttachments(base, other)
+            val summary = listOfNotNull(current.thread, candidate.thread).maxByOrNull { BigInteger(it.seq) }
+            val reaction = (if (candidateReaction > currentReaction) candidate else current).copy(thread = summary)
+            val forward = mergeForward(reaction, mergeForward(current, candidate))
+            // Reactions, edits, forwards and files advance independently: each keeps its newer snapshot.
+            newerAttachments(newerAttachments(mergeEdit(mergeEdit(forward, current), candidate), current), candidate)
         }
     }
+    val summaries = (loaded + incoming).filter { it.thread != null }.groupBy { it.threadRootId ?: it.id }
+        .mapValues { (_, rows) -> rows.mapNotNull { it.thread }.maxBy { BigInteger(it.seq) } }
     return merged.values.map { message ->
         val reacted = unseen.remove(message.id)?.let { mergeReaction(message, it) } ?: message
-        unseenAttachments.remove(message.id)?.let { mergeAttachments(reacted, it) } ?: reacted
+        val updated = unseenAttachments.remove(message.id)?.let { mergeAttachments(reacted, it) } ?: reacted
+        updated.copy(thread = summaries[message.threadRootId ?: message.id] ?: updated.thread)
     }.sortedWith(compareBy { BigInteger(it.seq) })
 }
 

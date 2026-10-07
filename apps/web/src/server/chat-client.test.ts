@@ -211,7 +211,7 @@ function committed(body: SendBody, seq: string): ChatMessage {
 async function sendingFixture(t: TestContext) {
   const sockets = installBrowser(t);
   const history: ChatMessage[] = [];
-  const posts: { body: SendBody; resolve: (response: Response) => void; reject: (error: Error) => void }[] = [];
+  const posts: { body: SendBody; signal: AbortSignal; resolve: (response: Response) => void; reject: (error: Error) => void }[] = [];
   t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
     if (String(input) === "/api/chat/session") return Response.json({ token: "opaque", author: { id: "guest", name: "Test Guest", isGuest: true } });
     if (String(input) === "/api/chat/general") return Response.json({
@@ -222,7 +222,9 @@ async function sendingFixture(t: TestContext) {
     const body = JSON.parse(String(init?.body)) as SendBody;
     assert.deepEqual(Object.keys(body).filter((key) => key !== "attachmentIds").sort(), ["clientMessageId", "text"], "local metadata never enters the wire contract");
     if ("attachmentIds" in body) assert.ok(Array.isArray(body.attachmentIds) && body.attachmentIds.length > 0, "attachment IDs are sent only when present");
-    return new Promise<Response>((resolve, reject) => posts.push({ body, resolve, reject }));
+    assert.ok(init?.signal);
+    const signal = init.signal;
+    return new Promise<Response>((resolve, reject) => posts.push({ body, signal, resolve, reject }));
   });
   let state!: ChatViewState;
   const client = new ChatClient((next) => { state = next; });
@@ -236,6 +238,47 @@ async function sendingFixture(t: TestContext) {
     get state() { return state; },
   };
 }
+
+test("pin PUTs share live state without advancing HTTP replay or restoring a later unpin", async (t) => {
+  const f = await sendingFixture(t);
+  const original = committed({ clientMessageId: "pin-target", text: "Shared pin" }, "1");
+  f.sockets[0].message(original);
+  const pinned = { ...original, pinSeq: "3", pin: { author: original.author, createdAt: original.createdAt } };
+  const event = { type: "message.pin" as const, schemaVersion: 1 as const, channelId: "general", seq: "3", message: pinned };
+  let finish!: (response: Response) => void;
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    assert.equal(String(input), "/api/chat/channels/general/messages/message-1/pin");
+    assert.equal(init?.method, "PUT");
+    assert.equal(new Headers(init?.headers).get("x-caper-chat-token"), "opaque");
+    assert.deepEqual(JSON.parse(String(init?.body)), { active: true });
+    return new Promise<Response>((resolve) => { finish = resolve; });
+  });
+  const saving = f.client.setPin(original.id, true);
+  f.sockets[0].message(committed({ clientMessageId: "between", text: "Between pin updates" }, "2"));
+  f.sockets[0].frame(event);
+  assert.equal(f.state.pinnedMessages[0].id, original.id);
+  f.sockets[0].frame({ ...event, seq: "4", message: { ...pinned, pin: null, pinSeq: "4" } });
+  finish(Response.json(event));
+  await saving;
+  assert.equal(f.client.snapshotHistory()?.cursor, "4");
+  assert.equal(f.state.pinnedMessages.length, 0);
+  assert.equal(f.state.messages[0].pin, null, "a late pin HTTP acknowledgement cannot revert a later shared unpin");
+  t.mock.method(globalThis, "fetch", async () => Response.json({ error: "Pins temporarily unavailable" }, { status: 503 }));
+  await assert.rejects(f.client.setPin(original.id, true), /Pins temporarily unavailable/);
+  assert.equal(f.state.pinnedMessages.length, 0);
+});
+
+test("HTTP-only pin acknowledgement updates the collection but not its durable cursor", async (t) => {
+  const f = await sendingFixture(t);
+  const original = committed({ clientMessageId: "pin-target", text: "Old pin outside the page" }, "1");
+  const event = { type: "message.pin", schemaVersion: 1, channelId: "general", seq: "2",
+    message: { ...original, pinSeq: "2", pin: { author: original.author, createdAt: original.createdAt } } };
+  t.mock.method(globalThis, "fetch", async () => Response.json(event));
+  await f.client.setPin(original.id, true);
+  assert.equal(f.client.snapshotHistory()?.cursor, "0");
+  assert.equal(f.state.messages.length, 0, "pins stay independent of pagination");
+  assert.equal(f.state.pinnedMessages[0].id, original.id);
+});
 
 for (const lifecycle of ["stopped", "denied"] as const) {
   test(`a late send acknowledgement cannot restore a ${lifecycle} chat`, async (t) => {
@@ -487,7 +530,7 @@ test("file-only messages send attachment IDs, keep local previews while pending,
   const f = await sendingFixture(t);
   await assert.rejects(f.client.send("   "), /Write a message first/);
   const local = { id: "f1", kind: "image" as const, contentType: "image/webp", name: "shot.webp", size: 10, url: "blob:local", previewUrl: "blob:local" };
-  const sending = f.client.send("", [local]);
+  const sending = f.client.send("", { attachments: [local] });
   assert.deepEqual(f.posts[0].body.attachmentIds, ["f1"]);
   assert.equal(f.posts[0].body.text, "");
   assert.equal(f.state.pendingSend?.attachments?.[0].url, "blob:local");
@@ -505,6 +548,7 @@ test("WebSocket-first confirmation requires the sender and cannot be undone by a
   other.author = { id: "someone-else", name: "Test Guest", isGuest: true };
   f.sockets[0].message(other);
   assert.ok(f.state.pendingSend, "matching text, name and UUID from a different author is not our acknowledgement");
+  assert.equal(f.posts[0].signal.aborted, false, "another sender must not cancel the in-flight POST");
   const accepted = committed(f.posts[0].body, "2");
   f.sockets[0].message(accepted);
   assert.equal(await sending, true, "does not wait for HTTP once delivery is confirmed");
@@ -520,6 +564,37 @@ test("WebSocket-first confirmation requires the sender and cannot be undone by a
   assert.equal(await nextSend, true);
   assert.deepEqual(f.state.messages.map((message) => message.seq), ["1", "2", "3"]);
 });
+
+for (const transport of ["WebSocket", "history"] as const) {
+  test(`${transport} confirmation cancels the obsolete POST without cancelling the next send`, async (t) => {
+    const f = await sendingFixture(t);
+    const sending = f.client.send("confirmed without an HTTP response");
+    const post = f.posts[0];
+    let aborts = 0;
+    post.signal.addEventListener("abort", () => {
+      aborts++;
+      post.reject(post.signal.reason);
+    }, { once: true });
+    assert.equal(post.signal.aborted, false, "the POST stays alive until delivery is confirmed");
+    const accepted = committed(post.body, "1");
+    if (transport === "WebSocket") f.sockets[0].message(accepted);
+    else { f.history.push(accepted); f.client.retryLoad(); }
+    assert.equal(await sending, true);
+    assert.equal(aborts, 1, "release the outstanding request immediately, not at its timeout");
+    assert.deepEqual(f.state.messages, [accepted]);
+    assert.equal(f.state.pendingSend, undefined);
+    assert.equal(f.state.sendError, undefined);
+
+    const next = f.client.send("a separate command");
+    assert.equal(f.posts[1].signal.aborted, false, "cancellation is scoped to the completed command");
+    assert.notEqual(f.posts[1].body.clientMessageId, post.body.clientMessageId);
+    f.posts[1].resolve(Response.json(committed(f.posts[1].body, "2")));
+    assert.equal(await next, true);
+    await tick();
+    assert.equal(f.state.sendError, undefined, "the old request's abort cannot become a send error");
+    assert.deepEqual(f.state.messages.map((message) => message.seq), ["1", "2"]);
+  });
+}
 
 test("failed optimistic row retries its exact command and replay can confirm during that retry", async (t) => {
   const f = await sendingFixture(t);
@@ -1127,4 +1202,123 @@ test("live attachment updates are sequenced, and progress is ephemeral and dropp
   assert.deepEqual(f.state.attachmentProgress, {}, "late progress for a ready file is ignored");
   await tick();
   assert.equal(historyLoads(), loadsBefore, "no event forced a history reload");
+});
+
+test("old thread parents and broadcast replies do not move channel paging or survive a resync as channel rows", async (t) => {
+  const f = await paginationFixture(t);
+  const root = f.message(1);
+  const reply = { ...f.message(2), threadRootId: root.id, broadcast: true };
+  const loading = f.client.openThread(root.id);
+  f.requests[0].resolve(Response.json({ root, messages: [reply], cursor: f.history.cursor, hasMore: false }));
+  await loading;
+  assert.deepEqual(f.state.channelMessages?.map((message) => message.id), [f.message(4).id, f.message(5).id]);
+  assert.deepEqual(f.client.snapshotHistory()?.messages.map((message) => message.id), [f.message(4).id, f.message(5).id]);
+  const older = f.client.loadOlder();
+  assert.equal(f.requests[1].url, `/api/chat/channels/general/messages?before=${f.message(4).seq}`);
+  f.requests[1].resolve(Response.json({ messages: [f.message(3)], cursor: f.history.cursor, hasMore: true }));
+  await older;
+  f.client.retryLoad();
+  await tick();
+  assert.deepEqual(f.state.channelMessages?.map((message) => message.id), [3, 4, 5].map((offset) => f.message(offset).id));
+  const threadReload = f.requests.at(-1)!;
+  threadReload.resolve(Response.json({ root, messages: [reply], cursor: f.history.cursor, hasMore: false }));
+  await tick();
+  assert.deepEqual(f.state.channelMessages?.map((message) => message.id), [3, 4, 5].map((offset) => f.message(offset).id));
+  const page = f.client.loadOlder();
+  f.requests.at(-1)!.resolve(Response.json({ messages: [root, reply], cursor: f.history.cursor, hasMore: false }));
+  await page;
+  assert.deepEqual(f.state.channelMessages?.map((message) => message.id), [1, 2, 3, 4, 5].map((offset) => f.message(offset).id));
+});
+
+test("late thread responses cannot reopen a closed or different thread", async (t) => {
+  const f = await paginationFixture(t);
+  const first = f.client.openThread(f.message(4).id);
+  const second = f.client.openThread(f.message(5).id);
+  f.requests[0].resolve(Response.json({ root: f.message(4), messages: [], cursor: f.history.cursor, hasMore: false }));
+  await first;
+  assert.equal(f.state.thread?.rootId, f.message(5).id);
+  f.client.closeThread();
+  f.requests[1].resolve(Response.json({ root: f.message(5), messages: [], cursor: f.history.cursor, hasMore: false }));
+  await second;
+  assert.equal(f.state.thread, undefined);
+  assert.equal(f.client.snapshotHistory()?.cursor, f.history.cursor);
+});
+
+test("thread send retry freezes root and broadcast and confirms one shared reply", async (t) => {
+  const f = await sendingFixture(t);
+  const bodies: Array<{ clientMessageId: string; text: string; threadRootId: string; broadcast: boolean }> = [];
+  let fail = true;
+  t.mock.method(globalThis, "fetch", async (_input: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body));
+    bodies.push(body);
+    if (fail) return Response.json({ error: "temporary" }, { status: 503 });
+    return Response.json({ ...committed(body, "1"), threadRootId: body.threadRootId, broadcast: body.broadcast });
+  });
+  assert.equal(await f.client.send("broadcast reply", { threadRootId: "parent", broadcast: true }), false);
+  assert.equal(await f.client.send("unrelated channel draft"), false, "channel composer cannot retry a thread command");
+  fail = false;
+  assert.equal(await f.client.send("different text", { threadRootId: "parent", broadcast: false }), true);
+  assert.deepEqual(bodies[1], bodies[0]);
+  assert.equal(f.state.pendingSend, undefined);
+  assert.equal(f.state.channelMessages?.length, 1);
+  const reply = f.state.messages[0];
+  f.sockets[0].message(reply);
+  assert.equal(f.state.messages.length, 1);
+  assert.equal(f.client.snapshotHistory()?.cursor, "1");
+});
+
+test("edit PUTs keep expected revision, merge live updates and reject late abandoned acknowledgements", async (t) => {
+  const f = await sendingFixture(t);
+  const original = committed({ clientMessageId: "edit-root", text: "Friday" }, "1");
+  f.sockets[0].message(original);
+  const version2 = { ...original, revision: 2, editSeq: "2", editedAt: original.createdAt, content: { ...original.content, text: "Saturday" } };
+  const responses: Array<(response: Response) => void> = [];
+  t.mock.method(globalThis, "fetch", (input: unknown, init?: RequestInit) => {
+    assert.equal(String(input), "/api/chat/channels/general/messages/message-1");
+    assert.equal(new Headers(init?.headers).get("x-caper-chat-token"), "opaque");
+    assert.equal(init?.method, "PUT");
+    assert.deepEqual(Object.keys(JSON.parse(String(init?.body))).sort(), ["expectedRevision", "text"]);
+    return new Promise<Response>((resolve) => responses.push(resolve));
+  });
+  const save = f.client.editMessage(original.id, "Saturday", 1);
+  responses[0](Response.json(version2)); await save;
+  assert.equal(f.state.messages[0].content.text, "Saturday");
+  assert.equal(f.client.snapshotHistory()?.cursor, "1");
+  f.sockets[0].frame({ type: "message.edited", schemaVersion: 1, channelId: "general", seq: "2", message: version2 });
+  assert.equal(f.client.snapshotHistory()?.cursor, "2");
+  assert.equal(f.state.messages.length, 1);
+  const conflict = f.client.editMessage(original.id, "Old draft", 1);
+  responses[1](Response.json({ error: "message changed" }, { status: 409 }));
+  await assert.rejects(conflict, /message changed/);
+  assert.equal(f.state.messages[0].content.text, "Saturday");
+  const late = f.client.editMessage(original.id, "Sunday", 2);
+  const before = f.state; f.client.stop();
+  responses[2](Response.json({ ...version2, revision: 3, editSeq: "3", content: { ...version2.content, text: "Sunday" } }));
+  await assert.rejects(late, /conversation changed/);
+  assert.equal(f.state, before);
+});
+
+test("thread replies send files and share attachment events and progress with the channel", async (t) => {
+  const f = await sendingFixture(t);
+  const bodies: Array<Record<string, unknown>> = [];
+  t.mock.method(globalThis, "fetch", async (_input: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body));
+    bodies.push(body);
+    const reply = committed(body, "1");
+    return Response.json({ ...reply, threadRootId: body.threadRootId, broadcast: body.broadcast,
+      content: { ...reply.content, attachments: [{ id: "f1", kind: "image", contentType: "image/png", name: "a.png", size: 1, status: "processing" }] } });
+  });
+  const local = { id: "f1", kind: "image" as const, contentType: "image/png", name: "a.png", size: 1, status: "processing" as const };
+  assert.equal(await f.client.send("with a file", { threadRootId: "parent", broadcast: false, attachments: [local] }), true);
+  assert.deepEqual(bodies[0], { clientMessageId: bodies[0].clientMessageId, text: "with a file", attachmentIds: ["f1"], threadRootId: "parent", broadcast: false });
+  const reply = f.state.messages[0];
+  f.sockets[0].frame({ type: "attachment.progress", channelId: "general", messageId: reply.id, attachmentId: "f1", percent: 10 });
+  assert.deepEqual(f.state.attachmentProgress, { f1: 10 }, "progress applies to thread replies");
+  f.sockets[0].message(reply);
+  f.sockets[0].frame({ type: "message.attachments", schemaVersion: 1, channelId: "general", seq: "2", messageId: reply.id,
+    attachments: [{ ...local, status: "ready", url: "https://cdn.test/original/f1" }] });
+  assert.equal(f.state.messages[0].content.attachments?.[0].status, "ready");
+  assert.equal(f.state.messages[0].threadRootId, "parent");
+  assert.deepEqual(f.state.attachmentProgress, {});
+  assert.equal(f.client.snapshotHistory()?.cursor, "2");
 });

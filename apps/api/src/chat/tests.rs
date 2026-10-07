@@ -47,6 +47,723 @@ fn external_ids_match_existing_alphabet_and_lengths() {
     }
 }
 
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL"]
+async fn threads_isolate_replies_and_broadcast_once_with_transactional_summaries(pool: PgPool) {
+    let mut users = Vec::new();
+    for name in ["alice", "bob", "preview", "outsider"] {
+        let user: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name,avatar_id) VALUES($1,$1,$1,$2) RETURNING id")
+            .bind(name).bind(31 + users.len() as i16).fetch_one(&pool).await.unwrap();
+        let hash = Sha256::digest(name.as_bytes()).to_vec();
+        sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 day')")
+            .bind(&hash).bind(user).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO public.chat_sessions(external_id,token_hash,name,user_id,account_session_hash) VALUES($1,$2,$1,$3,$2)")
+            .bind(name).bind(hash).bind(user).execute(&pool).await.unwrap();
+        users.push(user);
+    }
+    let space: i64 = sqlx::query_scalar("INSERT INTO public.spaces(external_id,name,owner_id) VALUES('thread-space','Threads',$1) RETURNING id")
+        .bind(users[0]).fetch_one(&pool).await.unwrap();
+    for user in &users[..3] {
+        sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+            .bind(space)
+            .bind(user)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    for channel in ["thread-channel", "other-channel"] {
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO public.channels(external_id,space_id,name) VALUES($1,$2,$1) RETURNING id",
+        )
+        .bind(channel)
+        .bind(space)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        for user in &users[..2] {
+            sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) VALUES($1,$2)")
+                .bind(id)
+                .bind(user)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    }
+    let channel = "thread-channel";
+    let root = persist(&pool, channel, "alice", Uuid::new_v4(), "parent")
+        .await
+        .unwrap();
+    let root = root["id"].as_str().unwrap();
+    let other = persist(&pool, channel, "alice", Uuid::new_v4(), "different parent")
+        .await
+        .unwrap();
+    let other = other["id"].as_str().unwrap();
+    let empty = conversation_page(&pool, channel, None, Some(users[2]), Some(root))
+        .await
+        .unwrap();
+    assert_eq!(empty["messages"], json!([]));
+    assert_eq!(empty["root"]["id"], root);
+
+    let key = Uuid::new_v4();
+    let (one, retry) = tokio::join!(
+        persist_message(&pool, channel, "bob", key, "thread only", Some(root), false),
+        persist_message(&pool, channel, "bob", key, "thread only", Some(root), false)
+    );
+    let one = one.unwrap();
+    assert_eq!(one, retry.unwrap());
+    assert_eq!(one["seq"], "3");
+    assert_eq!(one["threadRootId"], root);
+    assert_eq!(one["thread"]["replyCount"], 1);
+    let two = persist_message(
+        &pool,
+        channel,
+        "alice",
+        Uuid::new_v4(),
+        "also in channel",
+        Some(root),
+        true,
+    )
+    .await
+    .unwrap();
+    let three = persist_message(
+        &pool,
+        channel,
+        "bob",
+        Uuid::new_v4(),
+        "another thread",
+        Some(other),
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(three["thread"]["replyCount"], 1);
+    let history = history_page(&pool, channel, None, Some(users[2]))
+        .await
+        .unwrap();
+    assert_eq!(
+        history["cursor"], "5",
+        "thread-only events still advance the shared replay head"
+    );
+    let ids: Vec<&str> = history["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|message| message["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, [root, other, two["id"].as_str().unwrap()]);
+    assert_eq!(history["messages"][0]["thread"]["replyCount"], 2);
+    assert_eq!(history["messages"][0]["thread"]["seq"], "4");
+    assert_eq!(
+        history["messages"][0]["thread"]["participants"],
+        json!([
+            {"id":"bob","name":"bob","isGuest":false,"avatarId":32},
+            {"id":"alice","name":"alice","isGuest":false,"avatarId":31}
+        ])
+    );
+    let thread = conversation_page(&pool, channel, None, Some(users[2]), Some(root))
+        .await
+        .unwrap();
+    assert_eq!(thread["messages"], json!([one, two]));
+    assert_eq!(thread["root"], history["messages"][0]);
+    assert_eq!(thread["hasMore"], false);
+    let before = conversation_page(&pool, channel, Some(4), Some(users[0]), Some(root))
+        .await
+        .unwrap();
+    assert_eq!(before["messages"], json!([one]));
+    let reaction = persist_reaction(
+        &pool,
+        channel,
+        one["id"].as_str().unwrap(),
+        "alice",
+        "👍",
+        true,
+    )
+    .await
+    .unwrap();
+    let reacted = conversation_page(&pool, channel, None, Some(users[0]), Some(root))
+        .await
+        .unwrap();
+    assert_eq!(reacted["messages"][0]["reactions"], reaction["reactions"]);
+
+    for (target, broadcast, text) in [
+        (root, true, "thread only"),
+        (other, false, "thread only"),
+        (root, false, "changed"),
+    ] {
+        assert_eq!(
+            persist_message(&pool, channel, "bob", key, text, Some(target), broadcast)
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::CONFLICT
+        );
+    }
+    assert_eq!(
+        persist(&pool, channel, "bob", key, "thread only")
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::CONFLICT
+    );
+    for (channel, target) in [
+        (channel, one["id"].as_str().unwrap()),
+        (channel, "absent"),
+        ("other-channel", root),
+    ] {
+        assert_eq!(
+            persist_message(
+                &pool,
+                channel,
+                "alice",
+                Uuid::new_v4(),
+                "invalid",
+                Some(target),
+                false
+            )
+            .await
+            .unwrap_err()
+            .status,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            conversation_page(&pool, channel, None, Some(users[0]), Some(target))
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+    for reader in [None, Some(users[3])] {
+        assert_eq!(
+            conversation_page(&pool, channel, None, reader, Some(root))
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+    for sender in ["preview", "outsider"] {
+        assert_eq!(
+            persist_message(
+                &pool,
+                channel,
+                sender,
+                Uuid::new_v4(),
+                "denied",
+                Some(root),
+                false
+            )
+            .await
+            .unwrap_err()
+            .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert_eq!(
+        persist_message(
+            &pool,
+            channel,
+            "alice",
+            Uuid::new_v4(),
+            "invalid broadcast",
+            None,
+            true
+        )
+        .await
+        .unwrap_err()
+        .status,
+        StatusCode::BAD_REQUEST
+    );
+    // Outbox failure must not increment the parent summary or leave a reply.
+    pool.execute("ALTER TABLE public.channel_events ADD CONSTRAINT thread_reject CHECK (seq < 7)")
+        .await
+        .unwrap();
+    assert!(
+        persist_message(
+            &pool,
+            channel,
+            "alice",
+            Uuid::new_v4(),
+            "rollback",
+            Some(root),
+            false
+        )
+        .await
+        .is_err()
+    );
+    let after = conversation_page(&pool, channel, None, Some(users[0]), Some(root))
+        .await
+        .unwrap();
+    assert_eq!(after, reacted);
+    pool.execute("ALTER TABLE public.channel_events DROP CONSTRAINT thread_reject")
+        .await
+        .unwrap();
+    let events: Vec<Value> =
+        sqlx::query_scalar("SELECT payload FROM public.channel_events ORDER BY seq")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(events[2]["message"], one);
+    assert_eq!(events[3]["message"], two);
+    assert_eq!(events.len(), 6);
+
+    // Cross the 50-reply boundary with alternating authors and an older root.
+    // The channel head includes replies, but the channel page must not include them.
+    for index in 0..51 {
+        let message = persist_message(
+            &pool,
+            channel,
+            if index % 2 == 0 { "alice" } else { "bob" },
+            Uuid::new_v4(),
+            &format!("paged reply {index}"),
+            Some(root),
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(message["seq"], (7 + index).to_string());
+    }
+    let latest = conversation_page(&pool, channel, None, Some(users[0]), Some(root))
+        .await
+        .unwrap();
+    assert_eq!(latest["hasMore"], true);
+    assert_eq!(latest["cursor"], "57");
+    assert_eq!(
+        latest["root"]["seq"], "1",
+        "summary revisions never revise root identity"
+    );
+    assert_eq!(latest["root"]["thread"]["replyCount"], 53);
+    let replies = latest["messages"].as_array().unwrap();
+    assert_eq!(replies.len(), 50);
+    assert_eq!(replies[0]["seq"], "8");
+    assert_eq!(replies[0]["content"]["text"], "paged reply 1");
+    assert_eq!(replies[49]["seq"], "57");
+    assert_eq!(replies[49]["content"]["text"], "paged reply 50");
+    let older = conversation_page(&pool, channel, Some(8), Some(users[0]), Some(root))
+        .await
+        .unwrap();
+    assert_eq!(older["hasMore"], false);
+    assert_eq!(
+        older["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|message| message["seq"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["3", "4", "7"]
+    );
+    let channel_page = history_page(&pool, channel, None, Some(users[0]))
+        .await
+        .unwrap();
+    assert_eq!(channel_page["messages"].as_array().unwrap().len(), 3);
+    assert_eq!(channel_page["cursor"], "57");
+}
+
+#[tokio::test]
+#[ignore = "requires disposable loopback CHAT_TEST_DATABASE_URL"]
+async fn pins_are_shared_idempotent_authorized_and_transactional() {
+    let options =
+        PgConnectOptions::from_str(&std::env::var("CHAT_TEST_DATABASE_URL").unwrap()).unwrap();
+    assert!(matches!(options.get_host(), "127.0.0.1" | "localhost"));
+    let mut admin = sqlx::PgConnection::connect_with(&options).await.unwrap();
+    let database = format!("pins_test_{}", Uuid::new_v4().simple());
+    admin
+        .execute(format!("CREATE DATABASE {database}").as_str())
+        .await
+        .unwrap();
+    let pool = PgPoolOptions::new()
+        .max_connections(8)
+        .connect_with(options.database(&database))
+        .await
+        .unwrap();
+    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+    let mut actors = Vec::new();
+    for token in ["pin-owner", "pin-member"] {
+        let id: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name,avatar_id) VALUES($1,$1,$1,255) RETURNING id")
+            .bind(token).fetch_one(&pool).await.unwrap();
+        let hash = Sha256::digest(token.as_bytes()).to_vec();
+        sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 day')")
+            .bind(&hash).bind(id).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO public.chat_sessions(external_id,token_hash,name,user_id,account_session_hash) VALUES($1,$2,$1,$3,$2)")
+            .bind(token).bind(&hash).bind(id).execute(&pool).await.unwrap();
+        actors.push(id);
+    }
+    let owner = actors[0];
+    let member = actors[1];
+    let space: i64 = sqlx::query_scalar("INSERT INTO public.spaces(external_id,name,owner_id) VALUES('pin-space','Pins',$1) RETURNING id")
+        .bind(owner).fetch_one(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO public.space_members(space_id,user_id) SELECT $1,id FROM public.users",
+    )
+    .bind(space)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let channel = "pin-channel";
+    let channel_id: i64 = sqlx::query_scalar(
+        "INSERT INTO public.channels(external_id,space_id,name) VALUES($1,$2,'pins') RETURNING id",
+    )
+    .bind(channel)
+    .bind(space)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO public.channel_joins(channel_id,user_id) SELECT $1,id FROM public.users",
+    )
+    .bind(channel_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let original = persist(
+        &pool,
+        channel,
+        "pin-owner",
+        Uuid::new_v4(),
+        "An old shared pin",
+    )
+    .await
+    .unwrap();
+    let message = original["id"].as_str().unwrap();
+    let pin = persist_pin(&pool, channel, message, "pin-member", true)
+        .await
+        .unwrap();
+    assert_eq!(pin["seq"], "2");
+    assert_eq!(pin["message"]["seq"], "1");
+    assert_eq!(pin["message"]["pinSeq"], "2");
+    assert_eq!(pin["message"]["pin"]["author"]["id"], "pin-member");
+    assert_eq!(pin["message"]["author"]["avatarId"], 255);
+    let (one, two) = tokio::join!(
+        persist_pin(&pool, channel, message, "pin-owner", true),
+        persist_pin(&pool, channel, message, "pin-member", true)
+    );
+    assert_eq!(one.unwrap(), pin);
+    assert_eq!(two.unwrap(), pin);
+    persist_reaction(&pool, channel, message, "pin-owner", "🚀", true)
+        .await
+        .unwrap();
+    let history = history_page(&pool, channel, None, Some(owner))
+        .await
+        .unwrap();
+    assert_eq!(history["cursor"], "3");
+    assert_eq!(history["pinnedMessages"][0]["reactionSeq"], "3");
+    assert_eq!(history["messages"][0]["pin"], pin["message"]["pin"]);
+    let unpin = persist_pin(&pool, channel, message, "pin-owner", false)
+        .await
+        .unwrap();
+    assert_eq!(unpin["seq"], "4");
+    assert!(unpin["message"]["pin"].is_null());
+    assert_eq!(unpin["message"]["reactionSeq"], "3");
+    pool.execute("ALTER TABLE public.channel_events ADD CONSTRAINT reject_pin CHECK (seq < 5)")
+        .await
+        .unwrap();
+    assert!(
+        persist_pin(&pool, channel, message, "pin-owner", true)
+            .await
+            .is_err()
+    );
+    let rolled_back = history_page(&pool, channel, None, Some(owner))
+        .await
+        .unwrap();
+    assert_eq!(rolled_back["cursor"], "4");
+    assert_eq!(rolled_back["pinnedMessages"], json!([]));
+    let activity: i64 = sqlx::query_scalar("SELECT count(*) FROM public.message_pin_activity")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(activity, 2);
+    pool.execute("ALTER TABLE public.channel_events DROP CONSTRAINT reject_pin")
+        .await
+        .unwrap();
+
+    let broker_url = std::env::var("CHAT_TEST_VALKEY_URL").unwrap();
+    assert!(
+        broker_url.starts_with("redis://127.0.0.1:")
+            || broker_url.starts_with("redis://localhost:")
+    );
+    let chat = Chat {
+        pool: pool.clone(),
+        broker: redis::Client::open(broker_url).unwrap(),
+        wake: Arc::new(Notify::new()),
+        cdn: None,
+    };
+    let mut state = AppState::new(
+        crate::Config::test(false),
+        Arc::new(crate::Cloudflare::new()),
+    );
+    state.chat = Some(chat.clone());
+    let app = crate::app(state);
+    for (token, body, expected) in [
+        (None, json!({"active":true}), StatusCode::UNAUTHORIZED),
+        (
+            Some("pin-owner"),
+            json!({"active":"true"}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            Some("pin-owner"),
+            json!({"active":true,"authorId":"spoofed"}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (Some("pin-owner"), json!({"active":false}), StatusCode::OK),
+    ] {
+        let mut request = axum::http::Request::builder()
+            .method("PUT")
+            .uri(format!(
+                "/api/chat/channels/{channel}/messages/{message}/pin"
+            ))
+            .header("content-type", "application/json");
+        if let Some(token) = token {
+            request = request.header("x-caper-chat-token", token);
+        }
+        assert_eq!(
+            app.clone()
+                .oneshot(
+                    request
+                        .body(axum::body::Body::from(body.to_string()))
+                        .unwrap()
+                )
+                .await
+                .unwrap()
+                .status(),
+            expected
+        );
+    }
+    // Two authenticated readers see the exact shared mutation and replay it.
+    let gateway = crate::gateway::Gateway::new(chat.clone());
+    gateway.start();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server =
+        tokio::spawn(axum::serve(listener, crate::gateway::router(gateway.clone())).into_future());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while reqwest::get(format!("http://{address}/readyz"))
+            .await
+            .unwrap()
+            .status()
+            != StatusCode::NO_CONTENT
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let mut readers = Vec::new();
+    for token in ["pin-owner", "pin-member"] {
+        let (mut reader, _) = tokio_tungstenite::connect_async(account_socket(
+            format!("ws://{address}/api/chat/events?channelId={channel}&after=3"),
+            token,
+        ))
+        .await
+        .unwrap();
+        let replayed = event(&mut reader).await;
+        assert_eq!(replayed["type"], "message.pin");
+        assert_eq!(replayed["message"]["author"]["avatarId"], 255);
+        assert!(replayed["message"]["pin"].is_null());
+        assert_eq!(event(&mut reader).await["cursor"], "4");
+        readers.push(reader);
+    }
+    let shared = persist_pin(&pool, channel, message, "pin-member", true)
+        .await
+        .unwrap();
+    publish_pending(&chat).await.unwrap();
+    for reader in &mut readers {
+        assert_eq!(event(reader).await, shared);
+    }
+    persist_pin(&pool, channel, message, "pin-owner", false)
+        .await
+        .unwrap();
+    for mut reader in readers {
+        reader.close(None).await.unwrap();
+    }
+    gateway.begin_shutdown();
+    server.abort();
+
+    // Readable previews do not grant mutations; private grants gate reads too.
+    sqlx::query(
+        "UPDATE public.channel_joins SET deleted_at=now() WHERE channel_id=$1 AND user_id=$2",
+    )
+    .bind(channel_id)
+    .bind(member)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(
+        history_page(&pool, channel, None, Some(member))
+            .await
+            .is_ok()
+    );
+    for active in [true, false] {
+        assert_eq!(
+            persist_pin(&pool, channel, message, "pin-member", active)
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+    pool.execute("UPDATE public.channels SET private=true")
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE public.channel_joins SET deleted_at=NULL WHERE channel_id=$1 AND user_id=$2",
+    )
+    .bind(channel_id)
+    .bind(member)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO public.channel_members(channel_id,user_id,deleted_at) VALUES($1,$2,now())",
+    )
+    .bind(channel_id)
+    .bind(member)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        history_page(&pool, channel, None, Some(member))
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        persist_pin(&pool, channel, message, "pin-member", true)
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        persist_pin(&pool, channel, message, "wrong-token", true)
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        persist_pin(&pool, channel, "missing-message", "pin-owner", true)
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::NOT_FOUND
+    );
+
+    // Disposable SQL fixtures bypass send rate limits, not production behavior.
+    sqlx::query("INSERT INTO public.messages(external_id,channel_id,session_id,client_message_id,request_hash,channel_seq,payload) SELECT 'pinfixture'||lpad(n::text,5,'0'),m.channel_id,m.session_id,md5(n::text)::uuid,m.request_hash,n,m.payload || jsonb_build_object('id','pinfixture'||lpad(n::text,5,'0'),'seq',n::text,'clientMessageId',md5(n::text)::uuid) FROM public.messages m CROSS JOIN generate_series(5,106) n WHERE m.external_id=$1")
+        .bind(message).execute(&pool).await.unwrap();
+    pool.execute("UPDATE public.channels SET last_seq=106")
+        .await
+        .unwrap();
+    let repin = persist_pin(&pool, channel, message, "pin-owner", true)
+        .await
+        .unwrap();
+    let page = history_page(&pool, channel, None, Some(member)).await;
+    assert!(page.is_err());
+    let page = history_page(&pool, channel, None, Some(owner))
+        .await
+        .unwrap();
+    assert_eq!(page["messages"].as_array().unwrap().len(), 50);
+    assert!(
+        page["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["id"] != message)
+    );
+    assert_eq!(page["pinnedMessages"][0]["id"], message);
+    assert_eq!(page["pinnedMessages"][0]["pinSeq"], "107");
+    assert_eq!(page["cursor"], "107");
+    sqlx::query("UPDATE public.messages SET payload=payload || jsonb_build_object('pin',$1::jsonb,'pinSeq',channel_seq::text) WHERE channel_seq BETWEEN 5 AND 103")
+        .bind(&repin["message"]["pin"]).execute(&pool).await.unwrap();
+    assert_eq!(
+        persist_pin(&pool, channel, "pinfixture00106", "pin-owner", true)
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::CONFLICT
+    );
+    persist_pin(&pool, channel, message, "pin-owner", false)
+        .await
+        .unwrap();
+    let new_pin = persist_pin(&pool, channel, "pinfixture00106", "pin-owner", true)
+        .await
+        .unwrap();
+    let page = history_page(&pool, channel, None, Some(owner))
+        .await
+        .unwrap();
+    assert_eq!(page["pinnedMessages"].as_array().unwrap().len(), 100);
+    assert_eq!(page["pinnedMessages"][0]["id"], "pinfixture00106");
+
+    // No-op retries remain free at the rate boundary; real toggles do not.
+    sqlx::query("INSERT INTO public.message_pin_activity(message_id,user_id) SELECT m.id,$1 FROM public.messages m CROSS JOIN generate_series(1,60) WHERE m.external_id=$2")
+        .bind(owner).bind(message).execute(&pool).await.unwrap();
+    assert_eq!(
+        persist_pin(&pool, channel, "pinfixture00106", "pin-owner", true)
+            .await
+            .unwrap(),
+        new_pin
+    );
+    assert_eq!(
+        persist_pin(&pool, channel, "pinfixture00106", "pin-owner", false)
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    pool.execute("UPDATE public.message_pin_activity SET created_at=now()-interval '2 minutes'")
+        .await
+        .unwrap();
+    persist_pin(&pool, channel, "pinfixture00106", "pin-owner", false)
+        .await
+        .unwrap();
+
+    // A revocation that wins the space lock must beat a waiting mutation.
+    pool.execute("UPDATE public.channels SET private=false")
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE public.channel_joins SET deleted_at=NULL WHERE channel_id=$1 AND user_id=$2",
+    )
+    .bind(channel_id)
+    .bind(member)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut revocation = pool.begin().await.unwrap();
+    sqlx::query("SELECT id FROM public.spaces WHERE id=$1 FOR UPDATE")
+        .bind(space)
+        .execute(&mut *revocation)
+        .await
+        .unwrap();
+    let pending_pool = pool.clone();
+    let pending_message = message.to_owned();
+    let pending = tokio::spawn(async move {
+        persist_pin(&pending_pool, channel, &pending_message, "pin-member", true).await
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!pending.is_finished());
+    sqlx::query(
+        "UPDATE public.space_members SET deleted_at=now() WHERE space_id=$1 AND user_id=$2",
+    )
+    .bind(space)
+    .bind(member)
+    .execute(&mut *revocation)
+    .await
+    .unwrap();
+    revocation.commit().await.unwrap();
+    assert_eq!(
+        pending.await.unwrap().unwrap_err().status,
+        StatusCode::NOT_FOUND
+    );
+    pool.close().await;
+    admin
+        .execute(format!("DROP DATABASE {database} WITH (FORCE)").as_str())
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 #[ignore = "requires disposable loopback CHAT_TEST_DATABASE_URL"]
 async fn reactions_are_durable_idempotent_authorized_and_transactional() {
@@ -643,6 +1360,129 @@ async fn reactions_are_durable_idempotent_authorized_and_transactional() {
         .execute(format!("DROP DATABASE {database} WITH (FORCE)").as_str())
         .await
         .unwrap();
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL"]
+async fn reactor_lists_name_people_in_reaction_order_for_readers_only(pool: PgPool) {
+    let mut users = Vec::new();
+    for (token, username, name) in [
+        ("alice", "alice", "Alice A"),
+        ("bob", "bob", "Bob B"),
+        ("carol", "carol", "Carol C"),
+        ("outsider", "outsider", "Outsider"),
+    ] {
+        let user: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name,avatar_id) VALUES($1,$2,$3,$4) RETURNING id")
+            .bind(token).bind(username).bind(name).bind(100 + users.len() as i16).fetch_one(&pool).await.unwrap();
+        let hash = Sha256::digest(token.as_bytes()).to_vec();
+        sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 day')")
+            .bind(&hash).bind(user).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO public.chat_sessions(external_id,token_hash,name,user_id,account_session_hash) VALUES($1,$2,$3,$4,$2)")
+            .bind(token).bind(hash).bind(name).bind(user).execute(&pool).await.unwrap();
+        users.push(user);
+    }
+    let space: i64 = sqlx::query_scalar("INSERT INTO public.spaces(external_id,name,owner_id) VALUES('reactor-space','Reactors',$1) RETURNING id")
+        .bind(users[0]).fetch_one(&pool).await.unwrap();
+    for user in &users[..3] {
+        sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+            .bind(space)
+            .bind(user)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let channel = "reactor-channel".to_owned();
+    let channel_id: i64 = sqlx::query_scalar("INSERT INTO public.channels(external_id,space_id,name) VALUES($1,$2,'general') RETURNING id")
+        .bind(&channel).bind(space).fetch_one(&pool).await.unwrap();
+    // Carol is a member who has not joined: she may read, and so see who reacted.
+    for user in &users[..2] {
+        sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) VALUES($1,$2)")
+            .bind(channel_id)
+            .bind(user)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let message = persist(&pool, &channel, "alice", Uuid::new_v4(), "react to me")
+        .await
+        .unwrap();
+    let message = message["id"].as_str().unwrap();
+    persist_reaction(&pool, &channel, message, "bob", "👍", true)
+        .await
+        .unwrap();
+    persist_reaction(&pool, &channel, message, "alice", "👍", true)
+        .await
+        .unwrap();
+    let snapshot = persist_reaction(&pool, &channel, message, "alice", "🎉", true)
+        .await
+        .unwrap();
+
+    let list = reactor_list(&pool, &channel, message, Some(users[2]))
+        .await
+        .unwrap();
+    assert_eq!(list["messageId"], message);
+    assert_eq!(list["reactionSeq"], snapshot["seq"]);
+    let emoji = |value: &Value| -> Vec<Value> {
+        value
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["emoji"].clone())
+            .collect()
+    };
+    assert_eq!(emoji(&list["reactions"]), emoji(&snapshot["reactions"]));
+    let alice = json!({"id":"alice","username":"alice","displayName":"Alice A","avatarId":100});
+    let bob = json!({"id":"bob","username":"bob","displayName":"Bob B","avatarId":101});
+    let authors = |list: &Value, wanted: &str| -> Value {
+        list["reactions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["emoji"] == wanted)
+            .map(|r| r["authors"].clone())
+            .unwrap_or(Value::Null)
+    };
+    assert_eq!(
+        authors(&list, "👍"),
+        json!([bob, alice]),
+        "first reactor first"
+    );
+    assert_eq!(authors(&list, "🎉"), json!([alice]));
+
+    // Removed reactions stay stored but are no longer listed.
+    persist_reaction(&pool, &channel, message, "bob", "👍", false)
+        .await
+        .unwrap();
+    let list = reactor_list(&pool, &channel, message, Some(users[1]))
+        .await
+        .unwrap();
+    assert_eq!(authors(&list, "👍"), json!([alice]));
+
+    for reader in [Some(users[3]), None] {
+        assert_eq!(
+            reactor_list(&pool, &channel, message, reader)
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+    let other = "reactor-other".to_owned();
+    sqlx::query("INSERT INTO public.channels(external_id,space_id,name) VALUES($1,$2,'other')")
+        .bind(&other)
+        .bind(space)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for (channel, message) in [(channel.as_str(), "absent"), (other.as_str(), message)] {
+        assert_eq!(
+            reactor_list(&pool, channel, message, Some(users[0]))
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::NOT_FOUND
+        );
+    }
 }
 
 #[sqlx::test(migrations = "./migrations")]

@@ -62,6 +62,26 @@ class AttachmentUpdatesTest {
         assertEquals("10", merged.attachmentsSeq)
     }
 
+    @Test fun `edits, thread summaries and files merge independently`() {
+        val applied = mergeAttachments(message, update("8", ready))
+        // A later edit snapshot carries the older "processing" file: the text changes, the file stays ready.
+        val edited = message.copy(content = message.content.copy(text = "caption"), revision = 2, editedAt = "2026-10-07T00:00:00Z", editSeq = "9")
+        val merged = mergeMessages(listOf(applied), listOf(edited), mutableMapOf()).single()
+        assertEquals("caption", merged.content.text)
+        assertEquals(2, merged.revision)
+        assertEquals(listOf(ready), merged.content.attachments)
+        assertEquals("8", merged.attachmentsSeq)
+        assertEquals(merged, mergeEdit(applied, edited))
+        // And an older edit never overwrites a newer file snapshot carried by the edit side.
+        val newerFiles = edited.copy(content = edited.content.copy(attachments = listOf(file("failed"))), attachmentsSeq = "10")
+        assertEquals(listOf(file("failed")), mergeEdit(applied, newerFiles).content.attachments)
+        // Thread summaries survive alongside the newer files.
+        val summarized = message.copy(thread = ThreadSummary(1, emptyList(), "7"))
+        val withThread = mergeMessages(listOf(summarized), listOf(applied), mutableMapOf()).single()
+        assertEquals(listOf(ready), withThread.content.attachments)
+        assertEquals("7", withThread.thread?.seq)
+    }
+
     @Test fun `unloaded updates apply when their message arrives and the cache is bounded`() {
         val unseen = mutableMapOf<String, AttachmentsUpdate>()
         assertTrue(cacheUnseenAttachments(unseen, update("9", ready)))

@@ -63,15 +63,46 @@ class CaperApi(
         )
         return validatedHistory(history, channel)
     }
+    suspend fun thread(token: String?, channel: String, root: String, before: String? = null): ThreadHistory {
+        require(messageId.matches(root)) { "Invalid message ID." }
+        val page: ThreadHistory = get("/api/chat/channels/${channel.pathId()}/messages/$root/thread" + (before?.let { "?before=$it" } ?: ""), token)
+        page.root.validated(channel)
+        require(page.root.id == root && page.root.threadRootId == null) { "Invalid thread parent." }
+        page.messages.forEach { it.validated(channel); require(it.threadRootId == root) { "Invalid thread reply." } }
+        return page
+    }
     private fun validatedHistory(history: ChatHistory, expectedChannel: String? = history.channel?.id): ChatHistory {
         require(Regex("^(0|[1-9][0-9]*)$").matches(history.cursor) && history.cursor.toLongOrNull() != null) { "Invalid history cursor." }
         val channel = requireNotNull(expectedChannel) { "History channel is missing." }
         history.messages.forEach { it.validated(channel) }
+        history.pinnedMessages.forEach { it.validated(channel) }
         return history
     }
     suspend fun chatSession(token: String?, name: String): ChatSession = post(
         "/api/chat/session", buildJsonObject { put("name", name) }, token,
     )
+    suspend fun forwardDestinations(token: String): ForwardDestinations = get("/api/chat/forward-destinations", token)
+
+    suspend fun forward(token: String, chatToken: String, source: ChatMessage, destination: String, key: UUID, text: String): ChatMessage {
+        val message: ChatMessage = post(
+            "/api/chat/channels/${destination.pathId()}/forwards",
+            buildJsonObject { put("sourceChannelId", source.channelId); put("sourceMessageId", source.id); put("clientMessageId", key.toString()); put("text", text) },
+            token, mapOf("x-caper-chat-token" to chatToken),
+        )
+        require(message.forward != null) { "Invalid forward." }
+        return message.validated(destination, expectedClientMessageId = key, expectedText = text)
+    }
+
+    suspend fun forwardedConversation(token: String, source: ChatMessage, before: String? = null): ForwardConversation {
+        require(messageId.matches(source.id)) { "Invalid message ID." }
+        before?.let { require(Regex("^(0|[1-9][0-9]*)$").matches(it)) { "Invalid cursor." } }
+        val conversation: ForwardConversation = get("/api/chat/channels/${source.channelId.pathId()}/forwards/${source.id}/thread" + (before?.let { "?before=$it" } ?: ""), token)
+        require(Regex("^(0|[1-9][0-9]*)$").matches(conversation.cursor)) { "Invalid source cursor." }
+        conversation.root?.let { it.validated(it.channelId) }
+        conversation.messages.forEach { it.validated(it.channelId) }
+        return conversation
+    }
+
     suspend fun sendMessage(
         token: String?,
         chatToken: String,
@@ -80,6 +111,8 @@ class CaperApi(
         clientMessageId: UUID,
         text: String,
         attachmentIds: List<String> = emptyList(),
+        threadRootId: String? = null,
+        broadcast: Boolean = false,
     ): ChatMessage {
         require(attachmentIds.size <= AttachmentPolicy.MAX_ATTACHMENTS) { "Attach up to 10 files." }
         val message: ChatMessage = post(
@@ -88,9 +121,11 @@ class CaperApi(
                 put("clientMessageId", clientMessageId.toString()); put("text", text)
                 // Only when non-empty: text-only requests keep their original idempotency hash.
                 if (attachmentIds.isNotEmpty()) putJsonArray("attachmentIds") { attachmentIds.forEach { add(it.assetPathId()) } }
+                if (threadRootId != null) { put("threadRootId", threadRootId); put("broadcast", broadcast) }
             },
             token, mapOf("x-caper-chat-token" to chatToken),
         )
+        require(message.threadRootId == threadRootId && message.broadcast == broadcast) { "Reply destination mismatch." }
         return message.validated(channel, author, clientMessageId, text)
     }
 
@@ -147,12 +182,52 @@ class CaperApi(
             .writeTimeout(java.time.Duration.ofSeconds(60)).build()
     }
 
+    suspend fun editMessage(token: String?, chatToken: String, channel: String, message: String, text: String, expectedRevision: Int): ChatMessage {
+        require(messageId.matches(message) && expectedRevision > 0 && validEditText(text)) { "Invalid message edit." }
+        val result: ChatMessage = request(
+            "/api/chat/channels/${channel.pathId()}/messages/$message", "PUT", token,
+            buildJsonObject { put("text", text); put("expectedRevision", expectedRevision) }.toString(),
+            mapOf("x-caper-chat-token" to chatToken),
+        )
+        require(result.id == message) { "Message identity mismatch." }
+        return result.validated(channel)
+    }
+
+    suspend fun loadMessage(token: String?, channel: String, message: String): ChatMessage {
+        require(messageId.matches(message)) { "Invalid message ID." }
+        val result: ChatMessage = get("/api/chat/channels/${channel.pathId()}/messages/$message", token)
+        require(result.id == message) { "Message identity mismatch." }
+        return result.validated(channel)
+    }
+
+    suspend fun messageVersions(token: String?, channel: String, message: String, before: Int? = null): MessageVersions {
+        require(messageId.matches(message) && (before == null || before > 0)) { "Invalid message history request." }
+        val page: MessageVersions = get("/api/chat/channels/${channel.pathId()}/messages/$message/versions" + (before?.let { "?before=$it" } ?: ""), token)
+        return page.validated(message, before)
+    }
+
     suspend fun setReaction(token: String?, chatToken: String, channel: String, message: String, emoji: String, active: Boolean): ReactionUpdate {
         require(messageId.matches(message)) { "Invalid message ID." }
         val update: ReactionUpdate = request(
             "/api/chat/channels/${channel.pathId()}/messages/$message/reactions", "PUT", token,
             buildJsonObject { put("emoji", emoji); put("active", active) }.toString(),
             mapOf("x-caper-chat-token" to chatToken),
+        )
+        return update.validated(channel, message)
+    }
+
+    /** Who reacted, with the same read access and credentials as [history]. */
+    suspend fun reactors(token: String?, channel: String, message: String): ReactorList {
+        require(messageId.matches(message)) { "Invalid message ID." }
+        val list: ReactorList = get("/api/chat/channels/${channel.pathId()}/messages/$message/reactions", token)
+        return list.validated(message)
+    }
+
+    suspend fun setPin(token: String?, chatToken: String, channel: String, message: String, active: Boolean): PinUpdate {
+        require(messageId.matches(message)) { "Invalid message ID." }
+        val update: PinUpdate = request(
+            "/api/chat/channels/${channel.pathId()}/messages/$message/pin", "PUT", token,
+            buildJsonObject { put("active", active) }.toString(), mapOf("x-caper-chat-token" to chatToken),
         )
         return update.validated(channel, message)
     }

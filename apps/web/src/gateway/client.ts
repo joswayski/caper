@@ -384,7 +384,8 @@ export class AppGateway {
     if (!event || typeof event !== "object") throw new Error("Invalid gateway event.");
     const value = event as Record<string, unknown>;
     if (subscription.request.kind === "chat") {
-      if (value.type === "message.created" || value.type === "message.reactions" || value.type === "message.attachments") {
+      if (value.type === "message.created" || value.type === "message.reactions" || value.type === "message.attachments"
+        || value.type === "message.pin" || value.type === "message.forward" || value.type === "message.edited") {
         if (typeof value.seq !== "string") throw new Error("Invalid chat event.");
         const next = sequence(value.seq);
         if (state.position !== undefined && next > state.position + 1n) throw new Error("Chat event gap.");

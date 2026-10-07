@@ -35,9 +35,13 @@ private struct SendInput: Encodable {
     let text: String
     /// Omitted (nil) unless files are attached.
     let attachmentIds: [String]?
+    let threadRootId: String?
+    let broadcast: Bool?
 }
 private struct AttachmentURLsInput: Encodable { let ids: [String] }
 private struct ReactionInput: Encodable { let emoji: String; let active: Bool }
+private struct PinInput: Encodable { let active: Bool }
+private struct EditInput: Encodable { let text: String; let expectedRevision: Int }
 private struct SpaceInput: Encodable { let name: String }
 private struct ChannelInput: Encodable {
     let name: String
@@ -63,6 +67,7 @@ public actor APIClient {
     private let session: URLSession
     private let tokenStore: TokenStore
     private var token: String?
+    public var isSignedIn: Bool { token != nil }
     private var authGeneration: UInt64 = 0
     private let decoder = JSONDecoder()
     private let encoder = JSONEncoder()
@@ -240,6 +245,10 @@ public actor APIClient {
                   ($0.channelId == history.channel?.id || history.channel == nil)
                       && $0.content.version == 1 && $0.content.type == "text"
                       && (try? Sequence.compare($0.seq, "0")) != nil
+              }), history.pinnedMessages.count <= 100,
+              history.pinnedMessages.allSatisfy({
+                  ($0.channelId == history.channel?.id || history.channel == nil) && $0.pin != nil
+                      && (try? Sequence.compare($0.pinSeq ?? "", "0")) != nil
               }) else {
             throw APIError(status: 502, message: "The chat service returned invalid history.")
         }
@@ -250,9 +259,85 @@ public actor APIClient {
         try await request("api/chat/session", method: "POST", body: SessionInput(name: name))
     }
 
-    public func send(channelID: String, sessionToken: String, clientMessageID: String, text: String, attachmentIDs: [String] = []) async throws -> ChatMessage {
-        let body = SendInput(clientMessageId: clientMessageID, text: text, attachmentIds: attachmentIDs.isEmpty ? nil : attachmentIDs)
+    public func thread(channelID: String, rootID: String, before: String? = nil) async throws -> ThreadHistory {
+        let path = "api/chat/channels/\(try pathID(channelID))/messages/\(try messagePathID(rootID))/thread" + (before.map { "?before=\($0)" } ?? "")
+        let page: ThreadHistory = try await request(path)
+        guard page.root.id == rootID, page.root.channelId == channelID, page.root.threadRootId == nil,
+              page.messages.allSatisfy({ $0.channelId == channelID && $0.threadRootId == rootID && $0.content.version == 1 && $0.content.type == "text" && (try? Sequence.compare($0.seq, "0")) != nil }) else {
+            throw APIError(status: 502, message: "The chat service returned an invalid thread.")
+        }
+        return page
+    }
+
+    public func forwardDestinations() async throws -> [ForwardDestination] {
+        let result: ForwardDestinations = try await request("api/chat/forward-destinations")
+        return result.destinations
+    }
+
+    public func forward(source: ChatMessage, destinationID: String, sessionToken: String, clientMessageID: String, text: String) async throws -> ChatMessage {
+        struct Input: Encodable { let sourceChannelId: String; let sourceMessageId: String; let clientMessageId: String; let text: String }
+        let message: ChatMessage = try await request("api/chat/channels/\(try pathID(destinationID))/forwards", method: "POST",
+            body: Input(sourceChannelId: source.channelId, sourceMessageId: source.id, clientMessageId: clientMessageID, text: text), extraHeaders: ["x-caper-chat-token": sessionToken])
+        guard message.channelId == destinationID, message.clientMessageId == clientMessageID.lowercased(), message.forward != nil, message.isValidForward else {
+            throw APIError(status: 502, message: "Caper returned an invalid forward.")
+        }
+        return message
+    }
+
+    public func forwardedConversation(message: ChatMessage, before: String? = nil) async throws -> ForwardConversationHistory {
+        var path = "api/chat/channels/\(try pathID(message.channelId))/forwards/\(try messagePathID(message.id))/thread"
+        if let before {
+            guard (try? Sequence.compare(before, "0")) != nil else { throw APIError(status: 400, message: "Invalid cursor.") }
+            path += "?before=\(before)"
+        }
+        let history: ForwardConversationHistory = try await request(path)
+        guard (try? Sequence.compare(history.cursor, "0")) != nil,
+              (history.root.map { $0.content.version == 1 && $0.content.type == "text" && $0.isValidForward } ?? true),
+              history.messages.allSatisfy({ $0.content.version == 1 && $0.content.type == "text" && $0.isValidForward && (try? Sequence.compare($0.seq, "0")) != nil }) else {
+            throw APIError(status: 502, message: "Caper returned an invalid forwarded conversation.")
+        }
+        return history
+    }
+
+    public func send(channelID: String, sessionToken: String, clientMessageID: String, text: String, attachmentIDs: [String] = [],
+                     threadRootId: String? = nil, broadcast: Bool = false) async throws -> ChatMessage {
+        let body = SendInput(clientMessageId: clientMessageID, text: text, attachmentIds: attachmentIDs.isEmpty ? nil : attachmentIDs,
+                             threadRootId: threadRootId, broadcast: threadRootId == nil ? nil : broadcast)
         return try await request("api/chat/channels/\(try pathID(channelID))/messages", method: "POST", body: body, extraHeaders: ["x-caper-chat-token": sessionToken])
+    }
+
+    public func editMessage(channelID: String, messageID: String, sessionToken: String, text: String, expectedRevision: Int) async throws -> ChatMessage {
+        guard expectedRevision > 0, MessageValidation.error(for: text) == nil else { throw APIError(status: 400, message: "Invalid message edit.") }
+        let message: ChatMessage = try await request("api/chat/channels/\(try pathID(channelID))/messages/\(try messagePathID(messageID))",
+            method: "PUT", body: EditInput(text: text, expectedRevision: expectedRevision), extraHeaders: ["x-caper-chat-token": sessionToken])
+        return try validateSnapshot(message, channelID: channelID, messageID: messageID)
+    }
+
+    public func loadMessage(channelID: String, messageID: String) async throws -> ChatMessage {
+        let message: ChatMessage = try await request("api/chat/channels/\(try pathID(channelID))/messages/\(try messagePathID(messageID))")
+        return try validateSnapshot(message, channelID: channelID, messageID: messageID)
+    }
+
+    public func messageVersions(channelID: String, messageID: String, before: Int? = nil) async throws -> MessageVersions {
+        guard before == nil || before! > 0 else { throw APIError(status: 400, message: "Invalid version cursor.") }
+        let page: MessageVersions = try await request("api/chat/channels/\(try pathID(channelID))/messages/\(try messagePathID(messageID))/versions" + (before.map { "?before=\($0)" } ?? ""))
+        guard page.isValid(messageID: messageID, before: before) else { throw APIError(status: 502, message: "Invalid message history.") }
+        return page
+    }
+
+    private func validateSnapshot(_ message: ChatMessage, channelID: String, messageID: String) throws -> ChatMessage {
+        guard message.id == messageID, message.channelId == channelID, (message.revision ?? 1) >= 1,
+              message.content.version == 1, message.content.type == "text",
+              MessageValidation.error(for: message.content.text, attachmentCount: message.content.attachments?.count ?? 0) == nil,
+              (try? Sequence.compare(message.seq, "0")) != nil else { throw APIError(status: 502, message: "Invalid message snapshot.") }
+        if (message.revision ?? 1) > 1 {
+            let raw = try JSONSerialization.jsonObject(with: JSONEncoder().encode(message))
+            guard EditEvent.message(["type": "message.edited", "schemaVersion": 1, "channelId": channelID,
+                                     "seq": message.editSeq ?? "", "message": raw], channelID: channelID) != nil else {
+                throw APIError(status: 502, message: "Invalid message edit metadata.")
+            }
+        }
+        return message
     }
 
     // MARK: Attachments
@@ -315,6 +400,29 @@ public actor APIClient {
         )
         guard event.isValid, event.channelId == channelID, event.messageId == messageID else {
             throw APIError(status: 502, message: "The chat service returned invalid reactions.")
+        }
+        return event
+    }
+
+    /// Who reacted to a message. Same account authorization as history, so
+    /// read-only previews and DMs work; no chat session token is needed.
+    public func reactors(channelID: String, messageID: String) async throws -> ReactorList {
+        let list: ReactorList = try await request(
+            "api/chat/channels/\(try pathID(channelID))/messages/\(try messagePathID(messageID))/reactions"
+        )
+        guard list.isValid(messageID: messageID) else {
+            throw APIError(status: 502, message: "The chat service returned invalid reactions.")
+        }
+        return list
+    }
+
+    public func setPin(channelID: String, messageID: String, sessionToken: String, active: Bool) async throws -> MessagePinEvent {
+        let event: MessagePinEvent = try await request(
+            "api/chat/channels/\(try pathID(channelID))/messages/\(try messagePathID(messageID))/pin",
+            method: "PUT", body: PinInput(active: active), extraHeaders: ["x-caper-chat-token": sessionToken]
+        )
+        guard event.isValid, event.channelId == channelID, event.message.id == messageID else {
+            throw APIError(status: 502, message: "The chat service returned an invalid pin.")
         }
         return event
     }

@@ -66,7 +66,7 @@ writeFileSync(init, `(${fixture.toString()})();`);
 const session = `favicons-${process.pid}`;
 const browser = (...args) => execFileSync('agent-browser', ['--session', session, '--init-script', init, ...args], { encoding: 'utf8', timeout: 40000 });
 const evaluate = code => JSON.parse(browser('eval', code));
-const waitForWordmark = index => browser('wait', '--fn', `[...document.querySelectorAll('.wordmark-character')].length > 0 && [...document.querySelectorAll('.wordmark-character')].every(image => image.getAttribute('src') === '/images/branding/v1/${index}.svg' && image.complete && image.naturalWidth === 256)`);
+const waitForWordmark = index => browser('wait', '--fn', `[...document.querySelectorAll('.wordmark-character')].length > 0 && [...document.querySelectorAll('.wordmark-character')].every(image => image.getAttribute('src') === (location.pathname === '/' ? '/caper-face.svg?v=3' : '/images/branding/v1/${index}.svg') && image.complete && (location.pathname === '/' ? image.naturalWidth > 0 : image.naturalWidth === 256))`);
 const waitForIcon = (index, previousPNG = '') => {
   browser('wait', '--fn', `document.querySelector('#caper-favicon-svg')?.getAttribute('href') === '/images/branding/v1/${index}.svg' && document.querySelector('#caper-favicon-32')?.href.startsWith('data:image/png') && document.querySelector('#caper-favicon-32')?.href !== ${JSON.stringify(previousPNG)}`);
   waitForWordmark(index);
@@ -86,6 +86,13 @@ try {
     return true;
   })()`), true);
   if (artifacts) browser('screenshot', '.site-header', join(artifacts, 'wordmark-home-desktop.png'));
+  browser('set', 'viewport', '390', '844', '2');
+  waitForIcon(799);
+  if (artifacts) {
+    browser('eval', 'new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
+    browser('screenshot', join(artifacts, 'wordmark-home-narrow.png'));
+  }
+  browser('set', 'viewport', '1280', '844', '2');
   const today = record();
   browser('reload');
   waitForIcon(799);
@@ -174,8 +181,16 @@ try {
   browser('eval', 'window.dispatchEvent(new Event("focus"));');
   waitForIcon(77);
   assert.equal(record().svg, '/images/branding/v1/77.svg', 'Other tabs adopt the saved daily icon instead of rerolling');
-  browser('open', `${origin}?installed-icon-test=1&icon-now=${clock}`);
-  waitForWordmark(77);
+  // Keep one clock active when advancing days; the other tab still has the old mocked date.
+  browser('tab', 'close', 't2');
+  browser('open', `${origin}?icon-now=${clock}`);
+  waitForIcon(77);
+  browser('eval', 'window.__iconNow += 86400000; window.dispatchEvent(new Event("focus"));');
+  waitForIcon(0);
+  browser('eval', 'window.__iconNow += 86400000; window.__iconTimers.forEach(tick => tick());');
+  waitForIcon(1);
+  browser('open', `${origin}?installed-icon-test=1&icon-now=${evaluate('window.__iconNow')}`);
+  waitForWordmark(1);
   assert.equal(evaluate(`document.querySelector('#caper-favicon-svg').getAttribute('href')`), '/caper-face.svg?v=3', 'Explicitly mocked standalone launch keeps original identity');
   browser('open', `${origin}login?blocked-storage-test=1`);
   waitForIcon(160);
@@ -183,7 +198,7 @@ try {
   waitForIcon(160);
   browser('eval', 'window.__iconNow += 1; window.dispatchEvent(new Event("focus"));');
   waitForIcon(560);
-  console.log('Favicon + wordmark checks passed: all 800 characters decode without backgrounds; same shared character; same-day reload + navigation stability; UTC focus + timer rotation; cross-tab persistence; blocked-storage stability; SVG/PNG agreement; fixed installed icons with rotating in-app branding; accessible home link; desktop/narrow layouts.');
+  console.log('Favicon + wordmark checks passed: fixed plain homepage character across reloads, navigation, shared tabs and UTC focus/timer rotation; other pages retain daily branding; all 800 characters decode without backgrounds; same-day favicon stability; cross-tab persistence; blocked-storage stability; SVG/PNG agreement; fixed installed icons; accessible home link; desktop/narrow layouts.');
 } finally {
   browser('close');
   rmSync(scratch, { recursive: true, force: true });

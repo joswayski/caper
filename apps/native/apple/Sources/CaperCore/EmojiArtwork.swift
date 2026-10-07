@@ -2,7 +2,7 @@ import Foundation
 import SwiftUI
 import ImageIO
 
-struct EmojiCatalogEntry: Codable, Identifiable, Sendable {
+struct EmojiCatalogEntry: Codable, Identifiable, Sendable, Equatable {
     let id: String
     let emoji: String
     let name: String
@@ -33,6 +33,32 @@ enum EmojiArtwork {
 
     static func entry(for emoji: String) -> EmojiCatalogEntry? {
         entriesByID[id(for: emoji)]
+    }
+
+    /// The catalog's dash-separated name, as web derives it ("thumbs-up",
+    /// "red-heart"). Reactions are stored fully qualified, while the catalog
+    /// keys some emoji without U+FE0F, so a miss retries with every U+FE0F
+    /// removed from both sides. Entries without a real name (their name is
+    /// only the code point ID) return nil, and callers show the glyph.
+    static func name(for emoji: String) -> String? {
+        guard let entry = EmojiArtwork.entry(for: emoji) ?? entriesByBareEmoji[bare(emoji)],
+              !entry.name.isEmpty, entry.name != entry.id else { return nil }
+        return entry.name
+    }
+
+    private static let entriesByBareEmoji: [String: EmojiCatalogEntry] = {
+        var result: [String: EmojiCatalogEntry] = [:]
+        for entry in EmojiArtwork.entries {
+            let key = EmojiArtwork.bare(entry.emoji)
+            if result[key] == nil { result[key] = entry }
+        }
+        return result
+    }()
+
+    private static func bare(_ emoji: String) -> String {
+        var scalars = String.UnicodeScalarView()
+        scalars.append(contentsOf: emoji.unicodeScalars.filter { $0.value != 0xfe0f })
+        return String(scalars)
     }
 
     static func image(for entry: EmojiCatalogEntry) -> CGImage? {

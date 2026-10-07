@@ -2,6 +2,8 @@ import Foundation
 import XCTest
 #if os(iOS)
 import UIKit
+#elseif os(macOS)
+import AppKit
 #endif
 
 @MainActor
@@ -20,6 +22,12 @@ final class CaperParityUITests: XCTestCase {
             "-caper.voice.inputGain", "100",
             "-caper.voice.processingStrength", "25",
         ]
+        #if os(macOS)
+        // A persistent runner can restore closed or Settings-only windows from
+        // an earlier launch. Ignore AppKit's saved window state for this test
+        // process without deleting user preferences or changing normal launches.
+        app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+        #endif
         app.launchEnvironment["CAPER_TEST_MODE"] = "parity"
         app.launchEnvironment["CAPER_API_BASE_URL"] = "http://127.0.0.1:3001"
         if signedIn {
@@ -236,12 +244,44 @@ final class CaperParityUITests: XCTestCase {
         let add = try require(app.buttons["message-action-add-reaction"], timeout: 5,
                               "Holding \(messageID) did not offer Add reaction")
         #else
+        let row = try require(app.descendants(matching: .any)["message-row-\(messageID)"], timeout: 10,
+                              "Missing message-row-\(messageID)")
+        row.hover()
         let add = try require(app.buttons["add-reaction-\(messageID)"], timeout: 10,
-                              "Missing add-reaction-\(messageID)")
+                              "Hovering \(messageID) did not reveal Add reaction")
         #endif
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: add)
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
+        #if os(macOS)
+        // Keep the action's declared size and trailing placement, and verify
+        // moving the pointer into its overlay does not hide the click target.
+        XCTAssertEqual(add.frame.width, 24, accuracy: 1)
+        XCTAssertEqual(add.frame.height, 24, accuracy: 1)
+        XCTAssertGreaterThan(add.frame.minX, row.frame.midX, "Message actions must stay at the trailing edge")
+        XCTAssertTrue(add.isHittable)
+        add.hover()
+        XCTAssertTrue(add.isHittable, "Moving from the row onto Add reaction must not hide its click target")
+        #endif
         add.tap()
+    }
+
+    func testColonEmojiSuggestionsPreserveDraftAndFocusWithoutSending() throws {
+        let app = launch()
+        let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 30,
+                                   "Missing message composer")
+        XCTAssertTrue(focus(composer))
+        composer.typeText("Before :tomato")
+        let tomato = try require(app.buttons["emoji-suggestion-1f345"], timeout: 5,
+                                 "Typing a colon query must offer tomato")
+        capture("emoji-composer-suggestions", app: app)
+        tomato.tap()
+        let inserted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Before 🍅"), object: composer)
+        XCTAssertEqual(XCTWaiter.wait(for: [inserted], timeout: 3), .completed,
+                       "Selecting emoji must retain the draft without sending")
+        XCTAssertTrue(hasKeyboardFocus(composer))
+        composer.typeText(" after")
+        XCTAssertEqual(composer.value as? String, "Before 🍅 after", "Insertion must preserve the caret")
+        XCTAssertFalse(app.buttons["emoji-suggestion-1f345"].exists)
     }
 
     func testReactionChipsPickerAndEmptySearchState() throws {
@@ -252,7 +292,11 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(other.exists)
         XCTAssertGreaterThanOrEqual(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "reaction,")).count, 20)
         #if os(macOS)
-        XCTAssertGreaterThanOrEqual(app.buttons.matching(NSPredicate(format: "label == %@", "Add reaction")).count, 2, "fixture includes long and empty reaction rows")
+        let hoverTargetID = "chan00000001m01"
+        let target = app.descendants(matching: .any)["message-row-\(hoverTargetID)"]
+        XCTAssertTrue(target.waitForExistence(timeout: 5))
+        target.hover()
+        XCTAssertTrue(app.buttons["add-reaction-\(hoverTargetID)"].waitForExistence(timeout: 2), "Message controls appear on hover")
         #else
         XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label == %@", "Add reaction")).count, 0, "iPhone must not show an add-reaction button under each message")
         #endif
@@ -275,11 +319,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed)
         #endif
         try openReactionPicker(for: targetID, in: app)
-        #if os(iOS)
         let search = app.textFields["reaction-picker-search"]
-        #else
-        let search = app.searchFields.firstMatch
-        #endif
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         capture("reaction-picker-open-fixture", app: app)
         // Retapping until focus succeeds can hide a dismiss/re-present loop.
@@ -288,6 +328,142 @@ final class CaperParityUITests: XCTestCase {
         search.typeText("definitely-no-such-emoji")
         XCTAssertTrue(app.descendants(matching: .any)["reaction-picker-empty"].waitForExistence(timeout: 5))
         capture("reaction-picker-empty-fixture", app: app)
+    }
+
+    #if os(macOS)
+    func testReactionPickerIsCompactAndDismissesOutsideAndWithEscape() throws {
+        let app = launch(fixture: "reaction-chips")
+        let targetID = "chan00000001m01"
+        try openReactionPicker(for: targetID, in: app)
+        let picker = try require(app.descendants(matching: .any)["reaction-picker"], timeout: 5,
+                                 "The picker must expose its bounded content")
+        let search = try require(app.textFields["reaction-picker-search"], timeout: 5, "Missing emoji search")
+        let size = picker.frame.size
+        XCTAssertEqual(size.width, 352, accuracy: 1)
+        XCTAssertEqual(size.height, 420, accuracy: 1)
+        let grid = try require(app.scrollViews["reaction-picker-grid"], timeout: 5, "The catalog must scroll inside the picker")
+        XCTAssertLessThan(grid.frame.height, size.height)
+        XCTAssertTrue(grid.buttons.firstMatch.isHittable)
+        XCTAssertTrue(try require(picker.buttons["Cancel"], timeout: 5, "Cancel must be inside the popover").isHittable)
+        capture("reaction-picker-compact-catalog-fixture", app: app)
+        search.tap()
+        XCTAssertTrue(hasKeyboardFocus(search))
+        search.typeText("definitely-no-such-emoji")
+        try require(app.descendants(matching: .any)["reaction-picker-empty"], timeout: 5, "Missing empty search state")
+        XCTAssertEqual(picker.frame.width, size.width, accuracy: 1)
+        XCTAssertEqual(picker.frame.height, size.height, accuracy: 1)
+        XCTAssertTrue(picker.buttons["Cancel"].isHittable, "Empty results must leave Cancel available")
+        capture("reaction-picker-compact-empty-fixture", app: app)
+
+        // Click a real control outside, rather than cancelling the sheet.
+        let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 5, "Missing composer")
+        XCTAssertFalse(picker.frame.intersects(composer.frame), "The compact picker must leave the composer available")
+        composer.tap()
+        let outsideClosed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: picker)
+        XCTAssertEqual(XCTWaiter.wait(for: [outsideClosed], timeout: 5), .completed)
+        XCTAssertFalse(search.exists)
+
+        try openReactionPicker(for: targetID, in: app)
+        try require(search, timeout: 5, "Outside dismissal must allow reopening")
+        XCTAssertEqual(search.value as? String, "", "Reopening must clear the old query")
+        app.typeKey(.escape, modifierFlags: [])
+        let escapeClosed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: picker)
+        XCTAssertEqual(XCTWaiter.wait(for: [escapeClosed], timeout: 5), .completed)
+    }
+
+    func testReactionFocusDoesNotOutlineUnrelatedButtons() throws {
+        let app = launch(fixture: "reaction-chips")
+        let targetID = "chan00000001m01"
+        let reactions = try require(app.descendants(matching: .any)["reaction-row-\(targetID)"], timeout: 10,
+                                    "Missing fixture reactions")
+        let own = try require(reactions.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "👍 reaction")).firstMatch,
+                              timeout: 5, "Missing selected fixture chip")
+        let other = try require(reactions.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "❤️ reaction")).firstMatch,
+                                timeout: 5, "Missing unselected fixture chip")
+        XCTAssertTrue(own.label.hasSuffix(", selected by you"))
+        XCTAssertTrue(other.label.hasSuffix(", not selected by you"))
+        try openReactionPicker(for: targetID, in: app)
+        try require(app.buttons["Cancel"], timeout: 5, "Missing picker Cancel").tap()
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),
+                                               object: app.descendants(matching: .any)["reaction-picker"])
+        XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
+        let unrelatedRow = try require(app.descendants(matching: .any)["message-row-chan00000001m02"], timeout: 5,
+                                       "Missing unrelated hover target")
+        unrelatedRow.hover()
+        let unrelatedAdd = try require(app.buttons["add-reaction-chan00000001m02"], timeout: 5,
+                                       "Hovering another message did not reveal Add reaction")
+
+        // Accessibility focus alone cannot detect the bug: the old modifier
+        // painted inherited timeline focus around every otherwise valid button.
+        let window = app.windows.firstMatch
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: window.screenshot().pngRepresentation))
+        let scaleX = CGFloat(bitmap.pixelsWide) / window.frame.width
+        let scaleY = CGFloat(bitmap.pixelsHigh) / window.frame.height
+        func hasTerracottaOutline(_ element: XCUIElement) throws -> Bool {
+            XCTAssertTrue(element.isHittable)
+            let x = Int((element.frame.midX - window.frame.minX) * scaleX)
+            // Sample only the straight top border, away from emoji artwork.
+            let y = Int((element.frame.minY - window.frame.minY) * scaleY)
+            for offset in -1...2 {
+                let color = try XCTUnwrap(bitmap.colorAt(x: x, y: y + offset)?.usingColorSpace(.sRGB))
+                if color.redComponent > 0.6 && color.redComponent - color.greenComponent > 0.25 {
+                    return true
+                }
+            }
+            return false
+        }
+        XCTAssertTrue(try hasTerracottaOutline(own), "Your selected reaction must keep its terracotta outline (also calibrates pixel coordinates)")
+        XCTAssertFalse(try hasTerracottaOutline(other), "An unselected chip must not inherit another control's focus ring")
+        XCTAssertFalse(try hasTerracottaOutline(unrelatedAdd), "Focusing one add-reaction button must not highlight another message's button")
+        capture("reaction-focus-isolated-fixture", app: app)
+    }
+    #endif
+
+    private func waitForLabel(_ element: XCUIElement, _ text: String, _ message: String,
+                              timeout: TimeInterval = 5, line: UInt = #line) {
+        let named = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@ OR value == %@", text, text), object: element)
+        XCTAssertEqual(XCTWaiter.wait(for: [named], timeout: timeout), .completed,
+                       "\(message); found \(element.exists ? element.label : "nothing")", line: line)
+    }
+
+    /// Who reacted, from the reaction-chips fixture's locally served lists
+    /// (its chips carry local-only authors the fixture server cannot name):
+    /// hovering a chip on macOS, holding one on iPhone.
+    func testWhoReactedTooltipAndSheetFixture() throws {
+        let app = launch(fixture: "reaction-chips")
+        let targetID = "chan00000001m01"
+        // Scope to this message's reactions: a macOS Touch Bar can repeat controls.
+        let reactions = try require(app.descendants(matching: .any)["reaction-row-\(targetID)"], timeout: 10,
+                                    "Missing reaction-row-\(targetID)")
+        let chip = try require(reactions.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "👍 reaction")).firstMatch,
+                               timeout: 10, "Missing the 👍 chip on \(targetID)")
+        XCTAssertTrue(chip.label.hasSuffix(", selected by you"), "The fixture's 👍 includes your own reaction")
+        #if os(macOS)
+        chip.hover()
+        let tooltip = try require(app.descendants(matching: .any)["reaction-tooltip"], timeout: 5,
+                                  "Hovering a reaction chip did not show who reacted")
+        waitForLabel(tooltip, "You and TEST FIXTURE Other reacted with :thumbs-up:", "The tooltip must name who reacted")
+        capture("reaction-tooltip-fixture", app: app)
+        #else
+        chip.press(forDuration: 0.8)
+        let sheet = try require(app.descendants(matching: .any)["reactors-sheet"], timeout: 5,
+                                "Holding a reaction chip did not open who reacted")
+        XCTAssertFalse(app.descendants(matching: .any)["message-actions-sheet"].exists, "Holding a chip must not open message actions")
+        try require(sheet.descendants(matching: .any)["reactor-row-fixture-other"], timeout: 5, "The sheet did not list TEST FIXTURE Other")
+        XCTAssertTrue(sheet.descendants(matching: .any)["reactor-row-owner0000001"].exists, "The sheet must list your own reaction")
+        let emojiName = sheet.descendants(matching: .any)["reactors-emoji-name"]
+        waitForLabel(emojiName, ":thumbs-up:", "The held emoji's tab must be selected")
+        capture("reactors-sheet-fixture", app: app)
+        try require(sheet.descendants(matching: .any)["reactors-tab-😂"], timeout: 2, "Missing the 😂 tab").tap()
+        waitForLabel(emojiName, ":face-with-tears-of-joy:", "Choosing a tab must show its people")
+        let ownGone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),
+                                                object: sheet.descendants(matching: .any)["reactor-row-owner0000001"])
+        XCTAssertEqual(XCTWaiter.wait(for: [ownGone], timeout: 5), .completed, "Only TEST FIXTURE Other reacted with 😂")
+        try require(app.navigationBars.buttons["Done"].firstMatch, timeout: 2, "The sheet has no Done button").tap()
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: sheet)
+        XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
+        XCTAssertTrue(chip.label.hasSuffix(", selected by you"), "Holding a chip must not toggle the reaction")
+        #endif
     }
 
     private nonisolated static func fixtureControl(_ body: [String: Any]) async throws {
@@ -310,11 +486,7 @@ final class CaperParityUITests: XCTestCase {
         let row = try require(app.descendants(matching: .any)["message-row-\(targetID)"], timeout: 30,
                               "Missing message-row-\(targetID)")
         try openReactionPicker(for: targetID, in: app)
-        #if os(iOS)
         let search = app.textFields["reaction-picker-search"]
-        #else
-        let search = app.searchFields.firstMatch
-        #endif
         try require(search, timeout: 5, "The reaction picker search field never appeared")
         search.tap()
         XCTAssertTrue(hasKeyboardFocus(search), "One tap must focus search without reopening the sheet")
@@ -417,7 +589,7 @@ final class CaperParityUITests: XCTestCase {
     func testStableChannelRowsAndOwnerSettingsMenu() {
         let app = launch()
         #if os(iOS)
-        app.buttons["Browse"].tap()
+        app.buttons["Back to Browse"].tap()
         #endif
         let general = app.buttons["channel-chan00000001"]
         let design = app.buttons["channel-chan00000002"]
@@ -473,7 +645,7 @@ final class CaperParityUITests: XCTestCase {
         assertElement("selected-channel-name", label: "# general", in: app)
         XCTAssertFalse(app.buttons["Leave channel"].exists, "Leave must not appear in the chat header")
         #if os(iOS)
-        app.buttons["Browse"].tap()
+        app.buttons["Back to Browse"].tap()
         #endif
         let options = app.descendants(matching: .any)["channel-options-chan00000002"]
         XCTAssertTrue(options.waitForExistence(timeout: 10))
@@ -495,7 +667,7 @@ final class CaperParityUITests: XCTestCase {
         let app = launch()
         assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app)
         #if os(iOS)
-        app.buttons["Browse"].tap()
+        app.buttons["Back to Browse"].tap()
         #endif
         let stack = app.buttons["voice-stack-chan00000002"]
         XCTAssertTrue(stack.waitForExistence(timeout: 10), "The fixture's design-channel occupants must be visible without joining")
@@ -547,7 +719,7 @@ final class CaperParityUITests: XCTestCase {
     func testCompactActiveRosterAudioMenuAndCollapsedCallContextFixture() {
         let app = launch(fixture: "voice-roster")
         #if os(iOS)
-        app.buttons["Browse"].tap()
+        app.buttons["Back to Browse"].tap()
         #endif
         let context = app.descendants(matching: .any)["active-voice-context"]
         XCTAssertTrue(context.waitForExistence(timeout: 10))
@@ -934,7 +1106,7 @@ final class CaperParityUITests: XCTestCase {
         assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app)
         XCTAssertFalse(app.buttons["join-voice-button"].exists, "Web joins voice from the channel list, not the chat header")
         #if os(iOS)
-        app.buttons["Browse"].tap()
+        app.buttons["Back to Browse"].tap()
         #endif
         let join = app.buttons["join-voice-chan00000001"]
         XCTAssertTrue(join.waitForExistence(timeout: 5))
@@ -1072,7 +1244,7 @@ final class CaperParityUITests: XCTestCase {
     func testProfileEditRetainsRejectedValuesAndRetries() async throws {
         let app = launch()
         #if os(iOS)
-        app.buttons["Browse"].tap()
+        app.buttons["Back to Browse"].tap()
         #endif
         let account = app.buttons["account-profile"]
         XCTAssertTrue(account.waitForExistence(timeout: 10))
@@ -1189,7 +1361,7 @@ final class CaperParityUITests: XCTestCase {
             ("audio-statistics", "TEST FIXTURE — synthetic statistics layout; no voice connection.", "ios-audio-statistics-fixture"),
         ] {
             let app = launch(fixture: fixture)
-            app.buttons["Browse"].tap()
+            app.buttons["Back to Browse"].tap()
             let settings = app.descendants(matching: .any)["account-settings-menu"]
             XCTAssertTrue(settings.waitForExistence(timeout: 5))
             let frame = settings.frame, window = app.windows.firstMatch.frame
@@ -1301,7 +1473,7 @@ final class CaperParityUITests: XCTestCase {
         capture("manage-space-pending-invitation", app: app)
         app.buttons["Close"].firstMatch.tap()
         XCTAssertFalse(app.textFields["Exact username"].exists)
-        XCTAssertTrue(app.buttons["Browse"].exists || app.buttons["account-profile"].isHittable)
+        XCTAssertTrue(app.buttons["Back to Browse"].exists || app.buttons["account-profile"].isHittable)
     }
 
     func testManageSpaceCanDismissOnOutsideTap() {
@@ -1326,23 +1498,49 @@ final class CaperParityUITests: XCTestCase {
     #if os(iOS)
     func testNarrowConversationAndBrowse() {
         let app = launch()
-        let navigation = app.buttons["Browse"]
+        let navigation = app.buttons["Back to Browse"]
         XCTAssertTrue(navigation.waitForExistence(timeout: 10))
         assertStaticText("Fixture Owner", in: app)
         let channel = app.descendants(matching: .any)["selected-channel-name"]
-        XCTAssertGreaterThan(channel.frame.minX, navigation.frame.maxX, "Web's labelled Browse toggle leads the channel title")
-        XCTAssertGreaterThanOrEqual(navigation.frame.width, 44, "Keep the menu touch target accessible")
-        let members = app.buttons["Show member list"]
-        XCTAssertTrue(members.exists)
-        XCTAssertGreaterThan(members.frame.minX, app.frame.midX, "Members belongs on the right of the header")
+        XCTAssertGreaterThan(channel.frame.minX, navigation.frame.maxX, "Back arrow leads the channel menu")
+        XCTAssertGreaterThanOrEqual(navigation.frame.width, 44, "Keep the back touch target accessible")
+        XCTAssertFalse(app.buttons["Show member list"].exists, "Mobile Members belongs in the channel dropdown")
+        XCTAssertFalse(app.buttons["channel-pins"].exists, "Mobile Pins belongs in the channel dropdown")
+        let composer = app.descendants(matching: .any)["message-composer"]
+        composer.tap(); composer.typeText("Draft survives Browse")
+        let timeline = app.descendants(matching: .any)["chat-timeline"]
+        let start = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.5))
+        start.press(forDuration: 0.01, thenDragTo: timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.2)), withVelocity: .fast, thenHoldForDuration: 0)
+        XCTAssertTrue(navigation.isHittable, "A vertical scroll must stay in chat")
+        start.press(forDuration: 0.01, thenDragTo: timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
+        XCTAssertTrue(app.buttons["Close navigation"].waitForExistence(timeout: 3), "Swipe right from the timeline edge opens Browse")
+        let browser = app.descendants(matching: .any)["channel-browser"]
+        browser.coordinate(withNormalizedOffset: CGVector(dx: 0.97, dy: 0.5)).press(forDuration: 0.01,
+            thenDragTo: browser.coordinate(withNormalizedOffset: CGVector(dx: 0.4, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
+        XCTAssertTrue(navigation.waitForExistence(timeout: 3), "Swipe left from Browse's edge returns to chat")
+        XCTAssertEqual(composer.value as? String, "Draft survives Browse")
         capture("narrow-conversation", app: app)
+        channel.tap()
+        let members = app.buttons["Members"]
+        XCTAssertTrue(members.waitForExistence(timeout: 2))
+        capture("narrow-channel-menu", app: app)
         members.tap()
         assertStaticText("Members", in: app, timeout: 2)
         capture("narrow-members", app: app)
-        let hideMembers = app.buttons["Hide member list"]
-        XCTAssertTrue(hideMembers.isHittable, "The open member panel must leave its toggle accessible")
         app.buttons["Close member list"].tap()
         XCTAssertEqual(staticTexts("Members", in: app).count, 0)
+        channel.tap()
+        let pins = app.buttons["channel-pins"]
+        XCTAssertTrue(pins.waitForExistence(timeout: 2))
+        pins.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["pinned-messages"].waitForExistence(timeout: 3))
+        assertStaticText("No pinned messages", in: app, timeout: 2)
+        capture("narrow-empty-pins", app: app)
+        app.buttons["Messages"].tap()
+        XCTAssertTrue(navigation.waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["channel-pins"].exists, "Dismissing Pins restores the clean header")
+        XCTAssertEqual(composer.value as? String, "Draft survives Browse")
+        channel.tap()
         members.tap()
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.5)).tap()
         XCTAssertEqual(staticTexts("Members", in: app).count, 0)
