@@ -99,6 +99,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import java.util.Locale
+import kotlin.math.abs
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -267,6 +268,7 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
     viewModel: CaperViewModel,
 ) {
     var channelsExpanded by rememberSaveable { mutableStateOf(true) }
+    val conversationState = rememberSaveableStateHolder()
     val context = LocalContext.current
     val latestState by rememberUpdatedState(state)
     var pendingVoiceJoin by remember(viewModel.accountEpoch, viewModel.spaceAccessEpoch, state.selectedSpace?.space?.id) { mutableStateOf<VoiceJoinIntent?>(null) }
@@ -330,12 +332,15 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
                         Row(Modifier.weight(1f)) {
                             SpaceRail(state, viewModel, show, Modifier.width(60.dp))
                             ChannelSidebar(state, voice, viewModel, show,
-                                Modifier.weight(1f).padding(top = 8.dp, end = 8.dp).clip(RoundedCornerShape(16.dp)),
+                                Modifier.weight(1f).padding(top = 8.dp, end = 8.dp).clip(RoundedCornerShape(16.dp))
+                                    .browseSwipe(open = true, enabled = state.selectedChannel != null) { setNavigationOpen(it) },
                                 channelsExpanded, { channelsExpanded = it }, joinVoice, pendingVoiceJoin, voicePermissionError,
                                 { voicePermissionError = null }, showAccountBar = false) { setNavigationOpen(false) }
                         }
                         AccountBar(state, voice, viewModel, show)
-                    } else Conversation(state, voice, viewModel, show, true, membersVisible, { membersVisible = !membersVisible }, voicePermissionError) { setNavigationOpen(true) }
+                    } else conversationState.SaveableStateProvider(state.selectedChannel?.id ?: "empty") {
+                        Conversation(state, voice, viewModel, show, true, membersVisible, { membersVisible = !membersVisible }, voicePermissionError) { setNavigationOpen(true) }
+                    }
                     if (membersVisible && !navigationOpen && state.selectedChannel?.joined == true && state.selectedDirectId == null) {
                         Box(Modifier.fillMaxSize().padding(top = 54.dp).clickable(
                             interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
@@ -361,6 +366,32 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
         }
     }
 }
+
+// Only the timeline/sidebar uses this gesture; the composer and audio controls
+// keep their native drags. Consumed moves belong to scrolling, selection or a slider.
+private fun Modifier.browseSwipe(open: Boolean, enabled: Boolean, onOpenChange: (Boolean) -> Unit): Modifier =
+    if (!enabled) this else pointerInput(open) {
+        val threshold = 64.dp.toPx()
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            var rejected = false
+            var horizontal = false
+            do {
+                val event = awaitPointerEvent()
+                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                val dx = change.position.x - down.position.x
+                val dy = change.position.y - down.position.y
+                if (event.changes.size != 1 || change.isConsumed || change.uptimeMillis - down.uptimeMillis > 600 ||
+                    abs(dy) > maxOf(viewConfiguration.touchSlop, abs(dx))) rejected = true
+                if (!rejected && abs(dx) > viewConfiguration.touchSlop && abs(dx) > abs(dy) * 2 &&
+                    (if (open) dx < 0 else dx > 0)) horizontal = true
+                if (horizontal && !rejected) {
+                    change.consume() // Cancel a channel row's release click after a drag.
+                    if (!change.pressed && abs(dx) >= threshold && abs(dx) > abs(dy) * 2) onOpenChange(!open)
+                }
+            } while (event.changes.any { it.pressed })
+        }
+    }
 
 @Composable private fun SpaceRail(state: AppUiState, viewModel: CaperViewModel, show: (Overlay) -> Unit, modifier: Modifier = Modifier) {
     Column(modifier.fillMaxHeight().background(Blackout).verticalScroll(rememberScrollState()).padding(vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -985,7 +1016,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 ) {
     val channel = state.selectedChannel
     if (channel == null) return EmptyChannel(state, narrow, show, openNavigation, modifier)
-    var draft by remember(channel.id) { mutableStateOf(TextFieldValue("")) }
+    var draft by rememberSaveable(channel.id, stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("")) }
+    var channelMenuOpen by remember(channel.id) { mutableStateOf(false) }
     var showingPins by remember(channel.id) { mutableStateOf(false) }
     val joined = channel.joined
     Column(modifier.fillMaxHeight().background(SurfaceConversation)) {
@@ -994,15 +1026,30 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         var showConnection by remember(channel.id) { mutableStateOf(false) }
         LaunchedEffect(live, channel.id) { showConnection = false; if (!live) { kotlinx.coroutines.delay(1_000); showConnection = true } }
         Row(Modifier.fillMaxWidth().height(53.dp).padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            // Web: narrow screens show a bordered Menu + "Browse" toggle before the title.
-            if (narrow) BrowseButton("Browse", R.drawable.lucide_menu, openNavigation)
-            Text(if (channel.direct) channel.name else "# ${channel.name}", Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            TextButton({ showingPins = !showingPins }, Modifier.heightIn(min = 48.dp)) {
+            if (narrow) IconButton(openNavigation, Modifier.size(44.dp)) {
+                Icon(painterResource(R.drawable.lucide_arrow_right), "Back to Browse", Modifier.size(20.dp).graphicsLayer { rotationZ = 180f }, tint = TextMuted)
+            }
+            if (narrow) Box(Modifier.weight(1f)) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
+                    .clickable(role = Role.Button) { channelMenuOpen = true }
+                    .semantics(mergeDescendants = true) { contentDescription = "${if (channel.direct) "" else "# "}${channel.name} channel menu" }, verticalAlignment = Alignment.CenterVertically) {
+                    Text(if (channel.direct) channel.name else "# ${channel.name}", Modifier.weight(1f, fill = false), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Icon(painterResource(R.drawable.lucide_chevron_down), null, Modifier.size(16.dp), tint = TextMuted)
+                }
+                DropdownMenu(channelMenuOpen, { channelMenuOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+                    DropdownMenuItem(text = { Text(if (showingPins) "Messages" else "Pins (${state.pinnedMessages.size})") },
+                        onClick = { channelMenuOpen = false; showingPins = !showingPins })
+                    if (!channel.direct && joined) DropdownMenuItem(text = { Text(if (membersVisible) "Hide member list" else "Members") },
+                        leadingIcon = { Icon(painterResource(R.drawable.lucide_users), null) },
+                        onClick = { channelMenuOpen = false; toggleMembers() })
+                }
+            } else Text(if (channel.direct) channel.name else "# ${channel.name}", Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (!narrow) TextButton({ showingPins = !showingPins }, Modifier.heightIn(min = 48.dp)) {
                 Text(if (showingPins) "Messages" else "Pins (${state.pinnedMessages.size})", fontSize = 11.sp, fontWeight = FontWeight.Bold)
             }
             if (!channel.direct && !joined) Button({ viewModel.joinChannel(channel) }, enabled = !state.busy, shape = MaterialTheme.shapes.small) { Text("Join channel") }
             if (!live && showConnection) Text(if (state.gateway == GatewayStatus.ERROR || state.messagesError != null) "Offline" else "Connecting…", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-            if (!channel.direct && joined) IconButton(toggleMembers, Modifier.size(36.dp)) { Icon(painterResource(R.drawable.lucide_users), if (membersVisible) "Hide member list" else "Show member list", tint = if (membersVisible) Text else TextMuted) }
+            if (!narrow && !channel.direct && joined) IconButton(toggleMembers, Modifier.size(36.dp)) { Icon(painterResource(R.drawable.lucide_users), if (membersVisible) "Hide member list" else "Show member list", tint = if (membersVisible) Text else TextMuted) }
         }
         HorizontalDivider(color = Border)
         if (!joined) Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
@@ -1028,7 +1075,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         // Web shows a pending message's status inline, under the message itself.
         val channelPending = state.pendingMessage?.takeIf { it.threadRootId == null }
         if (showingPins) PinnedMessages(state, viewModel, Modifier.weight(1f))
-        else MessageTimeline(state, viewModel, Modifier.weight(1f)) {
+        else MessageTimeline(state, viewModel, Modifier.weight(1f).browseSwipe(open = false, enabled = narrow && !membersVisible && !channelMenuOpen, onOpenChange = { openNavigation() })) {
             channelPending?.error?.let { pending ->
                 val editable = canEditRejectedMessage(draft.text, channelPending.text)
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1210,6 +1257,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 @Composable private fun MessageTimeline(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, inThread: Boolean = false, pendingStatus: @Composable () -> Unit = {}) {
     var actionTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var pickerTarget by remember { mutableStateOf<ChatMessage?>(null) }
+    var forwardTarget by remember { mutableStateOf<ChatMessage?>(null) }
+    var conversationTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var editTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var historyTarget by remember { mutableStateOf<ChatMessage?>(null) }
     // Message ID and the pressed chip's emoji.
@@ -1222,6 +1271,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         pickerTarget = null
         reactorsTarget = null
         mentionTarget = null
+        forwardTarget = null
+        conversationTarget = null
         editTarget = null
         historyTarget = null
     }
@@ -1263,6 +1314,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 openReactors = { target, emoji -> reactorsTarget = target.id to emoji },
                 openMention = { mentionTarget = it },
                 openActions = { actionTarget = it },
+                openConversation = { conversationTarget = it },
                 openHistory = { historyTarget = it },
                 retryPin = viewModel::retryPin,
                 dismissPinError = viewModel::dismissPinError,
@@ -1298,6 +1350,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             openPicker = { actionTarget = null; pickerTarget = presented },
             setPin = { id, active -> viewModel.setPin(id, active); actionTarget = null },
             onReply = { actionTarget = null; viewModel.openThread(presented.threadRootId ?: presented.id) },
+            forward = { actionTarget = null; forwardTarget = presented },
             onEdit = if (viewModel.canEdit(presented)) ({ actionTarget = null; editTarget = presented }) else null,
             onHistory = { actionTarget = null; historyTarget = presented },
         )
@@ -1305,6 +1358,11 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     editTarget?.let { target ->
         if (viewModel.canEdit(target)) MessageEditorDialog(target, viewModel) { editTarget = null }
         else LaunchedEffect(target.id) { editTarget = null }
+    }
+    forwardTarget?.let { target -> key(target.id) { ForwardPickerSheet(target, viewModel) { forwardTarget = null } } }
+    conversationTarget?.let { target ->
+        val current = state.messages.firstOrNull { it.id == target.id }
+        if (current != null) key(target.id) { ForwardConversationSheet(current, viewModel) { conversationTarget = null } }
     }
     historyTarget?.let { target ->
         MessageHistoryDialog(state.messages.find { it.id == target.id } ?: target, viewModel) { historyTarget = null }
@@ -1354,6 +1412,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     openReactors: (ChatMessage, String) -> Unit,
     retryPin: (String) -> Unit = {},
     dismissPinError: (String) -> Unit = {},
+    openConversation: (ChatMessage) -> Unit = {},
     openHistory: (ChatMessage) -> Unit = {},
     openMention: (MessageMention) -> Unit = {},
     openActions: (ChatMessage) -> Unit,
@@ -1374,7 +1433,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             onClick = {},
             onLongClick = { openActions(message) },
             onLongClickLabel = "Message actions for ${message.author.name}",
-        )) { MessageRow(message, openMention, { mentionCard(it.id, it.username.orEmpty(), state).title }) { openHistory(message) } }
+        )) { MessageRow(message, openMention, { mentionCard(it.id, it.username.orEmpty(), state).title }) { if (message.forward == null) openHistory(message) } }
+        ForwardCard(message) { openConversation(message) }
         FlowRow(Modifier.padding(start = 62.dp, end = 18.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             message.reactions.forEach { reaction ->
                 val selected = own != null && own in reaction.authorIds
@@ -1415,6 +1475,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     openPicker: () -> Unit,
     setPin: (String, Boolean) -> Unit = { _, _ -> },
     onReply: (() -> Unit)? = null,
+    forward: () -> Unit = {},
     onEdit: (() -> Unit)? = null,
     onHistory: (() -> Unit)? = null,
 ) {
@@ -1449,6 +1510,10 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
             }
             Surface(shape = MaterialTheme.shapes.small, color = Surface) {
                 Column {
+                    if (state.account != null && (message.forward == null || message.forward.message != null)) {
+                        TextButton(forward, Modifier.fillMaxWidth().heightIn(min = 48.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) { Text("Forward message", Modifier.fillMaxWidth()) }
+                        HorizontalDivider(color = Border)
+                    }
                     if (canReact) {
                         val saving = state.pinSaves[message.id]?.saving == true
                         TextButton({ setPin(message.id, message.pin == null) }, enabled = !saving, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) {
@@ -1458,7 +1523,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                     }
                     onReply?.let { TextButton(it, Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("Reply in thread", Modifier.fillMaxWidth()) }; HorizontalDivider(color = Border) }
                     onEdit?.let { TextButton(it, Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("Edit message", Modifier.fillMaxWidth()) }; HorizontalDivider(color = Border) }
-                    if (message.revision > 1) onHistory?.let { TextButton(it, Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("View edit history", Modifier.fillMaxWidth()) }; HorizontalDivider(color = Border) }
+                    if (message.forward == null && message.revision > 1) onHistory?.let { TextButton(it, Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("View edit history", Modifier.fillMaxWidth()) }; HorizontalDivider(color = Border) }
                     TextButton({ copy("Message text", message.content.text) }, Modifier.fillMaxWidth().heightIn(min = 48.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) { Text("Copy text", Modifier.fillMaxWidth()) }
                     HorizontalDivider(color = Border)
                     TextButton({ copy("Message ID", message.id) }, Modifier.fillMaxWidth().heightIn(min = 48.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) { Text("Copy message ID", Modifier.fillMaxWidth()) }
@@ -1469,9 +1534,10 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
 }
 
 @Composable private fun PinnedMessages(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier) {
+    var conversationTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var editTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var historyTarget by remember { mutableStateOf<ChatMessage?>(null) }
-    LaunchedEffect(state.account?.id, state.selectedChannel?.id, state.selectedDirectId) { editTarget = null; historyTarget = null }
+    LaunchedEffect(state.account?.id, state.selectedChannel?.id, state.selectedDirectId) { conversationTarget = null; editTarget = null; historyTarget = null }
     LazyColumn(modifier.fillMaxWidth(), contentPadding = PaddingValues(vertical = 10.dp)) {
         item {
             Text("Pinned messages", Modifier.padding(horizontal = 18.dp, vertical = 8.dp), fontWeight = FontWeight.Bold, fontSize = 15.sp)
@@ -1483,7 +1549,8 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
             Column(Modifier.background(PinGoldWash)) {
                 message.pin?.let { Text("Pinned by ${it.author.name}", Modifier.padding(start = 62.dp, end = 18.dp, top = 4.dp), color = PinGold, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
                 Text(fullDateLabel(message.createdAt), Modifier.padding(start = 62.dp, end = 18.dp), color = TextMuted, fontSize = 10.sp)
-                MessageRow(message) { historyTarget = message }
+                MessageRow(message) { if (message.forward == null) historyTarget = message }
+                ForwardCard(message) { conversationTarget = message }
                 if (viewModel.canEdit(message)) TextButton({ editTarget = message }, Modifier.padding(start = 62.dp)) { Text("Edit message") }
                 if (state.selectedChannel?.joined == true && (state.chatAuthorId ?: state.account?.id) != null) {
                     val saving = state.pinSaves[message.id]?.saving == true
@@ -1499,6 +1566,11 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                     }
                 }
             }
+        }
+    }
+    conversationTarget?.let { target ->
+        state.pinnedMessages.firstOrNull { it.id == target.id }?.let { current ->
+            key(target.id) { ForwardConversationSheet(current, viewModel) { conversationTarget = null } }
         }
     }
     editTarget?.let { target ->
@@ -1536,7 +1608,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     mentionLabel: (MessageMention) -> String = { "@${it.username}" }, openHistory: () -> Unit = {},
 ) = MessageRow(
     message.author.name, message.author.isGuest, message.createdAt, message.content.text, false, message.author.avatarId,
-    message.revision > 1, openHistory, highlightedMentions(message.content.text, message.content.mentions), message.content.mentions, openMention, mentionLabel,
+    message.forward == null && message.revision > 1, openHistory, highlightedMentions(message.content.text, message.content.mentions), message.content.mentions, openMention, mentionLabel,
 )
 @Composable private fun MessageRow(
     author: String, guest: Boolean, createdAt: String, text: String, pending: Boolean, avatarId: Int? = null,

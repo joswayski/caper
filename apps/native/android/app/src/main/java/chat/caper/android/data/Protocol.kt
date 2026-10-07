@@ -17,7 +17,7 @@ internal fun ChatMessage.validated(
     require(this.channelId == channelId) { "Message channel mismatch." }
     require(sequencePattern.matches(seq) && runCatching { BigInteger(seq) }.isSuccess) { "Invalid message sequence." }
     require(content.version == 1 && content.type == "text") { "Unsupported message content." }
-    require(content.text.isNotEmpty() && content.text.codePointCount(0, content.text.length) <= 4000) { "Invalid message text." }
+    require((content.text.isNotEmpty() || forward != null) && content.text.codePointCount(0, content.text.length) <= 4000) { "Invalid message text." }
     require(content.text.none { it.isISOControl() && it != '\n' && it != '\t' }) { "Invalid message text." }
     require(runCatching { Instant.parse(createdAt) }.isSuccess) { "Invalid message timestamp." }
     require(revision >= 1) { "Invalid content revision." }
@@ -27,6 +27,12 @@ internal fun ChatMessage.validated(
         require(editSeq != null && sequencePattern.matches(editSeq) && BigInteger(editSeq) > BigInteger(seq)) { "Invalid edit sequence." }
     }
     pinSeq?.let { require(sequencePattern.matches(it) && runCatching { BigInteger(it) }.isSuccess) { "Invalid pin sequence." } }
+    forwardSeq?.let { require(sequencePattern.matches(it)) { "Invalid forward sequence." } }
+    forward?.let {
+        require(sequencePattern.matches(it.seq)) { "Invalid original sequence." }
+        require(it.message?.forward == null) { "Forward chain is not flattened." }
+        it.message?.let { original -> original.validated(original.channelId) }
+    }
     pin?.let {
         require(it.author.id.isNotEmpty() && it.author.name.isNotEmpty()) { "Invalid pin author." }
         require(runCatching { Instant.parse(it.createdAt) }.isSuccess) { "Invalid pin timestamp." }

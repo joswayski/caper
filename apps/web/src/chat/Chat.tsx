@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, MoreHorizontal, Pin } from "lucide-react";
+import { ArrowLeft, ChevronDown, MoreHorizontal, Pin } from "lucide-react";
 import { Virtuoso, type VirtuosoHandle, type ListProps, type ContextProp } from "react-virtuoso";
 import { ChatClient, initialChatView } from "./client.ts";
 import MessageReactions, { type ReactionSave } from "./MessageReactions.tsx";
@@ -9,6 +9,7 @@ import ThreadPanel from "./ThreadPanel.tsx";
 import MessageEditor from "./MessageEditor.tsx";
 import MessageHistory from "./MessageHistory.tsx";
 import { MessageSquare } from "lucide-react";
+import { ForwardCard, ForwardConversation, ForwardPicker, type ForwardTarget } from "./Forwarding.tsx";
 import { dateDivider } from "./dates.ts";
 import { isChannelMessage, type ChatAuthor, type GeneralChatHistory } from "./types.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
@@ -55,15 +56,26 @@ function MessageList({ context, children, ...props }: ListProps & ContextProp<Hi
 const listComponents = { Header: HistoryHeader, List: MessageList };
 const measureItem = (element: HTMLElement, field: "offsetHeight" | "offsetWidth") => element[field];
 
-export default function Chat({ name, signedIn, identityReady, channelId, channelName: expectedChannelName, direct = false, onReadCursor, initialHistory, initialHistoryError, showTitle = false, headerActions, readOnly = false, composerNotice, messageSounds = true, onAuthorChange, onHistoryChange, onLocalPresenceChange, onOnlineChange, mentionMembers, mentionDirectory = [], onMessagePerson }: { name: string; signedIn: boolean; identityReady: boolean; channelId?: string; channelName?: string; direct?: boolean; onReadCursor?: (seq: string) => void; initialHistory?: GeneralChatHistory; initialHistoryError?: string; showTitle?: boolean; headerActions?: ReactNode; readOnly?: boolean; composerNotice?: ReactNode; messageSounds?: boolean; onAuthorChange?: (author: ChatAuthor) => void; onHistoryChange?: (history: GeneralChatHistory) => void; onLocalPresenceChange?: (status: PresenceStatus) => void; onOnlineChange?: (online: boolean) => void; /** People `@` can suggest; undefined until loaded. */ mentionMembers?: MentionCandidate[]; /** Profile-card lookup, most specific first. */ mentionDirectory?: MentionCandidate[]; onMessagePerson?: (username: string) => Promise<void> }) {
+export default function Chat({ name, signedIn, identityReady, channelId, channelName: expectedChannelName, direct = false, onReadCursor, initialHistory, initialHistoryError, showTitle = false, headerLeading, channelMenu, headerActions, readOnly = false, composerNotice, messageSounds = true, onAuthorChange, onHistoryChange, onLocalPresenceChange, onOnlineChange, mentionMembers, mentionDirectory = [], onMessagePerson }: { name: string; signedIn: boolean; identityReady: boolean; channelId?: string; channelName?: string; direct?: boolean; onReadCursor?: (seq: string) => void; initialHistory?: GeneralChatHistory; initialHistoryError?: string; showTitle?: boolean; headerLeading?: ReactNode; channelMenu?: ReactNode; headerActions?: ReactNode; readOnly?: boolean; composerNotice?: ReactNode; messageSounds?: boolean; onAuthorChange?: (author: ChatAuthor) => void; onHistoryChange?: (history: GeneralChatHistory) => void; onLocalPresenceChange?: (status: PresenceStatus) => void; onOnlineChange?: (online: boolean) => void; /** People `@` can suggest; undefined until loaded. */ mentionMembers?: MentionCandidate[]; /** Profile-card lookup, most specific first. */ mentionDirectory?: MentionCandidate[]; onMessagePerson?: (username: string) => Promise<void> }) {
   const [state, setState] = useState(() => initialChatView(initialHistory, initialHistoryError));
   const [showConnectionStatus, setShowConnectionStatus] = useState(false);
   const [firstItemIndex, setFirstItemIndex] = useState(INITIAL_ITEM_INDEX);
   const [draft, setDraft] = useState("");
+  const channelMenuRef = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    const dismiss = (event: PointerEvent) => {
+      const menu = channelMenuRef.current;
+      if (menu && !menu.contains(event.target as Node)) menu.open = false;
+    };
+    document.addEventListener("pointerdown", dismiss);
+    return () => document.removeEventListener("pointerdown", dismiss);
+  }, []);
   const [validationError, setValidationError] = useState<string>();
   const clientRef = useRef<ChatClient | undefined>(undefined);
   const [actionTarget, setActionTarget] = useState<MessageActionTarget>();
   const [reactorsTarget, setReactorsTarget] = useState<ReactorsTarget>();
+  const [forwardTarget, setForwardTarget] = useState<ForwardTarget>();
+  const [conversationTarget, setConversationTarget] = useState<ForwardTarget>();
   const [editTarget, setEditTarget] = useState<string>();
   const [historyTarget, setHistoryTarget] = useState<string>();
   const [actionStatus, setActionStatus] = useState("");
@@ -79,6 +91,8 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     setActionTarget(undefined);
     setReactorsTarget(undefined);
     setMentionCard(undefined);
+    setForwardTarget(undefined);
+    setConversationTarget(undefined);
     setEditTarget(undefined);
     setHistoryTarget(undefined);
     setActionStatus("");
@@ -109,7 +123,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       window.removeEventListener("scroll", cancelPress, true);
     };
   }, [channelId]);
-  useEffect(() => { setActionTarget(undefined); setReactorsTarget(undefined); setEditTarget(undefined); setHistoryTarget(undefined); }, [state.author?.id, state.channelId]);
+  useEffect(() => { setActionTarget(undefined); setReactorsTarget(undefined); setForwardTarget(undefined); setConversationTarget(undefined); setEditTarget(undefined); setHistoryTarget(undefined); }, [state.author?.id, state.channelId]);
   useEffect(() => { if (readOnly) setEditTarget(undefined); }, [readOnly]);
   useEffect(() => { if (state.phase === "error") { setEditTarget(undefined); setHistoryTarget(undefined); } }, [state.phase]);
   const isTouchLayout = () => window.matchMedia("(max-width: 760px), (pointer: coarse)").matches;
@@ -142,10 +156,14 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   const findMessage = (id?: string) => state.messages.find((message) => message.id === id) ?? state.pinnedMessages.find((message) => message.id === id);
   const actionMessage = findMessage(actionTarget?.messageId);
   const reactorsMessage = state.messages.find((message) => message.id === reactorsTarget?.messageId);
+  const forwardMessage = state.messages.find((message) => message.id === forwardTarget?.messageId);
+  const conversationMessage = [...state.messages, ...state.pinnedMessages].find((message) => message.id === conversationTarget?.messageId);
+  const closeForward = useCallback(() => setForwardTarget(undefined), []);
+  const closeConversation = useCallback(() => setConversationTarget(undefined), []);
   const editMessage = findMessage(editTarget);
   const historyMessage = findMessage(historyTarget);
-  const openEdit = (messageId: string) => { setActionTarget(undefined); setHistoryTarget(undefined); setEditTarget(messageId); };
-  const openHistory = (messageId: string) => { setActionTarget(undefined); setEditTarget(undefined); setHistoryTarget(messageId); };
+  const openEdit = (messageId: string) => { if (findMessage(messageId)?.forward) return; setActionTarget(undefined); setHistoryTarget(undefined); setEditTarget(messageId); };
+  const openHistory = (messageId: string) => { if (findMessage(messageId)?.forward) return; setActionTarget(undefined); setEditTarget(undefined); setHistoryTarget(messageId); };
   const pin = async (messageId: string, active: boolean) => {
     const client = clientRef.current;
     if (!client || readOnly) return;
@@ -315,7 +333,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   useEffect(() => { onOnlineChange?.(state.online); }, [state.online, onOnlineChange]);
 
   useEffect(() => {
-    if (identityReady && !readOnly) clientRef.current?.identify(name, signedIn);
+    if (identityReady && (!readOnly || signedIn)) clientRef.current?.identify(name, signedIn);
   }, [identityReady, name, signedIn, readOnly]);
 
   useEffect(() => {
@@ -402,10 +420,10 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       <div className="chat-avatar"><Avatar avatarId={author?.avatarId} name={author?.name ?? name} /></div>
       <div>
         <header><strong>{author?.name ?? name}</strong>{author?.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt, timeFormatter) : ""}</time>
-          {"content" in message && (message.revision ?? 1) > 1 && <button type="button" className="chat-edited" title={message.editedAt ? `Edited ${new Date(message.editedAt).toLocaleString()}` : undefined} aria-label={`Message history, version ${message.revision}`} onClick={() => openHistory(message.id)}>edited</button>}
+          {"content" in message && !message.forward && (message.revision ?? 1) > 1 && <button type="button" className="chat-edited" title={message.editedAt ? `Edited ${new Date(message.editedAt).toLocaleString()}` : undefined} aria-label={`Message history, version ${message.revision}`} onClick={() => openHistory(message.id)}>edited</button>}
         </header>
         {!inThread && message.threadRootId && <button type="button" className="chat-thread-context" onClick={() => openThread(message.threadRootId!)}>Replied to a thread · View thread</button>}
-        <p>{"content" in message
+        {(!("content" in message) || message.content.text) && <p>{"content" in message
           ? mentionSegments(message.content.text, message.content.mentions).map((segment, part) => {
             if (!segment.mention) return segment.text;
             const user = segment.user;
@@ -419,8 +437,9 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
                 setMentionCard({ person: mentionCardPerson(user, mentionDirectory, state.author?.id), anchor: event.currentTarget, drawer: isTouchLayout() });
               }}>{segment.text}</button>;
           })
-          : message.text}</p>
+          : message.text}</p>}
         {"content" in message && <>
+          <ForwardCard message={message} onOpen={(anchor) => setConversationTarget({ messageId: message.id, anchor })} />
           <button type="button" className="chat-message-actions-trigger" aria-label={`Message actions for ${message.author.name}`} aria-haspopup="dialog" aria-expanded={actionTarget?.messageId === message.id && actionTarget.mode === "actions"} onClick={(event) => openActions(message.id, event.currentTarget)}><MoreHorizontal size={14} aria-hidden="true" /></button>
           {!inThread && <button type="button" className="chat-reply-thread" aria-label={`Reply in thread to ${message.author.name}`} title="Reply in thread" onClick={() => openThread(message.threadRootId ?? message.id)}><MessageSquare size={14} aria-hidden="true" /></button>}
           <MessageReactions message={message} channelId={state.channelId} authorId={state.author?.id} readOnly={readOnly} save={reactionSaves[message.id]} onReact={react}
@@ -447,11 +466,26 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     </article></div>;
   };
 
+  const pinsToggle = state.phase === "ready" && (showPins ? <button type="button" className="chat-pins-toggle" onClick={() => setShowPins(false)}><ArrowLeft size={16} aria-hidden="true" />Messages</button>
+    : <button type="button" className="chat-pins-toggle" onClick={() => setShowPins(true)} aria-label={`Pins, ${state.pinnedMessages.length}`}><Pin size={16} aria-hidden="true" />Pins{state.pinnedMessages.length ? ` ${state.pinnedMessages.length}` : ""}</button>);
+
   return <div className="chat-layout" data-thread-open={!!state.thread}><section className="chat-panel" aria-labelledby="chat-heading">
     <header className="chat-heading">
-      <h2 id="chat-heading" className={showTitle ? "chat-channel-title" : "sr-only"}>{direct ? "" : "# "}{channelName}</h2>
-      {state.phase === "ready" && (showPins ? <button type="button" className="chat-pins-toggle" onClick={() => setShowPins(false)}><ArrowLeft size={16} aria-hidden="true" />Messages</button>
-        : <button type="button" className="chat-pins-toggle" onClick={() => setShowPins(true)} aria-label={`Pins, ${state.pinnedMessages.length}`}><Pin size={16} aria-hidden="true" />Pins{state.pinnedMessages.length ? ` ${state.pinnedMessages.length}` : ""}</button>)}
+      {headerLeading}
+      {channelMenu ? <details ref={channelMenuRef} className="chat-channel-menu" onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.currentTarget.open = false;
+          event.currentTarget.querySelector("summary")?.focus();
+        }
+      }} onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
+      }}>
+        <summary aria-label={`${direct ? "" : "# "}${channelName} channel menu`}><h2 id="chat-heading" className="chat-channel-title">{direct ? "" : "# "}{channelName}</h2><ChevronDown aria-hidden="true" /></summary>
+        <div className="space-actions" onClick={(event) => {
+          if ((event.target as HTMLElement).closest("button")) channelMenuRef.current!.open = false;
+        }}>{pinsToggle}{channelMenu}</div>
+      </details> : <h2 id="chat-heading" className={showTitle ? "chat-channel-title" : "sr-only"}>{direct ? "" : "# "}{channelName}</h2>}
+      {!channelMenu && pinsToggle}
       {headerActions}
       {!state.online && showConnectionStatus && <span className="chat-offline" role="status">{state.phase === "error" ? "Offline" : "Connecting…"}</span>}
       {state.phase === "ready" && state.error && <div className="chat-refresh-error" role="alert">{state.error} <button type="button" onClick={() => clientRef.current?.retryLoad()}>Retry</button></div>}
@@ -466,7 +500,8 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
           <div className="chat-avatar chat-pinned-avatar"><Avatar avatarId={message.author.avatarId} name={message.author.name} /></div>
           <header><strong>{message.author.name}</strong><time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt, pinTimeFormatter) : ""}</time></header>
           <p>{message.content.text}</p>
-          {((message.revision ?? 1) > 1 || (!readOnly && state.author?.id === message.author.id)) && <div className="chat-pinned-edit-actions">
+          <ForwardCard message={message} onOpen={(anchor) => setConversationTarget({ messageId: message.id, anchor })} />
+          {!message.forward && ((message.revision ?? 1) > 1 || (!readOnly && state.author?.id === message.author.id)) && <div className="chat-pinned-edit-actions">
             {(message.revision ?? 1) > 1 && <button type="button" className="chat-edited" onClick={() => openHistory(message.id)}>edited · Message history</button>}
             {!readOnly && state.author?.id === message.author.id && <button type="button" onClick={() => openEdit(message.id)}>Edit message</button>}
           </div>}
@@ -519,13 +554,21 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
 
     {actionTarget && actionMessage && <MessageActions key={actionMessage.id} message={actionMessage} target={actionTarget} authorId={state.author?.id}
       canReact={!readOnly && !!state.author} canPin={!readOnly && !!state.author} pinning={pinning.has(actionMessage.id)} onReact={react} onPin={pin}
-      canEdit={!readOnly && !state.author?.isGuest && state.author?.id === actionMessage.author.id}
+      canForward={signedIn && !!state.author && !state.author.isGuest && actionMessage.forward?.message !== null}
+      onForward={() => { setForwardTarget({ messageId: actionMessage.id, anchor: actionTarget.anchor }); setActionTarget(undefined); }}
+      canEdit={!actionMessage.forward && !readOnly && !state.author?.isGuest && state.author?.id === actionMessage.author.id}
       onClose={() => setActionTarget(undefined)} onCopied={setActionStatus}
       onReply={() => openThread(actionMessage.threadRootId ?? actionMessage.id)}
       onEdit={() => openEdit(actionMessage.id)} onHistory={() => openHistory(actionMessage.id)}
       onViewReactions={(emoji) => showReactors(actionMessage.id, emoji, actionTarget.anchor)} />}
     {reactorsTarget && reactorsMessage && state.channelId && <ReactorsPanel key={reactorsMessage.id} channelId={state.channelId}
       message={reactorsMessage} target={reactorsTarget} onClose={closeReactors} />}
+    {forwardTarget && forwardMessage && <ForwardPicker key={forwardMessage.id} message={forwardMessage} target={forwardTarget} onClose={closeForward}
+      onForward={(destination, messageId, key, text) => {
+        if (!clientRef.current) return Promise.reject(new Error("Chat session is unavailable."));
+        return clientRef.current.forward(destination, messageId, key, text);
+      }} onSent={(destination) => { setActionStatus(`Forwarded to ${destination.direct ? "" : "#"}${destination.name}.`); setForwardTarget(undefined); }} />}
+    {conversationTarget && conversationMessage && <ForwardConversation key={conversationMessage.id} message={conversationMessage} target={conversationTarget} onClose={closeConversation} />}
 
     <p className="chat-typing" role="status" aria-atomic="true">
       <span className="chat-typing-content" data-visible={!!typingLabel} aria-hidden={!typingLabel}>

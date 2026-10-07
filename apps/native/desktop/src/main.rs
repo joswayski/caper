@@ -7,6 +7,7 @@ mod daily_icon;
 mod edits;
 mod effects;
 mod emoji;
+mod forwarding;
 mod gateway;
 #[path = "../voice-spike/src/media.rs"]
 mod media;
@@ -356,6 +357,7 @@ struct CaperApp {
     session: Option<ChatSession>,
     session_error: Option<String>,
     timeline: Timeline,
+    forwarding: forwarding::Forwarding,
     live: String,
     email: String,
     challenge: Option<String>,
@@ -480,6 +482,7 @@ impl CaperApp {
             session: None,
             session_error: None,
             timeline: Timeline::default(),
+            forwarding: forwarding::Forwarding::default(),
             live: "Connecting…".into(),
             email: String::new(),
             challenge: None,
@@ -1158,6 +1161,8 @@ impl CaperApp {
                 thread_root_id: None,
                 broadcast: false,
                 thread: None,
+                forward: None,
+                forward_seq: None,
                 revision: 1,
                 edited_at: None,
                 edit_seq: None,
@@ -1558,6 +1563,17 @@ impl CaperApp {
                     .is_some_and(|pending| pending.id == client_id) =>
                 {
                     self.sent(result)
+                }
+                Event::Forward {
+                    generation,
+                    request,
+                    result,
+                } if generation == self.generation => {
+                    if let Some(message) = self.forwarding.receive(request, result)
+                        && self.selected_channel.as_deref() == Some(&message.channel_id)
+                    {
+                        let _ = self.timeline.merge_sent(message);
+                    }
                 }
                 Event::Reacted {
                     generation,
@@ -2613,6 +2629,23 @@ impl CaperApp {
                     _ => {}
                 }
             }
+            GatewayEvent::Forward {
+                generation,
+                channel,
+                update,
+            } if current(
+                generation,
+                self.generation,
+                Some(&channel),
+                self.selected_channel.as_deref(),
+            ) =>
+            {
+                match self.timeline.apply_forward(*update) {
+                    Ok(model::Apply::Applied) => self.mark_selected_direct_read(),
+                    Ok(model::Apply::Resync) | Err(_) => self.reload_channel(),
+                    _ => {}
+                }
+            }
             GatewayEvent::Edit {
                 generation,
                 channel,
@@ -2837,6 +2870,7 @@ impl CaperApp {
         self.older_error = None;
         self.has_more = false;
         self.timeline = Timeline::default();
+        self.forwarding.close();
         self.older_armed = false;
         self.older_anchor = None;
         self.load_error = None;
@@ -3365,6 +3399,20 @@ impl eframe::App for CaperApp {
         self.periodic(context);
         self.update_banner(context);
         self.page(context);
+        let messages = self
+            .timeline
+            .messages()
+            .chain(self.timeline.pinned_messages())
+            .cloned()
+            .collect::<Vec<_>>();
+        self.forwarding.show(
+            context,
+            &self.worker,
+            self.generation,
+            self.token.as_deref(),
+            &messages,
+            &mut self.reaction_textures,
+        );
         if !matches!(self.dialog, Some(Dialog::Audio)) {
             if !matches!(self.voice.microphone, MicrophoneState::Idle) {
                 self.voice.stop_mic_test();
@@ -6780,85 +6828,95 @@ impl CaperApp {
         // Reserved beneath the row so the tint can be sized after drawing.
         let tint = ui.painter().add(egui::Shape::Noop);
         let pinned = message.pin.as_ref();
-        let shown = egui::Frame::new()
-            .fill(
-                if !in_thread
-                    && self
-                        .thread_view
-                        .as_ref()
-                        .is_some_and(|thread| thread.root == message.id)
-                {
-                    Color32::from_rgba_unmultiplied(228, 199, 106, 26)
-                } else if pinned.is_some() {
-                    Color32::from_rgba_unmultiplied(228, 199, 106, 15)
-                } else {
-                    Color32::TRANSPARENT
-                },
-            )
-            .show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                if let Some(pin) = pinned {
-                    egui::Frame::new()
-                        .inner_margin(egui::Margin {
-                            left: 62,
-                            right: 74,
-                            top: 6,
-                            bottom: 0,
-                        })
-                        .show(ui, |ui| {
-                            ui.label(
-                                RichText::new(format!("Pinned by {}", pin.author.name))
-                                    .size(11.0)
-                                    .color(Color32::from_rgb(228, 199, 106)),
-                            );
-                        });
-                }
-                let (timestamp, pill) = message_row(
-                    ui,
-                    &message.author.name,
-                    message.author.avatar_id,
-                    &time,
-                    message.author.is_guest,
-                    |ui| {
-                        message_body(
+        // Only hover is sensed for the forward menu, so pills, the edited
+        // marker and selectable text inside the row keep their clicks.
+        let scope = ui.scope_builder(
+            egui::UiBuilder::new()
+                .id_salt((&message.id, "forward-context"))
+                .sense(egui::Sense::hover()),
+            |ui| {
+                egui::Frame::new()
+                    .fill(
+                        if !in_thread
+                            && self
+                                .thread_view
+                                .as_ref()
+                                .is_some_and(|thread| thread.root == message.id)
+                        {
+                            Color32::from_rgba_unmultiplied(228, 199, 106, 26)
+                        } else if pinned.is_some() {
+                            Color32::from_rgba_unmultiplied(228, 199, 106, 15)
+                        } else {
+                            Color32::TRANSPARENT
+                        },
+                    )
+                    .show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        if let Some(pin) = pinned {
+                            egui::Frame::new()
+                                .inner_margin(egui::Margin {
+                                    left: 62,
+                                    right: 74,
+                                    top: 6,
+                                    bottom: 0,
+                                })
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        RichText::new(format!("Pinned by {}", pin.author.name))
+                                            .size(11.0)
+                                            .color(Color32::from_rgb(228, 199, 106)),
+                                    );
+                                });
+                        }
+                        let (timestamp, pill) = message_row(
                             ui,
-                            &message.id,
-                            &message.content.text,
-                            &message.content.mentions,
-                            |entry| {
-                                let name = self.mention_profile(entry).map_or_else(
-                                    || {
-                                        format!(
-                                            "@{}",
-                                            entry.username.as_deref().unwrap_or_default()
-                                        )
+                            &message.author.name,
+                            message.author.avatar_id,
+                            &time,
+                            message.author.is_guest,
+                            |ui| {
+                                message_body(
+                                    ui,
+                                    &message.id,
+                                    &message.content.text,
+                                    &message.content.mentions,
+                                    |entry| {
+                                        let name = self.mention_profile(entry).map_or_else(
+                                            || {
+                                                format!(
+                                                    "@{}",
+                                                    entry.username.as_deref().unwrap_or_default()
+                                                )
+                                            },
+                                            |profile| profile.title(),
+                                        );
+                                        format!("Open profile for {name}")
                                     },
-                                    |profile| profile.title(),
-                                );
-                                format!("Open profile for {name}")
+                                )
                             },
-                        )
-                    },
-                );
-                if message.revision > 1 {
-                    let marker = ui.interact(
-                        timestamp,
-                        ui.id().with(("edit-history", &message.id)),
-                        egui::Sense::click(),
-                    );
-                    marker.widget_info(|| {
-                        egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
-                            true,
-                            "View edit history",
-                        )
-                    });
-                    if marker.on_hover_text("View edit history").clicked() {
-                        self.open_edit_history(message);
-                    }
-                }
-                pill
-            });
+                        );
+                        if message.forward.is_none() && message.revision > 1 {
+                            let marker = ui.interact(
+                                timestamp,
+                                ui.id().with(("edit-history", &message.id)),
+                                egui::Sense::click(),
+                            );
+                            marker.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Button,
+                                    true,
+                                    "View edit history",
+                                )
+                            });
+                            if marker.on_hover_text("View edit history").clicked() {
+                                self.open_edit_history(message);
+                            }
+                        }
+                        pill
+                    })
+            },
+        );
+        let shown = scope.inner;
         let message_rect = shown.response.rect;
         if let Some(pill) = shown.inner {
             // Opening another pill replaces the card.
@@ -6868,6 +6926,73 @@ impl CaperApp {
                 error: None,
                 fresh: true,
             });
+        }
+        if let Some(token) = self.token.clone() {
+            // A right-click anywhere over the row, even on its text.
+            let opened =
+                scope.response.contains_pointer() && ui.input(|i| i.pointer.secondary_clicked());
+            egui::Popup::menu(&scope.response)
+                .open_memory(opened.then_some(egui::SetOpenCommand::Bool(true)))
+                .at_pointer_fixed()
+                .show(|ui| {
+                    if ui.button("Forward message").clicked() {
+                        self.forwarding.picker(
+                            &self.worker,
+                            self.generation,
+                            token,
+                            message.clone(),
+                        );
+                        ui.close();
+                    }
+                });
+        }
+        if let Some(forward) = &message.forward {
+            egui::Frame::new()
+                .inner_margin(egui::Margin {
+                    left: 62,
+                    right: 18,
+                    top: 4,
+                    bottom: 8,
+                })
+                .show(ui, |ui| {
+                    egui::Frame::new()
+                        .stroke(Stroke::new(1.0, BORDER))
+                        .corner_radius(8)
+                        .inner_margin(12)
+                        .show(ui, |ui| {
+                            ui.label(RichText::new("Forwarded · live").size(11.0).color(MUTED));
+                            if let Some(original) = &forward.message {
+                                forwarding::original(ui, original, &mut self.reaction_textures);
+                                let count = original
+                                    .thread
+                                    .as_ref()
+                                    .map(|summary| {
+                                        format!(
+                                            "{} {} · ",
+                                            summary.reply_count,
+                                            if summary.reply_count == 1 {
+                                                "reply"
+                                            } else {
+                                                "replies"
+                                            }
+                                        )
+                                    })
+                                    .unwrap_or_default();
+                                if ui.button(format!("{count}View conversation")).clicked()
+                                    && let Some(token) = self.token.clone()
+                                {
+                                    self.forwarding.conversation(
+                                        &self.worker,
+                                        self.generation,
+                                        token,
+                                        message.clone(),
+                                    );
+                                }
+                            } else {
+                                ui.label("Original conversation unavailable.");
+                            }
+                        });
+                });
         }
         let author = self
             .session
@@ -6960,11 +7085,25 @@ impl CaperApp {
                 }
                 let active = message.pin.is_some();
                 egui::Popup::menu(&more).show(|ui| {
+                    if ui.button("Forward message").clicked()
+                        && let Some(token) = self.token.clone()
+                    {
+                        self.forwarding.picker(
+                            &self.worker,
+                            self.generation,
+                            token,
+                            message.clone(),
+                        );
+                        ui.close();
+                    }
                     if self.can_edit(message) && ui.button("Edit message").clicked() {
                         self.open_editor(message);
                         ui.close();
                     }
-                    if message.revision > 1 && ui.button("View edit history").clicked() {
+                    if message.forward.is_none()
+                        && message.revision > 1
+                        && ui.button("View edit history").clicked()
+                    {
                         self.open_edit_history(message);
                         ui.close();
                     }
@@ -13497,6 +13636,67 @@ mod tests {
     }
 
     #[test]
+    fn signed_in_message_text_offers_forwarding_on_right_click() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-mentions"),
+        );
+        app.token = Some("account-token".into());
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let pos = pill_center(&output, ALEX_MESSAGE, "Keep");
+        for pressed in [true, false] {
+            render(
+                &mut app,
+                &context,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Secondary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        // New egui areas spend their first pass measuring, invisibly.
+        render(&mut app, &context, vec![]);
+        assert!(shows(
+            &render(&mut app, &context, vec![]),
+            "Forward message"
+        ));
+        assert!(app.mention_card.is_none(), "plain text opens no card");
+    }
+
+    #[test]
+    fn signed_in_edited_marker_still_opens_history() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-edits"),
+        );
+        app.token = Some("account-token".into());
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let marker = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(shape) if shape.galley.job.text.ends_with("(edited)") => {
+                    Some(shape.pos + shape.galley.rect.center().to_vec2())
+                }
+                _ => None,
+            })
+            .expect("the edited marker is drawn");
+        click_at(&mut app, &context, marker);
+        assert!(app.edit_history.is_some());
+    }
+
+    #[test]
     fn mention_card_message_creates_the_dm_by_username_and_navigates() {
         use std::io::{BufRead, BufReader, Read, Write};
         let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -15121,6 +15321,8 @@ mod tests {
             thread_root_id: None,
             broadcast: false,
             thread: None,
+            forward: None,
+            forward_seq: None,
             revision: 1,
             edited_at: None,
             edit_seq: None,
@@ -15207,6 +15409,8 @@ mod tests {
                 thread_root_id: None,
                 broadcast: false,
                 thread: None,
+                forward: None,
+                forward_seq: None,
                 revision: 1,
                 edited_at: None,
                 edit_seq: None,
@@ -16016,6 +16220,35 @@ mod tests {
             app.message_editor.is_none(),
             "Author/account loss closes the obsolete editor"
         );
+    }
+
+    #[test]
+    fn forwarded_wrapper_author_cannot_open_editor_or_source_history() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-edits-editor"),
+        );
+        let original = app.message_editor.take().unwrap().original;
+        assert!(
+            app.can_edit(&original),
+            "The actual source author retains editing"
+        );
+        let mut wrapper = original.clone();
+        wrapper.id = "forward-wrapper".into();
+        wrapper.forward = Some(Box::new(model::MessageForward {
+            message: Some(original),
+            seq: "7".into(),
+        }));
+        assert!(
+            !app.can_edit(&wrapper),
+            "Wrapper authors cannot edit the shared content or note"
+        );
+        app.open_editor(&wrapper);
+        app.open_edit_history(&wrapper);
+        assert!(app.message_editor.is_none());
+        assert!(app.edit_history.is_none());
     }
 
     #[test]
