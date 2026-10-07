@@ -3,7 +3,10 @@
 // so everything here saves the sender's quota and everyone's bandwidth. The
 // rule throughout: smaller without visible loss, else the original file.
 import type { ChatAttachmentKind } from "./types.ts";
-import { encodeIndexedPng } from "./png.ts";
+import { encodeIndexedPng, exactPalette } from "./png.ts";
+import { stripMetadata } from "./metadata.ts";
+import { encodeLosslessWebp, iccProfile, pngBitDepth, pngChunks, webpWithIcc } from "./webp.ts";
+import type { HdrTransfer } from "./hdr.ts";
 
 const PREVIEW_MAX_BYTES = 512 * 1024;
 const PREVIEW_QUALITY = 0.8;
@@ -80,7 +83,8 @@ export function declaredType(file: { type: string; name: string }) {
 // ---- Stills -----------------------------------------------------------------
 
 /**
- * - `lossless`: PNG, BMP, TIFF, lossless WebP. Never lossy-encoded.
+ * - `lossless`: PNG, BMP, TIFF, lossless WebP. Never lossy-encoded. (16-bit
+ *   PNG is kept: a canvas holds 8 bits per channel.)
  * - `photo`: JPEG, HEIC/HEIF, lossy WebP. Re-encoded at `imageQuality`.
  * - `keep`: everything else, including GIF, SVG, AVIF and animated PNG/WebP
  *   (a canvas would keep only the first frame).
@@ -122,7 +126,7 @@ export function pngIsAnimated(bytes: Uint8Array) {
 
 export function stillSource(contentType: string, head: Uint8Array): StillSource {
   switch (contentType) {
-    case "image/png": return pngIsAnimated(head) ? "keep" : "lossless";
+    case "image/png": return pngIsAnimated(head) || pngBitDepth(head) === 16 ? "keep" : "lossless";
     case "image/bmp": case "image/x-ms-bmp": case "image/tiff": return "lossless";
     case "image/jpeg": case "image/heic": case "image/heif": return "photo";
     case "image/webp": {
@@ -133,20 +137,33 @@ export function stillSource(contentType: string, head: Uint8Array): StillSource 
   }
 }
 
-export type StillPlan = "indexed-png" | "lossless-png" | "lossy" | "keep";
+export type StillPlan = "indexed-png" | "lossless-webp" | "lossless-png" | "lossy" | "keep";
 
-/** Which encoding a decodable still gets. Lossless sources stay lossless: an
- * exact indexed PNG when the colours fit, a canvas PNG only for opaque formats
- * browsers cannot show (BMP, TIFF; 8-bit opaque round-trips exactly), else the
- * original. Canvas cannot encode lossless WebP reliably, so there is no
- * lossless-WebP step. HEIC is converted even at quality 100. */
-export function stillPlan(source: StillSource, contentType: string, settings: CompressionSettings, pixels: { fitsPalette: boolean; opaque: boolean }): StillPlan {
+export interface StillPixels {
+  /** At most `paletteColors` exact colours (and no partial transparency). */
+  fitsPalette: boolean;
+  /** Every pixel fully opaque. */
+  opaque: boolean;
+  /** Alpha only 0 or 255: a canvas round-trips such pixels exactly, while
+   * partially transparent ones are premultiplied and lose precision. */
+  binaryAlpha: boolean;
+}
+
+/** Candidate encodings for a decodable still; the smallest one `keepStill`
+ * accepts wins, and none means the original. Lossless sources stay lossless:
+ * an exact indexed PNG when the colours fit, lossless WebP (libwebp), and a
+ * canvas PNG for opaque formats browsers cannot show (BMP, TIFF) in case WebP
+ * is unavailable. HEIC is converted even at quality 100. */
+export function stillPlans(source: StillSource, contentType: string, settings: CompressionSettings, pixels: StillPixels): StillPlan[] {
   if (source === "lossless") {
-    if (pixels.fitsPalette && settings.paletteColors > 0) return "indexed-png";
-    return attachmentKind(contentType) === "file" && pixels.opaque ? "lossless-png" : "keep";
+    const plans: StillPlan[] = [];
+    if (pixels.fitsPalette && settings.paletteColors > 0) plans.push("indexed-png");
+    if (pixels.binaryAlpha) plans.push("lossless-webp");
+    if (attachmentKind(contentType) === "file" && pixels.opaque) plans.push("lossless-png");
+    return plans;
   }
-  if (source === "photo") return settings.imageQuality < 100 || isHeic(contentType) ? "lossy" : "keep";
-  return "keep";
+  if (source === "photo") return settings.imageQuality < 100 || isHeic(contentType) ? ["lossy"] : [];
+  return [];
 }
 
 const isHeic = (contentType: string) => contentType === "image/heic" || contentType === "image/heif";
@@ -221,10 +238,34 @@ async function preview(source: CanvasImageSource, width: number, height: number,
   return blob && blob.size <= PREVIEW_MAX_BYTES ? blob : undefined;
 }
 
-/** Every pixel fully opaque, so a canvas PNG round-trips it exactly. */
-function opaque(rgba: Uint8ClampedArray) {
-  for (let i = 3; i < rgba.length; i += 4) if (rgba[i] !== 255) return false;
-  return true;
+function alphaKinds(rgba: Uint8ClampedArray) {
+  let opaque = true;
+  for (let i = 3; i < rgba.length; i += 4) {
+    if (rgba[i] === 255) continue;
+    if (rgba[i] !== 0) return { opaque: false, binaryAlpha: false };
+    opaque = false;
+  }
+  return { opaque, binaryAlpha: true };
+}
+
+async function encodeStill(plan: StillPlan, drawn: { canvas: Surface; context: Context2D }, rgba: Uint8ClampedArray | undefined, source: Uint8Array | undefined, settings: CompressionSettings): Promise<Blob | undefined> {
+  const { width, height } = drawn.canvas;
+  switch (plan) {
+    case "indexed-png": {
+      const indexed = rgba && await encodeIndexedPng(rgba, width, height, settings.paletteColors, source && pngChunks(source, "iCCP")[0]);
+      return indexed && new Blob([indexed as BlobPart], { type: "image/png" });
+    }
+    case "lossless-webp": {
+      const webp = rgba && await encodeLosslessWebp(rgba, width, height);
+      if (!webp) return;
+      // Pixels were read without colour conversion; keep their profile.
+      const icc = source && await iccProfile(source);
+      return new Blob([(icc ? webpWithIcc(webp, icc, width, height) : webp) as BlobPart], { type: "image/webp" });
+    }
+    case "lossless-png": return encode(drawn.canvas, "image/png");
+    case "lossy": return webpOrJpeg(drawn.canvas, settings.imageQuality / 100);
+    case "keep": return;
+  }
 }
 
 async function prepareImage(file: File, contentType: string, settings: CompressionSettings): Promise<PreparedFile> {
@@ -248,22 +289,23 @@ async function prepareImage(file: File, contentType: string, settings: Compressi
       const size = source === "photo" && settings.imageMaxEdge > 0 ? fitWithin(original.width, original.height, settings.imageMaxEdge) : original;
       const drawn = draw(bitmap, size.width, size.height);
       if (drawn) {
-        let encoded: Blob | undefined;
-        let indexed: Uint8Array | undefined;
-        let pixels = { fitsPalette: false, opaque: false };
+        let rgba: Uint8ClampedArray | undefined;
+        let bytes: Uint8Array | undefined;
+        let pixels: StillPixels = { fitsPalette: false, opaque: false, binaryAlpha: false };
         if (source === "lossless") {
-          const rgba = drawn.context.getImageData(0, 0, size.width, size.height).data;
-          indexed = settings.paletteColors > 0 ? await encodeIndexedPng(rgba, size.width, size.height, settings.paletteColors) : undefined;
-          pixels = { fitsPalette: !!indexed, opaque: opaque(rgba) };
+          rgba = drawn.context.getImageData(0, 0, size.width, size.height).data;
+          bytes = new Uint8Array(await file.arrayBuffer());
+          pixels = { fitsPalette: settings.paletteColors > 0 && !!exactPalette(rgba, settings.paletteColors), ...alphaKinds(rgba) };
         }
-        const plan = stillPlan(source, contentType, settings, pixels);
         // Re-encoding drops EXIF metadata such as photo GPS coordinates.
-        encoded = plan === "indexed-png" && indexed ? new Blob([indexed as BlobPart], { type: "image/png" })
-          : plan === "lossless-png" ? await encode(drawn.canvas, "image/png")
-          : plan === "lossy" ? await webpOrJpeg(drawn.canvas, settings.imageQuality / 100)
-          : undefined;
-        if (encoded && keepStill(plan, { type: contentType, size: file.size }, encoded.size)) {
-          prepared = { ...prepared, ...size, blob: encoded, contentType: encoded.type, kind: "image", name: renamed(file.name, encoded.type) };
+        let best: { plan: StillPlan; blob: Blob } | undefined;
+        for (const plan of stillPlans(source, contentType, settings, pixels)) {
+          if (plan === "lossless-png" && best) continue; // only a fallback when WebP failed
+          const encoded = await encodeStill(plan, drawn, rgba, bytes, settings).catch(() => undefined);
+          if (encoded && keepStill(plan, { type: contentType, size: file.size }, encoded.size) && (!best || encoded.size < best.blob.size)) best = { plan, blob: encoded };
+        }
+        if (best) {
+          prepared = { ...prepared, ...size, blob: best.blob, contentType: best.blob.type, kind: "image", name: renamed(file.name, best.blob.type) };
         }
       }
     }
@@ -306,19 +348,17 @@ export interface VideoProbe {
   inlineContainer: boolean;
 }
 
-export type VideoReason = "resolution" | "codec" | "container" | "bitrate";
+export type VideoReason = "hdr" | "resolution" | "codec" | "container" | "bitrate";
 export type VideoPlan =
-  | { action: "keep"; reason: "disabled" | "hdr" | "efficient" }
+  | { action: "keep"; reason: "disabled" | "efficient" }
   | { action: "transcode"; reasons: VideoReason[]; width: number; height: number; bitrateKbps: number };
 
 /** Transcode only when needed; otherwise upload the original untouched so
- * already-efficient phone video is never re-compressed. HDR always keeps the
- * original: WebCodecs offers no reliable tone mapping, and a straight
- * re-encode would be a washed-out SDR file. */
+ * already-efficient phone video is never re-compressed. HDR is always tone
+ * mapped to SDR (`hdr.ts`); the caller keeps the original when it cannot. */
 export function videoPlan(probe: VideoProbe, settings: CompressionSettings): VideoPlan {
   if (settings.videoMaxHeight <= 0) return { action: "keep", reason: "disabled" };
-  if (probe.hdr) return { action: "keep", reason: "hdr" };
-  const reasons: VideoReason[] = [];
+  const reasons: VideoReason[] = probe.hdr ? ["hdr"] : [];
   const scaled = videoTargetSize(probe.width, probe.height, settings.videoMaxHeight);
   if (scaled) reasons.push("resolution");
   if (probe.codec !== "avc") reasons.push("codec");
@@ -333,16 +373,21 @@ export function videoPlan(probe: VideoProbe, settings: CompressionSettings): Vid
 }
 
 /** A transcode for playability (codec or container) is always kept; one for
- * resolution only when smaller; a bitrate-only one only when ≥ 10% smaller. */
+ * HDR or resolution only when smaller; a bitrate-only one only when ≥ 10%
+ * smaller. */
 export function keepTranscode(reasons: VideoReason[], originalSize: number, outputSize: number) {
   if (reasons.includes("codec") || reasons.includes("container")) return true;
-  if (reasons.includes("resolution")) return outputSize < originalSize;
+  if (reasons.includes("resolution") || reasons.includes("hdr")) return outputSize < originalSize;
   return outputSize <= originalSize * (1 - MIN_SAVING);
 }
 
 /** HDR transfer functions (BT.2100 PQ / HLG), from container colour metadata. */
 export function isHdrColorSpace(space: { transfer?: string | null } | undefined) {
-  return space?.transfer === "pq" || space?.transfer === "hlg";
+  return hdrTransfer(space) !== undefined;
+}
+
+export function hdrTransfer(space: { transfer?: string | null } | undefined): HdrTransfer | undefined {
+  return space?.transfer === "pq" || space?.transfer === "hlg" ? space.transfer : undefined;
 }
 
 /** Audio codecs MP4 carries and browsers play, copied without re-encoding. */
@@ -376,8 +421,9 @@ async function transcodeVideo(file: File, contentType: string, settings: Compres
     }, settings);
     if (plan.action === "keep") return;
     const bitrate = plan.bitrateKbps * 1000;
+    const hdrMode = plan.reasons.includes("hdr");
     // H.264 in a container browsers will not play inline is only remuxed.
-    const remux = codec === "avc" && plan.reasons.every((reason) => reason === "container");
+    const remux = !hdrMode && codec === "avc" && plan.reasons.every((reason) => reason === "container");
     if (!remux && !await media.canEncodeVideo("avc", { width: plan.width, height: plan.height, bitrate })) return;
     const audioCodec = !audio ? undefined
       : COPY_AUDIO.has(await audio.getCodec() ?? "") ? "copy" as const
@@ -385,6 +431,18 @@ async function transcodeVideo(file: File, contentType: string, settings: Compres
       : await media.canEncodeAudio("opus") ? "opus" as const : undefined;
     // Never trade a smaller file for silently losing the soundtrack.
     if (audio && !audioCodec) return;
+    if (hdrMode) {
+      // HDR whose transfer is unknown cannot be tone mapped correctly.
+      const transfer = hdrTransfer(colorSpace);
+      if (!transfer) return;
+      const { transcodeHdrVideo } = await import("./hdr-video.ts");
+      const even = (n: number) => Math.max(2, Math.floor(n / 2) * 2);
+      const buffer = await transcodeHdrVideo(media, input, {
+        width: even(plan.width), height: even(plan.height), transfer, codec: "avc", bitrate,
+        audioCodec, audioBitrate: settings.audioBitrateKbps * 1000, progress, signal,
+      });
+      return buffer && keepTranscode(plan.reasons, file.size, buffer.byteLength) ? new Blob([buffer], { type: "video/mp4" }) : undefined;
+    }
     const output = new media.Output({ format: new media.Mp4OutputFormat({ fastStart: "in-memory" }), target: new media.BufferTarget() });
     const size = plan.reasons.includes("resolution") ? (width < height ? { width: plan.width } : { height: plan.height }) : {};
     const conversion = await media.Conversion.init({
@@ -460,8 +518,11 @@ async function prepareTimed(file: File, contentType: string, settings: Compressi
  * Any failure falls back to the original file. */
 export async function prepareFile(file: File, settings = DEFAULT_COMPRESSION, progress: (fraction: number) => void = () => undefined, signal?: AbortSignal): Promise<PreparedFile> {
   const contentType = declaredType(file);
-  if (contentType.startsWith("image/")) return prepareImage(file, contentType, settings);
   const kind = attachmentKind(contentType);
-  if (kind === "video" || kind === "audio" || contentType.startsWith("video/")) return prepareTimed(file, contentType, settings, progress, signal);
-  return { blob: file, name: file.name, contentType, kind, sourceSize: file.size };
+  const prepared = contentType.startsWith("image/") ? await prepareImage(file, contentType, settings)
+    : kind === "video" || kind === "audio" || contentType.startsWith("video/") ? await prepareTimed(file, contentType, settings, progress, signal)
+    : { blob: file, name: file.name, contentType, kind, sourceSize: file.size };
+  // An original upload still loses its location and other metadata, losslessly.
+  if (prepared.blob === file) prepared.blob = await stripMetadata(file, contentType);
+  return prepared;
 }

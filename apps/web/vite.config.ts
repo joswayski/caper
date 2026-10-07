@@ -107,6 +107,10 @@ export default defineConfig(async () => {
   define: {
     __LATEST_CHANGES__: JSON.stringify(changes),
   },
+  // Module workers may code-split (libwebp loads its SIMD or plain WASM build on demand).
+  worker: { format: "es" as const },
+  // Pre-bundling would move libwebp away from the .wasm files it locates via import.meta.url.
+  optimizeDeps: { exclude: ["@jsquash/webp"] },
   plugins: [
     tailwindcss(),
     tanstackStart({

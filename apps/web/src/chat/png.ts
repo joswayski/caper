@@ -51,8 +51,9 @@ export function exactPalette(rgba: Uint8ClampedArray | Uint8Array, max: number):
   return palette;
 }
 
-/** Encodes RGBA as an indexed PNG when it has at most `maxColors` colours. */
-export async function encodeIndexedPng(rgba: Uint8ClampedArray | Uint8Array, width: number, height: number, maxColors: number): Promise<Uint8Array | undefined> {
+/** Encodes RGBA as an indexed PNG when it has at most `maxColors` colours.
+ * `iccp` is a source iCCP chunk's data, copied so the colour space survives. */
+export async function encodeIndexedPng(rgba: Uint8ClampedArray | Uint8Array, width: number, height: number, maxColors: number, iccp?: Uint8Array): Promise<Uint8Array | undefined> {
   const palette = exactPalette(rgba, Math.min(256, maxColors));
   if (!palette) return;
   const depth = palette.size <= 2 ? 1 : palette.size <= 4 ? 2 : palette.size <= 16 ? 4 : 8;
@@ -88,7 +89,7 @@ export async function encodeIndexedPng(rgba: Uint8ClampedArray | Uint8Array, wid
   const parts = [
     new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
     chunk("IHDR", header),
-    chunk("sRGB", new Uint8Array([0])),
+    iccp ? chunk("iCCP", iccp) : chunk("sRGB", new Uint8Array([0])),
     chunk("PLTE", plte),
     ...(lastTransparent >= 0 ? [chunk("tRNS", trns.subarray(0, lastTransparent + 1))] : []),
     chunk("IDAT", await zlib(raw)),

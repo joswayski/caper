@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   DEFAULT_COMPRESSION, attachmentKind, compressionSettings, declaredType, fitWithin, isHdrColorSpace, keepStill, keepTranscode,
-  pngIsAnimated, renamed, stillPlan, stillSource, videoPlan, videoTargetKbps, videoTargetSize, webpInfo, type VideoProbe,
+  hdrTransfer, pngIsAnimated, renamed, stillPlans, stillSource, videoPlan, videoTargetKbps, videoTargetSize, webpInfo, type VideoProbe,
 } from "../chat/prepare.ts";
 
 const bytes = (...parts: Array<string | number[]>) => new Uint8Array(parts.flatMap((part) => typeof part === "string" ? [...part].map((c) => c.charCodeAt(0)) : part));
@@ -57,25 +57,33 @@ test("sources are classified: lossless, photo, or left alone", () => {
   for (const type of ["image/gif", "image/svg+xml", "image/avif"]) assert.equal(stillSource(type, new Uint8Array()), "keep", type);
 });
 
-test("lossless stays lossless: indexed PNG when colours fit, otherwise the original", () => {
+const px = (overrides: Partial<{ fitsPalette: boolean; opaque: boolean; binaryAlpha: boolean }> = {}) => ({ fitsPalette: false, opaque: true, binaryAlpha: true, ...overrides });
+
+test("lossless stays lossless: indexed PNG and lossless WebP compete, otherwise the original", () => {
   const s = DEFAULT_COMPRESSION;
-  assert.equal(stillPlan("lossless", "image/png", s, { fitsPalette: true, opaque: true }), "indexed-png");
-  assert.equal(stillPlan("lossless", "image/png", s, { fitsPalette: false, opaque: true }), "keep", "a real screenshot is never lossy-encoded");
-  assert.equal(stillPlan("lossless", "image/webp", s, { fitsPalette: false, opaque: true }), "keep");
-  assert.equal(stillPlan("lossless", "image/png", { ...s, paletteColors: 0 }, { fitsPalette: true, opaque: true }), "keep");
-  assert.equal(stillPlan("lossless", "image/png", { ...s, imageQuality: 50 }, { fitsPalette: false, opaque: true }), "keep", "quality never applies to lossless sources");
-  assert.equal(stillPlan("lossless", "image/bmp", s, { fitsPalette: false, opaque: true }), "lossless-png", "BMP becomes a viewable lossless PNG");
-  assert.equal(stillPlan("lossless", "image/bmp", s, { fitsPalette: false, opaque: false }), "keep");
+  assert.deepEqual(stillPlans("lossless", "image/png", s, px({ fitsPalette: true })), ["indexed-png", "lossless-webp"], "smallest of the two wins");
+  assert.deepEqual(stillPlans("lossless", "image/png", s, px()), ["lossless-webp"], "a real screenshot is compressed losslessly");
+  assert.deepEqual(stillPlans("lossless", "image/webp", s, px()), ["lossless-webp"]);
+  assert.deepEqual(stillPlans("lossless", "image/png", s, px({ opaque: false })), ["lossless-webp"], "on/off transparency round-trips exactly");
+  assert.deepEqual(stillPlans("lossless", "image/png", s, px({ opaque: false, binaryAlpha: false })), [], "partial alpha keeps the original");
+  assert.deepEqual(stillPlans("lossless", "image/png", { ...s, paletteColors: 0 }, px({ fitsPalette: true })), ["lossless-webp"]);
+  assert.deepEqual(stillPlans("lossless", "image/png", { ...s, imageQuality: 50 }, px()), ["lossless-webp"], "quality never applies to lossless sources");
+  assert.deepEqual(stillPlans("lossless", "image/bmp", s, px()), ["lossless-webp", "lossless-png"], "BMP becomes a viewable lossless image");
+  assert.deepEqual(stillPlans("lossless", "image/bmp", s, px({ opaque: false, binaryAlpha: false })), []);
   assert.ok(keepStill("indexed-png", { type: "image/png", size: 1000 }, 990), "any lossless saving is kept");
+  assert.ok(keepStill("lossless-webp", { type: "image/png", size: 1000 }, 999));
   assert.ok(!keepStill("indexed-png", { type: "image/png", size: 1000 }, 1000));
   assert.ok(keepStill("lossless-png", { type: "image/bmp", size: 1000 }, 1500), "non-inline sources convert even when larger");
+  const ihdr16 = bytes([0x89], "PNG\r\n\x1a\n", be32(13), "IHDR", be32(1), be32(1), [16, 2, 0, 0, 0], [0, 0, 0, 0]);
+  assert.equal(stillSource("image/png", ihdr16), "keep", "16-bit PNG cannot round-trip through a canvas");
 });
 
 test("photos re-encode lossily and keep the result only when at least 10% smaller; HEIC always converts", () => {
   const s = DEFAULT_COMPRESSION;
-  assert.equal(stillPlan("photo", "image/jpeg", s, { fitsPalette: false, opaque: true }), "lossy");
-  assert.equal(stillPlan("photo", "image/jpeg", { ...s, imageQuality: 100 }, { fitsPalette: false, opaque: true }), "keep");
-  assert.equal(stillPlan("photo", "image/heic", { ...s, imageQuality: 100 }, { fitsPalette: false, opaque: true }), "lossy", "HEIC must convert to be viewable");
+  assert.deepEqual(stillPlans("photo", "image/jpeg", s, px()), ["lossy"]);
+  assert.deepEqual(stillPlans("photo", "image/jpeg", { ...s, imageQuality: 100 }, px()), []);
+  assert.deepEqual(stillPlans("photo", "image/heic", { ...s, imageQuality: 100 }, px()), ["lossy"], "HEIC must convert to be viewable");
+  assert.deepEqual(stillPlans("keep", "image/gif", s, px()), []);
   assert.ok(keepStill("lossy", { type: "image/jpeg", size: 1000 }, 900));
   assert.ok(!keepStill("lossy", { type: "image/jpeg", size: 1000 }, 901));
   assert.ok(!keepStill("lossy", { type: "image/webp", size: 1000 }, 950));
@@ -115,8 +123,15 @@ test("efficient H.264 uploads unchanged; transcodes happen only for size, codec,
   assert.deepEqual(videoPlan(probe({ codec: "hevc" }), { ...s, videoMaxHeight: 0 }), { action: "keep", reason: "disabled" });
 });
 
-test("HDR video keeps the original rather than a washed-out SDR re-encode", () => {
-  assert.deepEqual(videoPlan(probe({ hdr: true, codec: "hevc", width: 3840, height: 2160, bitrateKbps: 50000 }), DEFAULT_COMPRESSION), { action: "keep", reason: "hdr" });
+test("HDR video is always tone mapped to SDR, and kept only when smaller unless needed for playback", () => {
+  assert.deepEqual(videoPlan(probe({ hdr: true, codec: "hevc", width: 3840, height: 2160, bitrateKbps: 50000 }), DEFAULT_COMPRESSION),
+    { action: "transcode", reasons: ["hdr", "resolution", "codec", "bitrate"], width: 1920, height: 1080, bitrateKbps: 6000 });
+  assert.deepEqual(videoPlan(probe({ hdr: true }), DEFAULT_COMPRESSION), { action: "transcode", reasons: ["hdr"], width: 1920, height: 1080, bitrateKbps: 6000 });
+  assert.deepEqual(videoPlan(probe({ hdr: true }), { ...DEFAULT_COMPRESSION, videoMaxHeight: 0 }), { action: "keep", reason: "disabled" });
+  assert.ok(keepTranscode(["hdr"], 1000, 999));
+  assert.ok(!keepTranscode(["hdr"], 1000, 1000));
+  assert.equal(hdrTransfer({ transfer: "hlg" }), "hlg");
+  assert.equal(hdrTransfer({ transfer: "bt709" }), undefined);
   assert.ok(isHdrColorSpace({ primaries: "bt2020", transfer: "pq" } as { transfer: string }));
   assert.ok(isHdrColorSpace({ transfer: "hlg" }));
   assert.ok(!isHdrColorSpace({ transfer: "bt709" }));

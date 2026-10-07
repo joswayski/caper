@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@floating-ui/react": "^0.27.20",
+    "@jsquash/webp": "1.5.0",
     "@pierre/diffs": "^1.5.1",
     "@radix-ui/react-slider": "^1.4.7",
     "@tanstack/react-router": "^1.170.29",
