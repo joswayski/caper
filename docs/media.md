@@ -937,24 +937,49 @@ uploads the original instead of a worse file.
 Rules shared by every client:
 
 - **Lossless stays lossless.** PNG, BMP, TIFF and lossless WebP (screenshots,
-  UI, drawings) are never encoded lossily: indexed PNG when the colours fit,
-  else lossless WebP where the platform can encode it, else the original.
-  Real screenshots have thousands of colours from text anti-aliasing, so this
-  matters: lossy WebP visibly blurred text in testing.
-- **Photos** (JPEG, HEIC/HEIF, lossy WebP) are re-encoded at
-  `ASSET_IMAGE_QUALITY` and kept only when at least 10% smaller. HEIC is always
-  converted (browsers cannot show it). Re-encoding applies the EXIF
-  orientation and drops EXIF/GPS.
+  UI, drawings) are never encoded lossily: the smaller of an indexed PNG (when
+  the colours fit) and libwebp lossless WebP (`method 3`, `exact`), else the
+  original. Pixels are identical and the ICC profile is kept. Real screenshots
+  have thousands of colours from text anti-aliasing, so this matters: lossy
+  WebP visibly blurred text in testing. Lossless WebP made 2880×1800
+  screenshots 70–74% smaller.
+- **Photos** (JPEG, HEIC/HEIF, lossy WebP) are re-encoded as AVIF at
+  `ASSET_AVIF_QUALITY` when `imageFormat` is `avif`, else (or when AVIF
+  encoding fails, or for HDR/other colour spaces) as lossy WebP at
+  `ASSET_IMAGE_QUALITY`, and kept only when at least 10% smaller. HEIC is
+  always converted (browsers cannot show it). Re-encoding applies the EXIF
+  orientation and drops EXIF/XMP/GPS. A missing `imageFormat` (older API)
+  means WebP.
+- **Originals that upload unchanged lose their metadata losslessly:** JPEG
+  APPn segments other than JFIF, ICC and Adobe are dropped (orientation is kept
+  as a minimal Exif segment), PNG `eXIf`/`tEXt`/`zTXt`/`iTXt` chunks are
+  dropped, and MP4/MOV `udta`/`meta` boxes under `moov` and each track are
+  renamed `free` and zero-filled in place, so locations are gone and sample
+  data is byte-identical.
 - **Video** is transcoded to H.264/AAC MP4 only when needed: the short edge is
   above `ASSET_VIDEO_MAX_HEIGHT`, the codec is not H.264 (HEVC, VP9 and others
   do not play everywhere), or the bitrate is more than 1.25× the target.
   Otherwise the original uploads unchanged, so already-efficient phone video is
   never re-compressed. A size-only transcode is kept only when at least 10%
   smaller; the audio track is never dropped.
-- **HDR video** (iPhone/Android HLG, HDR10) is tone mapped to SDR when the
-  platform encoder can do it; otherwise the original uploads unchanged rather
-  than a washed-out SDR copy.
+- **HDR video** (iPhone/Android HLG, HDR10) is tone mapped to SDR BT.709 (Hable,
+  1000-nit peak) where the platform can do it; otherwise the original uploads
+  unchanged rather than a washed-out SDR copy.
 - **GIF, SVG, AVIF, audio, documents and other files** upload unchanged.
+
+AVIF quality parity. `avifQuality` is libavif's quality scale as of
+libavif 1.0 (`avifenc -q`). On five 9–14 MP photos, quality 85 scored
+SSIMULACRA2 83.3 against 83.0 for WebP q92 at 81% of its bytes. libavif 1.3+
+with aom 3.13+ switches stills to aom `tune=iq`, which shifts that scale, so
+Android and Apple pin `tune=ssim`; desktop's rav1e maps quality 85 to
+quantizer index 55 (calibrated to within 0.05 points on average).
+
+Why H.264 and not HEVC/AV1: chat apps send H.264 (WhatsApp, Telegram and
+Signal encode it on the phone; Slack and Teams deliver it; Discord plays HEVC
+only where the device already can). Streaming services that ship software AV1
+decoders also store an H.264 rendition, which would defeat the storage saving,
+and browsers cannot use a bundled decoder for `<video>` (Safari plays AV1 only
+on devices with AV1 hardware).
 
 The server never transcodes: it verifies the stored bytes (exact size, and
 magic bytes for inline types) and charges quota for exactly what was stored,
@@ -963,6 +988,15 @@ so a client that skips compression only spends its own allowance faster.
 Web specifics: WebCodecs via Mediabunny (loaded on demand). Google Chrome on
 Linux encodes H.264 but not AAC, so those uploads carry Opus audio in MP4;
 open-source Chromium builds without H.264 keep the original file.
+
+### Encoders by platform
+
+| Platform | Photos (AVIF) | Lossless | Video and HDR | Size cost |
+| --- | --- | --- | --- | --- |
+| Web | libavif 1.0.1 + aom 3.7.0 WASM (`@jsquash/avif` 2.1.1), single-threaded worker, speed 9 (≈3 s per 12 MP here) | `@jsquash/webp` 1.5.0 worker; indexed PNG | Mediabunny/WebCodecs H.264; HDR tone mapped on WebGL2 | 3.5 MB WASM (1.1 MB gzipped), fetched only when a photo is encoded |
+| Android | libavif 1.4.2 + aom 3.15.1 JNI built from pinned sources (`prepare-avif.sh`), speed 8, `tune=ssim`; AOMedia decoder shows AVIF on API 26–30 | Bitmap lossless WebP; indexed PNG | Media3 Transformer H.264; HDR tone mapped with OpenGL | +1.8 MB download per ABI (3.75 MB installed) |
+| Apple | libavif 1.4.2 + aom 3.15.1 static XCFramework built from pinned sources (`build-libavif.sh`, Neon on arm64), speed 6, `tune=ssim`; ImageIO decodes | libwebp 1.6.0 lossless; indexed PNG | AVAssetExportSession H.264 presets; HDR to BT.709 via AVVideoComposition | ≈4.3 MB uncompressed per arm64 slice (estimate) |
+| Desktop (Windows, Linux) | rav1e 0.8.1 + avif-serialize, speed 10, quantizer 55 for quality 85; x86 assembly when nasm is present (1.4 s vs 4.6 s per 14 MP) | libwebp 1.6.0 lossless (`webpx`); indexed PNG | Videos upload unchanged (no transcoder); metadata stripped | ≈2.4 MB uncompressed (1 MB gzipped) |
 
 ### Server-side processing (parked)
 
@@ -981,11 +1015,10 @@ never sends them, and an absent `status` means ready.
 
 Follow-ups:
 
-- Uploads from the API or modified clients are stored as sent (quota-limited);
-  verify or re-encode them server-side when that matters.
-- Raw videos keep their location metadata when a client uploads the original.
-- HDR on web: browsers may not tone map in WebCodecs, so HDR videos upload as
-  originals there.
+- Desktop cannot decode HEIC (uploads it unchanged) or AVIF (opens originals
+  in the browser; the inline image is the preview).
+- Location written as a timed metadata track or a top-level XMP `uuid` box in
+  MP4 is not removed; WebP originals keep EXIF/XMP chunks.
 - HEVC/AV1 delivery once every client can play it; chunked parallel encoding
   if server processing returns.
 
