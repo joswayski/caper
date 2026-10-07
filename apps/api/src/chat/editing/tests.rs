@@ -586,7 +586,7 @@ async fn edits_retain_versions_authorize_accounts_and_commit_with_thread_project
     );
     pool.close().await;
     admin
-        .execute(format!("DROP DATABASE {database}").as_str())
+        .execute(format!("DROP DATABASE {database} WITH (FORCE)").as_str())
         .await
         .unwrap();
 }
