@@ -27,7 +27,19 @@ pub struct Manifest {
     pub commit: String,
     #[serde(default)]
     pub notes: String,
+    #[serde(default)]
+    pub changelog: Vec<ChangelogEntry>,
+    /// Oldest installed build for which the retained history is complete.
+    #[serde(default)]
+    pub changelog_from_build: Option<u64>,
     pub platforms: BTreeMap<String, Artifact>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangelogEntry {
+    pub build: u64,
+    pub version: String,
+    pub notes: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,6 +149,23 @@ impl Manifest {
             .then(|| self.platforms.get(platform))
             .flatten()
     }
+
+    /// Show only changes included in the jump from the installed build to latest.
+    pub fn changes_since(&self, current_build: u64) -> Vec<&ChangelogEntry> {
+        let mut entries = self
+            .changelog
+            .iter()
+            .filter(|entry| current_build < entry.build && entry.build <= self.build)
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry.build));
+        entries
+    }
+
+    pub fn history_complete(&self, current_build: u64) -> bool {
+        self.changelog_from_build
+            .is_some_and(|oldest| current_build >= oldest)
+            && self.changelog.iter().any(|entry| entry.build == self.build)
+    }
 }
 
 pub const PLATFORMS: [&str; 4] = ["macos-arm64", "macos-x64", "windows-x64", "linux-x64"];
@@ -196,6 +225,36 @@ mod tests {
         assert!(manifest.update_for("linux-x64", 42).is_none());
         assert!(manifest.update_for("linux-x64", 43).is_none());
         assert!(manifest.update_for("macos-arm64", 1).is_none());
+    }
+
+    #[test]
+    fn changelog_filters_both_boundaries_and_sorts_by_build_not_version_text() {
+        let mut value: serde_json::Value = serde_json::from_slice(&manifest_json(42)).unwrap();
+        value["changelog_from_build"] = 8.into();
+        value["changelog"] = serde_json::json!([
+            {"build": 9, "version": "0.1.9", "notes": "Older change"},
+            {"build": 43, "version": "0.1.43", "notes": "Not shipped yet"},
+            {"build": 10, "version": "0.1.10", "notes": "Installed change"},
+            {"build": 42, "version": "0.1.42", "notes": "Newest change"},
+            {"build": 11, "version": "0.1.11", "notes": "Skipped change"}
+        ]);
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let manifest = verify(&bytes, &sign(&bytes, &key()), &key().verifying_key()).unwrap();
+        assert_eq!(
+            manifest
+                .changes_since(10)
+                .iter()
+                .map(|entry| entry.build)
+                .collect::<Vec<_>>(),
+            vec![42, 11]
+        );
+        assert!(manifest.history_complete(8));
+        assert!(!manifest.history_complete(7));
+        assert!(manifest.changes_since(42).is_empty());
+        let legacy: Manifest = serde_json::from_slice(&manifest_json(42)).unwrap();
+        assert!(legacy.changes_since(10).is_empty());
+        assert!(!legacy.history_complete(10));
+        assert_eq!(legacy.notes, "Screen sharing");
     }
 
     #[test]

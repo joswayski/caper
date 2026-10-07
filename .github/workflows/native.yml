@@ -20,6 +20,8 @@ on:
       - scripts/native_artifacts.py
       - tests/test_native_artifacts.py
       - tests/test_apple_release_signing.py
+      - scripts/native_changelog.py
+      - tests/test_native_changelog.py
       - .github/workflows/native.yml
   workflow_dispatch:
 
@@ -54,6 +56,7 @@ jobs:
           node-version: '24'
       - run: python -m unittest discover -s tests -p test_native_artifacts.py -v
       - run: python -m unittest discover -s tests -p test_apple_release_signing.py -v
+      - run: python -m unittest discover -s tests -p test_native_changelog.py -v
       - run: python shared/fonts/test_native_fonts.py -v
       - run: node --test tests/native-parity-fixture.test.mjs
       - run: node --test tests/desktop-icons.test.mjs
