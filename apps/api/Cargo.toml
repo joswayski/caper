@@ -8,7 +8,6 @@ rust-version.workspace = true
 [dependencies]
 async-trait = "0.1"
 aws-config = "=1.8.14"
-aws-credential-types = "=1.2.14"
 # Keep the modern HTTPS client without the SDKs' legacy rustls 0.21 feature.
 aws-sdk-secretsmanager = { version = "=1.108.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-sesv2 = { version = "=1.120.0", default-features = false, features = ["default-https-client", "rt-tokio", "sigv4a"] }

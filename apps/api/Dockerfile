@@ -7,8 +7,6 @@ COPY apps/api/Cargo.toml apps/api/Cargo.toml
 COPY apps/api/src apps/api/src
 COPY apps/api/build.rs apps/api/build.rs
 COPY apps/api/migrations apps/api/migrations
-# Cargo loads every workspace member's manifest; the worker is not built here.
-COPY apps/media-worker/Cargo.toml apps/media-worker/Cargo.toml
 
 RUN cargo build --locked --release --package caper-api
 

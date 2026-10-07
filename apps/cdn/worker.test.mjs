@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
-import { gunzipSync, gzipSync } from "node:zlib";
 import { test } from "node:test";
 import worker, { sign } from "./worker.mjs";
 
@@ -39,7 +38,6 @@ const env = {
   MEDIA: bucket({
     "original/abc": { body: new TextEncoder().encode("0123456789"), headers: { "content-type": "image/png", "content-disposition": "attachment; filename=\"a.png\"" } },
     "original/doc": { body: new TextEncoder().encode("<html>"), headers: { "content-type": "text/html", "content-disposition": "attachment; filename=\"page.html\"" } },
-    "original/notes": { body: gzipSync("hello hello hello hello"), headers: { "content-type": "text/markdown", "content-disposition": "attachment; filename=\"notes.md\"", "content-encoding": "gzip" } },
   }),
 };
 
@@ -102,25 +100,4 @@ test("HEAD reports size without a body", async () => {
   const response = await worker.fetch(new Request(await signed("original/abc"), { method: "HEAD" }), env);
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("content-length"), "10");
-});
-
-test("gzip-stored documents pass through to clients that accept gzip", async () => {
-  const response = await worker.fetch(new Request(await signed("original/notes"), { headers: { "accept-encoding": "br, gzip;q=0.8", range: "bytes=0-3" } }), env);
-  assert.equal(response.status, 200);
-  assert.equal(response.headers.get("content-encoding"), "gzip");
-  assert.equal(response.headers.get("vary"), "accept-encoding");
-  assert.equal(response.headers.get("content-type"), "application/octet-stream");
-  assert.equal(response.headers.get("accept-ranges"), null);
-  assert.equal(gunzipSync(Buffer.from(await response.arrayBuffer())).toString(), "hello hello hello hello");
-});
-
-test("gzip-stored documents are decompressed for clients that do not accept gzip", async () => {
-  for (const accept of [undefined, "identity", "gzip;q=0"]) {
-    const headers = accept ? { "accept-encoding": accept } : {};
-    const response = await worker.fetch(new Request(await signed("original/notes"), { headers }), env);
-    assert.equal(response.status, 200);
-    assert.equal(response.headers.get("content-encoding"), null);
-    assert.equal(response.headers.get("content-length"), null);
-    assert.equal(await response.text(), "hello hello hello hello");
-  }
 });

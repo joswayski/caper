@@ -843,257 +843,62 @@ pre-spaces image after migration; complete the forward rollout instead.
 
 ## Uploads and attachments
 
-Signed-in members attach up to 10 files to a message. Clients upload the
-**original** file and never compress it themselves: a server-side media worker
-(AWS Lambda) compresses every file with the same rules, so a modified or older
-client cannot skip compression and every platform stores identical results.
-
-```
-client ──PUT original──▶ S3 incoming bucket (private, objects expire after 1 day)
-                              │ ObjectCreated
-                              ▼
-                         SQS queue ──▶ media worker Lambda (arm64 container)
-                              │            │ 1. POST /api/internal/media/{id}/start  → settings
-                         dead-letter       │ 2. compress (ffmpeg, libvips, avifenc, cwebp, gzip)
-                         queue (after      │ 3. PUT result + preview ──▶ R2 (private)
-                         3 failures)       │ 4. POST …/finish (or …/fail)
-                                           └ 5. DELETE the S3 original
-API ── message.attachments event ──▶ gateways ──▶ clients swap in the result
-CDN Worker (cdn.caper.chat) ── signed GET ──▶ R2
-```
-
-Bytes never pass through the API. Uploads land in S3 (inbound transfer is
-free), the worker reads them inside the region, and only the compressed result
-leaves AWS for R2. Nothing polls while idle except the Lambda SQS event source.
+Signed-in members attach up to 10 files to a message. Bytes never pass through
+AWS: the API reserves quota and presigns one exact upload, the client `PUT`s
+straight to the private R2 bucket, and the `apps/cdn` Worker serves downloads
+from its own domain after checking a signature the API issued.
 
 ### Data model
 
 One `assets` row per logical file (`202610070001_assets.sql`), shared by future
-purposes such as avatars (`purpose`, today only `attachment`). Rows are never
-deleted (retain-records policy): `deleted_at` hides a file and `purged_at`
-records that its stored objects were removed.
+purposes such as avatars (`purpose`, today only `attachment`). An optional
+preview is a fixed derived object beside the original, not another row:
 
-| Column | Meaning |
+| Object | Key |
 | --- | --- |
-| `status` | `uploading` → `processing` → `ready`, or `failed` |
-| `declared_content_type` | What the client said it uploaded. Display only until processed |
-| `upload_byte_size` | Exact size of the original the client may upload |
-| `content_type`, `kind`, `filename` | The stored result (a GIF becomes `video/mp4`, `.gif` becomes `.mp4`) |
-| `byte_size` | Stored bytes: the reservation (`upload_byte_size`) until processed, then the result |
-| `content_encoding` | `gzip` when a document is stored compressed |
-| `animated` | A GIF/animated image stored as a silent looping MP4 |
-| `preview_content_type`, `preview_byte_size` | Optional WebP preview (images, video posters) |
-
-| Stored object | Key |
-| --- | --- |
-| Original upload (S3 incoming bucket) | `incoming/{asset id}` |
-| Result (R2) | `original/{asset id}` |
-| Preview (R2, ≤ `MEDIA_PREVIEW_EDGE` px WebP) | `preview/{asset id}` |
+| Original | `original/{asset id}` |
+| Preview (≤ 640 px, ≤ 512 KiB, WebP/JPEG/PNG) | `preview/{asset id}` |
 
 `message_id`/`position` link a sent file to one message. Message content keeps
-its version 1 `type:"text"` shape with an optional `attachments` array.
-**Stored payloads never contain URLs.**
+its version 1 `type:"text"` shape and gains an optional `attachments` array
+(`id, kind, contentType, name, size, width, height, durationMs, preview`).
+**Stored payloads never contain URLs.** Rows are never deleted (matching the
+retain-records policy): `deleted_at` hides a file and `purged_at` records that
+its R2 objects were removed.
 
-### Attachment JSON
+### Upload flow
 
-```jsonc
-{
-  "id": "…", "kind": "image|video|audio|file", "contentType": "image/avif",
-  "name": "photo.avif", "size": 123456,
-  "width": 4032, "height": 3024, "durationMs": 5000,   // when known
-  "preview": {},                                       // present when a preview exists
-  "status": "processing|ready|failed",                 // absent in old payloads = ready
-  "animated": true,                                    // play muted, looping, no controls
-  "url": "https://cdn…", "previewUrl": "https://cdn…", // added at delivery, never stored
-  "unavailable": true                                  // deleted file
-}
-```
+1. `POST /api/assets` (account cookie/bearer) with channel, name, type, exact
+   byte size, optional dimensions/duration and preview size. The API checks
+   channel access, locks the user row, enforces quota, 30 reservations/minute
+   and 20 pending uploads, inserts a pending row, and returns presigned `PUT`
+   URLs (15 minutes). The signature covers `content-type`, `content-length`
+   and the download name in `content-disposition`, so R2 rejects other bytes.
+2. The client uploads the preview, then the original, directly to R2.
+3. `POST /api/assets/{id}/complete`: the API `HEAD`s each object, requires the
+   exact reserved size, and for inline types checks magic bytes from a 64-byte
+   ranged `GET`. A mismatch soft-deletes the reservation (`422`).
+4. `POST /api/chat/channels/{id}/messages` accepts `attachmentIds`. Inside the
+   send transaction the API locks the sender's ready, unattached uploads for
+   that channel, embeds their descriptions and links them. Text may be empty
+   only when files are attached. Attachment IDs join the idempotency hash;
+   text-only hashes are unchanged.
 
-`url` is present only when `status` is `ready`. `previewUrl` is present whenever
-a preview exists, including while processing (a video poster appears first).
-While processing, `kind`/`contentType`/`name` describe the upload; the final
-values arrive with the update event.
+`GET /api/assets/usage` returns `{used, limit}`. `POST /api/assets/urls`
+returns fresh URLs for visible attachments (like Discord's refresh endpoint)
+for tabs open longer than a URL's lifetime.
 
-### Client upload flow
+### Limits and quota
 
-1. `POST /api/assets` with `{channelId, filename, contentType, byteSize}` (the
-   original's exact size). The API checks channel access, `MEDIA_MAX_UPLOAD_BYTES`
-   (default 2 GiB), quota (the original's size is held until processing
-   finishes), 30 reservations/minute and 20 unfinished uploads. Response:
-   `{id, kind, upload: {method:"PUT", url, headers:{"content-type"}}, storage:{used, limit}}`.
-2. `PUT` the original bytes to `upload.url` with exactly `upload.headers`
-   (the presigned URL signs `content-type` and `content-length`; S3 rejects
-   anything else). Valid for 15 minutes.
-3. `POST /api/assets/{id}/complete`. The API confirms the object exists with the
-   reserved size (or that the worker already took it) and returns the
-   attachment JSON with `status:"processing"`. `409` means the upload has not
-   arrived yet; `422` means size mismatch.
-4. Send the message with `attachmentIds` right away. Sending does not wait for
-   processing.
-
-`GET /api/assets/usage` returns `{used, limit, maxUploadBytes}`.
-`POST /api/assets/urls {ids}` returns fresh `{url?, previewUrl?}` per visible
-attachment, for clients open longer than a URL's lifetime.
-
-### Live updates
-
-- `message.attachments` (sequenced like `message.reactions`):
-  `{"type":"message.attachments","schemaVersion":1,"channelId","seq","messageId","attachments":[…]}`.
-  Replace the message's `content.attachments` with `attachments` (freshly
-  signed). Sent when a preview appears, when processing finishes, and when it
-  fails. The stored message also records `attachmentsSeq` (like
-  `reactionSeq`): apply an event only when its `seq` is newer than the
-  message's `attachmentsSeq`, and take a fetched message's attachments only
-  when its `attachmentsSeq` is newer, so a replayed "processing" event never
-  overwrites a "ready" snapshot.
-- `attachment.progress` (ephemeral, unsequenced, like `typing.updated`):
-  `{"type":"attachment.progress","channelId","messageId","attachmentId","percent"}`
-  with `percent` 0–100, at most every few seconds while a video encodes. Clients
-  show it on the processing placeholder and may drop it.
-
-Editing a message changes its text only; its attachments (and their latest
-state) are kept, and a message with files may be edited to empty text. A
-forward embeds a snapshot of its source message, including its attachments,
-whose URLs are signed with the forward; they refresh when the forward is
-reloaded, not through `POST /api/assets/urls`. Thread replies may carry files
-through the API; the client composers attach files only in channels and DMs.
-
-Clients render `processing` as a placeholder sized from `width`/`height` when
-known, showing `previewUrl` if present, a spinner and the latest percent;
-`failed` as "Couldn't process this file"; and `ready` as before. The sender
-may show its own local copy until the result arrives.
-
-### Compression rules (media worker)
-
-The worker detects the real type from the bytes (never the declared type),
-removes metadata (EXIF/GPS) from re-encoded images, and keeps whichever stored
-form the rules choose:
-
-| Upload | Stored as |
-| --- | --- |
-| Screenshot/graphic (lossless WebP ≤ `MEDIA_IMAGE_LOSSLESS_RATIO` × the AVIF size) | Lossless WebP: pixel-exact |
-| Photo | AVIF at `MEDIA_IMAGE_AVIF_QUALITY`; the original JPEG/PNG/WebP stays (metadata stripped) when AVIF saves less than `MEDIA_IMAGE_MIN_SAVINGS_PERCENT` |
-| HEIC/HEIF, TIFF, BMP | Converted like photos (browsers cannot show HEIC) |
-| GIF, animated WebP/PNG | Silent looping H.264 MP4 (`animated: true`) |
-| Video | H.264/AAC MP4, short edge ≤ `MEDIA_VIDEO_MAX_HEIGHT`, CRF `MEDIA_VIDEO_CRF`; an MP4 that is already smaller and H.264 is kept. HDR (HLG from iPhone/Android cameras, PQ/HDR10) is tone mapped to SDR BT.709 (zscale + Hable), poster included, so it never plays back washed out |
-| WAV/AIFF | FLAC (lossless) |
-| Other audio, archives, already-compressed files | Stored unchanged |
-| Text and other documents | gzip, kept only when at least `MEDIA_FILE_MIN_SAVINGS_PERCENT` smaller; served with `Content-Encoding: gzip`, so downloads are byte-identical |
-
-Benchmarks behind these defaults (October 2026, SSIMULACRA2 ≥ 90 / VMAF ≥ 95
-mean visually indistinguishable): lossless WebP stored real screenshots at
-28–37% of PNG with zero loss, where AVIF was 73–160%; AVIF q90 stored photos
-from lossless sources at 22% of PNG (score 90); phone JPEGs re-encoded to AVIF
-q90 saved 24% for a 2-point score drop; H.264 CRF 20 stored a 25 Mbps 1080p
-clip at 32% (VMAF 95.6); GIF → MP4 kept 17–26% (SSIM ≥ 0.98); gzip stored text
-at 15–36%. AV1 video (20% at VMAF 97.5) is not used yet because about 70% of
-Apple devices cannot decode it; JPEG XL is not yet displayable everywhere.
-
-### Configuration
-
-API (sent to the worker with each job, so changes need only an API restart;
-`profile` leaves room for per-plan tiers):
-
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `MEDIA_UPLOAD_BUCKET` | — | S3 incoming bucket. Unset leaves upload routes returning 503 |
-| `MEDIA_UPLOAD_REGION` | `AWS_REGION` | Region of that bucket |
-| `MEDIA_WORKER_SECRET` | — | Shared bearer secret for `/api/internal/media/*` (≥ 32 characters) |
-| `MEDIA_MAX_UPLOAD_BYTES` | 2147483648 | Largest original accepted |
-| `ASSET_QUOTA_BYTES` | 10737418240 | Per-person stored bytes, after compression |
-| `MEDIA_IMAGE_AVIF_QUALITY` | 90 | AVIF quality (1–100) |
-| `MEDIA_IMAGE_AVIF_SPEED` | 6 | avifenc speed (0 slowest/smallest – 10) |
-| `MEDIA_IMAGE_LOSSLESS_RATIO` | 1.3 | Keep lossless WebP when at most this × the AVIF size |
-| `MEDIA_IMAGE_MIN_SAVINGS_PERCENT` | 15 | Keep the original image unless re-encoding saves this much |
-| `MEDIA_IMAGE_MAX_EDGE` | 0 | Downscale longer edge (0 keeps full resolution) |
-| `MEDIA_PREVIEW_EDGE` | 640 | Preview/poster longer edge |
-| `MEDIA_VIDEO_CRF` | 20 | H.264 CRF (lower = better, bigger) |
-| `MEDIA_VIDEO_PRESET` | `slow` | x264 preset |
-| `MEDIA_VIDEO_LONG_SECONDS` | 300 | Videos longer than this use `MEDIA_VIDEO_LONG_PRESET` to fit Lambda's 15 minutes |
-| `MEDIA_VIDEO_LONG_PRESET` | `veryfast` | x264 preset for long videos |
-| `MEDIA_VIDEO_MAX_HEIGHT` | 1080 | Short-edge cap (0 keeps resolution) |
-| `MEDIA_AUDIO_KBPS` | 128 | AAC bitrate in transcoded video |
-| `MEDIA_FILE_MIN_SAVINGS_PERCENT` | 10 | Keep gzip only when it saves this much |
-
-R2 (`R2_*`) and CDN (`ASSET_CDN_ORIGIN`, `ASSET_CDN_SIGNING_SECRET`) keep their
-meanings; the API now only deletes from R2 (purge) and signs CDN URLs.
-
-Media worker (Lambda environment): `MEDIA_API_ORIGIN` (e.g.
-`https://api.caper.chat`), `MEDIA_SECRET_ID` (the Secrets Manager secret holding
-`R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and
-`MEDIA_WORKER_SECRET`).
-
-### Worker API (`Authorization: Bearer MEDIA_WORKER_SECRET`)
-
-| Route | Body | Effect |
-| --- | --- | --- |
-| `POST /api/internal/media/{id}/start` | — | `200 {id, uploadByteSize, declaredContentType, filename, settings}` and `status=processing`; `409` when the asset is deleted, finished or unknown (the worker deletes the original and stops) |
-| `POST …/progress` | `{percent}` | Ephemeral `attachment.progress` when the file is already in a message |
-| `POST …/preview` | `{contentType, byteSize, width?, height?, durationMs?}` | Records the preview (poster) early; emits `message.attachments` |
-| `POST …/finish` | `{kind, contentType, filename, byteSize, width?, height?, durationMs?, animated, contentEncoding?, preview?:{contentType, byteSize}}` | `status=ready`, quota settles to the stored size; emits `message.attachments` |
-| `POST …/fail` | `{reason}` | `status=failed`, quota released; emits `message.attachments` |
-
-All are idempotent. A sweeper marks files still `uploading` 1 hour after
-creation, or `processing` 30 minutes after their last worker contact, as
-failed.
-
-### Media worker (`apps/media-worker`)
-
-Rust Lambda custom runtime (`caper-media-worker`, arm64 container image on
-Debian trixie with ffmpeg, libvips + libheif, cwebp, avifenc, jpegtran). The
-SQS mapping uses batch size 1 and `ReportBatchItemFailures`; each message body
-is an S3 notification (URL-encoded keys; `s3:TestEvent` and keys other than
-`incoming/{1–64 alphanumerics}` are ignored). The secret is read once per cold
-start. Per file it calls `start` (`409` → delete the original, done), streams
-the original to `/tmp`, fails with `size mismatch` when the size differs from
-`uploadByteSize` (or `upload missing` when the object is gone), processes it,
-uploads `original/{id}` (with the API's `Content-Disposition`, and
-`Content-Encoding: gzip` when set) and `preview/{id}`, calls `finish`, then
-deletes the original. Network/5xx callback errors are retried three times;
-other failures leave the message to SQS, and on the last receive
-(`ApproximateReceiveCount` ≥ `MEDIA_MAX_RECEIVES`, default 3, matching the
-redrive policy) the worker reports `fail {"reason":"processing failed"}` first.
-If the Lambda deadline is about to pass it reports `processing timed out`.
-
-Decisions beyond the rules table:
-
-- Type detection uses magic bytes, then libvips/ffprobe; media that cannot be
-  decoded is stored as a file (`application/octet-stream`, gzip only for
-  uncompressed formats such as BMP/TIFF/WAV). File content types keep the
-  declared type unless it claims `image/`, `video/` or `audio/`.
-- Images: libvips autorotates and keeps only the ICC profile; lossless WebP
-  uses `cwebp -z 3` (`-z 1` above 25 MP: 24 MP ≈ 9 s vs ≈ 7 s at similar
-  size); AVIF is 8-bit, 4:4:4 when the lossless WebP is under 4 bits/pixel
-  (graphics), else 4:2:0. The original JPEG/PNG/WebP/AVIF is kept only when it
-  is upright (EXIF orientation 1/absent) and not resized, and also when a
-  chosen lossless WebP would not be smaller than it. Kept JPEGs go through
-  `jpegtran -copy icc -optimize` (colour profile kept, EXIF/XMP/comments
-  dropped); PNG/WebP drop metadata chunks; an AVIF is kept only without
-  EXIF/XMP. HEIC/HEIF, TIFF, BMP and single-frame GIF always convert.
-- Animated GIF/APNG/WebP/AVIF become silent MP4 without B-frames (exact
-  variable frame delays); transparency becomes black; the short edge follows
-  `MEDIA_VIDEO_MAX_HEIGHT`. Animated WebP frames are extracted with libvips.
-- Video: the poster preview is uploaded and reported before the encode;
-  `progress` is sent at most every 3 s when the integer percent increases
-  (never 100; `finish` completes it). When the encode is projected to miss the
-  Lambda deadline (minus 30 s + upload time) it restarts with `superfast`, then
-  `ultrafast`. If it still cannot finish, a remuxable H.264 source is stored
-  remuxed; anything else is stored unchanged as a `file` (its earlier preview
-  is not repeated in `finish`). Metadata (including location) is dropped.
-- Audio: integer PCM WAV/AIFF (≤ 24-bit, ≤ 8 channels) becomes FLAC when
-  smaller; float/32-bit PCM and other audio stay unchanged.
-- File names keep the base name; converted results get the stored type's
-  extension (`photo.HEIC` → `photo.avif`), names with a matching extension
-  (`IMG.JPG`, `a.jpeg`) are unchanged, and files keep their name.
-
-Run the processing step locally (no AWS, prints the `finish` body; the
-result and `preview.webp` land in the output directory):
-
-```sh
-cargo run -p caper-media-worker -- process photo.heic out/ [--settings settings.json] [--deadline 120]
-cargo test -p caper-media-worker                                  # unit tests
-cargo test -p caper-media-worker --test pipeline -- --ignored     # needs the tools above
-```
+- Per person, across every space: `ASSET_QUOTA_BYTES` (default 10 GiB) of stored
+  bytes, original plus preview. No separate per-file limit; one file may use
+  the whole allowance. Space owners are not charged for members' uploads.
+- Quota counts what is **stored** (after browser compression), and reservations
+  count immediately so parallel uploads cannot overshoot.
+- Bytes stay counted until the purge loop removes the objects. That bounds
+  upload/delete/re-upload churn to the allowance.
+- Single `PUT` uploads (R2 allows up to 5 GiB). Multipart/resumable uploads are
+  not implemented.
 
 ### Delivery and URL signing
 
@@ -1101,7 +906,7 @@ Every response or socket frame that carries a message signs URLs as it leaves:
 history, the send response, and both gateway paths (live and replay, including
 the legacy socket). URLs look like
 `https://cdn.caper.chat/original/{id}?exp={unix}&sig={base64url HMAC-SHA256("{key}\n{exp}")}`.
-Results stored with `Content-Encoding: gzip` are passed through to clients that accept gzip and decompressed by the Worker for those that do not. Expiry snaps to UTC day boundaries, so a URL is identical for a day (browser
+Expiry snaps to UTC day boundaries, so a URL is identical for a day (browser
 cacheable) and lives 24–48 hours. The Worker rejects anything signed more than
 three days out, serves allowlisted image/video/audio types inline, forces every
 other type to download as `application/octet-stream`, and always sends
@@ -1109,33 +914,195 @@ other type to download as `application/octet-stream`, and always sends
 The edge cache is keyed by object, after signature verification. A leaked URL
 works until it expires, as with Discord's signed attachment links.
 
+### Client compression and previews
+
+Clients compress before upload, using settings the API serves with
+`GET /api/assets/usage` (`compression`), so operators tune them with
+configuration and an API restart, not a client release. The goal is smaller
+files **without visible quality loss**; when a platform cannot meet a rule it
+uploads the original instead of a worse file.
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `ASSET_PALETTE_COLORS` | 256 | Stills with at most this many distinct colours become a **lossless** indexed PNG (the exact-palette path from Captures). 0 disables. |
+| `ASSET_IMAGE_QUALITY` | 92 | Photos: lossy WebP (JPEG where WebP encoding is unavailable). 100 disables lossy encoding. |
+| `ASSET_IMAGE_MAX_EDGE` | 4096 | Longest still edge; 0 keeps the original size. Never upscales. |
+| `ASSET_PREVIEW_EDGE` | 640 | Preview size for images and video posters (≤ 512 KiB). |
+| `ASSET_VIDEO_MAX_HEIGHT` | 1080 | Short-edge cap for videos ("1080p", so portrait phone video keeps its detail); 0 uploads videos unchanged. |
+| `ASSET_VIDEO_BITRATE_KBPS` | 6000 | Target bitrate at 1080p, scaled by pixel count for smaller videos (hardware encoders need more headroom than x264 to avoid blocking). |
+| `ASSET_AUDIO_BITRATE_KBPS` | 128 | Audio bitrate for transcodes (AAC, or Opus where AAC encoding is unavailable). |
+
+Rules shared by every client:
+
+- **Lossless stays lossless.** PNG, BMP, TIFF and lossless WebP (screenshots,
+  UI, drawings) are never encoded lossily: indexed PNG when the colours fit,
+  else lossless WebP where the platform can encode it, else the original.
+  Real screenshots have thousands of colours from text anti-aliasing, so this
+  matters: lossy WebP visibly blurred text in testing.
+- **Photos** (JPEG, HEIC/HEIF, lossy WebP) are re-encoded at
+  `ASSET_IMAGE_QUALITY` and kept only when at least 10% smaller. HEIC is always
+  converted (browsers cannot show it). Re-encoding applies the EXIF
+  orientation and drops EXIF/GPS.
+- **Video** is transcoded to H.264/AAC MP4 only when needed: the short edge is
+  above `ASSET_VIDEO_MAX_HEIGHT`, the codec is not H.264 (HEVC, VP9 and others
+  do not play everywhere), or the bitrate is more than 1.25× the target.
+  Otherwise the original uploads unchanged, so already-efficient phone video is
+  never re-compressed. A size-only transcode is kept only when at least 10%
+  smaller; the audio track is never dropped.
+- **HDR video** (iPhone/Android HLG, HDR10) is tone mapped to SDR when the
+  platform encoder can do it; otherwise the original uploads unchanged rather
+  than a washed-out SDR copy.
+- **GIF, SVG, AVIF, audio, documents and other files** upload unchanged.
+
+The server never transcodes: it verifies the stored bytes (exact size, and
+magic bytes for inline types) and charges quota for exactly what was stored,
+so a client that skips compression only spends its own allowance faster.
+
+Web specifics: WebCodecs via Mediabunny (loaded on demand). Google Chrome on
+Linux encodes H.264 but not AAC, so those uploads carry Opus audio in MP4;
+open-source Chromium builds without H.264 keep the original file.
+
+### Server-side processing (parked)
+
+A server pipeline was built and then deliberately not shipped: clients
+uploaded originals to S3, an arm64 Lambda (`apps/media-worker`) compressed
+them (lossless WebP/AVIF, H.264 with HDR tone mapping, FLAC, gzip) into R2,
+and the API pushed `message.attachments` updates. Encoding on our servers
+costs roughly $0.003–0.02 per video minute, which a $5/month plan cannot
+absorb for heavy uploaders, while client encoders are free. It remains in the
+history of joswayski/caper#246 (contract `9d3709b`, API `5f23d15`, worker
+`08797de`, `72f8514`, `c5f57ea`) and joswayski/infrastructure#129 (`8ae9ace`) for when it
+is needed. Clients still accept the optional `status`
+(`processing|ready|failed`), `animated` and `attachmentsSeq` fields and the
+`message.attachments` / `attachment.progress` events it used; today's API
+never sends them, and an absent `status` means ready.
+
+Follow-ups:
+
+- Uploads from the API or modified clients are stored as sent (quota-limited);
+  verify or re-encode them server-side when that matters.
+- Raw videos keep their location metadata when a client uploads the original.
+- HDR on web: browsers may not tone map in WebCodecs, so HDR videos upload as
+  originals there.
+- HEVC/AV1 delivery once every client can play it; chunked parallel encoding
+  if server processing returns.
+
+Editing a message changes its text only; its attachments are kept, and a
+message with files may be edited to empty text. A forward embeds a snapshot of
+its source message, including its attachments, whose URLs are signed with the
+forward; they refresh when the forward is reloaded, not through
+`POST /api/assets/urls`. Pinned messages and thread replies show their files.
+Thread replies may carry files through the API; the client composers attach
+files only in channels and DMs.
+
 ### Deletion and purge
 
 An API loop (every minute, `FOR UPDATE SKIP LOCKED`, safe across replicas):
 
-- Marks uploads never confirmed after 1 hour, or confirmed but never sent after
-  24 hours, as deleted.
+- Marks uploads never completed after 1 hour, or completed but never sent
+  after 24 hours, as deleted.
 - Removes R2 objects for deleted rows: immediately when the file was never
-  sent, 24 hours after deletion when it was, then sets `purged_at` and releases
-  quota. S3 originals expire through the bucket lifecycle rule.
+  sent, 24 hours after deletion when it was (so moderators can still inspect
+  it), then sets `purged_at` and releases quota.
 
-No user-facing message or file delete exists yet.
+History marks deleted attachments `unavailable` without URLs. No user-facing
+message or file delete exists yet; account deletion should set `deleted_at` on
+the owner's assets when that flow lands.
 
-### Platform status and validation
+### Configuration
 
-| Platform | Uploads and display | Validated |
+| Variable | Where | Meaning |
 | --- | --- | --- |
-| API, CDN Worker | Presigned S3 uploads (session-token aware SigV4), worker routes, `message.attachments`/`attachment.progress`, quota settling, sweeper; gzip passthrough or decompression at the CDN | Unit tests (SigV4 against AWS's published vector), Postgres integration test of the whole flow (upload → send while processing → preview → progress → finish/fail → sweeper timeout → purge) against a fake S3, Worker tests |
-| Media worker | Rules in the table above; deadline-aware presets; idempotent callbacks | 49 unit tests and 15 pipeline tests with real ffmpeg/vips/avifenc/cwebp (Ubuntu 24.04 versions). Not run: the container image, arm64, Lambda/SQS/S3/R2/Secrets Manager, HEIC input |
-| Web | Uploads the original (XHR, exact signed headers, `complete` retried on 409, `maxUploadBytes` checked first); processing (preview or the sender's local copy, spinner, live percent), failed, animated (muted loop, reduced motion respected) | Unit tests; Chromium desktop and 390 px against a labelled mocked API/gateway fixture. Not run: live API/worker, Safari/Firefox, real H.264 playback |
-| Android | Streams the original from the content URI; same states; animated inline muted loops; AVIF native on API 31+, bundled libavif/dav1d (~0.9 MB per ABI) on API 26–30 with the WebP preview as fallback | 150 JVM tests (MockWebServer upload, gateway), `assembleDebug`, `lintDebug`. Not run on a device or emulator |
-| Apple (iOS 17 / macOS 14) | Uploads the original from disk (HEIC as is); same states; AVIF/WebP through ImageIO; animated loops via AVPlayerLooper, paused under Reduce Motion | Unit tests written but not compiled here (no Swift toolchain); macOS CI and device checks pending |
-| Rust desktop (Windows, Linux) | Streams the original; same states; inline images from the WebP preview (no in-app AVIF decode); AVIF/HEIC originals, video, audio and animated files open in the system browser | 222 tests, clippy, `parity-attachments` fixture under Xvfb. Not run on Windows or against live storage |
+| `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | API | Bucket-scoped R2 Object Read & Write key. All four or none; none leaves upload routes returning 503. |
+| `R2_ENDPOINT` | API, local only | Loopback S3-compatible fake (`http://127.0.0.1:…`). Rejected otherwise. |
+| `ASSET_QUOTA_BYTES` | API | Per-person stored bytes. Default `10737418240` (10 GiB). |
+| `ASSET_IMAGE_QUALITY`, `ASSET_IMAGE_MAX_EDGE`, `ASSET_PALETTE_COLORS`, `ASSET_PREVIEW_EDGE`, `ASSET_VIDEO_MAX_HEIGHT`, `ASSET_VIDEO_BITRATE_KBPS`, `ASSET_AUDIO_BITRATE_KBPS` | API | Client compression settings above; invalid values stop startup. |
+| `ASSET_CDN_ORIGIN`, `ASSET_CDN_SIGNING_SECRET` | API **and** gateway | Worker origin and shared HMAC secret (≥ 32 characters). Without them messages carry attachment metadata but no URLs. |
 
-Not yet validated anywhere: live S3/SQS/Lambda/R2, the deployed CDN Worker
-with gzip passthrough, physical phones, and long videos near Lambda's
-15-minute limit.
+The bucket needs a CORS rule allowing `PUT` from the web origin with the
+`content-type` and `content-disposition` headers (managed in
+`joswayski/infrastructure`). The Worker (`apps/cdn/wrangler.toml`) binds the
+bucket as `MEDIA`, runs on `cdn.caper.chat` / `cdn.staging.caper.chat`, and
+holds `ASSET_CDN_SIGNING_SECRET` as a Worker secret:
 
+```sh
+cd apps/cdn
+npx wrangler secret put ASSET_CDN_SIGNING_SECRET --env staging
+npx wrangler deploy --env staging
+```
+
+### Platform status
+
+| Platform | Send files | Show files |
+| --- | --- | --- |
+| Web (desktop and mobile layouts) | Yes: picker, paste, drag and drop | Images, video, audio, file cards |
+| Apple (iOS and macOS) | Yes: Photos picker, file importer, drag and drop on macOS (no paste) | Images, video (AVKit), audio, file cards, "File removed" |
+| Android | Yes: system photo picker and document picker, up to 10 files, draft chips with compression savings and progress. Applies the server `compression` settings on device (indexed PNG within `paletteColors`, else lossy WebP; Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview, tap for full size), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
+| Rust desktop (Windows, Linux) | Yes: file dialog (Win32; XDG desktop portal on Linux) and drag and drop, up to 10. No clipboard image paste. Stills: exact-palette indexed PNG or JPEG (pure Rust; no WebP encoder) with the server settings. Videos upload unchanged (no transcoder); MP4/QuickTime size and duration from headers | Inline images (decoded off the UI thread, cached by attachment id). Video posters, audio and files open in the system browser or player; no in-app playback. "File removed" cards. URLs refreshed before expiry and once after a 403/404 load |
+
+Apple notes. Attachments decode tolerantly (a malformed entry is skipped).
+Signed URLs are refreshed through `POST /api/assets/urls` when `exp` is past or
+within an hour, or after a 403/404, at most once per stale URL; decoded images
+are cached by attachment id. Stills follow the shared policy: an exact indexed
+PNG (Swift encoder over the Compression framework's DEFLATE) when the colours
+fit `paletteColors`, otherwise WebP if ImageIO can encode it at runtime, else
+JPEG on white, at `imageQuality`, scaled to `imageMaxEdge`; HEIC is never
+uploaded when conversion succeeds. Videos use the largest
+`AVAssetExportSession` size preset whose output short edge stays within
+`videoMaxHeight` (H.264/AAC MP4, kept only if smaller, original on failure).
+Presets choose their own bitrates, so `videoBitrateKbps` and
+`audioBitrateKbps` are not applied. Previews and poster frames use
+`previewEdge`. Taps open images and files at their signed URL in the system
+browser or viewer; there is no in-app full-screen viewer. GIFs show their
+first frame. Audio plays through `AVPlayer` with the app's existing audio
+session. Unit tests cover decoding, URL refresh decisions, compression
+decisions, the indexed-PNG round trip through ImageIO, the upload request
+sequence and a file-only send against a stubbed `URLProtocol`. They were
+written without a Swift toolchain and await macOS CI; Photos/file pickers,
+drag and drop, AVKit playback, export presets on real media, live R2 uploads
+and physical devices are not yet validated.
+
+### Validation
+
+- Rust unit tests: SigV4 presigning matches AWS's published S3 example, signed
+  upload headers, day-snapped delivery URLs, a signature vector shared with the
+  Worker tests, configuration rules, sniffing and name/type normalization.
+- Postgres integration test (fake S3 server): quota with previews, access
+  denial, exact-size and magic-byte verification, ordered single-use linking,
+  history signing, URL refresh visibility, purge timing and quota release.
+- Worker tests (`npm run test:cdn`): signature, expiry, tampering, inline versus
+  download headers, ranges, HEAD.
+- Web tests: tolerant attachment validation, upload request sequence, storage
+  full errors, file-only sends.
+- Chromium against a local API, gateway, Postgres 16, Valkey, a fake S3 server
+  and the real Worker code: a 1.6 MB PNG uploaded as a 143 KB WebP, a second
+  member received it live through the gateway, history reload and a 390 px
+  layout rendered, a tampered signature returned 404.
+- Google Chrome (stable, Linux) against the same stack: a flat 2560×1440 PNG
+  uploaded as a 9.5 KB lossless indexed PNG (from 104 KB), and a 4 s 2560×1440
+  VP9/Opus WebM was transcoded in the browser to a 1920×1080 H.264 + Opus MP4
+  (2.3 MB → 805 KB) that played back with its poster. Rust and web tests cover
+  the settings, the flood limits and an indexed-PNG decode round-trip.
+- Not yet validated: live R2 (signature acceptance, signed `content-length`
+  and CORS), the deployed Worker and its edge cache, Safari/Firefox encoders
+  (including Opus-in-MP4 playback on Safari), and physical phones. Desktop has
+  not uploaded to a live API/R2/CDN; its Windows file dialog and drag and drop
+  and the Linux portal dialog have not been exercised interactively.
+- Rust desktop unit tests: tolerant attachment parsing, URL expiry and
+  refresh batching with one retry after 403/404, compression decisions, a
+  pixel-exact palette PNG round trip, MP4 header probing, and the upload
+  request sequence against a loopback fake server (exact storage headers and
+  length, no credentials on storage `PUT`s, `attachmentIds` only when present,
+  storage-full errors). The labelled `--fixture parity-attachments` preview
+  was rendered under Xvfb (software Vulkan) at 1440×900 and 900×700.
+- Android: JVM unit tests cover tolerant attachment parsing, URL expiry and
+  refresh decisions, the compression decisions (palette PNG versus lossy versus
+  keep, preview sizing, video target height), a lossless indexed-PNG round trip
+  through the JDK decoder, and the reserve, presigned `PUT`, complete and send
+  sequence against MockWebServer (exact headers, no credentials sent to
+  storage). Not yet validated on Android: the Compose attachment UI and pickers
+  on an emulator or device, Bitmap/WebP encoding and EXIF handling, Media3
+  Transformer transcoding and playback, and uploads to live R2/CDN.
 ## Message reactions
 
 Desktop web exposes **Add reaction** on message hover or keyboard focus. Mobile

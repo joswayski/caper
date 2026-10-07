@@ -8,11 +8,11 @@ Custom photo/GIF avatars and an avatar gallery are not implemented yet.
 
 Signed-in members can attach up to 10 files per message on web, Android,
 iPhone/Mac and Windows/Linux desktop: images, video, audio and other files.
-Clients upload originals; a server-side media worker compresses every file the
-same way (lossless WebP for screenshots, AVIF for photos, H.264 for video and
-GIFs, FLAC for WAV, gzip for documents) within a per-person storage allowance
-(10 GB by default, after compression). Desktop opens video and audio in the
-system player. See [Uploads and attachments](docs/media.md#uploads-and-attachments).
+Clients compress on the device without visible quality loss (lossless for
+screenshots and graphics, high-quality WebP/JPEG for photos, H.264 video where
+the platform can encode it; other files upload unchanged) and upload straight
+to storage, within a per-person allowance (10 GB by default). Desktop opens
+video and audio in the system player. See [Uploads and attachments](docs/media.md#uploads-and-attachments).
 
 Signed-in accounts can start persistent, private one-to-one messages by username.
 The Direct messages list is shared across spaces. Mobile push is deferred;
@@ -78,7 +78,6 @@ for available settings. Stop the stack with Ctrl-C.
 
 - [apps/web](apps/web) — TanStack Start web app
 - [apps/api](apps/api) — Rust API and WebSocket gateway
-- [apps/media-worker](apps/media-worker) — Rust Lambda that compresses uploaded attachments
 - [apps/native](apps/native/README.md) — native development clients; not yet feature-parity releases
 - [shared](shared) — shared design tokens
 
