@@ -10,7 +10,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use crate::detect::ImageFormat;
 use crate::image;
 use crate::process::{Ctx, EarlyPreview, Error, Kind, Outcome};
-use crate::tools::{self, Probe, ToolError, VipsHeader};
+use crate::tools::{self, Probe, Stream, ToolError, VipsHeader};
 
 /// Minimum spacing of progress callbacks.
 const PROGRESS_INTERVAL: Duration = Duration::from_secs(3);
@@ -221,6 +221,36 @@ async fn ffmpeg_with_progress(
     }
 }
 
+/// Tone mapping from HDR (BT.2020 PQ/HLG) to SDR BT.709, so HDR phone videos
+/// do not play back washed out. Linearize, convert primaries, compress the
+/// highlights with Hable, then encode BT.709. `size` also scales.
+pub fn tonemap(stream: &Stream, size: Option<(u32, u32)>) -> Option<String> {
+    let transfer = stream.hdr_transfer()?;
+    let primaries = match stream.color_primaries.as_deref() {
+        Some("bt709") => "bt709",
+        _ => "bt2020",
+    };
+    let matrix = match stream.color_space.as_deref() {
+        Some("bt709") => "bt709",
+        Some("bt2020c") => "bt2020c",
+        _ => "bt2020nc",
+    };
+    let scale = size.map_or_else(String::new, |(w, h)| format!("w={w}:h={h}:"));
+    Some(format!(
+        "zscale={scale}tin={transfer}:pin={primaries}:min={matrix}:rin=tv:t=linear:npl=100,\
+         format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,\
+         zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
+    ))
+}
+
+/// The encode's video filter: scale to the target size, tone mapping HDR.
+pub fn video_filter(stream: &Stream, width: u32, height: u32) -> String {
+    tonemap(stream, Some((width, height))).map_or_else(
+        || format!("scale={width}:{height},setsar=1,format=yuv420p"),
+        |hdr| format!("{hdr},setsar=1"),
+    )
+}
+
 fn h264_args(preset: &str, crf: u8) -> Vec<OsString> {
     os([
         "-c:v".to_owned(),
@@ -233,6 +263,13 @@ fn h264_args(preset: &str, crf: u8) -> Vec<OsString> {
         crf.to_string(),
         "-pix_fmt".to_owned(),
         "yuv420p".to_owned(),
+        // Always SDR BT.709 out (tone mapped when the source is HDR).
+        "-color_primaries".to_owned(),
+        "bt709".to_owned(),
+        "-color_trc".to_owned(),
+        "bt709".to_owned(),
+        "-colorspace".to_owned(),
+        "bt709".to_owned(),
         "-map_metadata".to_owned(),
         "-1".to_owned(),
         "-map_chapters".to_owned(),
@@ -386,6 +423,7 @@ pub async fn animated(
 async fn poster(input: &Path, probe: &Probe, ctx: &Ctx<'_>) -> Option<PathBuf> {
     let duration = probe.duration_seconds().unwrap_or(0.0);
     let frame = ctx.path("poster.png");
+    let hdr = probe.video().and_then(|stream| tonemap(stream, None));
     let at = if duration > 2.0 {
         (duration * 0.1).min(1.0)
     } else {
@@ -406,6 +444,8 @@ async fn poster(input: &Path, probe: &Probe, ctx: &Ctx<'_>) -> Option<PathBuf> {
                 input.display().to_string(),
                 "-map".to_owned(),
                 "0:v:0".to_owned(),
+                "-vf".to_owned(),
+                hdr.clone().unwrap_or_else(|| "null".to_owned()),
                 "-frames:v".to_owned(),
                 "1".to_owned(),
                 "-update".to_owned(),
@@ -436,6 +476,7 @@ pub fn remuxable(probe: &Probe) -> bool {
     probe.is_iso_media()
         && video.codec_name == "h264"
         && matches!(video.pix_fmt.as_deref(), Some("yuv420p" | "yuvj420p"))
+        && video.hdr_transfer().is_none()
         && probe
             .audio()
             .all(|a| matches!(a.codec_name.as_str(), "aac" | "mp3"))
@@ -502,7 +543,7 @@ pub async fn video(input: &Path, probe: &Probe, ctx: &Ctx<'_>) -> Result<Outcome
         let mut args = os(["-i"]);
         args.push(input.as_os_str().to_owned());
         args.extend(os(["-map", "0:v:0", "-map", "0:a?", "-sn", "-dn", "-vf"]));
-        args.push(format!("scale={tw}:{th},setsar=1,format=yuv420p").into());
+        args.push(video_filter(stream, tw, th).into());
         args.extend(h264_args(preset, settings.video_crf));
         args.extend(os([
             "-c:a".to_owned(),
@@ -617,6 +658,42 @@ mod tests {
         assert!(!too_slow(Duration::from_secs(5), 0.001, budget));
         assert!(!too_slow(Duration::from_secs(60), 0.5, budget));
         assert!(too_slow(Duration::from_secs(60), 0.05, budget));
+    }
+
+    #[test]
+    fn hdr_streams_are_tone_mapped_and_never_remuxed() {
+        let stream = |transfer: &str| -> Stream {
+            serde_json::from_value(serde_json::json!({
+                "codec_type": "video", "codec_name": "h264", "width": 1920, "height": 1080,
+                "pix_fmt": "yuv420p", "color_transfer": transfer, "color_primaries": "bt2020",
+                "color_space": "bt2020nc"
+            }))
+            .unwrap()
+        };
+        let hlg = stream("arib-std-b67");
+        let filter = video_filter(&hlg, 1280, 720);
+        assert!(filter.starts_with("zscale=w=1280:h=720:tin=arib-std-b67:pin=bt2020:min=bt2020nc"));
+        assert!(filter.contains("tonemap=tonemap=hable"));
+        assert!(filter.ends_with("format=yuv420p,setsar=1"));
+        assert!(
+            tonemap(&stream("smpte2084"), None)
+                .unwrap()
+                .starts_with("zscale=tin=smpte2084")
+        );
+        assert!(tonemap(&stream("bt709"), None).is_none());
+        assert_eq!(
+            video_filter(&stream("bt709"), 1280, 720),
+            "scale=1280:720,setsar=1,format=yuv420p"
+        );
+        let probe = |s: Stream| Probe {
+            streams: vec![s],
+            format: crate::tools::Format {
+                format_name: "mov,mp4,m4a,3gp,3g2,mj2".into(),
+                duration: None,
+            },
+        };
+        assert!(!remuxable(&probe(hlg)));
+        assert!(remuxable(&probe(stream("bt709"))));
     }
 
     #[test]

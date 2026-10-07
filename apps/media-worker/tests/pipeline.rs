@@ -688,3 +688,71 @@ fn avif_bmp_and_tiff_inputs() {
         );
     }
 }
+
+/// Mean chroma saturation of a video's frames (ffmpeg signalstats).
+fn saturation(dir: &Dir, video: &Path, filter: &str, name: &str) -> f64 {
+    let stats = dir.path(name);
+    let graph = format!(
+        "{filter}signalstats,metadata=print:key=lavfi.signalstats.SATAVG:file={}",
+        s(&stats)
+    );
+    ffmpeg(&["-i", s(video), "-vf", &graph, "-f", "null", "-"]);
+    let text = std::fs::read_to_string(&stats).unwrap();
+    let values: Vec<f64> = text
+        .lines()
+        .filter_map(|l| l.split_once("SATAVG=")?.1.trim().parse().ok())
+        .collect();
+    values.iter().sum::<f64>() / values.len() as f64
+}
+
+#[test]
+#[ignore = "needs ffmpeg, libvips, cwebp, avifenc and jpegtran"]
+fn hdr_phone_video_is_tone_mapped_to_sdr() {
+    for transfer in ["arib-std-b67", "smpte2084"] {
+        let dir = Dir::new(&format!("hdr-{transfer}"));
+        let input = dir.path("hdr.mov");
+        // 10-bit HEVC in BT.2020 with HLG (iPhone) or PQ (HDR10) transfer.
+        let to_hdr = format!(
+            "zscale=tin=bt709:t={transfer}:pin=bt709:p=bt2020:min=bt709:m=bt2020nc:npl=100,format=yuv420p10le"
+        );
+        ffmpeg(&[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=1280x720:rate=30:duration=2,format=gbrpf32le",
+            "-vf",
+            &to_hdr,
+            "-c:v",
+            "libx265",
+            "-x265-params",
+            "log-level=error",
+            "-pix_fmt",
+            "yuv420p10le",
+            "-color_primaries",
+            "bt2020",
+            "-color_trc",
+            transfer,
+            "-colorspace",
+            "bt2020nc",
+            "-tag:v",
+            "hvc1",
+            s(&input),
+        ]);
+        let (finish, stored) = process(&dir, &input, "hdr.mov");
+        assert_eq!(finish["contentType"], "video/mp4", "{transfer}");
+        assert!(finish["preview"].is_object(), "{transfer}: poster expected");
+        let probe = probe(&stored);
+        let video = &probe["streams"][0];
+        assert_eq!(video["codec_name"], "h264");
+        assert_eq!(video["pix_fmt"], "yuv420p");
+        assert_eq!(video["color_transfer"], "bt709", "{transfer}");
+        assert_eq!(video["color_primaries"], "bt709", "{transfer}");
+        // Without tone mapping, HDR played as SDR looks washed out (grey).
+        let naive = saturation(&dir, &input, "format=yuv420p,", "naive.txt");
+        let mapped = saturation(&dir, &stored, "", "mapped.txt");
+        assert!(
+            mapped > naive * 1.3,
+            "{transfer}: tone-mapped saturation {mapped:.1} vs naive {naive:.1}"
+        );
+    }
+}

@@ -199,6 +199,9 @@ pub struct Stream {
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub pix_fmt: Option<String>,
+    pub color_transfer: Option<String>,
+    pub color_primaries: Option<String>,
+    pub color_space: Option<String>,
     pub sample_aspect_ratio: Option<String>,
     pub duration: Option<String>,
     pub channels: Option<u32>,
@@ -223,6 +226,17 @@ impl Stream {
             && self.disposition.get("attached_pic").copied().unwrap_or(0) == 0
             && self.width.unwrap_or(0) > 0
             && self.height.unwrap_or(0) > 0
+    }
+
+    /// The HDR transfer function, when the stream is HDR: PQ (`smpte2084`;
+    /// HDR10, Dolby Vision 8.1) or HLG (`arib-std-b67`; iPhone and Android
+    /// camera HDR, including Dolby Vision 8.4, whose base layer is HLG).
+    pub fn hdr_transfer(&self) -> Option<&'static str> {
+        match self.color_transfer.as_deref() {
+            Some("smpte2084") => Some("smpte2084"),
+            Some("arib-std-b67") => Some("arib-std-b67"),
+            _ => None,
+        }
     }
 
     /// Display rotation in degrees, normalised to 0, 90, 180 or 270.

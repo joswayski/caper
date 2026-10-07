@@ -975,7 +975,7 @@ form the rules choose:
 | Photo | AVIF at `MEDIA_IMAGE_AVIF_QUALITY`; the original JPEG/PNG/WebP stays (metadata stripped) when AVIF saves less than `MEDIA_IMAGE_MIN_SAVINGS_PERCENT` |
 | HEIC/HEIF, TIFF, BMP | Converted like photos (browsers cannot show HEIC) |
 | GIF, animated WebP/PNG | Silent looping H.264 MP4 (`animated: true`) |
-| Video | H.264/AAC MP4, short edge ≤ `MEDIA_VIDEO_MAX_HEIGHT`, CRF `MEDIA_VIDEO_CRF`; an MP4 that is already smaller and H.264 is kept |
+| Video | H.264/AAC MP4, short edge ≤ `MEDIA_VIDEO_MAX_HEIGHT`, CRF `MEDIA_VIDEO_CRF`; an MP4 that is already smaller and H.264 is kept. HDR (HLG from iPhone/Android cameras, PQ/HDR10) is tone mapped to SDR BT.709 (zscale + Hable), poster included, so it never plays back washed out |
 | WAV/AIFF | FLAC (lossless) |
 | Other audio, archives, already-compressed files | Stored unchanged |
 | Text and other documents | gzip, kept only when at least `MEDIA_FILE_MIN_SAVINGS_PERCENT` smaller; served with `Content-Encoding: gzip`, so downloads are byte-identical |
