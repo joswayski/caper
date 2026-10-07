@@ -1,6 +1,6 @@
 use crate::model::{
-    Account, Channel, ChatSession, DirectConversation, DirectConversations, History, Member,
-    Members, Message, ReactionUpdate, Reactors, Space, SpaceDetail, Spaces,
+    Account, Blocks, Channel, ChatSession, DirectConversation, DirectConversations, History,
+    Member, Members, Message, Privacy, ReactionUpdate, Reactors, Space, SpaceDetail, Spaces,
 };
 use reqwest::blocking::{Client, Response};
 use reqwest::{Method, StatusCode, redirect::Policy};
@@ -21,6 +21,8 @@ pub struct ApiError {
     pub message: String,
     /// Remaining sign-in code attempts, when the server reports them.
     pub attempts_remaining: Option<u64>,
+    /// The server's machine-readable `code`, such as `dm_blocked`.
+    pub code: Option<String>,
 }
 
 impl std::fmt::Display for ApiError {
@@ -126,6 +128,60 @@ impl Api {
             Some(token),
             None,
             Some(json!({"username": username})),
+        )
+    }
+
+    /// Accepts an incoming message request; idempotent.
+    pub fn accept_direct(&self, token: &str, id: &str) -> Result<DirectConversation, ApiError> {
+        self.request(
+            Method::POST,
+            &format!("api/dms/{id}/accept"),
+            Some(token),
+            None,
+            None,
+        )
+    }
+
+    /// Hides an incoming request from you only; the sender is not told.
+    pub fn decline_direct(&self, token: &str, id: &str) -> Result<(), ApiError> {
+        checked(self.raw(
+            Method::POST,
+            &format!("api/dms/{id}/decline"),
+            Some(token),
+            None,
+            None,
+        )?)
+        .map(|_| ())
+    }
+
+    pub fn blocks(&self, token: &str) -> Result<Blocks, ApiError> {
+        self.request(Method::GET, "api/blocks", Some(token), None, None)
+    }
+
+    /// `PUT` (block) or `DELETE` (unblock) `/api/blocks/{account}`; idempotent.
+    pub fn set_block(&self, token: &str, account: &str, blocked: bool) -> Result<(), ApiError> {
+        let method = if blocked { Method::PUT } else { Method::DELETE };
+        checked(self.raw(
+            method,
+            &format!("api/blocks/{account}"),
+            Some(token),
+            None,
+            None,
+        )?)
+        .map(|_| ())
+    }
+
+    pub fn privacy(&self, token: &str) -> Result<Privacy, ApiError> {
+        self.request(Method::GET, "api/account/privacy", Some(token), None, None)
+    }
+
+    pub fn save_privacy(&self, token: &str, direct_messages: &str) -> Result<Privacy, ApiError> {
+        self.request(
+            Method::PUT,
+            "api/account/privacy",
+            Some(token),
+            None,
+            Some(json!({"directMessages": direct_messages})),
         )
     }
 
@@ -514,6 +570,7 @@ impl Api {
                 status: None,
                 message: "Caper returned an invalid message snapshot.".into(),
                 attempts_remaining: None,
+                code: None,
             });
         }
         Ok(message)
@@ -539,6 +596,7 @@ impl Api {
                 status: None,
                 message: "Caper returned invalid message history.".into(),
                 attempts_remaining: None,
+                code: None,
             });
         }
         Ok(page)
@@ -643,6 +701,7 @@ impl Api {
             status: None,
             message: "Could not reach Caper. Check your connection and try again.".into(),
             attempts_remaining: None,
+            code: None,
         })
     }
 }
@@ -653,14 +712,22 @@ fn checked(response: Response) -> Result<Response, ApiError> {
         return Ok(response);
     }
     let body = response.json::<Value>().ok();
-    let message = body
+    let code = body
         .as_ref()
-        .and_then(|body| body["error"].as_str().map(str::to_owned))
-        .unwrap_or_else(|| format!("Caper request failed ({status})."));
+        .and_then(|body| body["code"].as_str().map(str::to_owned));
+    let message = match code.as_deref() {
+        Some("dm_not_accepted") => "This person isn't accepting direct messages.".into(),
+        Some("dm_blocked") => "You blocked this person. Unblock them to message them.".into(),
+        _ => body
+            .as_ref()
+            .and_then(|body| body["error"].as_str().map(str::to_owned))
+            .unwrap_or_else(|| format!("Caper request failed ({status}).")),
+    };
     Err(ApiError {
         status: Some(status),
         message,
         attempts_remaining: body.and_then(|body| body["attemptsRemaining"].as_u64()),
+        code,
     })
 }
 
@@ -669,6 +736,7 @@ fn invalid(message: &str) -> ApiError {
         status: None,
         message: message.into(),
         attempts_remaining: None,
+        code: None,
     }
 }
 
@@ -733,5 +801,104 @@ mod tests {
         let missing = api.reactors(Some("account"), "c1", "m1").unwrap_err();
         assert_eq!(missing.status.map(|status| status.as_u16()), Some(404));
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn request_block_and_privacy_endpoints_and_dm_error_codes() {
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api = Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
+        let exchanges = [
+            (
+                "POST /api/dms",
+                "403 Forbidden",
+                r#"{"error":"raw","code":"dm_not_accepted"}"#,
+            ),
+            (
+                "POST /api/dms",
+                "403 Forbidden",
+                r#"{"error":"raw","code":"dm_blocked"}"#,
+            ),
+            (
+                "POST /api/dms/dm0000000003/accept",
+                "200 OK",
+                r#"{"id":"dm0000000003","peer":{"id":"stranger0001","username":"jordan","displayName":"Jordan","avatarId":412},"lastSeq":"1","readSeq":"0","status":"accepted","blocked":false}"#,
+            ),
+            ("POST /api/dms/dm0000000003/decline", "204 No Content", ""),
+            ("PUT /api/blocks/member000001", "204 No Content", ""),
+            ("DELETE /api/blocks/member000001", "204 No Content", ""),
+            (
+                "GET /api/blocks",
+                "200 OK",
+                r#"{"blocks":[{"id":"member000001","username":"maya","displayName":"Maya","avatarId":null}]}"#,
+            ),
+            (
+                "GET /api/account/privacy",
+                "200 OK",
+                r#"{"directMessages":"anyone"}"#,
+            ),
+            (
+                "PUT /api/account/privacy",
+                "200 OK",
+                r#"{"directMessages":"nobody"}"#,
+            ),
+        ];
+        let worker = std::thread::spawn(move || {
+            let mut bodies = Vec::new();
+            for (expected, status, body) in exchanges {
+                let (stream, _) = server.accept().unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                assert_eq!(request, format!("{expected} HTTP/1.1\r\n"));
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse().unwrap();
+                    }
+                }
+                let mut sent = vec![0; length];
+                std::io::Read::read_exact(&mut reader, &mut sent).unwrap();
+                bodies.push(String::from_utf8(sent).unwrap());
+                write!(
+                    reader.get_mut(),
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+            bodies
+        });
+        let refused = api.create_direct("account", "jordan").unwrap_err();
+        assert_eq!(
+            refused.message,
+            "This person isn't accepting direct messages."
+        );
+        assert_eq!(refused.code.as_deref(), Some("dm_not_accepted"));
+        let blocked = api.create_direct("account", "jordan").unwrap_err();
+        assert_eq!(
+            blocked.message,
+            "You blocked this person. Unblock them to message them."
+        );
+        let accepted = api.accept_direct("account", "dm0000000003").unwrap();
+        assert_eq!(accepted.status, crate::model::DirectStatus::Accepted);
+        api.decline_direct("account", "dm0000000003").unwrap();
+        api.set_block("account", "member000001", true).unwrap();
+        api.set_block("account", "member000001", false).unwrap();
+        assert_eq!(api.blocks("account").unwrap().blocks[0].username, "maya");
+        assert_eq!(api.privacy("account").unwrap().direct_messages, "anyone");
+        assert_eq!(
+            api.save_privacy("account", "nobody")
+                .unwrap()
+                .direct_messages,
+            "nobody"
+        );
+        let bodies = worker.join().unwrap();
+        assert_eq!(bodies[0], r#"{"username":"jordan"}"#);
+        assert_eq!(bodies[8], r#"{"directMessages":"nobody"}"#);
     }
 }
