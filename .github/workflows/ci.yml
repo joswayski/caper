@@ -16,9 +16,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  route:
+    uses: ./.github/workflows/mac-route.yml
+    secrets: inherit
+
   frontend:
+    needs: route
     name: Frontend
-    runs-on: ubuntu-latest
+    runs-on: ${{ needs.route.outputs.linux == 'true' && fromJSON('["self-hosted","joselinux"]') || 'ubuntu-24.04' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -44,8 +49,9 @@ jobs:
             || echo "::warning::Could not cancel the rest of this run"
 
   rust:
+    needs: route
     name: Rust
-    runs-on: ubuntu-24.04
+    runs-on: ${{ needs.route.outputs.linux == 'true' && fromJSON('["self-hosted","joselinux"]') || 'ubuntu-24.04' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -74,8 +80,9 @@ jobs:
             || echo "::warning::Could not cancel the rest of this run"
 
   account-database:
+    needs: route
     name: Accounts and durable chat (Postgres + Valkey)
-    runs-on: ubuntu-latest
+    runs-on: ${{ needs.route.outputs.linux == 'true' && fromJSON('["self-hosted","joselinux"]') || 'ubuntu-24.04' }}
     timeout-minutes: 15
     services:
       postgres:
@@ -101,6 +108,8 @@ jobs:
         # A single primary owns all slots, enforcing CROSSSLOT rules like the
         # virtual shard exposed by ElastiCache Serverless (not an HA test).
         run: |
+          # Self-hosted runners keep their Docker containers between jobs.
+          docker rm --force chat-valkey 2>/dev/null || true
           docker run --detach --name chat-valkey --publish 127.0.0.1:6379:6379 \
             valkey/valkey:9.1.2-alpine valkey-server --cluster-enabled yes \
             --bind 0.0.0.0 --protected-mode no
@@ -114,7 +123,7 @@ jobs:
             sleep 1
           done
           docker exec chat-valkey valkey-cli cluster info | grep -q 'cluster_state:ok'
-      - run: CHAT_TEST_DATABASE_URL="$DATABASE_URL" CHAT_TEST_VALKEY_URL=redis://127.0.0.1:6379 TEST_VALKEY_URL=redis://127.0.0.1:6379 cargo test --locked -p caper-api -- --ignored --skip tests::shared
+      - run: CHAT_TEST_DATABASE_URL="$DATABASE_URL" CHAT_TEST_VALKEY_URL=redis://127.0.0.1:6379 TEST_VALKEY_URL=redis://127.0.0.1:6379 FORWARD_TEST_VALKEY_URL=redis://127.0.0.1:6379 cargo test --locked -p caper-api -- --ignored --skip tests::shared
       - name: Stop the rest of this run after a failure
         # One failed job already fails the run; cancel the other jobs instead of
         # letting them hold runners (and block newer pushes) until they finish.
@@ -129,8 +138,9 @@ jobs:
             || echo "::warning::Could not cancel the rest of this run"
 
   shared-media:
+    needs: route
     name: Cross-pod media (Valkey)
-    runs-on: ubuntu-latest
+    runs-on: ${{ needs.route.outputs.linux == 'true' && fromJSON('["self-hosted","joselinux"]') || 'ubuntu-24.04' }}
     timeout-minutes: 15
     services:
       valkey:
