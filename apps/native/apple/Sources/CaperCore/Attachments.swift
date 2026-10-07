@@ -15,7 +15,7 @@ public enum AttachmentKind: String, Codable, Equatable, Sendable {
 
     /// What this device can show for a local copy (draft chips and the
     /// pending row). ImageIO and AVFoundation decode more than browsers, such
-    /// as HEIC photos, which upload unchanged and are converted by the server.
+    /// as a HEIC original whose conversion failed and uploads unchanged.
     public static func local(contentType: String) -> AttachmentKind {
         guard let type = UTType(mimeType: baseType(contentType)) else { return AttachmentKind(contentType: contentType) }
         if type.conforms(to: .movie) { return .video }
@@ -29,15 +29,15 @@ public enum AttachmentKind: String, Codable, Equatable, Sendable {
     }
 }
 
-/// Server-side processing state. Payloads from before server-side
-/// compression omit it, which means `ready`.
+/// Server-side processing state from the parked server pipeline (see
+/// `docs/media.md`). Today's API never sends it; absent means `ready`.
 public enum AttachmentStatus: String, Codable, Equatable, Sendable {
     case processing, ready, failed
 }
 
 /// A file on a message. Signed URLs are added per response and expire after
-/// 24–48 hours; `ChatModel` refreshes them for long-open windows. `url` is
-/// present only once the media worker has finished (`status == .ready`).
+/// 24–48 hours; `ChatModel` refreshes them for long-open windows. A
+/// `processing` file (parked server pipeline only) has no `url` yet.
 public struct ChatAttachment: Codable, Equatable, Identifiable, Sendable {
     public let id: String
     public var kind: AttachmentKind
@@ -148,32 +148,74 @@ extension KeyedDecodingContainer {
     }
 }
 
+/// Server-tunable client compression settings from `GET /api/assets/usage`
+/// (`docs/media.md`, "Client compression and previews"). Missing or
+/// out-of-range values fall back to the contract defaults.
+public struct AttachmentCompression: Codable, Equatable, Sendable {
+    public var imageQuality: Int = 92
+    public var imageMaxEdge: Int = 4096
+    public var paletteColors: Int = 256
+    public var previewEdge: Int = 640
+    public var videoMaxHeight: Int = 1080
+    public var videoBitrateKbps: Int = 6000
+    public var audioBitrateKbps: Int = 128
+
+    public init() {}
+
+    private enum CodingKeys: String, CodingKey { case imageQuality, imageMaxEdge, paletteColors, previewEdge, videoMaxHeight, videoBitrateKbps, audioBitrateKbps }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        func value(_ key: CodingKeys, _ range: ClosedRange<Int>, _ fallback: Int) -> Int {
+            guard let decoded = try? values.decodeIfPresent(Int.self, forKey: key), range.contains(decoded) else { return fallback }
+            return decoded
+        }
+        imageQuality = value(.imageQuality, 1...100, 92)
+        imageMaxEdge = value(.imageMaxEdge, 0...65_536, 4096)
+        paletteColors = value(.paletteColors, 0...256, 256)
+        previewEdge = value(.previewEdge, 0...4096, 640)
+        videoMaxHeight = value(.videoMaxHeight, 0...8192, 1080)
+        videoBitrateKbps = value(.videoBitrateKbps, 1...1_000_000, 6000)
+        audioBitrateKbps = value(.audioBitrateKbps, 1...10_000, 128)
+    }
+}
+
 /// `GET /api/assets/usage`.
 public struct AssetUsage: Decodable, Equatable, Sendable {
     public let used: Int
     public let limit: Int
-    /// Largest original the API accepts; nil when the response omits it.
-    public let maxUploadBytes: Int?
+    public let compression: AttachmentCompression
 
-    private enum CodingKeys: String, CodingKey { case used, limit, maxUploadBytes }
+    private enum CodingKeys: String, CodingKey { case used, limit, compression }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         used = try values.decode(Int.self, forKey: .used)
         limit = try values.decode(Int.self, forKey: .limit)
-        let declared = try? values.decodeIfPresent(Int.self, forKey: .maxUploadBytes)
-        maxUploadBytes = declared.flatMap { $0 > 0 ? $0 : nil }
+        compression = (try? values.decodeIfPresent(AttachmentCompression.self, forKey: .compression)) ?? AttachmentCompression()
     }
 }
 
-/// `POST /api/assets` body: the original file, exactly as it will be uploaded.
+/// `POST /api/assets` body: the (compressed) file exactly as it will be
+/// stored, plus its optional preview. Optional fields are omitted when nil.
 public struct AssetCreateInput: Encodable, Equatable, Sendable {
+    public struct Preview: Encodable, Equatable, Sendable {
+        public let contentType: String
+        public let byteSize: Int
+        public init(contentType: String, byteSize: Int) { self.contentType = contentType; self.byteSize = byteSize }
+    }
     public let channelId: String
     public let filename: String
     public let contentType: String
     public let byteSize: Int
+    public var sourceByteSize: Int?
+    public var width: Int?
+    public var height: Int?
+    public var durationMs: Int?
+    public var preview: Preview?
 
-    public init(channelId: String, filename: String, contentType: String, byteSize: Int) {
+    public init(channelId: String, filename: String, contentType: String, byteSize: Int, sourceByteSize: Int? = nil,
+                width: Int? = nil, height: Int? = nil, durationMs: Int? = nil, preview: Preview? = nil) {
         self.channelId = channelId; self.filename = filename; self.contentType = contentType; self.byteSize = byteSize
+        self.sourceByteSize = sourceByteSize; self.width = width; self.height = height; self.durationMs = durationMs; self.preview = preview
     }
 }
 
@@ -186,6 +228,8 @@ public struct PresignedUpload: Decodable, Equatable, Sendable {
 public struct AssetReservation: Decodable, Equatable, Sendable {
     public let id: String
     public let upload: PresignedUpload
+    /// Present when the reservation declared a preview.
+    public let previewUpload: PresignedUpload?
 }
 
 /// Fresh signatures for one attachment; `url` is absent until it is ready.
@@ -230,10 +274,239 @@ public enum AttachmentPolicy {
         return ((Double(width) * scale).rounded(), (Double(height) * scale).rounded())
     }
 
-    /// Checked before reserving, so an oversized original never starts uploading.
-    public static func tooLargeMessage(size: Int, maxUploadBytes: Int?) -> String? {
-        guard let maxUploadBytes, size > maxUploadBytes else { return nil }
-        return "This file is too large to upload (max \(formatBytes(maxUploadBytes)))."
+    // MARK: Compression decisions (docs/media.md, "Client compression and previews")
+
+    public static let previewMaxBytes = 512 * 1024
+    public static let previewQuality = 0.8
+    /// Decoding enormous images can exhaust memory on phones; upload as-is.
+    public static let maxCompressPixels = 50_000_000
+    /// Counting colours needs a full RGBA copy; larger stills skip the
+    /// palette check (photos still re-encode, lossless files stay as they are).
+    public static let maxPalettePixels = 25_000_000
+    /// A size-only re-encode or transcode must save at least this fraction.
+    public static let minimumSaving = 0.10
+
+    /// How a still is treated, from its type (and WebP bitstream).
+    public enum StillSource: Equatable, Sendable {
+        /// JPEG, HEIC/HEIF and lossy WebP: may be re-encoded lossily.
+        case photo
+        /// PNG, BMP, TIFF and lossless WebP: never encoded lossily.
+        case lossless
+        /// GIF, SVG, AVIF, animated images and anything else.
+        case unchanged
+    }
+
+    /// One way to re-encode a still. Lossless candidates are all tried and
+    /// the smallest verified one wins; a lossy candidate is used only when no
+    /// lossless candidate succeeded.
+    public enum StillCandidate: Equatable, Sendable { case indexedPNG, losslessWebP, lossy(quality: Double) }
+
+    public enum WebPFormat: Equatable, Sendable { case lossy, lossless, animated }
+
+    static func baseType(_ contentType: String) -> String {
+        contentType.split(separator: ";").first.map { $0.trimmingCharacters(in: .whitespaces).lowercased() } ?? ""
+    }
+
+    /// `webP` is the sniffed bitstream for `image/webp` (nil when unknown,
+    /// which is treated as lossless so it is never encoded lossily).
+    public static func stillSource(contentType: String, webP: WebPFormat? = nil) -> StillSource {
+        switch baseType(contentType) {
+        case "image/jpeg", "image/jpg", "image/pjpeg", "image/heic", "image/heif": return .photo
+        case "image/png", "image/bmp", "image/x-bmp", "image/x-ms-bmp", "image/tiff": return .lossless
+        case "image/webp":
+            switch webP {
+            case .lossy: return .photo
+            case .animated: return .unchanged
+            case .lossless, .none: return .lossless
+            }
+        default: return .unchanged
+        }
+    }
+
+    /// Reads the RIFF chunks of a WebP file's first bytes: `VP8 ` is lossy,
+    /// `VP8L` lossless, and an animation flag or `ANIM` chunk is animated.
+    public static func webPFormat(_ bytes: Data) -> WebPFormat? {
+        let b = [UInt8](bytes.prefix(65_536))
+        func tag(_ offset: Int, _ value: String) -> Bool {
+            let expected = Array(value.utf8)
+            return offset + expected.count <= b.count && Array(b[offset..<offset + expected.count]) == expected
+        }
+        guard tag(0, "RIFF"), tag(8, "WEBP") else { return nil }
+        var offset = 12
+        while offset + 8 <= b.count {
+            let size = Int(b[offset + 4]) | Int(b[offset + 5]) << 8 | Int(b[offset + 6]) << 16 | Int(b[offset + 7]) << 24
+            if tag(offset, "VP8 ") { return .lossy }
+            if tag(offset, "VP8L") { return .lossless }
+            if tag(offset, "ANIM") || tag(offset, "ANMF") { return .animated }
+            if tag(offset, "VP8X") {
+                guard offset + 8 < b.count else { return nil }
+                if b[offset + 8] & 0x02 != 0 { return .animated }
+            }
+            offset += 8 + size + (size & 1)
+        }
+        return nil
+    }
+
+    /// What to try for a still, in order. `colorCount` is the exact number
+    /// of distinct colours, or nil when there are more than the palette limit
+    /// (or they were not counted). Lossless sources only ever get lossless
+    /// candidates: indexed PNG when the palette fits, and lossless WebP.
+    /// HEIC/HEIF must always convert because browsers cannot show it.
+    public static func stillCandidates(contentType: String, source: StillSource, colorCount: Int?, settings: AttachmentCompression) -> [StillCandidate] {
+        let paletteFits = settings.paletteColors > 0 && colorCount.map { $0 <= settings.paletteColors } == true
+        switch source {
+        case .unchanged:
+            return []
+        case .lossless:
+            return paletteFits ? [.indexedPNG, .losslessWebP] : [.losslessWebP]
+        case .photo:
+            var candidates: [StillCandidate] = paletteFits ? [.indexedPNG] : []
+            if settings.imageQuality < 100 {
+                candidates.append(.lossy(quality: Double(settings.imageQuality) / 100))
+            } else if AttachmentKind(contentType: contentType) != .image {
+                candidates.append(.lossy(quality: 1))
+            }
+            return candidates
+        }
+    }
+
+    /// Keep a re-encoded file when the original type cannot render inline at
+    /// all (e.g. HEIC, BMP, TIFF); otherwise a lossless result must be
+    /// smaller and a lossy one at least 10% smaller.
+    public static func keepReencoded(originalType: String, originalSize: Int, encodedSize: Int, lossless: Bool) -> Bool {
+        guard encodedSize > 0 else { return false }
+        if AttachmentKind(contentType: originalType) != .image { return true }
+        return lossless ? encodedSize < originalSize : Double(encodedSize) <= Double(originalSize) * (1 - minimumSaving)
+    }
+
+    /// WebP's maximum width and height.
+    public static let webPMaxDimension = 16_383
+
+    /// Wraps a simple-format WebP (`RIFF/WEBP/VP8L` or `VP8 `) in the
+    /// extended format with an `ICCP` chunk, so colours keep their meaning.
+    public static func webPAddingICCProfile(_ webP: Data, profile: Data, width: Int, height: Int, hasAlpha: Bool) -> Data? {
+        let bytes = [UInt8](webP)
+        guard bytes.count >= 20, (1...webPMaxDimension).contains(width), (1...webPMaxDimension).contains(height), !profile.isEmpty,
+              Array(bytes[0..<4]) == Array("RIFF".utf8), Array(bytes[8..<12]) == Array("WEBP".utf8),
+              [Array("VP8L".utf8), Array("VP8 ".utf8)].contains(Array(bytes[12..<16])) else { return nil }
+        func littleEndian(_ value: Int, _ count: Int) -> [UInt8] { (0..<count).map { UInt8(truncatingIfNeeded: value >> (8 * $0)) } }
+        var output: [UInt8] = Array("RIFF".utf8)
+        output += [0, 0, 0, 0] as [UInt8] // RIFF size, filled in below.
+        output += Array("WEBP".utf8)
+        output += Array("VP8X".utf8)
+        output += littleEndian(10, 4)
+        output += [UInt8(0x20 | (hasAlpha ? 0x10 : 0)), 0, 0, 0] // ICC (and alpha) flags.
+        output += littleEndian(width - 1, 3)
+        output += littleEndian(height - 1, 3)
+        output += Array("ICCP".utf8)
+        output += littleEndian(profile.count, 4)
+        output += [UInt8](profile)
+        if profile.count % 2 == 1 { output.append(0) }
+        output += bytes[12...]
+        let riffSize = littleEndian(output.count - 8, 4)
+        output.replaceSubrange(4..<8, with: riffSize)
+        return Data(output)
+    }
+
+    public static func needsPreview(kind: AttachmentKind, width: Int?, height: Int?, byteSize: Int, settings: AttachmentCompression) -> Bool {
+        guard settings.previewEdge > 0 else { return false }
+        if kind == .video { return width != nil && height != nil }
+        guard kind == .image else { return false }
+        return max(width ?? 0, height ?? 0) > settings.previewEdge || byteSize > previewMaxBytes
+    }
+
+    /// Longest edge scaled to `edge`, never enlarged.
+    public static func fitWithin(width: Int, height: Int, edge: Int) -> (width: Int, height: Int) {
+        guard width > 0, height > 0, edge > 0 else { return (max(1, width), max(1, height)) }
+        let scale = min(1, Double(edge) / Double(max(width, height)))
+        return (max(1, Int((Double(width) * scale).rounded())), max(1, Int((Double(height) * scale).rounded())))
+    }
+
+    public static func renamed(_ name: String, contentType: String) -> String {
+        let extensions = ["image/webp": "webp", "image/jpeg": "jpg", "image/png": "png", "video/mp4": "mp4"]
+        guard let ext = extensions[contentType] else { return name }
+        let base = (name as NSString).deletingPathExtension
+        return "\(base.isEmpty ? name : base).\(ext)"
+    }
+
+    // MARK: Video
+
+    /// What AVFoundation reports about a source video (display orientation).
+    public struct VideoFacts: Equatable, Sendable {
+        public var width: Int
+        public var height: Int
+        public var isH264: Bool
+        /// HLG or PQ transfer (iPhone HDR/Dolby Vision, HDR10).
+        public var isHDR: Bool
+        /// Video track data rate; nil when unknown.
+        public var bitrateKbps: Double?
+        /// The container is one the API serves inline (MP4, QuickTime, WebM).
+        public var playableContainer: Bool
+
+        public init(width: Int, height: Int, isH264: Bool, isHDR: Bool, bitrateKbps: Double?, playableContainer: Bool) {
+            self.width = width; self.height = height; self.isH264 = isH264; self.isHDR = isHDR
+            self.bitrateKbps = bitrateKbps; self.playableContainer = playableContainer
+        }
+    }
+
+    public enum VideoPlan: Equatable, Sendable {
+        /// Upload the original unchanged.
+        case keep
+        /// Copy the H.264 samples into MP4 unchanged (only the container is unplayable).
+        case remux
+        /// Re-encode to H.264/AAC MP4 with this export preset. `required`
+        /// transcodes (codec, HDR, container) are kept at any size; size-only
+        /// ones only when at least 10% smaller.
+        case transcode(preset: String, required: Bool)
+    }
+
+    /// `videoBitrateKbps` is the 1080p target; smaller frames scale it by
+    /// pixel count, with a floor so small videos are not starved.
+    public static let videoBitrateFloorKbps = 1500.0
+
+    public static func videoTargetKbps(width: Int, height: Int, settings: AttachmentCompression) -> Double {
+        let pixels = Double(max(0, width) * max(0, height))
+        return max(videoBitrateFloorKbps, Double(settings.videoBitrateKbps) * pixels / (1920 * 1080))
+    }
+
+    public static func videoPlan(_ facts: VideoFacts, settings: AttachmentCompression) -> VideoPlan {
+        guard settings.videoMaxHeight > 0, facts.width > 0, facts.height > 0 else { return .keep }
+        let oversized = min(facts.width, facts.height) > settings.videoMaxHeight
+        let heavy = facts.bitrateKbps.map { $0 > 1.25 * videoTargetKbps(width: facts.width, height: facts.height, settings: settings) } ?? false
+        let required = !facts.isH264 || facts.isHDR || !facts.playableContainer
+        guard oversized || heavy || !facts.isH264 || facts.isHDR else { return facts.playableContainer ? .keep : .remux }
+        guard let preset = videoPreset(width: facts.width, height: facts.height, maxHeight: settings.videoMaxHeight) else { return .keep }
+        return .transcode(preset: preset, required: required)
+    }
+
+    /// Whether an export may replace the original: it must be H.264 (for a
+    /// transcode), SDR, keep the audio, and be smaller unless it was required.
+    public static func keepTranscoded(required: Bool, originalSize: Int, outputSize: Int, outputIsH264: Bool, outputIsHDR: Bool,
+                                      sourceHasAudio: Bool, outputHasAudio: Bool) -> Bool {
+        guard outputSize > 0, outputIsH264, !outputIsHDR, !sourceHasAudio || outputHasAudio else { return false }
+        return required || Double(outputSize) <= Double(originalSize) * (1 - minimumSaving)
+    }
+
+    /// AVAssetExportSession H.264/AAC size presets as (long edge, short edge).
+    public static let videoPresets: [(name: String, long: Int, short: Int)] = [
+        ("AVAssetExportPreset640x480", 640, 480),
+        ("AVAssetExportPreset960x540", 960, 540),
+        ("AVAssetExportPreset1280x720", 1280, 720),
+        ("AVAssetExportPreset1920x1080", 1920, 1080),
+        ("AVAssetExportPreset3840x2160", 3840, 2160),
+    ]
+
+    /// The largest size preset whose output short edge stays within
+    /// `maxHeight`. Presets fit the video inside long×short without
+    /// enlarging it. Nil disables transcoding.
+    public static func videoPreset(width: Int, height: Int, maxHeight: Int) -> String? {
+        guard maxHeight > 0, width > 0, height > 0 else { return nil }
+        let candidates = videoPresets.filter { preset in
+            let scale = min(1, Double(preset.long) / Double(max(width, height)), Double(preset.short) / Double(min(width, height)))
+            // "1080p" bounds the short edge, so portrait phone video keeps full detail.
+            return Int((Double(min(width, height)) * scale).rounded()) <= maxHeight
+        }
+        return candidates.last?.name
     }
 
     public static func formatBytes(_ bytes: Int) -> String {
@@ -273,22 +546,32 @@ public struct AttachmentDraft: Identifiable, Equatable, Sendable {
     public var name: String
     /// What this device can preview locally (see `AttachmentKind.local`).
     public var kind: AttachmentKind
-    /// The staged original: uploaded unchanged, and shown as the chip
-    /// thumbnail and the pending-message preview.
+    /// The staged file: the original until compression finishes, then the
+    /// file that is uploaded. Shown as the chip thumbnail and the
+    /// pending-message preview.
     public var localURL: URL
-    public var size: Int
+    public var sourceSize: Int
+    /// Bytes stored after compression (nil while preparing).
+    public var storedSize: Int?
+    /// Compression is still running.
+    public var preparing = true
     public var progress: Double = 0
     public var error: String?
-    /// The confirmed upload (`status: processing` until the server finishes).
+    /// The confirmed upload.
     public var attachment: ChatAttachment?
 
-    public init(id: String, name: String, kind: AttachmentKind, localURL: URL, size: Int) {
-        self.id = id; self.name = name; self.kind = kind; self.localURL = localURL; self.size = size
+    public init(id: String, name: String, kind: AttachmentKind, localURL: URL, sourceSize: Int) {
+        self.id = id; self.name = name; self.kind = kind; self.localURL = localURL; self.sourceSize = sourceSize
     }
 
     public var statusLabel: String {
         if let error { return error }
-        guard attachment != nil else { return "Uploading… \(Int((progress * 100).rounded()))%" }
-        return AttachmentPolicy.formatBytes(size)
+        guard attachment != nil else {
+            return preparing ? "Compressing…" : "Uploading… \(Int((progress * 100).rounded()))%"
+        }
+        if let storedSize, storedSize < sourceSize {
+            return "\(AttachmentPolicy.formatBytes(sourceSize)) → \(AttachmentPolicy.formatBytes(storedSize))"
+        }
+        return AttachmentPolicy.formatBytes(storedSize ?? sourceSize)
     }
 }

@@ -370,10 +370,12 @@ public actor APIClient {
         }
     }
 
-    /// PUTs the original file straight to storage, streamed from disk, with
+    public enum UploadBody: Sendable { case file(URL), data(Data) }
+
+    /// PUTs bytes straight to storage (a file is streamed from disk) with
     /// exactly the presigned headers. No account credential or cookie is
     /// attached; URLSession sets Content-Length, which the URL signs.
-    public func putToStorage(_ upload: PresignedUpload, file: URL, progress: (@Sendable (Double) -> Void)? = nil) async throws {
+    public func putToStorage(_ upload: PresignedUpload, body: UploadBody, progress: (@Sendable (Double) -> Void)? = nil) async throws {
         guard upload.method.uppercased() == "PUT", ChatAttachment.isWebURL(upload.url), let url = URL(string: upload.url) else {
             throw APIError(status: 502, message: "The upload service returned an invalid response.")
         }
@@ -383,8 +385,12 @@ public actor APIClient {
             request.setValue(value, forHTTPHeaderField: name)
         }
         let delegate = UploadProgressDelegate(progress: progress)
-        let (_, response) = try await session.upload(for: request, fromFile: file, delegate: delegate)
-        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        let result: (Data, URLResponse)
+        switch body {
+        case .file(let file): result = try await session.upload(for: request, fromFile: file, delegate: delegate)
+        case .data(let data): result = try await session.upload(for: request, from: data, delegate: delegate)
+        }
+        guard let http = result.1 as? HTTPURLResponse else { throw URLError(.badServerResponse) }
         guard (200..<300).contains(http.statusCode) else { throw StorageUploadError(status: http.statusCode) }
     }
 

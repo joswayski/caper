@@ -982,8 +982,8 @@ public final class ChatModel {
     public var reactionErrors: [String: String] = [:]
     /// `GET /api/assets/usage` succeeded; otherwise the attach control stays hidden.
     public private(set) var uploadsEnabled = false
-    /// `maxUploadBytes` from usage: larger originals are refused before reserving.
-    public private(set) var maxUploadBytes: Int?
+    /// Client compression settings served with usage.
+    public private(set) var attachmentCompression = AttachmentCompression()
     public private(set) var attachmentDrafts: [AttachmentDraft] = []
     /// Latest ephemeral `attachment.progress` percent per processing attachment id.
     public private(set) var attachmentProgress: [String: Int] = [:]
@@ -2014,15 +2014,15 @@ public final class ChatModel {
     public func checkUploadAvailability() async {
         do {
             let usage = try await api.assetUsage()
-            maxUploadBytes = usage.maxUploadBytes
+            attachmentCompression = usage.compression
             uploadsEnabled = true
         } catch {
             uploadsEnabled = false
         }
     }
 
-    /// Uploads staged originals unchanged for the next message, up to 10.
-    /// The server compresses them after upload.
+    /// Compresses (with the server's settings) and uploads staged files for
+    /// the next message, up to 10.
     public func addAttachments(_ files: [LocalAttachmentFile]) {
         guard canAttach, let channelID, !files.isEmpty else {
             files.forEach { AttachmentStaging.remove($0.url) }
@@ -2037,22 +2037,31 @@ public final class ChatModel {
         attachmentNotice = files.count > room ? "Only \(room) more file\(room == 1 ? "" : "s") can be attached." : nil
         files.dropFirst(room).forEach { AttachmentStaging.remove($0.url) }
         if error == "Write a message first." || error == "Wait for files to finish uploading." { error = nil }
+        let settings = attachmentCompression
         let expectedGeneration = uploadGeneration
         for file in files.prefix(room) {
             let id = UUID().uuidString
-            var draft = AttachmentDraft(id: id, name: file.name, kind: AttachmentKind.local(contentType: file.contentType),
-                                        localURL: file.url, size: file.size)
-            if let tooLarge = AttachmentPolicy.tooLargeMessage(size: file.size, maxUploadBytes: maxUploadBytes) {
-                // Never reserved: the API would refuse it after the user waited.
-                draft.error = tooLarge
-                attachmentDrafts.append(draft)
-                continue
-            }
-            attachmentDrafts.append(draft)
+            attachmentDrafts.append(AttachmentDraft(id: id, name: file.name, kind: AttachmentKind.local(contentType: file.contentType),
+                                                    localURL: file.url, sourceSize: file.size))
             uploadTasks[id] = Task { [weak self, api] in
-                guard let self, self.uploadGeneration == expectedGeneration, !Task.isCancelled else { return }
+                let prepared = await AttachmentPreparer.prepare(file, settings: settings)
+                guard let self, self.uploadGeneration == expectedGeneration, !Task.isCancelled,
+                      self.attachmentDrafts.contains(where: { $0.id == id }) else {
+                    // Removed (or the conversation closed) while compressing.
+                    AttachmentStaging.remove(prepared.fileURL)
+                    if prepared.fileURL != file.url { AttachmentStaging.remove(file.url) }
+                    return
+                }
+                if prepared.fileURL != file.url { AttachmentStaging.remove(file.url) }
+                self.updateDraft(id) {
+                    $0.name = prepared.name
+                    $0.kind = AttachmentKind.local(contentType: prepared.contentType)
+                    $0.localURL = prepared.fileURL
+                    $0.storedSize = prepared.byteSize
+                    $0.preparing = false
+                }
                 do {
-                    let attachment = try await AttachmentUploader.upload(file, channelID: channelID, api: api) { fraction in
+                    let attachment = try await AttachmentUploader.upload(prepared, channelID: channelID, api: api) { fraction in
                         Task { @MainActor [weak self] in
                             guard let self, self.uploadGeneration == expectedGeneration else { return }
                             self.updateDraft(id) { if $0.attachment == nil && $0.error == nil { $0.progress = fraction } }

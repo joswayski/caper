@@ -1,8 +1,8 @@
 import Foundation
 import UniformTypeIdentifiers
 
-/// A picked file copied into the app's temporary staging area. It is
-/// uploaded unchanged: the server's media worker does all compression.
+/// A picked file copied into the app's temporary staging area, before
+/// `AttachmentPreparer` compresses it.
 public struct LocalAttachmentFile: Equatable, Sendable {
     public let url: URL
     public let name: String
@@ -63,21 +63,40 @@ public enum AttachmentStaging {
     }
 }
 
-/// Reserve, PUT the original straight to storage, then confirm. The
-/// confirmed attachment is `processing` until the media worker finishes;
-/// the message can be sent right away.
+/// Reserve, PUT the preview and then the compressed file straight to storage
+/// (presigned headers only, no app credentials), then confirm.
 public enum AttachmentUploader {
     /// Waits between `complete` attempts while storage has not yet reported
     /// the object (`409`).
     public static let completeRetryDelays: [Duration] = [.milliseconds(500), .seconds(1), .seconds(2)]
 
-    public static func upload(_ file: LocalAttachmentFile, channelID: String, api: APIClient,
+    public static func upload(_ file: PreparedAttachment, channelID: String, api: APIClient,
                               completeRetryDelays: [Duration] = AttachmentUploader.completeRetryDelays,
                               progress: @escaping @Sendable (Double) -> Void) async throws -> ChatAttachment {
-        let input = AssetCreateInput(channelId: channelID, filename: file.name, contentType: file.contentType, byteSize: file.size)
+        func dimension(_ value: Int?) -> Int? { value.flatMap { (1...32_768).contains($0) ? $0 : nil } }
+        let input = AssetCreateInput(
+            channelId: channelID, filename: file.name, contentType: file.contentType, byteSize: file.byteSize,
+            sourceByteSize: file.sourceSize > 0 ? file.sourceSize : nil,
+            width: dimension(file.width), height: dimension(file.height),
+            durationMs: file.durationMs.flatMap { (0...86_400_000).contains($0) ? $0 : nil },
+            preview: file.preview.map { AssetCreateInput.Preview(contentType: $0.contentType, byteSize: $0.data.count) }
+        )
         let reservation = try await api.createAsset(input)
         try Task.checkCancellation()
-        try await api.putToStorage(reservation.upload, file: file.url, progress: progress)
+        let previewSize = Double(file.preview?.data.count ?? 0)
+        let originalSize = Double(file.byteSize)
+        let total = max(1, previewSize + originalSize)
+        if let preview = file.preview {
+            // A declared preview must be stored too, or `complete` reports 409.
+            guard let previewUpload = reservation.previewUpload else {
+                throw APIError(status: 502, message: "The upload service returned an invalid response.")
+            }
+            try await api.putToStorage(previewUpload, body: .data(preview.data))
+            try Task.checkCancellation()
+        }
+        try await api.putToStorage(reservation.upload, body: .file(file.fileURL)) { fraction in
+            progress((previewSize + fraction * originalSize) / total)
+        }
         try Task.checkCancellation()
         var delays = completeRetryDelays[...]
         while true {

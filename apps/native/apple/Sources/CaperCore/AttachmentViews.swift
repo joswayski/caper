@@ -16,9 +16,9 @@ private final class CachedAttachmentImage: NSObject {
 
 /// Decoded attachment images cached by attachment id and variant, never by
 /// URL, so refreshed signatures reuse what is already on screen. Decoding is
-/// ImageIO, which reads the server's AVIF and lossless WebP results (AVIF
-/// since iOS 16/macOS 13) and local HEIC originals; URLSession transparently
-/// removes any `Content-Encoding: gzip`.
+/// ImageIO, which reads WebP (lossy and lossless), AVIF (since iOS 16/macOS
+/// 13) and local HEIC originals; URLSession transparently removes any
+/// `Content-Encoding: gzip`.
 final class AttachmentImageLoader: @unchecked Sendable {
     static let shared = AttachmentImageLoader()
     private let cache = NSCache<NSString, CachedAttachmentImage>()

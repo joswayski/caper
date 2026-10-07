@@ -8,6 +8,11 @@ packages:
   WebRTC:
     url: https://github.com/stasel/WebRTC.git
     exactVersion: 153.0.0
+  # Lossless WebP attachments (BSD; Resources/libwebp-LICENSE.txt). Static,
+  # imported implementation-only by CaperCore.
+  libwebp:
+    url: https://github.com/SDWebImage/libwebp-Xcode.git
+    exactVersion: 1.6.0
 settings:
   base:
     SWIFT_VERSION: "5.0"
@@ -96,6 +101,10 @@ targets:
         product: WebRTC
         link: true
         embed: false
+      - package: libwebp
+        product: libwebp
+        link: true
+        embed: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: chat.caper.core
@@ -121,6 +130,10 @@ targets:
         embed: false
       - package: WebRTC
         product: WebRTC
+        link: true
+        embed: false
+      - package: libwebp
+        product: libwebp
         link: true
         embed: false
     settings:
