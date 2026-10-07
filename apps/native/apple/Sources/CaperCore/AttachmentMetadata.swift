@@ -55,36 +55,50 @@ public enum AttachmentMetadata {
     /// `©xyz` and `com.apple.quicktime.location.ISO6709` locations. Nil when
     /// the file is not a readable MP4/QuickTime file.
     static func quickTimeMetadataTypeOffsets(fileSize: Int, read: (Int, Int) -> [UInt8]?) -> [Int]? {
+        quickTimeMetadataBoxList(fileSize: fileSize, read: read)?.map { $0.start + 4 }
+    }
+
+    /// The metadata boxes themselves (see `quickTimeMetadataTypeOffsets`).
+    static func quickTimeMetadataBoxList(fileSize: Int, read: (Int, Int) -> [UInt8]?) -> [Box]? {
         guard let top = boxes(from: 0, to: fileSize, read: read), let moov = top.first(where: { $0.type == "moov" }),
               let children = boxes(from: moov.contentStart, to: moov.end, read: read) else { return nil }
-        var offsets: [Int] = []
+        var found: [Box] = []
         for child in children {
-            if quickTimeMetadataBoxes.contains(child.type) { offsets.append(child.start + 4) }
+            if quickTimeMetadataBoxes.contains(child.type) { found.append(child) }
             guard child.type == "trak" else { continue }
             guard let trackChildren = boxes(from: child.contentStart, to: child.end, read: read) else { return nil }
-            offsets += trackChildren.filter { quickTimeMetadataBoxes.contains($0.type) }.map { $0.start + 4 }
+            found += trackChildren.filter { quickTimeMetadataBoxes.contains($0.type) }
         }
-        return offsets
+        return found
     }
 
     /// Renames every metadata box (see `quickTimeMetadataTypeOffsets`) to
-    /// `free` in place: same sizes, so no offset moves and samples are untouched.
-    /// Returns false when nothing was changed.
+    /// `free` and zero-fills its contents in place, so the location bytes are
+    /// gone rather than merely hidden: same sizes, so no offset moves and
+    /// samples are untouched. Returns false when nothing was changed.
     @discardableResult
     static func patchQuickTimeMetadata(at url: URL) -> Bool {
         guard let reader = try? FileHandle(forReadingFrom: url) else { return false }
         let fileSize = (try? reader.seekToEnd()).map { Int($0) } ?? 0
-        let offsets = quickTimeMetadataTypeOffsets(fileSize: fileSize) { offset, count in
+        let found = quickTimeMetadataBoxList(fileSize: fileSize) { offset, count in
             guard (try? reader.seek(toOffset: UInt64(offset))) != nil, let data = try? reader.read(upToCount: count) else { return nil }
             return [UInt8](data)
         }
         try? reader.close()
-        guard let offsets, !offsets.isEmpty, let writer = try? FileHandle(forWritingTo: url) else { return false }
+        guard let found, !found.isEmpty, let writer = try? FileHandle(forWritingTo: url) else { return false }
         defer { try? writer.close() }
+        let chunk = 64 * 1024
         do {
-            for offset in offsets {
-                try writer.seek(toOffset: UInt64(offset))
+            for box in found {
+                try writer.seek(toOffset: UInt64(box.start + 4))
                 try writer.write(contentsOf: Data("free".utf8))
+                try writer.seek(toOffset: UInt64(box.contentStart))
+                var remaining = box.end - box.contentStart
+                while remaining > 0 {
+                    let count = min(chunk, remaining)
+                    try writer.write(contentsOf: Data(count: count))
+                    remaining -= count
+                }
             }
             try writer.synchronize()
             return true

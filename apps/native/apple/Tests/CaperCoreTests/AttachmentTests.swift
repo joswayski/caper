@@ -1047,7 +1047,9 @@ final class AttachmentTests: XCTestCase {
         let stripped = [UInt8](try Data(contentsOf: strippedURL))
         XCTAssertEqual(stripped.count, file.count, "no box changes size")
         XCTAssertEqual([UInt8](try Data(contentsOf: original.url)), file, "the staged original is untouched")
-        XCTAssertEqual(zip(stripped, file).filter { $0 != $1 }.count, 12, "only three 4-byte box types change")
+        let text = String(decoding: stripped, as: UTF8.self)
+        XCTAssertFalse(text.contains("+37.3349-122.0090"), "location bytes are zeroed, not just hidden")
+        XCTAssertFalse(text.contains("ISO6709"), "QuickTime location keys are zeroed")
         let mdatStart = 16
         XCTAssertEqual(Array(stripped[mdatStart..<mdatStart + 16 + samples.count]), Array(file[mdatStart..<mdatStart + 16 + samples.count]),
                        "sample data is byte-identical")
