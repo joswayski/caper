@@ -107,6 +107,8 @@ jobs:
         # A single primary owns all slots, enforcing CROSSSLOT rules like the
         # virtual shard exposed by ElastiCache Serverless (not an HA test).
         run: |
+          # Self-hosted runners keep their Docker containers between jobs.
+          docker rm --force chat-valkey 2>/dev/null || true
           docker run --detach --name chat-valkey --publish 127.0.0.1:6379:6379 \
             valkey/valkey:9.1.2-alpine valkey-server --cluster-enabled yes \
             --bind 0.0.0.0 --protected-mode no
