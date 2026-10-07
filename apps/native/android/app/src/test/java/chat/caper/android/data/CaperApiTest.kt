@@ -83,6 +83,36 @@ class CaperApiTest {
         assertEquals("Bearer account-secret", read.headers["Authorization"])
     }
 
+    @Test fun `request, block and privacy routes`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"id":"direct000003","peer":{"id":"stranger0001","username":"jordan","displayName":"Jordan","avatarId":412},"lastSeq":"1","readSeq":"0","status":"accepted","blocked":false}"""))
+        server.enqueue(MockResponse().setResponseCode(204))
+        server.enqueue(MockResponse().setBody("""{"blocks":[{"id":"member000001","username":"maya","displayName":"Maya","avatarId":null}]}"""))
+        server.enqueue(MockResponse().setResponseCode(204))
+        server.enqueue(MockResponse().setResponseCode(204))
+        server.enqueue(MockResponse().setBody("""{"directMessages":"anyone"}"""))
+        server.enqueue(MockResponse().setBody("""{"directMessages":"nobody"}"""))
+        server.enqueue(MockResponse().setResponseCode(403).setBody("""{"error":"not accepting","code":"dm_not_accepted"}"""))
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        assertEquals("accepted", api.acceptDirectRequest("account-secret", "direct000003").status)
+        api.declineDirectRequest("account-secret", "direct000003")
+        assertEquals("maya", api.blocks("account-secret").blocks.single().username)
+        api.block("account-secret", "member000001")
+        api.unblock("account-secret", "member000001")
+        assertEquals("anyone", api.directPrivacy("account-secret").directMessages)
+        assertEquals("nobody", api.setDirectPrivacy("account-secret", "nobody").directMessages)
+        val refused = runCatching { api.startDirectConversation("account-secret", "jordan") }.exceptionOrNull() as ApiException
+        assertEquals("dm_not_accepted", refused.code)
+
+        val expected = listOf(
+            "POST /api/dms/direct000003/accept", "POST /api/dms/direct000003/decline", "GET /api/blocks",
+            "PUT /api/blocks/member000001", "DELETE /api/blocks/member000001", "GET /api/account/privacy", "PUT /api/account/privacy",
+        )
+        val requests = expected.map { server.takeRequest() }
+        assertEquals(expected, requests.map { "${it.method} ${it.path}" })
+        assertTrue(requests.all { it.headers["Authorization"] == "Bearer account-secret" })
+        assertEquals("{\"directMessages\":\"nobody\"}", requests.last().body.readUtf8())
+    }
+
     @Test fun `redirect is rejected without forwarding bearer credential`() = runTest {
         val target = MockWebServer()
         try {
