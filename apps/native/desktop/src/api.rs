@@ -1,4 +1,5 @@
 use crate::attachments::FreshUrl;
+use crate::compress::Compression;
 use crate::model::{
     Account, Channel, ChatSession, DirectConversation, DirectConversations, History, Member,
     Members, Message, ReactionUpdate, Reactors, Space, SpaceDetail, Spaces,
@@ -504,13 +505,11 @@ impl Api {
     }
 
     /// Uploads are optional server configuration (503 without storage). Any
-    /// failure hides the attach control.
-    pub fn asset_usage(&self, token: &str) -> Result<Usage, ApiError> {
+    /// failure hides the attach control; success carries compression settings.
+    pub fn asset_usage(&self, token: &str) -> Result<Compression, ApiError> {
         let usage: Value =
             self.request(Method::GET, "api/assets/usage", Some(token), None, None)?;
-        Ok(Usage {
-            max_upload_bytes: usage["maxUploadBytes"].as_u64().filter(|limit| *limit > 0),
-        })
+        Ok(serde_json::from_value(usage["compression"].clone()).unwrap_or_default())
     }
 
     /// Fresh signed URLs for visible attachments; ids the caller cannot see
@@ -559,8 +558,8 @@ impl Api {
             .map_err(|_| UploadError::new("The upload service returned an invalid response."))
     }
 
-    /// `POST /api/assets/{id}/complete`: the API confirms the upload arrived
-    /// with the reserved size (409: not yet; 422: size mismatch).
+    /// `POST /api/assets/{id}/complete`: the API verifies the stored bytes
+    /// (409: not arrived yet; 422: size or signature mismatch).
     pub fn complete_asset(&self, token: &str, id: &str) -> Result<Value, UploadError> {
         let response = self
             .raw(
@@ -608,8 +607,8 @@ impl Api {
 
     /// Download attachment media from a signed CDN URL (no credentials).
     /// Errors carry the HTTP status, if any, for the expired-URL retry.
-    /// Only images are fetched (WebP previews and legacy PNG/JPEG/GIF/WebP
-    /// originals). reqwest is built without decompression features, so it
+    /// Only images are fetched (previews and PNG/JPEG/GIF/WebP originals).
+    /// reqwest is built without decompression features, so it
     /// sends no `Accept-Encoding` and the CDN never answers with gzip; other
     /// files open in the system browser, which decodes gzip itself.
     pub fn fetch_media(&self, url: &str) -> Result<Vec<u8>, Option<u16>> {
@@ -886,13 +885,6 @@ fn upload_failure(response: Response) -> UploadError {
     };
     error.status = Some(status.as_u16());
     error
-}
-
-/// `GET /api/assets/usage` as far as the client needs it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Usage {
-    /// Largest original the server accepts; checked before reserving.
-    pub max_upload_bytes: Option<u64>,
 }
 
 fn checked(response: Response) -> Result<Response, ApiError> {

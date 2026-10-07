@@ -4,10 +4,10 @@
 //! longer than a signed URL lives (24–48 hours), so URLs are refreshed through
 //! `POST /api/assets/urls` before they expire and after a 403/404 load.
 //!
-//! Inline images come from the WebP `previewUrl` the media worker generates
-//! for every image and video poster. Stored photos are mostly AVIF, which the
-//! pure-Rust `image` codecs cannot decode (its AVIF decoder needs native
-//! dav1d), so full-size originals open in the system browser instead.
+//! Inline images come from the `previewUrl` clients upload for large stills
+//! (JPEG), else from the PNG/JPEG/WebP/GIF original. AVIF and HEIC originals
+//! are never decoded (the pure-Rust `image` codecs cannot read them) and open
+//! in the system browser instead.
 
 use crate::model::{Attachment, AttachmentKind, AttachmentStatus};
 use eframe::egui;
@@ -83,8 +83,8 @@ pub fn resolve(attachment: &Attachment, fresh: Option<&FreshUrl>) -> Attachment 
 }
 
 /// Still formats the bundled pure-Rust codecs decode. Originals in these
-/// formats (from before server-side processing) may load inline when they
-/// have no preview; AVIF, HEIC and anything else never do.
+/// formats load inline when they have no preview; AVIF, HEIC and anything
+/// else never do.
 pub fn decodable(content_type: &str) -> bool {
     matches!(
         content_type,
@@ -92,9 +92,8 @@ pub fn decodable(content_type: &str) -> bool {
     )
 }
 
-/// What to download for an inline tile: the WebP preview (images and video
-/// posters, available even while processing), else a ready original that
-/// decodes here.
+/// What to download for an inline tile: the preview (images and video
+/// posters), else a ready original that decodes here.
 pub fn inline_source(attachment: &Attachment) -> Option<&str> {
     attachment.preview_url.as_deref().or_else(|| {
         (attachment.kind == AttachmentKind::Image
@@ -107,8 +106,6 @@ pub fn inline_source(attachment: &Attachment) -> Option<&str> {
 
 /// Locally shown images fit the largest inline frame at 2x.
 pub const THUMBNAIL_EDGE: u32 = 720;
-/// Own files larger than this are not decoded for a local preview.
-const MAX_LOCAL_DECODE_BYTES: u64 = 50 * 1024 * 1024;
 
 /// Decode a still for display only, within memory limits.
 pub fn decode_thumbnail(bytes: &[u8]) -> Option<egui::ColorImage> {
@@ -129,16 +126,6 @@ pub fn decode_thumbnail(bytes: &[u8]) -> Option<egui::ColorImage> {
         [image.width() as usize, image.height() as usize],
         image.as_raw(),
     ))
-}
-
-/// The sender's own copy of a picked image, shown on its draft chip and on
-/// the sent message until the server's preview arrives. Formats this build
-/// cannot decode (HEIC, AVIF, …) simply show no local image.
-pub fn local_thumbnail(path: &std::path::Path, content_type: &str) -> Option<egui::ColorImage> {
-    if !decodable(content_type) || std::fs::metadata(path).ok()?.len() > MAX_LOCAL_DECODE_BYTES {
-        return None;
-    }
-    decode_thumbnail(&std::fs::read(path).ok()?)
 }
 
 /// Display size that reserves layout space before an image loads.

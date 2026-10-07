@@ -33,14 +33,18 @@ tokio-stream = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 eframe = { version = "0.33.3", default-features = false, features = ["wgpu", "x11", "wayland", "accesskit", "default_fonts", "persistence"] }
 egui_extras = { version = "0.33.3", default-features = false, features = ["svg", "image"] }
-# Display-only decoding in pure Rust: WebP previews from the media worker and
-# legacy PNG/JPEG/GIF originals. No AVIF: the image crate's decoder needs
-# native dav1d, so AVIF originals open in the system browser.
-image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+# Attachments decode PNG/JPEG/WebP/GIF/BMP/TIFF in pure Rust and are
+# compressed in pure Rust before upload: indexed PNG or lossless WebP (the
+# image crate's encoder) for lossless stills, JPEG for photos. No AVIF or
+# HEIC: those decoders need native libraries, so such files upload unchanged
+# and AVIF originals open in the system browser.
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "tiff"] }
+jpeg-encoder = "0.7"
 keyring = { version = "3.6.3", default-features = false }
 libwebrtc = { path = "voice-spike/vendor/libwebrtc" }
 nnnoiseless = { version = "=0.5.2", default-features = false }
 ort = { version = "=2.0.0-rc.11", default-features = false, features = ["load-dynamic"] }
+png = "0.18"
 # File picker: Win32 dialogs on Windows; XDG desktop portal (libdbus loaded at runtime) on Linux.
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 reqwest = { version = "0.12.23", default-features = false, features = ["blocking", "json", "rustls-tls"] }

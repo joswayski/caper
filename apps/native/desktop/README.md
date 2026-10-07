@@ -36,33 +36,42 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   paginated member presence, owner space/channel/member management, and confirmed
   non-owner leave-space with immediate call teardown and conversation clearing.
 - File attachments, when the server has storage configured (otherwise the
-  attach control is hidden). Inline images show the server's WebP preview,
-  decoded off the UI thread and cached by attachment id; clicking opens the
-  full file in the system browser. Stored photos are mostly AVIF, which the
-  bundled pure-Rust decoders cannot read, so originals are never decoded in
-  the app. Videos show their poster with a play button; animated GIFs (stored
-  as looping MP4) show their poster with a "GIF" badge and play in the
-  browser. Audio and other files show cards that open in the system browser
-  or player. Desktop has **no in-app video or audio playback**. Files still
-  being processed on the server show their preview (when one exists), a
-  spinner and the worker's percent (`attachment.progress`); failed files read
-  "Couldn't process this file" and removed files "File removed".
-  `message.attachments` updates are sequenced like reactions. Signed URLs are
+  attach control is hidden). Inline images show the uploaded preview, else
+  the PNG/JPEG/WebP/GIF original, decoded off the UI thread and cached by
+  attachment id; clicking opens the full file in the system browser. AVIF
+  and HEIC are never decoded in the app. Videos show their poster with a play
+  button. Audio and other files show cards that open in the system browser
+  or player. Desktop has **no in-app video or audio playback**. Removed files
+  read "File removed". The parked server-processing fields stay supported
+  (absent `status` means ready): processing placeholders with the
+  `attachment.progress` percent, "Couldn't process this file", animated
+  ("GIF") posters, and `message.attachments` updates sequenced like
+  reactions. Signed URLs are
   refreshed (`POST /api/assets/urls`) before they expire and once after a
   403/404 image load, so a window left open for days keeps working.
 - Sending up to 10 files per message from the paperclip file dialog (Win32 on
   Windows; on Linux the XDG desktop portal, which needs a file-chooser backend
   such as xdg-desktop-portal-gtk, -gnome or -kde) or by dropping files on the
-  window. The client never compresses: it reserves the original's exact size
-  (type guessed from the extension; larger than the server's `maxUploadBytes`
-  is refused before reserving), streams it from disk straight to storage with
-  exactly the presigned headers and no Caper credentials, confirms (retrying
-  while storage has not seen it yet), and sends; the server-side media worker
-  compresses it afterwards. Chips show the name, size, upload progress, errors
-  such as storage full, and remove; PNG/JPEG/WebP/GIF picks also show a local
-  thumbnail, which the sent message keeps until the server preview arrives.
-  Pasting images from the clipboard is not supported (egui does not deliver
-  image pastes).
+  window. Files are compressed on the device with the server's
+  `GET /api/assets/usage` `compression` settings, in pure Rust: lossless
+  stills (PNG, BMP, TIFF, lossless WebP) stay pixel-exact at full size, as an
+  exact-palette indexed PNG when the colours fit `paletteColors`, else
+  lossless WebP, kept only when smaller; photos (JPEG, lossy WebP) become JPEG
+  at `imageQuality` scaled to `imageMaxEdge`, upright, without EXIF/GPS, kept
+  only when at least 10% smaller (no lossy WebP encoder). HEIC, AVIF, GIF,
+  SVG, audio, documents and videos upload as the original (no transcoder;
+  MP4/QuickTime size and duration come from the header). Originals lose their
+  metadata losslessly: JPEG APPn/comments except JFIF, ICC and Adobe (a
+  non-default orientation is kept), PNG text/eXIf chunks, and MP4/QuickTime
+  `udta`/`meta` boxes under `moov` and each `trak`, zero-filled as `free`
+  boxes of the same size. Large images get a JPEG preview (≤ `previewEdge`,
+  ≤ 512 KiB). The client reserves the exact stored size, PUTs the preview
+  and then the file straight to storage with exactly the presigned headers
+  and no Caper credentials, confirms (retrying while storage has not seen it
+  yet), and sends. Chips show the name, saving ("1.6 MB → 143 KB"), progress,
+  errors such as storage full, and remove, with a local thumbnail the sent
+  message keeps. Pasting images from the clipboard is not supported (egui
+  does not deliver image pastes).
 - Global two-person direct messages, including exact-username conversation
   creation, unread state, account-wide read cursors, paging, typing, retry, and gateway
   replay. Desktop does not provide OS push notifications in this stage.

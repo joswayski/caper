@@ -3,6 +3,7 @@
 mod api;
 mod attachments;
 mod avatar_images;
+mod compress;
 mod credentials;
 mod daily_icon;
 mod edits;
@@ -14,6 +15,7 @@ mod gateway;
 mod media;
 #[path = "../voice-spike/src/media_gateway.rs"]
 mod media_gateway;
+mod metadata;
 mod model;
 mod navigation;
 mod startup;
@@ -187,8 +189,10 @@ struct DraftUpload {
     channel: String,
     name: String,
     kind: model::AttachmentKind,
-    /// The original's size; 0 until the file was checked.
-    size: u64,
+    /// The picked file's size; 0 until the file was read.
+    source_size: u64,
+    /// What is stored after compression, once prepared.
+    stored_size: Option<u64>,
     progress: f32,
     error: Option<String>,
     attachment: Option<model::Attachment>,
@@ -394,8 +398,8 @@ struct CaperApp {
     connection_copy_status: &'static str,
     diagnostics_copied: bool,
     updates: updates::Updates,
-    /// Upload limits while uploads are configured; `None` hides Attach.
-    uploads: Option<api::Usage>,
+    /// Compression settings while uploads are configured; `None` hides Attach.
+    uploads: Option<compress::Compression>,
     /// Latest `attachment.progress` percent per processing attachment id.
     attachment_progress: BTreeMap<String, u8>,
     uploads_checked: Option<Instant>,
@@ -1135,9 +1139,7 @@ impl CaperApp {
                 avatar_id: Some(0),
             },
         });
-        self.uploads = Some(api::Usage {
-            max_upload_bytes: Some(2 << 30),
-        });
+        self.uploads = Some(compress::Compression::default());
         let url = |kind: &str, id: &str| format!("https://fixture.invalid/{kind}/{id}");
         let file = |id: &str, kind, content_type: &str, name: &str, size| model::Attachment {
             id: id.into(),
@@ -1266,7 +1268,8 @@ impl CaperApp {
             channel: channel.clone(),
             name: name.into(),
             kind: model::AttachmentKind::Image,
-            size,
+            source_size: size,
+            stored_size: Some(size),
             progress,
             error: error.map(str::to_owned),
             attachment: None,
@@ -1275,12 +1278,13 @@ impl CaperApp {
             cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         let mut done = draft(1, "TEST FIXTURE photo.jpg", 1_677_722, 1.0, None);
+        done.stored_size = Some(146_432);
         done.attachment = Some(processing(file(
             "fixture-draft",
             model::AttachmentKind::Image,
             "image/jpeg",
             "TEST FIXTURE photo.jpg",
-            1_677_722,
+            146_432,
         )));
         let mut failed = draft(
             3,
@@ -1291,11 +1295,9 @@ impl CaperApp {
         );
         failed.kind = model::AttachmentKind::Video;
         failed.thumbnail_image = None;
-        self.drafts = vec![
-            done,
-            draft(2, "TEST FIXTURE diagram.png", 640_000, 0.45, None),
-            failed,
-        ];
+        let mut uploading = draft(2, "TEST FIXTURE diagram.png", 640_000, 0.45, None);
+        uploading.stored_size = Some(52_000);
+        self.drafts = vec![done, uploading, failed];
         self.draft_keys = 3;
     }
 
@@ -1667,8 +1669,8 @@ impl CaperApp {
                 {
                     self.sent(result)
                 }
-                Event::AssetUsage { token, usage } if self.token.as_ref() == Some(&token) => {
-                    self.uploads = usage;
+                Event::AssetUsage { token, settings } if self.token.as_ref() == Some(&token) => {
+                    self.uploads = settings;
                 }
                 Event::AttachmentUrls { token, ids, result }
                     if self.token.as_ref() == Some(&token) =>
@@ -3295,7 +3297,7 @@ impl CaperApp {
         if paths.is_empty() || !self.can_attach() {
             return;
         }
-        let (Some(usage), Some(token), Some(channel)) = (
+        let (Some(settings), Some(token), Some(channel)) = (
             self.uploads.clone(),
             self.token.clone(),
             self.selected_channel.clone(),
@@ -3326,7 +3328,8 @@ impl CaperApp {
                     .file_name()
                     .map_or_else(|| "file".into(), |name| name.to_string_lossy().into_owned()),
                 kind: model::AttachmentKind::File,
-                size: 0,
+                source_size: 0,
+                stored_size: None,
                 progress: 0.0,
                 error: None,
                 attachment: None,
@@ -3339,7 +3342,7 @@ impl CaperApp {
                 token: token.clone(),
                 channel: channel.clone(),
                 path,
-                max_upload_bytes: usage.max_upload_bytes,
+                settings: settings.clone(),
                 cancel,
             });
         }
@@ -3358,7 +3361,8 @@ impl CaperApp {
                 channel: channel.clone(),
                 name: attachment.name.clone(),
                 kind: attachment.kind,
-                size: attachment.size,
+                source_size: attachment.size,
+                stored_size: Some(attachment.size),
                 progress: 1.0,
                 error: None,
                 attachment: Some(attachment),
@@ -3392,10 +3396,16 @@ impl CaperApp {
             return;
         };
         match update {
-            worker::UploadUpdate::Prepared { name, kind, size } => {
+            worker::UploadUpdate::Prepared {
+                name,
+                kind,
+                source_size,
+                stored_size,
+            } => {
                 draft.name = name;
                 draft.kind = kind;
-                draft.size = size;
+                draft.source_size = source_size;
+                draft.stored_size = Some(stored_size);
             }
             worker::UploadUpdate::Thumbnail(image) => {
                 // The upload may have finished first.
@@ -3410,7 +3420,7 @@ impl CaperApp {
             }
             worker::UploadUpdate::Finished(Ok(attachment)) => {
                 draft.progress = 1.0;
-                // The sender sees its own copy until the server's preview.
+                // The sender sees its own copy without a download.
                 if let Some(image) = draft.thumbnail_image.clone() {
                     self.local_media.push((attachment.id.clone(), image));
                 }
@@ -7897,8 +7907,8 @@ impl CaperApp {
                 let status = if let Some(error) = &draft.error {
                     error.clone()
                 } else if draft.attachment.is_some() {
-                    uploads::format_bytes(draft.size)
-                } else if draft.size == 0 {
+                    uploads::size_label(draft.source_size, draft.stored_size)
+                } else if draft.stored_size.is_none() {
                     "Preparing…".into()
                 } else if draft.progress >= 1.0 {
                     "Confirming…".into()
@@ -14449,7 +14459,7 @@ mod tests {
             "Processing…",
             "GIF",
             "TEST FIXTURE photo.jpg",
-            "1.6 MB",
+            "1.6 MB → 143 KB",
             "Uploading… 45%",
             "You’ve used all of your file storage.",
         ] {
@@ -14547,7 +14557,7 @@ mod tests {
         assert!(app.can_attach());
         app.uploads = None;
         assert!(!app.can_attach(), "usage failure hides Attach");
-        app.uploads = Some(crate::api::Usage::default());
+        app.uploads = Some(crate::compress::Compression::default());
         let channel = app.selected_channel.clone().unwrap();
         app.detail
             .as_mut()
@@ -14650,10 +14660,12 @@ mod tests {
             crate::worker::UploadUpdate::Prepared {
                 name: "photo.jpg".into(),
                 kind: model::AttachmentKind::Image,
-                size: 1_677_722,
+                source_size: 1_677_722,
+                stored_size: 146_432,
             },
         );
-        assert_eq!(app.drafts[0].size, 1_677_722);
+        assert_eq!(app.drafts[0].source_size, 1_677_722);
+        assert_eq!(app.drafts[0].stored_size, Some(146_432));
         app.upload_update(
             1,
             crate::worker::UploadUpdate::Thumbnail(egui::ColorImage::filled(
