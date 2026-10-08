@@ -4952,14 +4952,24 @@ impl CaperApp {
                 }
                 let content = ui.max_rect();
                 if narrow {
-                    if self.navigation_open {
+                    // As on phones, the conversation slides over Browse, which sits a
+                    // little behind it and dims; both draw only while it moves.
+                    let uncovered = context.animate_bool_with_time_and_easing(
+                        egui::Id::new("browse-slide"),
+                        self.navigation_open,
+                        0.3,
+                        egui::emath::easing::cubic_out,
+                    );
+                    if uncovered > 0.0 {
+                        let browse = content
+                            .translate(egui::vec2(-(1.0 - uncovered) * content.width() * 0.3, 0.0));
                         let rail_rect = egui::Rect::from_min_max(
-                            content.min,
-                            egui::pos2(content.left() + 59.0, content.bottom()),
+                            browse.min,
+                            egui::pos2(browse.left() + 59.0, browse.bottom()),
                         );
                         let sidebar_rect = egui::Rect::from_min_max(
-                            egui::pos2(rail_rect.right(), content.top()),
-                            content.max,
+                            egui::pos2(rail_rect.right(), browse.top()),
+                            browse.max,
                         );
                         ui.scope_builder(egui::UiBuilder::new().max_rect(rail_rect), |ui| {
                             self.rail(ui);
@@ -4967,8 +4977,25 @@ impl CaperApp {
                         ui.scope_builder(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
                             self.sidebar(ui, sidebar_rect.width());
                         });
-                    } else {
-                        ui.scope_builder(egui::UiBuilder::new().max_rect(content), |ui| {
+                    }
+                    if uncovered < 1.0 {
+                        if uncovered > 0.0 {
+                            ui.painter().rect_filled(
+                                content,
+                                0.0,
+                                egui::Color32::from_black_alpha((128.0 * (1.0 - uncovered)) as u8),
+                            );
+                        }
+                        let stage = content.translate(egui::vec2(uncovered * content.width(), 0.0));
+                        let shadow = egui::Shadow {
+                            offset: [-4, 0],
+                            blur: 16,
+                            spread: 0,
+                            color: egui::Color32::from_black_alpha(110),
+                        };
+                        ui.painter().add(shadow.as_shape(stage, 0));
+                        ui.painter().rect_filled(stage, 0.0, SURFACE);
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(stage), |ui| {
                             self.conversation(ui, true)
                         });
                         if self.selected_direct.is_none()
@@ -4977,10 +5004,10 @@ impl CaperApp {
                         {
                             let members_rect = egui::Rect::from_min_max(
                                 egui::pos2(
-                                    (content.right() - 280.0).max(content.left()),
-                                    content.top() + 53.0,
+                                    (stage.right() - 280.0).max(stage.left()),
+                                    stage.top() + 53.0,
                                 ),
-                                content.max,
+                                stage.max,
                             );
                             ui.scope_builder(egui::UiBuilder::new().max_rect(members_rect), |ui| {
                                 self.member_presence(ui)

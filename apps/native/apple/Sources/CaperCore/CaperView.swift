@@ -199,35 +199,101 @@ private struct CaperIcon: View {
     }
 }
 
+/// Phones show Browse (spaces and channels) or the conversation. The
+/// conversation slides over Browse like a navigation stack, following a finger
+/// from the screen edge, while Browse sits a little behind it and dims.
+/// Buttons, Back and channel choices animate the same slide.
+@Observable private final class BrowseDrawer {
+    /// While a finger drags: how much of Browse is uncovered, from 0 (conversation) to 1 (Browse).
+    var drag: CGFloat?
+    var width: CGFloat = 1
+    static let settle = Animation.interpolatingSpring(duration: 0.35, bounce: 0)
+    /// How far Browse sits under the conversation, as a share of its width.
+    static let parallax: CGFloat = 0.3
+}
+
+/// Poses one of the two phone views. Only this reads the drag, so a moving finger
+/// re-renders the pose rather than the views themselves.
+private struct BrowseLayer: ViewModifier {
+    let conversation: Bool
+    let narrow: Bool
+    let showsBrowse: Bool
+    let width: CGFloat
+    @Environment(BrowseDrawer.self) private var drawer: BrowseDrawer?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        let drag = narrow ? drawer?.drag : nil
+        let uncovered = narrow ? drag ?? (showsBrowse ? 1 : 0) : 1
+        let reduceMotion = self.reduceMotion
+        // Follow the finger while dragged and spring into place otherwise,
+        // keeping a release's own spring (and speed).
+        content.transaction { transaction in
+            if drag != nil || reduceMotion { transaction.animation = nil }
+            else if transaction.animation == nil { transaction.animation = BrowseDrawer.settle }
+        } body: { layer in
+            if conversation {
+                layer.offset(x: uncovered * width)
+            } else {
+                layer.offset(x: -(1 - uncovered) * width * BrowseDrawer.parallax)
+                    .overlay { Color.black.opacity(0.5 * (1 - uncovered)).allowsHitTesting(false) }
+            }
+        }
+    }
+}
+
 // Native edge swipes leave text selection and inline controls in the center
 // alone. Attach only to scrolling content, never the composer or account dock.
 private struct BrowseSwipe: ViewModifier {
     let open: Bool
     let enabled: Bool
     let navigate: () -> Void
-    @State private var width: CGFloat = 0
-    @State private var startedAt: Date?
-    @State private var vertical = false
+    @Environment(BrowseDrawer.self) private var drawer: BrowseDrawer?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var frame: CGRect = .zero
+    /// Undecided until the first move; then following the finger, or not this gesture's.
+    @State private var tracking: Bool?
     @GestureState private var dragging = false
 
     func body(content: Content) -> some View {
-        content.onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
-            .simultaneousGesture(DragGesture(minimumDistance: 12)
+        // Global coordinates: the view itself moves with the finger.
+        content.onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { if tracking != true { frame = $0 } }
+            .simultaneousGesture(DragGesture(minimumDistance: 12, coordinateSpace: .global)
                 .updating($dragging) { _, active, _ in active = true }
                 .onChanged { value in
-                    if startedAt == nil { startedAt = value.time }
-                    if abs(value.translation.height) > max(12, abs(value.translation.width)) { vertical = true }
+                    let dx = value.translation.width, dy = value.translation.height
+                    if tracking == nil {
+                        let edge = open ? value.startLocation.x >= frame.maxX - 24 : value.startLocation.x <= frame.minX + 24
+                        tracking = enabled && drawer != nil && edge && abs(dx) > abs(dy) && (open ? dx < 0 : dx > 0)
+                    }
+                    guard tracking == true, let drawer else { return }
+                    drawer.drag = min(1, max(0, (open ? 1 : 0) + dx / drawer.width))
                 }
                 .onEnded { value in
-                    defer { startedAt = nil; vertical = false }
-                    guard enabled, !vertical, value.time.timeIntervalSince(startedAt ?? value.time) < 0.6,
-                          open ? value.startLocation.x >= width - 24 : value.startLocation.x <= 24,
-                          abs(value.translation.width) >= 64,
-                          abs(value.translation.width) > abs(value.translation.height) * 2,
-                          open ? value.translation.width < 0 : value.translation.width > 0 else { return }
-                    navigate()
+                    defer { tracking = nil }
+                    guard tracking == true, let drawer, let uncovered = drawer.drag else { return }
+                    // Toward the other view, in points per second.
+                    let toward = (open ? -1 : 1) * value.velocity.width
+                    let travelled = abs(uncovered - (open ? 1 : 0))
+                    let commit = toward > -300 && (travelled >= 0.5 || (toward >= 300 && abs(value.translation.width) >= 40))
+                    let target: CGFloat = commit != open ? 1 : 0
+                    // Carry the finger's speed into the spring, relative to the distance left.
+                    let remaining = target - uncovered
+                    let velocity = abs(remaining) > 0.01 ? value.velocity.width / drawer.width / remaining : 0
+                    withAnimation(reduceMotion ? nil : .interpolatingSpring(duration: 0.35, bounce: 0, initialVelocity: min(max(velocity, -20), 20))) {
+                        drawer.drag = nil
+                        if commit { navigate() }
+                    }
                 }, including: enabled ? .all : .subviews)
-            .onChange(of: dragging) { _, active in if !active { startedAt = nil; vertical = false } }
+            .onChange(of: dragging) { _, active in
+                guard !active else { return }
+                // After onEnded, if it runs: a cancelled drag (by a scroll, or the system) slides back.
+                DispatchQueue.main.async {
+                    guard tracking == true else { return }
+                    tracking = nil
+                    withAnimation(reduceMotion ? nil : BrowseDrawer.settle) { drawer?.drag = nil }
+                }
+            }
     }
 }
 
@@ -262,6 +328,7 @@ private struct WorkspaceView: View {
     @FocusState private var sidebarFocused: Bool
     @State private var membersPreference = false
     @State private var modalDismissDisabled = false
+    @State private var browseDrawer = BrowseDrawer()
     private let parityFixture: String?
     private let parityMode: Bool
 
@@ -290,25 +357,11 @@ private struct WorkspaceView: View {
                             .disabled(model.openingSpaceID != nil)
                     }.padding(12).background(CaperTheme.surface)
                 }
-                Group {
-                    if narrow && !model.navigationOpen && (!model.spaces.isEmpty || model.selectedDirectMessageID != nil) {
-                        ZStack(alignment: .trailing) {
-                            ConversationStage(model: model, narrow: true, browse: { model.navigationOpen = true }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
-                                membersPreference = !membersVisible
-                            }
-                            if membersVisible && model.selectedDirectMessageID == nil {
-                                Color.black.opacity(0.25)
-                                    .contentShape(Rectangle())
-                                    .onTapGesture { membersPreference = false }
-                                    .padding(.top, 50)
-                                    .accessibilityHidden(true)
-                                MemberPresenceView(model: model, close: { membersPreference = false })
-                                    .frame(width: min(280, geometry.size.width - 64))
-                                    .clipShape(RoundedRectangle(cornerRadius: 16))
-                                    .padding(.top, 58).padding(.trailing, 8).padding(.bottom, 8)
-                            }
-                        }
-                    } else {
+                // Phones slide the conversation over Browse; wider windows show both.
+                let conversationAvailable = !model.spaces.isEmpty || model.selectedDirectMessageID != nil
+                let showsBrowse = !narrow || model.navigationOpen || !conversationAvailable
+                ZStack(alignment: .leading) {
+                    VStack(spacing: 0) {
                         HStack(spacing: 0) {
                             SpaceRail(model: model, narrow: narrow, showLogin: { sheet = .login }, create: { sheet = .createSpace }, openInvitation: { sheet = .invitation($0) })
                                 .frame(width: 60)
@@ -391,16 +444,57 @@ private struct WorkspaceView: View {
                                 }
                             }
                         }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        if narrow { AccountBar(model: model, sheet: $sheet) }
+                    }
+                    .modifier(BrowseLayer(conversation: false, narrow: narrow, showsBrowse: showsBrowse, width: geometry.size.width))
+                    .allowsHitTesting(showsBrowse)
+                    .accessibilityHidden(!showsBrowse)
+                    if narrow && conversationAvailable {
+                        ZStack(alignment: .trailing) {
+                            ConversationStage(model: model, narrow: true, browse: { model.navigationOpen = true }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
+                                membersPreference = !membersVisible
+                            }
+                            if membersVisible && model.selectedDirectMessageID == nil {
+                                Color.black.opacity(0.25)
+                                    .contentShape(Rectangle())
+                                    .onTapGesture { membersPreference = false }
+                                    .padding(.top, 50)
+                                    .accessibilityHidden(true)
+                                MemberPresenceView(model: model, close: { membersPreference = false })
+                                    .frame(width: min(280, geometry.size.width - 64))
+                                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                                    .padding(.top, 58).padding(.trailing, 8).padding(.bottom, 8)
+                            }
+                        }
+                        .background(CaperTheme.blackout)
+                        .overlay(alignment: .leading) {
+                            LinearGradient(colors: [.clear, .black.opacity(0.35)], startPoint: .trailing, endPoint: .leading)
+                                .frame(width: 16).offset(x: -16).allowsHitTesting(false).accessibilityHidden(true)
+                        }
+                        .modifier(BrowseLayer(conversation: true, narrow: narrow, showsBrowse: showsBrowse, width: geometry.size.width))
+                        .allowsHitTesting(!showsBrowse)
+                        .accessibilityHidden(showsBrowse)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                if narrow && model.navigationOpen {
-                    AccountBar(model: model, sheet: $sheet)
-                }
+                .clipped()
+                .onChange(of: geometry.size.width, initial: true) { _, width in browseDrawer.width = max(width, 1) }
+                .onChange(of: showsBrowse) { _, _ in endEditing() }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(CaperTheme.blackout)
+            .environment(browseDrawer)
         }
+    }
+
+    /// The hidden view stays in place to slide back, so it must not keep the keyboard.
+    private func endEditing() {
+        #if os(iOS)
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        #elseif os(macOS)
+        NSApp.keyWindow?.makeFirstResponder(nil)
+        #endif
     }
 
     private var workspace: some View {

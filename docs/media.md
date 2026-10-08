@@ -5013,8 +5013,10 @@ their existing Pins/member controls.
 Swiping right opens the existing space/channel browser; swiping left returns to
 the selected conversation without selecting a different channel. Web keeps the
 chat mounted, Apple keeps the draft in its chat model, and Android saves the
-conversation state while Browse replaces it. Gestures require at least 64
-CSS pixels/native points of mostly horizontal travel and reject vertical drags.
+conversation state while Browse replaces it. Gestures originally required at
+least 64 CSS pixels/native points of mostly horizontal travel and reject vertical
+drags; see [Sliding Browse on phones](#sliding-browse-on-phones-october-8-2026)
+for the current finger-tracked behavior.
 
 | Platform | Intentional behavior and validation boundary |
 | --- | --- |
@@ -5127,3 +5129,56 @@ presents Pins as a sheet over the mounted conversation and is unchanged.
 | Rust desktop | 276 tests pass, 9 existing tests ignored, including rendered scroll-anchor/paging preservation across empty Pins. No macOS/Windows or physical-device acceptance. |
 | Android | Scroll state is hoisted above Pins navigation. Gradle compile attempt is blocked by the missing Android SDK; no native build or device verification. |
 | Deployment | Web, Android and Rust desktop can release independently. No API/gateway, infrastructure, secret/configuration, database or Apple release is required. Docker daemon unavailable; web build stages validated directly. No deployment performed. |
+
+### Sliding Browse on phones (October 8, 2026)
+
+On narrow layouts the conversation slides over Browse like a navigation stack
+instead of the two views swapping in place. A swipe moves the conversation with
+the finger while Browse sits 30% behind it and dims. Releasing past halfway, or
+flicking at least 300 CSS pixels/points per second after 40 of travel, completes
+the move; otherwise it springs back. A flick back toward the start cancels.
+Back to Browse, Close navigation, and choosing a channel or DM animate the same
+slide. Where a swipe may start is unchanged from the October 6 rules above. The
+gesture still never selects a channel, and drafts and history are kept.
+
+| Platform | Behavior and validation boundary |
+| --- | --- |
+| Web ≤760px | Uses same-document View Transitions. The room is snapshotted, and the old and new views' pseudo-elements are posed by the drag, then settled with WAAPI. The rest of the page stays live. Without View Transitions or with `prefers-reduced-motion`, Browse switches at once and keeps the original 64px/600ms quick-swipe rule. The conversation stays laid out but hidden behind Browse, so its scroll position now survives opening Browse and cancelled swipes (it previously reset to the latest message). `npm run check` passes, and `npm test` passes 471 tests on Node 24. `scripts/test-desktop-navigation.mjs` passes against disposable mocks in Chromium touch emulation, with timestamped touches. It covers mid-drag scrubbing, slow snap-back, halfway and fling commits in both directions, cancel/vertical/wrong-direction/multi-touch guards, reduced motion, Back/Close, overlays, drafts and history reads. The test's stale members-default and Pins-header expectations (#363/#366) were updated. 390px mid-swipe, settled and button-slide captures were inspected. Not Safari, Firefox or physical-device acceptance. |
+| Android narrow | Compose `Animatable` with a critically damped spring that carries the release velocity. Browse and the conversation are both composed only while the slide moves. The finger is tracked on the unmoving container; touches still start only on the timeline or channel list. Back, buttons and channel choices animate. Follows the system animator duration scale. `./gradlew :app:compileDebugKotlin` and `:app:lintDebug` pass (Android SDK 36). No emulator or device run: there is no KVM in this environment. |
+| Apple narrow | SwiftUI offsets with scoped transactions: no animation while dragged, then an interpolating spring carrying the release velocity. Model-driven changes use the default spring, and Reduce Motion switches without animation. Both views stay in the hierarchy on phones; the hidden one is not hit-testable or exposed to accessibility, and switching dismisses the keyboard. Edge-start rules (24pt) are unchanged. Swift/Xcode are unavailable in this Linux environment, so this is not compiled, UI-tested or device-checked. The existing iOS UI test's swipe/Back expectations are expected to hold. |
+| Rust desktop narrow | No touch gestures. Toggling Browse slides the conversation with the same parallax and dimming over 0.3s (cubic ease-out). Fmt, application-package Clippy (`--no-deps`) and the debug build pass, and 288 tests pass (9 existing ignored). A 60 fps Xvfb recording of the `parity-narrow` fixture (Browse, then Close navigation) was inspected frame by frame. Not macOS or Windows acceptance. |
+| Containers/services | No API, gateway, infrastructure, secret/configuration or database change. No deployment performed. |
+
+#### Deployment order
+
+1. No infrastructure, secret/configuration, database migration, API, gateway or
+   Valkey change is necessary. Web, Android, Apple and Rust desktop can deploy
+   independently. Wait for the merged revision's immutable web image and native
+   build checks, and set `MERGED_SHA` to that full merged commit SHA. Merging
+   does not deploy services or release apps.
+2. Deploy web through the existing operator workflow from an authenticated
+   checkout with the production Kubernetes context:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # Wait for this SHA's deployment workflow to succeed, then:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+
+3. Build Android, Apple and Rust desktop through their existing native
+   workflows after native checks pass: `bash apps/native/android/build.sh`,
+   `bash apps/native/apple/build.sh ios`, `bash apps/native/apple/build.sh macos`
+   and `bash apps/native/desktop/build.sh`. Build output is not a store release.
+4. On a real iPhone, an Android phone and mobile Safari/Chrome, verify:
+   - slow drags snapping back, half-way drags, and flicks in both directions;
+   - catching a slide mid-animation;
+   - vertical scrolling while horizontally still;
+   - Back to Browse and Close navigation;
+   - choosing a channel and a DM;
+   - draft and scroll retention, and keyboard dismissal;
+   - Reduce Motion or Remove animations;
+   - member overlay and audio slider drags.
+
+   Roll back web by deploying the previous known-good web image SHA with the
+   command above. For native clients, stop distribution and ship a corrected
+   higher-build-number build. No data rollback is required.

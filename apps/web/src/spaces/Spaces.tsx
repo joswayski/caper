@@ -1,4 +1,13 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import {
   Ban,
   BellOff,
@@ -36,6 +45,7 @@ import {
 } from "./notifications";
 import Tooltip from "../components/Tooltip";
 import { createSpaceNavigation, type PreparedSpace } from "./navigation";
+import { transitionBrowse } from "./browseTransition";
 import {
   acceptChannelInvitation,
   acceptDirectRequest,
@@ -1473,7 +1483,19 @@ export default function Spaces({
   const invitation = invitations.find((item) => item.id === selected.spaceId);
   const [dialog, setDialog] = useState<"space" | "channel" | "manage-space" | "leave-space" | "direct">();
   const [manageChannel, setManageChannel] = useState<Channel>();
-  const [navigationOpen, setNavigationOpen] = useState(false);
+  const [navigationOpen, showNavigation] = useState(false);
+  // Where Browse is headed: it changes inside a slide's view transition, after the request.
+  const navigationTarget = useRef(false);
+  const changeNavigation = useCallback((open: boolean) => {
+    navigationTarget.current = open;
+    showNavigation(open);
+  }, []);
+  const setNavigationOpen = useCallback((next: boolean | ((open: boolean) => boolean)) => {
+    const open = typeof next === "function" ? next(navigationTarget.current) : next;
+    if (open === navigationTarget.current) return;
+    navigationTarget.current = open;
+    transitionBrowse(open, () => showNavigation(open));
+  }, []);
   const spaceMenu = useRef<HTMLDetailsElement>(null);
   const channelMenu = useRef<HTMLDetailsElement>(null);
   const channelNavigationRef = useRef<HTMLElement>(null);
@@ -2830,6 +2852,7 @@ export default function Spaces({
         }
         navigationOpen={navigationOpen}
         onNavigationToggle={() => setNavigationOpen((open) => !open)}
+        onNavigationChange={changeNavigation}
       />
       {dialog === "space" && (
         <CreateSpaceDialog
