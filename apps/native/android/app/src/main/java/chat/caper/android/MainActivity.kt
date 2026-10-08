@@ -26,6 +26,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -1051,8 +1052,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         else if (draft.isNotBlank()) { viewModel.send(draft, threadRootId = thread.rootId, broadcast = broadcast); draft = "" }
     }
     Column(modifier.background(SurfaceConversation).border(BorderStroke(1.dp, Border))) {
-        Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("Thread · #${state.selectedChannel?.name}", Modifier.weight(1f), fontWeight = FontWeight.Bold)
+        Row(Modifier.fillMaxWidth().height(53.dp).padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Thread · #${state.selectedChannel?.name}", Modifier.weight(1f), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             TextButton(viewModel::closeThread) { Text("Back to channel") }
         }
         HorizontalDivider(color = Border)
@@ -1077,7 +1078,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 Text("Also send to #${state.selectedChannel?.name}", Modifier.weight(1f), fontSize = 12.sp)
                 TextButton(::send, enabled = !thread.loading && state.chatAuthorId != null && state.pendingMessage == null && draft.isNotBlank()) { Text("Send reply") }
             }
-            if (state.pendingMessage != null && pending == null) Text("Confirm or dismiss the pending channel message first.", color = TextMuted)
+            if (state.pendingMessage?.error != null && pending == null) Text("Confirm or dismiss the pending message first.", color = TextMuted)
         } else Text(if (state.selectedDirect?.incoming == true) "Accept the request to reply." else "Join the channel to reply.", Modifier.padding(18.dp), color = TextMuted)
     }
 }
@@ -1092,6 +1093,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     var draft by rememberSaveable(channel.id, stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("")) }
     var channelMenuOpen by remember(channel.id) { mutableStateOf(false) }
     var showingPins by remember(channel.id) { mutableStateOf(false) }
+    // Switching to Pins must not discard the channel's measured scroll position.
+    val timelineState = key(channel.id) { rememberLazyListState() }
     val joined = channel.joined
     // A 1:1 DM (not your notes) offers Block / Unblock; a request does so in its own bar.
     val direct = state.selectedDirect?.takeIf { channel.direct && it.peer.id != state.account?.id && !it.incoming }
@@ -1158,7 +1161,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         // Web shows a pending message's status inline, under the message itself.
         val channelPending = state.pendingMessage?.takeIf { it.threadRootId == null }
         if (showingPins) PinnedMessages(state, viewModel, Modifier.weight(1f))
-        else MessageTimeline(state, viewModel, Modifier.weight(1f).browseSwipe(open = false, enabled = narrow && !membersVisible && !channelMenuOpen, onOpenChange = { openNavigation() })) {
+        else MessageTimeline(state, viewModel, Modifier.weight(1f).browseSwipe(open = false, enabled = narrow && !membersVisible && !channelMenuOpen, onOpenChange = { openNavigation() }), listState = timelineState) {
             channelPending?.error?.let { pending ->
                 val editable = canEditRejectedMessage(draft.text, channelPending.text)
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1185,7 +1188,14 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         else if (joined && direct?.blocked == true) BlockedDirectNotice(direct, viewModel)
         else if (joined) Column(Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
             if (direct?.outgoing == true) OutgoingRequestNotice(direct)
-            state.pendingMessage?.threadRootId?.let { root -> TextButton({ viewModel.openThread(root) }) { Text("Pending reply · Open thread") } }
+            state.pendingMessage?.takeIf { it.error != null && it.threadRootId != state.thread?.rootId }?.let { pending ->
+                pending.threadRootId?.let { root ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(if (pending.rejected) "A thread reply wasn’t sent." else "A thread reply couldn’t be confirmed.", Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
+                        TextButton({ viewModel.openThread(root) }) { Text("Review reply") }
+                    }
+                }
+            }
             state.sessionError?.let { error ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(error, Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
@@ -1342,7 +1352,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     }
 }
 
-@Composable private fun MessageTimeline(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, inThread: Boolean = false, pendingStatus: @Composable () -> Unit = {}) {
+@Composable private fun MessageTimeline(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, inThread: Boolean = false, listState: LazyListState = rememberLazyListState(), pendingStatus: @Composable () -> Unit = {}) {
     var actionTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var pickerTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var forwardTarget by remember { mutableStateOf<ChatMessage?>(null) }
@@ -1383,7 +1393,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 colors = ButtonDefaults.outlinedButtonColors(containerColor = SurfaceRaised, contentColor = Text)) { Text("Try again", fontSize = 12.sp) }
         }
     } }
-    LazyColumn(modifier.fillMaxWidth(), reverseLayout = false, contentPadding = PaddingValues(vertical = 8.dp)) {
+    LazyColumn(modifier.fillMaxWidth(), state = listState, reverseLayout = false, contentPadding = PaddingValues(vertical = 8.dp)) {
         if (!inThread) item {
             Row(Modifier.fillMaxWidth().height(44.dp).padding(horizontal = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalAlignment = Alignment.CenterVertically) {
                 val historyButton: @Composable (String, Boolean) -> Unit = { label, enabled ->
@@ -1419,9 +1429,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 retryPin = viewModel::retryPin,
                 dismissPinError = viewModel::dismissPinError,
             )
-              if (!inThread) Row(Modifier.padding(start = 62.dp), verticalAlignment = Alignment.CenterVertically) {
+              if (!inThread && (message.threadRootId != null || (message.thread?.replyCount ?: 0) > 0)) Row(Modifier.padding(start = 62.dp), verticalAlignment = Alignment.CenterVertically) {
                   message.thread?.takeIf { message.threadRootId == null }?.participants?.forEach { Avatar(it.name, 24.dp, avatarId = it.avatarId) }
-                  TextButton({ viewModel.openThread(message.threadRootId ?: message.id) }) { Text(message.thread?.takeIf { message.threadRootId == null }?.let { "${it.replyCount} replies · View thread" } ?: "Reply in thread") }
+                  TextButton({ viewModel.openThread(message.threadRootId ?: message.id) }) { Text(message.thread?.takeIf { message.threadRootId == null }?.let { "${it.replyCount} ${if (it.replyCount == 1) "reply" else "replies"} · View thread" } ?: "Replied to a thread · View thread") }
               }
             }
         }
@@ -1462,7 +1472,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             setReaction = viewModel::setReaction,
             openPicker = { actionTarget = null; pickerTarget = presented },
             setPin = { id, active -> viewModel.setPin(id, active); actionTarget = null },
-            onReply = { actionTarget = null; viewModel.openThread(presented.threadRootId ?: presented.id) },
+            onReply = if (inThread) null else ({ actionTarget = null; viewModel.openThread(presented.threadRootId ?: presented.id) }),
             forward = { actionTarget = null; forwardTarget = presented },
             onEdit = if (viewModel.canEdit(presented)) ({ actionTarget = null; editTarget = presented }) else null,
             onHistory = { actionTarget = null; historyTarget = presented },

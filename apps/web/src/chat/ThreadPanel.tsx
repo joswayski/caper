@@ -161,9 +161,11 @@ export default function ThreadPanel({
         }}
       >
         {root && <div className="chat-thread-parent">{renderMessage(0, root, true)}</div>}
-        <div className="chat-thread-divider">
-          {root?.thread?.replyCount ?? 0} {root?.thread?.replyCount === 1 ? "reply" : "replies"}
-        </div>
+        {!!root?.thread?.replyCount && (
+          <div className="chat-thread-divider">
+            {root.thread.replyCount} {root.thread.replyCount === 1 ? "reply" : "replies"}
+          </div>
+        )}
         {state.thread.loading && !replies.length && (
           <div className="chat-thread-skeleton" role="status" aria-label="Loading thread replies">
             {Array.from({ length: Math.min(3, Math.max(1, root?.thread?.replyCount ?? 2)) }, (_, index) => (
@@ -263,7 +265,7 @@ export default function ThreadPanel({
                 )}
               </p>
             )}
-            {blocked && (
+            {blocked && state.sendError && (
               <p className="chat-inline-error">Confirm or dismiss the pending message before sending a reply.</p>
             )}
             <form

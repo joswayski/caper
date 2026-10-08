@@ -266,11 +266,13 @@ struct PendingReaction {
 struct ReactorCache {
     revision: String,
     state: ReactorState,
+    // Retain names while refreshing; displayed reaction IDs own membership.
+    groups: Vec<model::ReactorGroup>,
 }
 
 enum ReactorState {
     Loading(Instant),
-    Loaded(Vec<model::ReactorGroup>),
+    Loaded,
     /// Hovering again retries after `REACTOR_RETRY`.
     Failed(Instant),
 }
@@ -280,7 +282,7 @@ impl ReactorCache {
     fn wants_request(&self, revision: &str) -> bool {
         self.revision != revision
             || match self.state {
-                ReactorState::Loaded(_) => false,
+                ReactorState::Loaded => false,
                 // The API client times out after 15 s, so this request is lost.
                 ReactorState::Loading(at) => at.elapsed() >= Duration::from_secs(20),
                 ReactorState::Failed(at) => at.elapsed() >= REACTOR_RETRY,
@@ -1872,7 +1874,8 @@ impl CaperApp {
                     }) {
                         cached.state = match result {
                             Ok(list) if list.message_id == message => {
-                                ReactorState::Loaded(list.reactions)
+                                cached.groups = list.reactions;
+                                ReactorState::Loaded
                             }
                             _ => ReactorState::Failed(Instant::now()),
                         };
@@ -7206,6 +7209,7 @@ impl CaperApp {
                     .default_width(340.0)
                     .min_width(300.0)
                     .max_width(480.0)
+                    .frame(egui::Frame::new().fill(CONVERSATION))
                     .show_inside(ui, |ui| self.thread_panel(ui));
             }
             self.channel_conversation(ui, narrow);
@@ -7224,15 +7228,43 @@ impl CaperApp {
         let error = thread.error.clone();
         let broadcast_label = format!("Also send to #{}", self.channel_name());
         ui.set_min_height(ui.available_height());
-        ui.horizontal(|ui| {
-            ui.heading("Thread");
-            if ui.button("Back to channel").clicked() {
-                self.thread_view = None;
-                self.thread_request += 1;
-            }
-        });
-        ui.label(format!("in #{}", self.channel_name()));
-        ui.separator();
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let heading = egui::TopBottomPanel::top("thread-heading")
+            .exact_height(54.0)
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(CONVERSATION)
+                    .inner_margin(egui::Margin::symmetric(18, 8)),
+            )
+            .show_inside(ui, |ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), 38.0),
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        if ui.button("Back to channel").clicked() {
+                            self.thread_view = None;
+                            self.thread_request += 1;
+                        }
+                        ui.vertical(|ui| {
+                            ui.label(bold("Thread").size(15.0));
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(format!("in #{}", self.channel_name()))
+                                        .size(11.0)
+                                        .color(MUTED),
+                                )
+                                .truncate(),
+                            );
+                        });
+                    },
+                );
+            });
+        ui.painter().hline(
+            heading.response.rect.x_range(),
+            heading.response.rect.bottom(),
+            Stroke::new(1.0, BORDER),
+        );
         if self.selected_is_joined() {
             egui::TopBottomPanel::bottom("thread-composer").show_inside(ui, |ui| {
                 let pending = self.pending.clone().filter(|pending| pending.thread_root_id.as_deref() == Some(&root));
@@ -7245,10 +7277,15 @@ impl CaperApp {
                                 && let Some(text) = self.discard_rejected() { self.thread_drafts.entry(root.clone()).or_default().0 = text; }
                             if ui.button("Dismiss").clicked() { self.discard_rejected(); }
                         });
-                    } else if !pending.sending && ui.button("Retry send").clicked() { self.send_message_to(Some(root.clone()), pending.broadcast); }
+                    } else if !pending.sending {
+                        if let Some(error) = &self.error { ui.colored_label(ERROR, error); }
+                        if ui.button("Retry send").clicked() { self.send_message_to(Some(root.clone()), pending.broadcast); }
+                    }
                 }
                 let blocked = self.pending.is_some();
-                if blocked && pending.is_none() { ui.label("Confirm or dismiss the pending message first."); }
+                if pending.is_none() && self.pending.as_ref().is_some_and(|pending| !pending.sending && (pending.rejection.is_some() || self.error.is_some())) {
+                    ui.label("Confirm or dismiss the pending message first.");
+                }
                 let draft = self.thread_drafts.entry(root.clone()).or_default();
                 let output = ui.add_enabled(!loading, egui::TextEdit::multiline(&mut draft.0)
                     .id_salt(("thread-draft", &root)).desired_rows(3).desired_width(f32::INFINITY).char_limit(4000)
@@ -7429,7 +7466,8 @@ impl CaperApp {
                     ui.visuals_mut().widgets.inactive.corner_radius = CornerRadius::same(6);
                     ui.visuals_mut().widgets.hovered.corner_radius = CornerRadius::same(6);
                     ui.visuals_mut().widgets.active.corner_radius = CornerRadius::same(6);
-                    if let Some(error) = &self.error {
+                    if let Some(error) = &self.error
+                        && self.pending.as_ref().is_none_or(|pending| pending.thread_root_id.is_none()) {
                         ui.colored_label(ERROR, error);
                     }
                     let me = self.account.as_ref().map(|account| account.id.clone());
@@ -7451,8 +7489,16 @@ impl CaperApp {
                         }
                     }
                     // Web: the conversation stays; only sending waits on a new session.
-                    if let Some(root) = self.pending.as_ref().and_then(|pending| pending.thread_root_id.clone())
-                        && ui.button("Pending reply · Open thread").clicked() { self.open_thread(root); }
+                    if let Some(pending) = self.pending.as_ref()
+                        && !pending.sending && (pending.rejection.is_some() || self.error.is_some())
+                        && let Some(root) = pending.thread_root_id.clone()
+                        && self.thread_view.as_ref().is_none_or(|thread| thread.root != root) {
+                        let rejected = pending.rejection.is_some();
+                        ui.horizontal(|ui| {
+                            ui.colored_label(ERROR, if rejected { "A thread reply wasn’t sent." } else { "A thread reply couldn’t be confirmed." });
+                            if ui.button("Review reply").clicked() { self.open_thread(root); }
+                        });
+                    }
                     if !joined {
                         ui.label(bold("Preview").size(12.0));
                         let format = egui::TextFormat {
@@ -7678,13 +7724,16 @@ impl CaperApp {
             let jump_latest = ui.memory(|memory| memory.focused().is_none())
                 && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::End));
             let mut history = egui::ScrollArea::vertical()
-                .id_salt("history")
-                .stick_to_bottom(true)
+                // Pins must not clamp the conversation's retained scroll offset.
+                .id_salt(if self.showing_pins { "pins" } else { "history" })
+                .stick_to_bottom(!self.showing_pins)
                 .auto_shrink([false, false]);
-            if let Some(offset) = self.history_offset.take() {
-                history = history.vertical_scroll_offset(offset);
-            } else if jump_latest {
-                history = history.vertical_scroll_offset(f32::MAX);
+            if !self.showing_pins {
+                if let Some(offset) = self.history_offset.take() {
+                    history = history.vertical_scroll_offset(offset);
+                } else if jump_latest {
+                    history = history.vertical_scroll_offset(f32::MAX);
+                }
             }
             let history = history.show(ui, |ui| {
                     if self.showing_pins {
@@ -7896,29 +7945,31 @@ impl CaperApp {
         history: &egui::scroll_area::ScrollAreaOutput<()>,
         heading: egui::Rect,
     ) {
-        let height = history.content_size.y;
-        let viewport = history.inner_rect.height();
-        let offset = history.state.offset.y;
-        if let Some(previous) = self.older_anchor.take() {
-            // Keep the reader's place after older messages arrive above.
-            self.history_offset = Some(offset + (height - previous).max(0.0));
-            ui.ctx().request_repaint();
-        }
-        self.history_height = height;
-        if self.timeline.messages().next().is_some()
-            && (height <= viewport + 1.0 || offset >= height - viewport - 2.0)
-        {
-            self.older_armed = true;
-        }
-        // Web loads the previous page when the list reaches its start.
-        if self.older_armed
-            && self.history_offset.is_none()
-            && offset <= 1.0
-            && self.has_more
-            && !self.loading_older
-            && self.older_error.is_none()
-        {
-            self.load_older();
+        if !self.showing_pins {
+            let height = history.content_size.y;
+            let viewport = history.inner_rect.height();
+            let offset = history.state.offset.y;
+            if let Some(previous) = self.older_anchor.take() {
+                // Keep the reader's place after older messages arrive above.
+                self.history_offset = Some(offset + (height - previous).max(0.0));
+                ui.ctx().request_repaint();
+            }
+            self.history_height = height;
+            if self.timeline.messages().next().is_some()
+                && (height <= viewport + 1.0 || offset >= height - viewport - 2.0)
+            {
+                self.older_armed = true;
+            }
+            // Web loads the previous page when the list reaches its start.
+            if self.older_armed
+                && self.history_offset.is_none()
+                && offset <= 1.0
+                && self.has_more
+                && !self.loading_older
+                && self.older_error.is_none()
+            {
+                self.load_older();
+            }
         }
         // Web shows the connection state under the header after a second.
         if self.live != "Live" && self.selected_channel.is_some() {
@@ -8348,17 +8399,6 @@ impl CaperApp {
                     {
                         self.set_pin(message, false);
                     }
-                    if !in_thread
-                        && self.selected_request().is_none()
-                        && ui.small_button("Reply in thread").clicked()
-                    {
-                        self.open_thread(
-                            message
-                                .thread_root_id
-                                .clone()
-                                .unwrap_or_else(|| message.id.clone()),
-                        );
-                    }
                 });
                 if let Some((active, error)) = self.pin_errors.get(&message.id).cloned() {
                     ui.horizontal(|ui| {
@@ -8527,18 +8567,23 @@ impl CaperApp {
                 message.id.clone(),
                 ReactorCache {
                     revision,
-                    state: ReactorState::Loaded(reactions),
+                    state: ReactorState::Loaded,
+                    groups: reactions,
                 },
             );
             return;
         }
-        self.reactors.insert(
-            message.id.clone(),
-            ReactorCache {
+        self.reactors
+            .entry(message.id.clone())
+            .and_modify(|cached| {
+                cached.revision = revision.clone();
+                cached.state = ReactorState::Loading(Instant::now());
+            })
+            .or_insert_with(|| ReactorCache {
                 revision: revision.clone(),
                 state: ReactorState::Loading(Instant::now()),
-            },
-        );
+                groups: Vec::new(),
+            });
         self.worker.send(Command::LoadReactors {
             generation: self.generation,
             token: self.token.clone(),
@@ -8548,33 +8593,50 @@ impl CaperApp {
         });
     }
 
-    /// Names once they load for this exact set of people (a pending toggle
-    /// of your own changes the set); the snapshot's count until then.
+    /// Project known names onto the displayed IDs, including pending own toggles.
+    /// A refresh must not replace those names with a temporary count.
     fn reactor_summary(&self, message: &model::Message, reaction: &model::Reaction) -> String {
         let self_id = self.reactor_self_id();
         let name = emoji::name(&reaction.emoji);
-        let revision = message.reaction_seq.as_deref().unwrap_or("0");
-        let loaded = self
+        let groups = self
             .reactors
             .get(&message.id)
-            .filter(|cached| cached.revision == revision)
-            .and_then(|cached| match &cached.state {
-                ReactorState::Loaded(groups) => {
-                    groups.iter().find(|group| group.emoji == reaction.emoji)
-                }
-                _ => None,
-            })
-            .filter(|group| {
-                group.authors.len() == reaction.author_ids.len()
-                    && group
-                        .authors
-                        .iter()
-                        .all(|author| reaction.author_ids.contains(&author.id))
-            });
-        match loaded {
-            Some(group) => model::reactor_summary(&group.authors, self_id, name, &reaction.emoji),
-            None => model::reactor_fallback(&reaction.author_ids, self_id, name, &reaction.emoji),
+            .map_or(&[][..], |cached| cached.groups.as_slice());
+        let mut authors: Vec<_> = groups
+            .iter()
+            .find(|group| group.emoji == reaction.emoji)
+            .into_iter()
+            .flat_map(|group| &group.authors)
+            .filter(|author| reaction.author_ids.contains(&author.id))
+            .cloned()
+            .collect();
+        for id in &reaction.author_ids {
+            if authors.iter().any(|author| author.id == *id) {
+                continue;
+            }
+            if Some(id.as_str()) == self_id {
+                authors.push(model::Reactor {
+                    id: id.clone(),
+                    username: None,
+                    display_name: None,
+                    avatar_id: None,
+                });
+            } else if let Some(author) = groups
+                .iter()
+                .flat_map(|group| &group.authors)
+                .find(|author| author.id == *id)
+            {
+                authors.push(author.clone());
+            } else {
+                return model::reactor_fallback(
+                    &reaction.author_ids,
+                    self_id,
+                    name,
+                    &reaction.emoji,
+                );
+            }
         }
+        model::reactor_summary(&authors, self_id, name, &reaction.emoji)
     }
 
     fn set_reaction(&mut self, message: &str, emoji: &str, active: bool) {
@@ -11814,6 +11876,92 @@ mod tests {
     }
 
     #[test]
+    fn thread_and_channel_header_dividers_align_without_clipping_controls() {
+        for width in [1200.0, 840.0, 390.0] {
+            for name in ["general".to_owned(), "long-channel-name-".repeat(3)] {
+                let context = egui::Context::default();
+                let mut app = CaperApp::new(
+                    &context,
+                    crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                    Some("parity-channel"),
+                );
+                app.detail.as_mut().unwrap().channels[0].name = name;
+                app.thread_view = Some(super::ThreadView {
+                    root: "fixture-message-0".into(),
+                    loading: false,
+                    has_more: false,
+                    before: None,
+                    error: None,
+                });
+                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 700.0));
+                let mut frame = || {
+                    context.run(
+                        egui::RawInput {
+                            screen_rect: Some(screen),
+                            ..Default::default()
+                        },
+                        |context| {
+                            egui::CentralPanel::default().frame(egui::Frame::NONE).show(
+                                context,
+                                |ui| {
+                                    app.conversation(ui, width <= 760.0);
+                                },
+                            );
+                        },
+                    )
+                };
+                for _ in 0..3 {
+                    frame();
+                }
+                let output = frame();
+                let dividers: Vec<_> = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| {
+                        if let egui::Shape::LineSegment { points, stroke } = &shape.shape
+                            && stroke.color == super::BORDER
+                            && points[0].y == 54.0
+                            && points[1].y == 54.0
+                            && points[1].x - points[0].x > 200.0
+                        {
+                            Some(points)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                assert_eq!(
+                    dividers.len(),
+                    if width > 760.0 { 2 } else { 1 },
+                    "{width}: header borders must be at y=54"
+                );
+                for label in ["Thread", "Back to channel"] {
+                    let shape = output
+                        .shapes
+                        .iter()
+                        .find(|shape| {
+                            matches!(&shape.shape,
+                        egui::Shape::Text(text) if text.galley.job.text == label)
+                        })
+                        .unwrap();
+                    let egui::Shape::Text(text) = &shape.shape else {
+                        unreachable!()
+                    };
+                    let rect = egui::Rect::from_min_size(text.pos, text.galley.size());
+                    assert!(
+                        screen.contains_rect(rect) && shape.clip_rect.contains_rect(rect),
+                        "{width}: {label} is clipped"
+                    );
+                    assert!(
+                        rect.bottom() < 54.0,
+                        "{width}: {label} extends below its header"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn rendering_history_restores_messages_reactions_and_cursor_after_each_frame() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -11843,6 +11991,67 @@ mod tests {
                 messages
             );
         }
+    }
+
+    #[test]
+    fn pins_preserve_history_scroll_position_and_paging_anchors() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        let template = app.timeline.messages().next().unwrap().clone();
+        let messages = (1..=40)
+            .map(|index| {
+                let mut message = template.clone();
+                message.id = format!("scroll-{index}");
+                message.client_message_id = format!("scroll-command-{index}");
+                message.seq = index.to_string();
+                message.content.text = format!("Scroll fixture message {index}");
+                message
+            })
+            .collect();
+        app.timeline.reset(messages, "40").unwrap();
+        app.has_more = false;
+        for _ in 0..3 {
+            render(&mut app, &context, vec![]);
+        }
+        // Deliberately neither the top nor the bottom; an unconditional jump
+        // to latest or clamping to the empty Pins viewport must fail this test.
+        app.history_offset = Some(240.0);
+        render(&mut app, &context, vec![]);
+        let before = render(&mut app, &context, vec![]);
+        let anchor = before
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text)
+                    if text.galley.job.text.starts_with("Scroll fixture message ") =>
+                {
+                    Some(text.galley.job.text.clone())
+                }
+                _ => None,
+            })
+            .expect("a scrolled conversation paints message text");
+        let position = text_position(&before, &anchor);
+        let height = app.history_height;
+        app.showing_pins = true;
+        for _ in 0..3 {
+            render(&mut app, &context, vec![]);
+            assert_eq!(app.history_height, height);
+        }
+        app.showing_pins = false;
+        for _ in 0..3 {
+            let output = render(&mut app, &context, vec![]);
+            assert_eq!(text_position(&output, &anchor), position);
+        }
+        app.showing_pins = true;
+        app.history_offset = Some(260.0);
+        app.older_anchor = Some(height);
+        render(&mut app, &context, vec![]);
+        assert_eq!(app.history_offset, Some(260.0));
+        assert_eq!(app.older_anchor, Some(height));
     }
 
     #[test]
@@ -14164,10 +14373,7 @@ mod tests {
             .unwrap();
         assert!(card.y < chip.y, "the card opens above the chip");
         assert!(
-            matches!(
-                app.reactors[&message.id].state,
-                super::ReactorState::Loaded(_)
-            ),
+            matches!(app.reactors[&message.id].state, super::ReactorState::Loaded),
             "fixtures answer locally instead of contacting Caper"
         );
 
@@ -14253,22 +14459,37 @@ mod tests {
         let heart = &message.reactions[1];
         assert_eq!(
             app.reactor_summary(&message, heart),
-            "1 person reacted with :red-heart:",
-            "emoji missing from the list keep the snapshot count"
+            "Maya B reacted with :red-heart:",
+            "another emoji can supply the name for a current reactor ID"
         );
 
         // Cached for this revision: hovering again sends nothing new.
         app.load_reactors(&message);
         assert!(matches!(
             app.reactors[&message.id].state,
-            super::ReactorState::Loaded(_)
+            super::ReactorState::Loaded
         ));
-        // Your own pending toggle changes the people, so the count shows.
+        // Local removals use the displayed IDs, not the cached membership.
         let mut toggled = thumbs.clone();
         toggled.author_ids.retain(|id| id != "fixture-owner");
         assert_eq!(
             app.reactor_summary(&message, &toggled),
-            "1 person reacted with :thumbs-up:"
+            "Maya B reacted with :thumbs-up:"
+        );
+        app.reactors.get_mut(&message.id).unwrap().groups[0]
+            .authors
+            .retain(|author| author.id != "fixture-owner");
+        assert_eq!(
+            app.reactor_summary(&message, &thumbs),
+            "You and Maya B reacted with :thumbs-up:",
+            "a local add names you even before the endpoint includes you"
+        );
+        let mut unknown = toggled.clone();
+        unknown.author_ids.push("new-person".into());
+        assert_eq!(
+            app.reactor_summary(&message, &unknown),
+            "2 people reacted with :thumbs-up:",
+            "unknown IDs must not inherit removed people's names"
         );
         // A new reaction revision reloads.
         let mut changed = message.clone();
@@ -14279,6 +14500,16 @@ mod tests {
             app.reactors[&message.id].state,
             super::ReactorState::Loading(_)
         ));
+        assert_eq!(
+            app.reactor_summary(&changed, &thumbs),
+            "You and Maya B reacted with :thumbs-up:"
+        );
+        events.send(answer("4", "Stale Maya")).unwrap();
+        app.receive();
+        assert_eq!(
+            app.reactor_summary(&changed, &toggled),
+            "Maya B reacted with :thumbs-up:"
+        );
         events
             .send(crate::worker::Event::Reactors {
                 generation: app.generation,
@@ -14295,8 +14526,8 @@ mod tests {
         ));
         assert_eq!(
             app.reactor_summary(&changed, &thumbs),
-            "2 people reacted with :thumbs-up:",
-            "failures keep the snapshot count"
+            "You and Maya B reacted with :thumbs-up:",
+            "refresh failures keep known names"
         );
         app.load_reactors(&changed);
         assert!(
@@ -14305,6 +14536,14 @@ mod tests {
                 super::ReactorState::Failed(_)
             ),
             "failures are not retried on every frame"
+        );
+        changed.reaction_seq = Some("6".into());
+        app.load_reactors(&changed);
+        events.send(answer("6", "Maya Updated")).unwrap();
+        app.receive();
+        assert_eq!(
+            app.reactor_summary(&changed, &toggled),
+            "Maya Updated reacted with :thumbs-up:"
         );
     }
 

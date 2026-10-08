@@ -1689,16 +1689,11 @@ private struct ChatView: View {
         })
     }
 
-    /// Defer the scroll request; content geometry repeats it when the timeline
-    /// finishes measuring, including history above the unsent message.
+    /// Reveal in the same update that clears the composer. Content geometry
+    /// repeats this after lazy history resolves, without an extra task/frame.
     private func revealPending(_ proxy: ScrollViewProxy) {
         guard let pending = chat.pendingMessage, pending.threadRootId == nil else { return }
-        let pendingID = pending.id
-        Task { @MainActor in
-            await Task.yield()
-            guard chat.pendingMessage?.id == pendingID else { return }
-            proxy.scrollTo("pending-\(pendingID)", anchor: .bottom)
-        }
+        proxy.scrollTo("pending-\(pending.id)", anchor: .bottom)
     }
     init(model: AppModel, narrow: Bool, browse: @escaping () -> Void, membersVisible: Bool, toggleMembers: @escaping () -> Void) {
         self.model = model; chat = model.chat; voice = model.voice; self.narrow = narrow; self.browse = browse
@@ -1836,6 +1831,7 @@ private struct ChatView: View {
                                                   edit: { _ = chat.discardRejected(edit: true) },
                                                   dismiss: { _ = chat.discardRejected() })
                             }.id("pending-\(pending.id)")
+                                .onAppear { revealPending(proxy) }
                         }
                         if chat.loadFailed, let error = chat.error {
                             // Web's failed first load: the error with Try again, in place of the conversation.
@@ -1930,8 +1926,13 @@ private struct ChatView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .accessibilityIdentifier("message-request-waiting")
                     }
-                    if let root = chat.pendingMessage?.threadRootId {
-                        Button("Pending reply · Open thread") { Task { await chat.openThread(root) } }.font(CaperTheme.font(11))
+                    if let root = chat.pendingMessage?.threadRootId, !chat.sending,
+                       chat.error != nil || chat.sendRejected, chat.threadRootID != root {
+                        HStack(spacing: 8) {
+                            Text(chat.sendRejected ? "A thread reply wasn’t sent." : "A thread reply couldn’t be confirmed.")
+                                .foregroundStyle(CaperTheme.terracottaBright)
+                            Button("Review reply") { Task { await chat.openThread(root) } }
+                        }.font(CaperTheme.font(11))
                     }
                     ComposerSuggestionsView(controller: composerAutocomplete)
                     ZStack(alignment: .topLeading) {
@@ -2125,17 +2126,19 @@ private struct NativeThreadView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                VStack(alignment: .leading, spacing: 3) { Text("Thread").font(CaperTheme.font(15, weight: .bold)); Text("in #\(chat.channelName)").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted) }
+                VStack(alignment: .leading, spacing: 3) { Text("Thread").font(CaperTheme.font(15, weight: .bold)); Text("in #\(chat.channelName)").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1) }
                 Spacer()
                 Button("Back to channel") { chat.closeThread() }.buttonStyle(.plain).font(CaperTheme.font(12)).modifier(ControlHover())
-            }.padding(18)
-            Divider()
+            }.padding(.horizontal, 18).frame(height: 50)
+                .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         if let root = chat.displayedMessages.first(where: { $0.id == chat.threadRootID }) {
                             threadEntries([root])
-                            Text("\(root.thread?.replyCount ?? 0) replies").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).padding(12)
+                            if let summary = root.thread, summary.replyCount > 0 {
+                                Text("\(summary.replyCount) \(summary.replyCount == 1 ? "reply" : "replies")").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).padding(12)
+                            }
                         }
                         if chat.threadLoading && replies.isEmpty {
                             VStack(spacing: 0) {
@@ -2182,7 +2185,10 @@ private struct NativeThreadView: View {
                     Button("Send reply") { Task { await chat.send(inThread: true) } }.buttonStyle(CaperPrimaryButton())
                         .disabled(chat.sending || chat.sendRejected || chat.threadLoading || chat.pendingMessage != nil || MessageValidation.error(for: chat.threadDraft) != nil)
                 }
-                if let pending = chat.pendingMessage, pending.threadRootId != chat.threadRootID { Text("Confirm or dismiss the pending message first.").font(CaperTheme.font(11)) }
+                if let pending = chat.pendingMessage, pending.threadRootId != chat.threadRootID,
+                   !chat.sending, chat.error != nil || chat.sendRejected {
+                    Text("Confirm or dismiss the pending message first.").font(CaperTheme.font(11))
+                }
             }.padding(12) }
         }.background(CaperTheme.conversation)
             .overlay(alignment: .leading) { Rectangle().fill(CaperTheme.border).frame(width: 1) }
@@ -2192,7 +2198,7 @@ private struct NativeThreadView: View {
                     canReact: !chat.isPreview && chat.currentAuthor != nil,
                     canPin: !chat.isPreview && chat.currentAuthor != nil && !chat.pendingPins.contains(message.id),
                     togglePin: { reactionMessage = nil; Task { await chat.setPin(messageID: message.id, active: message.pin == nil) } },
-                    reply: { reactionMessage = nil; Task { await chat.openThread(message.threadRootId ?? message.id) } },
+                    reply: nil,
                     // Thread actions don't forward: the forward sheets belong to the conversation under this cover.
                     canForward: false, forward: {},
                     quickReaction: { emoji in
@@ -2310,6 +2316,7 @@ private struct MessageRow: View {
     @FocusState private var replyFocused: Bool
     @FocusState private var reactionFocused: Bool
     @FocusState private var actionsFocused: Bool
+    @FocusState private var threadLinkFocused: Bool
     #endif
     var body: some View {
         let mentionsMe = MentionAutocomplete.mentionsCurrentUser(message, currentUserID: currentUserID)
@@ -2350,15 +2357,21 @@ private struct MessageRow: View {
                             .disabled(chat.isPreview || chat.currentAuthor == nil || chat.pendingPins.contains(message.id))
                     }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.terracottaBright)
                 }
-                if !inThread {
+                if !inThread && (message.threadRootId != nil || (message.thread?.replyCount ?? 0) > 0) {
                     Button { Task { await chat.openThread(message.threadRootId ?? message.id) } } label: {
                         HStack(spacing: 5) {
                             if message.threadRootId == nil, let summary = message.thread {
                                 ForEach(summary.participants, id: \.id) { Avatar(name: $0.name, size: 24, avatarID: $0.avatarId) }
                                 Text("\(summary.replyCount) \(summary.replyCount == 1 ? "reply" : "replies") · View thread")
-                            } else { Image(systemName: "bubble.right"); Text(message.threadRootId == nil ? "Reply in thread" : "Replied to a thread · View thread") }
+                            } else { Image(systemName: "bubble.right"); Text("Replied to a thread · View thread") }
                         }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.terracottaBright)
-                    }.buttonStyle(.plain).frame(minHeight: 32).modifier(ControlHover()).accessibilityLabel("Reply in thread")
+                    }.buttonStyle(.plain).frame(minHeight: 32)
+                        #if os(macOS)
+                        .focused($threadLinkFocused).modifier(ControlHover(isFocused: threadLinkFocused))
+                        #else
+                        .modifier(ControlHover())
+                        #endif
+                        .accessibilityLabel("View thread")
                 }
                 if let error = chat.reactionErrors[message.id] {
                     HStack(spacing: 8) {
@@ -2687,7 +2700,7 @@ private struct ReactionChip: View {
     @State private var tooltipVisible = false
     @FocusState private var focused: Bool
     #endif
-    private var own: Bool { chat.currentAuthor.map { reaction.authorIds.contains($0.id) } ?? false }
+    private var own: Bool { reactors.viewerID.map { reaction.authorIds.contains($0) } ?? false }
 
     /// Names once loaded; until then, or after a failure, the snapshot count.
     private var summary: String {
@@ -3011,7 +3024,7 @@ private struct MessageActionsSheet: View {
     let canReact: Bool
     let canPin: Bool
     let togglePin: () -> Void
-    let reply: () -> Void
+    let reply: (() -> Void)?
     let canForward: Bool
     let forward: () -> Void
     let quickReaction: (String) -> Void
@@ -3025,7 +3038,8 @@ private struct MessageActionsSheet: View {
 
     /// Fits every offered action without scrolling.
     private var actionsHeight: CGFloat {
-        var height: CGFloat = 330
+        var height: CGFloat = 286
+        if reply != nil { height += 44 }
         if canForward { height += 50 }
         if chat.canEdit(message) { height += 44 }
         if message.forward == nil && (message.revision ?? 1) > 1 { height += 44 }
@@ -3069,9 +3083,11 @@ private struct MessageActionsSheet: View {
                 Label(message.pin == nil ? "Pin message" : "Unpin message", systemImage: message.pin == nil ? "pin" : "pin.slash")
                     .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             }.disabled(!canPin)
-            Divider()
-            Button(action: reply) {
-                Label("Reply in thread", systemImage: "bubble.right").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            if let reply {
+                Divider()
+                Button(action: reply) {
+                    Label("Reply in thread", systemImage: "bubble.right").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                }
             }
             if canForward {
                 Divider()
@@ -3299,6 +3315,7 @@ private struct PendingMessageRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(author?.name ?? "Guest").font(CaperTheme.font(13, weight: .bold))
                 Text(pending.text).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 if let error {
                     VStack(alignment: .leading, spacing: 5) {
                         Text("\(rejected ? "Not sent." : "Not confirmed yet.") \(error)")
@@ -3313,7 +3330,10 @@ private struct PendingMessageRow: View {
                     .font(CaperTheme.font(11, weight: .medium)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51))
                 }
             }
-        }.padding(.horizontal, 18).padding(.vertical, 10)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 18).padding(.vertical, 10)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("pending-message-\(pending.id)")
     }
 }
 

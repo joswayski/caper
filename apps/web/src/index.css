@@ -513,6 +513,14 @@ button:disabled,
   }
 }
 
+@media (max-width: 760px) {
+  /* The stacked navigation still needs room for a complete forwarded message,
+     including at 320px with all six voice participants present. */
+  .hero .live-stage {
+    min-height: 700px;
+  }
+}
+
 @media (max-width: 640px) {
   .page {
     overflow: visible;
