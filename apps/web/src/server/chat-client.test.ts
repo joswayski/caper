@@ -1808,6 +1808,32 @@ test("thread send retry freezes root and broadcast and confirms one shared reply
   assert.equal(f.client.snapshotHistory()?.cursor, "1");
 });
 
+test("duplicate delivery and local edits preserve unchanged message references", async (t) => {
+  const f = await sendingFixture(t);
+  const first = committed({ clientMessageId: "first", text: "First" }, "1");
+  const second = committed({ clientMessageId: "second", text: "Second" }, "2");
+  f.sockets[0].message(first);
+  f.sockets[0].message(second);
+  const rendered = f.state.messages;
+  f.sockets[0].message(second);
+  assert.equal(f.state.messages, rendered, "duplicate delivery must retain the render snapshot");
+  let finish!: (response: Response) => void;
+  vi.spyOn(globalThis, "fetch").mockImplementation(
+    () =>
+      new Promise<Response>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const saving = f.client.editMessage(first.id, "Changed first", 1);
+  assert.notEqual(f.state.messages[0], rendered[0]);
+  assert.equal(f.state.messages[0].content.text, "Changed first");
+  assert.equal(f.state.messages[1], rendered[1], "an edit must not clone unrelated rows");
+  assert.equal(rendered[0].content.text, "First", "optimism must not mutate the confirmed row");
+  finish(Response.json({ error: "not saved" }, { status: 503 }));
+  await assert.rejects(saving, /not saved/);
+  assert.equal(f.state.messages, rendered, "rollback reuses the unchanged authoritative snapshot");
+});
+
 for (const loaded of [true, false]) {
   test(`pin reaction intents roll back to live state without cloning unrelated messages (loaded=${loaded})`, async (t) => {
     const f = await sendingFixture(t);

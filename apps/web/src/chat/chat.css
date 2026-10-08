@@ -1754,6 +1754,15 @@
   color: var(--text-muted);
   overflow-wrap: anywhere;
 }
+.chat-version-columns > .chat-version-text {
+  font-size: 0.85rem;
+  color: var(--text);
+}
+.chat-version-comparison > .chat-edit-notice {
+  margin: 0;
+  padding: 12px;
+  border-top: 1px solid var(--border);
+}
 .chat-version-older {
   padding-top: 20px;
   border-top: 1px solid var(--border);
