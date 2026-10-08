@@ -195,6 +195,7 @@ try {
     evaluate('document.querySelector(".chat-forward-destinations input[value=chan00000001]").checked'),
     false,
   );
+  screenshot("forward-rejected-desktop");
   browser("fill", ".chat-forward-body textarea", "TEST FIXTURE — Corrected remaining note.");
   browser("click", ".chat-forward-send");
   wait('!document.querySelector(".chat-forward-dialog")');

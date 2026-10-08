@@ -354,7 +354,7 @@ impl Forwarding {
                         for destination in destinations.iter().filter(|item| query.split_whitespace().all(|term| format!("{} {}", item.space_name, item.name).to_lowercase().contains(term.trim_start_matches('#')))) {
                             let mut checked = selected.contains(&destination.id);
                             ui.add_enabled_ui(pending.is_none(), |ui| {
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 44.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     let checkbox = ui.checkbox(&mut checked, "");
                                     let row = ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 44.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                                         ui.spacing_mut().item_spacing.y = 2.0;
@@ -366,6 +366,8 @@ impl Forwarding {
                                         if checked { selected.push(destination.id.clone()); }
                                         else { selected.retain(|id| id != &destination.id); }
                                     }
+                                    checkbox.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), checked, format!("{} · {}", destination.name, destination.space_name)));
+                                    row.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), checked, format!("{} · {}", destination.name, destination.space_name)));
                                 });
                             });
                         }
@@ -578,5 +580,126 @@ mod tests {
                 .is_some()
         );
         assert!(state.view.is_none());
+    }
+
+    #[test]
+    fn picker_keeps_same_space_rows_compact_and_search_preserves_hidden_selections() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let worker = Worker::new(Api::new("http://127.0.0.1:9").unwrap(), context.clone());
+        let source = serde_json::from_value(serde_json::json!({
+            "id":"source", "channelId":"private", "seq":"1", "clientMessageId":"source-key",
+            "author":{"id":"author","name":"Author","isGuest":false},
+            "content":{"version":1,"type":"text","text":"original"}, "createdAt":"2026-10-06T12:00:00Z"
+        })).unwrap();
+        let mut state = Forwarding {
+            view: Some(View::Picker {
+                source: Box::new(source),
+                destinations: vec![
+                    ForwardDestination {
+                        id: "first".into(),
+                        name: "general".into(),
+                        space_name: "Gamers".into(),
+                        direct: false,
+                    },
+                    ForwardDestination {
+                        id: "second".into(),
+                        name: "tomato-soup".into(),
+                        space_name: "Gamers".into(),
+                        direct: false,
+                    },
+                    ForwardDestination {
+                        id: "third".into(),
+                        name: "general".into(),
+                        space_name: "Workshop".into(),
+                        direct: false,
+                    },
+                ],
+                selected: vec!["first".into(), "third".into()],
+                search: String::new(),
+                text: String::new(),
+                pending: None,
+                confirmed: 0,
+                session: Some("capability".into()),
+            }),
+            ..Default::default()
+        };
+        let mut textures = crate::emoji::Textures::default();
+        for query in ["", "  #TOMATO-SOUP   GAMERS ", "gamers #tomato-soup"] {
+            if let Some(View::Picker { search, .. }) = &mut state.view {
+                *search = query.into();
+            }
+            let mut output = egui::FullOutput::default();
+            for _ in 0..3 {
+                output = context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1440.0, 900.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |context| state.show(context, &worker, 0, Some("token"), &[], &mut textures),
+                );
+            }
+            let labels: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) => Some(text),
+                    _ => None,
+                })
+                .collect();
+            let names: Vec<_> = labels
+                .iter()
+                .filter(|text| text.galley.job.text.starts_with("# "))
+                .collect();
+            assert!(
+                labels
+                    .iter()
+                    .any(|text| text.galley.job.text == "Forward (2)")
+            );
+            if query.is_empty() {
+                assert_eq!(
+                    names.len(),
+                    3,
+                    "All rows must fit above the note and send controls"
+                );
+                let nodes = &output
+                    .platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .unwrap()
+                    .nodes;
+                for label in [
+                    "general · Gamers",
+                    "tomato-soup · Gamers",
+                    "general · Workshop",
+                ] {
+                    assert!(
+                        nodes.iter().any(|(_, node)| node.label() == Some(label)),
+                        "Destination checkboxes need distinct accessible names: {label}"
+                    );
+                }
+                for pair in names.windows(2) {
+                    assert_eq!(pair[0].pos.x, pair[1].pos.x);
+                    assert!(
+                        (30.0..=52.0).contains(&(pair[1].pos.y - pair[0].pos.y)),
+                        "Rows must not consume the window's remaining height"
+                    );
+                }
+                assert_eq!(
+                    labels
+                        .iter()
+                        .filter(|text| text.galley.job.text == "Gamers")
+                        .count(),
+                    2
+                );
+            } else {
+                assert_eq!(names.len(), 1);
+                assert_eq!(names[0].galley.job.text, "# tomato-soup");
+                assert!(labels.iter().all(|text| text.galley.job.text != "Workshop"));
+            }
+        }
     }
 }
