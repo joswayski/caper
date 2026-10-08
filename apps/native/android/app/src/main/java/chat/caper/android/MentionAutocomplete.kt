@@ -131,6 +131,40 @@ internal fun highlightedMentions(text: String, mentions: List<MessageMention>): 
     }
 }
 
+/** The `user` entry behind a highlighted pill; null for `@everyone`/`@here`, which open nothing. */
+internal fun mentionedUser(span: MentionSpan, mentions: List<MessageMention>): MessageMention? =
+    if (span.name == "everyone" || span.name == "here") null
+    else mentions.firstOrNull { it.type == "user" && it.username?.lowercase(Locale.ROOT) == span.name }
+
+/** The mention card for a tagged person, from data already loaded (no network call). */
+internal data class MentionCard(
+    val id: String?,
+    val username: String,
+    /** Null for someone you share nothing with: the title is then `@username`, without a second line. */
+    val displayName: String?,
+    val avatarId: Int? = null,
+    val self: Boolean = false,
+) {
+    val title: String get() = displayName ?: "@$username"
+    val subtitle: String? get() = displayName?.let { "@$username" }
+}
+
+/** Matches by id: loaded space members, then `/api/people`, then DM peers (then your own account), else unknown. */
+internal fun mentionCard(id: String?, username: String, state: AppUiState): MentionCard {
+    val selfId = state.account?.id ?: state.chatAuthorId
+    val self = if (id != null) id == selfId else state.account?.username?.equals(username, ignoreCase = true) == true
+    if (id != null) {
+        state.selectedSpace?.members?.firstOrNull { it.id == id }?.let { return MentionCard(id, it.username, it.displayName, it.avatarId, self) }
+        state.people?.firstOrNull { it.id == id }?.let { return MentionCard(id, it.username, it.displayName, it.avatarId, self) }
+        state.directConversations.firstOrNull { it.peer.id == id }?.peer?.let { return MentionCard(id, it.username, it.displayName, null, self) }
+    }
+    val account = state.account
+    if (self && account?.username != null && account.displayName != null) {
+        return MentionCard(account.id, account.username, account.displayName, account.avatarId, true)
+    }
+    return MentionCard(id, username, null, null, self)
+}
+
 /** You are mentioned by id, or by `@everyone`/`@here` in someone else's message. */
 internal fun mentionsMe(mentions: List<MessageMention>, authorId: String, selfId: String?): Boolean {
     if (selfId == null) return false

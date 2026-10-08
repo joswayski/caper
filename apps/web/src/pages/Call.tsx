@@ -434,6 +434,10 @@ interface CallProps {
   onChatOnlineChange?: (online: boolean) => void;
   /** People the composer's `@` can suggest; undefined until loaded. */
   mentionMembers?: MentionCandidate[];
+  /** Profile-card lookup for mention pills, most specific first. */
+  mentionDirectory?: MentionCandidate[];
+  /** Opens (or starts) a DM from a mention's profile card. */
+  onMessagePerson?: (username: string) => Promise<void>;
   /** A notice above the composer, such as a DM request still waiting. */
   composerBanner?: ReactNode;
   /** Offers "Block" in message actions; the caller confirms. */
@@ -458,6 +462,8 @@ export default function Call({
   engaged = true,
   onChatOnlineChange,
   mentionMembers,
+  mentionDirectory,
+  onMessagePerson,
   composerBanner,
   onBlockAuthor,
 }: CallProps = {}) {
@@ -1562,6 +1568,8 @@ export default function Call({
             messageSounds={engaged && channelJoined}
             onOnlineChange={onChatOnlineChange}
             mentionMembers={mentionMembers}
+            mentionDirectory={mentionDirectory}
+            onMessagePerson={onMessagePerson}
             channelId={channel?.id}
             channelName={channel?.name}
             initialHistory={initialHistory}

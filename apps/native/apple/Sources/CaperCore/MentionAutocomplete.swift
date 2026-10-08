@@ -78,6 +78,15 @@ struct MentionToken: Equatable {
 struct MentionSegment: Equatable {
     let text: String
     let highlighted: Bool
+    /// A highlighted person (`user` entry), which opens the mention card;
+    /// nil for plain text and the `@everyone`/`@here` pills.
+    var user: MentionPill? = nil
+}
+
+/// A person's pill in message text: the `user` entry it resolved to.
+struct MentionPill: Equatable, Hashable, Identifiable, Sendable {
+    let id: String
+    let username: String
 }
 
 /// The shared `@mention` contract: a token starts at an `@` at the start of the
@@ -222,13 +231,31 @@ enum MentionAutocomplete {
             if cursor < token.range.lowerBound {
                 segments.append(MentionSegment(text: string(scalars[cursor..<token.range.lowerBound]), highlighted: false))
             }
-            segments.append(MentionSegment(text: string(scalars[token.range]), highlighted: true))
+            segments.append(MentionSegment(text: string(scalars[token.range]), highlighted: true,
+                                           user: user(named: token.name, in: mentions)))
             cursor = token.range.upperBound
         }
         if cursor < scalars.endIndex {
             segments.append(MentionSegment(text: string(scalars[cursor..<scalars.endIndex]), highlighted: false))
         }
         return segments
+    }
+
+    /// The `user` entry a highlighted token resolved to, if any.
+    static func user(named name: String, in mentions: [MessageMention]) -> MentionPill? {
+        let name = name.lowercased()
+        for mention in mentions {
+            if case let .user(id, username) = mention, username.lowercased() == name {
+                return MentionPill(id: id, username: username)
+            }
+        }
+        return nil
+    }
+
+    /// Distinct person pills in `text`, in order of first appearance.
+    static func pills(in text: String, mentions: [MessageMention]) -> [MentionPill] {
+        var seen = Set<String>()
+        return segments(in: text, mentions: mentions).compactMap(\.user).filter { seen.insert($0.id).inserted }
     }
 
     /// A message mentions the signed-in account when a `user` entry carries its

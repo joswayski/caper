@@ -1403,11 +1403,12 @@ export default function Spaces({
   const [blockTarget, setBlockTarget] = useState<BlockedAccount>();
   const blockedIds = useBlockedIds();
   const [directView, setDirectView] = useState<{ conversation: DirectConversation }>();
-  // DM `@` suggestions; the previous list stays while a refresh is in flight.
+  // DM `@` suggestions and mention profile cards; the previous list stays while
+  // a refresh is in flight. Loaded once signed in and again whenever a DM opens.
   const [people, setPeople] = useState<Person[]>();
   const directId = directView?.conversation.id;
   useEffect(() => {
-    if (!directId) return;
+    if (!account?.id) return;
     let current = true;
     void listPeople()
       .then((result) => {
@@ -1417,7 +1418,7 @@ export default function Spaces({
     return () => {
       current = false;
     };
-  }, [directId]);
+  }, [directId, account?.id]);
   const detail =
     view?.detail ??
     (!spaces.length
@@ -2666,6 +2667,16 @@ export default function Spaces({
         mentionMembers={
           directView ? (people ?? [directView.conversation.peer]) : view?.detail ? detail.members : undefined
         }
+        mentionDirectory={[
+          ...(directView ? [] : detail.members),
+          ...(people ?? []),
+          ...directs.map((conversation) => conversation.peer),
+        ]}
+        onMessagePerson={async (username) => {
+          const conversation = await createDirectConversation(username);
+          setDirects((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
+          openDirect(conversation);
+        }}
         onHistoryChange={navigation.current.rememberHistory}
         spaceRail={rail}
         channelNavigation={channelNavigation}
