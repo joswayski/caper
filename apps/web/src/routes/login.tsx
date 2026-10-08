@@ -1,9 +1,26 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { AccountApiError, getAccount, requestEmailCode, verifyEmailCode } from "../account/client";
 import Wordmark from "../components/Wordmark";
 
-export const Route = createFileRoute("/login")({ component: Login });
+export const Route = createFileRoute("/login")({
+  head: () => ({ meta: [{ title: "Sign in - Caper" }] }),
+  component: Login,
+});
+
+const primaryButton =
+  "mt-3 flex cursor-pointer items-center gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content transition-colors duration-150 enabled:hover:border-terracotta-bright enabled:hover:bg-terracotta-bright disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4";
+const fieldClass =
+  "w-full rounded-control border border-border bg-surface px-3.5 py-[13px] text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4 read-only:opacity-55 disabled:cursor-not-allowed disabled:opacity-55";
+
+function Spinner() {
+  return (
+    <span
+      className="size-[1em] animate-spin rounded-full border-2 border-current border-r-transparent"
+      aria-hidden="true"
+    />
+  );
+}
 
 function loginError(error: unknown) {
   if (error instanceof AccountApiError) {
@@ -24,6 +41,13 @@ function Login() {
   const [attemptsRemaining, setAttemptsRemaining] = useState<number>();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
+  const emailInput = useRef<HTMLInputElement>(null);
+  const codeInput = useRef<HTMLInputElement>(null);
+
+  // Requests keep the field focused (read-only, not disabled) so a retry needs no extra click.
+  useEffect(() => {
+    if (!pending) (challengeId ? codeInput : emailInput).current?.focus();
+  }, [pending, challengeId]);
 
   useEffect(() => {
     void getAccount()
@@ -91,24 +115,27 @@ function Login() {
                 Sign-in code
               </label>
               <input
-                className="w-full rounded-control border border-border bg-surface px-3.5 py-[13px] text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4 disabled:cursor-not-allowed disabled:opacity-55"
+                ref={codeInput}
+                className={fieldClass}
                 id="code"
                 name="code"
                 value={code}
-                onChange={(event) =>
+                onChange={(event) => {
+                  // No maxLength: it would truncate a pasted " ABC-123" before it is cleaned up.
                   setCode(
                     event.target.value
                       .toUpperCase()
                       .replace(/[^A-HJKMNPQRSTWXYZ2-9]/g, "")
                       .slice(0, 6),
-                  )
-                }
+                  );
+                  if (attemptsRemaining !== 0) setError(undefined);
+                }}
                 autoComplete="one-time-code"
                 autoCapitalize="characters"
                 spellCheck={false}
                 pattern="[A-HJKMNPQRSTWXYZ2-9]{6}"
-                maxLength={6}
-                disabled={pending || attemptsRemaining === 0}
+                readOnly={pending}
+                disabled={attemptsRemaining === 0}
                 required
                 autoFocus
               />
@@ -124,13 +151,16 @@ function Login() {
               )}
               {attemptsRemaining === 0 ? (
                 <button
-                  className="mt-3 flex w-full cursor-pointer items-center justify-between gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
+                  className={`${primaryButton} w-full ${pending ? "justify-center" : "justify-between"}`}
                   type="button"
                   disabled={pending}
                   onClick={() => void sendCode()}
                 >
                   {pending ? (
-                    "Sending…"
+                    <>
+                      <Spinner />
+                      Sending…
+                    </>
                   ) : (
                     <>
                       Email me a new code <span aria-hidden="true">→</span>
@@ -139,16 +169,13 @@ function Login() {
                 </button>
               ) : (
                 <button
-                  className={`mt-3 flex w-full cursor-pointer items-center gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4 ${pending ? "justify-center" : "justify-between"}`}
+                  className={`${primaryButton} w-full ${pending ? "justify-center" : "justify-between"}`}
                   type="submit"
                   disabled={pending || code.length !== 6}
                 >
                   {pending ? (
                     <>
-                      <span
-                        className="size-[1em] animate-spin rounded-full border-2 border-current border-r-transparent"
-                        aria-hidden="true"
-                      />
+                      <Spinner />
                       Checking…
                     </>
                   ) : (
@@ -159,7 +186,7 @@ function Login() {
                 </button>
               )}
               <button
-                className="cursor-pointer border-0 bg-transparent py-4 text-[.85rem] text-content-muted focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
+                className="cursor-pointer border-0 bg-transparent py-4 text-[.85rem] text-content-muted transition-colors duration-150 enabled:hover:text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
                 type="button"
                 disabled={pending}
                 onClick={() => {
@@ -182,15 +209,19 @@ function Login() {
                 Email address
               </label>
               <input
-                className="w-full rounded-control border border-border bg-surface px-3.5 py-[13px] text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4 disabled:cursor-not-allowed disabled:opacity-55"
+                ref={emailInput}
+                className={fieldClass}
                 id="email"
                 name="email"
                 type="email"
                 value={email}
-                onChange={(event) => setEmail(event.target.value)}
+                onChange={(event) => {
+                  setEmail(event.target.value);
+                  setError(undefined);
+                }}
                 autoComplete="email"
                 placeholder="you@example.com"
-                disabled={pending}
+                readOnly={pending}
                 required
                 autoFocus
               />
@@ -200,12 +231,15 @@ function Login() {
                 </p>
               )}
               <button
-                className="mt-3 ml-auto flex w-fit cursor-pointer items-center justify-between gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
+                className={`${primaryButton} ml-auto min-w-[12.5rem] ${pending ? "justify-center" : "justify-between"}`}
                 type="submit"
                 disabled={pending}
               >
                 {pending ? (
-                  "Sending…"
+                  <>
+                    <Spinner />
+                    Sending…
+                  </>
                 ) : (
                   <>
                     Email me a code <span aria-hidden="true">→</span>

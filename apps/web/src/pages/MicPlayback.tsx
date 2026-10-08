@@ -436,9 +436,6 @@ export default function MicPlayback({
                   }}
                   onDeviceError={() => setDeviceError(true)}
                 />
-                {clips.processed.silent && (
-                  <p role="alert">No audible signal detected. Check your mic and try again.</p>
-                )}
               </>
             ) : (
               <p>{processing ? "Preparing…" : "Record to compare."}</p>
