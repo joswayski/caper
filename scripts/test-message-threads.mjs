@@ -31,6 +31,26 @@ const screenshot = (name) => {
 const row = (id) => `[data-message-key="${id}"]`;
 const channel = (id) => `.chat-panel ${row(id)}`;
 const thread = (id) => `.chat-thread-panel ${row(id)}`;
+const alignedHeaders = (width) => {
+  evaluate("document.fonts.ready.then(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))");
+  const geometry = evaluate(`(() => {
+    const main = document.querySelector('.chat-heading').getBoundingClientRect();
+    const heading = document.querySelector('.chat-thread-heading').getBoundingClientRect();
+    const panel = document.querySelector('.chat-thread-panel').getBoundingClientRect();
+    const name = document.querySelector('.chat-thread-heading span').getBoundingClientRect();
+    const control = document.querySelector(innerWidth > 760 ? '.chat-thread-close' : '.chat-thread-back').getBoundingClientRect();
+    return { main: [main.top, main.bottom, main.height], thread: [heading.top, heading.bottom, heading.height],
+      contentFits: (innerWidth > 760 ? name.right <= control.left : control.right <= name.left) && name.bottom <= heading.bottom && control.right <= heading.right && name.right <= heading.right,
+      panelFits: heading.left >= panel.left && heading.right <= panel.right && panel.right <= innerWidth,
+      control: [control.width, control.height] };
+  })()`);
+  assert.equal(geometry.thread[2], 54, `Thread header stays 54px at ${width}px`);
+  assert.equal(geometry.main[2], 54, `Channel header stays 54px at ${width}px`);
+  if (width > 760) assert.deepEqual(geometry.thread, geometry.main, `Header dividers align at ${width}px`);
+  assert.equal(geometry.contentFits, true, `Channel name and close/back control fit at ${width}px`);
+  assert.equal(geometry.panelFits, true, `Header stays inside the visible panel at ${width}px`);
+  if (width <= 760) assert.deepEqual(geometry.control, [44, 44], "Mobile Back keeps its touch target");
+};
 const headers = { authorization: "Bearer fixture-owner-token", connection: "close" };
 const history = async () => (await fetch(`${api}/api/chat/channels/chan00000001/messages`, { headers })).json();
 const close = () => {
@@ -115,7 +135,18 @@ try {
     evaluate('document.querySelector(".chat-thread-status").textContent'),
     "No replies yet. Start the thread.",
   );
+  alignedHeaders(1440);
   screenshot("threads-desktop-empty");
+  // Explicit layout-only mock: the longest channel name must not grow the header.
+  const originalName = evaluate('document.querySelector(".chat-thread-heading span").textContent');
+  evaluate('document.querySelector(".chat-thread-heading span").textContent = "in #" + "long-channel-name-".repeat(3)');
+  for (const width of [1024, 761]) {
+    browser("set", "viewport", String(width), "900", "2");
+    alignedHeaders(width);
+    if (width === 1024) screenshot("threads-desktop-long-name");
+  }
+  browser("set", "viewport", "1440", "900", "2");
+  evaluate(`document.querySelector(".chat-thread-heading span").textContent = ${JSON.stringify(originalName)}`);
   reply("TEST FIXTURE — Keep the layout discussion here. 🙂");
   wait(
     `document.querySelector('${channel(root.clientMessageId)} .chat-thread-summary strong')?.textContent === '1 reply'`,
@@ -179,9 +210,11 @@ try {
   })()`);
   browser("click", `${channel(other.clientMessageId)} .chat-reply-thread`);
   wait('document.querySelector(".chat-thread-messages").getAttribute("aria-busy") === "true"');
+  alignedHeaders(1440);
   screenshot("threads-desktop-loading");
   evaluate("window.releaseThread()");
   wait('document.querySelector(".chat-thread-status[role=alert]")?.textContent.includes("TEST FIXTURE")');
+  alignedHeaders(1440);
   screenshot("threads-desktop-error");
   evaluate("window.fetch = window.threadFetch");
   browser("click", ".chat-thread-status[role=alert] button");
@@ -237,7 +270,13 @@ try {
     ),
     [0, 0, 390, 844],
   );
+  alignedHeaders(390);
   screenshot("threads-mobile");
+  evaluate('document.querySelector(".chat-thread-heading span").textContent = "in #" + "long-channel-name-".repeat(3)');
+  browser("set", "viewport", "320", "844", "2");
+  alignedHeaders(320);
+  screenshot("threads-mobile-long-name");
+  browser("set", "viewport", "390", "844", "2");
   evaluate("history.back()");
   wait('!document.querySelector(".chat-thread-panel")');
   assert.equal(evaluate('document.querySelector(".chat-panel").inert'), false);
@@ -246,7 +285,7 @@ try {
   wait('!document.querySelector(".chat-thread-panel")');
   assert.equal(evaluate('document.querySelector(".chat-panel").inert'), false);
   console.log(
-    "PASS: isolated replies, root highlight/count/avatars, shared broadcast/reaction identity, per-root drafts, loading/error/retry, focus restoration, touch target separation, full-screen dialog, inert background and mobile Back.",
+    "PASS: aligned 54px headers at 1440/1024/761/390/320px, long-name containment, isolated replies, root highlight/count/avatars, shared broadcast/reaction identity, per-root drafts, loading/error/retry, focus restoration, touch target separation, full-screen dialog, inert background and mobile Back.",
   );
 } finally {
   socket?.close();

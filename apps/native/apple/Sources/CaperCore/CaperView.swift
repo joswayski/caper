@@ -2125,11 +2125,11 @@ private struct NativeThreadView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                VStack(alignment: .leading, spacing: 3) { Text("Thread").font(CaperTheme.font(15, weight: .bold)); Text("in #\(chat.channelName)").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted) }
+                VStack(alignment: .leading, spacing: 3) { Text("Thread").font(CaperTheme.font(15, weight: .bold)); Text("in #\(chat.channelName)").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1) }
                 Spacer()
                 Button("Back to channel") { chat.closeThread() }.buttonStyle(.plain).font(CaperTheme.font(12)).modifier(ControlHover())
-            }.padding(18)
-            Divider()
+            }.padding(.horizontal, 18).frame(height: 50)
+                .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 0) {

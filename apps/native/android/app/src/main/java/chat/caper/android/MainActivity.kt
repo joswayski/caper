@@ -1051,8 +1051,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         else if (draft.isNotBlank()) { viewModel.send(draft, threadRootId = thread.rootId, broadcast = broadcast); draft = "" }
     }
     Column(modifier.background(SurfaceConversation).border(BorderStroke(1.dp, Border))) {
-        Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("Thread · #${state.selectedChannel?.name}", Modifier.weight(1f), fontWeight = FontWeight.Bold)
+        Row(Modifier.fillMaxWidth().height(53.dp).padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Thread · #${state.selectedChannel?.name}", Modifier.weight(1f), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             TextButton(viewModel::closeThread) { Text("Back to channel") }
         }
         HorizontalDivider(color = Border)
