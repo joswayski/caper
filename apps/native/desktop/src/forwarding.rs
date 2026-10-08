@@ -156,6 +156,11 @@ pub struct Forwarding {
 }
 
 impl Forwarding {
+    /// Whether the forward picker or a forwarded conversation is showing.
+    pub fn is_open(&self) -> bool {
+        self.view.is_some()
+    }
+
     pub fn close(&mut self) {
         self.view = None;
         self.request += 1;
