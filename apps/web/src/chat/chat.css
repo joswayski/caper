@@ -117,6 +117,16 @@
 .chat-scroller {
   overflow-anchor: none;
 }
+/* Live follow must not flash the platform's overlay scrollbar on every post.
+   Keep overflow scrolling and the timeline's keyboard controls available. */
+.chat-scroller,
+.chat-thread-messages {
+  scrollbar-width: none;
+}
+.chat-scroller::-webkit-scrollbar,
+.chat-thread-messages::-webkit-scrollbar {
+  display: none;
+}
 .chat-history {
   height: 44px;
   display: flex;

@@ -380,6 +380,7 @@ export default function Chat({
     }
   };
   const listRef = useRef<VirtuosoHandle>(null);
+  const scrollerRef = useRef<HTMLElement>(null);
   const goToMessage = async (message: GeneralChatHistory["messages"][number]) => {
     const client = clientRef.current;
     if (!client || jumping) return;
@@ -392,7 +393,6 @@ export default function Chat({
         setShowPins(false);
         setJumpMessage(message.id);
         if (!message.threadRootId) {
-          followLatest.current = false;
           // Cancel the previous window's queued follow/measurement corrections.
           setListWindow((window) => window + 1);
           setScrollTarget(message.id);
@@ -493,7 +493,6 @@ export default function Chat({
       composerRef.current?.setSelectionRange(result.caret, result.caret);
     });
   };
-  const followLatest = useRef(true);
   const allowFollow = useRef(false);
   allowFollow.current = !state.hasNewer && !scrollTarget && !jumping;
   const latestMessage = state.messages.at(-1);
@@ -521,9 +520,16 @@ export default function Chat({
     const composer = composerRef.current;
     if (!composer) return;
     const resize = () => {
+      const scroller = scrollerRef.current;
+      // Read the actual position before resizing, not a delayed bottom callback.
+      const atBottom = scroller && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 80;
+      const height = composer.offsetHeight;
       composer.style.height = "0px";
       composer.style.height = `${composer.scrollHeight + composer.offsetHeight - composer.clientHeight}px`;
-      if (followLatest.current && allowFollow.current) listRef.current?.autoscrollToBottom();
+      // Only height changes need correction; read the new DOM extent so this
+      // does not use the virtualizer's previous viewport measurements.
+      if (composer.offsetHeight !== height && atBottom && allowFollow.current)
+        scroller.scrollTop = scroller.scrollHeight;
     };
     resize();
     let width = composer.clientWidth;
@@ -553,7 +559,6 @@ export default function Chat({
         const pending = next.pendingSend;
         if (pending && !pending.threadRootId && pending.clientMessageId !== pendingId) {
           setDraft((current) => (current === pending.text ? "" : current));
-          followLatest.current = true;
         }
         pendingId = pending?.clientMessageId;
         setState(next);
@@ -700,7 +705,6 @@ export default function Chat({
   const submit = async () => {
     if (readOnly || !identityReady || sending || state.sendRejected || state.pendingSend?.threadRootId) return;
     setValidationError(undefined);
-    followLatest.current = true;
     const submitted = state.pendingSend?.text ?? draft;
     try {
       if ((await clientRef.current?.send(submitted)) && state.hasNewer) {
@@ -1231,6 +1235,9 @@ export default function Chat({
               <Virtuoso
                 key={listWindow}
                 ref={listRef}
+                scrollerRef={(element) => {
+                  scrollerRef.current = element instanceof HTMLElement ? element : null;
+                }}
                 data={messages}
                 firstItemIndex={firstItemIndex}
                 initialTopMostItemIndex={{
@@ -1245,9 +1252,6 @@ export default function Chat({
                 increaseViewportBy={{ top: 250, bottom: 150 }}
                 followOutput={allowFollow.current ? "auto" : false}
                 atBottomThreshold={80}
-                atBottomStateChange={(atBottom) => {
-                  followLatest.current = atBottom;
-                }}
                 startReached={() => {
                   if (!state.olderError) loadOlder();
                 }}
