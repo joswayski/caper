@@ -80,6 +80,39 @@ try {
   );
   browser("press", "Escape");
   edit(root);
+  for (const [width, height, label] of [
+    [1440, 900, "desktop"],
+    [390, 844, "narrow"],
+  ]) {
+    browser("set", "viewport", String(width), String(height), "2");
+    browser("fill", "#chat-edit-text", "🙂".repeat(4000));
+    assert.equal(evaluate('document.querySelector("#chat-edit-count").textContent'), "4,000 / 4,000");
+    assert.equal(evaluate('document.querySelector(".chat-edit-save").disabled'), false);
+    assert.equal(evaluate('document.querySelector("#chat-edit-text").getAttribute("aria-invalid")'), null);
+    assert.equal(evaluate('getComputedStyle(document.querySelector("#chat-edit-count")).color'), "rgb(185, 188, 190)");
+    browser(
+      "fill",
+      "#chat-edit-text",
+      "TEST FIXTURE — This draft is over the message limit. ".repeat(100).slice(0, 4001),
+    );
+    assert.equal(evaluate('document.querySelector("#chat-edit-count").textContent'), "4,001 / 4,000");
+    assert.equal(evaluate('document.querySelector(".chat-edit-save").disabled'), true);
+    assert.equal(evaluate('document.querySelector("#chat-edit-text").getAttribute("aria-invalid")'), "true");
+    assert.equal(
+      evaluate('document.querySelector("#chat-edit-text").getAttribute("aria-describedby")'),
+      "chat-edit-count",
+    );
+    assert.equal(evaluate('getComputedStyle(document.querySelector("#chat-edit-count")).color'), "rgb(255, 155, 130)");
+    browser("press", "Control+Enter");
+    assert.equal((await history()).messages.find((message) => message.id === root.id).content.text, root.content.text);
+    screenshot(`message-edit-limit-${label}`);
+    browser("fill", "#chat-edit-text", root.content.text);
+    assert.equal(evaluate('document.querySelector(".chat-edit-save").disabled'), false);
+    assert.equal(evaluate('document.querySelector("#chat-edit-text").getAttribute("aria-invalid")'), null);
+    assert.equal(evaluate('getComputedStyle(document.querySelector("#chat-edit-count")).color'), "rgb(185, 188, 190)");
+    screenshot(`message-edit-valid-${label}`);
+  }
+  browser("set", "viewport", "1440", "900", "2");
   // Hold the request before it reaches the fixture: the preview must be local.
   evaluate(`(() => {
     const original = window.fetch.bind(window);
@@ -280,7 +313,7 @@ try {
   );
   action("Cancel");
   console.log(
-    "Message edits browser checks passed: ownership, optimistic preview, save, pins, diffs, narrow conflict, hidden/broadcast replies, independent summary, history retry/paging and rejected-save rollback.",
+    "Message edits browser checks passed: ownership, character-limit styling/accessibility, optimistic preview, save, pins, diffs, narrow conflict, hidden/broadcast replies, independent summary, history retry/paging and rejected-save rollback.",
   );
 } finally {
   try {
