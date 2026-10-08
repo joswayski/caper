@@ -20,6 +20,8 @@ export interface MentionCardTarget {
   anchor: HTMLElement;
   /** Phones and touch layouts get the bottom sheet used by message actions. */
   drawer: boolean;
+  /** A mouse hover preview must not take keyboard focus. */
+  focusOnOpen?: boolean;
 }
 
 /** Who a mention points at, with Message to open or start a DM. */
@@ -50,10 +52,10 @@ export default function MentionCard({
   useEffect(() => {
     refs.setReference(anchor);
   }, [anchor, refs.setReference]);
-  const title = person.displayName ?? `@${person.username}`;
+  const title = person.displayName ?? (person.username ? `@${person.username}` : "Profile");
 
   const message = async () => {
-    if (!onMessage || pending) return;
+    if (!onMessage || !person.username || pending) return;
     setPending(true);
     setError(undefined);
     try {
@@ -66,7 +68,11 @@ export default function MentionCard({
   };
 
   const panel = (
-    <FloatingFocusManager context={context} returnFocus={returnFocus}>
+    <FloatingFocusManager
+      context={context}
+      returnFocus={returnFocus}
+      initialFocus={target.focusOnOpen === false ? -1 : 0}
+    >
       <div
         className={`chat-mention-card${drawer ? " chat-mention-card-drawer" : ""}`}
         ref={refs.setFloating}
@@ -77,17 +83,18 @@ export default function MentionCard({
         {drawer && <div className="chat-drawer-handle" aria-hidden="true" />}
         <div className="chat-mention-card-identity">
           <i className="chat-mention-card-avatar">
-            <Avatar avatarId={person.avatarId} name={person.displayName ?? person.username} />
+            <Avatar avatarId={person.avatarId} name={person.displayName ?? person.username ?? title} />
           </i>
           <div>
             <strong>{title}</strong>
-            {person.displayName && <span>@{person.username}</span>}
+            {person.displayName && person.username && <span>@{person.username}</span>}
           </div>
         </div>
         {person.self ? (
           <p className="chat-mention-card-self">You</p>
         ) : (
-          onMessage && (
+          onMessage &&
+          person.username && (
             <button
               type="button"
               className="chat-mention-card-message"

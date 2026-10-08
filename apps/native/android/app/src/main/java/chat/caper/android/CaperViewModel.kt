@@ -42,6 +42,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var typingExpiry: Job? = null
     private val typers = mutableMapOf<String, TypingAuthor>()
     private var generation = 0L
+    private var historyAnchorRequest = 0L
     private var durableReplayCursor: String? = null
     private var refreshingHistory = false
     private var accountGeneration = 0L
@@ -653,27 +654,87 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             if (channel.direct) current.directConversations.firstOrNull { it.id == channel.id }?.let(::selectDirect)
             else selectChannel(channel)
         }
-        else if (current.refreshError != null) resyncChannel(channel.id)
+        else if (current.refreshError != null || current.hasNewerMessages) resyncChannel(channel.id)
     }
 
     fun loadOlder() {
         val channel = mutable.value.selectedChannel ?: return
-        val before = mutable.value.messages.firstOrNull { (it.threadRootId == null || it.broadcast) && it.id !in mutable.value.threadOnlyRows }?.seq ?: return
+        val before = mutable.value.channelMessages.firstOrNull()?.seq ?: return
         val request = generation
+        val anchorRequest = historyAnchorRequest
         if (refreshingHistory || !mutable.value.hasMoreMessages || mutable.value.loadingOlder) return
         mutable.value = mutable.value.copy(loadingOlder = true, olderError = null)
         viewModelScope.launch {
             try {
                 val history = api.history(accountToken, channel.id, before)
-                if (request != generation) return@launch
+                if (request != generation || anchorRequest != historyAnchorRequest) return@launch
                 val newer = authoritativeMessages()
                 mutable.value = mutable.value.copy(
                     messages = projectMessages(mergeTimelinePins(mergeMessages(newer, history.messages, unloadedReactions))), hasMoreMessages = history.hasMore,
                     threadOnlyRows = mutable.value.threadOnlyRows - history.messages.map { it.id }.toSet(),
+                    contextStart = if (mutable.value.contextStart != null) history.messages.firstOrNull()?.seq ?: mutable.value.contextStart else null,
                     loadingOlder = false,
                 )
             } catch (error: Throwable) {
-                if (request == generation) mutable.value = mutable.value.copy(loadingOlder = false, olderError = message(error))
+                if (request == generation && anchorRequest == historyAnchorRequest) mutable.value = mutable.value.copy(loadingOlder = false, olderError = message(error))
+            }
+        }
+    }
+
+    fun goToMessage(target: ChatMessage, onLoaded: () -> Unit) {
+        val channel = mutable.value.selectedChannel?.id ?: return
+        if (target.channelId != channel || mutable.value.loadingMessageContext || refreshingHistory) return
+        val request = generation; val anchor = ++historyAnchorRequest
+        mutable.value = mutable.value.copy(loadingMessageContext = true, messageContextError = null, loadingOlder = false, loadingNewer = false)
+        viewModelScope.launch {
+            try {
+                val root = target.threadRootId
+                val page = if (root == null) api.history(accountToken, channel, around = target.id) else null
+                val threadPage = if (root != null) api.thread(accountToken, channel, root, around = target.id) else null
+                if (request != generation || anchor != historyAnchorRequest) return@launch
+                val context = page?.messages ?: requireNotNull(threadPage).messages
+                require(context.any { it.id == target.id }) { "Message context is unavailable." }
+                val loaded = mutable.value.messages.map { it.id }.toSet()
+                val incoming = threadPage?.let { listOf(it.root) + context } ?: context
+                ++threadRequest
+                mutable.value = mutable.value.copy(
+                    messages = projectMessages(mergeTimelinePins(mergeMessages(authoritativeMessages(), incoming, unloadedReactions))),
+                    thread = threadPage?.let { ThreadUi(requireNotNull(root), loading = false, hasMore = it.hasMore, before = context.firstOrNull()?.seq,
+                        hasNewer = it.hasNewer, after = context.lastOrNull()?.seq, windowStart = context.firstOrNull()?.seq, windowEnd = if (it.hasNewer) context.lastOrNull()?.seq else null) },
+                    threadOnlyRows = if (root == null) mutable.value.threadOnlyRows - context.map { it.id }.toSet() else mutable.value.threadOnlyRows + incoming.filter { it.id !in loaded && (it.threadRootId == null || it.broadcast) }.map { it.id },
+                    contextStart = page?.messages?.firstOrNull()?.seq ?: mutable.value.contextStart,
+                    contextEnd = if (page != null) if (page.hasNewer) context.lastOrNull()?.seq else null else mutable.value.contextEnd,
+                    hasMoreMessages = page?.hasMore ?: mutable.value.hasMoreMessages,
+                    hasNewerMessages = page?.hasNewer ?: mutable.value.hasNewerMessages,
+                    focusedMessageId = target.id, focusRevision = mutable.value.focusRevision + 1,
+                    loadingMessageContext = false, loadingOlder = false, loadingNewer = false,
+                )
+                mutable.value.thread?.let { threadPages[it.rootId] = it }
+                onLoaded()
+            } catch (error: Throwable) {
+                if (request == generation && anchor == historyAnchorRequest) mutable.value = mutable.value.copy(loadingMessageContext = false, messageContextError = message(error))
+            }
+        }
+    }
+
+    fun loadNewer() {
+        val channel = mutable.value.selectedChannel?.id ?: return
+        val after = mutable.value.channelMessages.lastOrNull()?.seq ?: return
+        if (!mutable.value.hasNewerMessages || mutable.value.loadingNewer || refreshingHistory) return
+        val request = generation; val anchor = historyAnchorRequest
+        mutable.value = mutable.value.copy(loadingNewer = true, refreshError = null)
+        viewModelScope.launch {
+            try {
+                val page = api.history(accountToken, channel, after = after)
+                if (request != generation || anchor != historyAnchorRequest) return@launch
+                mutable.value = mutable.value.copy(
+                    messages = projectMessages(mergeTimelinePins(mergeMessages(authoritativeMessages(), page.messages, unloadedReactions))),
+                    threadOnlyRows = mutable.value.threadOnlyRows - page.messages.map { it.id }.toSet(),
+                    contextEnd = if (page.hasNewer) page.messages.lastOrNull()?.seq ?: after else null,
+                    hasNewerMessages = page.hasNewer, loadingNewer = false,
+                )
+            } catch (error: Throwable) {
+                if (request == generation && anchor == historyAnchorRequest) mutable.value = mutable.value.copy(loadingNewer = false, refreshError = message(error))
             }
         }
     }
@@ -930,7 +991,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (cached == null) loadThread()
     }
 
-    fun loadThread(older: Boolean = false) {
+    fun loadThread(older: Boolean = false, newer: Boolean = false) {
         val thread = mutable.value.thread ?: return
         val channel = mutable.value.selectedChannel?.id ?: return
         val request = ++threadRequest
@@ -938,11 +999,17 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value = mutable.value.copy(thread = thread.copy(loading = true, error = null))
         viewModelScope.launch {
             try {
-                val page = api.thread(accountToken, channel, thread.rootId, if (older) thread.before else null)
+                val page = api.thread(accountToken, channel, thread.rootId, if (older) thread.before else null, after = if (newer) thread.after else null)
                 if (request != threadRequest || channelRequest != generation || mutable.value.thread?.rootId != thread.rootId) return@launch
                 val rows = listOf(page.root) + page.messages
                 val loaded = mutable.value.messages.map { it.id }.toSet()
-                val pageState = thread.copy(loading = false, error = null, hasMore = page.hasMore, before = page.messages.firstOrNull()?.seq ?: thread.before)
+                val pageState = thread.copy(loading = false, error = null,
+                    hasMore = if (newer) thread.hasMore else page.hasMore,
+                    before = if (newer) thread.before else page.messages.firstOrNull()?.seq ?: if (older) thread.before else null,
+                    hasNewer = if (older) thread.hasNewer else page.hasNewer,
+                    after = if (older) thread.after else page.messages.lastOrNull()?.seq ?: if (newer) thread.after else null,
+                    windowStart = if (newer) thread.windowStart else page.messages.firstOrNull()?.seq ?: if (older) thread.windowStart else null,
+                    windowEnd = if (older) thread.windowEnd else if (page.hasNewer) page.messages.lastOrNull()?.seq else null)
                 threadPages[thread.rootId] = pageState
                 mutable.value = mutable.value.copy(
                     messages = projectMessages(mergeTimelinePins(mergeMessages(authoritativeMessages(), rows, unloadedReactions))),
@@ -1300,8 +1367,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun confirmPending(message: ChatMessage) {
         pendingSends.confirm(message)?.let {
-            mutable.value = mutable.value.copy(pendingMessage = null)
+            mutable.value = mutable.value.copy(pendingMessage = null, focusedMessageId = null)
             it.confirmed.invoke()
+            if (!refreshingHistory) {
+                if (message.threadRootId != null && mutable.value.thread?.rootId == message.threadRootId && mutable.value.thread?.hasNewer == true) loadThread()
+                else if (message.threadRootId == null && mutable.value.hasNewerMessages) resyncChannel(message.channelId)
+            }
         }
     }
 
@@ -1320,6 +1391,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             selectedChannel = channel, selectedDirectId = previous.selectedDirectId,
             messages = previous.messages, hasMoreMessages = previous.hasMoreMessages,
             thread = previous.thread, threadOnlyRows = previous.threadOnlyRows,
+            contextStart = previous.contextStart, contextEnd = previous.contextEnd,
+            hasNewerMessages = previous.hasNewerMessages,
             gateway = GatewayStatus.CONNECTING, busy = true, error = null,
         )
         viewModelScope.launch {
@@ -1327,11 +1400,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 val history = api.history(accountToken, channel.id)
                 if (generation != request || mutable.value.selectedChannel?.id != channel.id) return@launch
                 history.messages.forEach(::confirmPending)
-                val recovered = recoverHistory(authoritativeMessages().filter { (it.threadRootId == null || it.broadcast) && it.id !in previous.threadOnlyRows }, previous.hasMoreMessages, previousCursor, history)
+                val recovered = recoverHistory(if (previous.hasNewerMessages) emptyList() else authoritativeMessages().filter { (it.threadRootId == null || it.broadcast) && it.id !in previous.threadOnlyRows }, previous.hasMoreMessages, previousCursor, history)
                 installHistoryPins(history)
                 mutable.value = mutable.value.copy(
                     messages = projectMessages(mergeTimelinePins(recovered.messages)), hasMoreMessages = recovered.hasMore, busy = false,
                     threadOnlyRows = emptySet(),
+                    contextStart = null, contextEnd = null, hasNewerMessages = false,
                 )
                 openGateway(channel.id, history.cursor, request, channel.joined)
                 if (mutable.value.thread != null) loadThread()
@@ -1547,6 +1621,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun closeChannel(clearPending: Boolean) {
+        ++historyAnchorRequest
         gateway?.close(); gateway = null
         ++threadRequest
         threadPages.clear()
@@ -1566,6 +1641,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value = mutable.value.copy(
             selectedChannel = null, selectedDirectId = null, messages = emptyList(), typingAuthors = emptyList(), presence = emptyMap(),
             thread = null, threadOnlyRows = emptySet(),
+            contextStart = null, contextEnd = null, hasNewerMessages = false, loadingNewer = false,
+            focusedMessageId = null, loadingMessageContext = false, messageContextError = null,
             loadingOlder = false, olderError = null, messagesLoading = false, messagesError = null, refreshError = null,
             voiceRosters = emptyMap(),
             voiceSessionStartedAt = emptyMap(),

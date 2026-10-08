@@ -276,6 +276,24 @@ impl Api {
         self.request(Method::GET, &path, token, None, None)
     }
 
+    pub fn message_context(
+        &self,
+        token: Option<&str>,
+        channel: &str,
+        root: Option<&str>,
+        anchor: &str,
+        newer: bool,
+    ) -> Result<crate::model::MessageContext, ApiError> {
+        let path = root.map_or_else(
+            || format!("api/chat/channels/{channel}/messages"),
+            |root| format!("api/chat/channels/{channel}/messages/{root}/thread"),
+        );
+        let mut url = self.base.join(&path).expect("valid API path");
+        url.query_pairs_mut()
+            .append_pair(if newer { "after" } else { "around" }, anchor);
+        self.request(Method::GET, url.as_str(), token, None, None)
+    }
+
     pub fn chat_session(&self, token: Option<&str>, name: &str) -> Result<ChatSession, ApiError> {
         self.request(
             Method::POST,

@@ -70,6 +70,7 @@ enum NavIcon {
     Hash,
     Lock,
     Users,
+    Pin,
     Speech,
     Mic,
     MicOff,
@@ -132,6 +133,21 @@ struct ThreadView {
     has_more: bool,
     before: Option<String>,
     error: Option<String>,
+    window: Option<MessageWindow>,
+    has_newer: bool,
+}
+
+#[derive(Clone, Copy)]
+struct MessageWindow {
+    start: u64,
+    end: Option<u64>,
+}
+
+impl MessageWindow {
+    fn contains(self, message: &model::Message) -> bool {
+        model::sequence(&message.seq)
+            .is_ok_and(|seq| seq >= self.start && self.end.is_none_or(|end| seq <= end))
+    }
 }
 
 fn permanent_send_rejection(status: Option<u16>) -> bool {
@@ -192,6 +208,9 @@ struct PillClick {
 #[derive(Clone, Debug)]
 struct MentionCard {
     pill: PillClick,
+    /// Pin metadata supplies the fallback identity, not a made-up username.
+    author: Option<model::Author>,
+    focus_on_open: bool,
     /// The `CreateDirect` navigation while **Message** is opening a DM.
     opening: Option<u64>,
     error: Option<String>,
@@ -353,6 +372,12 @@ struct CaperApp {
     history_height: f32,
     history_offset: Option<f32>,
     has_more: bool,
+    history_request: u64,
+    context_window: Option<MessageWindow>,
+    has_newer: bool,
+    context_loading: bool,
+    focused_message: Option<String>,
+    scroll_to_target: bool,
     error: Option<String>,
     warning: Option<String>,
     token: Option<String>,
@@ -501,6 +526,12 @@ impl CaperApp {
             history_height: 0.0,
             history_offset: None,
             has_more: false,
+            history_request: 0,
+            context_window: None,
+            has_newer: false,
+            context_loading: false,
+            focused_message: None,
+            scroll_to_target: false,
             error: None,
             warning: None,
             token: None,
@@ -636,7 +667,39 @@ impl CaperApp {
             Some("login") => app.dialog = Some(Dialog::SignIn),
             Some(name) if name.starts_with("parity") => {
                 app.install_fixture();
-                if name.starts_with("parity-settings") {
+                if name.starts_with("parity-pins") {
+                    let author = app.timeline.messages().next().unwrap().author.clone();
+                    app.session = Some(ChatSession {
+                        token: "fixture-token".into(),
+                        author: author.clone(),
+                    });
+                    let count = match name {
+                        "parity-pins-empty" => 0,
+                        "parity-pins-long" => 3,
+                        _ => 1,
+                    };
+                    let pins = app
+                        .timeline
+                        .messages()
+                        .take(count)
+                        .cloned()
+                        .enumerate()
+                        .map(|(index, mut message)| {
+                            message.pin = Some(model::Pin {
+                                author: author.clone(),
+                                created_at: message.created_at.clone(),
+                            });
+                            message.pin_seq = Some((index + 5).to_string());
+                            if name == "parity-pins-long" && index == count - 1 {
+                                message.content.text = "TEST FIXTURE — local sample data, not a live conversation.\n\n".into();
+                                message.content.text.push_str(&"A longer pinned message wraps inside the card without moving the close control or hiding the next message. ".repeat(5));
+                            }
+                            message
+                        })
+                        .collect();
+                    app.timeline.reset_pins(pins).unwrap();
+                    app.showing_pins = true;
+                } else if name.starts_with("parity-settings") {
                     app.dialog = Some(Dialog::Settings);
                     app.updates = updates::Updates::preview_status(match name {
                         "parity-settings-checking" => updates::Status::Checking,
@@ -694,6 +757,8 @@ impl CaperApp {
                         has_more: false,
                         before: None,
                         error: None,
+                        window: None,
+                        has_newer: false,
                     };
                     if !loading {
                         app.thread_pages.insert(root, thread.clone());
@@ -1654,13 +1719,30 @@ impl CaperApp {
                 }
                 Event::OlderLoaded {
                     generation,
+                    request,
                     channel,
                     result,
                 } if generation == self.generation
+                    && request == self.history_request
                     && self.selected_channel.as_deref() == Some(&channel) =>
                 {
                     self.loading_older = false;
                     self.accept_older(&channel, result);
+                }
+                Event::ContextLoaded {
+                    generation,
+                    request,
+                    channel,
+                    root,
+                    anchor,
+                    newer,
+                    result,
+                } if generation == self.generation
+                    && request == self.history_request
+                    && self.selected_channel.as_deref() == Some(&channel) =>
+                {
+                    self.context_loading = false;
+                    self.accept_context(root, &anchor, newer, result);
                 }
                 Event::ThreadLoaded {
                     generation,
@@ -1711,6 +1793,11 @@ impl CaperApp {
                                 thread.loading = false;
                                 thread.has_more = page.has_more;
                                 thread.before = before.or(thread.before.take());
+                                if let (Some(window), Some(before)) =
+                                    (&mut thread.window, &thread.before)
+                                {
+                                    window.start = model::sequence(before).unwrap_or(window.start);
+                                }
                                 self.thread_pages.insert(root, thread.clone());
                             }
                         }
@@ -2048,17 +2135,9 @@ impl CaperApp {
         self.directs.iter().find(|direct| &direct.id == id)
     }
 
-    /// Under "No messages yet.": who can read a DM (only you, in your own), or a channel prompt.
+    /// Under "No messages yet." (not your own DM): who can read a DM, or a channel prompt.
     fn empty_conversation_note(&self) -> String {
         match self.selected_direct_conversation() {
-            Some(direct)
-                if self
-                    .account
-                    .as_ref()
-                    .is_some_and(|account| account.id == direct.peer.id) =>
-            {
-                "Only you can read this conversation.".to_owned()
-            }
             Some(direct) => format!(
                 "Only you and {} can read this conversation.",
                 direct.peer.display_name
@@ -2569,6 +2648,7 @@ impl CaperApp {
             })
             && model::sequence(&history.cursor) == Ok(accounted);
         let retained_older = contiguous
+            && self.context_window.is_none()
             && self
                 .timeline
                 .messages()
@@ -2588,6 +2668,7 @@ impl CaperApp {
             .messages()
             .filter(|message| {
                 (contiguous
+                    && self.context_window.is_none()
                     && message.is_channel_message()
                     && !self.thread_only_rows.contains(&message.id))
                     || fresh_ids.contains(&message.id)
@@ -2611,6 +2692,10 @@ impl CaperApp {
         if !retained_older {
             self.has_more = history.has_more;
         }
+        self.context_window = None;
+        self.has_newer = false;
+        self.context_loading = false;
+        self.history_request += 1;
         self.selected_channel = Some(history.channel.id.clone());
         if general {
             let demo = model::Space {
@@ -3241,11 +3326,13 @@ impl CaperApp {
                 self.selected_channel.as_deref(),
             ) =>
             {
-                if self.pending.as_ref().is_some_and(|pending| {
+                let root = message.thread_root_id.clone();
+                let confirmed = self.pending.as_ref().is_some_and(|pending| {
                     self.session
                         .as_ref()
                         .is_some_and(|session| pending.confirmed_by(&message, &session.author.id))
-                }) {
+                });
+                if confirmed {
                     self.pending = None;
                     self.error = None;
                 }
@@ -3272,6 +3359,16 @@ impl CaperApp {
                     }
                     Ok(model::Apply::Resync) | Err(_) => self.reload_channel(),
                     _ => {}
+                }
+                if confirmed && !self.loading {
+                    self.focused_message = None;
+                    if root.is_none() && self.has_newer {
+                        self.reload_channel();
+                    } else if self.thread_view.as_ref().is_some_and(|thread| {
+                        Some(thread.root.as_str()) == root.as_deref() && thread.has_newer
+                    }) {
+                        self.load_thread(false);
+                    }
                 }
             }
             GatewayEvent::Reactions {
@@ -3424,6 +3521,7 @@ impl CaperApp {
     fn sent(&mut self, result: Result<model::Message, worker::SendFailure>) {
         match result {
             Ok(message) => {
+                let root = message.thread_root_id.clone();
                 let confirmed = self.selected_channel.as_deref() == Some(&message.channel_id)
                     && self.pending.as_ref().is_some_and(|pending| {
                         self.session.as_ref().is_some_and(|session| {
@@ -3432,6 +3530,14 @@ impl CaperApp {
                     });
                 if confirmed && self.timeline.merge_sent(message).is_ok() {
                     self.pending = None;
+                    self.focused_message = None;
+                    if root.is_none() && self.has_newer {
+                        self.reload_channel();
+                    } else if self.thread_view.as_ref().is_some_and(|thread| {
+                        Some(thread.root.as_str()) == root.as_deref() && thread.has_newer
+                    }) {
+                        self.load_thread(false);
+                    }
                 } else {
                     if let Some(pending) = &mut self.pending {
                         pending.sending = false;
@@ -3487,6 +3593,8 @@ impl CaperApp {
             let drafts = std::mem::take(&mut self.thread_drafts);
             let rows = std::mem::take(&mut self.thread_only_rows);
             let has_more = self.has_more;
+            let window = self.context_window;
+            let has_newer = self.has_newer;
             if let Some(pending) = &mut pending {
                 pending.sending = false;
             }
@@ -3498,6 +3606,8 @@ impl CaperApp {
             self.thread_drafts = drafts;
             self.thread_only_rows = rows;
             self.has_more = has_more;
+            self.context_window = window;
+            self.has_newer = has_newer;
         }
     }
 
@@ -3534,6 +3644,11 @@ impl CaperApp {
                 for message in &history.messages {
                     self.thread_only_rows.remove(&message.id);
                 }
+                if let (Some(window), Some(first)) =
+                    (&mut self.context_window, history.messages.first())
+                {
+                    window.start = model::sequence(&first.seq).unwrap_or(window.start);
+                }
                 if let Err(error) = self.timeline.prepend(history.messages) {
                     self.older_error = Some(error);
                 }
@@ -3567,6 +3682,12 @@ impl CaperApp {
         self.loading_older = false;
         self.older_error = None;
         self.has_more = false;
+        self.history_request += 1;
+        self.context_window = None;
+        self.has_newer = false;
+        self.context_loading = false;
+        self.focused_message = None;
+        self.scroll_to_target = false;
         self.timeline = Timeline::default();
         self.thread_view = None;
         self.thread_request += 1;
@@ -3652,6 +3773,8 @@ impl CaperApp {
             has_more: false,
             before: None,
             error: None,
+            window: None,
+            has_newer: false,
         });
         self.load_thread(false);
     }
@@ -3662,6 +3785,10 @@ impl CaperApp {
         };
         thread.loading = true;
         thread.error = None;
+        if !older {
+            thread.window = None;
+            thread.has_newer = false;
+        }
         self.thread_request += 1;
         self.worker.send(Command::LoadThread {
             generation: self.generation,
@@ -3779,7 +3906,7 @@ impl CaperApp {
     }
 
     fn load_older(&mut self) {
-        if self.loading || self.loading_older || !self.has_more {
+        if self.loading || self.loading_older || self.context_loading || !self.has_more {
             return;
         }
         let Some(channel) = self.selected_channel.clone() else {
@@ -3789,7 +3916,11 @@ impl CaperApp {
             .timeline
             .messages()
             .find(|message| {
-                message.is_channel_message() && !self.thread_only_rows.contains(&message.id)
+                message.is_channel_message()
+                    && !self.thread_only_rows.contains(&message.id)
+                    && self
+                        .context_window
+                        .is_none_or(|window| window.contains(message))
             })
             .map(|message| message.seq.clone())
         else {
@@ -3799,10 +3930,161 @@ impl CaperApp {
         self.older_error = None;
         self.worker.send(Command::LoadOlder {
             generation: self.generation,
+            request: self.history_request,
             token: self.token.clone(),
             channel,
             before,
         });
+    }
+
+    fn load_context(&mut self, root: Option<String>, anchor: String, newer: bool) {
+        let Some(channel) = self.selected_channel.clone() else {
+            return;
+        };
+        self.mention_card = None;
+        self.history_request += 1;
+        self.thread_request += 1;
+        self.loading_older = false;
+        self.context_loading = true;
+        self.error = None;
+        self.worker.send(Command::LoadContext {
+            generation: self.generation,
+            request: self.history_request,
+            token: self.token.clone(),
+            channel,
+            root,
+            anchor,
+            newer,
+        });
+    }
+
+    fn load_newer_context(&mut self, root: Option<String>) {
+        let window = root
+            .as_ref()
+            .and_then(|_| self.thread_view.as_ref().and_then(|thread| thread.window))
+            .or(self.context_window);
+        if let Some(end) = window.and_then(|window| window.end) {
+            self.load_context(root, end.to_string(), true);
+        }
+    }
+
+    fn accept_context(
+        &mut self,
+        root: Option<String>,
+        anchor: &str,
+        newer: bool,
+        result: Result<model::MessageContext, worker::LoadError>,
+    ) {
+        let page = match result {
+            Ok(page) => page,
+            Err(error) if error.access_denied => {
+                self.clear_channel(&error.message);
+                return;
+            }
+            Err(error) => {
+                self.error = Some(error.message);
+                return;
+            }
+        };
+        let valid_root = root.as_ref().is_none_or(|root| {
+            page.root.as_ref().is_some_and(|message| {
+                message.id == *root
+                    && message.thread_root_id.is_none()
+                    && Some(&message.channel_id) == self.selected_channel.as_ref()
+                    && message.validate().is_ok()
+            })
+        });
+        if !valid_root
+            || !page.messages.iter().all(|message| {
+                Some(&message.channel_id) == self.selected_channel.as_ref()
+                    && message.validate().is_ok()
+                    && root.as_ref().map_or_else(
+                        || message.is_channel_message(),
+                        |root| message.thread_root_id.as_ref() == Some(root),
+                    )
+            })
+            || (!newer && !page.messages.iter().any(|message| message.id == anchor))
+        {
+            self.error = Some("Caper returned invalid message context.".into());
+            return;
+        }
+        let start = page
+            .messages
+            .first()
+            .and_then(|message| model::sequence(&message.seq).ok())
+            .unwrap_or(0);
+        let end = page
+            .messages
+            .last()
+            .and_then(|message| model::sequence(&message.seq).ok());
+        let window = MessageWindow {
+            start,
+            end: if page.has_newer { end } else { None },
+        };
+        let before = page.messages.first().map(|message| message.seq.clone());
+        let rows: Vec<_> = page.root.into_iter().chain(page.messages).collect();
+        if root.is_some() {
+            self.thread_only_rows.extend(
+                rows.iter()
+                    .filter(|message| {
+                        message.is_channel_message()
+                            && !self
+                                .timeline
+                                .messages()
+                                .any(|loaded| loaded.id == message.id)
+                    })
+                    .map(|message| message.id.clone()),
+            );
+        } else {
+            for message in &rows {
+                self.thread_only_rows.remove(&message.id);
+            }
+        }
+        if let Err(error) = self.timeline.prepend(rows) {
+            self.error = Some(error);
+            return;
+        }
+        if let Some(root) = root {
+            if newer {
+                if let Some(thread) = &mut self.thread_view {
+                    if let Some(window) = &mut thread.window {
+                        window.end = if page.has_newer { end } else { None };
+                    }
+                    thread.has_newer = page.has_newer;
+                }
+            } else {
+                self.thread_view = Some(ThreadView {
+                    root: root.clone(),
+                    loading: false,
+                    has_more: page.has_more,
+                    before,
+                    error: None,
+                    window: Some(window),
+                    has_newer: page.has_newer,
+                });
+            }
+            if let Some(thread) = &self.thread_view {
+                self.thread_pages.insert(root, thread.clone());
+            }
+        } else if newer {
+            if let Some(window) = &mut self.context_window {
+                window.end = if page.has_newer { end } else { None };
+            }
+            self.has_newer = page.has_newer;
+        } else {
+            self.thread_view = None;
+            self.context_window = Some(window);
+            self.has_more = page.has_more;
+            self.has_newer = page.has_newer;
+            self.older_armed = false;
+            self.older_anchor = None;
+            self.history_offset = None;
+        }
+        if !newer {
+            self.focused_message = Some(anchor.into());
+            self.scroll_to_target = true;
+            self.showing_pins = false;
+        }
     }
 
     fn admin(&mut self, operation: AdminOperation) {
@@ -4152,6 +4434,7 @@ impl CaperApp {
         } else {
             let dialog_was_open = self.dialog.is_some();
             self.shell(context);
+            self.pins_dialog(context);
             self.dialogs(context, dialog_was_open);
             self.message_edit_dialogs(context);
         }
@@ -5353,7 +5636,7 @@ impl CaperApp {
                                 if let Some(space) = &space {
                                     menu = Some(RowMenu {
                                         label: format!("Channel options for {name}"),
-                                        on_hover: false,
+                                        on_hover: true,
                                         content: Box::new(|ui: &mut egui::Ui| {
                                             self.channel_menu(ui, space, &id, &name, private)
                                         }),
@@ -5681,6 +5964,13 @@ impl CaperApp {
             let range = match row {
                 blocking::Row::Message(index) => index..index + 1,
                 blocking::Row::Blocked { range, key } => {
+                    if self.scroll_to_target
+                        && messages[range.clone()]
+                            .iter()
+                            .any(|message| self.focused_message.as_deref() == Some(&message.id))
+                    {
+                        self.revealed_blocked.insert(key.clone());
+                    }
                     if !self.blocked_row(ui, &key, range.len()) {
                         continue;
                     }
@@ -5931,14 +6221,6 @@ impl CaperApp {
                 });
                 if stack.hovered() || stack.has_focus() {
                     ui.painter().rect_filled(rect, 8.0, RAISED);
-                }
-                if stack.has_focus() {
-                    ui.painter().rect_stroke(
-                        rect,
-                        8.0,
-                        Stroke::new(1.0, TERRACOTTA_BRIGHT),
-                        egui::StrokeKind::Inside,
-                    );
                 }
                 let font = egui::FontId::new(11.0, egui::FontFamily::Name("Satoshi Medium".into()));
                 let mut count = format!("{} in voice", people.len());
@@ -7247,7 +7529,9 @@ impl CaperApp {
             self.channel_conversation(ui, narrow);
         }
         // Once per pass, for pills in the channel and in thread replies.
-        self.mention_card(ui.ctx());
+        if !self.showing_pins {
+            self.mention_card(ui.ctx());
+        }
     }
 
     fn thread_panel(&mut self, ui: &mut egui::Ui) {
@@ -7257,6 +7541,8 @@ impl CaperApp {
         let root = thread.root.clone();
         let loading = thread.loading;
         let has_more = thread.has_more;
+        let has_newer = thread.has_newer;
+        let window = thread.window;
         let error = thread.error.clone();
         // A DM thread belongs to a person's conversation, not a #channel.
         let direct = self.selected_direct.is_some();
@@ -7348,13 +7634,16 @@ impl CaperApp {
         egui::ScrollArea::vertical()
             .id_salt(("thread-history", &root))
             .stick_to_bottom(true)
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 let rows: Vec<_> = self
                     .timeline
                     .messages()
                     .filter(|message| {
-                        message.id == root || message.thread_root_id.as_deref() == Some(&root)
+                        message.id == root
+                            || (message.thread_root_id.as_deref() == Some(&root)
+                                && window.is_none_or(|window| window.contains(message)))
                     })
                     .cloned()
                     .collect();
@@ -7385,6 +7674,19 @@ impl CaperApp {
                     ui.label("No replies yet. Start the thread.");
                 }
                 self.messages_or_blocked(ui, &replies);
+                if has_newer
+                    && ui
+                        .add_enabled(
+                            !self.context_loading,
+                            egui::Button::new("Load newer replies"),
+                        )
+                        .clicked()
+                {
+                    self.load_newer_context(Some(root.clone()));
+                }
+                if window.is_some() && ui.button("Back to latest replies").clicked() {
+                    self.open_thread(root.clone());
+                }
             });
         self.emoji_picker(ui.ctx());
     }
@@ -7427,9 +7729,6 @@ impl CaperApp {
                                 Some(item) => item.peer.display_name.clone(),
                                 None => format!("# {}", self.channel_name()),
                             }).size(13.76));
-                            if self.showing_pins {
-                                ui.label(RichText::new("Pinned messages").size(12.0).color(MUTED));
-                            }
                             // Web: a failed refresh keeps the conversation and offers Retry in the header.
                             if let Some(error) = self.load_error.clone().filter(|_| self.timeline.messages().next().is_some()) {
                                 ui.add(egui::Label::new(RichText::new(error).size(11.2).color(ERROR)).truncate());
@@ -7440,10 +7739,7 @@ impl CaperApp {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    let pin_count = self.mutations.pinned(&self.timeline).len();
-                                    if self.showing_pins {
-                                        if ui.button("Messages").clicked() { self.showing_pins = false; }
-                                    } else if ui.button(format!("Pins ({pin_count})")).clicked() {
+                                    if drawn_icon_button(ui, NavIcon::Pin, "Pins").clicked() {
                                         self.showing_pins = true;
                                     }
                                     if self.selected_direct.is_none() {
@@ -7770,9 +8066,10 @@ impl CaperApp {
             let jump_latest = ui.memory(|memory| memory.focused().is_none())
                 && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::End));
             let mut history = egui::ScrollArea::vertical()
-                // Pins must not clamp the conversation's retained scroll offset.
-                .id_salt(if self.showing_pins { "pins" } else { "history" })
+                // The conversation stays mounted behind the separate Pins modal.
+                .id_salt("history")
                 .stick_to_bottom(!self.showing_pins)
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                 .auto_shrink([false, false]);
             if !self.showing_pins {
                 if let Some(offset) = self.history_offset.take() {
@@ -7782,15 +8079,6 @@ impl CaperApp {
                 }
             }
             let history = history.show(ui, |ui| {
-                    if self.showing_pins {
-                        let pins = self.mutations.pinned(&self.timeline);
-                        if pins.is_empty() {
-                            chat_state(ui, 2, |ui| { ui.label(RichText::new("No pinned messages.").color(MUTED)); });
-                        } else {
-                            for message in &pins { self.message(ui, message, false); }
-                        }
-                        return;
-                    }
                     if let Some(error) = self.load_error.clone().filter(|_| empty) {
                         chat_state(ui, 2, |ui| {
                             ui.label(RichText::new(error).color(MUTED));
@@ -7820,7 +8108,7 @@ impl CaperApp {
                     // pending/empty state and paging can inspect the timeline.
                     let timeline = std::mem::take(&mut self.timeline);
                     let mut last_date = None;
-                    let messages: Vec<_> = timeline.messages().filter(|message| message.is_channel_message() && !self.thread_only_rows.contains(&message.id)).collect();
+                    let messages: Vec<_> = timeline.messages().filter(|message| message.is_channel_message() && !self.thread_only_rows.contains(&message.id) && self.context_window.is_none_or(|window| window.contains(message))).collect();
                     let me = self.account.as_ref().map(|account| account.id.clone());
                     for row in blocking::rows(&messages, &self.blocked_ids(), me.as_deref()) {
                         let (range, blocked) = match row {
@@ -7832,6 +8120,9 @@ impl CaperApp {
                                 && take_date_divider(&mut last_date, &date.key)
                             {
                                 date_divider(ui, &date.label);
+                            }
+                            if self.scroll_to_target && messages[range.clone()].iter().any(|message| self.focused_message.as_deref() == Some(&message.id)) {
+                                self.revealed_blocked.insert(key.clone());
                             }
                             if !self.blocked_row(ui, &key, range.len()) {
                                 continue;
@@ -7847,6 +8138,8 @@ impl CaperApp {
                         }
                     }
                     self.timeline = timeline;
+                    if self.has_newer && ui.add_enabled(!self.context_loading, egui::Button::new("Load newer messages")).clicked() { self.load_newer_context(None); }
+                    if self.context_window.is_some() && ui.button("Back to latest messages").clicked() { self.reload_channel(); }
                     if let Some(pending) = self.pending.clone().filter(|pending| pending.thread_root_id.is_none()) {
                         if let Some(pending_date) = display_date(&pending.created_at)
                             && take_date_divider(&mut last_date, &pending_date.key)
@@ -7888,13 +8181,17 @@ impl CaperApp {
                         && self.pending.is_none()
                         && !self.loading
                     {
+                        let self_direct = self.selected_direct_conversation().is_some_and(|direct| {
+                            self.account.as_ref().is_some_and(|account| account.id == direct.peer.id)
+                        });
                         ui.centered_and_justified(|ui| {
                             ui.vertical_centered(|ui| {
-                                ui.label("No messages yet.");
-                                ui.label(
-                                    RichText::new(self.empty_conversation_note())
-                                    .color(MUTED),
-                                );
+                                if self_direct {
+                                    ui.label(RichText::new("You can message yourself here to keep notes, reminders, and ideas.").color(MUTED));
+                                } else {
+                                    ui.label("No messages yet.");
+                                    ui.label(RichText::new(self.empty_conversation_note()).color(MUTED));
+                                }
                             });
                         });
                     }
@@ -8043,9 +8340,19 @@ impl CaperApp {
     }
 
     fn message(&mut self, ui: &mut egui::Ui, message: &model::Message, in_thread: bool) {
+        self.message_in(ui, message, in_thread, false);
+    }
+
+    fn message_in(
+        &mut self,
+        ui: &mut egui::Ui,
+        message: &model::Message,
+        in_thread: bool,
+        in_pins: bool,
+    ) {
         let projected = self.mutations.project(message);
         let message = projected.as_ref();
-        let time = if self.showing_pins {
+        let time = if in_pins {
             DateTime::parse_from_rfc3339(&message.created_at).map_or_else(
                 |_| message.created_at.clone(),
                 |date| {
@@ -8079,15 +8386,15 @@ impl CaperApp {
                         .is_some_and(|thread| thread.root == message.id)
                 {
                     Color32::from_rgba_unmultiplied(228, 199, 106, 26)
-                } else if pinned.is_some() {
-                    Color32::from_rgba_unmultiplied(228, 199, 106, 15)
+                } else if !in_pins && self.focused_message.as_deref() == Some(&message.id) {
+                    Color32::from_rgba_unmultiplied(182, 77, 50, 35)
                 } else {
                     Color32::TRANSPARENT
                 },
             )
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
-                if let Some(pin) = pinned {
+                if in_pins && let Some(pin) = pinned {
                     egui::Frame::new()
                         .inner_margin(egui::Margin {
                             left: 62,
@@ -8096,11 +8403,49 @@ impl CaperApp {
                             bottom: 0,
                         })
                         .show(ui, |ui| {
-                            ui.label(
-                                RichText::new(format!("Pinned by {}", pin.author.name))
-                                    .size(11.0)
-                                    .color(Color32::from_rgb(228, 199, 106)),
+                            let response = ui.add(
+                                egui::Button::new(
+                                    RichText::new(format!("Pinned by {}", pin.author.name))
+                                        .size(11.0)
+                                        .color(MUTED),
+                                )
+                                .frame(false),
                             );
+                            response.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Button,
+                                    true,
+                                    format!("Open profile for {}", pin.author.name),
+                                )
+                            });
+                            let hover_id = response.id.with("was-hovered");
+                            let was_hovered = ui
+                                .data(|data| data.get_temp::<bool>(hover_id))
+                                .unwrap_or(false);
+                            ui.data_mut(|data| data.insert_temp(hover_id, response.hovered()));
+                            if response.clicked()
+                                || response.long_touched()
+                                || (response.hovered()
+                                    && !was_hovered
+                                    && !ui.input(|input| input.pointer.any_down()))
+                            {
+                                self.mention_card = Some(MentionCard {
+                                    pill: PillClick {
+                                        id: response.id,
+                                        rect: response.rect,
+                                        entry: model::Mention {
+                                            kind: "user".into(),
+                                            id: Some(pin.author.id.clone()),
+                                            username: None,
+                                        },
+                                    },
+                                    author: Some(pin.author.clone()),
+                                    focus_on_open: response.clicked() || response.long_touched(),
+                                    opening: None,
+                                    error: None,
+                                    fresh: true,
+                                });
+                            }
                         });
                 }
                 let (timestamp, pill) = message_row(
@@ -8154,6 +8499,8 @@ impl CaperApp {
             // Opening another pill replaces the card.
             self.mention_card = Some(MentionCard {
                 pill,
+                author: None,
+                focus_on_open: true,
                 opening: None,
                 error: None,
                 fresh: true,
@@ -8381,67 +8728,58 @@ impl CaperApp {
                 bottom: 5,
             })
             .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    for reaction in &reactions {
-                        let owned = author
-                            .as_ref()
-                            .is_some_and(|id| reaction.author_ids.iter().any(|entry| entry == id));
-                        let Some(entry) = emoji::find(&reaction.emoji) else {
-                            continue;
-                        };
-                        let image = self.reaction_textures.image(ui, entry, 18.0);
-                        let label = format!(
-                            "{}, {} {}{}",
-                            entry.name,
-                            reaction.author_ids.len(),
-                            if reaction.author_ids.len() == 1 {
-                                "reaction"
-                            } else {
-                                "reactions"
-                            },
-                            if owned { ", including you" } else { "" }
-                        );
-                        let response = ui.add_enabled(
-                            can_react,
-                            egui::Button::image_and_text(
-                                image,
-                                RichText::new(reaction.author_ids.len().to_string()).size(11.0),
-                            )
-                            .fill(if owned {
-                                Color32::from_rgb(57, 35, 30)
-                            } else {
-                                RAISED
-                            })
-                            .stroke(Stroke::new(
-                                1.0,
-                                if owned { TERRACOTTA_BRIGHT } else { BORDER },
-                            ))
-                            .corner_radius(8),
-                        );
-                        response.widget_info(|| {
-                            egui::WidgetInfo::labeled(
-                                egui::WidgetType::Button,
+                if !in_pins || !reactions.is_empty() {
+                    ui.horizontal_wrapped(|ui| {
+                        for reaction in &reactions {
+                            let owned = author.as_ref().is_some_and(|id| {
+                                reaction.author_ids.iter().any(|entry| entry == id)
+                            });
+                            let Some(entry) = emoji::find(&reaction.emoji) else {
+                                continue;
+                            };
+                            let image = self.reaction_textures.image(ui, entry, 18.0);
+                            let label = format!(
+                                "{}, {} {}{}",
+                                entry.name,
+                                reaction.author_ids.len(),
+                                if reaction.author_ids.len() == 1 {
+                                    "reaction"
+                                } else {
+                                    "reactions"
+                                },
+                                if owned { ", including you" } else { "" }
+                            );
+                            let response = ui.add_enabled(
                                 can_react,
-                                label.clone(),
-                            )
-                        });
-                        self.reactor_tooltip(&response, message, reaction, entry);
-                        if response.clicked() {
-                            self.set_reaction(&message.id, &reaction.emoji, !owned);
+                                egui::Button::image_and_text(
+                                    image,
+                                    RichText::new(reaction.author_ids.len().to_string()).size(11.0),
+                                )
+                                .fill(if owned {
+                                    Color32::from_rgb(57, 35, 30)
+                                } else {
+                                    RAISED
+                                })
+                                .stroke(Stroke::new(
+                                    1.0,
+                                    if owned { TERRACOTTA_BRIGHT } else { BORDER },
+                                ))
+                                .corner_radius(8),
+                            );
+                            response.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Button,
+                                    can_react,
+                                    label.clone(),
+                                )
+                            });
+                            self.reactor_tooltip(&response, message, reaction, entry);
+                            if response.clicked() {
+                                self.set_reaction(&message.id, &reaction.emoji, !owned);
+                            }
                         }
-                    }
-                    if self.showing_pins
-                        && can_react
-                        && ui
-                            .add_enabled(
-                                !self.pending_pins.contains(&message.id),
-                                egui::Button::new("Unpin").small(),
-                            )
-                            .clicked()
-                    {
-                        self.set_pin(message, false);
-                    }
-                });
+                    });
+                }
                 if let Some((active, error)) = self.pin_errors.get(&message.id).cloned() {
                     ui.horizontal(|ui| {
                         ui.colored_label(ERROR, error);
@@ -8513,6 +8851,118 @@ impl CaperApp {
                 0.0,
                 TERRACOTTA,
             );
+        }
+        if !in_pins && self.scroll_to_target && self.focused_message.as_deref() == Some(&message.id)
+        {
+            ui.scroll_to_rect(message_rect, Some(egui::Align::Center));
+            self.scroll_to_target = false;
+        }
+    }
+
+    fn pins_dialog(&mut self, context: &egui::Context) {
+        if !self.showing_pins {
+            return;
+        }
+        let pins = self.mutations.pinned(&self.timeline);
+        let mut close = false;
+        let card_was_open = self.mention_card.is_some();
+        let modal = egui::Modal::new(egui::Id::new("pinned-messages"))
+            .frame(
+                egui::Frame::popup(&context.style())
+                    .fill(SURFACE)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .corner_radius(8)
+                    .inner_margin(0),
+            )
+            .show(context, |ui| {
+                ui.set_width(560.0_f32.min(context.content_rect().width() - 48.0));
+                ui.spacing_mut().item_spacing.y = 0.0;
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(22, 18))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(bold("Pins").size(19.0));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    close = drawn_icon_button(ui, NavIcon::Close, "Close pins")
+                                        .clicked();
+                                },
+                            );
+                        });
+                    });
+                ui.separator();
+                egui::Frame::new().inner_margin(16).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 12.0;
+                    let list_height = (context.content_rect().height() - 128.0).max(1.0);
+                    egui::ScrollArea::vertical()
+                        .id_salt("pinned-messages-list")
+                        .max_height(list_height)
+                        // Reserve the bounded viewport before the auto-sized modal
+                        // settles; auto_shrink still fits short lists to their content.
+                        .min_scrolled_height(list_height)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            if let Some(error) = &self.error {
+                                ui.colored_label(ERROR, error);
+                            }
+                            if pins.is_empty() {
+                                ui.add_space(16.0);
+                                ui.vertical_centered(|ui| {
+                                    ui.label(bold("No pinned messages.").size(14.0));
+                                    ui.label(
+                                        RichText::new("Messages you pin will appear here.")
+                                            .size(12.0)
+                                            .color(MUTED),
+                                    );
+                                });
+                                ui.add_space(16.0);
+                            }
+                            for message in &pins {
+                                ui.push_id(&message.id, |ui| {
+                                    egui::Frame::new()
+                                        .fill(BLACKOUT)
+                                        .stroke(Stroke::new(1.0, BORDER))
+                                        .corner_radius(8)
+                                        .inner_margin(egui::Margin::symmetric(0, 8))
+                                        .show(ui, |ui| {
+                                            ui.spacing_mut().item_spacing.y = 0.0;
+                                            self.message_in(ui, message, false, true);
+                                            egui::Frame::new()
+                                                .inner_margin(egui::Margin {
+                                                    left: 62,
+                                                    right: 18,
+                                                    top: 6,
+                                                    bottom: 12,
+                                                })
+                                                .show(ui, |ui| {
+                                                    if ui.add_enabled(!self.context_loading,
+                                                        egui::Button::image_and_text(
+                                                            egui::Image::new(egui::include_image!("../resources/icons/arrow-right.svg")).tint(MUTED).fit_to_exact_size(egui::vec2(14.0, 14.0)),
+                                                            RichText::new(if self.context_loading { "Loading message…" } else { "Go to message" }).size(11.0).color(MUTED),
+                                                        ).frame(false).min_size(egui::vec2(0.0, 28.0)),
+                                                    )
+                                                    .clicked()
+                                                    {
+                                                        self.load_context(
+                                                            message.thread_root_id.clone(),
+                                                            message.id.clone(),
+                                                            false,
+                                                        );
+                                                    }
+                                                });
+                                        });
+                                });
+                            }
+                        });
+                });
+                self.emoji_picker(context);
+                context.set_sublayer(ui.layer_id(), egui::LayerId::new(egui::Order::Foreground, egui::Id::new("mention-card")));
+                self.mention_card(context);
+            });
+        if close || (!card_was_open && self.mention_card.is_none() && modal.should_close()) {
+            self.showing_pins = false;
+            self.mention_card = None;
         }
     }
 
@@ -8962,7 +9412,22 @@ impl CaperApp {
         let Some(card) = self.mention_card.clone() else {
             return;
         };
-        let Some(profile) = self.mention_profile(&card.pill.entry) else {
+        let profile = card
+            .author
+            .as_ref()
+            .map(|author| {
+                mentions::author_profile(
+                    author,
+                    self.account.as_ref().map(|account| account.id.as_str()),
+                    self.detail
+                        .as_ref()
+                        .map_or(&[][..], |detail| detail.members.as_slice()),
+                    self.people.as_deref().unwrap_or_default(),
+                    &self.directs,
+                )
+            })
+            .or_else(|| self.mention_profile(&card.pill.entry));
+        let Some(profile) = profile else {
             self.mention_card = None;
             return;
         };
@@ -9002,14 +9467,20 @@ impl CaperApp {
                         // 280px including the padding and the border.
                         ui.set_width(246.0);
                         ui.spacing_mut().item_spacing.y = 12.0;
-                        let initial = profile.display_name.as_ref().unwrap_or(&profile.username);
+                        let initial = profile
+                            .display_name
+                            .as_deref()
+                            .or(profile.username.as_deref())
+                            .unwrap_or("Profile");
                         avatar(ui, initial, profile.avatar_id, 48.0, false);
                         ui.vertical(|ui| {
                             ui.spacing_mut().item_spacing.y = 2.0;
                             ui.label(bold(profile.title()).size(15.0).color(TEXT));
-                            if profile.display_name.is_some() {
+                            if profile.display_name.is_some()
+                                && let Some(username) = &profile.username
+                            {
                                 ui.label(
-                                    RichText::new(format!("@{}", profile.username))
+                                    RichText::new(format!("@{username}"))
                                         .size(12.0)
                                         .color(MUTED),
                                 );
@@ -9017,6 +9488,9 @@ impl CaperApp {
                         });
                         if profile.me {
                             ui.label(RichText::new("You").size(12.0).color(MUTED));
+                            return;
+                        }
+                        if profile.username.is_none() {
                             return;
                         }
                         let opening = card.opening.is_some();
@@ -9036,7 +9510,7 @@ impl CaperApp {
                                 )
                             })
                             .inner;
-                        if card.fresh {
+                        if card.fresh && card.focus_on_open {
                             button.request_focus();
                         }
                         message = button.clicked();
@@ -9057,8 +9531,8 @@ impl CaperApp {
         if let Some(open) = &mut self.mention_card {
             open.fresh = false;
         }
-        if message {
-            self.message_from_card(&card.pill.entry, &profile.username);
+        if message && let Some(username) = &profile.username {
+            self.message_from_card(&card.pill.entry, username);
         }
     }
 
@@ -10454,14 +10928,6 @@ fn voice_join_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     if hover {
         ui.painter().rect_filled(rect, 8.0, RAISED);
     }
-    if response.has_focus() {
-        ui.painter().rect_stroke(
-            rect,
-            8.0,
-            Stroke::new(1.0, TERRACOTTA_BRIGHT),
-            egui::StrokeKind::Inside,
-        );
-    }
     paint_icon(
         ui.painter(),
         egui::Rect::from_center_size(
@@ -10496,6 +10962,7 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::Hash => egui::include_image!("../resources/icons/hash.svg"),
         NavIcon::Lock => egui::include_image!("../resources/icons/lock.svg"),
         NavIcon::Users => egui::include_image!("../resources/icons/users.svg"),
+        NavIcon::Pin => egui::include_image!("../resources/icons/pin.svg"),
         NavIcon::Speech => egui::include_image!("../resources/icons/speech.svg"),
         NavIcon::Mic => egui::include_image!("../resources/icons/mic.svg"),
         NavIcon::MicOff => egui::include_image!("../resources/icons/mic-off.svg"),
@@ -10587,19 +11054,13 @@ fn channel_button(
         ui.painter().rect_filled(
             rect,
             6.0,
-            if active {
+            if response.has_focus() {
+                BORDER
+            } else if active {
                 Color32::from_rgba_unmultiplied(182, 77, 50, 40)
             } else {
                 RAISED
             },
-        );
-    }
-    if response.has_focus() {
-        ui.painter().rect_stroke(
-            rect,
-            6.0,
-            Stroke::new(1.0, TERRACOTTA_BRIGHT),
-            egui::StrokeKind::Inside,
         );
     }
     let dim = |color| {
@@ -10664,11 +11125,11 @@ fn channel_button(
     }
     ui.painter()
         .with_clip_rect(egui::Rect::from_min_max(
-            egui::pos2(rect.left() + 34.0, rect.top()),
+            egui::pos2(rect.left() + 31.0, rect.top()),
             egui::pos2(name_right, rect.bottom()),
         ))
         .text(
-            egui::pos2(rect.left() + 35.0, rect.center().y - 1.0),
+            egui::pos2(rect.left() + 32.0, rect.center().y - 1.0),
             egui::Align2::LEFT_CENTER,
             name,
             egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into())),
@@ -10685,17 +11146,9 @@ fn channel_button(
         let popup = egui::Popup::menu(&settings);
         let open = popup.is_open();
         opened = settings.clicked() && !open;
-        if !menu.on_hover || row_hovered || open || settings.has_focus() {
+        if !menu.on_hover || row_hovered || response.has_focus() || open || settings.has_focus() {
             if settings.hovered() || settings.has_focus() {
                 ui.painter().rect_filled(rect, 8.0, SURFACE);
-            }
-            if settings.has_focus() {
-                ui.painter().rect_stroke(
-                    rect,
-                    8.0,
-                    Stroke::new(1.0, TERRACOTTA_BRIGHT),
-                    egui::StrokeKind::Inside,
-                );
             }
             paint_icon(
                 ui.painter(),
@@ -11934,6 +12387,8 @@ mod tests {
                     has_more: false,
                     before: None,
                     error: None,
+                    window: None,
+                    has_newer: false,
                 });
                 let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 700.0));
                 let mut frame = || {
@@ -12097,7 +12552,7 @@ mod tests {
     }
 
     #[test]
-    fn pinned_message_has_gold_attribution_above_only_two_compact_hover_actions() {
+    fn pins_use_normal_hover_actions_and_a_dismissible_navigation_dialog() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
             &context,
@@ -12120,32 +12575,14 @@ mod tests {
         render(&mut app, &context, vec![]);
         context.enable_accesskit();
         let output = render(&mut app, &context, vec![]);
-        assert!(
-            text_position(&output, "Pinned by Fixture Pinner").y
-                < text_position(&output, "Pinned original author").y
-        );
+        assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Pinned by Fixture Pinner")));
         assert!(
             text_position(&output, "Pinned original author").y
                 < text_position(&output, "Pinned original text").y
         );
-        let gold = output
-            .shapes
-            .iter()
-            .find_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) if text.galley.job.text == "Pinned by Fixture Pinner" => {
-                    Some(&text.galley.job)
-                }
-                _ => None,
-            })
-            .unwrap();
-        assert!(
-            gold.sections
-                .iter()
-                .all(|section| section.format.color == egui::Color32::from_rgb(228, 199, 106))
-        );
-        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+        assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
             egui::Shape::Rect(rect) if rect.fill == egui::Color32::from_rgba_unmultiplied(228, 199, 106, 15) && rect.rect.width() > 700.0
-        )), "a short pinned message must still highlight the full conversation row");
+        )), "pins must not add a highlight to the channel timeline");
         let nodes = &output
             .platform_output
             .accesskit_update
@@ -12218,8 +12655,247 @@ mod tests {
         egui::Popup::close_all(&context);
         app.showing_pins = true;
         app.timeline.reset_pins(vec![message]).unwrap();
+        render(&mut app, &context, vec![]);
         let pins = render(&mut app, &context, vec![]);
-        assert!(pins.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Unpin")), "pin list retains direct Unpin");
+        for label in ["Pinned by Fixture Pinner", "Go to message"] {
+            assert!(pins.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == label)));
+        }
+        assert!(!pins.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Unpin")), "unpin belongs only in the actions menu");
+        click(&mut app, &context, egui::pos2(20.0, 20.0));
+        assert!(!app.showing_pins, "clicking outside closes Pins");
+    }
+
+    #[test]
+    fn pinner_hover_preview_is_above_pins_and_dismisses_before_its_parent() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-pins"),
+        );
+        app.token = Some("fixture-only".into());
+        let mut message = app.timeline.pinned_messages().next().unwrap().clone();
+        assert_ne!(message.author.id, "fixture-maya");
+        let pinner = &mut message.pin.as_mut().unwrap().author;
+        pinner.id = "fixture-maya".into();
+        pinner.name = "Old pinner name".into();
+        app.timeline.reset(vec![message.clone()], "5").unwrap();
+        app.timeline.reset_pins(vec![message]).unwrap();
+        for _ in 0..3 {
+            render(&mut app, &context, vec![]);
+        }
+        let output = render(&mut app, &context, vec![]);
+        let anchor = text_position(&output, "Pinned by Old pinner name") + egui::vec2(30.0, 5.0);
+        render(&mut app, &context, vec![egui::Event::PointerMoved(anchor)]);
+        let output = render(&mut app, &context, vec![]);
+        assert_eq!(card_entry(&app), Some("fixture-maya"));
+        assert!(
+            shows(&output, "@maya") && shows(&output, "Message"),
+            "pinner profile, not the message author: {:?}",
+            text_shapes(&output)
+        );
+        assert!(!shows(&output, "You"));
+        click(
+            &mut app,
+            &context,
+            text_position(&output, "Message") + egui::vec2(20.0, 8.0),
+        );
+        assert!(
+            app.mention_card.as_ref().unwrap().opening.is_some(),
+            "the card's Message button is interactive above the modal"
+        );
+        render(&mut app, &context, press(egui::Key::Escape));
+        assert!(app.mention_card.is_none());
+        assert!(app.showing_pins, "Escape closes the child first");
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerMoved(egui::pos2(20.0, 20.0))],
+        );
+        render(&mut app, &context, vec![egui::Event::PointerMoved(anchor)]);
+        render(&mut app, &context, vec![]);
+        click(&mut app, &context, egui::pos2(20.0, 20.0));
+        assert!(app.mention_card.is_none());
+        assert!(app.showing_pins, "outside click dismisses the child first");
+        click(&mut app, &context, egui::pos2(20.0, 20.0));
+        assert!(!app.showing_pins);
+    }
+
+    #[test]
+    fn pins_modal_projects_pending_unpin_without_changing_confirmed_history() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-pins"),
+        );
+        let message = app.timeline.pinned_messages().next().unwrap().clone();
+        let id = message.id.clone();
+        app.mutations.pins.insert(id.clone(), (message, None));
+        for _ in 0..3 {
+            render(&mut app, &context, vec![]);
+        }
+        assert!(shows(
+            &render(&mut app, &context, vec![]),
+            "No pinned messages."
+        ));
+        assert_eq!(app.timeline.pinned_messages().count(), 1);
+        app.mutations.pins.remove(&id);
+        assert!(shows(&render(&mut app, &context, vec![]), "Go to message"));
+    }
+
+    #[test]
+    fn pins_fixtures_preserve_each_pin_and_include_the_empty_state() {
+        for (fixture, expected) in [
+            ("parity-pins", 1),
+            ("parity-pins-empty", 0),
+            ("parity-pins-long", 3),
+        ] {
+            let app = CaperApp::new(
+                &egui::Context::default(),
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some(fixture),
+            );
+            assert_eq!(
+                app.timeline.pinned_messages().count(),
+                expected,
+                "{fixture}"
+            );
+            assert!(app.showing_pins);
+        }
+    }
+
+    #[test]
+    fn pins_cards_align_navigation_and_keep_close_visible_in_small_windows() {
+        for size in [egui::vec2(840.0, 620.0), egui::vec2(390.0, 520.0)] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-pins"),
+            );
+            let frame = |app: &mut CaperApp, screen_size, events| {
+                context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen_size)),
+                        events,
+                        ..Default::default()
+                    },
+                    |context| app.page(context),
+                )
+            };
+            for _ in 0..3 {
+                frame(&mut app, egui::vec2(1440.0, 900.0), vec![]);
+            }
+            for _ in 0..3 {
+                frame(&mut app, size, vec![]);
+            }
+            context.enable_accesskit();
+            let output = frame(&mut app, size, vec![]);
+            let nodes = &output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes;
+            let bounds = |label| {
+                nodes
+                    .iter()
+                    .find_map(|(_, node)| {
+                        (node.label() == Some(label))
+                            .then(|| node.bounds())
+                            .flatten()
+                    })
+                    .unwrap_or_else(|| panic!("missing {label} at {size:?}"))
+            };
+            let close = bounds("Close pins");
+            let author = output
+                .shapes
+                .iter()
+                .rev()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == "Fixture Owner" => {
+                        Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            let go = bounds("Go to message");
+            assert!(
+                (go.x0 - f64::from(author.left())).abs() < 1.0,
+                "navigation aligns with message text"
+            );
+            assert!(
+                go.y0 > f64::from(author.bottom()),
+                "navigation follows the message"
+            );
+            assert!(
+                close.x0 > f64::from(author.right()) && close.y1 < f64::from(author.top()),
+                "close belongs in the top-right header"
+            );
+            for button in [close, go] {
+                assert!(button.x0 >= 0.0 && button.x1 <= f64::from(size.x));
+                assert!(button.y0 >= 0.0 && button.y1 <= f64::from(size.y));
+            }
+            let navigation_rect = egui::Rect::from_min_max(
+                egui::pos2(go.x0 as f32, go.y0 as f32),
+                egui::pos2(go.x1 as f32, go.y1 as f32),
+            );
+            let navigation_clip = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == "Go to message" => {
+                        Some(shape.clip_rect)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            assert!(
+                navigation_clip.contains_rect(navigation_rect),
+                "navigation is clipped at {size:?}: {navigation_rect:?} by {navigation_clip:?}"
+            );
+            assert!(
+                !output.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Text(text) if text.galley.job.text == "Reply in thread"
+                        && shape.clip_rect == navigation_clip
+                )),
+                "Pins must not show a redundant static reply button"
+            );
+            let navigation_center = egui::pos2(
+                ((go.x0 + go.x1) / 2.0) as f32,
+                ((go.y0 + go.y1) / 2.0) as f32,
+            );
+            assert!(
+                output.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Rect(rect) if rect.stroke.width == 1.0
+                        && f64::from(rect.rect.top()) > close.y1
+                        && rect.rect.contains(author.center())
+                        && rect.rect.contains(navigation_center)
+                        && shape.clip_rect.contains_rect(rect.rect)
+                )),
+                "each pin has a fully visible bordered card"
+            );
+            for pressed in [true, false] {
+                frame(
+                    &mut app,
+                    size,
+                    vec![
+                        egui::Event::PointerMoved(egui::pos2(
+                            (close.x0 + 14.0) as f32,
+                            (close.y0 + 14.0) as f32,
+                        )),
+                        egui::Event::PointerButton {
+                            pos: egui::pos2((close.x0 + 14.0) as f32, (close.y0 + 14.0) as f32),
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            }
+            assert!(!app.showing_pins, "header close works at {size:?}");
+        }
     }
 
     #[test]
@@ -14639,8 +15315,26 @@ mod tests {
             .collect();
         assert!(texts.contains(&"Message TEST FIXTURE Maya"));
         assert!(texts.contains(&"Only you and TEST FIXTURE Maya can read this conversation."));
+        assert!(texts.contains(&"No messages yet."));
         assert!(!texts.contains(&"Message #general"));
         assert!(!texts.contains(&"Members"));
+
+        // The same display name is not enough: only the peer's account ID changes.
+        app.directs[0].peer.id = app.account.as_ref().unwrap().id.clone();
+        let output = render(&mut app, &context, vec![]);
+        let texts: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts.contains(&"You can message yourself here to keep notes, reminders, and ideas.")
+        );
+        assert!(!texts.contains(&"No messages yet."));
+        assert!(!texts.contains(&"Only you and this person can read this conversation."));
     }
 
     #[test]
@@ -15690,7 +16384,7 @@ mod tests {
         for label in ["general", "design", "planning"] {
             assert_eq!(
                 text(label).pos.x,
-                106.0,
+                103.0,
                 "public/private labels must share one offset"
             );
         }
@@ -16689,6 +17383,70 @@ mod tests {
     }
 
     #[test]
+    fn cached_thread_context_retains_bounds_after_forward_paging() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-pins"),
+        );
+        let root = app.timeline.messages().next().unwrap().clone();
+        let reply = |seq: u64| {
+            let mut message = root.clone();
+            message.id = format!("context-reply-{seq}");
+            message.client_message_id = message.id.clone();
+            message.seq = seq.to_string();
+            message.thread_root_id = Some(root.id.clone());
+            message.pin = None;
+            message
+        };
+        app.timeline.prepend(vec![reply(100)]).unwrap();
+        app.accept_context(
+            Some(root.id.clone()),
+            "context-reply-11",
+            false,
+            Ok(model::MessageContext {
+                root: Some(root.clone()),
+                messages: (10..=12).map(reply).collect(),
+                has_more: true,
+                has_newer: true,
+            }),
+        );
+        assert!(app.error.is_none(), "valid pinned reply context");
+        app.thread_view = None;
+        app.open_thread(root.id.clone());
+        let thread = app.thread_view.as_ref().unwrap();
+        assert!(!thread.loading && thread.has_more && thread.has_newer);
+        let window = thread.window.unwrap();
+        assert_eq!((window.start, window.end), (10, Some(12)));
+        assert!(
+            !window.contains(&reply(100)),
+            "cached latest rows stay hidden"
+        );
+        app.accept_context(
+            Some(root.id.clone()),
+            "12",
+            true,
+            Ok(model::MessageContext {
+                root: Some(root.clone()),
+                messages: vec![reply(13)],
+                has_more: false,
+                has_newer: true,
+            }),
+        );
+        app.thread_view = None;
+        app.open_thread(root.id);
+        let thread = app.thread_view.as_ref().unwrap();
+        assert!(!thread.loading && thread.has_more && thread.has_newer);
+        assert_eq!(thread.before.as_deref(), Some("10"));
+        let window = thread.window.unwrap();
+        assert_eq!((window.start, window.end), (10, Some(13)));
+        app.load_thread(false);
+        let thread = app.thread_view.as_ref().unwrap();
+        assert!(thread.loading && thread.window.is_none() && !thread.has_newer);
+    }
+
+    #[test]
     fn thread_reply_pills_open_the_profile_card() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -17379,6 +18137,77 @@ mod tests {
                 && (rect.center().y as f64 - (microphone.y0 + microphone.y1) / 2.0).abs() < 0.5),
             "the account dock keeps its larger avatar"
         );
+    }
+
+    #[test]
+    fn channel_menu_reveals_on_hover_or_focus_without_rings_or_layout_shift() {
+        let context = egui::Context::default();
+        let _app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        let frame = |events| {
+            let mut row = None;
+            let output = context.run(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |context| {
+                    egui::CentralPanel::default().show(context, |ui| {
+                        row = Some(
+                            super::channel_button(
+                                ui,
+                                egui::vec2(280.0, 32.0),
+                                "general",
+                                Some(super::NavIcon::Hash),
+                                true,
+                                super::RowExtras {
+                                    menu: Some(super::RowMenu {
+                                        label: "Channel options for general".into(),
+                                        on_hover: true,
+                                        content: Box::new(|ui| {
+                                            ui.label("Options");
+                                        }),
+                                    }),
+                                    ..Default::default()
+                                },
+                            )
+                            .0,
+                        );
+                    });
+                },
+            );
+            (output, row.unwrap())
+        };
+        let (_, row) = frame(vec![]);
+        let menu_id = row.id.with("settings");
+        let menu = context.read_response(menu_id).unwrap().rect;
+        let painted = |output: &egui::FullOutput| {
+            output.shapes.iter().any(|shape|
+            matches!(&shape.shape, egui::Shape::Mesh(mesh) if menu.contains_rect(mesh.calc_bounds())))
+        };
+        frame(vec![egui::Event::PointerMoved(row.rect.left_center())]);
+        assert!(painted(&frame(vec![]).0), "hover reveals the menu icon");
+        let (resting, unchanged) = frame(vec![egui::Event::PointerMoved(egui::pos2(700.0, 400.0))]);
+        assert!(
+            !painted(&resting),
+            "the menu icon hides when the pointer leaves"
+        );
+        assert_eq!(
+            unchanged.rect, row.rect,
+            "the hidden menu reserves its space"
+        );
+        for id in [row.id, menu_id] {
+            context.memory_mut(|memory| memory.request_focus(id));
+            let (focused, unchanged) = frame(vec![]);
+            assert!(painted(&focused), "keyboard focus reveals channel options");
+            assert_eq!(unchanged.rect, row.rect);
+            assert!(!focused.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Rect(rect) if rect.stroke.color == super::TERRACOTTA_BRIGHT && rect.stroke.width > 0.0
+            )), "keyboard focus must not paint an orange ring");
+        }
     }
 
     #[test]

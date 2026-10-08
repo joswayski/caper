@@ -549,6 +549,15 @@ pub struct ThreadHistory {
     pub has_more: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageContext {
+    pub messages: Vec<Message>,
+    pub root: Option<Message>,
+    pub has_more: bool,
+    pub has_newer: bool,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageVersion {
