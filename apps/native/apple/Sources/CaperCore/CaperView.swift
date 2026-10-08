@@ -232,7 +232,7 @@ private struct BrowseSwipe: ViewModifier {
 }
 
 private enum WorkspaceSheet: Identifiable {
-    case login, profile, createSpace, createChannel, newDirectMessage, manageSpace, manageChannel(Channel), invitation(Space), channelInvitation(ChannelInvitation), leaveSpace, audio, connection, diagnostics, privacy
+    case login, profile, createSpace, createChannel, newDirectMessage, manageSpace, manageChannel(Channel), invitation(Space), channelInvitation(ChannelInvitation), leaveSpace, audio, connection, diagnostics, privacy, notifications
     var id: String {
         switch self {
         case .login: "login"
@@ -249,6 +249,7 @@ private enum WorkspaceSheet: Identifiable {
         case .connection: "connection"
         case .diagnostics: "diagnostics"
         case .privacy: "privacy"
+        case .notifications: "notifications"
         }
     }
 }
@@ -534,16 +535,23 @@ private struct SpaceRailButton: View {
     private var corner: CGFloat { selected ? 8 : 12 }
     private var fill: Color { selected ? Color(red: 57/255, green: 35/255, blue: 30/255) : CaperTheme.surface }
     private var edge: Color { selected ? Color(red: 128/255, green: 81/255, blue: 67/255) : CaperTheme.border }
-    private var state: String { model.openingSpaceID == space.id ? "Opening" : selected ? "Selected" : "" }
+    private var muted: Bool { space.demo != true && model.notificationsMuted(.space(space.id)) }
+    private var state: String {
+        let base: String = model.openingSpaceID == space.id ? "Opening" : selected ? "Selected" : ""
+        guard muted else { return base }
+        return base.isEmpty ? "Muted" : base + ", Muted"
+    }
 
     var body: some View {
         Button { Task { await model.select(space: space) } } label: {
             Text(space.demo == true ? "C" : String(space.name.prefix(1)).uppercased())
                 .font(CaperTheme.font(13, weight: .black))
+                .opacity(muted ? 0.5 : 1)
                 .frame(width: narrow ? 44 : 40, height: narrow ? 44 : 40)
                 .background(fill)
                 .clipShape(RoundedRectangle(cornerRadius: corner))
                 .overlay(RoundedRectangle(cornerRadius: corner).stroke(edge))
+                .overlay(alignment: .bottomTrailing) { mutedBadge }
         }
         .buttonStyle(.plain).help(name)
         .modifier(NavigationPrefetchModifier { model.prefetch(space: space) })
@@ -553,6 +561,16 @@ private struct SpaceRailButton: View {
             if selected {
                 RoundedRectangle(cornerRadius: 2).fill(CaperTheme.terracottaBright).frame(width: 3, height: 24).offset(x: -10)
             }
+        }
+    }
+
+    /// A muted space: a small bell-slash on the rail tile.
+    @ViewBuilder private var mutedBadge: some View {
+        if muted {
+            MutedBell(size: 9)
+                .frame(width: 16, height: 16)
+                .background(Circle().fill(CaperTheme.blackout))
+                .offset(x: 4, y: 4)
         }
     }
 }
@@ -569,16 +587,25 @@ private struct ChannelSidebar: View {
     @State private var directHeadingHovered = false
     @FocusState private var directActionFocused: Bool
     #endif
+    /// The space menu: Browse, notifications and mute, then settings or leave.
+    @ViewBuilder private var spaceMenuItems: some View {
+        Button(browsing ? "Exit Browse channels" : "Browse channels") {
+            browsing.toggle()
+            channelSearch = ""
+        }
+        if let space = model.detail?.space, space.demo != true, model.account != nil {
+            Divider()
+            SpaceNotificationItems(model: model, spaceID: space.id)
+            Divider()
+        }
+        if model.isOwner { Button("Space settings") { sheet = .manageSpace } }
+        else if model.account != nil && model.detail?.space.demo != true { Button("Leave space…", role: .destructive) { sheet = .leaveSpace } }
+    }
     var body: some View {
         VStack(spacing: 0) {
                     HStack(spacing: 6) {
                         Menu {
-                            Button(browsing ? "Exit Browse channels" : "Browse channels") {
-                                browsing.toggle()
-                                channelSearch = ""
-                            }
-                            if model.isOwner { Button("Space settings") { sheet = .manageSpace } }
-                            else if model.account != nil && model.detail?.space.demo != true { Button("Leave space…", role: .destructive) { sheet = .leaveSpace } }
+                            spaceMenuItems
                         } label: {
                             HStack {
                                 Text(model.detail?.space.demo == true ? "Caper" : model.detail?.space.name ?? "Caper").font(CaperTheme.font(15, weight: .bold)).lineLimit(1)
@@ -592,6 +619,7 @@ private struct ChannelSidebar: View {
                     }
                     .padding(.horizontal, 16).frame(height: 50)
                     .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+            NotificationErrorRow(model: model)
 
             ScrollView {
                 if narrow && model.showingMessageRequests && model.account != nil {
@@ -709,20 +737,7 @@ private struct ChannelSidebar: View {
                                     .accessibilityIdentifier("dm-self")
                             }
                             ForEach(model.visibleDirectMessages.filter { $0.peer.id != model.account?.id }) { conversation in
-                                Button { Task { await model.select(directMessage: conversation) } } label: {
-                                    HStack(spacing: 9) {
-                                        CaperIcon(name: "speech", size: 17).frame(width: 24)
-                                        Text(conversation.peer.displayName).lineLimit(1)
-                                        Spacer()
-                                        if conversation.unread { Circle().fill(CaperTheme.terracottaBright).frame(width: 8, height: 8).accessibilityLabel("Unread") }
-                                    }.font(CaperTheme.font(13, weight: .medium))
-                                        .foregroundStyle(model.selectedDirectMessageID == conversation.id ? CaperTheme.text : CaperTheme.muted)
-                                        .padding(.horizontal, 9).frame(height: directRowHeight)
-                                        .background(model.selectedDirectMessageID == conversation.id ? CaperTheme.terracotta.opacity(0.16) : Color.clear)
-                                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                                }.buttonStyle(.plain).accessibilityIdentifier("dm-\(conversation.id)")
-                                    .modifier(ControlHover())
-                                    .accessibilityValue(model.selectedDirectMessageID == conversation.id ? "Selected" : conversation.unread ? "Unread" : "")
+                                DirectMessageSidebarRow(model: model, conversation: conversation, rowHeight: directRowHeight)
                             }
                         }.padding(.horizontal, 16).padding(.top, 2)
                     Button {
@@ -739,13 +754,6 @@ private struct ChannelSidebar: View {
                         .contentShape(Rectangle())
                     }.buttonStyle(.plain).modifier(ControlHover()).padding(.horizontal, 16)
                         .accessibilityIdentifier(model.isOwner && model.detail?.space.demo == false ? "invite-people" : "new-message")
-                    if model.pushAvailable {
-                        Toggle("Direct message notifications", isOn: Binding(
-                            get: { model.pushEnabled },
-                            set: { value in Task { await model.changePushEnabled(value) } }
-                        )).font(CaperTheme.font(11)).padding(.horizontal, 16).padding(.vertical, 10)
-                            .accessibilityIdentifier("dm-push-opt-in")
-                    }
                 }.padding(.bottom, 8)
                     .overlay(alignment: .top) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
             }
@@ -764,6 +772,80 @@ private struct ChannelSidebar: View {
     }
 }
 
+/// One DM in the sidebar, with its options menu: a context menu (press and
+/// hold on iPhone), plus a "…" on hover on macOS. Personal notes have none.
+private struct DirectMessageSidebarRow: View {
+    @Bindable var model: AppModel
+    let conversation: DirectMessageConversation
+    let rowHeight: CGFloat
+    #if os(macOS)
+    @State private var hovered = false
+    @FocusState private var optionsFocused: Bool
+    #endif
+
+    private var selected: Bool { model.selectedDirectMessageID == conversation.id }
+    private var muted: Bool { model.notificationsMuted(.direct(conversation.id)) }
+    /// A muted DM shows no unread dot.
+    private var showsUnread: Bool { conversation.unread && !muted }
+    private var rowState: String {
+        let base: String = selected ? "Selected" : showsUnread ? "Unread" : ""
+        guard muted else { return base }
+        return base.isEmpty ? "Muted" : base + ", Muted"
+    }
+
+    var body: some View {
+        HStack(spacing: 2) {
+            rowButton
+            #if os(macOS)
+            optionsMenu
+            #endif
+        }
+        #if os(macOS)
+        .onHover { hovered = $0 }
+        #endif
+        .contextMenu { DirectMessageNotificationItems(model: model, conversationID: conversation.id) }
+    }
+
+    private var rowButton: some View {
+        Button { Task { await model.select(directMessage: conversation) } } label: { rowLabel }
+            .buttonStyle(.plain).accessibilityIdentifier("dm-\(conversation.id)")
+            .modifier(ControlHover())
+            .accessibilityValue(rowState)
+    }
+
+    private var rowLabel: some View {
+        HStack(spacing: 9) {
+            CaperIcon(name: "speech", size: 17).frame(width: 24)
+            Text(conversation.peer.displayName).lineLimit(1)
+            if muted { MutedBell() }
+            Spacer()
+            if showsUnread { Circle().fill(CaperTheme.terracottaBright).frame(width: 8, height: 8).accessibilityLabel("Unread") }
+        }
+        .font(CaperTheme.font(13, weight: .medium))
+        .foregroundStyle(selected ? CaperTheme.text : CaperTheme.muted)
+        .opacity(muted ? 0.55 : 1)
+        .padding(.horizontal, 9).frame(height: rowHeight)
+        .background(selected ? CaperTheme.terracotta.opacity(0.16) : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .contentShape(Rectangle())
+    }
+
+    #if os(macOS)
+    private var optionsMenu: some View {
+        Menu { DirectMessageNotificationItems(model: model, conversationID: conversation.id) } label: { CaperIcon(name: "ellipsis") }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden)
+            .foregroundStyle(CaperTheme.muted)
+            .frame(width: 28, height: 28)
+            .focused($optionsFocused)
+            .opacity(hovered || optionsFocused ? 1 : 0)
+            .allowsHitTesting(hovered || optionsFocused)
+            .help("Conversation options for \(conversation.peer.displayName)")
+            .accessibilityLabel("Conversation options for \(conversation.peer.displayName)")
+            .accessibilityIdentifier("dm-options-\(conversation.id)")
+    }
+    #endif
+}
+
 private struct ChannelSidebarItem: View {
     @Bindable var model: AppModel
     @Binding var sheet: WorkspaceSheet?
@@ -779,6 +861,27 @@ private struct ChannelSidebarItem: View {
             ?? (model.pendingVoiceChannelID == channel.id ? Double(model.pendingVoiceStartedAt) : nil)
     }
 
+    private var muted: Bool { model.notificationsMuted(.channel(spaceID: channel.spaceId, channelID: channel.id)) }
+    /// Muted channels are dimmed, with a bell-slash.
+    private var nameOpacity: Double { muted ? 0.55 : 1 }
+    private var rowState: String {
+        let base: String = model.openingChannelID == channel.id ? "Opening" : model.selectedChannelID == channel.id ? "Selected" : ""
+        guard muted else { return base }
+        return base.isEmpty ? "Muted" : base + ", Muted"
+    }
+
+    @ViewBuilder private var optionsMenuItems: some View {
+        if model.isOwner {
+            Button("Channel settings") { sheet = .manageChannel(channel) }
+            Divider()
+        }
+        if model.account != nil { ChannelNotificationItems(model: model, channel: channel) }
+        if channel.joined {
+            Divider()
+            Button("Leave channel") { confirmLeave = true }
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 2) {
@@ -786,7 +889,9 @@ private struct ChannelSidebarItem: View {
                     HStack(spacing: 9) {
                         CaperIcon(name: channel.private ? "lock" : "hash", size: 18)
                             .foregroundStyle(model.selectedChannelID == channel.id ? CaperTheme.terracottaBright : CaperTheme.muted)
-                        Text(channel.name).lineLimit(1)
+                            .opacity(nameOpacity)
+                        Text(channel.name).lineLimit(1).opacity(nameOpacity)
+                        if muted { MutedBell() }
                         Spacer(minLength: 0)
                         if let sessionStartedAt {
                             TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -815,11 +920,10 @@ private struct ChannelSidebarItem: View {
                         if let space = model.detail?.space { model.prefetch(space: space, channelID: channel.id) }
                     })
                     .accessibilityIdentifier("channel-\(channel.id)")
-                    .accessibilityValue(model.openingChannelID == channel.id ? "Opening" : model.selectedChannelID == channel.id ? "Selected" : "")
+                    .accessibilityValue(rowState)
                 if model.detail?.space.demo != true {
                     Menu {
-                        if model.isOwner { Button("Channel settings") { sheet = .manageChannel(channel) } }
-                        if channel.joined { Button("Leave channel") { confirmLeave = true } }
+                        optionsMenuItems
                     } label: { CaperIcon(name: "ellipsis") }
                         .menuStyle(.borderlessButton).menuIndicator(.hidden)
                         .foregroundStyle(CaperTheme.muted)
@@ -1345,6 +1449,8 @@ private struct AccountBar: View {
                 }
                 #endif
                 if model.account != nil {
+                    Button("Notifications") { sheet = .notifications }
+                        .accessibilityIdentifier("open-notifications")
                     Button("Privacy and blocked accounts") { sheet = .privacy }
                         .accessibilityIdentifier("open-privacy")
                     Button("Log out", role: .destructive) { Task { await model.logout() } }
@@ -3292,6 +3398,7 @@ private struct WorkspaceSheetView: View {
             case .audio: AudioPreferencesView(voice: model.voice, debugEnabled: model.account?.debugEnabled == true, close: close)
             case .connection: ScrollView { ConnectionDetailsView(voice: model.voice, close: close) }
             case .privacy: PrivacySheet(model: model, close: close)
+            case .notifications: NotificationsSheet(model: model, close: close)
             case .diagnostics:
                 VStack(alignment: .leading, spacing: 18) {
                     SheetHeader(title: "Audio diagnostics", detail: "Local processing counters", close: close)
@@ -3576,6 +3683,96 @@ private struct PrivacySheet: View {
         Task { @MainActor in
             do { try await model.unblock(accountID: id) } catch { unblockError = error.localizedDescription }
             unblocking.remove(id)
+        }
+    }
+}
+
+/// One radio choice in a settings sheet, like the DM privacy options.
+private struct SettingsChoiceRow: View {
+    let title: String
+    let selected: Bool
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: selected ? "largecircle.fill.circle" : "circle")
+                    .foregroundStyle(selected ? CaperTheme.terracottaBright : CaperTheme.muted)
+                    .font(.system(size: 15)).padding(.top, 1)
+                Text(title).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.text)
+                Spacer(minLength: 0)
+            }.padding(.vertical, 8).frame(minHeight: 44).contentShape(Rectangle())
+        }.buttonStyle(.plain)
+            .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+/// Account notifications: what notifies you, and on an iPhone with push
+/// available, this phone's delivery and its on/off switch.
+private struct NotificationsSheet: View {
+    @Bindable var model: AppModel
+    let close: () -> Void
+    var body: some View {
+        VStack(spacing: 0) {
+            SheetHeader(title: NotificationLabels.notifications, detail: "What Caper notifies you about.",
+                        closeLabel: "Close notification settings", close: close)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    levelSection
+                    if model.pushAvailable { phoneSection }
+                    status
+                }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .background(CaperTheme.surface)
+        .accessibilityIdentifier("notification-settings")
+        .task { await model.loadNotificationSettings() }
+    }
+
+    private var levelSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(NotificationLabels.notifyMeAbout).font(CaperTheme.font(13, weight: .bold)).padding(.bottom, 6)
+            ForEach(NotificationLevel.allCases) { level in
+                SettingsChoiceRow(title: level.accountTitle, selected: model.notificationSettings?.level == level) {
+                    Task { await model.setAccountNotificationLevel(level) }
+                }
+                .disabled(model.notificationSettings == nil)
+                .accessibilityIdentifier("notify-level-\(level.rawValue)")
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(NotificationLabels.notifyMeAbout)
+    }
+
+    private var phoneSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Rectangle().fill(CaperTheme.border).frame(height: 1).padding(.bottom, 14)
+            Text(NotificationLabels.sendToThisPhone).font(CaperTheme.font(13, weight: .bold)).padding(.bottom, 6)
+            ForEach(MobilePushPolicy.allCases) { policy in
+                SettingsChoiceRow(title: policy.title, selected: model.notificationSettings?.mobile == policy) {
+                    Task { await model.setMobilePushPolicy(policy) }
+                }
+                .disabled(model.notificationSettings == nil)
+                .accessibilityIdentifier("notify-mobile-\(policy.rawValue)")
+            }
+            Toggle("Notifications on this phone", isOn: pushBinding)
+                .font(CaperTheme.font(14)).padding(.top, 8)
+                .accessibilityIdentifier("push-opt-in")
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    /// The existing per-device opt-in (permission prompt and APNs registration).
+    private var pushBinding: Binding<Bool> {
+        Binding(get: { model.pushEnabled }, set: { value in Task { await model.changePushEnabled(value) } })
+    }
+
+    @ViewBuilder private var status: some View {
+        if let error = model.notificationError ?? model.notificationsLoadError {
+            Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("notification-settings-error")
+        } else if model.notificationSettings == nil {
+            Text("Loading…").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
         }
     }
 }
