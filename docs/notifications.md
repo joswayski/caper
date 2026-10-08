@@ -65,8 +65,12 @@ as different), that device's delivery is held for 60 s. When it comes due it is
 dropped if the recipient is still active elsewhere. `always` never holds.
 
 At send time every delivery also rechecks that the device and its session are
-still valid, that the conversation still exists, that the message is less than
-24 h old, and, for DMs, that the recipient has not read up to the message.
+still valid, that the conversation still exists, and that the recipient still
+has access and permits this notification. Membership, private-channel grants,
+channel joins (except direct @mentions), blocks, notification levels, mutes and
+pauses are checked again when claiming a delivery, including provider retries.
+The message must be less than 24 h old and, for DMs, the recipient must not have
+read up to it. Changes after the claim cannot recall an in-flight provider send.
 
 ### Content and payloads
 

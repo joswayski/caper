@@ -1683,6 +1683,255 @@ async fn phone_push_waits_while_active_elsewhere_and_rechecks_at_send_time(pool:
 
 #[sqlx::test(migrations = "./migrations")]
 #[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
+async fn queued_push_rechecks_channel_access_and_consent(pool: PgPool) {
+    let h = harness(&pool).await;
+    let alice = person(&pool, "alice").await;
+    let cases = [
+        (
+            "member",
+            "UPDATE public.space_members SET deleted_at=now() WHERE user_id=$1",
+        ),
+        (
+            "grant",
+            "UPDATE public.channel_members SET deleted_at=now() WHERE user_id=$1",
+        ),
+        (
+            "joined",
+            "UPDATE public.channel_joins SET deleted_at=now() WHERE user_id=$1",
+        ),
+        (
+            "blocked",
+            "INSERT INTO public.user_blocks(blocker_id,blocked_id) SELECT $1,id FROM public.users WHERE username='alice'",
+        ),
+        (
+            "deleted",
+            "UPDATE public.users SET deleted_at=now() WHERE id=$1",
+        ),
+    ];
+    for (name, revoke) in cases {
+        let bob = person(&pool, name).await;
+        let (space_id, _) = space(&pool, &alice, &[&bob]).await;
+        let channel = channel(&pool, space_id, name, true, &[&alice, &bob]).await;
+        sqlx::query("INSERT INTO public.channel_members(channel_id,user_id) SELECT id,$2 FROM public.channels WHERE external_id=$1")
+            .bind(&channel).bind(bob.id).execute(&pool).await.unwrap();
+        register(&h, &bob, &bob.token, "fcm", &format!("fcm:{name}")).await;
+        let message = send(&h, &alice, &channel, "queued private content", None).await;
+        expand(&h).await;
+        assert_eq!(
+            notified(&pool, &message).await,
+            pairs(&[(name, "channel.message")])
+        );
+        sqlx::query(revoke)
+            .bind(bob.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        deliver(&h).await;
+        assert!(
+            h.fcm.take().is_empty(),
+            "{name}: revoked eligibility must prevent provider delivery"
+        );
+        let abandoned: bool = sqlx::query_scalar("SELECT abandoned_at IS NOT NULL FROM public.notification_deliveries d JOIN public.notifications n ON n.id=d.notification_id JOIN public.messages m ON m.id=n.message_id WHERE m.external_id=$1")
+            .bind(&message).fetch_one(&pool).await.unwrap();
+        assert!(
+            abandoned,
+            "{name}: a revoked delivery must not remain retryable"
+        );
+    }
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
+async fn queued_push_rechecks_preferences_without_silencing_direct_mentions(pool: PgPool) {
+    let h = harness(&pool).await;
+    let alice = person(&pool, "alice").await;
+    for (name, mention, setting, allowed) in [
+        ("off", true, "account-off", false),
+        ("paused", true, "pause", false),
+        ("channeloff", true, "channel-off", false),
+        ("spacemute", false, "space-mute", false),
+        ("channelmute", false, "channel-mute", false),
+        ("mentions", false, "mentions", false),
+        ("named", true, "space-mute", true),
+        ("unjoined", true, "leave", true),
+    ] {
+        let bob = person(&pool, name).await;
+        let (space_id, _) = space(&pool, &alice, &[&bob]).await;
+        let channel = channel(&pool, space_id, name, false, &[&alice, &bob]).await;
+        register(&h, &bob, &bob.token, "fcm", &format!("fcm:{name}")).await;
+        let text = if mention {
+            format!("@{name} queued mention")
+        } else {
+            "queued message".into()
+        };
+        let message = send(&h, &alice, &channel, &text, None).await;
+        expand(&h).await;
+        assert_eq!(
+            notified(&pool, &message).await,
+            pairs(&[(
+                name,
+                if mention {
+                    "mention.user"
+                } else {
+                    "channel.message"
+                }
+            )])
+        );
+        match setting {
+            "account-off" | "mentions" => {
+                sqlx::query(
+                    "INSERT INTO public.notification_settings(user_id,default_level) VALUES($1,$2)",
+                )
+                .bind(bob.id)
+                .bind(if setting == "account-off" {
+                    "nothing"
+                } else {
+                    "mentions"
+                })
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            "pause" => {
+                sqlx::query("INSERT INTO public.notification_settings(user_id,paused_until) VALUES($1,now()+interval '1 hour')")
+                    .bind(bob.id).execute(&pool).await.unwrap();
+            }
+            "space-mute" => {
+                sqlx::query("INSERT INTO public.notification_overrides(user_id,space_id,muted_until) VALUES($1,$2,now()+interval '1 hour')")
+                    .bind(bob.id).bind(space_id).execute(&pool).await.unwrap();
+            }
+            "channel-off" | "channel-mute" => {
+                sqlx::query("INSERT INTO public.notification_overrides(user_id,channel_id,level,muted_until) SELECT $1,id,$3,CASE WHEN $3::text IS NULL THEN now()+interval '1 hour' END FROM public.channels WHERE external_id=$2")
+                    .bind(bob.id).bind(&channel).bind(if setting == "channel-off" { Some("nothing") } else { None }).execute(&pool).await.unwrap();
+            }
+            "leave" => {
+                sqlx::query("UPDATE public.channel_joins SET deleted_at=now() WHERE user_id=$1")
+                    .bind(bob.id)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        deliver(&h).await;
+        let requests = h.fcm.take();
+        assert_eq!(
+            requests.len(),
+            usize::from(allowed),
+            "{name}: send-time notification policy"
+        );
+        if allowed {
+            assert_eq!(requests[0].body["message"]["data"]["messageId"], message);
+        }
+    }
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
+async fn queued_dm_push_rechecks_blocks_in_both_directions(pool: PgPool) {
+    let h = harness(&pool).await;
+    let alice = person(&pool, "alice").await;
+    for (name, sender_blocks) in [("bob", false), ("carol", true)] {
+        let recipient = person(&pool, name).await;
+        space(&pool, &alice, &[&recipient]).await;
+        let conversation = direct(&h, &alice, name).await;
+        register(
+            &h,
+            &recipient,
+            &recipient.token,
+            "fcm",
+            &format!("fcm:{name}"),
+        )
+        .await;
+        let message = send(&h, &alice, &conversation, "queued DM", None).await;
+        expand(&h).await;
+        assert_eq!(
+            notified(&pool, &message).await,
+            pairs(&[(name, "direct.message")])
+        );
+        if sender_blocks {
+            h.fcm
+                .reply(503, json!({"error": {"status": "UNAVAILABLE"}}), None);
+            deliver(&h).await;
+            assert_eq!(
+                h.fcm.take().len(),
+                1,
+                "the first authorized attempt reaches FCM"
+            );
+            sqlx::query("UPDATE public.notification_deliveries SET available_at=now() WHERE delivered_at IS NULL AND abandoned_at IS NULL")
+                .execute(&pool).await.unwrap();
+        }
+        let (blocker, blocked) = if sender_blocks {
+            (alice.id, recipient.id)
+        } else {
+            (recipient.id, alice.id)
+        };
+        sqlx::query("INSERT INTO public.user_blocks(blocker_id,blocked_id) VALUES($1,$2)")
+            .bind(blocker)
+            .bind(blocked)
+            .execute(&pool)
+            .await
+            .unwrap();
+        deliver(&h).await;
+        assert!(
+            h.fcm.take().is_empty(),
+            "{name}: either direction of a DM block must suppress queued push"
+        );
+    }
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
+async fn fanout_preserves_per_device_holds_for_mixed_recipients(pool: PgPool) {
+    let h = harness(&pool).await;
+    let alice = person(&pool, "alice").await;
+    let bob = person(&pool, "bob").await;
+    let carol = person(&pool, "carol").await;
+    let dave = person(&pool, "dave").await;
+    let (space_id, _) = space(&pool, &alice, &[&bob, &carol, &dave]).await;
+    let general = channel(
+        &pool,
+        space_id,
+        "general",
+        false,
+        &[&alice, &bob, &carol, &dave],
+    )
+    .await;
+    register(&h, &bob, &bob.token, "fcm", "bob-active").await;
+    let (other_phone, _) = session(&pool, bob.id).await;
+    register(&h, &bob, &other_phone, "fcm", "bob-held").await;
+    register(&h, &carol, &carol.token, "fcm", "carol-always").await;
+    sqlx::query("INSERT INTO public.notification_settings(user_id,mobile) VALUES($1,'always')")
+        .bind(carol.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    active(&h, &bob, &bob.hash).await;
+    let (_, carol_desktop) = session(&pool, carol.id).await;
+    active(&h, &carol, &carol_desktop).await;
+    let message = send(&h, &alice, &general, "mixed devices", None).await;
+    expand(&h).await;
+    assert_eq!(
+        notified(&pool, &message).await.len(),
+        3,
+        "Dave is notified but has no phone"
+    );
+    let deliveries: Vec<(String, bool)> = sqlx::query_as("SELECT dev.address,d.held FROM public.notification_deliveries d JOIN public.notification_devices dev ON dev.id=d.device_id ORDER BY dev.address")
+        .fetch_all(&pool).await.unwrap();
+    assert_eq!(
+        deliveries,
+        vec![
+            ("bob-active".into(), false),
+            ("bob-held".into(), true),
+            ("carol-always".into(), false)
+        ]
+    );
+    clear_presence(&bob).await;
+    clear_presence(&carol).await;
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
 async fn deliveries_reach_providers_revoke_dead_tokens_and_retry_with_backoff(pool: PgPool) {
     let h = harness(&pool).await;
     let alice = person(&pool, "alice").await;

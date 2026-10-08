@@ -1853,6 +1853,7 @@ export default function Spaces({
   const changeChannelMembership = async (action: () => Promise<unknown>, openChannel?: string, left?: Channel) => {
     if (!detail || membershipSubmitting.current) return;
     const spaceId = detail.space.id;
+    const navigationRequest = navigationRevision.current;
     membershipSubmitting.current = true;
     membershipRevision.current++;
     setMembershipPending(true);
@@ -1873,9 +1874,14 @@ export default function Spaces({
       const next = await getSpace(spaceId);
       if (activeSpace.current !== spaceId) return;
       replaceDetail(next);
-      setChannelInvitation(undefined);
-      setLeavingChannel(undefined);
+      if (navigationRequest !== navigationRevision.current) return;
+      setChannelInvitation((current) => (current === channelInvitation ? undefined : current));
+      setLeavingChannel((current) => (current === leavingChannel ? undefined : current));
       if (openChannel) choose(spaceId, openChannel, true);
+    } catch (reason) {
+      // The membership write still completes, but its error belongs only to
+      // the navigation that started it, including an away-and-back round trip.
+      if (navigationRequest === navigationRevision.current) throw reason;
     } finally {
       membershipRevision.current++;
       membershipSubmitting.current = false;

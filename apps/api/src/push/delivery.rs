@@ -1,6 +1,6 @@
 //! Sends due deliveries. Claiming and recording are single short statements;
 //! the provider call holds no database connection (the pool has five).
-use super::{Alert, Conversation, Outcome, Platform, Workers, expansion};
+use super::{Alert, Conversation, Level, Outcome, Platform, Workers, expansion};
 use chrono::{DateTime, TimeDelta, Utc};
 use futures_util::{StreamExt, stream};
 use std::time::Duration;
@@ -31,6 +31,13 @@ struct Claimed {
     device_tag: String,
     session_valid: bool,
     conversation_live: bool,
+    recipient_eligible: bool,
+    account_level: Option<String>,
+    paused: bool,
+    channel_level: Option<String>,
+    channel_muted: bool,
+    space_level: Option<String>,
+    space_muted: bool,
     message_at: DateTime<Utc>,
     read: bool,
     kind: String,
@@ -47,6 +54,29 @@ struct Claimed {
 }
 
 impl Claimed {
+    fn notifies(&self) -> bool {
+        use expansion::{Kind, Preferences};
+        let kind = match self.kind.as_str() {
+            "direct.message" => Kind::DirectMessage,
+            "channel.message" => Kind::ChannelMessage,
+            "mention.user" => Kind::MentionUser,
+            "mention.everyone" => Kind::MentionEveryone,
+            _ => return false,
+        };
+        let level = |value: &Option<String>| value.as_deref().and_then(Level::parse);
+        expansion::notifies(
+            kind,
+            &Preferences {
+                account: level(&self.account_level),
+                paused: self.paused,
+                channel: level(&self.channel_level),
+                channel_muted: self.channel_muted,
+                space: level(&self.space_level),
+                space_muted: self.space_muted,
+            },
+        )
+    }
+
     fn alert(&self) -> Alert {
         let conversation = match (&self.space_id, &self.space_name) {
             (Some(space_id), Some(space_name)) => Conversation::Channel {
@@ -80,7 +110,8 @@ enum Attempt {
 
 pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
     // One statement claims a batch under a lease and reads what sending needs,
-    // including the send-time checks: session, conversation, DM read cursor.
+    // including current access, blocks, preferences and the DM read cursor.
+    // Holds and provider retries must not preserve revoked notification consent.
     let claimed: Vec<Claimed> = sqlx::query_as(
         "WITH due AS (
              SELECT id FROM public.notification_deliveries
@@ -95,8 +126,27 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
          SELECT c.id, c.attempts, c.held, c.device_id, dev.transport, dev.address,
                 encode(substring(dev.account_session_hash FROM 1 FOR 8), 'hex') AS device_tag,
                 (dev.revoked_at IS NULL AND a.revoked_at IS NULL AND a.expires_at > now()
-                 AND a.user_id=dev.user_id) AS session_valid,
+                 AND a.user_id=dev.user_id AND dev.user_id=n.user_id) AS session_valid,
                 (ch.deleted_at IS NULL AND (ch.space_id IS NULL OR s.deleted_at IS NULL)) AS conversation_live,
+                (recipient.deleted_at IS NULL AND author.id IS NOT NULL
+                 AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.deleted_at IS NULL
+                     AND ((b.blocker_id=n.user_id AND b.blocked_id=n.actor_id)
+                         OR (ch.space_id IS NULL AND b.blocker_id=n.actor_id AND b.blocked_id=n.user_id)))
+                 AND CASE WHEN ch.space_id IS NULL THEN
+                     EXISTS(SELECT 1 FROM public.direct_conversations d WHERE d.channel_id=ch.id
+                         AND d.accepted_at IS NOT NULL AND d.low_user_id<>d.high_user_id
+                         AND n.user_id IN(d.low_user_id,d.high_user_id) AND n.actor_id IN(d.low_user_id,d.high_user_id))
+                 ELSE
+                     NOT s.demo
+                     AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=n.user_id AND sm.deleted_at IS NULL)
+                     AND (NOT ch.private OR s.owner_id=n.user_id OR EXISTS(SELECT 1 FROM public.channel_members cm
+                         WHERE cm.channel_id=ch.id AND cm.user_id=n.user_id AND cm.deleted_at IS NULL))
+                     AND (n.kind='mention.user' OR EXISTS(SELECT 1 FROM public.channel_joins cj
+                         WHERE cj.channel_id=ch.id AND cj.user_id=n.user_id AND cj.deleted_at IS NULL))
+                 END) AS recipient_eligible,
+                ns.default_level AS account_level, COALESCE(ns.paused_until > now(), false) AS paused,
+                co.level AS channel_level, COALESCE(co.muted_until > now(), false) AS channel_muted,
+                so.level AS space_level, COALESCE(so.muted_until > now(), false) AS space_muted,
                 m.created_at AS message_at,
                 (ch.space_id IS NULL AND COALESCE(r.seq, 0) >= m.channel_seq) AS read,
                 n.kind, m.external_id AS message_id, m.payload->'content'->>'text' AS text,
@@ -116,6 +166,8 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
          JOIN public.users recipient ON recipient.id=n.user_id
          LEFT JOIN public.users author ON author.id=n.actor_id AND author.deleted_at IS NULL
          LEFT JOIN public.notification_settings ns ON ns.user_id=n.user_id
+         LEFT JOIN public.notification_overrides co ON co.user_id=n.user_id AND co.channel_id=ch.id
+         LEFT JOIN public.notification_overrides so ON so.user_id=n.user_id AND so.space_id=ch.space_id
          LEFT JOIN public.direct_reads r ON r.channel_id=n.channel_id AND r.user_id=n.user_id
          ORDER BY c.id",
     )
@@ -141,6 +193,12 @@ async fn attempt(workers: &Workers, claimed: &Claimed) -> Attempt {
     }
     if !claimed.conversation_live {
         return Attempt::Dropped("conversation deleted");
+    }
+    if !claimed.recipient_eligible {
+        return Attempt::Dropped("recipient ineligible");
+    }
+    if !claimed.notifies() {
+        return Attempt::Dropped("notifications disabled");
     }
     if Utc::now() >= claimed.message_at + LIFETIME {
         return Attempt::Dropped("expired");

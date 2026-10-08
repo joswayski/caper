@@ -76,6 +76,8 @@ export default function MessageEditor({
           value={draft}
           disabled={saving}
           rows={5}
+          aria-describedby="chat-edit-count"
+          aria-invalid={count > 4_000 || undefined}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !event.nativeEvent.isComposing) {
@@ -84,7 +86,9 @@ export default function MessageEditor({
             }
           }}
         />
-        <small className={count > 4_000 ? "chat-action-error" : ""}>{count.toLocaleString()} / 4,000</small>
+        <small id="chat-edit-count" className={count > 4_000 ? "chat-action-error" : ""}>
+          {count.toLocaleString()} / 4,000
+        </small>
         {error && (
           <div role="alert" className="chat-action-error">
             <p>{error}</p>

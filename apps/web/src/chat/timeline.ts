@@ -170,9 +170,10 @@ export class ChatTimeline {
       const current = collection.get(message.id);
       if (!current) continue;
       const updated = mergeEditedContent(current, message);
-      if (updated === current) continue;
-      collection.set(message.id, updated);
-      if (collection === this.byId) this.sortedMessages = undefined;
+      if (updated !== current) {
+        collection.set(message.id, updated);
+        if (collection === this.byId) this.sortedMessages = undefined;
+      }
     }
   }
 

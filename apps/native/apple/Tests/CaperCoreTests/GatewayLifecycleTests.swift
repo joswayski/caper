@@ -130,6 +130,37 @@ final class GatewayLifecycleTests: XCTestCase {
         await subject.stop()
     }
 
+    func testForwardUpdatesAdvanceReplayAndDeduplicateDuringHandoff() async {
+        let factory = SocketFactory(); var delivered: [String] = []
+        let subject = gateway(factory)
+        _ = await subject.subscribeChat(channelID: "chat", after: "4") { event in
+            if let seq = event["seq"] as? String { delivered.append(seq) }
+        }
+        await eventually { factory.socket(0) != nil }; let old = factory.socket(0)!
+        old.push(["type": "hello"])
+        let id = await subscribeID(old, kind: "chat")
+        old.push(["type": "subscribed", "id": id])
+        old.push(["type": "event", "id": id, "event": ["type": "ready", "cursor": "4"]])
+        old.push(["type": "migrating"])
+        await eventually { factory.socket(1) != nil }; let candidate = factory.socket(1)!
+        candidate.push(["type": "hello"])
+        _ = await subscribeID(candidate, kind: "chat")
+        let forward: [String: Any] = ["type": "message.forward", "seq": "5",
+                                      "message": ["seq": "1", "forwardSeq": "5"]]
+        old.push(["type": "event", "id": id, "event": forward])
+        await eventually { delivered == ["5"] }
+        candidate.push(["type": "event", "id": id, "event": forward])
+        candidate.push(["type": "event", "id": id, "event": ["type": "ready", "cursor": "5"]])
+        candidate.push(["type": "subscribed", "id": id])
+        await eventually("forward checkpoint did not promote candidate") { old.cancelled }
+        XCTAssertFalse(candidate.cancelled)
+        XCTAssertEqual(delivered, ["5"], "overlapping forward events must not be redelivered")
+        candidate.push(["type": "event", "id": id, "event": ["type": "message.created", "seq": "6"]])
+        await eventually { delivered == ["5", "6"] }
+        XCTAssertFalse(candidate.cancelled, "a message after a forward must not be treated as a gap")
+        await subject.stop()
+    }
+
     func testChatCandidateNeedsReadyCheckpointEvenAtZero() async {
         let factory = SocketFactory(); var delivered = 0; let subject = gateway(factory)
         _ = await subject.subscribeChat(channelID: "chat", after: "0") { if $0["type"] as? String == "message.created" { delivered += 1 } }
