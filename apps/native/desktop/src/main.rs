@@ -648,14 +648,37 @@ impl CaperApp {
             Some("login") => app.dialog = Some(Dialog::SignIn),
             Some(name) if name.starts_with("parity") => {
                 app.install_fixture();
-                if name == "parity-pins" {
-                    let mut message = app.timeline.messages().next().unwrap().clone();
-                    message.pin = Some(model::Pin {
-                        author: message.author.clone(),
-                        created_at: message.created_at.clone(),
+                if name.starts_with("parity-pins") {
+                    let author = app.timeline.messages().next().unwrap().author.clone();
+                    app.session = Some(ChatSession {
+                        token: "fixture-token".into(),
+                        author: author.clone(),
                     });
-                    message.pin_seq = Some(app.timeline.cursor());
-                    app.timeline.reset_pins(vec![message]).unwrap();
+                    let count = match name {
+                        "parity-pins-empty" => 0,
+                        "parity-pins-long" => 3,
+                        _ => 1,
+                    };
+                    let pins = app
+                        .timeline
+                        .messages()
+                        .take(count)
+                        .cloned()
+                        .enumerate()
+                        .map(|(index, mut message)| {
+                            message.pin = Some(model::Pin {
+                                author: author.clone(),
+                                created_at: message.created_at.clone(),
+                            });
+                            message.pin_seq = Some((index + 5).to_string());
+                            if name == "parity-pins-long" && index == count - 1 {
+                                message.content.text = "TEST FIXTURE — local sample data, not a live conversation.\n\n".into();
+                                message.content.text.push_str(&"A longer pinned message wraps inside the card without moving the close control or hiding the next message. ".repeat(5));
+                            }
+                            message
+                        })
+                        .collect();
+                    app.timeline.reset_pins(pins).unwrap();
                     app.showing_pins = true;
                 } else if name.starts_with("parity-settings") {
                     app.dialog = Some(Dialog::Settings);
@@ -7904,7 +7927,7 @@ impl CaperApp {
                             ui.label(
                                 RichText::new(format!("Pinned by {}", pin.author.name))
                                     .size(11.0)
-                                    .color(Color32::from_rgb(228, 199, 106)),
+                                    .color(MUTED),
                             );
                         });
                 }
@@ -8186,67 +8209,70 @@ impl CaperApp {
                 bottom: 5,
             })
             .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    for reaction in &reactions {
-                        let owned = author
-                            .as_ref()
-                            .is_some_and(|id| reaction.author_ids.iter().any(|entry| entry == id));
-                        let Some(entry) = emoji::find(&reaction.emoji) else {
-                            continue;
-                        };
-                        let image = self.reaction_textures.image(ui, entry, 18.0);
-                        let label = format!(
-                            "{}, {} {}{}",
-                            entry.name,
-                            reaction.author_ids.len(),
-                            if reaction.author_ids.len() == 1 {
-                                "reaction"
-                            } else {
-                                "reactions"
-                            },
-                            if owned { ", including you" } else { "" }
-                        );
-                        let response = ui.add_enabled(
-                            can_react,
-                            egui::Button::image_and_text(
-                                image,
-                                RichText::new(reaction.author_ids.len().to_string()).size(11.0),
-                            )
-                            .fill(if owned {
-                                Color32::from_rgb(57, 35, 30)
-                            } else {
-                                RAISED
-                            })
-                            .stroke(Stroke::new(
-                                1.0,
-                                if owned { TERRACOTTA_BRIGHT } else { BORDER },
-                            ))
-                            .corner_radius(8),
-                        );
-                        response.widget_info(|| {
-                            egui::WidgetInfo::labeled(
-                                egui::WidgetType::Button,
+                if !in_pins || !reactions.is_empty() {
+                    ui.horizontal_wrapped(|ui| {
+                        for reaction in &reactions {
+                            let owned = author.as_ref().is_some_and(|id| {
+                                reaction.author_ids.iter().any(|entry| entry == id)
+                            });
+                            let Some(entry) = emoji::find(&reaction.emoji) else {
+                                continue;
+                            };
+                            let image = self.reaction_textures.image(ui, entry, 18.0);
+                            let label = format!(
+                                "{}, {} {}{}",
+                                entry.name,
+                                reaction.author_ids.len(),
+                                if reaction.author_ids.len() == 1 {
+                                    "reaction"
+                                } else {
+                                    "reactions"
+                                },
+                                if owned { ", including you" } else { "" }
+                            );
+                            let response = ui.add_enabled(
                                 can_react,
-                                label.clone(),
-                            )
-                        });
-                        self.reactor_tooltip(&response, message, reaction, entry);
-                        if response.clicked() {
-                            self.set_reaction(&message.id, &reaction.emoji, !owned);
+                                egui::Button::image_and_text(
+                                    image,
+                                    RichText::new(reaction.author_ids.len().to_string()).size(11.0),
+                                )
+                                .fill(if owned {
+                                    Color32::from_rgb(57, 35, 30)
+                                } else {
+                                    RAISED
+                                })
+                                .stroke(Stroke::new(
+                                    1.0,
+                                    if owned { TERRACOTTA_BRIGHT } else { BORDER },
+                                ))
+                                .corner_radius(8),
+                            );
+                            response.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Button,
+                                    can_react,
+                                    label.clone(),
+                                )
+                            });
+                            self.reactor_tooltip(&response, message, reaction, entry);
+                            if response.clicked() {
+                                self.set_reaction(&message.id, &reaction.emoji, !owned);
+                            }
                         }
-                    }
-                    if !in_thread
-                        && self.selected_request().is_none()
-                        && ui.small_button("Reply in thread").clicked()
-                    {
-                        self.open_thread(
-                            message
-                                .thread_root_id
-                                .clone()
-                                .unwrap_or_else(|| message.id.clone()),
-                        );
-                    }
-                });
+                        if !in_thread
+                            && !in_pins
+                            && self.selected_request().is_none()
+                            && ui.small_button("Reply in thread").clicked()
+                        {
+                            self.open_thread(
+                                message
+                                    .thread_root_id
+                                    .clone()
+                                    .unwrap_or_else(|| message.id.clone()),
+                            );
+                        }
+                    });
+                }
                 if let Some((active, error)) = self.pin_errors.get(&message.id).cloned() {
                     ui.horizontal(|ui| {
                         ui.colored_label(ERROR, error);
@@ -8332,46 +8358,97 @@ impl CaperApp {
         }
         let pins: Vec<_> = self.timeline.pinned_messages().cloned().collect();
         let mut close = false;
-        let modal = egui::Modal::new(egui::Id::new("pinned-messages")).show(context, |ui| {
-            ui.set_width(560.0_f32.min(context.content_rect().width() - 48.0));
-            ui.horizontal(|ui| {
-                ui.heading("Pinned messages");
-                if ui.button("Close").clicked() {
-                    close = true;
-                }
-            });
-            if let Some(error) = &self.error {
-                ui.colored_label(ERROR, error);
-            }
-            egui::ScrollArea::vertical()
-                .max_height(context.content_rect().height() * 0.7)
-                .min_scrolled_height(280.0_f32.min(context.content_rect().height() * 0.65))
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    if pins.is_empty() {
-                        ui.label("No pinned messages.");
-                    }
-                    for message in &pins {
-                        ui.push_id(&message.id, |ui| {
-                            self.message_in(ui, message, false, true);
-                            if ui
-                                .add_enabled(
-                                    !self.context_loading,
-                                    egui::Button::new("Go to message"),
-                                )
-                                .clicked()
-                            {
-                                self.load_context(
-                                    message.thread_root_id.clone(),
-                                    message.id.clone(),
-                                    false,
-                                );
+        let modal = egui::Modal::new(egui::Id::new("pinned-messages"))
+            .frame(
+                egui::Frame::popup(&context.style())
+                    .fill(SURFACE)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .corner_radius(8)
+                    .inner_margin(0),
+            )
+            .show(context, |ui| {
+                ui.set_width(560.0_f32.min(context.content_rect().width() - 48.0));
+                ui.spacing_mut().item_spacing.y = 0.0;
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(22, 18))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(bold("Pins").size(19.0));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    close = drawn_icon_button(ui, NavIcon::Close, "Close pins")
+                                        .clicked();
+                                },
+                            );
+                        });
+                    });
+                ui.separator();
+                egui::Frame::new().inner_margin(16).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 12.0;
+                    let list_height = (context.content_rect().height() - 128.0).max(1.0);
+                    egui::ScrollArea::vertical()
+                        .id_salt("pinned-messages-list")
+                        .max_height(list_height)
+                        // Reserve the bounded viewport before the auto-sized modal
+                        // settles; auto_shrink still fits short lists to their content.
+                        .min_scrolled_height(list_height)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            if let Some(error) = &self.error {
+                                ui.colored_label(ERROR, error);
+                            }
+                            if pins.is_empty() {
+                                ui.add_space(16.0);
+                                ui.vertical_centered(|ui| {
+                                    ui.label(bold("No pinned messages.").size(14.0));
+                                    ui.label(
+                                        RichText::new("Messages you pin will appear here.")
+                                            .size(12.0)
+                                            .color(MUTED),
+                                    );
+                                });
+                                ui.add_space(16.0);
+                            }
+                            for message in &pins {
+                                ui.push_id(&message.id, |ui| {
+                                    egui::Frame::new()
+                                        .fill(BLACKOUT)
+                                        .stroke(Stroke::new(1.0, BORDER))
+                                        .corner_radius(8)
+                                        .inner_margin(egui::Margin::symmetric(0, 8))
+                                        .show(ui, |ui| {
+                                            ui.spacing_mut().item_spacing.y = 0.0;
+                                            self.message_in(ui, message, false, true);
+                                            egui::Frame::new()
+                                                .inner_margin(egui::Margin {
+                                                    left: 62,
+                                                    right: 18,
+                                                    top: 6,
+                                                    bottom: 12,
+                                                })
+                                                .show(ui, |ui| {
+                                                    if secondary_button(
+                                                        ui,
+                                                        "Go to message",
+                                                        !self.context_loading,
+                                                    )
+                                                    .clicked()
+                                                    {
+                                                        self.load_context(
+                                                            message.thread_root_id.clone(),
+                                                            message.id.clone(),
+                                                            false,
+                                                        );
+                                                    }
+                                                });
+                                        });
+                                });
                             }
                         });
-                    }
                 });
-            self.emoji_picker(context);
-        });
+                self.emoji_picker(context);
+            });
         if close || modal.should_close() {
             self.showing_pins = false;
         }
@@ -11787,6 +11864,160 @@ mod tests {
         assert!(!pins.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Unpin")), "unpin belongs only in the actions menu");
         click(&mut app, &context, egui::pos2(20.0, 20.0));
         assert!(!app.showing_pins, "clicking outside closes Pins");
+    }
+
+    #[test]
+    fn pins_fixtures_preserve_each_pin_and_include_the_empty_state() {
+        for (fixture, expected) in [
+            ("parity-pins", 1),
+            ("parity-pins-empty", 0),
+            ("parity-pins-long", 3),
+        ] {
+            let app = CaperApp::new(
+                &egui::Context::default(),
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some(fixture),
+            );
+            assert_eq!(
+                app.timeline.pinned_messages().count(),
+                expected,
+                "{fixture}"
+            );
+            assert!(app.showing_pins);
+        }
+    }
+
+    #[test]
+    fn pins_cards_align_navigation_and_keep_close_visible_in_small_windows() {
+        for size in [egui::vec2(840.0, 620.0), egui::vec2(390.0, 520.0)] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-pins"),
+            );
+            let frame = |app: &mut CaperApp, screen_size, events| {
+                context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen_size)),
+                        events,
+                        ..Default::default()
+                    },
+                    |context| app.page(context),
+                )
+            };
+            for _ in 0..3 {
+                frame(&mut app, egui::vec2(1440.0, 900.0), vec![]);
+            }
+            for _ in 0..3 {
+                frame(&mut app, size, vec![]);
+            }
+            context.enable_accesskit();
+            let output = frame(&mut app, size, vec![]);
+            let nodes = &output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes;
+            let bounds = |label| {
+                nodes
+                    .iter()
+                    .find_map(|(_, node)| {
+                        (node.label() == Some(label))
+                            .then(|| node.bounds())
+                            .flatten()
+                    })
+                    .unwrap_or_else(|| panic!("missing {label} at {size:?}"))
+            };
+            let close = bounds("Close pins");
+            let author = output
+                .shapes
+                .iter()
+                .rev()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == "Fixture Owner" => {
+                        Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            let go = bounds("Go to message");
+            assert!(
+                (go.x0 - f64::from(author.left())).abs() < 1.0,
+                "navigation aligns with message text"
+            );
+            assert!(
+                go.y0 > f64::from(author.bottom()),
+                "navigation follows the message"
+            );
+            assert!(
+                close.x0 > f64::from(author.right()) && close.y1 < f64::from(author.top()),
+                "close belongs in the top-right header"
+            );
+            for button in [close, go] {
+                assert!(button.x0 >= 0.0 && button.x1 <= f64::from(size.x));
+                assert!(button.y0 >= 0.0 && button.y1 <= f64::from(size.y));
+            }
+            let navigation_rect = egui::Rect::from_min_max(
+                egui::pos2(go.x0 as f32, go.y0 as f32),
+                egui::pos2(go.x1 as f32, go.y1 as f32),
+            );
+            let navigation_clip = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == "Go to message" => {
+                        Some(shape.clip_rect)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            assert!(
+                navigation_clip.contains_rect(navigation_rect),
+                "navigation is clipped at {size:?}: {navigation_rect:?} by {navigation_clip:?}"
+            );
+            assert!(
+                !output.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Text(text) if text.galley.job.text == "Reply in thread"
+                        && shape.clip_rect == navigation_clip
+                )),
+                "Pins must not show a redundant static reply button"
+            );
+            let navigation_center = egui::pos2(
+                ((go.x0 + go.x1) / 2.0) as f32,
+                ((go.y0 + go.y1) / 2.0) as f32,
+            );
+            assert!(
+                output.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Rect(rect) if rect.stroke.width == 1.0
+                        && f64::from(rect.rect.top()) > close.y1
+                        && rect.rect.contains(author.center())
+                        && rect.rect.contains(navigation_center)
+                        && shape.clip_rect.contains_rect(rect.rect)
+                )),
+                "each pin has a fully visible bordered card"
+            );
+            for pressed in [true, false] {
+                frame(
+                    &mut app,
+                    size,
+                    vec![
+                        egui::Event::PointerMoved(egui::pos2(
+                            (close.x0 + 14.0) as f32,
+                            (close.y0 + 14.0) as f32,
+                        )),
+                        egui::Event::PointerButton {
+                            pos: egui::pos2((close.x0 + 14.0) as f32, (close.y0 + 14.0) as f32),
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            }
+            assert!(!app.showing_pins, "header close works at {size:?}");
+        }
     }
 
     #[test]
