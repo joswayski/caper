@@ -50,9 +50,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.Role
@@ -65,7 +69,9 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -77,6 +83,7 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -1139,38 +1146,46 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             val catalog = remember { EmojiArtwork.catalog(context) }
             var dismissedAt by remember(channel.id) { mutableStateOf<TextFieldValue?>(null) }
             var composerFocused by remember(channel.id) { mutableStateOf(false) }
+            // `:` emoji and `@` mention tokens never overlap; both share one popup.
             val token = emojiToken(draft)
-            val suggestions = if (composerFocused && token != null && draft != dismissedAt) emojiSuggestions(catalog, token.query) else emptyList()
+            val mention = if (token == null) mentionToken(draft) else null
+            val open = composerFocused && draft != dismissedAt
+            val emojiRows = if (open && token != null) emojiSuggestions(catalog, token.query) else emptyList()
+            val mentionRows = if (open && mention != null) mentionSuggestions(mentionSource(state), mention.query) else emptyList()
+            val suggestionCount = emojiRows.size + mentionRows.size
             var selectedSuggestion by remember(channel.id) { mutableIntStateOf(0) }
-            LaunchedEffect(token) { selectedSuggestion = 0 }
+            LaunchedEffect(token, mention) { selectedSuggestion = 0 }
             val suggestionList = rememberLazyListState()
-            LaunchedEffect(selectedSuggestion, token) {
-                if (suggestions.isNotEmpty()) suggestionList.animateScrollToItem(selectedSuggestion.coerceAtMost(suggestions.lastIndex))
+            LaunchedEffect(selectedSuggestion, token, mention) {
+                if (suggestionCount > 0) suggestionList.animateScrollToItem(selectedSuggestion.coerceAtMost(suggestionCount - 1))
             }
-            fun chooseEmoji(index: Int): Boolean {
-                val currentToken = emojiToken(draft) ?: return false
-                val entry = suggestions.getOrNull(index) ?: return false
-                insertEmoji(draft, currentToken, entry.emoji)?.let { draft = it; dismissedAt = null; viewModel.reportActivity(); viewModel.setTyping(it.text.isNotBlank()) }
+            fun accept(next: TextFieldValue?) {
+                next?.let { draft = it; dismissedAt = null; viewModel.reportActivity(); viewModel.setTyping(it.text.isNotBlank()) }
+            }
+            fun chooseSuggestion(index: Int): Boolean {
+                emojiToken(draft)?.let { current ->
+                    val entry = emojiRows.getOrNull(index) ?: return false
+                    accept(insertEmoji(draft, current, entry.emoji))
+                    return true
+                }
+                val current = mentionToken(draft) ?: return false
+                val candidate = mentionRows.getOrNull(index) ?: return false
+                accept(insertMention(draft, current, candidate.username))
                 return true
             }
-            if (suggestions.isNotEmpty()) Surface(
+            if (suggestionCount > 0) Surface(
                 Modifier.widthIn(max = 260.dp).fillMaxWidth().padding(bottom = 6.dp), color = SurfaceRaised,
                 shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border),
             ) {
                 LazyColumn(Modifier.heightIn(max = 192.dp).padding(vertical = 4.dp), state = suggestionList) {
-                    itemsIndexed(suggestions, key = { _, entry -> entry.id }) { index, entry ->
-                        Row(
-                            Modifier.fillMaxWidth().heightIn(min = 48.dp)
-                                .background(if (index == selectedSuggestion) Terracotta.copy(alpha = 0.18f) else Color.Transparent)
-                                .clickable { selectedSuggestion = index; chooseEmoji(index) }
-                                .semantics { contentDescription = "Insert emoji ${emojiShortcodeLabel(entry.name)}" }
-                                .padding(horizontal = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
+                    itemsIndexed(emojiRows, key = { _, entry -> entry.id }) { index, entry ->
+                        SuggestionRow(index == selectedSuggestion, "Insert emoji ${emojiShortcodeLabel(entry.name)}", { selectedSuggestion = index; chooseSuggestion(index) }) {
                             EmojiImage(entry.emoji, null, Modifier.size(28.dp))
                             Text(emojiShortcodeLabel(entry.name), color = if (index == selectedSuggestion) Text else TextMuted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
+                    }
+                    itemsIndexed(mentionRows, key = { _, candidate -> "@${candidate.username}" }) { index, candidate ->
+                        MentionSuggestionRow(candidate, index == selectedSuggestion) { selectedSuggestion = index; chooseSuggestion(index) }
                     }
                 }
             }
@@ -1186,10 +1201,10 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         draft = limited; dismissedAt = null; viewModel.reportActivity(); viewModel.setTyping(limited.text.isNotBlank())
                     },
                     modifier = Modifier.weight(1f).onFocusChanged { composerFocused = it.isFocused }.onPreviewKeyEvent { event ->
-                        if (event.type != KeyEventType.KeyDown || suggestions.isEmpty()) false else when (event.key) {
-                            Key.DirectionDown -> { selectedSuggestion = (selectedSuggestion + 1) % suggestions.size; true }
-                            Key.DirectionUp -> { selectedSuggestion = (selectedSuggestion - 1 + suggestions.size) % suggestions.size; true }
-                            Key.Enter, Key.Tab -> if (event.isShiftPressed) false else chooseEmoji(selectedSuggestion.coerceAtMost(suggestions.lastIndex))
+                        if (event.type != KeyEventType.KeyDown || suggestionCount == 0) false else when (event.key) {
+                            Key.DirectionDown -> { selectedSuggestion = (selectedSuggestion + 1) % suggestionCount; true }
+                            Key.DirectionUp -> { selectedSuggestion = (selectedSuggestion - 1 + suggestionCount) % suggestionCount; true }
+                            Key.Enter, Key.Tab -> if (event.isShiftPressed) false else chooseSuggestion(selectedSuggestion.coerceAtMost(suggestionCount - 1))
                             Key.Escape -> { dismissedAt = draft; true }
                             else -> false
                         }
@@ -1197,7 +1212,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     enabled = !state.messagesLoading && state.messagesError == null,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(onSend = {
-                        if (suggestions.isNotEmpty()) { chooseEmoji(selectedSuggestion.coerceAtMost(suggestions.lastIndex)); return@KeyboardActions }
+                        if (suggestionCount > 0) { chooseSuggestion(selectedSuggestion.coerceAtMost(suggestionCount - 1)); return@KeyboardActions }
                         val pending = state.pendingMessage
                         // Web: Enter retries an unconfirmed send; a rejected one waits for Edit or Dismiss.
                         if (state.chatAuthorId != null) {
@@ -1219,6 +1234,33 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             }
             val count = draft.text.codePointCount(0, draft.text.length)
             if (count >= 3000) Text("${"%,d".format(java.util.Locale.US, count)} / 4,000", Modifier.align(Alignment.End), color = counterTone(count), fontSize = 10.sp)
+        }
+    }
+}
+
+/** One flat row of the composer's `:` emoji / `@` mention popup. */
+@Composable private fun SuggestionRow(selected: Boolean, description: String, choose: () -> Unit, content: @Composable RowScope.() -> Unit) = Row(
+    Modifier.fillMaxWidth().heightIn(min = 48.dp)
+        .background(if (selected) Terracotta.copy(alpha = 0.18f) else Color.Transparent)
+        .clickable(onClick = choose)
+        .semantics { contentDescription = description }
+        .padding(horizontal = 12.dp),
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(12.dp),
+    content = content,
+)
+
+/** A person (avatar, display name, muted `@username`) or a special (`@everyone`, muted description). */
+@Composable private fun MentionSuggestionRow(candidate: MentionCandidate, selected: Boolean, choose: () -> Unit) {
+    val primary = if (candidate.special) "@${candidate.username}" else candidate.label
+    val secondary = if (candidate.special) candidate.label else "@${candidate.username}"
+    SuggestionRow(selected, "Mention $primary, $secondary", choose) {
+        if (candidate.special) Box(Modifier.size(28.dp), contentAlignment = Alignment.Center) {
+            Icon(painterResource(R.drawable.lucide_users), null, Modifier.size(18.dp), tint = TextMuted)
+        } else Avatar(candidate.label, 28.dp, avatarId = candidate.avatarId)
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(primary, Modifier.weight(1f, fill = false), color = Text, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(secondary, Modifier.weight(1f, fill = false), color = TextMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -1261,6 +1303,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     var historyTarget by remember { mutableStateOf<ChatMessage?>(null) }
     // Message ID and the pressed chip's emoji.
     var reactorsTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
+    // The tapped person's `user` mention entry; another pill replaces it.
+    var mentionTarget by remember { mutableStateOf<MessageMention?>(null) }
     val messages = if (inThread) state.messages else state.messages.filter { (it.threadRootId == null || it.broadcast) && it.id !in state.threadOnlyRows }
     // Runs of blocked authors' messages collapse; Show reveals one run, in memory only.
     var revealedRuns by remember { mutableStateOf(emptySet<String>()) }
@@ -1272,6 +1316,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         actionTarget = null
         pickerTarget = null
         reactorsTarget = null
+        mentionTarget = null
         forwardTarget = null
         conversationTarget = null
         editTarget = null
@@ -1319,6 +1364,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
               ReactionMessageRow(
                 message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
                 openReactors = { target, emoji -> reactorsTarget = target.id to emoji },
+                openMention = { mentionTarget = it },
                 openActions = { actionTarget = it },
                 openConversation = { conversationTarget = it },
                 openHistory = { historyTarget = it },
@@ -1391,6 +1437,12 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             ReactorsSheet(presented, emoji, state.chatAuthorId ?: state.account?.id, viewModel::reactors) { reactorsTarget = null }
         }
     }
+    mentionTarget?.let { target ->
+        val card = mentionCard(target.id, target.username.orEmpty(), state)
+        key(target) {
+            MentionCardSheet(card, { done, failed -> viewModel.messageMentioned(card.id, card.username, done, failed) }) { mentionTarget = null }
+        }
+    }
     pickerTarget?.let { target ->
         val canReact = state.canParticipate && (state.chatAuthorId ?: state.account?.id) != null
         if (canReact) EmojiPicker(onDismiss = { pickerTarget = null }) { emoji ->
@@ -1456,12 +1508,18 @@ private fun timelineRows(entries: List<TimelineEntry>): List<TimelineRow> = buil
     openConversation: (ChatMessage) -> Unit = {},
     openHistory: (ChatMessage) -> Unit = {},
     onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> },
+    openMention: (MessageMention) -> Unit = {},
     openActions: (ChatMessage) -> Unit,
 ) {
     val own = state.chatAuthorId ?: state.account?.id
     val canReact = state.canParticipate && own != null
     val saves = state.reactionSaves.filterKeys { it.startsWith("${message.id}:") }.values
-    Column(Modifier.background(if (message.pin != null) PinGoldWash else Color.Transparent)) {
+    // A message that mentions you: terracotta wash with a 2dp leading edge (over a pinned message's gold wash).
+    val mentioned = mentionsMe(message.content.mentions, message.author.id, state.account?.id ?: state.chatAuthorId)
+    Column(Modifier.background(if (message.pin != null) PinGoldWash else Color.Transparent).then(if (!mentioned) Modifier else Modifier.background(Terracotta.copy(alpha = 0.08f)).drawBehind {
+        val edge = 2.dp.toPx()
+        drawRect(Terracotta, topLeft = Offset(if (layoutDirection == LayoutDirection.Rtl) size.width - edge else 0f, 0f), size = Size(edge, size.height))
+    })) {
         message.pin?.let { pin ->
             Text("Pinned by ${pin.author.name}", Modifier.padding(start = 62.dp, end = 18.dp, top = 6.dp), color = PinGold, fontSize = 10.sp, fontWeight = FontWeight.Bold)
         }
@@ -1469,7 +1527,7 @@ private fun timelineRows(entries: List<TimelineEntry>): List<TimelineRow> = buil
             onClick = {},
             onLongClick = { openActions(message) },
             onLongClickLabel = "Message actions for ${message.author.name}",
-        )) { MessageRow(message, state, onAttachmentFailed) { if (message.forward == null) openHistory(message) } }
+        )) { MessageRow(message, state, onAttachmentFailed, openMention, { mentionCard(it.id, it.username.orEmpty(), state).title }) { if (message.forward == null) openHistory(message) } }
         ForwardCard(message, state, onAttachmentFailed) { openConversation(message) }
         FlowRow(Modifier.padding(start = 62.dp, end = 18.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             message.reactions.forEach { reaction ->
@@ -1645,20 +1703,24 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
         }
     }
 }
-/** A delivered message, with its files on fresh URLs and their live processing state. */
+/** A delivered message: its files on fresh URLs with their live processing state, and its resolved mentions. */
 @Composable private fun MessageRow(
-    message: ChatMessage, state: AppUiState, onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> }, openHistory: () -> Unit = {},
+    message: ChatMessage, state: AppUiState, onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> },
+    openMention: ((MessageMention) -> Unit)? = null, mentionLabel: (MessageMention) -> String = { "@${it.username}" }, openHistory: () -> Unit = {},
 ) = MessageRow(
     message.author.name, message.author.isGuest, message.createdAt, message.content.text, false, message.author.avatarId,
     message.content.attachments.map { it.withFreshUrls(state.freshAttachmentUrls[it.id]) }, onAttachmentFailed,
     state.attachmentProgress, state.localAttachmentPreviews,
     edited = message.forward == null && message.revision > 1, openHistory = openHistory,
+    mentions = highlightedMentions(message.content.text, message.content.mentions), entries = message.content.mentions,
+    openMention = openMention, mentionLabel = mentionLabel,
 )
 @Composable private fun MessageRow(
     author: String, guest: Boolean, createdAt: String, text: String, pending: Boolean, avatarId: Int? = null,
     attachments: List<ChatAttachment> = emptyList(), onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> },
     attachmentProgress: Map<String, Int> = emptyMap(), localAttachmentPreviews: Map<String, String> = emptyMap(),
-    edited: Boolean = false, openHistory: () -> Unit = {},
+    edited: Boolean = false, openHistory: () -> Unit = {}, mentions: List<MentionSpan> = emptyList(), entries: List<MessageMention> = emptyList(),
+    openMention: ((MessageMention) -> Unit)? = null, mentionLabel: (MessageMention) -> String = { "@${it.username}" },
 ) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp)) {
         Avatar(author, 34.dp, avatarId = avatarId)
@@ -1671,7 +1733,23 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                 if (edited) { Spacer(Modifier.width(7.dp)); Text("(edited)", Modifier.clickable(onClickLabel = "View edit history", onClick = openHistory), color = TextMuted, fontSize = 10.sp) }
             }
             // A file-only message has empty text: show just its files.
-            if (text.isNotEmpty()) Text(text, color = if (pending) TextMuted else MessageText, fontSize = 14.sp, lineHeight = 21.sp)
+            if (text.isNotEmpty()) {
+                if (mentions.isEmpty()) Text(text, color = if (pending) TextMuted else MessageText, fontSize = 14.sp, lineHeight = 21.sp)
+                else {
+                    // Person pills are links: their tap is consumed before the row's long-press handler sees it.
+                    val open by rememberUpdatedState(openMention)
+                    val linked = if (openMention == null) null else entries
+                    val annotated = remember(text, mentions, linked) { mentionText(text, mentions, linked) { user -> open?.invoke(user) } }
+                    val people = linked?.let { mentions.mapNotNull { span -> mentionedUser(span, it) }.distinct() }.orEmpty()
+                    Text(
+                        annotated,
+                        if (people.isEmpty()) Modifier else Modifier.semantics {
+                            customActions = people.map { user -> CustomAccessibilityAction("Open profile for ${mentionLabel(user)}") { open?.invoke(user); true } }
+                        },
+                        color = if (pending) TextMuted else MessageText, fontSize = 14.sp, lineHeight = 21.sp,
+                    )
+                }
+            }
             MessageAttachments(attachments, pending, onAttachmentFailed, attachmentProgress, localAttachmentPreviews)
         }
     }
@@ -1698,6 +1776,24 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
         }
     }
 }
+
+/**
+ * Resolved mentions as pills: text #F3F4F5, one weight step bolder, terracotta at 24%.
+ * `SpanStyle` backgrounds cannot round corners or pad, so Android pills are square-edged.
+ */
+internal fun mentionText(text: String, mentions: List<MentionSpan>, entries: List<MessageMention>? = null, open: (MessageMention) -> Unit = {}) = buildAnnotatedString {
+    append(text)
+    mentions.forEach { span ->
+        // With [entries], a person's pill is a link (focusable, Enter-activatable; 32% while hovered, focused or pressed).
+        val user = entries?.let { mentionedUser(span, it) }
+        if (user == null) addStyle(MentionPill, span.start, span.end)
+        else addLink(LinkAnnotation.Clickable("mention:${span.name}", MentionPillLink) { open(user) }, span.start, span.end)
+    }
+}
+
+private val MentionPill = SpanStyle(color = Text, fontWeight = FontWeight.Medium, background = Terracotta.copy(alpha = 0.24f))
+private val MentionPillActive = SpanStyle(background = Terracotta.copy(alpha = 0.32f))
+private val MentionPillLink = TextLinkStyles(MentionPill, focusedStyle = MentionPillActive, hoveredStyle = MentionPillActive, pressedStyle = MentionPillActive)
 
 @Composable private fun TypingLine(authors: List<ChatAuthor>) {
     val label = when { authors.size > 2 -> "Several people are typing…"; authors.size == 2 -> "${authors[0].name} and ${authors[1].name} are typing…"; authors.size == 1 -> "${authors[0].name} is typing…"; else -> "" }

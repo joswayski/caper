@@ -709,7 +709,7 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
 
     pool.close().await;
     admin
-        .execute(format!("DROP DATABASE {database}").as_str())
+        .execute(format!("DROP DATABASE {database} WITH (FORCE)").as_str())
         .await
         .unwrap();
 }

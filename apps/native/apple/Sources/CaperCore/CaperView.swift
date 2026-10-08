@@ -1521,6 +1521,10 @@ private struct ChatView: View {
     @State private var showingEmojiPicker = false
     /// Who reacted: opened by holding a chip (iOS) or its VoiceOver action.
     @State private var reactorsTarget: ReactorsTarget?
+    /// The person card for a clicked `@mention` pill: a popover on macOS, a
+    /// sheet on iPhone. Opening another pill replaces it.
+    @State private var mentionCard: MentionCardTarget?
+    @State private var mentionPointer = MentionPointer()
 
     /// The signed-in person, also while previewing without a chat session.
     private var viewerID: String? { chat.currentAuthor?.id ?? model.account?.id }
@@ -1531,7 +1535,7 @@ private struct ChatView: View {
             reactorsTarget = ReactorsTarget(messageID: messageID, emoji: emoji)
         }
     }
-    @StateObject private var emojiComposer = EmojiComposerController()
+    @StateObject private var composerAutocomplete = ComposerAutocompleteController()
     @State private var showingPins = false
     /// Block confirmation, from the DM header, the request bar or message actions.
     @State private var blockTarget: BlockTarget?
@@ -1546,7 +1550,8 @@ private struct ChatView: View {
         BlockedMessages.entries(chat.channelMessages, blocked: chat.blockedAuthorIDs, viewerID: viewerID, revealed: revealedBlocked)
     }
     private func channelRow(_ message: ChatMessage) -> some View {
-        MessageRow(message: message, chat: chat, reactors: reactorContext, requestBlock: { blockTarget = BlockTarget(author: $0) }) {
+        MessageRow(message: message, chat: chat, currentUserID: viewerID, reactors: reactorContext, mentionCards: mentionCards,
+                   requestBlock: { blockTarget = BlockTarget(author: $0) }) {
             // Holding a chip opens who reacted, not message actions.
             guard reactorsTarget == nil else { return }
             showingEmojiPicker = false
@@ -1569,6 +1574,13 @@ private struct ChatView: View {
         }
     }
 
+    private var mentionCards: MentionCardContext {
+        MentionCardContext(pointer: mentionPointer, name: { model.mentionPerson($0, viewerID: viewerID).title }, open: { pill in
+            reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil
+            mentionCard = MentionCardTarget(pill: pill, pointer: mentionPointer.location)
+        })
+    }
+
     /// Defer the scroll request; content geometry repeats it when the timeline
     /// finishes measuring, including history above the unsent message.
     private func revealPending(_ proxy: ScrollViewProxy) {
@@ -1589,14 +1601,14 @@ private struct ChatView: View {
         #if os(iOS)
         HStack(spacing: 0) {
             channelBody
-            if !narrow, chat.threadRootID != nil { NativeThreadView(chat: chat).frame(width: 340) }
+            if !narrow, chat.threadRootID != nil { NativeThreadView(chat: chat, model: model, viewerID: viewerID, mentions: mentionSource).frame(width: 340) }
         }.fullScreenCover(isPresented: Binding(get: { narrow && chat.threadRootID != nil }, set: { if !$0 { chat.closeThread() } })) {
-            NativeThreadView(chat: chat)
+            NativeThreadView(chat: chat, model: model, viewerID: viewerID, mentions: mentionSource)
         }
         #else
         HStack(spacing: 0) {
             if !narrow || chat.threadRootID == nil { channelBody }
-            if chat.threadRootID != nil { NativeThreadView(chat: chat).frame(maxWidth: narrow ? .infinity : 380) }
+            if chat.threadRootID != nil { NativeThreadView(chat: chat, model: model, viewerID: viewerID, mentions: mentionSource).frame(maxWidth: narrow ? .infinity : 380) }
         }
         #endif
         }
@@ -1736,7 +1748,10 @@ private struct ChatView: View {
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { _ in revealPending(proxy) }
                 }
                 .accessibilityIdentifier("chat-timeline")
-                .modifier(BrowseSwipe(open: false, enabled: narrow && !membersVisible && reactionMessage == nil && reactorsTarget == nil && !showingEmojiPicker, navigate: browse))
+                // Pills report the pointer in this space; the popover anchors in it too.
+                .coordinateSpace(.named(MentionCard.timelineSpace))
+                .modifier(MentionCardHost(target: $mentionCard, model: model, viewerID: viewerID))
+                .modifier(BrowseSwipe(open: false, enabled: narrow && !membersVisible && reactionMessage == nil && reactorsTarget == nil && !showingEmojiPicker && mentionCard == nil, navigate: browse))
                 #if os(macOS)
                 // Web: End in the message list jumps to the latest message.
                 .focusable().focusEffectDisabled()
@@ -1816,14 +1831,15 @@ private struct ChatView: View {
                     if let root = chat.pendingMessage?.threadRootId {
                         Button("Pending reply · Open thread") { Task { await chat.openThread(root) } }.font(CaperTheme.font(11))
                     }
-                    EmojiSuggestionsView(controller: emojiComposer)
+                    ComposerSuggestionsView(controller: composerAutocomplete)
                     ZStack(alignment: .topLeading) {
                         if chat.draft.isEmpty {
                             Text("Message #\(chat.channelName.lowercased())").font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
                                 .padding(.leading, 11).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
                         }
                         NativeMessageComposer(text: $chat.draft, placeholder: "Message #\(chat.channelName.lowercased())",
-                                              controller: emojiComposer, submit: { Task { await chat.send() } })
+                                              controller: composerAutocomplete, mentions: mentionSource,
+                                              submit: { Task { await chat.send() } })
                     }
                     .frame(minHeight: 42, maxHeight: 174)
                     // The flexible frame otherwise fills its proposal up to 174,
@@ -1930,10 +1946,10 @@ private struct ChatView: View {
             }
             .onChange(of: chat.currentAuthor?.id) { _, _ in reactionMessage = nil; showingEmojiPicker = false }
             .onChange(of: model.selectedChannelID) { _, _ in
-                reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil; showingPins = false
+                reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil; showingPins = false; mentionCard = nil
             }
             .onChange(of: model.selectedDirectMessageID) { _, _ in
-                reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil; showingPins = false
+                reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil; showingPins = false; mentionCard = nil
             }
             .task(id: chat.liveState) {
                 showConnectionStatus = false
@@ -1941,6 +1957,16 @@ private struct ChatView: View {
                 do { try await Task.sleep(for: .seconds(1)) } catch { return }
                 showConnectionStatus = true
             }
+    }
+    /// `@` suggestions: the open space's members as `GET /api/spaces/{space}`
+    /// returned them (only the specials until loaded), or in a DM everyone from
+    /// `GET /api/people` (the DM's other participant until that loads). The
+    /// signed-in account is never suggested.
+    private var mentionSource: MentionSource {
+        if let id = model.selectedDirectMessageID {
+            return .direct(peer: model.directMessages.first { $0.id == id }?.peer, people: model.people, accountID: viewerID)
+        }
+        return .space(members: model.detail?.members ?? [], excluding: viewerID)
     }
     /// Web's counter tones at 3500 / 3750 / 3900 characters.
     private var counterTone: Color {
@@ -1959,17 +1985,32 @@ private struct ChatView: View {
 
 private struct NativeThreadView: View {
     @Bindable var chat: ChatModel
-    @StateObject private var emojiComposer = EmojiComposerController()
+    /// For the mention card: names from loaded members/people/DMs, and Message.
+    let model: AppModel
+    /// The signed-in person, for the mentions-me tint on replies.
+    let viewerID: String?
+    /// The conversation's `@` candidates, shared with the main composer.
+    let mentions: MentionSource
+    @StateObject private var composerAutocomplete = ComposerAutocompleteController()
     @State private var reactionMessage: ChatMessage?
     @State private var showingEmojiPicker = false
     @State private var reactorsTarget: ReactorsTarget?
+    /// Pills in the thread open their own card, anchored in this panel.
+    @State private var mentionCard: MentionCardTarget?
+    @State private var mentionPointer = MentionPointer()
+    private var mentionCards: MentionCardContext {
+        MentionCardContext(pointer: mentionPointer, name: { model.mentionPerson($0, viewerID: viewerID).title }, open: { pill in
+            reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil
+            mentionCard = MentionCardTarget(pill: pill, pointer: mentionPointer.location)
+        })
+    }
     @State private var blockTarget: BlockTarget?
     @State private var revealedBlocked: Set<String> = []
     private func entries(_ messages: [ChatMessage]) -> [TimelineEntry] {
         BlockedMessages.entries(messages, blocked: chat.blockedAuthorIDs, viewerID: chat.viewerID, revealed: revealedBlocked)
     }
     private func threadRow(_ message: ChatMessage) -> some View {
-        MessageRow(message: message, chat: chat, reactors: reactors, inThread: true,
+        MessageRow(message: message, chat: chat, currentUserID: viewerID, reactors: reactors, mentionCards: mentionCards, inThread: true,
                    requestBlock: { blockTarget = BlockTarget(author: $0) }) { reactionMessage = message }
     }
     /// The root and replies collapse like the channel: blocked runs show "Show".
@@ -2017,14 +2058,18 @@ private struct NativeThreadView: View {
                                 edit: { if chat.discardRejected() { chat.threadDraft = pending.text } }, dismiss: { _ = chat.discardRejected() })
                         }
                     }
-                }.onChange(of: replies.last?.id) { _, id in if let id { proxy.scrollTo(id, anchor: .bottom) } }
+                }
+                .coordinateSpace(.named(MentionCard.timelineSpace))
+                .modifier(MentionCardHost(target: $mentionCard, model: model, viewerID: viewerID))
+                .onChange(of: replies.last?.id) { _, id in if let id { proxy.scrollTo(id, anchor: .bottom) } }
             }
             if chat.isPreview { Text("Join the channel to reply.").font(CaperTheme.font(12)).padding(18) }
             else { VStack(alignment: .leading, spacing: 8) {
                 if let error = chat.error, chat.pendingMessage == nil { Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.terracottaBright) }
                 if let error = chat.sessionError { Text(error); Button("Retry session") { Task { await chat.retrySession() } } }
-                EmojiSuggestionsView(controller: emojiComposer)
-                NativeMessageComposer(text: $chat.threadDraft, placeholder: "Reply to thread…", controller: emojiComposer, submit: { Task { await chat.send(inThread: true) } })
+                ComposerSuggestionsView(controller: composerAutocomplete)
+                NativeMessageComposer(text: $chat.threadDraft, placeholder: "Reply to thread…", controller: composerAutocomplete,
+                                      mentions: mentions, submit: { Task { await chat.send(inThread: true) } })
                     .frame(minHeight: 72, maxHeight: 174)
                     .fixedSize(horizontal: false, vertical: true)
                     .background(CaperTheme.composer)
@@ -2145,7 +2190,9 @@ struct ChatDateDivider: View {
 private struct MessageRow: View {
     let message: ChatMessage
     @Bindable var chat: ChatModel
+    let currentUserID: String?
     let reactors: ReactorContext
+    let mentionCards: MentionCardContext
     var inThread = false
     /// Asks the containing view to confirm blocking this message's author.
     var requestBlock: ((ChatAuthor) -> Void)? = nil
@@ -2162,6 +2209,8 @@ private struct MessageRow: View {
     @FocusState private var actionsFocused: Bool
     #endif
     var body: some View {
+        let mentionsMe = MentionAutocomplete.mentionsCurrentUser(message, currentUserID: currentUserID)
+        let pills = MentionAutocomplete.pills(in: message.content.text, mentions: message.content.mentions)
         let row = VStack(alignment: .leading, spacing: 5) {
             if let pin = message.pin {
                 Label("Pinned by \(pin.author.name)", systemImage: "pin.fill")
@@ -2186,11 +2235,11 @@ private struct MessageRow: View {
                 #endif
                 // File-only messages carry empty text; hide the empty row.
                 if !message.content.text.isEmpty {
-                    Text(message.content.text).font(CaperTheme.font(14)).foregroundStyle(Color(red: 222/255, green: 223/255, blue: 224/255))
+                    messageText.font(CaperTheme.font(14)).foregroundStyle(Color(red: 222/255, green: 223/255, blue: 224/255))
+                        // Person pills are links: keep them in the pill text colour, not the accent.
+                        .tint(CaperTheme.text)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        #if os(macOS)
-                        .textSelection(.enabled)
-                        #endif
+                        .modifier(MentionPillInteraction(pills: pills, cards: mentionCards))
                 }
                 if let attachments = message.content.attachments, !attachments.isEmpty {
                     MessageAttachmentsView(attachments: attachments, chat: chat)
@@ -2224,7 +2273,12 @@ private struct MessageRow: View {
             }
             }
         }.padding(.horizontal, 18).padding(.vertical, 10)
-            .background(!inThread && chat.threadRootID == message.id ? CaperTheme.pinGold.opacity(0.1) : message.pin == nil ? .clear : CaperTheme.pinGold.opacity(0.06))
+            // The open thread's root, then a message that mentions the signed-in
+            // account (8% terracotta with a 2pt terracotta leading edge), then a pin.
+            .background(rowBackground(mentionsMe: mentionsMe))
+            .overlay(alignment: .leading) {
+                if mentionsMe { Rectangle().fill(CaperTheme.terracotta).frame(width: 2).accessibilityHidden(true) }
+            }
             // An identifier on a plain container is copied onto every child,
             // replacing their own (add-reaction-…, reaction chips). Make the
             // row a containing element so children keep their identifiers.
@@ -2302,11 +2356,206 @@ private struct MessageRow: View {
             }
         #endif
     }
+    private func rowBackground(mentionsMe: Bool) -> Color {
+        if !inThread && chat.threadRootID == message.id { return CaperTheme.pinGold.opacity(0.1) }
+        if mentionsMe { return CaperTheme.terracotta.opacity(0.08) }
+        return message.pin == nil ? .clear : CaperTheme.pinGold.opacity(0.06)
+    }
+    /// Resolved `@mention` tokens render as pills: #F3F4F5 medium text on 24%
+    /// terracotta. SwiftUI `Text` styles an inline run's background but cannot
+    /// pad or round it, so the pill is a square-cornered span tight to its
+    /// glyphs (spec: 2pt padding, 4pt corners). Unresolved names stay plain.
+    private var messageText: Text {
+        let content = message.content
+        let segments = MentionAutocomplete.segments(in: content.text, mentions: content.mentions)
+        guard segments.contains(where: { $0.highlighted }) else { return Text(content.text) }
+        var attributed = AttributedString()
+        for segment in segments {
+            var part = AttributedString(segment.text)
+            if segment.highlighted {
+                part.font = CaperTheme.font(14, weight: .medium)
+                part.foregroundColor = CaperTheme.text
+                part.backgroundColor = CaperTheme.terracotta.opacity(0.24)
+                // A person's pill opens the mention card; @everyone/@here stay inert.
+                if let user = segment.user { part.link = MentionCard.url(for: user) }
+            }
+            attributed.append(part)
+        }
+        return Text(attributed)
+    }
     private func timeLabel(_ value: String) -> String {
         let fractional = ISO8601DateFormatter()
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         guard let date = fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value) else { return "" }
         return date.formatted(date: .omitted, time: .shortened)
+    }
+}
+
+/// How a message's person pills reach the mention card.
+private struct MentionCardContext {
+    let pointer: MentionPointer
+    /// "Open profile for <display name or @username>".
+    let name: (MentionPill) -> String
+    let open: (MentionPill) -> Void
+}
+
+/// The pointer over message text, in the timeline's space, read only when a
+/// pill opens. A plain reference box, so hover tracking never re-renders rows.
+private final class MentionPointer {
+    var location: CGPoint?
+}
+
+private struct MentionCardTarget: Identifiable {
+    let id = UUID()
+    let pill: MentionPill
+    /// macOS: the click point; nil (keyboard or VoiceOver) centres the popover.
+    let anchor: CGRect?
+
+    /// The click point becomes a pill-high rect, so the popover sits below the pill.
+    init(pill: MentionPill, pointer: CGPoint?) {
+        self.pill = pill
+        anchor = pointer.map { CGRect(x: $0.x - 1, y: $0.y - 9, width: 2, height: 18) }
+    }
+}
+
+private extension AppModel {
+    /// The mention card's data, from what this client has already loaded.
+    func mentionPerson(_ pill: MentionPill, viewerID: String?) -> MentionCardPerson {
+        MentionCard.resolve(pill, members: detail?.members ?? [], people: people,
+                            peers: directMessages.map(\.peer), account: account, viewerID: viewerID)
+    }
+}
+
+/// Presents the mention card: a popover at the clicked pill on macOS, a sheet
+/// on iPhone. Attach it to the scroll view that names `MentionCard.timelineSpace`,
+/// so the pointer and the anchor share coordinates (the channel and the thread
+/// panel each host their own).
+private struct MentionCardHost: ViewModifier {
+    @Binding var target: MentionCardTarget?
+    let model: AppModel
+    let viewerID: String?
+
+    @ViewBuilder func body(content: Content) -> some View {
+        #if os(macOS)
+        content.popover(item: $target, attachmentAnchor: anchor, arrowEdge: .bottom) { target in
+            MentionCardView(model: model, person: model.mentionPerson(target.pill, viewerID: viewerID)) { self.target = nil }
+        }
+        #else
+        content.sheet(item: $target) { target in
+            MentionCardView(model: model, person: model.mentionPerson(target.pill, viewerID: viewerID)) { self.target = nil }
+        }
+        #endif
+    }
+
+    #if os(macOS)
+    private var anchor: PopoverAttachmentAnchor {
+        guard let rect = target?.anchor else { return .point(.center) }
+        return .rect(.rect(rect))
+    }
+    #endif
+}
+
+/// Routes pill links (`caper-mention:`) to the mention card instead of the
+/// system. A tap on a link is handled by the Text itself; the row's message
+/// actions still need a long press. macOS keeps text selection only for
+/// messages without person pills, so a click on a pill is never taken as a
+/// selection. VoiceOver gets one "Open profile for …" action per person.
+private struct MentionPillInteraction: ViewModifier {
+    let pills: [MentionPill]
+    let cards: MentionCardContext
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if pills.isEmpty {
+            #if os(macOS)
+            content.textSelection(.enabled)
+            #else
+            content
+            #endif
+        } else {
+            content
+                .environment(\.openURL, OpenURLAction { url in
+                    guard url.scheme == MentionCard.scheme else { return .systemAction }
+                    if let id = MentionCard.userID(from: url), let pill = pills.first(where: { $0.id == id }) { cards.open(pill) }
+                    return .handled
+                })
+                #if os(macOS)
+                .onContinuousHover(coordinateSpace: CoordinateSpace.named(MentionCard.timelineSpace)) { phase in
+                    switch phase {
+                    case .active(let location): cards.pointer.location = location
+                    case .ended: cards.pointer.location = nil
+                    }
+                }
+                #endif
+                .accessibilityActions {
+                    ForEach(pills) { pill in
+                        Button("Open profile for " + cards.name(pill)) { cards.open(pill) }
+                    }
+                }
+        }
+    }
+}
+
+/// A person's mention card: avatar, name, @username, then **Message** (or
+/// "You"). Data is resolved locally; **Message** reuses the DM-by-username flow.
+private struct MentionCardView: View {
+    @Bindable var model: AppModel
+    let person: MentionCardPerson
+    let close: () -> Void
+    @State private var opening = false
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Avatar(name: person.avatarName, size: 48, avatarID: person.avatarId).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(person.title).font(CaperTheme.font(15, weight: .semibold)).foregroundStyle(CaperTheme.text).lineLimit(1)
+                    .accessibilityIdentifier("mention-card-title")
+                if let subtitle = person.subtitle {
+                    Text(subtitle).font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).lineLimit(1)
+                        .accessibilityIdentifier("mention-card-username")
+                }
+            }
+            if person.isSelf {
+                Text("You").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
+                    .accessibilityIdentifier("mention-card-you")
+            } else {
+                Button(opening ? "Opening…" : "Message") { Task { await message() } }
+                    .buttonStyle(CaperPrimaryButton())
+                    .disabled(opening)
+                    .accessibilityIdentifier("mention-card-message")
+                if let error {
+                    Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("mention-card-error")
+                }
+            }
+        }
+        .padding(16)
+        #if os(macOS)
+        // A fixed width keeps the popover's size independent of its content.
+        .frame(width: 280, alignment: .leading)
+        .background(CaperTheme.surface)
+        #else
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .presentationDetents([.height(person.isSelf ? 196 : 268)])
+        .presentationDragIndicator(.visible)
+        .presentationBackground(CaperTheme.surface)
+        #endif
+        // Contain, so this identifier does not replace each child's own.
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("mention-card")
+    }
+
+    private func message() async {
+        guard !opening else { return }
+        opening = true; error = nil
+        model.error = nil
+        let opened = await model.createDirectMessage(username: person.username)
+        opening = false
+        if opened { close(); return }
+        // Shown in the card, which stays open, rather than in the sidebar.
+        error = model.error ?? "Couldn’t open that conversation."
+        model.error = nil
     }
 }
 

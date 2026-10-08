@@ -72,6 +72,12 @@ export interface ChatAttachmentProgressEvent {
   attachmentId: string;
   percent: number;
 }
+/** Server-resolved `@mentions`; clients ignore unknown types. */
+export type ChatMention =
+  | { type: "user"; id: string; username: string }
+  | { type: "everyone" }
+  | { type: "here" }
+  | { type: string; id?: string; username?: string };
 
 export interface ChatPinEvent {
   type: "message.pin";
@@ -108,7 +114,7 @@ export interface ChatMessage {
   channelId: string;
   seq: string;
   author: ChatAuthor;
-  content: { version: 1; type: "text"; text: string; attachments?: ChatAttachment[] };
+  content: { version: 1; type: "text"; text: string; attachments?: ChatAttachment[]; mentions?: ChatMention[] };
   createdAt: string;
   clientMessageId: string;
   reactions?: ChatReaction[];

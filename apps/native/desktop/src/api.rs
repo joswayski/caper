@@ -2,7 +2,8 @@ use crate::attachments::FreshUrl;
 use crate::compress::Compression;
 use crate::model::{
     Account, Blocks, Channel, ChatSession, DirectConversation, DirectConversations, History,
-    Member, Members, Message, Privacy, ReactionUpdate, Reactors, Space, SpaceDetail, Spaces,
+    Member, Members, Message, People, Privacy, ReactionUpdate, Reactors, Space, SpaceDetail,
+    Spaces,
 };
 use crate::uploads::UploadError;
 use reqwest::blocking::{Client, Response};
@@ -132,6 +133,10 @@ impl Api {
 
     pub fn direct_conversations(&self, token: &str) -> Result<DirectConversations, ApiError> {
         self.request(Method::GET, "api/dms", Some(token), None, None)
+    }
+
+    pub fn people(&self, token: &str) -> Result<People, ApiError> {
+        self.request(Method::GET, "api/people", Some(token), None, None)
     }
 
     pub fn create_direct(

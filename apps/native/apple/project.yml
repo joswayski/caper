@@ -320,6 +320,8 @@ targets:
       - Tests/CaperCoreTests/GatewayLifecycleTests.swift
       - Tests/CaperCoreTests/ReactorSummaryTests.swift
       - Tests/CaperCoreTests/EmojiAutocompleteTests.swift
+      - Tests/CaperCoreTests/MentionAutocompleteTests.swift
+      - Tests/CaperCoreTests/MentionCardTests.swift
       - Tests/CaperCoreTests/MessageRequestsTests.swift
     dependencies:
       - target: CaperCoreIOS

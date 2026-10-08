@@ -132,6 +132,11 @@ public actor APIClient {
         }) else { throw APIError(status: 502, message: "Caper returned invalid direct messages.") }
         return response.conversations
     }
+    /// Everyone you can `@` in a DM: accounts sharing an active space or a DM with you.
+    public func people() async throws -> [Person] {
+        let response: PeopleResponse = try await request("api/people")
+        return response.people
+    }
     public func createDirectMessage(username: String) async throws -> DirectMessageConversation {
         try await request("api/dms", method: "POST", body: UsernameInput(username: username))
     }

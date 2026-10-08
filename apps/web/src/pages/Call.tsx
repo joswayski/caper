@@ -40,6 +40,7 @@ import {
 } from "../audio/effects";
 import Chat from "../chat/Chat";
 import type { ChatAuthor, GeneralChatHistory } from "../chat/types";
+import type { MentionCandidate } from "../chat/mentions";
 import Slider from "../components/Slider";
 import PresenceDot from "../components/PresenceDot";
 import Avatar from "../components/Avatar";
@@ -431,6 +432,12 @@ interface CallProps {
    */
   engaged?: boolean;
   onChatOnlineChange?: (online: boolean) => void;
+  /** People the composer's `@` can suggest; undefined until loaded. */
+  mentionMembers?: MentionCandidate[];
+  /** Profile-card lookup for mention pills, most specific first. */
+  mentionDirectory?: MentionCandidate[];
+  /** Opens (or starts) a DM from a mention's profile card. */
+  onMessagePerson?: (username: string) => Promise<void>;
   /** A notice above the composer, such as a DM request still waiting. */
   composerBanner?: ReactNode;
   /** Offers "Block" in message actions; the caller confirms. */
@@ -454,6 +461,9 @@ export default function Call({
   embedded = false,
   engaged = true,
   onChatOnlineChange,
+  mentionMembers,
+  mentionDirectory,
+  onMessagePerson,
   composerBanner,
   onBlockAuthor,
 }: CallProps = {}) {
@@ -1557,6 +1567,9 @@ export default function Call({
             onBlockAuthor={onBlockAuthor}
             messageSounds={engaged && channelJoined}
             onOnlineChange={onChatOnlineChange}
+            mentionMembers={mentionMembers}
+            mentionDirectory={mentionDirectory}
+            onMessagePerson={onMessagePerson}
             channelId={channel?.id}
             channelName={channel?.name}
             initialHistory={initialHistory}

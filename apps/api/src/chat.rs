@@ -6,6 +6,7 @@ use crate::{
     ApiError, AppState, RuntimeEnvironment, account_token,
     assets::{self, CdnSigner},
     auth::random_id,
+    mentions::{self, Mention},
     spaces::{channel_participation, session_user},
 };
 use axum::{
@@ -807,6 +808,8 @@ pub(crate) async fn send_message(
         content["attachments"] =
             Value::Array(assets::attach(&mut tx, attachment_ids, owner, channel_id).await?);
     }
+    let content =
+        with_mentions(&mut tx, content, &mentions::parse(text, space_id.is_some())).await?;
     let seq = head + 1;
     let id = random_id(15);
     let mut payload = json!({"id":id,"channelId":channel,"seq":seq.to_string(),"author":{"id":author_id,"name":name,"isGuest":user_id.is_none(),"avatarId":avatar_id},"content":content,"createdAt":Utc::now().to_rfc3339(),"clientMessageId":client_id});
@@ -859,6 +862,50 @@ pub(crate) async fn send_message(
     tx.commit().await.map_err(database_error)?;
     tracing::info!(event_name = "chat_committed", "message committed");
     Ok(payload)
+}
+
+/// Adds `content.mentions` for `@everyone`/`@here` and for any existing
+/// account named, in channels and DMs alike, so people can point each other at
+/// someone. Tagging is not access: notifications must check read access
+/// themselves. Unknown names stay plain text and are not recorded.
+async fn with_mentions(
+    connection: &mut sqlx::PgConnection,
+    mut content: Value,
+    found: &[Mention],
+) -> Result<Value, ApiError> {
+    let names: Vec<&str> = found
+        .iter()
+        .filter_map(|mention| match mention {
+            Mention::User(name) => Some(name.as_str()),
+            Mention::Everyone | Mention::Here => None,
+        })
+        .collect();
+    let accounts: Vec<(String, String)> = if names.is_empty() {
+        Vec::new()
+    } else {
+        sqlx::query_as(
+            "SELECT username,external_id FROM public.users WHERE username=ANY($1) AND deleted_at IS NULL",
+        )
+        .bind(&names)
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(database_error)?
+    };
+    let entries: Vec<Value> = found
+        .iter()
+        .filter_map(|mention| match mention {
+            Mention::Everyone => Some(json!({"type":"everyone"})),
+            Mention::Here => Some(json!({"type":"here"})),
+            Mention::User(name) => accounts
+                .iter()
+                .find(|(username, _)| username == name)
+                .map(|(username, id)| json!({"type":"user","id":id,"username":username})),
+        })
+        .collect();
+    if !entries.is_empty() {
+        content["mentions"] = Value::Array(entries);
+    }
+    Ok(content)
 }
 
 async fn persist_reaction(

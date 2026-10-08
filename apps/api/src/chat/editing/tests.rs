@@ -591,3 +591,61 @@ async fn edits_retain_versions_authorize_accounts_and_commit_with_thread_project
         .await
         .unwrap();
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL"]
+async fn edits_re_resolve_mentions(pool: PgPool) {
+    let mut users = Vec::new();
+    for name in ["writer", "maya"] {
+        let user: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name) VALUES($1||'-id',$1,$1) RETURNING id")
+            .bind(name).fetch_one(&pool).await.unwrap();
+        let hash = Sha256::digest(name.as_bytes()).to_vec();
+        sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 day')")
+            .bind(&hash).bind(user).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO public.chat_sessions(external_id,token_hash,name,user_id,account_session_hash) VALUES($1,$2,$1,$3,$2)")
+            .bind(name).bind(hash).bind(user).execute(&pool).await.unwrap();
+        users.push(user);
+    }
+    let space: i64 = sqlx::query_scalar("INSERT INTO public.spaces(external_id,name,owner_id) VALUES('mention-edit-space','Edits',$1) RETURNING id")
+        .bind(users[0]).fetch_one(&pool).await.unwrap();
+    let channel: i64 = sqlx::query_scalar("INSERT INTO public.channels(external_id,space_id,name) VALUES('mention-edit',$1,'edits') RETURNING id")
+        .bind(space).fetch_one(&pool).await.unwrap();
+    for user in &users {
+        sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+            .bind(space)
+            .bind(user)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) VALUES($1,$2)")
+            .bind(channel)
+            .bind(user)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let sent = persist(&pool, "mention-edit", "writer", Uuid::new_v4(), "hello")
+        .await
+        .unwrap();
+    let id = sent["id"].as_str().unwrap();
+    assert!(sent["content"].get("mentions").is_none());
+    let added = persist_edit(&pool, "mention-edit", id, "writer", "hello @maya @here", 1)
+        .await
+        .unwrap();
+    assert_eq!(
+        added["content"]["mentions"],
+        json!([{"type":"user","id":"maya-id","username":"maya"},{"type":"here"}])
+    );
+    // A lost response retried with the same text is accepted, not a conflict.
+    let retried = persist_edit(&pool, "mention-edit", id, "writer", "hello @maya @here", 1)
+        .await
+        .unwrap();
+    assert_eq!(retried["content"], added["content"]);
+    let event: Value = sqlx::query_scalar("SELECT payload FROM public.channel_events WHERE channel_id=$1 AND payload->>'type'='message.edited'")
+        .bind(channel).fetch_one(&pool).await.unwrap();
+    assert_eq!(event["message"]["content"], added["content"]);
+    let removed = persist_edit(&pool, "mention-edit", id, "writer", "hello", 2)
+        .await
+        .unwrap();
+    assert!(removed["content"].get("mentions").is_none());
+}

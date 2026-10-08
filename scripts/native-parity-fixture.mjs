@@ -52,15 +52,19 @@ function initialState() {
         ["TEST FIXTURE — local sample data, not a live conversation.", members[0]],
         ["The same conversation should feel familiar on every platform.", members[1]],
         ["Keep the space rail, channel list, and audio controls in their usual places.", members[1]],
-        ["Agreed. Let’s check the narrow layout and the management dialogs too.", members[2]],
-      ].map(([text, member], index) => ({
+        [
+          "Agreed, @fixture_owner. Let’s check the narrow layout and the management dialogs too.",
+          members[2],
+          [{ type: "user", id: ids.owner, username: initialAccount.username }],
+        ],
+      ].map(([text, member, mentions], index) => ({
         // Same shape as the API's message IDs (15 ASCII alphanumerics); native
         // clients refuse to build reaction paths for anything else.
         id: `${channel.id}m${String(index + 1).padStart(2, "0")}`,
         channelId: channel.id,
         seq: String(index + 1),
         author: author(member),
-        content: { version: 1, type: "text", text },
+        content: { version: 1, type: "text", text, ...(mentions ? { mentions } : {}) },
         clientMessageId: `00000000-0000-4000-8000-00000000000${index + 1}`,
         createdAt: `2026-09-23T09:${40 + index}:00.000Z`,
       })),
@@ -170,6 +174,35 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
                 detail.space.ownerId === user.id ||
                 (state.grants.get(channel.id) ?? []).includes(user.id)),
           )));
+  // Same @mention grammar and rules as apps/api/src/mentions.rs and chat::with_mentions:
+  // any existing account is tagged, in channels and DMs; specials only outside DMs.
+  const mentionsFor = (channel, text) => {
+    const tagged = [state.account, ...accounts.slice(1), ...state.directs.map((conversation) => conversation.peer)];
+    const found = [],
+      names = new Set(),
+      chars = [...text];
+    let previous;
+    for (let index = 0; index < chars.length; index++) {
+      const starts = chars[index] === "@" && (previous === undefined || /[\s([{]/u.test(previous));
+      previous = chars[index];
+      if (!starts) continue;
+      let name = "";
+      while (/^[A-Za-z0-9_]$/.test(chars[index + 1] ?? "")) {
+        name += chars[++index];
+        previous = chars[index];
+      }
+      name = name.toLowerCase();
+      if (name.length > 32) continue;
+      if (name === "everyone" || name === "here") {
+        if (!channel.direct && !found.some((entry) => entry.type === name)) found.push({ type: name });
+      } else if (name.length >= 3 && !names.has(name) && names.size < 20) {
+        names.add(name);
+        const member = tagged.find((candidate) => candidate?.username === name);
+        if (member) found.push({ type: "user", id: member.id, username: member.username });
+      }
+    }
+    return found;
+  };
   const canParticipate = (channel, user) =>
     canRead(channel, user) &&
     (channel.direct || channel.id === ids.demo || (state.joins.get(channel.id) ?? []).includes(user.id));
@@ -239,7 +272,9 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
     message.editSeq = String(BigInt(channelHead(message.channelId)) + 1n);
     message.revision = (message.revision ?? 1) + 1;
     message.editedAt = new Date().toISOString();
-    message.content = { version: 1, type: "text", text };
+    // Edits re-resolve @mentions like chat::editing.
+    const mentions = mentionsFor(channelFor(message.channelId), text);
+    message.content = { version: 1, type: "text", text, ...(mentions.length ? { mentions } : {}) };
     versions.push({ revision: message.revision, content: clone(message.content), createdAt: message.editedAt });
     state.versions.set(message.id, versions);
     const event = {
@@ -471,6 +506,22 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       const user = identity(request);
       if (path === "/api/push/config")
         return user ? json(response, 200, { platforms: [] }) : reject(response, 401, "Sign in required.");
+      if (path === "/api/people" && method === "GET") {
+        // Like direct::people: everyone sharing a space or a DM, never yourself.
+        if (!user) return reject(response, 401, "Sign in required.");
+        const known = new Map();
+        for (const detail of state.spaces)
+          if (detail.members.some((member) => member.id === user.id)) {
+            for (const member of detail.members) if (!known.has(member.id)) known.set(member.id, member);
+          }
+        if (user.id === state.account.id)
+          for (const { peer } of state.directs) if (!known.has(peer.id)) known.set(peer.id, peer);
+        known.delete(user.id);
+        const people = [...known.values()]
+          .map(({ id, username, displayName, avatarId }) => ({ id, username, displayName, avatarId: avatarId ?? null }))
+          .sort((a, b) => a.username.localeCompare(b.username));
+        return json(response, 200, { people });
+      }
       if (path === "/api/dms") {
         if (!user) return reject(response, 401, "Sign in required.");
         if (method === "POST") {
@@ -882,12 +933,13 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             : undefined;
           if (body.threadRootId && !root) return reject(response, 404, "Thread not found.");
           if (body.broadcast && !root) return reject(response, 400, "Only replies can broadcast.");
+          const mentions = mentionsFor(channel, body.text);
           const message = {
             id: randomUUID().replaceAll("-", "").slice(0, 15),
             channelId: channel.id,
             seq: String(BigInt(channelHead(channel.id)) + 1n),
             author: who,
-            content: { version: 1, type: "text", text: body.text },
+            content: { version: 1, type: "text", text: body.text, ...(mentions.length ? { mentions } : {}) },
             createdAt: new Date().toISOString(),
             clientMessageId,
           };

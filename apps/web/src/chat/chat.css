@@ -713,6 +713,110 @@
 .chat-message-pending p {
   color: var(--text-muted);
 }
+.chat-mention {
+  padding: 0 2px;
+  border-radius: 4px;
+  background: rgb(182 77 50 / 24%);
+  color: var(--text);
+  font-weight: 600;
+}
+.chat-mention-person {
+  display: inline;
+  margin: 0;
+  border: 0;
+  font: inherit;
+  font-weight: 600;
+  line-height: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+.chat-mention-person:hover,
+.chat-mention-person:focus-visible {
+  background: rgb(182 77 50 / 32%);
+}
+.chat-mention-person:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 1px;
+}
+.chat-mention-card {
+  z-index: 1000;
+  display: grid;
+  gap: 12px;
+  width: min(280px, calc(100vw - 24px));
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 25%);
+}
+.chat-mention-card-drawer {
+  width: min(480px, 100%);
+  padding: 8px 16px max(16px, env(safe-area-inset-bottom));
+  border-bottom: 0;
+  border-radius: 16px 16px 0 0;
+  box-shadow: none;
+}
+.chat-mention-card-identity {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.chat-mention-card-identity > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.chat-mention-card-identity strong,
+.chat-mention-card-identity span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-mention-card-identity strong {
+  font-size: 0.95rem;
+}
+.chat-mention-card-identity span,
+.chat-mention-card-self {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+.chat-mention-card-avatar {
+  display: grid;
+  flex: 0 0 48px;
+  width: 48px;
+  height: 48px;
+  overflow: hidden;
+  border-radius: var(--radius-avatar);
+  font-style: normal;
+}
+.chat-mention-card-message {
+  min-height: 40px;
+  border: 1px solid var(--terracotta);
+  border-radius: 8px;
+  color: #fff;
+  background: var(--terracotta);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 750;
+  cursor: pointer;
+}
+.chat-mention-card-message:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+.chat-mention-card-message:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+.chat-message-mentioned,
+.chat-message-mentioned:hover,
+.chat-message-mentioned:focus-within {
+  background: rgb(182 77 50 / 8%);
+  box-shadow: inset 2px 0 0 var(--terracotta);
+}
 .chat-send-status {
   display: flex;
   flex-wrap: wrap;
@@ -795,6 +899,32 @@
   padding: 10px;
   color: var(--text-muted);
   font-size: 0.8rem;
+}
+.chat-mention-suggestions small {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-mention-avatar {
+  display: grid;
+  flex: 0 0 24px;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  overflow: hidden;
+  border-radius: var(--radius-avatar);
+  font-style: normal;
+  font-size: 0.7rem;
+}
+.chat-mention-special {
+  background: var(--surface-composer);
+  color: var(--text);
+  font-weight: 700;
 }
 .chat-typing {
   display: flex;

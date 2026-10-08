@@ -10,6 +10,7 @@ import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonDecoder
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonTransformingSerializer
@@ -52,6 +53,9 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 /** `GET/PUT /api/account/privacy`: `anyone`, `spaces` or `nobody`. */
 @Serializable data class DirectPrivacy(val directMessages: String)
 @Serializable data class DirectConversationList(val conversations: List<DirectConversation>)
+/** `GET /api/people`: accounts sharing a space or a DM with you (never you), by username. */
+@Serializable data class Person(val id: String, val username: String, val displayName: String, val avatarId: Int? = null)
+@Serializable data class PeopleList(val people: List<Person>)
 @Serializable data class PushConfig(val platforms: List<String>)
 @Serializable data class ChannelInvitation(val channel: Channel, val inviter: Inviter)
 @Serializable data class Member(val id: String, val username: String, val displayName: String, val owner: Boolean, val avatarId: Int? = null)
@@ -62,12 +66,19 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val channelInvitations: List<ChannelInvitation> = emptyList(),
 )
 @Serializable data class ChatAuthor(val id: String, val name: String, val isGuest: Boolean, val avatarId: Int? = null)
+/**
+ * One `content.mentions` entry: `user` (with `id` and `username`), `everyone` or `here`.
+ * Other types decode too and are ignored where mentions are used.
+ */
+@Serializable data class MessageMention(val type: String, val id: String? = null, val username: String? = null)
 @Serializable data class ChatContent(
     val version: Int,
     val type: String,
     val text: String,
     /** Additive file list. Malformed entries are dropped, never the message. */
     @Serializable(with = TolerantAttachmentsSerializer::class) val attachments: List<ChatAttachment> = emptyList(),
+    /** Absent on older messages and servers. */
+    @Serializable(with = MentionListSerializer::class) val mentions: List<MessageMention> = emptyList(),
 )
 
 /** A file on a message. URLs are signed per response and expire in 24–48 hours. */
@@ -150,6 +161,22 @@ object TolerantAttachmentsSerializer : KSerializer<List<ChatAttachment>> {
 @Serializable data class AssetUsage(val used: Long, val limit: Long, val compression: CompressionSettings = CompressionSettings())
 @Serializable data class PresignedUpload(val method: String = "PUT", val url: String, val headers: Map<String, String> = emptyMap())
 @Serializable data class AssetReservation(val id: String, val kind: String = "file", val upload: PresignedUpload, val previewUpload: PresignedUpload? = null)
+
+/** Keeps a malformed or future-shaped mention entry from failing the whole message. */
+object MentionListSerializer : JsonTransformingSerializer<List<MessageMention>>(ListSerializer(MessageMention.serializer())) {
+    override fun transformDeserialize(element: JsonElement): JsonElement =
+        JsonArray((element as? JsonArray).orEmpty().mapNotNull { entry ->
+            val fields = entry as? JsonObject ?: return@mapNotNull null
+            val type = fields.string("type") ?: return@mapNotNull null
+            JsonObject(buildMap {
+                put("type", JsonPrimitive(type))
+                fields.string("id")?.let { put("id", JsonPrimitive(it)) }
+                fields.string("username")?.let { put("username", JsonPrimitive(it)) }
+            })
+        })
+
+    private fun JsonObject.string(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+}
 @Serializable data class MessageVersion(val revision: Int, val content: ChatContent, val createdAt: String)
 @Serializable data class MessageVersions(val messageId: String, val versions: List<MessageVersion>, val hasMore: Boolean)
 @Serializable data class MessageReaction(val emoji: String, val authorIds: List<String>)
@@ -318,6 +345,8 @@ data class AppUiState(
     val selectedSpace: SpaceDetail? = null,
     val selectedChannel: Channel? = null,
     val directConversations: List<DirectConversation> = emptyList(),
+    /** DM mention candidates from `GET /api/people`; null until the first load succeeds. */
+    val people: List<Person>? = null,
     /** Accounts you blocked, newest first; their messages collapse everywhere. */
     val blocks: List<BlockedAccount> = emptyList(),
     val blocksError: String? = null,
