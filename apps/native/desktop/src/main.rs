@@ -4247,7 +4247,7 @@ impl CaperApp {
                             ui.add_space(8.0);
                             let exhausted = self.attempts_remaining == Some(0);
                             let response = ui.add_enabled(
-                                !exhausted,
+                                !self.loading && !exhausted,
                                 egui::TextEdit::singleline(&mut self.code)
                                     .vertical_align(egui::Align::Center)
                                     .char_limit(6)
@@ -4291,7 +4291,9 @@ impl CaperApp {
                                 self.loading || self.code.len() != 6,
                             )
                             .clicked()
-                                || (response.lost_focus()
+                                || (!self.loading
+                                    && self.code.len() == 6
+                                    && response.lost_focus()
                                     && ui.input(|input| input.key_pressed(egui::Key::Enter)))
                             {
                                 let challenge = self.challenge.clone().unwrap_or_default();
@@ -4305,7 +4307,8 @@ impl CaperApp {
                             }
                             ui.add_space(10.0);
                             if ui
-                                .add(
+                                .add_enabled(
+                                    !self.loading,
                                     egui::Button::new(
                                         RichText::new("Use a different email")
                                             .size(13.6)
@@ -4323,10 +4326,12 @@ impl CaperApp {
                         } else {
                             ui.label(bold("Email address").size(14.0));
                             ui.add_space(8.0);
-                            let response = ui.add_sized(
-                                [width, 52.0],
+                            let response = ui.add_enabled(
+                                !self.loading,
                                 egui::TextEdit::singleline(&mut self.email)
                                     .vertical_align(egui::Align::Center)
+                                    .min_size(egui::vec2(width, 52.0))
+                                    .desired_width(width)
                                     .hint_text("you@example.com"),
                             );
                             if let Some(error) = self.error.as_ref().or(self.warning.as_ref()) {
@@ -4351,7 +4356,9 @@ impl CaperApp {
                                 ).inner
                             }).inner;
                             if submit.clicked()
-                                || (response.lost_focus()
+                                || (!self.loading
+                                    && self.email.contains('@')
+                                    && response.lost_focus()
                                     && ui.input(|input| input.key_pressed(egui::Key::Enter)))
                             {
                                 self.loading = true;
@@ -16386,6 +16393,83 @@ mod tests {
         let output = render(&mut app, &context, vec![]);
         text_position(&output, "Welcome to Caper");
         text_position(&output, "Email me a code");
+    }
+
+    #[test]
+    fn login_keeps_pending_inputs_and_challenge_unchanged() {
+        for verifying in [false, true] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("signed-out"),
+            );
+            app.email = "fixture@example.test".into();
+            app.code = "ABC234".into();
+            app.challenge = verifying.then(|| "fixture-challenge".into());
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            let field = text_position(
+                &output,
+                if verifying {
+                    "ABC234"
+                } else {
+                    "fixture@example.test"
+                },
+            );
+            click(&mut app, &context, field);
+            app.loading = true;
+            render(&mut app, &context, vec![egui::Event::Text("ZZ".into())]);
+            assert_eq!(app.email, "fixture@example.test");
+            assert_eq!(app.code, "ABC234");
+            if verifying {
+                let output = render(&mut app, &context, vec![]);
+                click(
+                    &mut app,
+                    &context,
+                    text_position(&output, "Use a different email"),
+                );
+                assert_eq!(app.challenge.as_deref(), Some("fixture-challenge"));
+                app.loading = false;
+                render(&mut app, &context, vec![]);
+                click(
+                    &mut app,
+                    &context,
+                    text_position(&output, "Use a different email"),
+                );
+                assert!(
+                    app.challenge.is_none(),
+                    "the back action works after the request ends"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn login_enter_respects_the_same_validation_as_the_button() {
+        for verifying in [false, true] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("signed-out"),
+            );
+            app.email = "invalid-email".into();
+            app.code = "ABC".into();
+            app.challenge = verifying.then(|| "fixture-challenge".into());
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            click(
+                &mut app,
+                &context,
+                text_position(&output, if verifying { "ABC" } else { "invalid-email" }),
+            );
+            render(&mut app, &context, press(egui::Key::Enter));
+            assert!(
+                !app.loading,
+                "invalid input must not start an account request"
+            );
+        }
     }
 
     #[test]
