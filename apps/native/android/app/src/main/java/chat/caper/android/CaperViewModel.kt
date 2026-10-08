@@ -258,12 +258,34 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun startDirect(username: String, done: () -> Unit = {}) = launchAction { request ->
+    fun startDirect(username: String, done: () -> Unit = {}) = launchAction { request -> openDirectByUsername(username, request, done) }
+
+    /** `POST /api/dms` by username (it returns an existing DM), then opens it unless you navigated meanwhile. */
+    private suspend fun openDirectByUsername(username: String, request: Long, done: () -> Unit) {
         val navigation = generation
         val conversation = api.startDirectConversation(requireAccountToken(), username)
-        if (request != accountGeneration) return@launchAction
+        if (request != accountGeneration) return
         mutable.value = mutable.value.copy(directConversations = mergeDirects(mutable.value.directConversations, listOf(conversation)))
         if (navigation == generation) { done(); selectDirect(conversation) }
+    }
+
+    /**
+     * The mention card's Message: opens a loaded DM with that person, otherwise the
+     * same create-by-username flow, reporting failures to the card instead of the app.
+     */
+    fun messageMentioned(id: String?, username: String, done: () -> Unit, failed: (String) -> Unit) {
+        val existing = mutable.value.directConversations.firstOrNull { if (id != null) it.peer.id == id else it.peer.username.equals(username, ignoreCase = true) }
+        if (existing != null) {
+            done()
+            if (mutable.value.selectedDirectId != existing.id) selectDirect(existing)
+            return
+        }
+        val request = accountGeneration
+        viewModelScope.launch {
+            try { openDirectByUsername(username, request, done) }
+            catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { if (request == accountGeneration) failed(message(error)) }
+        }
     }
 
     /** Opens the signed-in account's notes, creating the real DM on first use. */

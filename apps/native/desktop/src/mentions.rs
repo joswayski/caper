@@ -1,8 +1,8 @@
 //! `@mention` contract v1, shared with the API and every client: token grammar,
-//! composer suggestions and insertion, and which message tokens to highlight.
-//! Mentions do not notify anyone yet.
+//! composer suggestions and insertion, which message tokens to highlight, and
+//! what a person pill's card shows. Mentions do not notify anyone yet.
 
-use crate::model::Mention;
+use crate::model::{DirectConversation, Member, Mention, Person as KnownPerson};
 use std::ops::Range;
 
 /// Longer runs after `@` are plain text.
@@ -162,10 +162,10 @@ fn tokens(text: &str) -> Vec<(Range<usize>, String)> {
     found
 }
 
-/// Whether a token's lowercase name is backed by a server entry. Unresolved
-/// names, and `everyone`/`here` without their entry (as in DMs), stay plain.
-fn resolved(name: &str, mentions: &[Mention]) -> bool {
-    mentions.iter().any(|entry| match entry.kind.as_str() {
+/// The server entry backing a token's lowercase name. Unresolved names, and
+/// `everyone`/`here` without their entry (as in DMs), stay plain.
+fn resolved<'a>(name: &str, mentions: &'a [Mention]) -> Option<&'a Mention> {
+    mentions.iter().find(|entry| match entry.kind.as_str() {
         "everyone" | "here" => entry.kind == name,
         "user" => entry
             .username
@@ -175,16 +175,81 @@ fn resolved(name: &str, mentions: &[Mention]) -> bool {
     })
 }
 
-/// Byte ranges of the tokens in `text` to draw as mention pills.
-pub fn highlights(text: &str, mentions: &[Mention]) -> Vec<Range<usize>> {
+/// The tokens in `text` to draw as mention pills: byte ranges and the entry
+/// each one resolved to (only `user` entries open a card).
+pub fn highlights<'a>(text: &str, mentions: &'a [Mention]) -> Vec<(Range<usize>, &'a Mention)> {
     if mentions.is_empty() {
         return Vec::new();
     }
     tokens(text)
         .into_iter()
-        .filter(|(_, name)| resolved(name, mentions))
-        .map(|(range, _)| range)
+        .filter_map(|(range, name)| resolved(&name, mentions).map(|entry| (range, entry)))
         .collect()
+}
+
+/// What a person pill's card shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Profile {
+    pub username: String,
+    /// `None` when nothing loaded knows the id: the card is titled `@username`.
+    pub display_name: Option<String>,
+    pub avatar_id: Option<i32>,
+    pub me: bool,
+}
+
+impl Profile {
+    /// Display name, or `@username` for someone unknown.
+    pub fn title(&self) -> String {
+        self.display_name
+            .clone()
+            .unwrap_or_else(|| format!("@{}", self.username))
+    }
+}
+
+/// A `user` entry's card from data already loaded, without a request: space
+/// members, then `GET /api/people`, then DM peers, each matched by id. Anyone
+/// else keeps the entry's username. Other entry types have no card.
+pub fn profile(
+    entry: &Mention,
+    me: Option<&str>,
+    members: &[Member],
+    people: &[KnownPerson],
+    directs: &[DirectConversation],
+) -> Option<Profile> {
+    if entry.kind != "user" {
+        return None;
+    }
+    let id = entry.id.as_deref();
+    let known = id.and_then(|id| {
+        members
+            .iter()
+            .find(|member| member.id == id)
+            .map(|member| (&member.username, &member.display_name, member.avatar_id))
+            .or_else(|| {
+                people
+                    .iter()
+                    .find(|person| person.id == id)
+                    .map(|person| (&person.username, &person.display_name, person.avatar_id))
+            })
+            .or_else(|| {
+                directs
+                    .iter()
+                    .find(|direct| direct.peer.id == id)
+                    .map(|direct| (&direct.peer.username, &direct.peer.display_name, None))
+            })
+    });
+    let (username, display_name, avatar_id) = match known {
+        Some((username, display_name, avatar_id)) => {
+            (username.clone(), Some(display_name.clone()), avatar_id)
+        }
+        None => (entry.username.clone()?, None, None),
+    };
+    Some(Profile {
+        username,
+        display_name,
+        avatar_id,
+        me: id.is_some() && id == me,
+    })
 }
 
 /// A message mentions `me` when a `user` entry has my account id, or when it
@@ -373,7 +438,7 @@ mod tests {
     fn pills<'a>(text: &'a str, mentions: &[Mention]) -> Vec<&'a str> {
         highlights(text, mentions)
             .into_iter()
-            .map(|range| &text[range])
+            .map(|(range, _)| &text[range])
             .collect()
     }
 
@@ -423,5 +488,95 @@ mod tests {
             None
         ));
         assert!(!mentions_me(&[], "author", me));
+    }
+
+    #[test]
+    fn highlights_carry_the_entry_each_pill_resolved_to() {
+        let mentions = [user("user00000001", "alice"), entry("everyone", None, None)];
+        let kinds: Vec<_> = highlights("@ALICE @everyone", &mentions)
+            .into_iter()
+            .map(|(_, entry)| (entry.kind.as_str(), entry.id.as_deref()))
+            .collect();
+        assert_eq!(kinds, [("user", Some("user00000001")), ("everyone", None)]);
+    }
+
+    #[test]
+    fn profiles_resolve_members_then_people_then_dm_peers_then_unknown() {
+        let member = |id: &str, username: &str, display_name: &str| Member {
+            id: id.into(),
+            avatar_id: Some(3),
+            username: username.into(),
+            display_name: display_name.into(),
+            owner: false,
+        };
+        let known = |id: &str, username: &str, display_name: &str| KnownPerson {
+            id: id.into(),
+            username: username.into(),
+            display_name: display_name.into(),
+            avatar_id: Some(9),
+        };
+        let direct = |id: &str, username: &str, display_name: &str| DirectConversation {
+            id: format!("dm-{id}"),
+            peer: crate::model::DirectPeer {
+                id: id.into(),
+                username: username.into(),
+                display_name: display_name.into(),
+                avatar_id: None,
+            },
+            last_seq: "0".into(),
+            read_seq: "0".into(),
+            status: crate::model::DirectStatus::Accepted,
+            blocked: false,
+        };
+        let members = [member("u1", "alex", "Alex (space)")];
+        let people = [
+            known("u1", "alex", "Alex (people)"),
+            known("u2", "maya", "Maya (people)"),
+        ];
+        let directs = [
+            direct("u2", "maya", "Maya (DM)"),
+            direct("u3", "sam", "Sam (DM)"),
+        ];
+        let card = |entry: Mention| profile(&entry, Some("me"), &members, &people, &directs);
+        assert_eq!(
+            card(user("u1", "stale_name")),
+            Some(Profile {
+                username: "alex".into(),
+                display_name: Some("Alex (space)".into()),
+                avatar_id: Some(3),
+                me: false,
+            }),
+            "members first, with their current username"
+        );
+        let maya = card(user("u2", "maya")).unwrap();
+        assert_eq!(maya.display_name.as_deref(), Some("Maya (people)"));
+        assert_eq!(maya.avatar_id, Some(9));
+        let sam = card(user("u3", "sam")).unwrap();
+        assert_eq!(
+            (sam.display_name.as_deref(), sam.avatar_id),
+            (Some("Sam (DM)"), None)
+        );
+        let unknown = card(user("u9", "zed")).unwrap();
+        assert_eq!(
+            unknown,
+            Profile {
+                username: "zed".into(),
+                display_name: None,
+                avatar_id: None,
+                me: false,
+            }
+        );
+        assert_eq!(unknown.title(), "@zed");
+        assert_eq!(sam.title(), "Sam (DM)");
+        assert!(card(user("me", "fixture_owner")).unwrap().me, "self flag");
+        assert!(!card(entry("user", None, Some("ghost"))).unwrap().me);
+        assert_eq!(card(entry("user", None, None)), None, "nothing to show");
+        assert_eq!(card(entry("everyone", None, None)), None);
+        assert_eq!(card(entry("role", Some("u1"), Some("alex"))), None);
+        assert!(
+            !profile(&user("u1", "alex"), None, &members, &people, &directs)
+                .unwrap()
+                .me
+        );
     }
 }

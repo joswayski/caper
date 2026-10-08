@@ -61,8 +61,9 @@ you, then `@everyone` and `@here`; in DMs, everyone you share a space or DM with
 inserts `@username ` without sending. Names the API resolved in
 `content.mentions` render as terracotta pills, and messages that mention you get a
 light terracotta row tint with a 2px/pt/dp leading edge. Android, SwiftUI and egui
-pills are square-cornered background spans (web rounds them). Mentions do not
-notify anyone yet. The grammar and payload are described in
+pills are square-cornered background spans (web rounds them). Tapping or clicking
+a person's pill opens a profile card with **Message** (a popover on macOS and Rust
+desktop, a bottom sheet on Android and iPhone). Mentions do not notify anyone yet. The grammar and payload are described in
 [docs/media.md](../../docs/media.md#scope-and-architecture).
 
 First launch without a valid session opens email sign-in, not a Guest workspace.

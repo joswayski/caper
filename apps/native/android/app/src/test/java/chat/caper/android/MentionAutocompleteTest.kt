@@ -153,6 +153,53 @@ class MentionAutocompleteTest {
         assertEquals(listOf(MentionSpan(0, 6, "alice")), highlightedMentions("@alice", listOf(user("alice"))))
     }
 
+    @Test fun `only person pills resolve to a user entry`() {
+        val entries = listOf(user("alice"), everyone, here, MessageMention("role", "x", "team"))
+        val spans = mentionSpans("@Alice @everyone @here @team @bob")
+        assertEquals(listOf(user("alice"), null, null, null, null), spans.map { mentionedUser(it, entries) })
+    }
+
+    @Test fun `mention card resolves members, then people, then DM peers, then unknown`() {
+        val me = Account("me000000000a", "me", "Me Myself", avatarId = 9)
+        val space = SpaceDetail(Space("space0000001", "Space"), emptyList(), listOf(
+            Member("me000000000a", "me", "Me Myself", true, 9), Member("maya0000000a", "maya", "Maya Member", false, 4),
+        ))
+        val people = listOf(Person("maya0000000a", "maya", "Maya Person", 5), Person("alex0000000a", "alex", "Alex Person", null))
+        val dms = listOf(
+            DirectConversation("direct000001", DirectPeer("alex0000000a", "alex", "Alex Peer"), "0", "0"),
+            DirectConversation("direct000002", DirectPeer("sam00000000a", "sam", "Sam Peer"), "0", "0"),
+        )
+        val state = AppUiState(account = me, selectedSpace = space, people = people, directConversations = dms)
+
+        assertEquals(MentionCard("maya0000000a", "maya", "Maya Member", 4), mentionCard("maya0000000a", "maya", state))
+        assertEquals(MentionCard("alex0000000a", "alex", "Alex Person", null), mentionCard("alex0000000a", "alex", state))
+        assertEquals(MentionCard("sam00000000a", "sam", "Sam Peer", null), mentionCard("sam00000000a", "sam", state))
+        assertEquals(MentionCard("maya0000000a", "maya", "Maya Person", 5), mentionCard("maya0000000a", "maya", state.copy(selectedSpace = null)))
+        assertEquals(MentionCard("alex0000000a", "alex", "Alex Peer", null), mentionCard("alex0000000a", "alex", state.copy(people = null)))
+
+        // Tagged, but nothing shared: `@username` title, no second line, still messageable by username.
+        val unknown = mentionCard("zed00000000a", "zed", state)
+        assertEquals(MentionCard("zed00000000a", "zed", null, null, self = false), unknown)
+        assertEquals("@zed", unknown.title)
+        assertNull(unknown.subtitle)
+        assertEquals("Maya Member", mentionCard("maya0000000a", "maya", state).title)
+        assertEquals("@maya", mentionCard("maya0000000a", "maya", state).subtitle)
+        // An entry without an id never matches by name alone.
+        assertEquals(MentionCard(null, "maya", null), mentionCard(null, "maya", state))
+    }
+
+    @Test fun `mention card marks you by id, or by username when the entry has no id`() {
+        val me = Account("me000000000a", "me", "Me Myself", avatarId = 9)
+        val member = SpaceDetail(Space("space0000001", "Space"), emptyList(), listOf(Member("me000000000a", "me", "Me Myself", true, 9)))
+        assertTrue(mentionCard("me000000000a", "me", AppUiState(account = me, selectedSpace = member)).self)
+        // People lists exclude you; your own account still fills the card.
+        assertEquals(MentionCard("me000000000a", "me", "Me Myself", 9, self = true), mentionCard("me000000000a", "me", AppUiState(account = me)))
+        assertTrue(mentionCard(null, "ME", AppUiState(account = me)).self)
+        assertFalse(mentionCard("other000000a", "me", AppUiState(account = me)).self)
+        assertFalse(mentionCard("me000000000a", "me", AppUiState()).self)
+        assertTrue(mentionCard("me000000000a", "me", AppUiState(chatAuthorId = "me000000000a")).self)
+    }
+
     @Test fun `mentions me by id, or by everyone and here from someone else`() {
         assertTrue(mentionsMe(listOf(user("me", "me_id")), "other", "me_id"))
         assertFalse(mentionsMe(listOf(user("me", "not_me")), "other", "me_id"))

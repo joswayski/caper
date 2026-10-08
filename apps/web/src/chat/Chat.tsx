@@ -18,6 +18,7 @@ import { emojiAsset } from "./emoji.ts";
 import { emojiToken, emojiSuggestions, insertEmoji, loadEmojiChoices, type EmojiChoice } from "./emoji-autocomplete.ts";
 import {
   insertMention,
+  mentionCardPerson,
   mentionName,
   mentionSegments,
   mentionSuggestions,
@@ -27,6 +28,7 @@ import {
   type MentionCandidate,
   type MentionSuggestion,
 } from "./mentions.ts";
+import MentionCard, { type MentionCardTarget } from "./MentionCard.tsx";
 import { blockedLabel, blockedRuns, type BlockedRun } from "./blocked.ts";
 import { unblock, useBlockedIds } from "../spaces/blocks.ts";
 import "./chat.css";
@@ -104,6 +106,8 @@ export default function Chat({
   onLocalPresenceChange,
   onOnlineChange,
   mentionMembers,
+  mentionDirectory = [],
+  onMessagePerson,
 }: {
   name: string;
   signedIn: boolean;
@@ -128,6 +132,8 @@ export default function Chat({
   onLocalPresenceChange?: (status: PresenceStatus) => void;
   onOnlineChange?: (online: boolean) => void;
   /** People `@` can suggest; undefined until loaded. */ mentionMembers?: MentionCandidate[];
+  /** Profile-card lookup, most specific first. */ mentionDirectory?: MentionCandidate[];
+  onMessagePerson?: (username: string) => Promise<void>;
 }) {
   const [state, setState] = useState(() => initialChatView(initialHistory, initialHistoryError));
   const [showConnectionStatus, setShowConnectionStatus] = useState(false);
@@ -152,6 +158,7 @@ export default function Chat({
   const [historyTarget, setHistoryTarget] = useState<string>();
   const [actionStatus, setActionStatus] = useState("");
   const [reactionSaves, setReactionSaves] = useState<Record<string, ReactionSave | undefined>>({});
+  const [mentionCard, setMentionCard] = useState<MentionCardTarget>();
   const [showPins, setShowPins] = useState(false);
   const [pinning, setPinning] = useState<Set<string>>(() => new Set());
   const [pinError, setPinError] = useState<{ messageId: string; active: boolean; text: string }>();
@@ -167,6 +174,7 @@ export default function Chat({
   useEffect(() => {
     setActionTarget(undefined);
     setReactorsTarget(undefined);
+    setMentionCard(undefined);
     setForwardTarget(undefined);
     setConversationTarget(undefined);
     setEditTarget(undefined);
@@ -719,15 +727,37 @@ export default function Chat({
             {(!("content" in message) || message.content.text) && (
               <p>
                 {"content" in message
-                  ? mentionSegments(message.content.text, message.content.mentions).map((segment, part) =>
-                      segment.mention ? (
-                        <span key={part} className="chat-mention">
+                  ? mentionSegments(message.content.text, message.content.mentions).map((segment, part) => {
+                      if (!segment.mention) return segment.text;
+                      const user = segment.user;
+                      if (!user)
+                        return (
+                          <span key={part} className="chat-mention">
+                            {segment.text}
+                          </span>
+                        );
+                      const known = mentionDirectory.find((candidate) => candidate.id === user.id);
+                      return (
+                        <button
+                          type="button"
+                          key={part}
+                          className="chat-mention chat-mention-person"
+                          aria-haspopup="dialog"
+                          aria-label={`Open profile for ${known?.displayName ?? `@${user.username}`}`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setActionTarget(undefined);
+                            setMentionCard({
+                              person: mentionCardPerson(user, mentionDirectory, state.author?.id),
+                              anchor: event.currentTarget,
+                              drawer: isTouchLayout(),
+                            });
+                          }}
+                        >
                           {segment.text}
-                        </span>
-                      ) : (
-                        segment.text
-                      ),
-                    )
+                        </button>
+                      );
+                    })
                   : message.text}
               </p>
             )}
@@ -1076,6 +1106,15 @@ export default function Chat({
             </>
           )}
         </div>
+
+        {mentionCard && (
+          <MentionCard
+            key={mentionCard.person.id}
+            target={mentionCard}
+            onClose={() => setMentionCard(undefined)}
+            onMessage={onMessagePerson}
+          />
+        )}
 
         {actionTarget && actionMessage && (
           <MessageActions

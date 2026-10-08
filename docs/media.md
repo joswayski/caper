@@ -54,7 +54,17 @@ terracotta pills, and tint messages that mention the reader (their id, or
 usernames. Tagging is not access: someone tagged in a conversation they cannot
 open still cannot read it, and future notifications go only to people who can read
 the conversation. Mention ids are the 12-character random account `external_id`,
-never the internal sequence key. Pills are not yet clickable. Mentions do not notify anyone yet; see
+never the internal sequence key.
+
+Clicking or tapping a person's pill opens a small profile card (`@everyone`/`@here`
+pills stay inert): 48px avatar, display name, `@username`, and a **Message** button
+that opens the existing DM or starts one through `POST /api/dms`, then navigates
+there. Your own card says "You" and has no button. Card data comes only from what
+the client already loaded: space members, then `GET /api/people`, then DM peers;
+someone you share nothing with shows `@username` and the generic avatar, and
+Message still works. Wide layouts (web desktop, macOS, Rust desktop) show a popover
+by the pill; web narrow/touch, Android and iPhone show a bottom sheet. DM errors
+stay inline in the card. No API change. Mentions do not notify anyone yet; see
 [notifications.md](notifications.md).
 
 No migration, gateway, infrastructure or secret change is required. The API and

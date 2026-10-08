@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "vitest";
 import {
   insertMention,
+  mentionCardPerson,
   mentionName,
   mentionSegments,
   mentionSuggestions,
@@ -59,11 +60,11 @@ test("only server-resolved names render as mentions", () => {
   const mentions = [{ type: "user", id: "u-maya", username: "maya" }, { type: "everyone" }, { type: "future" }];
   assert.deepEqual(mentionSegments("hey @Maya, @everyone @here @mo bob@maya.com (@maya)", mentions), [
     { text: "hey ", mention: false },
-    { text: "@Maya", mention: true },
+    { text: "@Maya", mention: true, user: { id: "u-maya", username: "maya" } },
     { text: ", ", mention: false },
     { text: "@everyone", mention: true },
     { text: " @here @mo bob@maya.com (", mention: false },
-    { text: "@maya", mention: true },
+    { text: "@maya", mention: true, user: { id: "u-maya", username: "maya" } },
     { text: ")", mention: false },
   ]);
   assert.deepEqual(mentionSegments("@maya", undefined), [{ text: "@maya", mention: false }]);
@@ -90,4 +91,27 @@ test("a message mentions the reader by id or by everyone/here from someone else"
   assert.equal(mentionsAccount(message("u-mo", [{ type: "future", id: "u-maya" }]), "u-maya"), false);
   assert.equal(mentionsAccount(message("u-mo", undefined), "u-maya"), false);
   assert.equal(mentionsAccount(message("u-mo", [{ type: "everyone" }]), undefined), false);
+});
+
+test("profile cards prefer the most specific local match and flag yourself", () => {
+  const directory: MentionCandidate[] = [
+    { id: "u-maya", username: "maya", displayName: "Maya Lopez", avatarId: 31 },
+    { id: "u-maya", username: "maya", displayName: "Stale Maya" },
+  ];
+  assert.deepEqual(mentionCardPerson({ id: "u-maya", username: "maya" }, directory, "u-me"), {
+    id: "u-maya",
+    username: "maya",
+    displayName: "Maya Lopez",
+    avatarId: 31,
+    self: false,
+  });
+  assert.deepEqual(mentionCardPerson({ id: "u-stranger", username: "sam" }, directory, "u-me"), {
+    id: "u-stranger",
+    username: "sam",
+    displayName: undefined,
+    avatarId: undefined,
+    self: false,
+  });
+  assert.equal(mentionCardPerson({ id: "u-me", username: "me" }, directory, "u-me").self, true);
+  assert.equal(mentionCardPerson({ id: "u-me", username: "me" }, directory, undefined).self, false);
 });

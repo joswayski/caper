@@ -201,7 +201,7 @@ final class MentionAutocompleteTests: XCTestCase {
         let mentions: [MessageMention] = [.user(id: "Alice0000001", username: "alice"), .everyone]
         let text = "@Alice @bob @everyone @here bob@alice"
         XCTAssertEqual(MentionAutocomplete.segments(in: text, mentions: mentions), [
-            MentionSegment(text: "@Alice", highlighted: true),
+            MentionSegment(text: "@Alice", highlighted: true, user: MentionPill(id: "Alice0000001", username: "alice")),
             MentionSegment(text: " @bob ", highlighted: false),
             MentionSegment(text: "@everyone", highlighted: true),
             MentionSegment(text: " @here bob@alice", highlighted: false),

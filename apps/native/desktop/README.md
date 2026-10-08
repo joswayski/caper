@@ -47,7 +47,10 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   `content.mentions` render as pills: egui background spans with square corners
   rather than 4px rounded ones, including in thread replies and edited messages.
   Messages that mention you get a terracotta tint with a 2px leading edge.
-  Mentions do not notify anyone.
+  Clicking a person's pill, or Enter/Space on a focused pill, opens a card with
+  their avatar, name and `@username` from loaded data, and a **Message** button
+  that opens or creates the DM (your own card says "You"). Mentions do not
+  notify anyone.
 - Message requests: a DM from someone you share no space with waits under
   "Message requests" (with a count, never unread dots or sounds) and opens
   read-only with Accept, Decline or Block; your own pending requests say
@@ -268,7 +271,8 @@ the voice dock and Audio test dialog without starting capture or a transport.
 `parity-direct` and `parity-direct-new` preview a two-person DM and its
 exact-username dialog without a live account or notification provider.
 `parity-mentions` previews mention pills, an unresolved `@name`, and rows that
-mention you; type `@` in its composer for space suggestions.
+mention you; click `@alex` or `@fixture_owner` for the cards, or type `@` in its
+composer for space suggestions.
 `parity-direct-no-spaces` previews the first-space page's Direct messages entry
 and the global list without any space membership.
 `parity-requests` previews an open incoming request and the requests list;
