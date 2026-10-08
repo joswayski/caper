@@ -388,6 +388,24 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertLessThan(send.frame.minY - composer.frame.maxY, 32)
         XCTAssertTrue(send.isHittable)
         capture("thread-composer-single-line-keyboard", app: app)
+
+        hold(row)
+        let actions = try require(app.descendants(matching: .any)["message-actions-sheet"], timeout: 5,
+                                  "Missing thread root actions")
+        XCTAssertFalse(actions.buttons["Reply in thread"].exists, "The root is already open in its thread")
+        XCTAssertTrue(actions.buttons["Copy text"].exists)
+        actions.buttons["Copy text"].tap()
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: actions)
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed)
+
+        send.tap()
+        let reply = try require(app.staticTexts["Short reply"], timeout: 5, "Reply was not sent")
+        hold(reply)
+        let replyActions = try require(app.descendants(matching: .any)["message-actions-sheet"], timeout: 5,
+                                       "Missing thread reply actions")
+        XCTAssertFalse(replyActions.buttons["Reply in thread"].exists, "Replies cannot start nested threads")
+        XCTAssertTrue(replyActions.buttons["Copy text"].exists)
+        capture("thread-reply-actions-fixture", app: app)
     }
     #endif
 
@@ -814,19 +832,20 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(mute.waitForExistence(timeout: 5), "The channel menu offers Mute channel")
         let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: mute)
         XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 5), .completed, "Mute is available once settings load")
-        let forever = app.descendants(matching: .any)["Until I turn it back on"].firstMatch
         #if os(macOS)
-        // XCUITest re-hovers the parent item before every submenu item, and
-        // its synthesized move into the submenu closes it, even level with the
-        // first preset (seen in CI's recordings). Open the submenu by hovering
-        // its parent, then choose with the keyboard: → enters the submenu at
-        // "For 15 minutes", and four ↓ reach the last preset.
-        mute.hover()
-        XCTAssertTrue(forever.waitForExistence(timeout: 3))
+        // Keyboard only, without touching the submenu through accessibility.
+        // In CI's recordings the open "Mute channel" submenu closed whenever
+        // the test looked up one of its items (an existence check, or a hover,
+        // which XCUITest starts by re-hovering the parent), so the choice
+        // never landed. ↓↓↓ reaches "Mute channel" after Channel settings and
+        // Notifications, → opens its submenu at "For 15 minutes", and ↓↓↓↓
+        // reaches the last preset.
+        for _ in 0..<3 { app.typeKey(.downArrow, modifierFlags: []) }
         app.typeKey(.rightArrow, modifierFlags: [])
         for _ in 0..<4 { app.typeKey(.downArrow, modifierFlags: []) }
         app.typeKey(.return, modifierFlags: [])
         #else
+        let forever = app.descendants(matching: .any)["Until I turn it back on"].firstMatch
         mute.tap()
         XCTAssertTrue(forever.waitForExistence(timeout: 3))
         forever.tap()

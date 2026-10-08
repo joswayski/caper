@@ -31,6 +31,24 @@ class ReactionsTest {
         assertSame(laterPin, mergeReaction(laterPin, removed.copy(channelId = "another")))
     }
 
+    @Test fun `pin snapshots preserve newer reactions without replacing independent content`() {
+        val pinned = message.copy(pin = MessagePin(message.author, "later"), pinSeq = "12",
+            revision = 2, content = ChatContent(1, "text", "edited"))
+        val reacted = mergeReaction(message, update("13", listOf("peer")))
+        val merged = mergeReaction(pinned, reacted)
+        assertEquals(listOf("peer"), merged.reactions.single().authorIds)
+        assertEquals("13", merged.reactionSeq)
+        assertEquals(pinned.pin, merged.pin)
+        assertEquals("12", merged.pinSeq)
+        assertEquals("edited", merged.content.text)
+        assertEquals(2, merged.revision)
+        val removed = reacted.copy(reactionSeq = "14", reactions = emptyList())
+        val latest = mergeReaction(merged, removed)
+        assertTrue(latest.reactions.isEmpty())
+        assertSame(latest, mergeReaction(latest, reacted))
+        assertSame(latest, mergeReaction(latest, removed.copy(id = "another-message", reactionSeq = "15")))
+    }
+
     @Test fun `only sequenced reactions advance durable recovery cursor`() {
         assertEquals("7", replayCursorAfterReaction("5", update("7", listOf("a")), sequenced = true))
         assertEquals("5", replayCursorAfterReaction("5", update("9", listOf("a")), sequenced = false))

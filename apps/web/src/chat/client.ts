@@ -1020,18 +1020,29 @@ export class ChatClient {
 
   private update(change: Partial<ChatViewState>) {
     if (change.messages) change = { ...change, pinnedMessages: this.timeline.pinnedMessages };
-    if (change.messages && (this.pinIntents.size || this.editIntents.size)) {
+    if (change.messages && (this.pinIntents.size || this.editIntents.size || this.reactionIntents.size)) {
       const project = (message: ChatMessage): ChatMessage => {
         const pin = this.pinIntents.get(message.id);
         const edit = this.editIntents.get(message.id);
-        if (!pin && (!edit || (message.revision ?? 1) > edit.expectedRevision)) return message;
-        return {
-          ...message,
-          ...(pin ? { pin: pin.pin } : {}),
-          ...(edit && (message.revision ?? 1) <= edit.expectedRevision
-            ? { content: { ...message.content, text: edit.text, mentions: [] } }
-            : {}),
-        };
+        if (pin || (edit && (message.revision ?? 1) <= edit.expectedRevision))
+          message = {
+            ...message,
+            ...(pin ? { pin: pin.pin } : {}),
+            ...(edit && (message.revision ?? 1) <= edit.expectedRevision
+              ? { content: { ...message.content, text: edit.text, mentions: [] } }
+              : {}),
+          };
+        const intents = this.reactionIntents.get(message.id);
+        if (!intents) return message;
+        const reactions = new Map((message.reactions ?? []).map((reaction) => [reaction.emoji, reaction]));
+        for (const [emoji, intent] of intents) {
+          if (intent.generation !== this.generation || intent.authorId !== this.session?.author.id) continue;
+          const authorIds = reactions.get(emoji)?.authorIds.filter((id) => id !== intent.authorId) ?? [];
+          if (intent.active) authorIds.push(intent.authorId);
+          if (authorIds.length) reactions.set(emoji, { emoji, authorIds });
+          else reactions.delete(emoji);
+        }
+        return { ...message, reactions: [...reactions.values()] };
       };
       const pinned = new Map(change.pinnedMessages!.map((message) => [message.id, message]));
       for (const [id, intent] of this.pinIntents) {
@@ -1042,24 +1053,6 @@ export class ChatClient {
         }
       }
       change = { ...change, messages: change.messages.map(project), pinnedMessages: [...pinned.values()].map(project) };
-    }
-    if (change.messages && this.reactionIntents.size) {
-      change = {
-        ...change,
-        messages: change.messages.map((message) => {
-          const intents = this.reactionIntents.get(message.id);
-          if (!intents) return message;
-          const reactions = new Map((message.reactions ?? []).map((reaction) => [reaction.emoji, reaction]));
-          for (const [emoji, intent] of intents) {
-            if (intent.generation !== this.generation || intent.authorId !== this.session?.author.id) continue;
-            const authorIds = reactions.get(emoji)?.authorIds.filter((id) => id !== intent.authorId) ?? [];
-            if (intent.active) authorIds.push(intent.authorId);
-            if (authorIds.length) reactions.set(emoji, { emoji, authorIds });
-            else reactions.delete(emoji);
-          }
-          return { ...message, reactions: [...reactions.values()] };
-        }),
-      };
     }
     this.state = { ...this.state, ...change };
     if (change.messages)

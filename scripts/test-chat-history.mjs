@@ -291,7 +291,6 @@ try {
   screenshot("chat-history-beginning");
 
   browser("set", "viewport", "390", "844", "2");
-  browser("click", 'button[aria-label="Hide member list"]');
   settle();
   assert.ok(metrics().rows < 40);
   assert.equal(evaluate("document.documentElement.scrollWidth <= innerWidth"), true);

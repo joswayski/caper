@@ -1808,6 +1808,78 @@ test("thread send retry freezes root and broadcast and confirms one shared reply
   assert.equal(f.client.snapshotHistory()?.cursor, "1");
 });
 
+test("duplicate delivery and local edits preserve unchanged message references", async (t) => {
+  const f = await sendingFixture(t);
+  const first = committed({ clientMessageId: "first", text: "First" }, "1");
+  const second = committed({ clientMessageId: "second", text: "Second" }, "2");
+  f.sockets[0].message(first);
+  f.sockets[0].message(second);
+  const rendered = f.state.messages;
+  f.sockets[0].message(second);
+  assert.equal(f.state.messages, rendered, "duplicate delivery must retain the render snapshot");
+  let finish!: (response: Response) => void;
+  vi.spyOn(globalThis, "fetch").mockImplementation(
+    () =>
+      new Promise<Response>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const saving = f.client.editMessage(first.id, "Changed first", 1);
+  assert.notEqual(f.state.messages[0], rendered[0]);
+  assert.equal(f.state.messages[0].content.text, "Changed first");
+  assert.equal(f.state.messages[1], rendered[1], "an edit must not clone unrelated rows");
+  assert.equal(rendered[0].content.text, "First", "optimism must not mutate the confirmed row");
+  finish(Response.json({ error: "not saved" }, { status: 503 }));
+  await assert.rejects(saving, /not saved/);
+  assert.equal(f.state.messages, rendered, "rollback reuses the unchanged authoritative snapshot");
+});
+
+for (const loaded of [true, false]) {
+  test(`pin reaction intents roll back to live state without cloning unrelated messages (loaded=${loaded})`, async (t) => {
+    const f = await sendingFixture(t);
+    const target = committed({ clientMessageId: "pinned", text: "Pinned" }, "1");
+    const pinned = { ...target, pin: { author: target.author, createdAt: target.createdAt }, pinSeq: "2" };
+    const unrelated = committed({ clientMessageId: "other", text: "Unchanged" }, "3");
+    f.client.start({
+      ...f.client.snapshotHistory()!,
+      messages: loaded ? [pinned, unrelated] : [unrelated],
+      pinnedMessages: [pinned],
+      cursor: "3",
+    });
+    await tick();
+    const stable = f.state.messages.at(-1);
+    let finish!: (response: Response) => void;
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      () =>
+        new Promise<Response>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const saving = f.client.setReaction(target.id, "👍", true);
+    assert.deepEqual(f.state.pinnedMessages[0].reactions, [{ emoji: "👍", authorIds: ["guest"] }]);
+    assert.equal(f.client.snapshotHistory()?.pinnedMessages?.[0].reactions, undefined);
+    assert.strictEqual(f.state.messages.at(-1), stable, "local intents must not clone unrelated rows");
+    f.sockets[0].frame({
+      type: "message.reactions",
+      schemaVersion: 1,
+      channelId: "general",
+      messageId: target.id,
+      seq: "4",
+      reactions: [{ emoji: "🎉", authorIds: ["peer"] }],
+    });
+    assert.deepEqual(f.state.pinnedMessages[0].reactions, [
+      { emoji: "🎉", authorIds: ["peer"] },
+      { emoji: "👍", authorIds: ["guest"] },
+    ]);
+    finish(Response.json({ error: "temporary" }, { status: 503 }));
+    await assert.rejects(saving, /temporary/);
+    assert.deepEqual(f.state.pinnedMessages[0].reactions, [{ emoji: "🎉", authorIds: ["peer"] }]);
+    assert.strictEqual(f.state.messages.at(-1), stable);
+    assert.equal(f.state.messages.length, loaded ? 2 : 1);
+    assert.equal(f.client.snapshotHistory()?.cursor, "4");
+  });
+}
+
 test("edit PUTs keep expected revision, merge live updates and reject late abandoned acknowledgements", async (t) => {
   const f = await sendingFixture(t);
   const original = committed({ clientMessageId: "edit-root", text: "Friday" }, "1");

@@ -705,7 +705,7 @@ pub struct Timeline {
     cursor: u64,
     pin_snapshot_cursor: u64,
     messages: BTreeMap<u64, Message>,
-    ids: BTreeSet<String>,
+    ids: BTreeMap<String, u64>,
     buffered: BTreeMap<u64, Message>,
     unseen_reactions: BTreeMap<String, ReactionUpdate>,
     unseen_pins: BTreeMap<String, Message>,
@@ -917,12 +917,12 @@ impl Timeline {
 
     fn merge_edit_snapshot(&mut self, message: Message) -> Result<bool, String> {
         message.validate()?;
-        if !self.ids.contains(&message.id)
+        if !self.ids.contains_key(&message.id)
             && !self.edits.contains_key(&message.id)
             && self
                 .edits
                 .keys()
-                .filter(|id| !self.ids.contains(*id))
+                .filter(|id| !self.ids.contains_key(*id))
                 .count()
                 >= 256
         {
@@ -1064,25 +1064,15 @@ impl Timeline {
         {
             return Err("invalid reaction update".into());
         }
-        for message in self
-            .pinned
-            .values_mut()
-            .chain(self.unseen_pins.values_mut())
-        {
-            if message.id == update.message_id {
-                if message.channel_id != update.channel_id {
-                    return Err("reaction update is for another channel".into());
-                }
-                if seq > sequence(message.reaction_seq.as_deref().unwrap_or("0"))? {
-                    message.reactions.clone_from(&update.reactions);
-                    message.reaction_seq = Some(update.seq.clone());
-                }
-            }
-        }
-        if let Some(message) = self
-            .messages
-            .values_mut()
-            .find(|item| item.id == update.message_id)
+        let loaded = self
+            .ids
+            .get(&update.message_id)
+            .and_then(|seq| self.messages.get_mut(seq));
+        for message in loaded
+            .into_iter()
+            .chain(self.pinned.values_mut())
+            .chain(self.unseen_pins.get_mut(&update.message_id))
+            .filter(|item| item.id == update.message_id)
         {
             if message.channel_id != update.channel_id {
                 return Err("reaction update is for another channel".into());
@@ -1097,7 +1087,8 @@ impl Timeline {
                 message.reactions.clone_from(&update.reactions);
                 message.reaction_seq = Some(update.seq.clone());
             }
-        } else {
+        }
+        if !self.ids.contains_key(&update.message_id) {
             if self
                 .messages
                 .values()
@@ -1309,7 +1300,8 @@ impl Timeline {
             }
             overlay_forward(&mut message, existing);
             *existing = message;
-        } else if !self.messages.contains_key(&seq) && self.ids.insert(message.id.clone()) {
+        } else if !self.messages.contains_key(&seq) && !self.ids.contains_key(&message.id) {
+            self.ids.insert(message.id.clone(), seq);
             self.messages.insert(seq, message);
         }
         if let Some(message) = self.messages.get(&seq) {
@@ -2039,6 +2031,83 @@ mod tests {
                 Some("15")
             );
         }
+    }
+
+    #[test]
+    fn pins_share_reactions_without_entering_channel_pagination() {
+        for loaded in [false, true] {
+            let mut timeline = Timeline::default();
+            let pinned = pin_update(message("old", 1), 8, true).message;
+            let mut messages = vec![message("new", 10)];
+            if loaded {
+                messages.push(pinned.clone());
+            }
+            timeline.reset(messages, "10").unwrap();
+            timeline.reset_pins(vec![pinned.clone()]).unwrap();
+            timeline
+                .apply_reactions(reaction_update("old", 11, "peer"))
+                .unwrap();
+            assert_eq!(
+                timeline.pinned_messages().next().unwrap().reactions[0].author_ids,
+                ["peer"]
+            );
+            assert_eq!(timeline.messages().count(), if loaded { 2 } else { 1 });
+            let mut removed = reaction_update("old", 14, "peer");
+            removed.reactions.clear();
+            timeline.merge_reaction_ack(removed).unwrap();
+            timeline
+                .apply_pin(pin_update(pinned.clone(), 12, false))
+                .unwrap();
+            timeline
+                .apply_pin(pin_update(pinned.clone(), 13, true))
+                .unwrap();
+            let latest = timeline.pinned_messages().next().unwrap();
+            assert_eq!(latest.reaction_seq.as_deref(), Some("14"));
+            assert!(latest.reactions.is_empty());
+            assert_eq!(timeline.cursor(), "13");
+            timeline.prepend(vec![pinned]).unwrap();
+            let latest = timeline.messages().next().unwrap();
+            assert_eq!(latest.reaction_seq.as_deref(), Some("14"));
+            assert!(latest.reactions.is_empty());
+        }
+    }
+
+    #[test]
+    fn first_pin_overlays_unseen_reactions_and_stale_pin_revisions_can_carry_newer_reactions() {
+        let mut timeline = Timeline::default();
+        timeline.reset(vec![message("new", 10)], "10").unwrap();
+        timeline
+            .apply_reactions(reaction_update("old", 11, "peer"))
+            .unwrap();
+        timeline
+            .apply_pin(pin_update(message("old", 1), 12, true))
+            .unwrap();
+        assert_eq!(
+            timeline
+                .pinned_messages()
+                .next()
+                .unwrap()
+                .reaction_seq
+                .as_deref(),
+            Some("11")
+        );
+        let mut snapshot = pin_update(message("old", 1), 12, true);
+        snapshot.message.reaction_seq = Some("15".into());
+        timeline.merge_pin_ack(snapshot).unwrap();
+        assert!(
+            timeline
+                .pinned_messages()
+                .next()
+                .unwrap()
+                .reactions
+                .is_empty()
+        );
+        timeline.prepend(vec![message("old", 1)]).unwrap();
+        assert_eq!(
+            timeline.messages().next().unwrap().reaction_seq.as_deref(),
+            Some("15")
+        );
+        assert_eq!(timeline.cursor(), "12");
     }
 
     #[test]

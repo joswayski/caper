@@ -85,6 +85,7 @@ const measureItem = (element: HTMLElement, field: "offsetHeight" | "offsetWidth"
 export default function Chat({
   name,
   signedIn,
+  accountId,
   identityReady,
   channelId,
   channelName: expectedChannelName,
@@ -111,6 +112,8 @@ export default function Chat({
 }: {
   name: string;
   signedIn: boolean;
+  /** Known viewer identity, independent of the chat sending capability. */
+  accountId?: string;
   identityReady: boolean;
   channelId?: string;
   channelName?: string;
@@ -136,6 +139,7 @@ export default function Chat({
   onMessagePerson?: (username: string) => Promise<void>;
 }) {
   const [state, setState] = useState(() => initialChatView(initialHistory, initialHistoryError));
+  const viewerId = accountId ?? state.author?.id;
   const [showConnectionStatus, setShowConnectionStatus] = useState(false);
   const [firstItemIndex, setFirstItemIndex] = useState(INITIAL_ITEM_INDEX);
   const [draft, setDraft] = useState("");
@@ -228,8 +232,8 @@ export default function Chat({
     }
   }, [state.phase]);
   const isTouchLayout = () => window.matchMedia("(max-width: 760px), (pointer: coarse)").matches;
-  const openActions = (messageId: string, anchor: HTMLElement) =>
-    setActionTarget({ messageId, anchor, mode: "actions", drawer: isTouchLayout() });
+  const openActions = (messageId: string, anchor: HTMLElement, inThread: boolean) =>
+    setActionTarget({ messageId, anchor, mode: "actions", drawer: isTouchLayout(), inThread });
   const openThread = (rootId: string) => {
     setActionTarget(undefined);
     setReactorsTarget(undefined);
@@ -668,7 +672,7 @@ export default function Chat({
               timer: setTimeout(() => {
                 suppressClick.current = true;
                 window.getSelection()?.removeAllRanges();
-                openActions(message.id, anchor);
+                openActions(message.id, anchor, inThread);
               }, 500),
             };
           }}
@@ -689,7 +693,7 @@ export default function Chat({
             event.preventDefault();
             cancelPress();
             suppressClick.current = true;
-            openActions(message.id, event.currentTarget);
+            openActions(message.id, event.currentTarget, inThread);
           }}
           tabIndex={pending ? undefined : -1}
         >
@@ -773,7 +777,7 @@ export default function Chat({
                   aria-label={`Message actions for ${message.author.name}`}
                   aria-haspopup="dialog"
                   aria-expanded={actionTarget?.messageId === message.id && actionTarget.mode === "actions"}
-                  onClick={(event) => openActions(message.id, event.currentTarget)}
+                  onClick={(event) => openActions(message.id, event.currentTarget, inThread)}
                 >
                   <MoreHorizontal size={14} aria-hidden="true" />
                 </button>
@@ -791,8 +795,8 @@ export default function Chat({
                 <MessageReactions
                   message={message}
                   channelId={state.channelId}
-                  authorId={state.author?.id}
-                  readOnly={readOnly}
+                  authorId={viewerId}
+                  readOnly={readOnly || !state.author}
                   save={reactionSaves[message.id]}
                   onReact={react}
                   onShowReactors={(emoji, anchor) => showReactors(message.id, emoji, anchor)}
@@ -804,6 +808,7 @@ export default function Chat({
                       anchorRect: anchor.getBoundingClientRect(),
                       mode: "emoji",
                       drawer: isTouchLayout(),
+                      inThread,
                     })
                   }
                   onDismissError={() => setReactionSaves((current) => ({ ...current, [message.id]: undefined }))}
@@ -1121,7 +1126,7 @@ export default function Chat({
             key={actionMessage.id}
             message={actionMessage}
             target={actionTarget}
-            authorId={state.author?.id}
+            authorId={viewerId}
             canReact={!readOnly && !!state.author}
             canPin={!readOnly && !!state.author}
             pinning={pinning.has(actionMessage.id)}
@@ -1140,7 +1145,9 @@ export default function Chat({
             }
             onClose={() => setActionTarget(undefined)}
             onCopied={setActionStatus}
-            onReply={() => openThread(actionMessage.threadRootId ?? actionMessage.id)}
+            onReply={
+              actionTarget.inThread ? undefined : () => openThread(actionMessage.threadRootId ?? actionMessage.id)
+            }
             onEdit={() => openEdit(actionMessage.id)}
             onHistory={() => openHistory(actionMessage.id)}
             onViewReactions={(emoji) => showReactors(actionMessage.id, emoji, actionTarget.anchor)}
@@ -1210,14 +1217,16 @@ export default function Chat({
         ) : (
           <div className="chat-composer">
             {composerBanner}
-            {state.pendingSend?.threadRootId && (
-              <p className="chat-inline-error">
-                A thread reply is awaiting confirmation.{" "}
-                <button type="button" onClick={() => openThread(state.pendingSend!.threadRootId!)}>
-                  Open thread
-                </button>
-              </p>
-            )}
+            {state.pendingSend?.threadRootId &&
+              state.sendError &&
+              state.thread?.rootId !== state.pendingSend.threadRootId && (
+                <p className="chat-inline-error" role="alert">
+                  {state.sendRejected ? "A thread reply wasn’t sent." : "A thread reply couldn’t be confirmed."}{" "}
+                  <button type="button" onClick={() => openThread(state.pendingSend!.threadRootId!)}>
+                    Review reply
+                  </button>
+                </p>
+              )}
             {state.sessionError && (
               <p className="chat-inline-error" role="alert">
                 {state.sessionError}{" "}

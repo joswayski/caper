@@ -232,6 +232,12 @@
   outline: 2px solid var(--terracotta);
   outline-offset: 2px;
 }
+.chat-add-reaction:disabled {
+  cursor: wait;
+}
+.chat-add-reaction:disabled > svg {
+  opacity: 0.5;
+}
 @media (hover: hover) and (pointer: fine) {
   .chat-add-reaction,
   .chat-message-actions-trigger,
@@ -287,10 +293,6 @@
 .chat-reaction img {
   flex-shrink: 0;
   object-fit: contain;
-}
-.chat-add-reaction:disabled {
-  cursor: wait;
-  opacity: 0.5;
 }
 .chat-reaction:focus-visible,
 .chat-add-reaction:focus-visible,
@@ -1061,7 +1063,6 @@
 }
 .chat-reaction[aria-disabled="true"] {
   cursor: wait;
-  opacity: 0.5;
 }
 .chat-reaction-tooltip {
   z-index: 1001;
@@ -1773,6 +1774,15 @@
   font-size: 0.7rem;
   color: var(--text-muted);
   overflow-wrap: anywhere;
+}
+.chat-version-columns > .chat-version-text {
+  font-size: 0.85rem;
+  color: var(--text);
+}
+.chat-version-comparison > .chat-edit-notice {
+  margin: 0;
+  padding: 12px;
+  border-top: 1px solid var(--border);
 }
 .chat-version-older {
   padding-top: 20px;
