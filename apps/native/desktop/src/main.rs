@@ -7649,13 +7649,16 @@ impl CaperApp {
             let jump_latest = ui.memory(|memory| memory.focused().is_none())
                 && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::End));
             let mut history = egui::ScrollArea::vertical()
-                .id_salt("history")
-                .stick_to_bottom(true)
+                // Pins must not clamp the conversation's retained scroll offset.
+                .id_salt(if self.showing_pins { "pins" } else { "history" })
+                .stick_to_bottom(!self.showing_pins)
                 .auto_shrink([false, false]);
-            if let Some(offset) = self.history_offset.take() {
-                history = history.vertical_scroll_offset(offset);
-            } else if jump_latest {
-                history = history.vertical_scroll_offset(f32::MAX);
+            if !self.showing_pins {
+                if let Some(offset) = self.history_offset.take() {
+                    history = history.vertical_scroll_offset(offset);
+                } else if jump_latest {
+                    history = history.vertical_scroll_offset(f32::MAX);
+                }
             }
             let history = history.show(ui, |ui| {
                     if self.showing_pins {
@@ -7867,29 +7870,31 @@ impl CaperApp {
         history: &egui::scroll_area::ScrollAreaOutput<()>,
         heading: egui::Rect,
     ) {
-        let height = history.content_size.y;
-        let viewport = history.inner_rect.height();
-        let offset = history.state.offset.y;
-        if let Some(previous) = self.older_anchor.take() {
-            // Keep the reader's place after older messages arrive above.
-            self.history_offset = Some(offset + (height - previous).max(0.0));
-            ui.ctx().request_repaint();
-        }
-        self.history_height = height;
-        if self.timeline.messages().next().is_some()
-            && (height <= viewport + 1.0 || offset >= height - viewport - 2.0)
-        {
-            self.older_armed = true;
-        }
-        // Web loads the previous page when the list reaches its start.
-        if self.older_armed
-            && self.history_offset.is_none()
-            && offset <= 1.0
-            && self.has_more
-            && !self.loading_older
-            && self.older_error.is_none()
-        {
-            self.load_older();
+        if !self.showing_pins {
+            let height = history.content_size.y;
+            let viewport = history.inner_rect.height();
+            let offset = history.state.offset.y;
+            if let Some(previous) = self.older_anchor.take() {
+                // Keep the reader's place after older messages arrive above.
+                self.history_offset = Some(offset + (height - previous).max(0.0));
+                ui.ctx().request_repaint();
+            }
+            self.history_height = height;
+            if self.timeline.messages().next().is_some()
+                && (height <= viewport + 1.0 || offset >= height - viewport - 2.0)
+            {
+                self.older_armed = true;
+            }
+            // Web loads the previous page when the list reaches its start.
+            if self.older_armed
+                && self.history_offset.is_none()
+                && offset <= 1.0
+                && self.has_more
+                && !self.loading_older
+                && self.older_error.is_none()
+            {
+                self.load_older();
+            }
         }
         // Web shows the connection state under the header after a second.
         if self.live != "Live" && self.selected_channel.is_some() {
@@ -11836,6 +11841,67 @@ mod tests {
                 messages
             );
         }
+    }
+
+    #[test]
+    fn pins_preserve_history_scroll_position_and_paging_anchors() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        let template = app.timeline.messages().next().unwrap().clone();
+        let messages = (1..=40)
+            .map(|index| {
+                let mut message = template.clone();
+                message.id = format!("scroll-{index}");
+                message.client_message_id = format!("scroll-command-{index}");
+                message.seq = index.to_string();
+                message.content.text = format!("Scroll fixture message {index}");
+                message
+            })
+            .collect();
+        app.timeline.reset(messages, "40").unwrap();
+        app.has_more = false;
+        for _ in 0..3 {
+            render(&mut app, &context, vec![]);
+        }
+        // Deliberately neither the top nor the bottom; an unconditional jump
+        // to latest or clamping to the empty Pins viewport must fail this test.
+        app.history_offset = Some(240.0);
+        render(&mut app, &context, vec![]);
+        let before = render(&mut app, &context, vec![]);
+        let anchor = before
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text)
+                    if text.galley.job.text.starts_with("Scroll fixture message ") =>
+                {
+                    Some(text.galley.job.text.clone())
+                }
+                _ => None,
+            })
+            .expect("a scrolled conversation paints message text");
+        let position = text_position(&before, &anchor);
+        let height = app.history_height;
+        app.showing_pins = true;
+        for _ in 0..3 {
+            render(&mut app, &context, vec![]);
+            assert_eq!(app.history_height, height);
+        }
+        app.showing_pins = false;
+        for _ in 0..3 {
+            let output = render(&mut app, &context, vec![]);
+            assert_eq!(text_position(&output, &anchor), position);
+        }
+        app.showing_pins = true;
+        app.history_offset = Some(260.0);
+        app.older_anchor = Some(height);
+        render(&mut app, &context, vec![]);
+        assert_eq!(app.history_offset, Some(260.0));
+        assert_eq!(app.older_anchor, Some(height));
     }
 
     #[test]

@@ -5003,3 +5003,21 @@ controls do not register a pointing-hand region.
 | Android | Projection/rollback coverage added. Gradle unit-test invocation blocked by missing Android SDK; no Android build or device test in this orb. |
 | iOS/macOS | Projection/rollback coverage added. No Swift/Xcode build, device run or AppKit cursor runtime check in this Linux orb; native build and enabled/disabled hover acceptance remain required. |
 | Containers/services | Web build stage passes directly; Docker daemon unavailable. No API/gateway change, infrastructure/configuration change, migration, deployment or live SFU validation. Clients can release independently. |
+
+### Returning from Pins (October 8, 2026)
+
+Web keeps the virtualized conversation mounted and measurable behind Pins, but
+invisible and inert to pointer, keyboard and accessibility navigation. Returning
+reveals the existing viewport without repeating initial measurement or showing
+an empty history. Live arrivals follow the bottom only for readers already there;
+readers in older history retain their position. Android retains its channel's
+lazy-list state across the Pins branch. Rust desktop uses a separate Pins scroll
+area without changing conversation offsets or pagination anchors. Apple already
+presents Pins as a sheet over the mounted conversation and is unchanged.
+
+| Platform | Validation boundary |
+| --- | --- |
+| Web | Build/typecheck/lint/format and 449 web/shared-native-support tests pass. Disposable Chromium regressions sample every return frame for desktop/narrow, latest/older history, live arrivals, short/empty conversations and an open thread with a draft. The timeline is invisible and unfocusable behind Pins; screenshots inspected. Narrow viewport checks are not physical-device or Safari acceptance. |
+| Rust desktop | 276 tests pass, 9 existing tests ignored, including rendered scroll-anchor/paging preservation across empty Pins. No macOS/Windows or physical-device acceptance. |
+| Android | Scroll state is hoisted above Pins navigation. Gradle compile attempt is blocked by the missing Android SDK; no native build or device verification. |
+| Deployment | Web, Android and Rust desktop can release independently. No API/gateway, infrastructure, secret/configuration, database or Apple release is required. Docker daemon unavailable; web build stages validated directly. No deployment performed. |

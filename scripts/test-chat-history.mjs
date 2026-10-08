@@ -191,6 +191,80 @@ const anchorOffset = (key) =>
     `document.querySelector('[data-message-key="${key}"]').getBoundingClientRect().top - document.querySelector('.chat-scroller').getBoundingClientRect().top`,
   );
 
+function togglePins() {
+  if (evaluate('!!document.querySelector(".chat-channel-menu")')) browser("click", ".chat-channel-menu summary");
+  browser("click", ".chat-pins-toggle");
+}
+
+function pinsRoundTrip(name, { incoming = false, atBottom = false } = {}) {
+  const before = anchor();
+  evaluate("void (window.retainedScroller = document.querySelector('.chat-scroller'))");
+  togglePins();
+  wait('!!document.querySelector(".chat-pins")');
+  assert.equal(
+    evaluate(`(() => {
+      const timeline = document.querySelector('.chat-timeline');
+      document.querySelector('.chat-scroller').focus();
+      return timeline.inert && timeline.getAttribute('aria-hidden') === 'true'
+        && !timeline.contains(document.activeElement)
+        && !timeline.querySelector('.chat-message').checkVisibility({ opacityProperty: true });
+    })()`),
+    true,
+    "The retained timeline must be invisible, inaccessible and unfocusable behind Pins",
+  );
+  if (incoming) {
+    evaluate('chatHistoryFixture.append("TEST FIXTURE arrival while reading pins")');
+    settle();
+  }
+  screenshot(`${name}-pins`);
+  // Sample every return frame, not just the eventually settled DOM. A remount
+  // can end at the correct position after visibly flashing an empty viewport.
+  evaluate(`(() => {
+    window.pinReturnFrames = [];
+    const sample = () => {
+      if (!document.querySelector('.chat-pins')) {
+        const scroller = document.querySelector('.chat-scroller');
+        const bounds = scroller?.getBoundingClientRect();
+        const rows = [...document.querySelectorAll('.chat-panel .chat-message')];
+        const anchor = rows.find(row => row.dataset.messageKey === ${JSON.stringify(before.key)});
+        pinReturnFrames.push({
+          retained: scroller === retainedScroller,
+          painted: rows.some(row => row.checkVisibility({ visibilityProperty: true, opacityProperty: true }) && row.getBoundingClientRect().bottom > bounds.top && row.getBoundingClientRect().top < bounds.bottom),
+          offset: anchor && anchor.getBoundingClientRect().top - bounds.top,
+          bottom: scroller && scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop,
+          height: scroller?.scrollHeight,
+        });
+      }
+      if (pinReturnFrames.length < 30) requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  })()`);
+  togglePins();
+  wait("pinReturnFrames.length === 30");
+  const frames = evaluate("pinReturnFrames");
+  assert.ok(
+    frames.every((frame) => frame.painted),
+    `${name}: blank return frames: ${JSON.stringify(frames)}`,
+  );
+  assert.ok(
+    frames.every((frame) => frame.retained),
+    `${name}: returning must retain the measured scroller`,
+  );
+  if (atBottom)
+    assert.ok(
+      frames.every((frame) => frame.bottom <= 2),
+      `${name}: latest must remain at the bottom`,
+    );
+  else
+    assert.ok(
+      frames.every((frame) => Math.abs(frame.offset - before.offset) < 2),
+      `${name}: returning must preserve the reader's anchor`,
+    );
+  assert.equal(new Set(frames.map((frame) => frame.height)).size, 1, `${name}: scrollbar extent must not jump`);
+  screenshot(`${name}-messages`);
+  console.log(`PASS: ${name}: 30 painted return frames, retained scroll position and stable scrollbar.`);
+}
+
 try {
   browser("open", "about:blank");
   browser("set", "viewport", "1280", "800", "2");
@@ -210,6 +284,8 @@ try {
   assert.ok(metrics().bottom <= 2, JSON.stringify(metrics()));
   assert.equal(evaluate("chatHistoryFixture.requests.length"), 0, "Initial positioning must not fetch older pages");
   screenshot("chat-history-latest");
+  pinsRoundTrip("pins-desktop-latest", { atBottom: true });
+  pinsRoundTrip("pins-desktop-live", { incoming: true, atBottom: true });
 
   // Measure this range before the race so height-estimate corrections from
   // newly visible wrapped rows do not get mistaken for an append stealing it.
@@ -234,6 +310,7 @@ try {
     Math.abs(anchorOffset(rapidScroll.key) - rapidScroll.offset) < 2,
     "Immediate live delivery stole the reader’s scroll position",
   );
+  pinsRoundTrip("pins-desktop-history", { incoming: true });
 
   evaluate('chatHistoryFixture.holdNext = true; document.querySelector(".chat-scroller").scrollTop = 0');
   wait('typeof chatHistoryFixture.release === "function"');
@@ -297,6 +374,7 @@ try {
   evaluate('document.querySelector(".chat-scroller").scrollTop = 500');
   settle();
   screenshot("chat-history-narrow");
+  pinsRoundTrip("pins-narrow-history", { incoming: true });
 
   evaluate('document.querySelector(".chat-scroller").focus()');
   browser("press", "End");
@@ -307,6 +385,7 @@ try {
   evaluate('chatHistoryFixture.append("Fixture arrival at the bottom")');
   settle();
   assert.ok(metrics().bottom <= 2, "Following live messages at bottom must still work: " + JSON.stringify(metrics()));
+  pinsRoundTrip("pins-narrow-latest", { incoming: true, atBottom: true });
   evaluate('document.querySelector(".chat-scroller").scrollTop = 0');
   settle();
   browser("fill", "#chat-message", "Fixture optimistic message");
@@ -331,6 +410,11 @@ try {
   browser("open", emptyUrl.toString());
   wait('document.querySelector(".chat-state")?.textContent.includes("No messages yet.")');
   screenshot("chat-history-empty");
+  togglePins();
+  wait('document.querySelector(".chat-pins")?.textContent.includes("No pinned messages.")');
+  togglePins();
+  wait('!document.querySelector(".chat-pins")');
+  assert.equal(evaluate('document.querySelector(".chat-state p").textContent'), "No messages yet.");
   browser("fill", "#chat-message", "First fixture message");
   browser("press", "Enter");
   wait('document.querySelectorAll(".chat-message").length === 1 && !document.querySelector(".chat-message-pending")');
@@ -341,6 +425,8 @@ try {
     evaluate("chatHistoryFixture.initialFrames.length > 0 && chatHistoryFixture.initialFrames.every(Boolean)"),
     "First-message mount must not flash empty",
   );
+  settle();
+  pinsRoundTrip("pins-short-conversation", { atBottom: true });
 } catch (error) {
   console.error(
     "History fixture failure state:",
