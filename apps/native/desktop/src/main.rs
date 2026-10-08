@@ -558,7 +558,7 @@ impl CaperApp {
             typing_pulse: now,
             presence: BTreeMap::new(),
             member_page: 0,
-            members_visible: true,
+            members_visible: false,
             narrow_members_visible: false,
             channels_expanded: true,
             browse_channels: false,
@@ -13315,8 +13315,17 @@ mod tests {
             crate::api::Api::new("http://127.0.0.1:9").unwrap(),
             Some("parity-voice-connected"),
         );
+        let has_members = |output: &egui::FullOutput| {
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Members")
+            })
+        };
+        assert!(!app.members_visible);
+        assert!(!app.narrow_members_visible);
         render(&mut app, &context, vec![]);
-        assert!(app.members_visible);
+        assert!(!has_members(&render(&mut app, &context, vec![])));
+        app.members_visible = true;
+        assert!(has_members(&render(&mut app, &context, vec![])));
         let narrow = |app: &mut CaperApp| {
             context.run(
                 egui::RawInput {
@@ -13328,11 +13337,6 @@ mod tests {
                 },
                 |context| app.shell(context),
             )
-        };
-        let has_members = |output: &egui::FullOutput| {
-            output.shapes.iter().any(|shape| {
-                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Members")
-            })
         };
         narrow(&mut app);
         assert!(!has_members(&narrow(&mut app)));
@@ -14149,6 +14153,7 @@ mod tests {
                 crate::api::Api::new("http://127.0.0.1:9").unwrap(),
                 Some("parity-voice-rosters"),
             );
+            app.members_visible = true;
             app.sidebar_width = sidebar;
             let mut frame = || {
                 context.run(
@@ -14210,6 +14215,7 @@ mod tests {
             crate::api::Api::new("http://127.0.0.1:9").unwrap(),
             Some("parity-desktop"),
         );
+        app.members_visible = true;
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
         let texts: Vec<_> = output
@@ -16886,6 +16892,7 @@ mod tests {
                 crate::api::Api::new("http://127.0.0.1:9").unwrap(),
                 Some("parity-desktop"),
             );
+            app.members_visible = true;
             app.draft = "Unsent draft".into();
             let frame = |app: &mut CaperApp, events| {
                 context.run(

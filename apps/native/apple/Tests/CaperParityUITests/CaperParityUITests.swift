@@ -687,9 +687,9 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(staticTexts("caper", in: app).count, 0, "The workspace must not have a web-style branding header")
         #if os(macOS)
         assertElement("selected-space-name", label: "Fixture Studio", in: app)
-        XCTAssertTrue(app.buttons["Hide member list"].exists)
-        assertStaticText("Members", in: app, timeout: 2)
+        XCTAssertTrue(app.buttons["Show member list"].exists)
         #endif
+        XCTAssertEqual(staticTexts("Members", in: app).count, 0, "Chat opens with the members list closed")
         capture("populated", app: app)
     }
 
@@ -945,16 +945,20 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(app.buttons["account-profile"].isHittable)
     }
 
-    func testMembersCanBeHiddenWithoutChangingConversation() {
+    func testMembersStartClosedAndCanBeToggledWithoutChangingConversation() {
         let app = launch()
-        let toggle = app.buttons["Hide member list"]
+        let toggle = app.buttons["Show member list"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 10))
+        XCTAssertEqual(staticTexts("Members", in: app).count, 0)
+        capture("members-hidden", app: app)
         toggle.tap()
+        assertStaticText("Members", in: app, timeout: 2)
+        assertElement("selected-channel-name", label: "# general", in: app, timeout: 2)
+        app.buttons["Hide member list"].tap()
         XCTAssertTrue(app.buttons["Show member list"].waitForExistence(timeout: 2))
         assertElement("selected-channel-name", label: "# general", in: app, timeout: 2)
         assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app, timeout: 2)
         XCTAssertEqual(staticTexts("Members", in: app).count, 0)
-        capture("members-hidden", app: app)
     }
 
     func testCompletedLocalRecordingLayoutWithoutCapture() {
