@@ -8353,17 +8353,6 @@ impl CaperApp {
                     {
                         self.set_pin(message, false);
                     }
-                    if !in_thread
-                        && self.selected_request().is_none()
-                        && ui.small_button("Reply in thread").clicked()
-                    {
-                        self.open_thread(
-                            message
-                                .thread_root_id
-                                .clone()
-                                .unwrap_or_else(|| message.id.clone()),
-                        );
-                    }
                 });
                 if let Some((active, error)) = self.pin_errors.get(&message.id).cloned() {
                     ui.horizontal(|ui| {

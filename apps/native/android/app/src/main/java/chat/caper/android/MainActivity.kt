@@ -1430,9 +1430,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 retryPin = viewModel::retryPin,
                 dismissPinError = viewModel::dismissPinError,
             )
-              if (!inThread) Row(Modifier.padding(start = 62.dp), verticalAlignment = Alignment.CenterVertically) {
+              if (!inThread && (message.threadRootId != null || (message.thread?.replyCount ?: 0) > 0)) Row(Modifier.padding(start = 62.dp), verticalAlignment = Alignment.CenterVertically) {
                   message.thread?.takeIf { message.threadRootId == null }?.participants?.forEach { Avatar(it.name, 24.dp, avatarId = it.avatarId) }
-                  TextButton({ viewModel.openThread(message.threadRootId ?: message.id) }) { Text(message.thread?.takeIf { message.threadRootId == null }?.let { "${it.replyCount} replies · View thread" } ?: "Reply in thread") }
+                  TextButton({ viewModel.openThread(message.threadRootId ?: message.id) }) { Text(message.thread?.takeIf { message.threadRootId == null }?.let { "${it.replyCount} ${if (it.replyCount == 1) "reply" else "replies"} · View thread" } ?: "Replied to a thread · View thread") }
               }
             }
         }

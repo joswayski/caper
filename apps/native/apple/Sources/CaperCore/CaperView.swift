@@ -2136,7 +2136,9 @@ private struct NativeThreadView: View {
                     LazyVStack(spacing: 0) {
                         if let root = chat.displayedMessages.first(where: { $0.id == chat.threadRootID }) {
                             threadEntries([root])
-                            Text("\(root.thread?.replyCount ?? 0) replies").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).padding(12)
+                            if let summary = root.thread, summary.replyCount > 0 {
+                                Text("\(summary.replyCount) \(summary.replyCount == 1 ? "reply" : "replies")").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).padding(12)
+                            }
                         }
                         if chat.threadLoading { Text("Loading thread…").padding(18) }
                         if let error = chat.threadError { Text(error).padding(12); Button("Retry") { Task { await chat.loadThread() } } }
@@ -2301,6 +2303,7 @@ private struct MessageRow: View {
     @FocusState private var replyFocused: Bool
     @FocusState private var reactionFocused: Bool
     @FocusState private var actionsFocused: Bool
+    @FocusState private var threadLinkFocused: Bool
     #endif
     var body: some View {
         let mentionsMe = MentionAutocomplete.mentionsCurrentUser(message, currentUserID: currentUserID)
@@ -2341,15 +2344,21 @@ private struct MessageRow: View {
                             .disabled(chat.isPreview || chat.currentAuthor == nil || chat.pendingPins.contains(message.id))
                     }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.terracottaBright)
                 }
-                if !inThread {
+                if !inThread && (message.threadRootId != nil || (message.thread?.replyCount ?? 0) > 0) {
                     Button { Task { await chat.openThread(message.threadRootId ?? message.id) } } label: {
                         HStack(spacing: 5) {
                             if message.threadRootId == nil, let summary = message.thread {
                                 ForEach(summary.participants, id: \.id) { Avatar(name: $0.name, size: 24, avatarID: $0.avatarId) }
                                 Text("\(summary.replyCount) \(summary.replyCount == 1 ? "reply" : "replies") · View thread")
-                            } else { Image(systemName: "bubble.right"); Text(message.threadRootId == nil ? "Reply in thread" : "Replied to a thread · View thread") }
+                            } else { Image(systemName: "bubble.right"); Text("Replied to a thread · View thread") }
                         }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.terracottaBright)
-                    }.buttonStyle(.plain).frame(minHeight: 32).modifier(ControlHover()).accessibilityLabel("Reply in thread")
+                    }.buttonStyle(.plain).frame(minHeight: 32)
+                        #if os(macOS)
+                        .focused($threadLinkFocused).modifier(ControlHover(isFocused: threadLinkFocused))
+                        #else
+                        .modifier(ControlHover())
+                        #endif
+                        .accessibilityLabel("View thread")
                 }
                 if let error = chat.reactionErrors[message.id] {
                     HStack(spacing: 8) {
