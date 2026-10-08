@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
-import { test, type TestContext } from "node:test";
+import { test, type TestContext } from "vitest";
 import { MAX_RECORDING_SECONDS, recordReceivedAudio } from "../media/recording.ts";
 
 function install(t: TestContext, key: string, value: unknown) {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, key);
   Object.defineProperty(globalThis, key, { configurable: true, value });
-  t.after(() => descriptor
-    ? Object.defineProperty(globalThis, key, descriptor)
-    : Reflect.deleteProperty(globalThis, key));
+  t.onTestFinished(() => {
+    if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+    else Reflect.deleteProperty(globalThis, key);
+  });
 }
 
 test("received recordings have a 30-second maximum", () => {

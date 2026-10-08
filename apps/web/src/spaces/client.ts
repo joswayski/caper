@@ -119,6 +119,7 @@ export class SpacesApiError extends Error {
 
 const SPACE_ID = /^[A-Za-z0-9]{12}$/;
 const CHANNEL_NAME = /^[a-z]+(?:-[a-z]+)*$/;
+// oxlint-disable-next-line no-control-regex -- Reject control characters in user-provided names.
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/u;
 
 export function spaceNameError(name: string) {

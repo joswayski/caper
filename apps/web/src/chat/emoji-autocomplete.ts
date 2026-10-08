@@ -6,7 +6,7 @@ export interface EmojiChoice {
 }
 
 export interface EmojiToken { start: number; end: number; query: string }
-const queryCharacter = /^[a-z0-9_+\-]$/i;
+const queryCharacter = /^[a-z0-9_+-]$/i;
 const normalize = (value: string) => value.toLowerCase().replace(/[_-]/g, " ");
 
 export function emojiToken(text: string, start: number, end = start): EmojiToken | undefined {

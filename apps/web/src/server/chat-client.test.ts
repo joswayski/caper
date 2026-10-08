@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test, type TestContext } from "node:test";
+import { test, type TestContext, vi } from "vitest";
 import { ChatClient, initialChatView, loadChatHistory, type ChatViewState } from "../chat/client.ts";
 import { AppGateway, setAppGatewayForTests } from "../gateway/client.ts";
 import type { ChatEvent, ChatMessage, ChatTypingEvent, GeneralChatHistory } from "../chat/types.ts";
@@ -71,7 +71,7 @@ function installBrowser(t: TestContext) {
     return socket;
   }, () => 0);
   setAppGatewayForTests(gateway);
-  t.after(() => {
+  t.onTestFinished(() => {
     gateway.destroy();
     setAppGatewayForTests(undefined);
     Object.defineProperties(globalThis, {
@@ -91,10 +91,10 @@ function chatSubscription(socket: TestSocket, offset = -1) {
 
 test("pressing Send again after an unknown outcome preserves the original UUID and text", async (t) => {
   installBrowser(t);
-  t.mock.method(globalThis.crypto, "randomUUID", () => "00000000-0000-4000-8000-000000000001");
+  vi.spyOn(globalThis.crypto, "randomUUID").mockImplementation(() => "00000000-0000-4000-8000-000000000001");
   const sentBodies: string[] = [];
   let sendAttempts = 0;
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     if (url === "/api/chat/session") return Response.json({ token: "opaque-token", author: { id: "guest", name: "Test Guest", isGuest: true } });
     if (url === "/api/chat/general") return Response.json({
@@ -114,7 +114,7 @@ test("pressing Send again after an unknown outcome preserves the original UUID a
 
   let state!: ChatViewState;
   const client = new ChatClient((next) => { state = next; });
-  t.after(() => client.stop());
+  t.onTestFinished(() => client.stop());
   client.start();
   client.identify("Test Guest");
   await tick(); await tick();
@@ -135,7 +135,7 @@ test("signed-in startup does not reuse another account's capability with the sam
     token: "old-account-token", author: { id: "old-account", name: "Shared Name", isGuest: false },
   }));
   let sessions = 0;
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
     if (String(input) === "/api/chat/session") {
       sessions++;
       return Response.json({ token: "current-account-token", author: { id: "current-account", name: "Shared Name", isGuest: false } });
@@ -147,7 +147,7 @@ test("signed-in startup does not reuse another account's capability with the sam
   });
   let state!: ChatViewState;
   const client = new ChatClient((next) => { state = next; });
-  t.after(() => client.stop());
+  t.onTestFinished(() => client.stop());
   client.start();
   client.identify("Shared Name", true);
   await tick(); await tick();
@@ -164,7 +164,7 @@ test("public history loads before identity and remains visible while the send se
   };
   const requests: string[] = [];
   let finishSession!: (response: Response) => void;
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
     const path = String(input);
     requests.push(path);
     if (path === "/api/chat/session") return new Promise<Response>((resolve) => { finishSession = resolve; });
@@ -175,7 +175,7 @@ test("public history loads before identity and remains visible while the send se
   });
   let state!: ChatViewState;
   const client = new ChatClient((next) => { state = next; });
-  t.after(() => client.stop());
+  t.onTestFinished(() => client.stop());
   client.start();
   await tick(); await tick();
   assert.deepEqual(requests, ["/api/chat/general"]);
@@ -212,7 +212,7 @@ async function sendingFixture(t: TestContext) {
   const sockets = installBrowser(t);
   const history: ChatMessage[] = [];
   const posts: { body: SendBody; signal: AbortSignal; resolve: (response: Response) => void; reject: (error: Error) => void }[] = [];
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
     if (String(input) === "/api/chat/session") return Response.json({ token: "opaque", author: { id: "guest", name: "Test Guest", isGuest: true } });
     if (String(input) === "/api/chat/general") return Response.json({
       space: { id: "space", name: "Caper" }, channel: { id: "general", name: "General" },
@@ -227,7 +227,7 @@ async function sendingFixture(t: TestContext) {
   });
   let state!: ChatViewState;
   const client = new ChatClient((next) => { state = next; });
-  t.after(() => client.stop());
+  t.onTestFinished(() => client.stop());
   client.start(); client.identify("Test Guest");
   await tick();
   sockets[0].frame({ type: "ready", cursor: "0" });
@@ -245,7 +245,7 @@ test("pin PUTs share live state without advancing HTTP replay or restoring a lat
   const pinned = { ...original, pinSeq: "3", pin: { author: original.author, createdAt: original.createdAt } };
   const event = { type: "message.pin" as const, schemaVersion: 1 as const, channelId: "general", seq: "3", message: pinned };
   let finish!: (response: Response) => void;
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
     assert.equal(String(input), "/api/chat/channels/general/messages/message-1/pin");
     assert.equal(init?.method, "PUT");
     assert.equal(new Headers(init?.headers).get("x-caper-chat-token"), "opaque");
@@ -262,7 +262,9 @@ test("pin PUTs share live state without advancing HTTP replay or restoring a lat
   assert.equal(f.client.snapshotHistory()?.cursor, "4");
   assert.equal(f.state.pinnedMessages.length, 0);
   assert.equal(f.state.messages[0].pin, null, "a late pin HTTP acknowledgement cannot revert a later shared unpin");
-  t.mock.method(globalThis, "fetch", async () => Response.json({ error: "Pins temporarily unavailable" }, { status: 503 }));
+  vi.spyOn(globalThis, "fetch").mockImplementation(
+    async () => Response.json({ error: "Pins temporarily unavailable" }, { status: 503 })
+  );
   await assert.rejects(f.client.setPin(original.id, true), /Pins temporarily unavailable/);
   assert.equal(f.state.pinnedMessages.length, 0);
 });
@@ -272,7 +274,7 @@ test("HTTP-only pin acknowledgement updates the collection but not its durable c
   const original = committed({ clientMessageId: "pin-target", text: "Old pin outside the page" }, "1");
   const event = { type: "message.pin", schemaVersion: 1, channelId: "general", seq: "2",
     message: { ...original, pinSeq: "2", pin: { author: original.author, createdAt: original.createdAt } } };
-  t.mock.method(globalThis, "fetch", async () => Response.json(event));
+  vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json(event));
   await f.client.setPin(original.id, true);
   assert.equal(f.client.snapshotHistory()?.cursor, "0");
   assert.equal(f.state.messages.length, 0, "pins stay independent of pagination");
@@ -285,7 +287,7 @@ for (const lifecycle of ["stopped", "denied"] as const) {
     const sending = f.client.send("In flight before departure");
     if (lifecycle === "stopped") f.client.stop();
     else {
-      t.mock.method(globalThis, "fetch", async () => Response.json({ error: "Access removed" }, { status: 403 }));
+      vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({ error: "Access removed" }, { status: 403 }));
       f.client.retryLoad();
       await tick();
       assert.equal(f.state.phase, "error");
@@ -301,18 +303,18 @@ for (const lifecycle of ["stopped", "denied"] as const) {
   test(`a late send rejection cannot reset the session of a ${lifecycle} chat`, async (t) => {
     const f = await sendingFixture(t);
     const sending = f.client.send("In flight before departure");
-    const fetch = t.mock.method(globalThis, "fetch", async () => Response.json({ error: "Access removed" }, { status: 403 }));
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({ error: "Access removed" }, { status: 403 }));
     if (lifecycle === "stopped") f.client.stop();
     else { f.client.retryLoad(); await tick(); }
     const departed = f.state;
     const session = localStorage.getItem("caper.chat.session");
-    const requests = fetch.mock.callCount();
+    const requests = fetch.mock.calls.length;
     f.posts[0].resolve(Response.json({ error: "Obsolete rejection" }, { status: 401 }));
     assert.equal(await sending, false);
     await tick();
     assert.equal(f.state, departed);
     assert.equal(localStorage.getItem("caper.chat.session"), session);
-    assert.equal(fetch.mock.callCount(), requests, "obsolete sends cannot mint new sessions");
+    assert.equal(fetch.mock.calls.length, requests, "obsolete sends cannot mint new sessions");
   });
 }
 
@@ -321,7 +323,7 @@ for (const status of [200, 503]) {
     const f = await sendingFixture(t);
     const sending = f.client.send("Still in this channel");
     const snapshot = f.client.snapshotHistory();
-    t.mock.method(globalThis, "fetch", async () => status === 200
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => status === 200
       ? Response.json(snapshot)
       : Response.json({ error: "Temporary outage" }, { status }));
     f.client.retryLoad();
@@ -339,11 +341,11 @@ test("stopped clients cannot send or retry history", async (t) => {
   const f = await sendingFixture(t);
   f.client.stop();
   const departed = f.state;
-  const fetch = t.mock.method(globalThis, "fetch", async () => { throw new Error("Unexpected request after stop"); });
+  const fetch = vi.spyOn(globalThis, "fetch").mockClear().mockImplementation(async () => { throw new Error("Unexpected request after stop"); });
   assert.equal(await f.client.send("Too late"), false);
   f.client.retryLoad();
   await tick();
-  assert.equal(fetch.mock.callCount(), 0);
+  assert.equal(fetch.mock.calls.length, 0);
   assert.equal(f.state, departed);
 });
 
@@ -352,7 +354,7 @@ test("reaction HTTP snapshots and sequenced delivery agree without skipping mess
   const target = committed({ clientMessageId: "target", text: "React here" }, "1");
   f.sockets[0].message(target);
   let finish!: (response: Response) => void;
-  t.mock.method(globalThis, "fetch", (input: string | URL | Request, init?: RequestInit) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation((input: string | URL | Request, init?: RequestInit) => {
     assert.equal(String(input), "/api/chat/channels/general/messages/message-1/reactions");
     assert.equal(init?.method, "PUT");
     assert.equal(new Headers(init?.headers).get("x-caper-chat-token"), "opaque");
@@ -390,9 +392,11 @@ test("rapid reaction intents stay visible, serialize writes and roll back only t
     reactionSeq: "1", reactions: [{ emoji: "👍", authorIds: ["other"] }] };
   f.sockets[0].message(target);
   const requests: { body: { emoji: string; active: boolean }; finish: (response: Response) => void }[] = [];
-  t.mock.method(globalThis, "fetch", (_input: unknown, init?: RequestInit) => new Promise<Response>((finish) => {
-    requests.push({ body: JSON.parse(String(init?.body)), finish });
-  }));
+  vi.spyOn(globalThis, "fetch").mockImplementation(
+    (_input: unknown, init?: RequestInit) => new Promise<Response>((finish) => {
+      requests.push({ body: JSON.parse(String(init?.body)), finish });
+    })
+  );
   const add = f.client.setReaction(target.id, "👍", true);
   assert.deepEqual(f.state.messages[0].reactions, [{ emoji: "👍", authorIds: ["other", "guest"] }]);
   const remove = f.client.setReaction(target.id, "👍", false);
@@ -429,16 +433,16 @@ test("rapid reaction intents stay visible, serialize writes and roll back only t
 test("a late reaction rejection after stopping cannot recreate a chat session", async (t) => {
   const f = await sendingFixture(t);
   let finish!: (response: Response) => void;
-  const fetch = t.mock.method(globalThis, "fetch", () => new Promise<Response>((resolve) => { finish = resolve; }));
+  const fetch = vi.spyOn(globalThis, "fetch").mockClear().mockImplementation(() => new Promise<Response>((resolve) => { finish = resolve; }));
   const request = f.client.setReaction("message-1", "👍", true);
   const before = f.state;
   f.client.stop();
   finish(Response.json({ error: "expired" }, { status: 401 }));
   await request;
-  assert.equal(fetch.mock.callCount(), 1, "do not mint a session for an abandoned conversation");
+  assert.equal(fetch.mock.calls.length, 1, "do not mint a session for an abandoned conversation");
   assert.equal(f.state, before);
   await assert.rejects(f.client.setReaction("message-1", "👍", true), /unavailable/);
-  assert.equal(fetch.mock.callCount(), 1);
+  assert.equal(fetch.mock.calls.length, 1);
 });
 
 test("message sounds exclude history, own messages, and duplicate replay", async (t) => {
@@ -451,7 +455,7 @@ test("message sounds exclude history, own messages, and duplicate replay", async
     constructor(src: string) { super(); sounds.push(src); }
     play() { return Promise.resolve(); }
   } });
-  t.after(() => {
+  t.onTestFinished(() => {
     if (descriptor) Object.defineProperty(globalThis, "Audio", descriptor);
     else Reflect.deleteProperty(globalThis, "Audio");
   });
@@ -483,14 +487,14 @@ test("a client created without sounds stays silent for new messages", async (t) 
     constructor(src: string) { super(); sounds.push(src); }
     play() { return Promise.resolve(); }
   } });
-  t.after(() => {
+  t.onTestFinished(() => {
     if (descriptor) Object.defineProperty(globalThis, "Audio", descriptor);
     else Reflect.deleteProperty(globalThis, "Audio");
   });
   const sockets = installBrowser(t);
   let state!: ChatViewState;
   const client = new ChatClient((next) => { state = next; }, undefined, { sounds: false });
-  t.after(() => client.stop());
+  t.onTestFinished(() => client.stop());
   client.start({ space: { id: "space", name: "Caper" }, channel: { id: "general", name: "general" }, messages: [], cursor: "0", hasMore: false });
   await tick();
   sockets[0].frame({ type: "ready", cursor: "0" });
@@ -656,7 +660,7 @@ function typingEvent(id: string, revision = "9007199254740992", typing = true): 
 }
 
 test("typing is opt-in, author-deduplicated, expires independently, and never advances replay", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000 });
+  vi.useFakeTimers({ toFake: ["setTimeout", "Date", "clearTimeout"], now: 1_000 });
   const f = await sendingFixture(t);
   assert.equal(chatSubscription(f.sockets[0]).channelId, "general");
   assert.equal(new URL(f.sockets[0].url).search, "", "typing is multiplexed rather than enabled through URL credentials");
@@ -665,11 +669,11 @@ test("typing is opt-in, author-deduplicated, expires independently, and never ad
   assert.equal(f.state.typingAuthors.length, 0);
   f.sockets[0].frame(typingEvent("a"));
   f.sockets[0].frame(typingEvent("a"));
-  t.mock.timers.tick(4_000);
+  vi.advanceTimersByTime(4_000);
   f.sockets[0].frame(typingEvent("b"));
   f.sockets[0].frame(typingEvent("a"));
   assert.deepEqual(f.state.typingAuthors.map((author) => author.id), ["a", "b"], "same names are not the same identity");
-  t.mock.timers.tick(2_000);
+  vi.advanceTimersByTime(2_000);
   assert.deepEqual(f.state.typingAuthors.map((author) => author.id), ["b"], "duplicates do not prolong a stale indicator");
   assert.deepEqual(f.state.messages, []);
   f.sockets[0].frame({ type: "migrating" });
@@ -704,25 +708,25 @@ test("typing clears on message, offline, and history resync; unique typers are b
 });
 
 test("typing pulses are throttled, stop after inactivity, and failures stay out of send state", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000 });
+  vi.useFakeTimers({ toFake: ["setTimeout", "Date", "clearTimeout"], now: 1_000 });
   const f = await sendingFixture(t);
   f.client.setTyping(true);
   f.typingPosts[0].resolve(new Response(null, { status: 204 }));
   await tick();
   for (let index = 0; index < 100; index++) f.client.setTyping(true);
-  t.mock.timers.tick(249);
+  vi.advanceTimersByTime(249);
   f.client.setTyping(true);
-  t.mock.timers.tick(249);
+  vi.advanceTimersByTime(249);
   f.client.setTyping(true);
   assert.equal(f.typingPosts.length, 1);
-  t.mock.timers.tick(2);
+  vi.advanceTimersByTime(2);
   f.client.setTyping(true);
   assert.equal(f.typingPosts.length, 2);
   f.typingPosts[1].reject(new TypeError("broker unavailable"));
   await tick();
-  t.mock.timers.tick(499);
+  vi.advanceTimersByTime(499);
   assert.deepEqual(f.typingPosts.map((post) => post.active), [true, true]);
-  t.mock.timers.tick(1);
+  vi.advanceTimersByTime(1);
   assert.deepEqual(f.typingPosts.map((post) => post.active), [true, true, false]);
   f.typingPosts[2].resolve(new Response(null, { status: 429 }));
   await tick();
@@ -730,7 +734,7 @@ test("typing pulses are throttled, stop after inactivity, and failures stay out 
   assert.equal(f.state.sessionError, undefined);
   f.client.stop();
   f.client.setTyping(true);
-  t.mock.timers.tick(10_000);
+  vi.advanceTimersByTime(10_000);
   assert.equal(f.typingPosts.length, 3);
 });
 
@@ -758,14 +762,14 @@ async function paginationFixture(t: TestContext) {
   const message = (offset: number) => committed({ clientMessageId: `command-${offset}`, text: `Message ${offset}` }, String(base + BigInt(offset)));
   const history = { messages: [message(4), message(5)], cursor: message(5).seq, hasMore: true };
   const requests: { url: string; resolve: (response: Response) => void }[] = [];
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
     const url = String(input);
     if (url === "/api/chat/general") return Response.json({ ...history, space: { id: "space", name: "Caper" }, channel: { id: "general", name: "General" } });
     return new Promise<Response>((resolve) => requests.push({ url, resolve }));
   });
   let state!: ChatViewState;
   const client = new ChatClient((next) => { state = next; });
-  t.after(() => client.stop());
+  t.onTestFinished(() => client.stop());
   client.start();
   await tick();
   sockets[0].frame({ type: "ready", cursor: history.cursor });
@@ -783,7 +787,7 @@ test("history gaps discard older rows without erasing concurrent HTTP reaction s
     messageId: fresh.id, seq: "6", reactions: [{ emoji: "👍", authorIds: ["guest"] }],
   };
   let finish!: (response: Response) => void;
-  t.mock.method(globalThis, "fetch", (input: string | URL | Request) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation((input: string | URL | Request) => {
     if (String(input).endsWith("/reactions")) return Promise.resolve(Response.json(update));
     return new Promise<Response>((resolve) => { finish = resolve; });
   });
@@ -857,7 +861,7 @@ for (const status of [200, 503]) {
 test("channel clients isolate history, gateway subscriptions, and late events across a switch", async (t) => {
   const sockets = installBrowser(t);
   const requests: string[] = [];
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
     const url = String(input);
     requests.push(url);
     const channelId = url.includes("alpha") ? "alphaChannel" : "bravoChannel";
@@ -881,7 +885,7 @@ test("channel clients isolate history, gateway subscriptions, and late events ac
 
   let bravo!: ChatViewState;
   const second = new ChatClient((state) => { bravo = state; }, "bravoChannel");
-  t.after(() => second.stop());
+  t.onTestFinished(() => second.stop());
   second.start();
   await tick();
   assert.equal(requests[1], "/api/chat/channels/bravoChannel/messages");
@@ -899,7 +903,7 @@ test("channel clients isolate history, gateway subscriptions, and late events ac
 
 test("prepared history is ready on the first render and starts live replay without another history fetch", async (t) => {
   const sockets = installBrowser(t);
-  t.mock.method(globalThis, "fetch", () => { throw new Error("Unexpected duplicate history fetch"); });
+  vi.spyOn(globalThis, "fetch").mockImplementation(() => { throw new Error("Unexpected duplicate history fetch"); });
   const message: ChatMessage = {
     id: "seven", channelId: "alphaChannel", seq: "7", author: { id: "peer", name: "Peer", isGuest: false },
     content: { version: 1, type: "text", text: "Prepared message" }, createdAt: "2026-09-23T12:00:00Z", clientMessageId: "command-seven",
@@ -913,7 +917,7 @@ test("prepared history is ready on the first render and starts live replay witho
   assert.deepEqual(firstRender.messages, [message]);
   const states: ChatViewState[] = [];
   const client = new ChatClient((state) => states.push(state), "alphaChannel");
-  t.after(() => client.stop());
+  t.onTestFinished(() => client.stop());
   client.start(history);
   assert.ok(states.every((state) => state.phase === "ready"));
   await tick();
@@ -924,8 +928,8 @@ test("prepared history is ready on the first render and starts live replay witho
   assert.equal(sockets[0].closed, false);
 });
 
-test("prefetch rejects a history payload containing another channel's messages", async (t) => {
-  t.mock.method(globalThis, "fetch", async () => Response.json({
+test("prefetch rejects a history payload containing another channel's messages", async () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({
     space: { id: "space", name: "Studio" }, channel: { id: "alphaChannel", name: "general" },
     messages: [{ id: "one", channelId: "bravoChannel", seq: "1", author: { id: "peer", name: "Peer", isGuest: false },
       content: { version: 1, type: "text", text: "Wrong channel" }, createdAt: "2026-09-23T12:00:00Z", clientMessageId: "command-one" }],
@@ -937,14 +941,14 @@ test("prefetch rejects a history payload containing another channel's messages",
 test("a prepared history failure renders once and retries only when requested", async (t) => {
   const sockets = installBrowser(t);
   let requests = 0;
-  t.mock.method(globalThis, "fetch", async () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
     requests++;
     return Response.json({ space: { id: "space", name: "Studio" }, channel: { id: "alphaChannel", name: "general" }, messages: [], cursor: "0", hasMore: false });
   });
   let view = initialChatView(undefined, "Messaging unavailable");
   assert.equal(view.phase, "error");
   const client = new ChatClient((next) => { view = next; }, "alphaChannel");
-  t.after(() => client.stop());
+  t.onTestFinished(() => client.stop());
   client.start(undefined, "Messaging unavailable");
   assert.equal(requests, 0);
   assert.equal(sockets.length, 0);
@@ -968,7 +972,7 @@ test("snapshots include older pages and live messages; returning replays the mis
   assert.equal(snapshot.hasMore, false);
   const states: ChatViewState[] = [];
   const returning = new ChatClient((state) => states.push(state), "general");
-  t.after(() => returning.stop());
+  t.onTestFinished(() => returning.stop());
   returning.start(snapshot);
   assert.equal(chatSubscription(f.sockets[0]).after, f.message(6).seq);
   assert.deepEqual(states.at(-1)?.messages, snapshot.messages);
@@ -986,7 +990,7 @@ test("unscoped direct-message history can be retained in a timeline snapshot", a
     messages: [], cursor: "0", hasMore: false,
   };
   const client = new ChatClient(() => undefined, "direct000001");
-  t.after(() => client.stop());
+  t.onTestFinished(() => client.stop());
   client.start(history);
   assert.equal(client.snapshotHistory()?.space.id, "");
   assert.equal(client.snapshotHistory()?.channel.name, "Mira");
@@ -996,7 +1000,7 @@ test("unscoped direct-message history can be retained in a timeline snapshot", a
 test("resync retains visible messages through transient failures but clears them on access denial", async (t) => {
   const f = await paginationFixture(t);
   let finish!: (response: Response) => void;
-  t.mock.method(globalThis, "fetch", () => new Promise<Response>((resolve) => { finish = resolve; }));
+  vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise<Response>((resolve) => { finish = resolve; }));
   f.sockets[0].frame({ type: "resync_required" });
   assert.equal(f.state.phase, "ready");
   assert.deepEqual(f.state.messages, [4, 5].map(f.message));
@@ -1038,7 +1042,7 @@ test("prepared history receives the same channel isolation checks as fetched his
   const sockets = installBrowser(t);
   let state!: ChatViewState;
   const client = new ChatClient((next) => { state = next; }, "general");
-  t.after(() => client.stop());
+  t.onTestFinished(() => client.stop());
   client.start({
     space: { id: "space", name: "Caper" }, channel: { id: "general", name: "general" },
     messages: [{ ...committed({ clientMessageId: "foreign", text: "Wrong channel" }, "1"), channelId: "other-channel" }],
@@ -1054,10 +1058,10 @@ for (const status of [200, 503]) {
   test(`an obsolete session response (${status}) cannot overwrite a newer identity or error state`, async (t) => {
     installBrowser(t);
     const requests: Array<(response: Response) => void> = [];
-    t.mock.method(globalThis, "fetch", () => new Promise<Response>((resolve) => requests.push(resolve)));
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise<Response>((resolve) => requests.push(resolve)));
     let state!: ChatViewState;
     const client = new ChatClient((next) => { state = next; });
-    t.after(() => client.stop());
+    t.onTestFinished(() => client.stop());
     client.identify("Old", true);
     client.identify("Current", true);
     const current = { token: "current", author: { id: "current", name: "Current", isGuest: false } };
@@ -1077,7 +1081,7 @@ test("stopped clients cannot persist a late session or start a session retry", a
   installBrowser(t);
   let finish!: (response: Response) => void;
   let requests = 0;
-  t.mock.method(globalThis, "fetch", () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(() => {
     requests++;
     return new Promise<Response>((resolve) => { finish = resolve; });
   });
@@ -1101,7 +1105,7 @@ test("resync keeps paginated history while refreshing overlapping author metadat
   await older;
   let finish!: (response: Response) => void;
   let requests = 0;
-  t.mock.method(globalThis, "fetch", () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(() => {
     requests++;
     return new Promise<Response>((resolve) => { finish = resolve; });
   });
@@ -1121,7 +1125,7 @@ test("pagination cannot start during a refresh even when older pages remain", as
   const f = await paginationFixture(t);
   const snapshot = f.client.snapshotHistory()!;
   const requests: ((response: Response) => void)[] = [];
-  t.mock.method(globalThis, "fetch", () => new Promise<Response>((resolve) => { requests.push(resolve); }));
+  vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise<Response>((resolve) => { requests.push(resolve); }));
   f.client.retryLoad();
   const blockedPage = f.client.loadOlder();
   assert.equal(requests.length, 1, "a page started after the resync generation would otherwise be lost or corrupt hasMore");
@@ -1138,7 +1142,7 @@ test("pagination cannot start during a refresh even when older pages remain", as
 test("resync replaces a disconnected range so pagination can fill its gap", async (t) => {
   const f = await paginationFixture(t);
   const snapshot = f.client.snapshotHistory()!;
-  t.mock.method(globalThis, "fetch", async () => Response.json({
+  vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({
     ...snapshot, messages: [f.message(7)], cursor: f.message(7).seq, hasMore: true,
   }));
   f.client.retryLoad();
@@ -1203,7 +1207,7 @@ test("thread send retry freezes root and broadcast and confirms one shared reply
   const f = await sendingFixture(t);
   const bodies: Array<{ clientMessageId: string; text: string; threadRootId: string; broadcast: boolean }> = [];
   let fail = true;
-  t.mock.method(globalThis, "fetch", async (_input: unknown, init?: RequestInit) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (_input: unknown, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body));
     bodies.push(body);
     if (fail) return Response.json({ error: "temporary" }, { status: 503 });
@@ -1228,7 +1232,7 @@ test("edit PUTs keep expected revision, merge live updates and reject late aband
   f.sockets[0].message(original);
   const version2 = { ...original, revision: 2, editSeq: "2", editedAt: original.createdAt, content: { ...original.content, text: "Saturday" } };
   const responses: Array<(response: Response) => void> = [];
-  t.mock.method(globalThis, "fetch", (input: unknown, init?: RequestInit) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation((input: unknown, init?: RequestInit) => {
     assert.equal(String(input), "/api/chat/channels/general/messages/message-1");
     assert.equal(new Headers(init?.headers).get("x-caper-chat-token"), "opaque");
     assert.equal(init?.method, "PUT");

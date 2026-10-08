@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { ChatTimeline } from "../chat/timeline.ts";
 import { isChatForwardEvent, isChatMessage, type ChatForwardEvent, type ChatMessage } from "../chat/types.ts";
 

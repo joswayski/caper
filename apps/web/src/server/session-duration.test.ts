@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { sessionDuration } from "../media/session-duration.ts";
 
 test("voice duration uses the shared start, clamps clock skew and keeps hours", () => {

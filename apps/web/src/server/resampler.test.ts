@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { runInNewContext } from "node:vm";
-import { test } from "node:test";
+import { test } from "vitest";
 
 const assets = new URL("../../public/audio/", import.meta.url);
 

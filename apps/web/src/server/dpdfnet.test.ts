@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
-import { test } from "node:test";
+import { test } from "vitest";
 import * as ort from "onnxruntime-web";
 import { DpdfnetStream } from "../../public/audio/dpdfnet8-v2/dsp.js";
 

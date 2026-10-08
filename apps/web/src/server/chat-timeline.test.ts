@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import test from "node:test";
+import { test, vi } from "vitest";
 import { ChatTimeline } from "../chat/timeline.ts";
 import { isChatMessage, isChannelMessage, isChatPinEvent, isChatReactionEvent, type ChatMessage, type ChatPinEvent, type ChatReactionEvent } from "../chat/types.ts";
 import { emojiAsset, emojiCode, emojiNames, preloadEmojiImages } from "../chat/emoji.ts";
@@ -211,10 +211,10 @@ test("bundled native emoji names and aliases match on Android, Apple and desktop
 
 test("emoji preload shares decoding per category, retries failures, and stays warm across messages", async (t) => {
   const manifest = ["1f600", "0031-fe0f-20e3", "1f469-200d-2695-fe0f"];
-  const fetchMock = t.mock.method(globalThis, "fetch", async (url: string) => Response.json(
+  const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => Response.json(
     String(url).endsWith("preload-flags.json") ? ["1f3c1", "1f1e9-1f1f4"] : manifest,
   ));
-  fetchMock.mock.mockImplementationOnce(async () => new Response(null, { status: 503 }));
+  fetchMock.mockImplementationOnce(async () => new Response(null, { status: 503 }));
   const images: { src: string }[] = [];
   const decoded: (() => void)[] = [];
   let failImage = true;
@@ -226,7 +226,7 @@ test("emoji preload shares decoding per category, retries failures, and stays wa
       return failImage ? Promise.reject(new Error("Artwork unavailable")) : new Promise<void>((resolve) => decoded.push(resolve));
     }
   } as unknown as typeof Image;
-  t.after(() => {
+  t.onTestFinished(() => {
     if (originalImage) globalThis.Image = originalImage;
     else Reflect.deleteProperty(globalThis, "Image");
   });
@@ -239,7 +239,7 @@ test("emoji preload shares decoding per category, retries failures, and stays wa
   const first = preloadEmojiImages();
   assert.strictEqual(preloadEmojiImages(), first, "simultaneous hovers must share the preload");
   await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(fetchMock.mock.callCount(), 3, "manifest and image failures must both allow retry");
+  assert.equal(fetchMock.mock.calls.length, 3, "manifest and image failures must both allow retry");
   assert.deepEqual(images.slice(3).map((image) => image.src), [
     "/emoji/twemoji-15/1f600.svg", "/emoji/twemoji-15/31-20e3.svg", "/emoji/twemoji-15/1f469-200d-2695-fe0f.svg",
   ]);
@@ -247,8 +247,8 @@ test("emoji preload shares decoding per category, retries failures, and stays wa
   decoded.forEach((finish) => finish());
   await first;
   assert.strictEqual(preloadEmojiImages(), first, "a later message must reuse completed preload work");
-  assert.equal(fetchMock.mock.callCount(), 3);
-  assert.ok(fetchMock.mock.calls.every(({ arguments: args }) => args[0] === "/emoji/twemoji-15/preload.json"));
+  assert.equal(fetchMock.mock.calls.length, 3);
+  assert.ok(fetchMock.mock.calls.every(([url]) => url === "/emoji/twemoji-15/preload.json"));
 
   failImage = true;
   await preloadEmojiImages("flags");
@@ -259,7 +259,7 @@ test("emoji preload shares decoding per category, retries failures, and stays wa
   assert.strictEqual(preloadEmojiImages("flags"), flags, "concurrent intent must share only its category");
   assert.notStrictEqual(food, flags, "different categories must preload independently");
   await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.deepEqual(fetchMock.mock.calls.slice(3).map(({ arguments: args }) => args[0]), [
+  assert.deepEqual(fetchMock.mock.calls.slice(3).map(([url]) => url), [
     "/emoji/twemoji-15/preload-flags.json", "/emoji/twemoji-15/preload-flags.json", "/emoji/twemoji-15/preload-food_drink.json",
   ]);
   assert.deepEqual(images.slice(8, 10).map((image) => image.src), [
@@ -269,7 +269,7 @@ test("emoji preload shares decoding per category, retries failures, and stays wa
   await Promise.all([flags, food]);
   assert.strictEqual(preloadEmojiImages("flags"), flags);
   assert.strictEqual(preloadEmojiImages("food_drink"), food);
-  assert.equal(fetchMock.mock.callCount(), 6, "completed categories must stay warm when the picker reopens");
+  assert.equal(fetchMock.mock.calls.length, 6, "completed categories must stay warm when the picker reopens");
 });
 
 test("message snapshots retain identity until visible contents change", () => {

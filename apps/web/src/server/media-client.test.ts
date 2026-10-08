@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test, type TestContext } from "node:test";
+import { test, type TestContext, vi } from "vitest";
 import { AppGateway, setAppGatewayForTests } from "../gateway/client.ts";
 import { PublicCallClient, prepareVoiceJoin, waitFor } from "../media/client.ts";
 import { NoiseAssets } from "../media/noise-assets.ts";
@@ -182,7 +182,7 @@ function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
   const client = new PublicCallClient((state) => states.push(state), "/api/media", transport);
   // These tests isolate signaling with raw mock tracks; enhanced audio is tested separately.
   void client.setNoiseSuppression("off");
-  t.after(async () => {
+  t.onTestFinished(async () => {
     client.leaveImmediately();
     await tick();
     gateway.destroy();
@@ -214,10 +214,10 @@ test("state requests carry increasing sequences across mute/deafen and retries",
   assert.deepEqual(stateSequences, [1, 2, 3, 4, 5]);
 });
 
-test("DPDFNet suppression is the fixed default and prepares before capture", async (t) => {
-  const dpdfnet = t.mock.method(DpdfnetPreparation.prototype, "prepare", async () => undefined);
+test("DPDFNet suppression is the fixed default and prepares before capture", async () => {
+  const dpdfnet = vi.spyOn(DpdfnetPreparation.prototype, "prepare").mockImplementation(async () => undefined);
   const engines: string[] = [];
-  t.mock.method(NoiseAssets.prototype, "load", async (engine: string) => {
+  vi.spyOn(NoiseAssets.prototype, "load").mockImplementation(async (engine: string) => {
     engines.push(engine);
     return { module: {} as WebAssembly.Module };
   });
@@ -226,7 +226,7 @@ test("DPDFNet suppression is the fixed default and prepares before capture", asy
   await client.setAudioSetup("headphones");
   assert.equal(states.at(-1)?.noiseSuppression, "dpdfnet8");
   client.prepareMicrophone();
-  assert.equal(dpdfnet.mock.callCount(), 1);
+  assert.equal(dpdfnet.mock.calls.length, 1);
   assert.deepEqual(engines, []);
   await client.setNoiseSuppression("deepfilter-gentle");
   client.prepareMicrophone();
@@ -237,21 +237,24 @@ test("DPDFNet suppression is the fixed default and prepares before capture", asy
 
 test("preparation does not allocate a spare during a call; Leave warms the next join, page exit does not", async (t) => {
   const { client, track } = setup(t);
-  const prepare = t.mock.method(DpdfnetPreparation.prototype, "prepare", async () => undefined);
-  const stop = t.mock.method(DpdfnetPreparation.prototype, "stop", () => undefined);
+  const prepare = vi.spyOn(DpdfnetPreparation.prototype, "prepare").mockImplementation(async () => undefined);
+  const stop = vi.spyOn(DpdfnetPreparation.prototype, "stop").mockImplementation(() => undefined);
   // Isolate client lifecycle here; real processed capture and worker handoff have separate tests.
-  t.mock.method(client as unknown as { openMicrophone(): Promise<MediaStreamTrack> }, "openMicrophone", async () => track as unknown as MediaStreamTrack);
+  vi.spyOn(
+    client as unknown as { openMicrophone(): Promise<MediaStreamTrack> },
+    "openMicrophone"
+  ).mockImplementation(async () => track as unknown as MediaStreamTrack);
   await client.setNoiseSuppression("dpdfnet8");
   client.prepareMicrophone();
   await client.join();
   client.prepareMicrophone();
-  assert.equal(prepare.mock.callCount(), 1);
+  assert.equal(prepare.mock.calls.length, 1);
   await client.leave();
-  assert.equal(prepare.mock.callCount(), 2);
-  assert.equal(stop.mock.callCount(), 1);
+  assert.equal(prepare.mock.calls.length, 2);
+  assert.equal(stop.mock.calls.length, 1);
   client.leaveImmediately();
-  assert.equal(prepare.mock.callCount(), 2);
-  assert.equal(stop.mock.callCount(), 2);
+  assert.equal(prepare.mock.calls.length, 2);
+  assert.equal(stop.mock.calls.length, 2);
 });
 
 test("connection diagnostics are structured and include live transport rates", async (t) => {
@@ -311,17 +314,17 @@ test("failed mode replacement keeps the old microphone and rolls back selection"
   const { client, track, install, states } = setup(t);
   await client.join();
   const capture = (client as unknown as { captures: Map<Track, { pause(): Promise<void>; resume(): Promise<void> }> }).captures.get(track)!;
-  const pause = t.mock.method(capture, "pause");
-  const resume = t.mock.method(capture, "resume");
+  const pause = vi.spyOn(capture, "pause");
+  const resume = vi.spyOn(capture, "resume");
   const replacement = new Track();
   install("navigator", { mediaDevices: { getUserMedia: async () => {
-    assert.equal(pause.mock.callCount(), 1, "old processing pauses before replacement capture starts");
+    assert.equal(pause.mock.calls.length, 1, "old processing pauses before replacement capture starts");
     return new Stream([replacement]);
   } } });
   Peer.latest.senders[0].replaceTrack = async () => { throw new Error("replace failed"); };
   await assert.rejects(client.setNoiseSuppression("browser"), /replace failed/);
-  assert.equal(pause.mock.callCount(), 1);
-  assert.equal(resume.mock.callCount(), 1);
+  assert.equal(pause.mock.calls.length, 1);
+  assert.equal(resume.mock.calls.length, 1);
   assert.equal(track.readyState, "live");
   assert.equal(replacement.readyState, "ended");
   assert.equal(states.at(-1)?.noiseSuppression, "off");
@@ -473,7 +476,7 @@ test("stopping a pending local mic test releases capture that arrives later", as
 });
 
 test("local mic test times out unanswered permission and releases a late grant", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const { client, states, install } = setup(t);
   let finish!: () => void;
   const lateTrack = new Track();
@@ -483,10 +486,10 @@ test("local mic test times out unanswered permission and releases a late grant",
   let settled = false;
   const starting = client.startLocalMicTest();
   const rejected = assert.rejects(starting, /Microphone setup timed out/).then(() => { settled = true; });
-  t.mock.timers.tick(29_999);
+  vi.advanceTimersByTime(29_999);
   await tick();
   assert.equal(settled, false);
-  t.mock.timers.tick(1);
+  vi.advanceTimersByTime(1);
   await rejected;
   finish();
   await tick();
@@ -580,10 +583,10 @@ test("voice processing defaults to 25%, clamps updates, and changes the live cap
   await client.join();
   assert.equal(states.at(-1)?.voiceProcessingStrength, 25);
   const capture = (client as unknown as { captures: Map<Track, { setVoiceProcessingStrength(strength: number): void }> }).captures.get(track)!;
-  const update = t.mock.method(capture, "setVoiceProcessingStrength");
+  const update = vi.spyOn(capture, "setVoiceProcessingStrength");
   client.setVoiceProcessingStrength(125);
   assert.equal(states.at(-1)?.voiceProcessingStrength, 100);
-  assert.deepEqual(update.mock.calls.map((call) => call.arguments), [[100]]);
+  assert.deepEqual(update.mock.calls, [[100]]);
 });
 
 test("monitor capture replacement stays private and uses the replacement local stream", async (t) => {
@@ -628,7 +631,7 @@ test("transient heartbeat failures preserve audio, recover the same session, and
   const originalFetch = fetch;
   let now = 0;
   let status = 503;
-  t.mock.method(performance, "now", () => now);
+  vi.spyOn(performance, "now").mockImplementation(() => now);
   install("fetch", (url: string, options: RequestInit) => url.endsWith("/snapshot") && status !== 200
     ? Promise.resolve(Response.json({}, { status })) : originalFetch(url, options));
   for (status of [503, 502, 429, 408]) {
@@ -655,7 +658,7 @@ test("prolonged control outage still triggers rejoin", async (t) => {
   await new Promise((resolve) => setImmediate(resolve));
   const polling = client as unknown as { poll(): Promise<void> };
   let now = 0;
-  t.mock.method(performance, "now", () => now);
+  vi.spyOn(performance, "now").mockImplementation(() => now);
   install("fetch", async () => { throw new TypeError("Network unavailable"); });
   await polling.poll();
   assert.equal(states.at(-1)?.phase, "connected");
@@ -682,14 +685,14 @@ test("heartbeat timeout covers response bodies without closing healthy media", a
   const { client, track, states, install } = setup(t);
   await client.join();
   await new Promise((resolve) => setImmediate(resolve));
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   install("fetch", async (_url: string, options: RequestInit) => ({
     ok: true, status: 200, headers: new Headers(),
     text: () => new Promise((_resolve, reject) => options.signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")))),
   }));
   const pending = (client as unknown as { poll(): Promise<void> }).poll();
   await Promise.resolve();
-  t.mock.timers.tick(5_000);
+  vi.advanceTimersByTime(5_000);
   await pending;
   assert.equal(states.at(-1)?.phase, "connected");
   assert.equal(track.readyState, "live");
@@ -697,7 +700,7 @@ test("heartbeat timeout covers response bodies without closing healthy media", a
 
 test("failed mute state synchronization retries the latest state after API recovery", async (t) => {
   const { client, track, stateUpdates, states, install } = setup(t);
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   await client.join();
   await new Promise((resolve) => setImmediate(resolve));
   const originalFetch = fetch;
@@ -710,7 +713,7 @@ test("failed mute state synchronization retries the latest state after API recov
   await client.setDeafened(true);
   assert.equal(states.at(-1)?.stateSyncPending, true);
   unavailable = false;
-  t.mock.timers.tick(250);
+  vi.advanceTimersByTime(250);
   await tick();
   assert.deepEqual(stateUpdates.at(-1), { muted: true, deafened: true });
   assert.equal(states.at(-1)?.stateSyncPending, false);
@@ -721,19 +724,19 @@ test("temporary RTC disconnect recovers without rejoin, but persistent disconnec
   const { client, states } = setup(t);
   await client.join();
   await new Promise((resolve) => setImmediate(resolve));
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const peer = Peer.latest;
   peer.connectionState = "disconnected";
   peer.onconnectionstatechange!();
-  t.mock.timers.tick(9_000);
+  vi.advanceTimersByTime(9_000);
   assert.equal(states.at(-1)?.phase, "connected");
   peer.connectionState = "connected";
   peer.onconnectionstatechange!();
-  t.mock.timers.tick(1_000);
+  vi.advanceTimersByTime(1_000);
   assert.equal(states.at(-1)?.phase, "connected");
   peer.connectionState = "disconnected";
   peer.onconnectionstatechange!();
-  t.mock.timers.tick(10_000);
+  vi.advanceTimersByTime(10_000);
   assert.equal(states.at(-1)?.phase, "reconnecting");
 });
 
@@ -741,16 +744,16 @@ for (const intermediate of ["connecting", "disconnected"]) {
   test(`RTC recovery keeps the original deadline through ${intermediate} events`, async (t) => {
     const { client, states } = setup(t);
     await client.join();
-    t.mock.timers.enable({ apis: ["setTimeout"] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const peer = Peer.latest;
     peer.connectionState = "disconnected";
     peer.onconnectionstatechange!();
-    t.mock.timers.tick(9_000);
+    vi.advanceTimersByTime(9_000);
     peer.connectionState = intermediate;
     peer.onconnectionstatechange!();
     await (client as unknown as { poll(): Promise<void> }).poll();
     assert.equal(states.at(-1)?.phase, "connected", "a healthy heartbeat does not prove transport recovery");
-    t.mock.timers.tick(1_000);
+    vi.advanceTimersByTime(1_000);
     assert.equal(states.at(-1)?.phase, "reconnecting", "recover at the original ten-second deadline");
   });
 }
@@ -759,14 +762,14 @@ test("RTC failure immediately schedules recovery and leave cancels delayed recov
   const { client, states, calls } = setup(t);
   await client.join();
   await new Promise((resolve) => setImmediate(resolve));
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const peer = Peer.latest;
   peer.connectionState = "failed";
   peer.onconnectionstatechange!();
   assert.equal(states.at(-1)?.phase, "reconnecting");
   assert.equal(client.getAudioDiagnostics().voice.lastReconnect?.reason, "connection failed");
   await client.leave();
-  t.mock.timers.tick(20_000);
+  vi.advanceTimersByTime(20_000);
   assert.equal(states.at(-1)?.phase, "idle");
   assert.equal(calls.filter((op) => op === "join").length, 1);
 });
@@ -950,7 +953,7 @@ for (const occupied of [false, true]) test(`join timer starts at click and adopt
   const originalNow = Date.now;
   let now = clicked;
   Date.now = () => now;
-  t.after(() => { Date.now = originalNow; });
+  t.onTestFinished(() => { Date.now = originalNow; });
   let offer!: () => void;
   install("RTCPeerConnection", class extends Peer {
     async createOffer() {
@@ -1222,7 +1225,7 @@ test("deafen changed during a warm Join is acknowledged before readiness", async
 });
 
 /** Holds the microphone transport in "connecting" and records request bodies. */
-function holdTransport(t: TestContext, install: (key: string, value: unknown) => void, roster: object[], reject?: (op: string, body: Record<string, unknown>) => Response | undefined) {
+function holdTransport(install: (key: string, value: unknown) => void, roster: object[], reject?: (op: string, body: Record<string, unknown>) => Response | undefined) {
   const original = fetch;
   const bodies: Array<{ op: string; body: Record<string, unknown> }> = [];
   install("fetch", (url: string, init: RequestInit) => {
@@ -1236,7 +1239,7 @@ function holdTransport(t: TestContext, install: (key: string, value: unknown) =>
   });
   const applyRemote = Peer.prototype.setRemoteDescription;
   let answers = 0;
-  t.mock.method(Peer.prototype, "setRemoteDescription", async function (this: Peer, description: RTCSessionDescriptionInit) {
+  vi.spyOn(Peer.prototype, "setRemoteDescription").mockImplementation(async function (this: Peer, description: RTCSessionDescriptionInit) {
     // Only the publication answer starts the microphone transport.
     if (answers++ === 0) { this.connectionState = "connecting"; return; }
     return applyRemote.call(this, description);
@@ -1258,8 +1261,8 @@ const joinWithPulls = (trackIds: string[]) => Response.json({
 
 test("join pulls everyone present onto a receive connection that comes up with the microphone", async (t) => {
   const { client, track, states, install } = setup(t);
-  const bodies = holdTransport(t, install, otherSpeaker, (op, body) => op === "join" && body.receive ? joinWithPulls(["remote"]) : undefined);
-  t.mock.method(Peer.prototype, "createAnswer", async function (this: Peer) {
+  const bodies = holdTransport(install, otherSpeaker, (op, body) => op === "join" && body.receive ? joinWithPulls(["remote"]) : undefined);
+  vi.spyOn(Peer.prototype, "createAnswer").mockImplementation(async function (this: Peer) {
     // The receive connection is still connecting when its answer is sent.
     this.connectionState = "connecting";
     return { type: "answer", sdp: "v=0" };
@@ -1296,13 +1299,13 @@ test("join pulls everyone present onto a receive connection that comes up with t
 
 test("Join does not wait for the receive answer's round trip", async (t) => {
   const { client, track, states, install } = setup(t);
-  holdTransport(t, install, otherSpeaker, (op, body) => op === "join" && body.receive ? joinWithPulls(["remote"]) : undefined);
+  holdTransport(install, otherSpeaker, (op, body) => op === "join" && body.receive ? joinWithPulls(["remote"]) : undefined);
   const held = fetch;
   let answered!: () => void;
   install("fetch", (url: string, init: RequestInit) => url.endsWith("/negotiate")
     ? new Promise<Response>((resolve) => { answered = () => resolve(Response.json({})); })
     : held(url, init));
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const joining = client.join();
   await tick();
   const [main] = Peer.all;
@@ -1321,12 +1324,12 @@ test("Join does not wait for the receive answer's round trip", async (t) => {
 
 test("a receive connection that never comes up after Join reconnects the call", async (t) => {
   const { client, states, install } = setup(t);
-  holdTransport(t, install, otherSpeaker, (op, body) => op === "join" && body.receive ? joinWithPulls(["remote"]) : undefined);
-  t.mock.method(Peer.prototype, "createAnswer", async function (this: Peer) {
+  holdTransport(install, otherSpeaker, (op, body) => op === "join" && body.receive ? joinWithPulls(["remote"]) : undefined);
+  vi.spyOn(Peer.prototype, "createAnswer").mockImplementation(async function (this: Peer) {
     this.connectionState = "connecting";
     return { type: "answer", sdp: "v=0" };
   });
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const joining = client.join();
   await tick();
   const [main] = Peer.all;
@@ -1334,7 +1337,7 @@ test("a receive connection that never comes up after Join reconnects the call", 
   main.dispatchEvent(new Event("connectionstatechange"));
   await joining;
   assert.equal(states.at(-1)?.phase, "connected");
-  t.mock.timers.tick(15_000);
+  vi.advanceTimersByTime(15_000);
   await tick();
   assert.equal(states.at(-1)?.phase, "reconnecting");
   assert.equal(client.getAudioDiagnostics().voice.lastReconnect?.reason, "hearing others failed: Error");
@@ -1343,7 +1346,7 @@ test("a receive connection that never comes up after Join reconnects the call", 
 
 test("later pulls and closes use the receive connection", async (t) => {
   const { client, events, install } = setup(t);
-  const bodies = holdTransport(t, install, otherSpeaker, (op, body) => op === "join" && body.receive ? joinWithPulls(["remote"]) : undefined);
+  const bodies = holdTransport(install, otherSpeaker, (op, body) => op === "join" && body.receive ? joinWithPulls(["remote"]) : undefined);
   const joining = client.join();
   await tick();
   const [main, receiver] = Peer.all;
@@ -1366,7 +1369,7 @@ test("later pulls and closes use the receive connection", async (t) => {
 
 test("an API without join-time pulls keeps combined publication and pulls after connecting", async (t) => {
   const { client, states, install } = setup(t);
-  const bodies = holdTransport(t, install, otherSpeaker, (op, body) =>
+  const bodies = holdTransport(install, otherSpeaker, (op, body) =>
     op === "join" && body.receive ? Response.json({ error: "unknown field `receive`" }, { status: 422 }) : undefined);
   const joining = client.join();
   await tick();
@@ -1437,7 +1440,7 @@ test("publication failure cancels an unfinished SSE handshake without enabling a
 
 test("state failure cancels an unfinished transport handshake without enabling audio", async (t) => {
   const { client, track, calls, states, install } = setup(t);
-  t.mock.method(Peer.prototype, "setRemoteDescription", async () => { Peer.latest.connectionState = "connecting"; });
+  vi.spyOn(Peer.prototype, "setRemoteDescription").mockImplementation(async () => { Peer.latest.connectionState = "connecting"; });
   const original = fetch;
   install("fetch", async (url: string, init: RequestInit) => {
     if (url.endsWith("/join")) await client.setMuted(true);
@@ -1509,7 +1512,7 @@ test("subscription renegotiation may reconnect transport before Join enables aud
   install("fetch", (url: string, init: RequestInit) => url.endsWith("/snapshot")
     ? Promise.resolve(Response.json({ participants: [{id:"other",name:"Other",muted:false,deafened:false,tracks:[{id:"remote",kind:"microphone"}]}] }))
     : original(url, init));
-  t.mock.method(Peer.prototype, "setRemoteDescription", async (description: RTCSessionDescriptionInit) => {
+  vi.spyOn(Peer.prototype, "setRemoteDescription").mockImplementation(async (description: RTCSessionDescriptionInit) => {
     if (description.type === "offer") Peer.latest.connectionState = "connecting";
   });
 
@@ -1533,7 +1536,7 @@ test("leaving while subscription transport reconnects cancels Join and keeps aud
   install("fetch", (url: string, init: RequestInit) => url.endsWith("/snapshot")
     ? Promise.resolve(Response.json({ participants: [{id:"other",name:"Other",muted:false,deafened:false,tracks:[{id:"remote",kind:"microphone"}]}] }))
     : original(url, init));
-  t.mock.method(Peer.prototype, "setRemoteDescription", async (description: RTCSessionDescriptionInit) => {
+  vi.spyOn(Peer.prototype, "setRemoteDescription").mockImplementation(async (description: RTCSessionDescriptionInit) => {
     if (description.type === "offer") Peer.latest.connectionState = "connecting";
   });
 
@@ -1551,12 +1554,12 @@ test("leaving while subscription transport reconnects cancels Join and keeps aud
 
 test("subscription transport reconnection still times out without enabling audio", async (t) => {
   const { client, track, states, install } = setup(t);
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const original = fetch;
   install("fetch", (url: string, init: RequestInit) => url.endsWith("/snapshot")
     ? Promise.resolve(Response.json({ participants: [{id:"other",name:"Other",muted:false,deafened:false,tracks:[{id:"remote",kind:"microphone"}]}] }))
     : original(url, init));
-  t.mock.method(Peer.prototype, "setRemoteDescription", async (description: RTCSessionDescriptionInit) => {
+  vi.spyOn(Peer.prototype, "setRemoteDescription").mockImplementation(async (description: RTCSessionDescriptionInit) => {
     if (description.type === "offer") Peer.latest.connectionState = "connecting";
   });
 
@@ -1564,7 +1567,7 @@ test("subscription transport reconnection still times out without enabling audio
   await tick();
   await tick();
   assert.equal(Peer.latest.connectionState, "connecting");
-  t.mock.timers.tick(12_000);
+  vi.advanceTimersByTime(12_000);
   await joining;
   assert.equal(states.at(-1)?.phase, "failed");
   assert.match(states.at(-1)?.error ?? "", /Timed out waiting for connectionstatechange/);
@@ -1641,11 +1644,11 @@ test("gateway loss during startup and an established call preserves media while 
     : original(url, init));
   const joining = client.join();
   await tick();
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   events[0].close();
   await tick();
   assert.equal(track.readyState, "live");
-  t.mock.timers.tick(188);
+  vi.advanceTimersByTime(188);
   await tick();
   publish();
   await joining;
@@ -1658,7 +1661,7 @@ test("gateway loss during startup and an established call preserves media while 
   assert.equal(outgoing.readyState, "live");
   assert.equal(outgoing.enabled, true);
   assert.equal(states.at(-1)?.phase, "connected");
-  t.mock.timers.tick(375);
+  vi.advanceTimersByTime(375);
   await tick();
   await tick();
   assert.equal(events.length, 3, "reopen the gateway subscription using the existing voice session");
@@ -1669,7 +1672,7 @@ test("gateway loss during startup and an established call preserves media while 
 
 test("gateway-only outage never restarts healthy voice while authenticated renewals succeed", async (t) => {
   const { client, events, states } = setup(t);
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval"] });
   await client.join();
   const peer = Peer.latest;
   events[0].close();
@@ -1678,7 +1681,7 @@ test("gateway-only outage never restarts healthy voice while authenticated renew
   assert.equal(states.at(-1)?.liveUpdatesPending, true);
   assert.equal(Peer.latest, peer);
   assert.equal(peer.senders[0].track?.enabled, true);
-  t.mock.timers.tick(188);
+  vi.advanceTimersByTime(188);
   await tick();
   await tick();
   assert.equal(events.length, 2);
@@ -1770,11 +1773,11 @@ test("draining reopens control with the same call and does not rejoin or replace
   await client.join();
   const peer = Peer.latest;
   const joins = calls.filter((call) => call === "join").length;
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   events[0].enqueue(new TextEncoder().encode("event: draining\ndata: {}\n\n"));
   events[0].close();
   await tick();
-  t.mock.timers.tick(50);
+  vi.advanceTimersByTime(50);
   await tick();
   assert.equal(events.length, 2);
   assert.equal(Peer.latest, peer);
@@ -1805,7 +1808,7 @@ test("repeated gateway migrations preserve the active call and stop after leavin
 });
 
 test("queued pushed snapshots never suppress a scheduled lease heartbeat", async (t) => {
-  t.mock.timers.enable({ apis: ["setInterval"] });
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   const { client, events, install, states } = setup(t);
   await client.join();
   const original = fetch;
@@ -1822,7 +1825,7 @@ test("queued pushed snapshots never suppress a scheduled lease heartbeat", async
   await tick();
   events[0].enqueue(snapshotEvent(latest.participants, 2));
   await tick();
-  t.mock.timers.tick(15_000);
+  vi.advanceTimersByTime(15_000);
   finish();
   await tick();
   await tick();
@@ -1877,7 +1880,7 @@ test("rapid mute changes coalesce to the latest intent behind an in-flight state
 
 test("mute writes and pushed roster updates cannot block the scheduled lease renewal", async (t) => {
   const { client, install, states, events, calls } = setup(t);
-  t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setInterval", "setTimeout", "clearInterval", "clearTimeout"] });
   await client.join();
   const original = fetch;
   const participants = [{ id: "other", name: "Other", muted: true, deafened: false, tracks: [] }];
@@ -1899,7 +1902,7 @@ test("mute writes and pushed roster updates cannot block the scheduled lease ren
   events[0].enqueue(snapshotEvent(participants, 1));
   await tick();
   const pushedMuted = states.at(-1)?.participants[0]?.muted;
-  t.mock.timers.tick(15_000);
+  vi.advanceTimersByTime(15_000);
   await tick();
   assert.ok(renewals > 0, "lease renewal must not queue behind a state request");
   assert.equal(pushedMuted, true, "show pushed state before heartbeat, without waiting for our own write");
@@ -1911,7 +1914,7 @@ test("mute writes and pushed roster updates cannot block the scheduled lease ren
 
 test("draining with failed state writes retries latest intent without replacing the voice session", async (t) => {
   const { client, events, install, states, calls } = setup(t);
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval"] });
   await client.join();
   const peer = Peer.latest;
   const original = fetch;
@@ -1931,11 +1934,11 @@ test("draining with failed state writes retries latest intent without replacing 
   events[0].enqueue(new TextEncoder().encode("event: draining\ndata: {}\n\n"));
   events[0].close();
   await tick();
-  t.mock.timers.tick(50);
+  vi.advanceTimersByTime(50);
   await tick();
   await client.setDeafened(true);
   await Promise.all([client.setDeafened(false), client.setMuted(false)]);
-  t.mock.timers.tick(300);
+  vi.advanceTimersByTime(300);
   await tick();
   assert.deepEqual(updates.at(-1), { muted: false, deafened: false, sequence: 4 });
   assert.equal(states.at(-1)?.stateSyncPending, false);
@@ -1951,7 +1954,7 @@ test("draining with failed state writes retries latest intent without replacing 
 
 test("blocked subscription negotiation cannot delay roster, mute synchronization, or lease renewal", async (t) => {
   const { client, events, install, states, stateUpdates } = setup(t);
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval"] });
   await client.join();
   const original = fetch;
   let finish!: () => void;
@@ -1978,7 +1981,7 @@ test("blocked subscription negotiation cannot delay roster, mute synchronization
   await client.setMuted(true);
   assert.equal(stateUpdates.at(-1)?.muted, true);
   for (let heartbeat = 0; heartbeat < 2; heartbeat++) {
-    t.mock.timers.tick(15_000);
+    vi.advanceTimersByTime(15_000);
     await tick();
   }
   assert.equal(renewals, 2, "heartbeat must run while SDP work is still pending");
@@ -1991,7 +1994,7 @@ test("blocked subscription negotiation cannot delay roster, mute synchronization
 
 test("a late timed-out mute write is repaired from a newer pushed self snapshot", async (t) => {
   const { client, events, install, states } = setup(t);
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval"] });
   await client.join();
   const original = fetch;
   const updates: boolean[] = [];
@@ -2005,7 +2008,7 @@ test("a late timed-out mute write is repaired from a newer pushed self snapshot"
   });
   const muting = client.setMuted(true);
   await tick();
-  t.mock.timers.tick(5_000);
+  vi.advanceTimersByTime(5_000);
   await muting;
   await client.setMuted(false);
   assert.deepEqual(updates, [true, false]);
@@ -2024,7 +2027,7 @@ test("a late timed-out mute write is repaired from a newer pushed self snapshot"
 
 test("leaving cancels pending state retries and ignores an old mute action after rejoin", async (t) => {
   const { client, install, states } = setup(t);
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval"] });
   await client.join();
   const original = fetch;
   let writes = 0;
@@ -2042,7 +2045,7 @@ test("leaving cancels pending state retries and ignores an old mute action after
   await oldAction;
   install("fetch", original);
   await client.join();
-  t.mock.timers.tick(1_000);
+  vi.advanceTimersByTime(1_000);
   await tick();
   assert.equal(writes, 1, "no old-generation write or retry");
   assert.equal(states.at(-1)?.phase, "connected");
@@ -2054,7 +2057,7 @@ test("leaving cancels pending state retries and ignores an old mute action after
 for (const operation of ["join", "publish", "subscribe", "negotiate", "close"]) {
   test(`${operation} retries explicit drain rejection without replacing the call`, async (t) => {
     const { client, install, events, states, calls } = setup(t);
-    t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval"] });
     const startup = operation === "join" || operation === "publish";
     if (!startup) await client.join();
     const original = fetch;
@@ -2071,7 +2074,7 @@ for (const operation of ["join", "publish", "subscribe", "negotiate", "close"]) 
     }
     await tick();
     assert.equal(attempts, 1);
-    t.mock.timers.tick(250);
+    vi.advanceTimersByTime(250);
     await tick();
     await joining;
     assert.equal(attempts, 2);
@@ -2085,7 +2088,7 @@ for (const operation of ["join", "publish", "subscribe", "negotiate", "close"]) 
 for (const status of [502, 503, 504]) {
   test(`ambiguous subscription ${status} is never blindly replayed`, async (t) => {
     const { client, install, events, states } = setup(t);
-    t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval"] });
     await client.join();
     const original = fetch;
     let attempts = 0;
@@ -2172,7 +2175,7 @@ test("a source leaving during subscription completes negotiation then closes onl
 
 test("drain retries are bounded and leave cancels retry backoff", async (t) => {
   const { client, install } = setup(t);
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval"] });
   await client.join();
   const original = fetch;
   let attempts = 0;
@@ -2184,14 +2187,14 @@ test("drain retries are bounded and leave cancels retry backoff", async (t) => {
   const api = client as unknown as { api(operation: string): Promise<void> };
   const exhausted = assert.rejects(api.api("subscribe"), /API is draining/);
   await tick();
-  for (const delay of [250, 500, 1_000]) { t.mock.timers.tick(delay); await tick(); }
+  for (const delay of [250, 500, 1_000]) { vi.advanceTimersByTime(delay); await tick(); }
   await exhausted;
   assert.equal(attempts, 4);
   const cancelled = assert.rejects(api.api("subscribe"));
   await tick();
   await client.leave();
   await cancelled;
-  t.mock.timers.tick(2_000);
+  vi.advanceTimersByTime(2_000);
   await tick();
   assert.equal(attempts, 5, "no retry after leaving");
 });
@@ -2210,7 +2213,7 @@ test("a pending old microphone request cannot block controls in a replacement ca
   const { client, install, states, stateUpdates } = setup(t);
   await client.join();
   const capture = [...(client as unknown as { captures: Map<Track, { resume(): Promise<void> }> }).captures.values()][0];
-  const resume = t.mock.method(capture, "resume", async () => { throw new Error("old pipeline was stopped"); });
+  const resume = vi.spyOn(capture, "resume").mockImplementation(async () => { throw new Error("old pipeline was stopped"); });
   let finish!: () => void;
   let captures = 0;
   install("navigator", { mediaDevices: { getUserMedia: () => ++captures === 1
@@ -2228,7 +2231,7 @@ test("a pending old microphone request cannot block controls in a replacement ca
   finish();
   await replacing;
   await muting;
-  assert.equal(resume.mock.callCount(), 0, "never resurrect an old pipeline or let its failed rollback restart the new call");
+  assert.equal(resume.mock.calls.length, 0, "never resurrect an old pipeline or let its failed rollback restart the new call");
   assert.equal(states.at(-1)?.phase, "connected");
 });
 
@@ -2257,7 +2260,7 @@ test("a late ended-track cleanup failure cannot reconnect a replacement call", a
 for (const failure of [502, 503, 504, "network", "timeout"] as const) {
   test(`remote departure with ${failure} cleanup failure keeps the existing call and retries`, async (t) => {
     const { client, install, events, states, calls, track } = setup(t);
-    t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval"] });
     await client.join();
     const peer = Peer.latest;
     const before = states.length;
@@ -2279,8 +2282,8 @@ for (const failure of [502, 503, 504, "network", "timeout"] as const) {
     events[0].enqueue(snapshotEvent([], 2));
     await tick();
     assert.equal(states.at(-1)?.remoteMedia.length, 0, "remove departed audio before waiting for cleanup");
-    if (failure === "timeout") { t.mock.timers.tick(5_000); await tick(); }
-    t.mock.timers.tick(15_000);
+    if (failure === "timeout") { vi.advanceTimersByTime(5_000); await tick(); }
+    vi.advanceTimersByTime(15_000);
     await tick();
     await tick();
     assert.equal(attempts, 2, "cleanup retries without creating another session");
@@ -2407,7 +2410,7 @@ test("join preparation targets member channels only, at most every few seconds",
   const restoreWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
   Object.defineProperty(globalThis, "window", { value: globalThis, configurable: true });
   setAppGatewayForTests({ command: async (request: { method: string; channelId?: string }) => { commands.push(request); } } as unknown as AppGateway);
-  t.after(() => {
+  t.onTestFinished(() => {
     setAppGatewayForTests(undefined);
     if (restoreWindow) Object.defineProperty(globalThis, "window", restoreWindow); else Reflect.deleteProperty(globalThis, "window");
   });
@@ -2474,7 +2477,7 @@ const warmAnswer = (ticket = "ticket") => ({
 async function warmed(t: TestContext, respond: () => Promise<object> = async () => warmAnswer()) {
   const requests: Array<{ channelId?: string; body: any }> = [];
   setWarmRequestForTests(async (channelId, body) => { requests.push({ channelId, body }); return await respond() as never; });
-  t.after(() => setWarmRequestForTests());
+  t.onTestFinished(() => setWarmRequestForTests());
   keepVoiceWarm(WARM_ROOT);
   await tick();
   return requests;
@@ -2504,7 +2507,7 @@ test("the signed-in live demo warms the public endpoint and Join adopts its conn
   const { client, install } = setup(t);
   const requests: Array<string | undefined> = [];
   setWarmRequestForTests(async (channelId) => { requests.push(channelId); return warmAnswer() as never; });
-  t.after(() => setWarmRequestForTests());
+  t.onTestFinished(() => setWarmRequestForTests());
   keepVoiceWarm("/api/media");
   await tick();
   assert.deepEqual(requests, [undefined], "the public demo has no account-channel ID");
@@ -2579,19 +2582,19 @@ for (const refusal of [{ status: 409, code: "warm_unavailable" }, { status: 422 
 
 test("a warm connection that fails is replaced; an API without warm sessions is not asked again", async (t) => {
   setup(t);
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const requests = await warmed(t);
   const [warmMain] = Peer.all;
   warmMain.connectionState = "failed";
   warmMain.dispatchEvent(new Event("connectionstatechange"));
   assert.equal(hasWarmVoice(), false);
-  t.mock.timers.tick(0);
+  vi.advanceTimersByTime(0);
   await tick();
   assert.equal(requests.length, 2, "rebuilt at once");
   assert.equal(hasWarmVoice(), true);
 
   const unsupported = await warmed(t, async () => { throw Object.assign(new Error("not found"), { status: 404 }); });
-  t.mock.timers.tick(120_000);
+  vi.advanceTimersByTime(120_000);
   await tick();
   assert.equal(unsupported.length, 1);
   assert.equal(hasWarmVoice(), false);

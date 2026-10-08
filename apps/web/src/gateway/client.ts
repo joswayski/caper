@@ -248,6 +248,7 @@ export class AppGateway {
       if (!subscription.readySettled) subscription.reject(new DOMException("Gateway closed.", "AbortError"));
     }
     this.subscriptions.clear();
+    // oxlint-disable-next-line unicorn/no-useless-spread -- Cleanup mutates the commands map; keep the original key set.
     for (const id of [...this.commands.keys()]) this.finishCommand(id, undefined, new DOMException("Gateway closed.", "AbortError"));
     clearTimeout(this.idleTimer);
     this.idleTimer = undefined;

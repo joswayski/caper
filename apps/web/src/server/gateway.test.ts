@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test, type TestContext } from "node:test";
+import { test, type TestContext, vi } from "vitest";
 import { AppGateway, setAppGatewayForTests, watchPresence } from "../gateway/client.ts";
 import { watchPresence as watchMediaPresence } from "../media/presence.ts";
 import { callSnapshot } from "../media/events.ts";
@@ -44,16 +44,16 @@ class FakeSocket extends EventTarget {
 function setup(t: TestContext) {
   const originalWindow = globalThis.window;
   Object.defineProperty(globalThis, "window", { configurable: true, value: new FakeWindow() });
-  t.after(() => Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow }));
+  t.onTestFinished(() => { Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow }); });
   let nextId = 0;
-  t.mock.method(globalThis.crypto, "randomUUID", () => `00000000-0000-4000-8000-${String(++nextId).padStart(12, "0")}`);
+  vi.spyOn(globalThis.crypto, "randomUUID").mockImplementation(() => `00000000-0000-4000-8000-${String(++nextId).padStart(12, "0")}`);
   const sockets: FakeSocket[] = [];
   const gateway = new AppGateway((url) => {
     const socket = new FakeSocket(url);
     sockets.push(socket);
     return socket;
   }, () => 0);
-  t.after(() => gateway.destroy());
+  t.onTestFinished(() => gateway.destroy());
   const hello = (index: number, serverTime = Date.now()) => sockets[index].frame({
     type: "hello", idleTimeoutSeconds: 600, serverTime,
   });
@@ -66,7 +66,7 @@ test("chat, media, and scoped presence share one credential-free same-origin soc
   const chat = f.gateway.subscribe({ kind: "chat", channelId: "general", after: "4" }, { event: () => undefined, cursor: () => "4" });
   const media = f.gateway.subscribe({ kind: "media", token: "media-secret" }, { event: () => undefined });
   const presence = f.gateway.subscribe({ kind: "presence", spaceId: "space", userIds: ["one", "two"] }, { event: () => undefined });
-  t.after(() => { chat.unsubscribe(); media.unsubscribe(); presence.unsubscribe(); });
+  t.onTestFinished(() => { chat.unsubscribe(); media.unsubscribe(); presence.unsubscribe(); });
 
   assert.equal(f.sockets.length, 1);
   assert.equal(f.sockets[0].url, "wss://caper.test/api/chat/events");
@@ -94,7 +94,7 @@ test("handoff retains the old socket through overlap and promotes only after cha
       }
     },
   });
-  t.after(() => subscription.unsubscribe());
+  t.onTestFinished(() => subscription.unsubscribe());
   f.hello(0);
   const id = f.subscribe(0).id;
   f.sockets[0].frame({ type: "event", id, event: { type: "ready", cursor: "5" } });
@@ -114,7 +114,7 @@ test("handoff retains the old socket through overlap and promotes only after cha
 });
 
 test("candidate gaps or failure cannot kill a healthy active stream", (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const f = setup(t);
   let cursor = "2";
   const delivered: string[] = [];
@@ -125,7 +125,7 @@ test("candidate gaps or failure cannot kill a healthy active stream", (t) => {
       if (seq && BigInt(seq) > BigInt(cursor)) { cursor = seq; delivered.push(seq); }
     },
   });
-  t.after(() => subscription.unsubscribe());
+  t.onTestFinished(() => subscription.unsubscribe());
   f.hello(0);
   const id = f.subscribe(0).id;
   f.sockets[0].frame({ type: "event", id, event: { type: "ready", cursor } });
@@ -140,7 +140,7 @@ test("candidate gaps or failure cannot kill a healthy active stream", (t) => {
 });
 
 test("repeated deployments keep chat and media online through a failed candidate and delayed snapshots", (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const f = setup(t);
   let cursor = "5";
   const delivered: string[] = [];
@@ -159,7 +159,7 @@ test("repeated deployments keep chat and media online through a failed candidate
     status: (online) => mediaStatus.push(online),
     event: (event) => revisions.push((event as { revision: number }).revision),
   });
-  t.after(() => { chat.unsubscribe(); media.unsubscribe(); });
+  t.onTestFinished(() => { chat.unsubscribe(); media.unsubscribe(); });
   f.hello(0);
   f.sockets[0].frame({ type: "event", id: chat.id, event: { type: "ready", cursor } });
   f.sockets[0].frame({ type: "subscribed", id: chat.id });
@@ -170,7 +170,7 @@ test("repeated deployments keep chat and media online through a failed candidate
   f.sockets[1].fail();
   f.sockets[0].frame({ type: "event", id: chat.id, event: { type: "message.created", seq: "6" } });
   assert.equal(f.sockets[0].closed, false, "replacement failure leaves the draining socket usable");
-  t.mock.timers.tick(188);
+  vi.advanceTimersByTime(188);
   assert.equal(f.sockets.length, 3);
 
   for (const [activeIndex, candidateIndex, seq, revision] of [[0, 2, "7", 9], [2, 3, "8", 10]] as const) {
@@ -201,18 +201,18 @@ test("repeated deployments keep chat and media online through a failed candidate
 });
 
 test("pending commands retry with identical identity on reconnect, command_pending, and gateway draining", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const f = setup(t);
   const result = f.gateway.command({ method: "media.state", token: "secret", body: { muted: true }, timeoutMs: 5_000 });
   f.hello(0);
   const first = f.sockets[0].sent.find((frame) => frame.type === "command")!;
   f.sockets[0].frame({ type: "result", id: first.id, status: 409, body: { code: "command_pending", error: "pending" } });
-  t.mock.timers.tick(100);
+  vi.advanceTimersByTime(100);
   const retry = f.sockets[0].sent.filter((frame) => frame.type === "command").at(-1)!;
   assert.deepEqual(retry, first);
 
   f.sockets[0].fail();
-  t.mock.timers.tick(188);
+  vi.advanceTimersByTime(188);
   f.hello(1);
   const reconnectRetry = f.sockets[1].sent.find((frame) => frame.type === "command")!;
   assert.deepEqual(reconnectRetry, first, "reconnect preserves id and issuedAt for backend deduplication");
@@ -227,13 +227,13 @@ test("pending commands retry with identical identity on reconnect, command_pendi
 
 for (const interruption of ["disconnect", "handoff", "draining", "pending"] as const) {
   test(`typing pulses are not queued or retried after ${interruption}`, async (t) => {
-    t.mock.timers.enable({ apis: ["setTimeout"] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const f = setup(t);
     await assert.rejects(f.gateway.command({ method: "typing" }), /reconnecting/);
     assert.equal(f.sockets.length, 0, "typing alone cannot open a connection or queue old activity");
     const subscription = f.gateway.subscribe({ kind: "chat", channelId: "general", after: "0" }, { event: () => undefined });
     void subscription.ready.catch(() => undefined);
-    t.after(() => subscription.unsubscribe());
+    t.onTestFinished(() => subscription.unsubscribe());
     f.hello(0);
     f.sockets[0].frame({ type: "subscribed", id: subscription.id });
     const pulse = f.gateway.command({ method: "typing", channelId: "general", body: { typing: true }, timeoutMs: 2_000 });
@@ -243,7 +243,7 @@ for (const interruption of ["disconnect", "handoff", "draining", "pending"] as c
 
     if (interruption === "disconnect") {
       f.sockets[0].fail();
-      t.mock.timers.tick(188);
+      vi.advanceTimersByTime(188);
       f.hello(1);
     } else if (interruption === "handoff") {
       f.sockets[0].frame({ type: "migrating" });
@@ -253,7 +253,7 @@ for (const interruption of ["disconnect", "handoff", "draining", "pending"] as c
     } else {
       f.sockets[0].frame({ type: "result", id: first.id, status: interruption === "draining" ? 503 : 409,
         body: { code: interruption === "draining" ? "gateway_draining" : "command_pending" } });
-      t.mock.timers.tick(1_000);
+      vi.advanceTimersByTime(1_000);
     }
     await lost;
     assert.equal(f.sockets.flatMap((socket) => socket.sent).filter((frame) => frame.type === "command").length, 1);
@@ -270,12 +270,12 @@ for (const interruption of ["disconnect", "handoff", "draining", "pending"] as c
 test("local presence follows connection and the server idle timeout without a presence subscription", (t) => {
   const f = setup(t);
   let now = 10_000;
-  t.mock.method(Date, "now", () => now);
+  vi.spyOn(Date, "now").mockImplementation(() => now);
   f.gateway.reportActivity();
   assert.equal(f.gateway.localPresence(false), "offline");
   const subscription = f.gateway.subscribe({ kind: "chat", channelId: "general" }, { event: () => undefined });
   void subscription.ready.catch(() => undefined);
-  t.after(() => subscription.unsubscribe());
+  t.onTestFinished(() => subscription.unsubscribe());
   f.sockets[0].frame({ type: "hello", idleTimeoutSeconds: 12, serverTime: now });
   now += 11_999;
   assert.equal(f.gateway.localPresence(true), "online");
@@ -288,25 +288,25 @@ test("local presence follows connection and the server idle timeout without a pr
 });
 
 test("pointer movement reports throttled activity without focus state", (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const f = setup(t);
   const subscription = f.gateway.subscribe({ kind: "presence", spaceId: "space", userIds: [] }, { event: () => undefined });
   void subscription.ready.catch(() => undefined);
-  t.after(() => subscription.unsubscribe());
+  t.onTestFinished(() => subscription.unsubscribe());
   f.hello(0);
 
   globalThis.window.dispatchEvent(new Event("pointermove"));
   globalThis.window.dispatchEvent(new Event("pointermove"));
-  t.mock.timers.tick(999);
+  vi.advanceTimersByTime(999);
   assert.equal(f.sockets[0].sent.filter((frame) => frame.type === "activity").length, 0);
-  t.mock.timers.tick(1);
+  vi.advanceTimersByTime(1);
   const activity = f.sockets[0].sent.filter((frame) => frame.type === "activity");
   assert.equal(activity.length, 1);
   assert.equal(typeof activity[0].activityAgeMs, "number");
 });
 
 test("a command is stamped once from the first server clock and preserves that stamp on retry", (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_700_000_000_000 });
+  vi.useFakeTimers({ toFake: ["setTimeout", "Date", "clearTimeout"], now: 1_700_000_000_000 });
   const f = setup(t);
   const serverTime = Date.now() + 45_000;
   void f.gateway.command({ method: "media.snapshot", timeoutMs: 5_000 }).catch(() => undefined);
@@ -316,7 +316,7 @@ test("a command is stamped once from the first server clock and preserves that s
   assert.equal(first.issuedAt, serverTime);
 
   f.sockets[0].fail();
-  t.mock.timers.tick(188);
+  vi.advanceTimersByTime(188);
   f.hello(1, serverTime + 90_000);
   assert.deepEqual(f.sockets[1].sent.find((frame) => frame.type === "command"), first);
 });
@@ -327,7 +327,7 @@ test("queued frames for an unsubscribed logical ID do not disconnect healthy sub
   const received: unknown[] = [];
   const healthy = f.gateway.subscribe({ kind: "chat", channelId: "current" }, { event: (event) => received.push(event) });
   void stale.ready.catch(() => undefined);
-  t.after(() => healthy.unsubscribe());
+  t.onTestFinished(() => healthy.unsubscribe());
   f.hello(0);
   const staleId = f.subscribe(0, 0).id as string;
   const healthyId = f.subscribe(0, 1).id as string;
@@ -344,7 +344,7 @@ test("queued frames for an unsubscribed logical ID do not disconnect healthy sub
 });
 
 test("subscription 503 retries the same ID while authorization errors terminate it", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const f = setup(t);
   const live: boolean[] = [];
   const transient = f.gateway.subscribe({ kind: "presence", spaceId: "space", userIds: ["one"] }, {
@@ -354,9 +354,9 @@ test("subscription 503 retries the same ID while authorization errors terminate 
   f.hello(0);
   const transientId = f.subscribe(0).id;
   f.sockets[0].frame({ type: "error", id: transientId, status: 503, error: "draining" });
-  t.mock.timers.tick(187);
+  vi.advanceTimersByTime(187);
   assert.equal(f.sockets[0].sent.filter((frame) => frame.type === "subscribe").length, 1);
-  t.mock.timers.tick(1);
+  vi.advanceTimersByTime(1);
   const retried = f.sockets[0].sent.filter((frame) => frame.type === "subscribe");
   assert.equal(retried.length, 2);
   assert.equal(retried[1].id, transientId);
@@ -381,7 +381,7 @@ test("subscription 503 retries the same ID while authorization errors terminate 
   await assert.rejects(denied.ready, (error: unknown) => (error as { status?: number }).status === 403);
   assert.equal(f.sockets[0].sent.some((frame) => frame.type === "unsubscribe" && frame.id === deniedId), true,
     "terminal subscription errors release the server-side active slot");
-  t.mock.timers.tick(5_000);
+  vi.advanceTimersByTime(5_000);
   assert.equal(f.sockets[0].sent.filter((frame) => frame.type === "subscribe" && frame.id === deniedId).length, 1);
   assert.deepEqual(errors, [403]);
   transient.unsubscribe();
@@ -395,11 +395,11 @@ test("promotion resolves a subscription first established on the candidate", asy
   f.sockets[0].frame({ type: "event", id: existingId, event: { type: "ready", cursor: "0" } });
   f.sockets[0].frame({ type: "subscribed", id: existingId });
   await existing.ready;
-  t.after(() => existing.unsubscribe());
+  t.onTestFinished(() => existing.unsubscribe());
 
   f.sockets[0].frame({ type: "migrating" });
   const candidateOnly = f.gateway.subscribe({ kind: "chat", channelId: "new", after: "0" }, { event: () => undefined, cursor: () => "0" });
-  t.after(() => candidateOnly.unsubscribe());
+  t.onTestFinished(() => candidateOnly.unsubscribe());
   f.hello(1);
   for (const frame of f.sockets[1].sent.filter((value) => value.type === "subscribe")) {
     f.sockets[1].frame({ type: "event", id: frame.id, event: { type: "ready", cursor: "0" } });
@@ -415,7 +415,7 @@ test("handoff waits for a media snapshot at least as new as the applied revision
   const subscription = f.gateway.subscribe({ kind: "media" }, {
     event: (event) => revisions.push((event as { revision: number }).revision),
   });
-  t.after(() => subscription.unsubscribe());
+  t.onTestFinished(() => subscription.unsubscribe());
   f.hello(0);
   const id = f.subscribe(0).id;
   f.sockets[0].frame({ type: "event", id, event: { type: "snapshot", revision: 5, participants: [] } });
@@ -440,7 +440,7 @@ test("candidate presence snapshots remain hidden until promotion and only the la
   const subscription = f.gateway.subscribe({ kind: "presence", spaceId: "space", userIds: ["one"] }, {
     event: (event) => states.push((event as { members: Array<{ status: string }> }).members[0].status),
   });
-  t.after(() => subscription.unsubscribe());
+  t.onTestFinished(() => subscription.unsubscribe());
   f.hello(0);
   const id = f.subscribe(0).id;
   const snapshot = (status: string) => ({ type: "snapshot", members: [{ userId: "one", status }] });
@@ -459,19 +459,19 @@ test("candidate presence snapshots remain hidden until promotion and only the la
 });
 
 test("legacy spectator presence reports live status across gateway reconnect", (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const f = setup(t);
   setAppGatewayForTests(f.gateway);
-  t.after(() => setAppGatewayForTests(undefined));
+  t.onTestFinished(() => setAppGatewayForTests(undefined));
   const live: boolean[] = [];
   const stop = watchMediaPresence(() => undefined, (online) => live.push(online));
-  t.after(stop);
+  t.onTestFinished(stop);
   f.hello(0);
   const id = f.subscribe(0).id;
   f.sockets[0].frame({ type: "event", id, event: { type: "snapshot", revision: 1, participants: [] } });
   f.sockets[0].frame({ type: "subscribed", id });
   f.sockets[0].fail();
-  t.mock.timers.tick(188);
+  vi.advanceTimersByTime(188);
   f.hello(1);
   f.sockets[1].frame({ type: "event", id, event: { type: "snapshot", revision: 2, participants: [] } });
   f.sockets[1].frame({ type: "subscribed", id });
@@ -489,10 +489,10 @@ test("presence subscriptions reject more than 100 users", (t) => {
 test("public watchPresence delivers scoped member states", (t) => {
   const f = setup(t);
   setAppGatewayForTests(f.gateway);
-  t.after(() => setAppGatewayForTests(undefined));
+  t.onTestFinished(() => setAppGatewayForTests(undefined));
   const received: unknown[] = [];
   const stop = watchPresence("space", ["one"], (members) => received.push(members));
-  t.after(stop);
+  t.onTestFinished(stop);
   f.hello(0);
   const id = f.subscribe(0).id;
   f.sockets[0].frame({ type: "event", id, event: { type: "snapshot", members: [{ userId: "one", status: "idle" }] } });
@@ -507,7 +507,7 @@ test("edited messages advance gateway handoff positions independently of origina
     cursor: () => cursor,
     event: (event) => { const seq = (event as { seq?: string }).seq; if (seq && BigInt(seq) > BigInt(cursor)) cursor = seq; },
   });
-  t.after(() => subscription.unsubscribe());
+  t.onTestFinished(() => subscription.unsubscribe());
   f.hello(0); const id = f.subscribe(0).id;
   f.sockets[0].frame({ type: "event", id, event: { type: "ready", cursor } });
   f.sockets[0].frame({ type: "subscribed", id });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { test } from "node:test";
+import { test } from "vitest";
 import { emojiToken, emojiSuggestions, insertEmoji, type EmojiChoice } from "../chat/emoji-autocomplete.ts";
 
 const catalog: EmojiChoice[] = JSON.parse(readFileSync(new URL("../../../../shared/emoji/catalog.json", import.meta.url), "utf8"))

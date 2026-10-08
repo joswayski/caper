@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test, type TestContext } from "vitest";
 import { AccountApiError, getAccount, getRememberedAccount, logout, requestEmailCode, updateProfile, verifyEmailCode } from "../account/client.ts";
 
-function mockFetch(t: test.TestContext, handler: (path: string, init?: RequestInit) => Response) {
+function mockFetch(t: TestContext, handler: (path: string, init?: RequestInit) => Response) {
   const original = globalThis.fetch;
   globalThis.fetch = async (input, init) => handler(String(input), init);
-  t.after(() => { globalThis.fetch = original; });
+  t.onTestFinished(() => { globalThis.fetch = original; });
 }
 
 test("web account client uses cookie sessions across the complete onboarding flow", async (t) => {

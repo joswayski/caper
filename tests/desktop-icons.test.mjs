@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import test from 'node:test';
+import { test } from "vitest";
 
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url));
 const desktop = 'apps/native/desktop/resources/';

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import test from "node:test";
+import { test } from "vitest";
 import { emojiLabel, emojiNameFrom, emojiNameIndex, fallbackSummary, isReactionList, reactionSummary, reactorName } from "../chat/reactors.ts";
 
 const people = (...names: string[]) => names.map((name) => ({ id: name.toLowerCase(), name }));

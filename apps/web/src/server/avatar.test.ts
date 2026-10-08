@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { avatarUrl } from "../account/avatar.ts";
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test, vi } from "vitest";
 import { createSpaceNavigation } from "../spaces/navigation.ts";
 import {
   SpacesApiError,
@@ -15,9 +15,9 @@ import {
   spaceNameError,
 } from "../spaces/client.ts";
 
-test("DM requests are global and unread comparisons preserve large sequence values", async (t) => {
+test("DM requests are global and unread comparisons preserve large sequence values", async () => {
   const calls: Array<{ path: string; body?: string }> = [];
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
     calls.push({ path: String(input), body: init?.body as string | undefined });
     return init?.method === "POST" && String(input).endsWith("/read") ? new Response(null, { status: 204 }) : Response.json({ conversations: [] });
   });
@@ -52,9 +52,9 @@ test("channel input normalizes pasted names while allowing a word separator duri
   assert.equal(normalizeChannelName("UPDATES".repeat(12)), "updates".repeat(11) + "upd");
 });
 
-test("CRUD sends only the specified payload and preserves server error details", async (t) => {
+test("CRUD sends only the specified payload and preserves server error details", async () => {
   const requests: Array<{ path: string; init?: RequestInit }> = [];
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
     requests.push({ path: String(input), init });
     if (String(input) === "/api/spaces") return Response.json({ id: "space1234567", name: "Studio", ownerId: "owner1234567" });
     if (init?.method === "DELETE") return Response.json({ error: "The default space cannot be deleted." }, { status: 409 });
@@ -88,10 +88,10 @@ const history = (id: string) => ({
   space: spaceDetail.space, channel: { id, name: id }, messages: [], cursor: "7", hasMore: false,
 });
 
-test("hover and click share one read, wait for history, and consume the snapshot only once", async (t) => {
+test("hover and click share one read, wait for history, and consume the snapshot only once", async () => {
   const paths: string[] = [];
   let release!: (response: Response) => void;
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
     const path = String(input); paths.push(path);
     if (path === "/api/spaces/space1234567") return Response.json(spaceDetail);
     return new Promise<Response>((resolve) => { release = resolve; });
@@ -114,11 +114,11 @@ test("hover and click share one read, wait for history, and consume the snapshot
   assert.equal(paths.length, 4, "revisits must recheck access and current history");
 });
 
-test("expired and invalidated speculation is not reused; genuinely empty spaces do not fetch history", async (t) => {
+test("expired and invalidated speculation is not reused; genuinely empty spaces do not fetch history", async () => {
   let now = 100;
   let requests = 0;
-  t.mock.method(Date, "now", () => now);
-  t.mock.method(globalThis, "fetch", async () => {
+  vi.spyOn(Date, "now").mockImplementation(() => now);
+  vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
     requests++;
     return Response.json({ ...spaceDetail, channels: [] });
   });
@@ -136,9 +136,9 @@ test("expired and invalidated speculation is not reused; genuinely empty spaces 
   assert.equal(requests, 3);
 });
 
-test("failed speculation retries and rejects history for another space", async (t) => {
+test("failed speculation retries and rejects history for another space", async () => {
   let denied = true;
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
     if (denied) return Response.json({ error: "Access removed" }, { status: 404 });
     if (String(input).startsWith("/api/spaces/")) return Response.json(spaceDetail);
     return Response.json({ ...history("first1234567"), space: { id: "wrong1234567", name: "Wrong" } });
@@ -149,8 +149,8 @@ test("failed speculation retries and rejects history for another space", async (
   await assert.rejects(navigation.take("space1234567"), /wrong space/);
 });
 
-test("a message outage preserves channel navigation and space management", async (t) => {
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) =>
+test("a message outage preserves channel navigation and space management", async () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) =>
     String(input).startsWith("/api/spaces/") ? Response.json(spaceDetail)
       : Response.json({ error: "Messaging unavailable" }, { status: 503 }));
   const next = await createSpaceNavigation().take("space1234567");
@@ -160,10 +160,10 @@ test("a message outage preserves channel navigation and space management", async
   assert.equal(next.historyError, "Messaging unavailable");
 });
 
-test("returning restores each channel snapshot, rechecks access, and forgets revoked data", async (t) => {
+test("returning restores each channel snapshot, rechecks access, and forgets revoked data", async () => {
   const paths: string[] = [];
   let denied = false;
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
     const path = String(input); paths.push(path);
     if (path.startsWith("/api/spaces/")) return denied
       ? Response.json({ error: "Access removed" }, { status: 404 }) : Response.json(spaceDetail);

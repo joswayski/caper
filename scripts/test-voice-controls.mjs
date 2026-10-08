@@ -35,6 +35,7 @@ async function fixture() {
   const { default: Call } = await import('/src/pages/Call.tsx');
   const { default: Spaces } = await import('/src/spaces/Spaces.tsx');
   // Remove the homepage's simulated channels from document-level test queries.
+  // oxlint-disable-next-line unicorn/no-useless-spread -- Snapshot the live HTMLCollection before removing children.
   for (const element of [...document.body.children]) element.remove();
   const mount = document.createElement('div'); document.body.append(mount);
   const f = window.voiceFixture = { people: [], sockets: [], captures: [], devices: [], recorders: [], commands: [], revision: 0 };

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test, type TestContext } from "node:test";
+import { test, type TestContext, vi } from "vitest";
 import { TurnRenewal } from "../media/turn-renewal.ts";
 import type { TurnGeneration, TurnResponse } from "../media/types.ts";
 
@@ -45,14 +45,14 @@ class Peer {
 }
 
 function setup(t: TestContext) {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const oldWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
   Object.defineProperty(globalThis, "window", { value: globalThis, configurable: true });
-  t.after(() => {
+  t.onTestFinished(() => {
     if (oldWindow) Object.defineProperty(globalThis, "window", oldWindow);
     else Reflect.deleteProperty(globalThis, "window");
   });
-  const start = async () => { t.mock.timers.tick(1_000); await flush(); };
+  const start = async () => { vi.advanceTimersByTime(1_000); await flush(); };
   return { start };
 }
 
@@ -79,7 +79,7 @@ test("replays the exact restart offer after a lost answer or 503", async (t) => 
   await start();
   assert.equal(restartBodies.length, 1);
   assert.equal(pc.offers.length, 1);
-  t.mock.timers.tick(1_000);
+  vi.advanceTimersByTime(1_000);
   await flush();
   assert.equal(restartBodies.length, 2);
   assert.strictEqual(restartBodies[1], restartBodies[0], "retry must replay the same body object");
@@ -117,7 +117,7 @@ test("holds the signaling queue through ACK and retries ACK without renegotiatin
   assert.equal(pc.offers.length, 1);
   assert.equal(pc.remotes.length, 1);
   assert.equal(released, false);
-  t.mock.timers.tick(1_000);
+  vi.advanceTimersByTime(1_000);
   await flush();
   assert.equal(operations.filter(({ operation }) => operation === "restart-ice-ack").length, 2);
   assert.equal(operations.filter(({ operation }) => operation === "restart-ice").length, 1);
@@ -167,7 +167,7 @@ test("cancellation while queued and while applying the answer has no stale failu
   applyingPc.remoteHook = () => remote.promise;
   const applying = make(applyingPc, request, (operation) => operation(), () => invalids++);
   // A fresh helper has its own initial timer.
-  t.mock.timers.tick(1_000);
+  vi.advanceTimersByTime(1_000);
   await flush();
   assert.equal(applyingPc.remotes.length, 1);
   applying.stop();
@@ -194,7 +194,7 @@ for (const scenario of ["mismatch", "invalid answer"] as const) {
     await start();
     assert.equal(invalids, 1);
     assert.equal(restarts, 1);
-    t.mock.timers.tick(120_000);
+    vi.advanceTimersByTime(120_000);
     await flush();
     assert.equal(invalids, 1);
     assert.equal(restarts, 1);

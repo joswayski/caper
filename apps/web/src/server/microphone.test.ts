@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test, type TestContext } from "node:test";
+import { test, type TestContext, vi, describe } from "vitest";
 import { appleMobileWebKit, captureMicrophone, type NoiseSuppression } from "../media/microphone.ts";
 import { NoiseAssets } from "../media/noise-assets.ts";
 import { mixWithOtherAudio, resetCapturesForTests } from "../audio/session.ts";
@@ -147,9 +147,9 @@ function setup(t: TestContext, options: {
     fetches.push({ url: String(url), init });
     return new Response(new Uint8Array([0, 97, 115, 109]));
   }));
-  const compile = options.compile ?? (async () => ({}) as WebAssembly.Module);
-  t.mock.method(WebAssembly, "compile", compile);
-  t.after(() => restore.reverse().forEach((fn) => fn()));
+  const compile = options.compile ?? (async () => (({}) as WebAssembly.Module));
+  vi.spyOn(WebAssembly, "compile").mockImplementation(compile);
+  t.onTestFinished(() => restore.reverse().forEach((fn) => fn()));
   return { raw, stream, fetches, install };
 }
 
@@ -218,7 +218,7 @@ function preparedDpdfnet(t: TestContext) {
     terminate() { this.terminateCalls++; }
   });
   const preparation = new DpdfnetPreparation();
-  t.after(() => preparation.stop());
+  t.onTestFinished(() => preparation.stop());
   return { preparation, workers, raw };
 }
 
@@ -229,7 +229,7 @@ for (const end of ["cancel", "failed", "timeout"] as const) test(`RNNoise fallba
   workers[0].onmessage!({ data: { type: "ready" } });
   const microphone = await capturing;
   const original = WorkletNode.latest!;
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   original.port.emit("bypassed");
   await tick();
   workers[1].onmessage!({ data: { type: "failed" } });
@@ -240,7 +240,7 @@ for (const end of ["cancel", "failed", "timeout"] as const) test(`RNNoise fallba
   assert.notEqual(replacement, original);
   if (end === "cancel") microphone.stop();
   else if (end === "failed") replacement.port.emit("failed");
-  else t.mock.timers.tick(15_000);
+  else vi.advanceTimersByTime(15_000);
   await tick();
   replacement.port.emit("ready");
   await tick();
@@ -434,12 +434,12 @@ test("2 HR and RNNoise each get one crash retry, then advance or stop", async (t
 
 test("DPDFNet startup timeout retries once; aborting the retry releases every track", async (t) => {
   const { preparation, workers, raw } = preparedDpdfnet(t);
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const controller = new AbortController();
   const capturing = captureMicrophone(undefined, "dpdfnet8", controller.signal, () => undefined, "headphones", undefined, preparation);
   const rejected = assert.rejects(capturing, { name: "AbortError" });
   await tick();
-  t.mock.timers.tick(60_000);
+  vi.advanceTimersByTime(60_000);
   await tick();
   assert.equal(workers.length, 2);
   assert.equal(workers[1].url, "/audio/dpdfnet8-v2/worker.js");
@@ -492,9 +492,9 @@ test("headphones opt out of echo and automatic level processing; speakers retain
   assert.deepEqual(captured.map((c) => [c.echoCancellation, c.autoGainControl, c.noiseSuppression]), [[false, false, false], [true, true, false]]);
 });
 
-test("every enhanced mode selects the intended engine and preset", async (t) => {
+describe("every enhanced mode selects the intended engine and preset", () => {
   for (const [mode, attenuation] of [["deepfilter", 20], ["deepfilter-gentle", 12], ["deepfilter-strong", 40], ["rnnoise", 20]] as const) {
-    await t.test(mode, async (t) => {
+    test(mode, async (t) => {
       const { fetches } = setup(t);
       const capturing = captureMicrophone(undefined, mode, new AbortController().signal, () => undefined);
       await tick();
@@ -789,7 +789,7 @@ test("voice processing strength scales smoothly and zero bypasses without replac
   microphone.stop();
 });
 
-test("initialization, download, and worklet failures stop capture rather than downgrade", async (t) => {
+describe("initialization, download, and worklet failures stop capture rather than downgrade", () => {
   class BrokenContext { constructor() { throw new Error("init"); } }
   class BrokenWorkletContext extends Context {
     override audioWorklet = { addModule: async () => { throw new Error("worklet"); } };
@@ -799,7 +799,7 @@ test("initialization, download, and worklet failures stop capture rather than do
     ["asset download", { fetch: async () => new Response(null, { status: 503 }) }],
     ["audio worklet module", { context: BrokenWorkletContext }],
   ] as const) {
-    await t.test(name, async (t) => {
+    test(name, async (t) => {
       const { raw } = setup(t, options);
       await assert.rejects(captureMicrophone(undefined, "deepfilter", new AbortController().signal, () => undefined), /DeepFilterNet could not start/);
       assert.equal(raw.readyState, "ended");
@@ -851,8 +851,8 @@ test("enhanced capture can pause during replacement and resume after rollback", 
   microphone.stop();
 });
 
-test("abort during asset download releases capture and abort after a late permission grant releases raw audio", async (t) => {
-  await t.test("download", async (t) => {
+describe("abort during asset download releases capture and abort after a late permission grant releases raw audio", () => {
+  test("download", async (t) => {
     const controller = new AbortController();
     const { raw } = setup(t, { fetch: async (_url, init) => new Promise((_resolve, reject) => {
       init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true });
@@ -863,7 +863,7 @@ test("abort during asset download releases capture and abort after a late permis
     await assert.rejects(capturing, { name: "AbortError" });
     assert.equal(raw.readyState, "ended");
   });
-  await t.test("permission", async (t) => {
+  test("permission", async (t) => {
     let grant!: (stream: Stream) => void;
     const controller = new AbortController();
     const raw = new Track();

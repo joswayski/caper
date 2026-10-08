@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test, { type TestContext } from "node:test";
+import { test, type TestContext, vi } from "vitest";
 import { hasVoiceActivity, watchVoiceActivity } from "../media/voice-activity.ts";
 import { playbackDiagnostics } from "../media/audio-context.ts";
 
@@ -54,12 +54,12 @@ function audioEnvironment(t: TestContext) {
   })) {
     const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
     Object.defineProperty(globalThis, name, { configurable: true, value });
-    t.after(() => {
+    t.onTestFinished(() => {
       if (descriptor) Object.defineProperty(globalThis, name, descriptor);
       else Reflect.deleteProperty(globalThis, name);
     });
   }
-  t.mock.method(performance, "now", () => now);
+  vi.spyOn(performance, "now").mockImplementation(() => now);
   return {
     stream, changes, timers,
     get reads() { return reads; }, get closed() { return closed; }, get disconnected() { return disconnected; },

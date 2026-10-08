@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { detectDownloadPlatform, downloads, intelMacDownload } from "../downloads.ts";
 
 test("desktop hints select current platform packages", () => {

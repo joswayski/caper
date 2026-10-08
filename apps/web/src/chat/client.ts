@@ -348,6 +348,7 @@ export class ChatClient {
     };
     const count = Array.from(pending.text).length;
     if (!pending.text.trim() || count > 4_000) throw new Error(count > 4_000 ? "Messages can be at most 4,000 characters." : "Write a message first.");
+    // oxlint-disable-next-line no-control-regex -- Validate message text while allowing tabs and newlines.
     if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/u.test(pending.text)) throw new Error("Messages cannot contain control characters.");
     const channelId = this.state.channelId;
     if (!channelId) throw new Error("Chat is not ready yet.");

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dailyIcon, dailyIconUrl } from "../components/daily-icon.ts";
@@ -33,7 +33,7 @@ test("native branding exports preserve the web character geometry, palette and t
     const apple = readFileSync(new URL(`../../../native/apple/Sources/CaperCore/CaperAvatars.xcassets/caper-branding-${id}.imageset/avatar.svg`, import.meta.url), "utf8");
     assert.equal(apple, branding, `Apple branding drift for ${id}`);
     const android = readFileSync(new URL(`../../../native/android/app/src/main/res/drawable/caper_branding_${id}.xml`, import.meta.url), "utf8");
-    const paths = [...branding.matchAll(/<path d="([^"]+)" fill="([^"]+)" transform="translate\(([^,]+),([^\)]+)\)"\/>/g)]
+    const paths = [...branding.matchAll(/<path d="([^"]+)" fill="([^"]+)" transform="translate\(([^,]+),([^)]+)\)"\/>/g)]
       .map(([, d, fill, x, y]) => [x, y, d, fill]);
     const vectors = [...android.matchAll(/<group android:translateX="([^"]+)" android:translateY="([^"]+)"><path android:pathData="([^"]+)" android:fillColor="([^"]+)"\/><\/group>/g)]
       .map(([, x, y, d, fill]) => [x, y, d, fill]);

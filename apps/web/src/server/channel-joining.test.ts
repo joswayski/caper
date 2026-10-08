@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test, vi } from "vitest";
 import { createSpaceNavigation } from "../spaces/navigation.ts";
 import { acceptChannelInvitation, declineChannelInvitation, joinChannel, leaveChannel, SpacesApiError } from "../spaces/client.ts";
 
@@ -9,9 +9,9 @@ const joined = { id: "first1234567", spaceId: space.id, name: "general", private
 const detail = { space, channels: [preview, joined], members: [], channelInvitations: [] };
 const history = (channel: typeof joined) => ({ space, channel, messages: [], cursor: "0", hasMore: false });
 
-test("landing selects a joined channel; explicit preview performs reads without silently joining", async (t) => {
+test("landing selects a joined channel; explicit preview performs reads without silently joining", async () => {
   const paths: string[] = [];
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
     assert.ok(!init?.method, "navigation must never issue a membership write");
     const path = String(input); paths.push(path);
     return Response.json(path.startsWith("/api/spaces/") ? detail : history(path.includes(preview.id) ? preview : joined));
@@ -21,8 +21,8 @@ test("landing selects a joined channel; explicit preview performs reads without 
   assert.deepEqual(paths, [`/api/spaces/${space.id}`, `/api/chat/channels/${joined.id}/messages`, `/api/spaces/${space.id}`, `/api/chat/channels/${preview.id}/messages`]);
 });
 
-test("returning to a space does not restore an unjoined preview's channel or history as the landing conversation", async (t) => {
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+test("returning to a space does not restore an unjoined preview's channel or history as the landing conversation", async () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
     const path = String(input);
     return Response.json(path.startsWith("/api/spaces/") ? detail : history(path.includes(preview.id) ? preview : joined));
   });
@@ -33,8 +33,8 @@ test("returning to a space does not restore an unjoined preview's channel or his
   assert.equal(landing.history?.channel.id, joined.id);
 });
 
-test("no joined channels leaves browsing available without choosing or loading an unjoined channel", async (t) => {
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+test("no joined channels leaves browsing available without choosing or loading an unjoined channel", async () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
     assert.equal(String(input), `/api/spaces/${space.id}`);
     return Response.json({ ...detail, channels: [preview], channelInvitations: [{ channel: { ...preview, private: true }, inviter: { username: "owner", displayName: "Owner" } }] });
   });
@@ -44,10 +44,10 @@ test("no joined channels leaves browsing available without choosing or loading a
 });
 
 for (const cached of [false, true]) {
-  test(`an inaccessible explicit channel rejects rather than opening another conversation (cached: ${cached})`, async (t) => {
+  test(`an inaccessible explicit channel rejects rather than opening another conversation (cached: ${cached})`, async () => {
     const paths: string[] = [];
     let accessible = false;
-    t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
       const path = String(input); paths.push(path);
       return Response.json(path.startsWith("/api/spaces/")
         ? { ...detail, channels: accessible ? [preview, joined] : [joined] }
@@ -72,8 +72,8 @@ for (const cached of [false, true]) {
   });
 }
 
-test("an explicit channel in an empty space rejects instead of becoming an empty landing page", async (t) => {
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+test("an explicit channel in an empty space rejects instead of becoming an empty landing page", async () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
     assert.equal(String(input), `/api/spaces/${space.id}`);
     return Response.json({ ...detail, channels: [] });
   });
@@ -81,9 +81,9 @@ test("an explicit channel in an empty space rejects instead of becoming an empty
     error instanceof SpacesApiError && error.status === 404);
 });
 
-test("join, leave and invitation responses use separate explicit mutation endpoints", async (t) => {
+test("join, leave and invitation responses use separate explicit mutation endpoints", async () => {
   const writes: Array<{ path: string; method?: string; body?: BodyInit | null }> = [];
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
     assert.equal(init?.credentials, "same-origin");
     writes.push({ path: String(input), method: init?.method, body: init?.body });
     return init?.method === "DELETE" ? new Response(null, { status: 204 }) : Response.json(joined);

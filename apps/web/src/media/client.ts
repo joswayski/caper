@@ -216,6 +216,8 @@ export class PublicCallClient {
   }
 
   private emit(error?: string) {
+    const microphoneTrack = this.senders.get("microphone")?.track;
+    const capture = microphoneTrack ? this.captures.get(microphoneTrack) : undefined;
     this.changed({
       phase: this.phase,
       muted: this.muted,
@@ -236,7 +238,7 @@ export class PublicCallClient {
       noiseSuppression: this.noiseSuppression,
       audioSetup: this.audioSetup,
       voiceProcessingStrength: this.voiceProcessingStrength,
-      noiseSuppressionStatus: this.captures.get(this.senders.get("microphone")?.track!)?.status ?? this.microphoneStatus,
+      noiseSuppressionStatus: capture?.status ?? this.microphoneStatus,
       error,
     });
   }
@@ -883,13 +885,15 @@ export class PublicCallClient {
 
   setInputVolume(volume: number) {
     this.inputVolume = Math.max(0, Math.min(volume, 200));
-    this.captures.get(this.localTestTrack ?? this.senders.get("microphone")?.track!)?.setInputVolume(this.inputVolume);
+    const track = this.localTestTrack ?? this.senders.get("microphone")?.track;
+    if (track) this.captures.get(track)?.setInputVolume(this.inputVolume);
     this.emit();
   }
 
   setVoiceProcessingStrength(strength: number) {
     this.voiceProcessingStrength = clampVoiceProcessingStrength(strength);
-    this.captures.get(this.localTestTrack ?? this.senders.get("microphone")?.track!)?.setVoiceProcessingStrength(this.voiceProcessingStrength);
+    const track = this.localTestTrack ?? this.senders.get("microphone")?.track;
+    if (track) this.captures.get(track)?.setVoiceProcessingStrength(this.voiceProcessingStrength);
     this.emit();
   }
 

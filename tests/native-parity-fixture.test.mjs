@@ -1,11 +1,11 @@
-import test from 'node:test';
+import { test } from "vitest";
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { startFixture, fixtureIDs as ids } from '../scripts/native-parity-fixture.mjs';
 
 async function setup(t) {
   const fixture = await startFixture({ port: 0, gatewayPort: 0 });
-  t.after(() => fixture.close());
+  t.onTestFinished(() => fixture.close());
   const base = `http://127.0.0.1:${fixture.port}`;
   const request = async (path, { auth = false, body, ...init } = {}) => {
     const response = await fetch(base + path, {
@@ -172,7 +172,7 @@ test('send is idempotent, conflicts on changed payload, and history uses stable 
 test('loopback WebSocket replays, delivers live messages/typing/presence, failures, and disconnects', async (t) => {
   const { fixture, base, request } = await setup(t);
   const stream = socket(`ws://127.0.0.1:${fixture.gatewayPort}/api/chat/events`);
-  t.after(() => stream.ws.close());
+  t.onTestFinished(() => stream.ws.close());
   await stream.opened;
   assert.equal((await stream.next()).type, 'hello');
   stream.ws.send(JSON.stringify({ type: 'subscribe', id: 'chat', kind: 'chat', channelId: ids.demo, after: '3' }));
@@ -210,7 +210,7 @@ test('loopback WebSocket replays, delivers live messages/typing/presence, failur
 test('spectator rosters update and revoke without granting capture or account-channel access', async (t) => {
   const { fixture, request } = await setup(t);
   const stream = socket(`ws://127.0.0.1:${fixture.gatewayPort}/api/chat/events`);
-  t.after(() => stream.ws.close());
+  t.onTestFinished(() => stream.ws.close());
   await stream.opened;
   assert.equal((await stream.next()).type, 'hello');
   stream.ws.send(JSON.stringify({ type: 'subscribe', id: 'private', kind: 'media', channelId: ids.private }));
@@ -270,7 +270,7 @@ test('pins are channel-wide, replayable, idempotent and separate from history pa
   const target = (await request(root, { auth: true })).value.messages[0];
   const session = await request('/api/chat/session', { auth: true, method: 'POST', body: { name: 'Fixture Owner' } });
   const stream = socket(`ws://127.0.0.1:${fixture.gatewayPort}/api/chat/events`);
-  t.after(() => stream.ws.close());
+  t.onTestFinished(() => stream.ws.close());
   await stream.opened; await stream.next();
   stream.ws.send(JSON.stringify({ type: 'subscribe', id: 'pins', kind: 'chat', channelId: ids.demo, after: '4' }));
   assert.equal((await stream.next()).event.cursor, '4'); await stream.next();
@@ -427,7 +427,7 @@ test('edit history is paginated and replay keeps the immutable original content'
   assert.deepEqual(older.versions.map(version => version.revision), [3, 2, 1]);
   assert.equal(older.versions.at(-1).content.text, original.content.text);
   const stream = socket(`ws://127.0.0.1:${fixture.gatewayPort}/api/chat/events`);
-  t.after(() => stream.ws.close()); await stream.opened; await stream.next();
+  t.onTestFinished(() => stream.ws.close()); await stream.opened; await stream.next();
   stream.ws.send(JSON.stringify({ type: 'subscribe', id: 'edits', kind: 'chat', channelId: ids.demo, after: '0' }));
   const events = [];
   while (true) { const frame = await stream.next(); if (frame.event?.type === 'ready') break; if (frame.event) events.push(frame.event); }

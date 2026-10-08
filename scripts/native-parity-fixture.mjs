@@ -1,4 +1,5 @@
 /** Loopback-only, disposable UI fixture. Never proxies to Caper or an SFU. */
+/* oxlint-disable no-control-regex -- Mirror the API's rejection of control characters in message text. */
 import { createServer } from 'node:http';
 import { createHash, randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';

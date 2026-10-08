@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test, vi } from "vitest";
 import { blockedLabel, blockedRuns } from "../chat/blocked.ts";
 import {
   SpacesApiError,
@@ -27,9 +27,9 @@ test("requests never count as unread and older servers read as accepted", () => 
   assert.equal(directUnread(conversation("incoming")), false);
 });
 
-test("request, block and privacy calls use the API paths and readable refusals", async (t) => {
+test("request, block and privacy calls use the API paths and readable refusals", async () => {
   const calls: string[] = [];
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
     const path = String(input);
     calls.push(`${init?.method ?? "GET"} ${path}${init?.body ? ` ${String(init.body)}` : ""}`);
     if (path === "/api/dms") return Response.json({ error: "this person isn't accepting direct messages", code: "dm_not_accepted" }, { status: 403 });

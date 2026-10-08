@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test, vi } from "vitest";
 import { getSystemSoundsEnabled, playSliderTick, playSound, preloadSoundEffects, setSystemSoundsEnabled } from "../audio/effects.ts";
 
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -39,7 +39,7 @@ test("effects preload decoded buffers and bound immediate Web Audio playback", a
   let resolveWarning!: (response: Response) => void;
   const originalContext = Object.getOwnPropertyDescriptor(globalThis, "AudioContext");
   Object.defineProperty(globalThis, "AudioContext", { configurable: true, value: Context });
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
     const url = String(input);
     requests.push(url);
     if (url.endsWith("/warning.wav")) {
@@ -49,7 +49,7 @@ test("effects preload decoded buffers and bound immediate Web Audio playback", a
     }
     return new Response(new Uint8Array([requests.length]));
   });
-  t.after(() => {
+  t.onTestFinished(() => {
     if (originalContext) Object.defineProperty(globalThis, "AudioContext", originalContext);
     else Reflect.deleteProperty(globalThis, "AudioContext");
   });
@@ -61,7 +61,7 @@ test("effects preload decoded buffers and bound immediate Web Audio playback", a
   assert.ok(requests.includes("/audio/effects/channel-leave.wav"));
 
   let now = 1_000;
-  t.mock.method(performance, "now", () => now);
+  vi.spyOn(performance, "now").mockImplementation(() => now);
   playSound("channel-join", { volume: 2, playbackRate: 3 });
   await flush();
   assert.equal(requests.filter((url) => url.endsWith("/channel-join.wav")).length, 1, "decoded buffers are reused");
@@ -100,7 +100,9 @@ test("effects preload decoded buffers and bound immediate Web Audio playback", a
   assert.equal(sources.length, beforeStale + 1, "a failed preload is retryable and its decoded retry is cached");
   let resume!: () => void;
   currentContext.state = "suspended";
-  t.mock.method(currentContext, "resume", () => new Promise<void>((resolve) => { resume = () => { currentContext.state = "running"; resolve(); }; }));
+  vi.spyOn(currentContext, "resume").mockImplementation(
+    () => new Promise<void>((resolve) => { resume = () => { currentContext.state = "running"; resolve(); }; })
+  );
   const beforeResume = sources.length;
   playSound("toggle-on");
   await flush();

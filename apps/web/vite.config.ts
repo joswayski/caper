@@ -107,6 +107,8 @@ export default defineConfig(async () => {
   define: {
     __LATEST_CHANGES__: JSON.stringify(changes),
   },
+  // Preserve Vite 7's browser floor instead of silently raising it with Vite 8.
+  build: { target: ["chrome107", "edge107", "firefox104", "safari16"] },
   plugins: [
     tailwindcss(),
     tanstackStart({
