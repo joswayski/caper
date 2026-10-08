@@ -1136,6 +1136,12 @@
   font-weight: 700;
   overflow-wrap: anywhere;
 }
+.chat-reactors-panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
 .chat-reactors-list {
   flex: 1;
   min-height: 0;
@@ -1193,7 +1199,8 @@
   font-weight: 700;
   cursor: pointer;
 }
-.chat-reactors button:focus-visible {
+.chat-reactors button:focus-visible,
+.chat-reactors-panel:focus-visible {
   outline: 2px solid var(--terracotta, #b64d32);
   outline-offset: -2px;
 }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   autoUpdate,
   flip,
@@ -45,6 +45,7 @@ export default function ReactorsPanel({
   const [error, setError] = useState<string>();
   const [attempt, setAttempt] = useState(0);
   const [name, setName] = useState<string>();
+  const id = useId();
   const returnFocus = useRef(target.anchor);
   const { refs, floatingStyles, context } = useFloating({
     open: true,
@@ -116,14 +117,28 @@ export default function ReactorsPanel({
           </button>
         </div>
         <div className="chat-reactors-tabs" role="tablist" aria-label="Reactions by emoji">
-          {reactions.map((reaction) => (
+          {reactions.map((reaction, index) => (
             <button
               type="button"
               role="tab"
               key={reaction.emoji}
+              id={`${id}-tab-${index}`}
+              aria-controls={`${id}-panel`}
               aria-selected={reaction.emoji === current}
+              tabIndex={reaction.emoji === current ? 0 : -1}
               aria-label={`${reaction.emoji}, ${reaction.authorIds.length}`}
               onClick={() => setSelected(reaction.emoji)}
+              onKeyDown={(event) => {
+                let next: number;
+                if (event.key === "ArrowRight") next = (index + 1) % reactions.length;
+                else if (event.key === "ArrowLeft") next = (index + reactions.length - 1) % reactions.length;
+                else if (event.key === "Home") next = 0;
+                else if (event.key === "End") next = reactions.length - 1;
+                else return;
+                event.preventDefault();
+                setSelected(reactions[next].emoji);
+                event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+              }}
             >
               <img src={emojiAsset(emojiCode(reaction.emoji))} width={20} height={20} alt="" />
               <span>{reaction.authorIds.length}</span>
@@ -131,36 +146,40 @@ export default function ReactorsPanel({
           ))}
         </div>
         <div className="chat-reactors-label">{emojiLabel(current, name)}</div>
-        {authors ? (
-          <ul
-            className="chat-reactors-list"
-            role="tabpanel"
-            aria-label={`People who reacted with ${emojiLabel(current, name)}`}
-          >
-            {authors.map((author) => (
-              <li key={author.id}>
-                <span className="chat-avatar chat-reactors-avatar">
-                  <Avatar avatarId={author.avatarId} name={reactorName(author)} />
-                </span>
-                <span>
-                  <strong>{reactorName(author)}</strong>
-                  {author.username && <span className="chat-reactors-username">@{author.username}</span>}
-                </span>
-              </li>
-            ))}
-          </ul>
-        ) : error ? (
-          <div className="chat-reactors-status" role="alert">
-            <span>Couldn’t load reactions.</span>
-            <button type="button" onClick={() => setAttempt((count) => count + 1)}>
-              Retry
-            </button>
-          </div>
-        ) : (
-          <p className="chat-reactors-status" role="status">
-            Loading reactions…
-          </p>
-        )}
+        <div
+          id={`${id}-panel`}
+          className="chat-reactors-panel"
+          role="tabpanel"
+          aria-labelledby={`${id}-tab-${reactions.findIndex((reaction) => reaction.emoji === current)}`}
+          tabIndex={0}
+        >
+          {authors ? (
+            <ul className="chat-reactors-list">
+              {authors.map((author) => (
+                <li key={author.id}>
+                  <span className="chat-avatar chat-reactors-avatar">
+                    <Avatar avatarId={author.avatarId} name={reactorName(author)} />
+                  </span>
+                  <span>
+                    <strong>{reactorName(author)}</strong>
+                    {author.username && <span className="chat-reactors-username">@{author.username}</span>}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : error ? (
+            <div className="chat-reactors-status" role="alert">
+              <span>Couldn’t load reactions.</span>
+              <button type="button" onClick={() => setAttempt((count) => count + 1)}>
+                Retry
+              </button>
+            </div>
+          ) : (
+            <p className="chat-reactors-status" role="status">
+              Loading reactions…
+            </p>
+          )}
+        </div>
       </div>
     </FloatingFocusManager>
   );
