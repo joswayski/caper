@@ -1031,6 +1031,12 @@ Follow-ups:
   MP4 is not removed; WebP originals keep EXIF/XMP chunks.
 - HEVC/AV1 delivery once every client can play it; chunked parallel encoding
   if server processing returns.
+- JPEG XL: Chrome 155 (October 2026) decodes it by default, Safari since 17
+  and Firefox from 158. Its draw for us is lossless JPEG recompression
+  (about 20% smaller and byte-for-byte reversible), but Android has no
+  platform decoder, desktop and older browsers would need one, and AVIF
+  already gives about 19% over WebP on photos. Revisit once Android and our
+  native clients can display it.
 
 Editing a message changes its text only; its attachments are kept, and a
 message with files may be edited to empty text. A forward embeds a snapshot of
@@ -1082,17 +1088,17 @@ npx wrangler deploy --env staging
 | --- | --- | --- |
 | Web (desktop and mobile layouts) | Yes: picker, paste, drag and drop | Images, video, audio, file cards |
 | Apple (iOS and macOS) | Yes: Photos picker, file importer, drag and drop on macOS (no paste) | Images, video (AVKit), audio, file cards, "File removed" |
-| Android | Yes: system photo picker and document picker, up to 10 files, draft chips with compression savings and progress. Applies the server `compression` settings on device (indexed PNG within `paletteColors`, else lossy WebP; Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview, tap for full size), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
-| Rust desktop (Windows, Linux) | Yes: file dialog (Win32; XDG desktop portal on Linux) and drag and drop, up to 10. No clipboard image paste. Stills: exact-palette indexed PNG or JPEG (pure Rust; no WebP encoder) with the server settings. Videos upload unchanged (no transcoder); MP4/QuickTime size and duration from headers | Inline images (decoded off the UI thread, cached by attachment id). Video posters, audio and files open in the system browser or player; no in-app playback. "File removed" cards. URLs refreshed before expiry and once after a 403/404 load |
+| Android | Yes: system photo picker and document picker, up to 10 files, draft chips with compression savings and progress. Applies the server `compression` settings on device per the shared rules and encoder table above (Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview, tap for full size), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
+| Rust desktop (Windows, Linux) | Yes: file dialog (Win32; XDG desktop portal on Linux) and drag and drop, up to 10. No clipboard image paste. Stills per the shared rules and encoder table above (JPEG only if WebP fails; HEIC uploads unchanged). Videos upload unchanged (no transcoder) with metadata stripped; MP4/QuickTime size and duration from headers | Inline images (decoded off the UI thread, cached by attachment id). Video posters, audio and files open in the system browser or player; no in-app playback. "File removed" cards. URLs refreshed before expiry and once after a 403/404 load |
 
 Apple notes. Attachments decode tolerantly (a malformed entry is skipped).
 Signed URLs are refreshed through `POST /api/assets/urls` when `exp` is past or
 within an hour, or after a 403/404, at most once per stale URL; decoded images
-are cached by attachment id. Stills follow the shared policy: an exact indexed
-PNG (Swift encoder over the Compression framework's DEFLATE) when the colours
-fit `paletteColors`, otherwise WebP if ImageIO can encode it at runtime, else
-JPEG on white, at `imageQuality`, scaled to `imageMaxEdge`; HEIC is never
-uploaded when conversion succeeds. Videos use the largest
+are cached by attachment id. Stills follow the shared rules and encoder table
+above (exact indexed PNG via a Swift encoder over the Compression framework's
+DEFLATE, libwebp lossless, AVIF through the bundled libavif, else WebP/JPEG at
+`imageQuality`), scaled to `imageMaxEdge`; HEIC is never uploaded when
+conversion succeeds. Videos use the largest
 `AVAssetExportSession` size preset whose output short edge stays within
 `videoMaxHeight` (H.264/AAC MP4, kept only if smaller, original on failure).
 Presets choose their own bitrates, so `videoBitrateKbps` and
