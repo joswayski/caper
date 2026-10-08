@@ -2,12 +2,14 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import {
   AudioLines,
   ChevronDown,
+  Forward,
   Hash,
   Headphones,
   MessageCircle,
   Mic,
   MoreHorizontal,
   PhoneOff,
+  Pin,
   Plus,
   Search,
   Settings,
@@ -107,9 +109,40 @@ const people = [
   },
 ];
 
-const messages = [
-  { person: 0, at: 0, text: "okay, this made my entire morning", meme: true, emoji: 0, reactionCount: 3 },
-  { person: 1, at: 1.25, text: "the tiny hat is doing a lot of work here" },
+type DemoPost = {
+  person: number;
+  at: number;
+  text: string;
+  meme?: boolean;
+  emoji?: number;
+  reactionCount?: number;
+  pinnedBy?: number;
+  edit?: { at: number; text: string };
+  thread?: { at: number; person: number }[];
+  forward?: { person: number; text: string; replies: number[] };
+};
+
+const messages: DemoPost[] = [
+  {
+    person: 0,
+    at: 0,
+    text: "okay, this made my entire morning",
+    meme: true,
+    emoji: 0,
+    reactionCount: 3,
+    thread: [
+      { at: 2, person: 1 },
+      { at: 8, person: 2 },
+      { at: 15, person: 3 },
+    ],
+  },
+  {
+    person: 1,
+    at: 1.25,
+    text: "game night at 8. bringing the playlist 🎶",
+    pinnedBy: 0,
+    edit: { at: 6, text: "game night at 8:30. bringing the playlist 🎶" },
+  },
   { person: 2, at: 3, text: "new group photo. no objections please" },
   { person: 3, at: 4.75, text: "i leave for TWO minutes 😂", emoji: 4, reactionCount: 1 },
   { person: 0, at: 7.5, text: "anyway… who’s up for a game?" },
@@ -118,7 +151,12 @@ const messages = [
   { person: 3, at: 11.75, text: "save me a spot" },
   { person: 2, at: 12.5, text: "rule one: nobody lets me choose the map", emoji: 0, reactionCount: 2 },
   { person: 5, at: 16.25, text: "hello hello! what did i miss?" },
-  { person: 4, at: 16.75, text: "a tiny hat and some very serious planning" },
+  {
+    person: 4,
+    at: 16.75,
+    text: "bringing this over from #feedback",
+    forward: { person: 2, text: "petition for everyone to wear a tiny hat to game night", replies: [21, 29] },
+  },
   { person: 5, at: 20.25, text: "excellent. i brought snacks 🍿" },
   { person: 0, at: 22, text: "brb, getting tea. please behave" },
   { person: 3, at: 24, text: "no promises", emoji: 0, reactionCount: 1 },
@@ -406,7 +444,7 @@ export default function LiveWindow() {
                     </div>
                     <ul>
                       <li>
-                        <div className="channel-select direct-select">
+                        <div className="channel-select direct-select direct-self">
                           <span className="direct-avatar">
                             <Avatar person={people[0]} />
                           </span>
@@ -414,6 +452,16 @@ export default function LiveWindow() {
                           <small>you</small>
                         </div>
                       </li>
+                      {[1, 2].map((index) => (
+                        <li key={people[index].name}>
+                          <div className="channel-select direct-select">
+                            <span className="direct-avatar">
+                              <Avatar person={people[index]} />
+                            </span>
+                            <span>{people[index].name}</span>
+                          </div>
+                        </li>
+                      ))}
                     </ul>
                     <div className="channel-select direct-action">
                       <Plus aria-hidden="true" />
@@ -483,9 +531,16 @@ export default function LiveWindow() {
             </aside>
             <section className="sim-chat chat-panel">
               <header className="chat-heading">
-                <h2 className="chat-channel-title"># general</h2>
-                <span className="member-list-toggle" aria-hidden="true">
-                  <Users />
+                <div className="sim-channel-heading">
+                  <h2 className="chat-channel-title"># general</h2>
+                  <ChevronDown aria-hidden="true" />
+                </div>
+                <span
+                  className="member-list-toggle"
+                  role="img"
+                  aria-label={`Simulated members: ${onlinePeople.length} online; member list closed`}
+                >
+                  <Users aria-hidden="true" />
                 </span>
               </header>
               <div
@@ -503,18 +558,34 @@ export default function LiveWindow() {
                 <div className="sim-message-list">
                   {visibleMessages.map((message) => {
                     const item = message.emoji === undefined ? undefined : emoji[message.emoji];
-                    const count = message.reactions.filter(
-                      (at) => at + message.cycle * cycleLength <= phase + cycle * cycleLength,
-                    ).length;
+                    // Keep edits, replies and reactions on the original message's
+                    // clock so retained history never rewinds at a loop boundary.
+                    const elapsed = phase + (cycle - message.cycle) * cycleLength;
+                    const count = message.reactions.filter((at) => at <= elapsed).length;
+                    const edited = message.edit && message.edit.at <= elapsed ? message.edit : undefined;
+                    const replies = message.thread?.filter((reply) => reply.at <= elapsed) ?? [];
+                    const forwardReplies = message.forward?.replies.filter((at) => at <= elapsed).length ?? 0;
                     return (
-                      <article className="sim-message chat-message" key={`${message.cycle}:${message.at}`}>
-                        <Avatar person={people[message.person]} />
+                      <article
+                        className={`sim-message chat-message${message.pinnedBy !== undefined ? " chat-message-pinned" : ""}`}
+                        key={`${message.cycle}:${message.at}`}
+                      >
+                        {message.pinnedBy !== undefined && (
+                          <div className="chat-pin-marker">
+                            <Pin size={12} aria-hidden="true" />
+                            Pinned by {people[message.pinnedBy].name}
+                          </div>
+                        )}
+                        <div className="chat-avatar">
+                          <Avatar person={people[message.person]} />
+                        </div>
                         <div>
                           <header>
                             <strong>{people[message.person].name}</strong>
                             <time>just now</time>
+                            {edited && <small className="chat-edited">edited</small>}
                           </header>
-                          <p>{message.text}</p>
+                          <p>{edited?.text ?? message.text}</p>
                           {message.meme && (
                             <img
                               className="sim-meme"
@@ -524,6 +595,28 @@ export default function LiveWindow() {
                               draggable={false}
                               alt="A capybara wearing a tiny hat. Caption: Tiny hat. Huge energy."
                             />
+                          )}
+                          {message.forward && (
+                            <div className="chat-forward-card">
+                              <small className="chat-forward-label">
+                                <Forward size={12} aria-hidden="true" />
+                                Forwarded · live
+                              </small>
+                              <div className="chat-forward-original">
+                                <header>
+                                  <div className="chat-avatar">
+                                    <Avatar person={people[message.forward.person]} />
+                                  </div>
+                                  <strong>{people[message.forward.person].name}</strong>
+                                </header>
+                                <p>{message.forward.text}</p>
+                              </div>
+                              <span className="sim-forward-summary">
+                                {forwardReplies > 0 &&
+                                  `${forwardReplies} ${forwardReplies === 1 ? "reply" : "replies"} · `}
+                                View conversation
+                              </span>
+                            </div>
                           )}
                           <div className="sim-reactions chat-reactions">
                             {item && count > 0 && (
@@ -537,6 +630,21 @@ export default function LiveWindow() {
                               </span>
                             )}
                           </div>
+                          {replies.length > 0 && (
+                            <div className="chat-thread-summary">
+                              <span className="chat-thread-avatars">
+                                {replies.map((reply) => (
+                                  <span key={reply.person}>
+                                    <Avatar person={people[reply.person]} />
+                                  </span>
+                                ))}
+                              </span>
+                              <strong>
+                                {replies.length} {replies.length === 1 ? "reply" : "replies"}
+                              </strong>
+                              <span>View thread</span>
+                            </div>
+                          )}
                         </div>
                       </article>
                     );
@@ -563,27 +671,6 @@ export default function LiveWindow() {
                 <div className="sim-composer">Message #general</div>
               </footer>
             </section>
-            <aside className="sim-members space-member-presence" aria-label="Simulated members">
-              <h2 className="sim-members-heading member-presence-heading">
-                <span>Members</span>
-                <span className="section-count">{onlinePeople.length}</span>
-              </h2>
-              <div>
-                <ul>
-                  {onlinePeople.map((person) => (
-                    <li className="sim-member" key={person.name}>
-                      <span className="member-presence-avatar">
-                        <Avatar person={person} />
-                        <PresenceDot status="online" />
-                      </span>
-                      <span>
-                        <strong>{person.name}</strong>
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </aside>
           </div>
         </div>
         <a className="live-activator" data-live-activator data-live-control href="/spaces" aria-label="Join Caper">

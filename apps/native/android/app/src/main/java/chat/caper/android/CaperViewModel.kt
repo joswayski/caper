@@ -760,7 +760,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun setReaction(messageId: String, emoji: String, active: Boolean) {
         val channel = mutable.value.selectedChannel?.takeIf { it.joined } ?: return
         val key = "$messageId:$emoji"
-        val target = mutable.value.messages.firstOrNull { it.id == messageId } ?: return
+        val target = (mutable.value.messages + mutable.value.pinnedMessages).firstOrNull { it.id == messageId } ?: return
         val own = mutable.value.chatAuthorId ?: mutable.value.account?.id ?: return
         authoritativeReactionMessages.putIfAbsent(messageId, target)
         reactionIntents.getOrPut(messageId) { linkedMapOf() }[emoji] = ReactionIntent(emoji, active, ++reactionIntentVersion)
@@ -877,9 +877,13 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun projectPendingReaction(messageId: String, own: String) {
         val authoritative = authoritativeReactionMessages[messageId] ?: return
         val intents = reactionIntents[messageId]?.values.orEmpty().map { ReactionSaveUi(it.emoji, it.active) }
-        mutable.value = mutable.value.copy(messages = mutable.value.messages.map {
-            if (it.id == messageId) projectReactionIntents(authoritative, own, intents) else it
-        })
+        fun project(message: ChatMessage): ChatMessage = if (message.id == messageId)
+            projectReactionIntents(message.copy(reactions = authoritative.reactions, reactionSeq = authoritative.reactionSeq), own, intents)
+        else message
+        mutable.value = mutable.value.copy(
+            messages = mutable.value.messages.map(::project),
+            pinnedMessages = mutable.value.pinnedMessages.map(::project),
+        )
     }
 
     fun retryReaction(messageId: String, emoji: String) {
@@ -1319,24 +1323,23 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         durableReplayCursor = replayCursorAfterReaction(durableReplayCursor, update, sequenced)
         if (sequenced && mutable.value.selectedDirectId == update.channelId) markDirectRead(update.channelId, update.seq)
         pinSnapshots[update.messageId]?.let { pinSnapshots[update.messageId] = mergeReaction(it, update) }
-        mutable.value = mutable.value.copy(pinnedMessages = mutable.value.pinnedMessages.map { mergeReaction(it, update) })
-        val index = mutable.value.messages.indexOfFirst { it.id == update.messageId }
-        if (index < 0) {
+        val current = authoritativeReactionMessages[update.messageId]
+            ?: (mutable.value.messages + mutable.value.pinnedMessages).firstOrNull { it.id == update.messageId }
+        if (current == null) {
             if (!cacheUnseenReaction(unloadedReactions, update)) {
                 mutable.value.selectedChannel?.id?.let(::resyncChannel)
                 return
             }
             return
         }
-        val current = authoritativeReactionMessages[update.messageId]
-            ?: mutable.value.messages.first { it.id == update.messageId }
         val authoritative = mergeReaction(current, update)
         authoritativeReactionMessages[update.messageId] = authoritative
+        mutable.value = mutable.value.copy(
+            messages = mutable.value.messages.map { mergeReaction(it, update) },
+            pinnedMessages = mutable.value.pinnedMessages.map { mergeReaction(it, update) },
+        )
         val own = mutable.value.chatAuthorId ?: mutable.value.account?.id
-        val intents = reactionIntents[update.messageId]?.values.orEmpty().map { ReactionSaveUi(it.emoji, it.active) }
-        mutable.value = mutable.value.copy(messages = mutable.value.messages.map {
-            if (it.id == update.messageId && own != null) projectReactionIntents(authoritative, own, intents) else mergeReaction(it, update)
-        })
+        if (own != null) projectPendingReaction(update.messageId, own)
     }
 
     /** `message.attachments`: sequenced exactly like reactions, replacing the message's files. */
@@ -1444,6 +1447,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             messages = mutable.value.messages.map { if (it.id == merged.id) mergeReaction(mergeEdit(mergePin(it, merged), merged), merged) else it },
             pinnedMessages = pinSnapshots.values.filter { it.pin != null }.sortedByDescending { it.pinSeq?.toBigIntegerOrNull() },
         )
+        val own = mutable.value.chatAuthorId ?: mutable.value.account?.id
+        if (own != null) projectPendingReaction(merged.id, own)
     }
 
     private fun receiveForward(update: ForwardUpdate) {
@@ -1495,9 +1500,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun mergeTimelinePins(messages: List<ChatMessage>) = messages.map { message ->
-        val snapshot = pinSnapshots[message.id]
-        val reactions = snapshot?.let { mergeReaction(message, it) } ?: message
-        val pinned = overlayEdit(overlayPin(reactions, snapshot, pinSnapshotCursor))
+        val pinned = overlayReactions(overlayEdit(overlayPin(message, pinSnapshots[message.id], pinSnapshotCursor)))
         forwardSnapshots[message.id]?.let { mergeForward(pinned, it) } ?: pinned
     }
 

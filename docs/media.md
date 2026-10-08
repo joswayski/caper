@@ -1791,6 +1791,12 @@ freeze the root and broadcast choice. Ordinary sends cannot retry a pending repl
 into the channel. Replies use the existing participation and read permissions;
 thread reads do not expose another channel's messages.
 
+Normal in-flight sends show no cross-composer warning. A delivery problem stays
+with its reply in the thread; the channel offers **Review reply** only when that
+thread is closed or another thread is open. Sending still allows one outstanding
+command per channel, and retries keep the original ID, text, root and broadcast
+choice so an uncertain outcome cannot become a duplicate or a channel message.
+
 `POST /api/chat/channels/{channel}/messages` adds optional `threadRootId` and
 default-false `broadcast`. The root must be a same-channel, top-level message.
 `GET /api/chat/channels/{channel}/messages/{root}/thread?before={seq}` returns

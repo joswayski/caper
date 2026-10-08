@@ -7730,10 +7730,15 @@ impl CaperApp {
                                 && let Some(text) = self.discard_rejected() { self.thread_drafts.entry(root.clone()).or_default().0 = text; }
                             if ui.button("Dismiss").clicked() { self.discard_rejected(); }
                         });
-                    } else if !pending.sending && ui.button("Retry send").clicked() { self.send_message_to(Some(root.clone()), pending.broadcast); }
+                    } else if !pending.sending {
+                        if let Some(error) = &self.error { ui.colored_label(ERROR, error); }
+                        if ui.button("Retry send").clicked() { self.send_message_to(Some(root.clone()), pending.broadcast); }
+                    }
                 }
                 let blocked = self.pending.is_some();
-                if blocked && pending.is_none() { ui.label("Confirm or dismiss the pending message first."); }
+                if pending.is_none() && self.pending.as_ref().is_some_and(|pending| !pending.sending && (pending.rejection.is_some() || self.error.is_some())) {
+                    ui.label("Confirm or dismiss the pending message first.");
+                }
                 let draft = self.thread_drafts.entry(root.clone()).or_default();
                 let output = ui.add_enabled(!loading, egui::TextEdit::multiline(&mut draft.0)
                     .id_salt(("thread-draft", &root)).desired_rows(3).desired_width(f32::INFINITY).char_limit(4000)
@@ -7922,7 +7927,8 @@ impl CaperApp {
                     ui.visuals_mut().widgets.inactive.corner_radius = CornerRadius::same(6);
                     ui.visuals_mut().widgets.hovered.corner_radius = CornerRadius::same(6);
                     ui.visuals_mut().widgets.active.corner_radius = CornerRadius::same(6);
-                    if let Some(error) = &self.error {
+                    if let Some(error) = &self.error
+                        && self.pending.as_ref().is_none_or(|pending| pending.thread_root_id.is_none()) {
                         ui.colored_label(ERROR, error);
                     }
                     let me = self.account.as_ref().map(|account| account.id.clone());
@@ -7944,8 +7950,16 @@ impl CaperApp {
                         }
                     }
                     // Web: the conversation stays; only sending waits on a new session.
-                    if let Some(root) = self.pending.as_ref().and_then(|pending| pending.thread_root_id.clone())
-                        && ui.button("Pending reply · Open thread").clicked() { self.open_thread(root); }
+                    if let Some(pending) = self.pending.as_ref()
+                        && !pending.sending && (pending.rejection.is_some() || self.error.is_some())
+                        && let Some(root) = pending.thread_root_id.clone()
+                        && self.thread_view.as_ref().is_none_or(|thread| thread.root != root) {
+                        let rejected = pending.rejection.is_some();
+                        ui.horizontal(|ui| {
+                            ui.colored_label(ERROR, if rejected { "A thread reply wasn’t sent." } else { "A thread reply couldn’t be confirmed." });
+                            if ui.button("Review reply").clicked() { self.open_thread(root); }
+                        });
+                    }
                     if !joined {
                         ui.label(bold("Preview").size(12.0));
                         let format = egui::TextFormat {
