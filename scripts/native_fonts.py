@@ -59,17 +59,13 @@ def download_archive(destination: Path = ARCHIVE_PATH) -> None:
         with urllib.request.urlopen(request, timeout=30) as response:
             if response.url != DOWNLOAD_URL:
                 raise RuntimeError(f"unexpected download redirect to {response.url}")
-            with tempfile.NamedTemporaryFile(
-                dir=destination.parent, prefix=".satoshi-", delete=False
-            ) as output:
+            with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=".satoshi-", delete=False) as output:
                 temporary = Path(output.name)
                 size = 0
                 while chunk := response.read(64 * 1024):
                     size += len(chunk)
                     if size > MAX_DOWNLOAD_BYTES:
-                        raise RuntimeError(
-                            f"download exceeds {MAX_DOWNLOAD_BYTES} byte limit"
-                        )
+                        raise RuntimeError(f"download exceeds {MAX_DOWNLOAD_BYTES} byte limit")
                     output.write(chunk)
         verified_resources(temporary)
         os.replace(temporary, destination)
@@ -91,8 +87,7 @@ def verified_resources(archive_path: Path) -> dict[str, tuple[bytes, str]]:
         missing = [name for name in resources if names.count(name) != 1]
         if missing:
             raise RuntimeError(
-                "archive must contain exactly one of each required member; invalid: "
-                + ", ".join(missing)
+                "archive must contain exactly one of each required member; invalid: " + ", ".join(missing)
             )
 
         for member, (filename, expected_hash) in resources.items():

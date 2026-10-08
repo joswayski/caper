@@ -62,9 +62,7 @@ def extract(archive: Path, destination: Path) -> None:
             bundle.extractall(temporary)
         roots = list(temporary.iterdir())
         extracted = roots[0] if len(roots) == 1 and roots[0].is_dir() else temporary
-        if not (extracted / "lib" / "libwebrtc.a").exists() and not (
-            extracted / "lib" / "webrtc.lib"
-        ).exists():
+        if not (extracted / "lib" / "libwebrtc.a").exists() and not (extracted / "lib" / "webrtc.lib").exists():
             raise RuntimeError("libwebrtc archive does not contain the expected library")
         if not (extracted / "LICENSE.md").is_file():
             raise RuntimeError("libwebrtc archive does not contain LICENSE.md")
@@ -86,7 +84,9 @@ def main() -> None:
     if platform.machine().lower() not in {"x86_64", "amd64"}:
         raise SystemExit("Caper voice archives support x64 hosts only")
     filename, expected = ARCHIVES[args.platform]
-    output = args.output or Path(__file__).resolve().parents[1] / "target" / "libwebrtc" / filename.removeprefix("webrtc-").removesuffix(".zip")
+    output = args.output or Path(__file__).resolve().parents[1] / "target" / "libwebrtc" / filename.removeprefix(
+        "webrtc-"
+    ).removesuffix(".zip")
     output = output.resolve()
     if (output / ".caper-sha256").is_file() and (output / ".caper-sha256").read_text().strip() == expected:
         print(output)

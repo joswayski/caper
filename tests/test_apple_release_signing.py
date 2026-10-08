@@ -65,7 +65,9 @@ if os.environ.get("FAIL_STAGE") == stage:
         result = subprocess.run(
             ["bash", str(self.app / "upload-testflight.sh")],
             env={**self.env, "FAIL_STAGE": fail_stage},
-            capture_output=True, text=True, check=False,
+            capture_output=True,
+            text=True,
+            check=False,
         )
         commands = [json.loads(line) for line in self.log.read_text().splitlines()]
         return result, commands
@@ -85,18 +87,31 @@ if os.environ.get("FAIL_STAGE") == stage:
         self.assertIn("CURRENT_PROJECT_VERSION=37.2", args)
         self.assertNotIn("CODE_SIGNING_ALLOWED=NO", args)
         self.assertNotIn("CODE_SIGN_ENTITLEMENTS=", args)
-        for flag in ("-allowProvisioningUpdates", "-authenticationKeyPath",
-                     "-authenticationKeyID", "-authenticationKeyIssuerID"):
+        for flag in (
+            "-allowProvisioningUpdates",
+            "-authenticationKeyPath",
+            "-authenticationKeyID",
+            "-authenticationKeyIssuerID",
+        ):
             self.assertNotIn(flag, args)
             self.assertIn(flag, export["args"])
-        self.assertEqual(export["args"][export["args"].index("-authenticationKeyPath") + 1],
-                         self.env["NOTARY_KEY_PATH"])
-        self.assertFalse(any(arg.startswith(("CODE_SIGN_IDENTITY=", "AD_HOC_CODE_SIGNING_ALLOWED="))
-                             for arg in export["args"]))
-        self.assertEqual(export["options"], {
-            "method": "app-store-connect", "destination": "upload", "teamID": "FIXTURETEAM",
-            "signingStyle": "automatic", "manageAppVersionAndBuildNumber": False, "uploadSymbols": True,
-        })
+        self.assertEqual(
+            export["args"][export["args"].index("-authenticationKeyPath") + 1], self.env["NOTARY_KEY_PATH"]
+        )
+        self.assertFalse(
+            any(arg.startswith(("CODE_SIGN_IDENTITY=", "AD_HOC_CODE_SIGNING_ALLOWED=")) for arg in export["args"])
+        )
+        self.assertEqual(
+            export["options"],
+            {
+                "method": "app-store-connect",
+                "destination": "upload",
+                "teamID": "FIXTURETEAM",
+                "signingStyle": "automatic",
+                "manageAppVersionAndBuildNumber": False,
+                "uploadSymbols": True,
+            },
+        )
         self.assertIn("Uploaded chat.fixture.custom build 37.2", result.stdout)
 
     def test_archive_failure_stops_before_export_or_success_message(self):
@@ -126,8 +141,15 @@ class MacDiskImageTests(unittest.TestCase):
         (self.app / "Contents/MacOS").mkdir(parents=True)
         (self.app / "Contents/Frameworks").mkdir()
         with (self.app / "Contents/Info.plist").open("wb") as info:
-            plistlib.dump({"CFBundleName": "Caper", "CFBundleExecutable": "Caper",
-                          "CFBundleIdentifier": "chat.caper.fixture", "CFBundlePackageType": "APPL"}, info)
+            plistlib.dump(
+                {
+                    "CFBundleName": "Caper",
+                    "CFBundleExecutable": "Caper",
+                    "CFBundleIdentifier": "chat.caper.fixture",
+                    "CFBundlePackageType": "APPL",
+                },
+                info,
+            )
         (self.app / "Contents/MacOS/Caper").write_bytes(b"fixture-executable")
         self.updater = self.root / "fixture-updater"
         self.updater.write_bytes(b"updater")
@@ -172,17 +194,24 @@ elif tool == "spctl":
             tool.chmod(0o755)
         self.log = self.root / "commands.jsonl"
         self.env = {
-            **os.environ, "PATH": f"{binary}:{os.environ['PATH']}",
-            "TEST_LOG": str(self.log), "TEST_APP": str(self.app),
+            **os.environ,
+            "PATH": f"{binary}:{os.environ['PATH']}",
+            "TEST_LOG": str(self.log),
+            "TEST_APP": str(self.app),
             "APPLE_SIGNING_IDENTITY": "Developer ID Application: Fixture",
             "NOTARY_KEY_PATH": str(self.root / "fixture-key.p8"),
-            "NOTARY_KEY_ID": "fixture-id", "NOTARY_ISSUER": "fixture-issuer",
+            "NOTARY_KEY_ID": "fixture-id",
+            "NOTARY_ISSUER": "fixture-issuer",
             "CAPER_UPDATER_BINARY": str(self.updater),
         }
 
     def sign(self, **failure):
-        result = subprocess.run(["bash", str(self.apple / "sign-and-notarize.sh"), "Intel"],
-                                env={**self.env, **failure}, capture_output=True, text=True)
+        result = subprocess.run(
+            ["bash", str(self.apple / "sign-and-notarize.sh"), "Intel"],
+            env={**self.env, **failure},
+            capture_output=True,
+            text=True,
+        )
         commands = [json.loads(line) for line in self.log.read_text().splitlines()]
         return result, commands
 
@@ -194,17 +223,17 @@ elif tool == "spctl":
         dmg = self.apple / "dist/Caper-macOS-Intel.dmg"
         self.assertEqual((self.apple / "dist/Caper-macOS-Intel.zip").read_bytes(), b"stapled")
         self.assertEqual(dmg.read_bytes(), b"disk-image")
-        build = ["dmgbuild", "-s", str(self.apple / "dmg-settings.py"), "-D",
-                 f"app={self.app}", "Caper", str(dmg)]
+        build = ["dmgbuild", "-s", str(self.apple / "dmg-settings.py"), "-D", f"app={self.app}", "Caper", str(dmg)]
         self.assertIn(build, commands)
-        sign = ["codesign", "--force", "--timestamp", "--sign",
-                self.env["APPLE_SIGNING_IDENTITY"], str(dmg)]
+        sign = ["codesign", "--force", "--timestamp", "--sign", self.env["APPLE_SIGNING_IDENTITY"], str(dmg)]
         staple = ["xcrun", "stapler", "staple", str(dmg)]
         self.assertLess(commands.index(sign), commands.index(submissions[1]))
         self.assertLess(commands.index(submissions[1]), commands.index(staple))
         self.assertIn(["xcrun", "stapler", "validate", str(dmg)], commands)
-        self.assertIn(["spctl", "--assess", "--type", "open", "--context",
-                       "context:primary-signature", "--verbose=2", str(dmg)], commands)
+        self.assertIn(
+            ["spctl", "--assess", "--type", "open", "--context", "context:primary-signature", "--verbose=2", str(dmg)],
+            commands,
+        )
         self.assertIn(str(dmg), result.stdout)
 
     def test_rejected_notarizations_stop_before_stapling_or_reporting_success(self):
@@ -227,8 +256,7 @@ elif tool == "spctl":
                 self.assertNotIn(str(self.apple / "dist/Caper-macOS-Intel.dmg"), result.stdout)
 
     def test_finder_layout_has_both_icons_arrow_and_read_only_format(self):
-        settings = runpy.run_path(str(self.apple / "dmg-settings.py"),
-                                  init_globals={"defines": {"app": str(self.app)}})
+        settings = runpy.run_path(str(self.apple / "dmg-settings.py"), init_globals={"defines": {"app": str(self.app)}})
         self.assertEqual(settings["files"], [str(self.app)])
         self.assertEqual(settings["symlinks"], {"Applications": "/Applications"})
         self.assertEqual(settings["icon_locations"], {"Caper.app": (140, 120), "Applications": (500, 120)})
@@ -240,10 +268,13 @@ elif tool == "spctl":
     def test_real_disk_image_contains_the_app_applications_link_and_finder_layout(self):
         # No signing material or real app is used in this packaging smoke check.
         dmg = self.root / "fixture.dmg"
-        subprocess.run(["dmgbuild", "-s", str(self.apple / "dmg-settings.py"),
-                        "-D", f"app={self.app}", "Caper", str(dmg)], check=True)
-        result = subprocess.run(["hdiutil", "attach", "-readonly", "-nobrowse", "-plist", str(dmg)],
-                                check=True, capture_output=True)
+        subprocess.run(
+            ["dmgbuild", "-s", str(self.apple / "dmg-settings.py"), "-D", f"app={self.app}", "Caper", str(dmg)],
+            check=True,
+        )
+        result = subprocess.run(
+            ["hdiutil", "attach", "-readonly", "-nobrowse", "-plist", str(dmg)], check=True, capture_output=True
+        )
         entities = plistlib.loads(result.stdout)["system-entities"]
         mount = Path(next(entity["mount-point"] for entity in entities if "mount-point" in entity))
         try:
