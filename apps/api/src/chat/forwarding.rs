@@ -131,7 +131,11 @@ async fn persist_forward(
             ));
         }
         payload["forward"] = forward;
-        return Ok(enrich_author(payload, avatar_id));
+        return Ok(enrich_author(
+            payload,
+            avatar_id,
+            user.map(|_| name.as_str()),
+        ));
     }
     let (global, personal): (i64, i64) = sqlx::query_as("SELECT count(*),count(*) FILTER(WHERE session_id=$2) FROM public.messages WHERE channel_id=$1 AND created_at>now()-interval '1 minute'")
         .bind(destination.id).bind(session).fetch_one(&mut *tx).await.map_err(database_error)?;
@@ -184,9 +188,9 @@ async fn source_snapshot(
     tx: &mut Transaction<'_, Postgres>,
     source: i64,
 ) -> Result<Option<Value>, ApiError> {
-    let row: Option<(Value, i64, Option<i16>)> = sqlx::query_as("SELECT m.payload,c.last_seq,u.avatar_id FROM public.messages m JOIN public.channels c ON c.id=m.channel_id LEFT JOIN public.spaces s ON s.id=c.space_id JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.id=$1 AND c.deleted_at IS NULL AND (c.space_id IS NULL OR s.deleted_at IS NULL)")
+    let row: Option<(Value, i64, Option<i16>, Option<String>)> = sqlx::query_as("SELECT m.payload,c.last_seq,u.avatar_id,u.display_name FROM public.messages m JOIN public.channels c ON c.id=m.channel_id LEFT JOIN public.spaces s ON s.id=c.space_id JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.id=$1 AND c.deleted_at IS NULL AND (c.space_id IS NULL OR s.deleted_at IS NULL)")
         .bind(source).fetch_optional(&mut **tx).await.map_err(database_error)?;
-    Ok(row.map(|(message, head, avatar)| json!({"message":shared_message(enrich_author(message,avatar)),"seq":head.to_string()})))
+    Ok(row.map(|(message, head, avatar, name)| json!({"message":shared_message(enrich_author(message,avatar,name.as_deref())),"seq":head.to_string()})))
 }
 
 pub(super) async fn hydrate(
@@ -234,14 +238,14 @@ async fn thread(
         .bind(id).bind(&message).fetch_optional(&mut *tx).await.map_err(database_error)?.ok_or_else(not_found)?;
     // One repeatable snapshot for the root, replies, and their source cursor.
     // The destination grant authorizes only direct children of this original.
-    let rows: Vec<(Value, Option<i16>, i64)> = sqlx::query_as("SELECT m.payload,u.avatar_id,c.last_seq FROM public.messages root JOIN public.channels c ON c.id=root.channel_id LEFT JOIN public.spaces s ON s.id=c.space_id JOIN public.messages m ON m.channel_id=root.channel_id AND (m.id=root.id OR m.thread_root_id=root.id) JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE root.id=$1 AND c.deleted_at IS NULL AND (c.space_id IS NULL OR s.deleted_at IS NULL) AND (m.id=root.id OR $2::bigint IS NULL OR m.channel_seq<$2) ORDER BY (m.id=root.id) DESC,m.channel_seq DESC LIMIT $3")
+    let rows: Vec<(Value, Option<i16>, i64, Option<String>)> = sqlx::query_as("SELECT m.payload,u.avatar_id,c.last_seq,u.display_name FROM public.messages root JOIN public.channels c ON c.id=root.channel_id LEFT JOIN public.spaces s ON s.id=c.space_id JOIN public.messages m ON m.channel_id=root.channel_id AND (m.id=root.id OR m.thread_root_id=root.id) JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE root.id=$1 AND c.deleted_at IS NULL AND (c.space_id IS NULL OR s.deleted_at IS NULL) AND (m.id=root.id OR $2::bigint IS NULL OR m.channel_seq<$2) ORDER BY (m.id=root.id) DESC,m.channel_seq DESC LIMIT $3")
         .bind(source).bind(before).bind(PAGE+2).fetch_all(&mut *tx).await.map_err(database_error)?;
     let mut root = Value::Null;
     let mut replies = Vec::new();
     let mut head = "0".to_owned();
-    for (payload, avatar, cursor) in rows {
+    for (payload, avatar, cursor, name) in rows {
         head = cursor.to_string();
-        let original = shared_message(enrich_author(payload, avatar));
+        let original = shared_message(enrich_author(payload, avatar, name.as_deref()));
         // The first row is always the selected original, not a guessed root.
         if root.is_null() {
             root = original;
@@ -263,10 +267,10 @@ async fn thread(
 /// lose an update. Forward events never recurse: every reference is flattened.
 pub(super) async fn project_events(
     tx: &mut Transaction<'_, Postgres>,
-    events: &[(i64, i64, Value, Option<i16>)],
+    events: &[super::PendingEvent],
 ) -> Result<(), ApiError> {
     let mut targets = Vec::new();
-    for (_, _, event, _) in events {
+    for (_, _, event, _, _) in events {
         match event["type"].as_str() {
             Some("message.created" | "message.edited") => {
                 if let Some(id) = event["message"]["id"].as_str() {
