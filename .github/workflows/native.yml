@@ -23,6 +23,9 @@ on:
       - scripts/native_changelog.py
       - tests/test_native_changelog.py
       - .github/workflows/native.yml
+      - package.json
+      - package-lock.json
+      - vitest.config.ts
   workflow_dispatch:
 
 # No signing credentials, release, store upload, or deploy.
@@ -54,12 +57,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+          cache: npm
+      - run: npm ci
       - run: python -m unittest discover -s tests -p test_native_artifacts.py -v
       - run: python -m unittest discover -s tests -p test_apple_release_signing.py -v
       - run: python -m unittest discover -s tests -p test_native_changelog.py -v
       - run: python shared/fonts/test_native_fonts.py -v
-      - run: node --test tests/native-parity-fixture.test.mjs
-      - run: node --test tests/desktop-icons.test.mjs
+      - run: npm run test:native
       - name: Verify bundled Apple emoji match the shared artwork and licenses
         run: diff -qr shared/emoji apps/native/apple/Sources/CaperCore/EmojiAssets
       - name: Stop the rest of this run after a failure

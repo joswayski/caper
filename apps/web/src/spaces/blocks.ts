@@ -16,7 +16,9 @@ function publish(next: BlockedAccount[]) {
 
 function subscribe(listener: () => void) {
   listeners.add(listener);
-  return () => { listeners.delete(listener); };
+  return () => {
+    listeners.delete(listener);
+  };
 }
 
 export async function refreshBlocks() {
@@ -36,9 +38,17 @@ export async function unblock(id: string) {
 }
 
 export function useBlocks() {
-  return useSyncExternalStore(subscribe, () => blocks, () => EMPTY);
+  return useSyncExternalStore(
+    subscribe,
+    () => blocks,
+    () => EMPTY,
+  );
 }
 
 export function useBlockedIds() {
-  return useSyncExternalStore(subscribe, () => blockedIds, () => EMPTY_IDS);
+  return useSyncExternalStore(
+    subscribe,
+    () => blockedIds,
+    () => EMPTY_IDS,
+  );
 }

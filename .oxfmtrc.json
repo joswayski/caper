@@ -1,0 +1,6 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "printWidth": 120,
+  "sortPackageJson": false,
+  "ignorePatterns": ["apps/web/src/routeTree.gen.ts", "apps/web/public/**", "**/vendor/**"]
+}

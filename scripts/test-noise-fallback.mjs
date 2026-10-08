@@ -2,23 +2,24 @@
 // verify its retry, then stall 8 HR, verify 2 HR,
 // then stall 2 HR to verify RNNoise. No hardware microphone, API, or SFU is used.
 // node scripts/test-noise-fallback.mjs http://localhost:5174
-import { execFileSync } from 'node:child_process';
-import assert from 'node:assert/strict';
+import { execFileSync } from "node:child_process";
+import assert from "node:assert/strict";
 
-const origin = new URL(process.argv[2] ?? 'http://localhost:5174');
-assert.ok(['localhost', '127.0.0.1'].includes(origin.hostname));
-const args = ['--session', 'noise-fallback', '--args', '--autoplay-policy=no-user-gesture-required'];
-const browser = (...command) => JSON.parse(execFileSync('agent-browser', [...args, ...command, '--json'], { encoding: 'utf8', timeout: 90000 }));
+const origin = new URL(process.argv[2] ?? "http://localhost:5174");
+assert.ok(["localhost", "127.0.0.1"].includes(origin.hostname));
+const args = ["--session", "noise-fallback", "--args", "--autoplay-policy=no-user-gesture-required"];
+const browser = (...command) =>
+  JSON.parse(execFileSync("agent-browser", [...args, ...command, "--json"], { encoding: "utf8", timeout: 90000 }));
 function evaluate(code) {
-  const result = browser('eval', `(async()=>{${code}})()`);
+  const result = browser("eval", `(async()=>{${code}})()`);
   assert.ok(result.success, JSON.stringify(result));
   return result.data.result;
 }
 try {
-  browser('open', new URL('/spaces', origin).href);
-  browser('wait', '.spaces-state, .chat-panel, .spaces-empty');
-  browser('set', 'viewport', '1280', '900', '2');
-  browser('click', 'body');
+  browser("open", new URL("/spaces", origin).href);
+  browser("wait", ".spaces-state, .chat-panel, .spaces-empty");
+  browser("set", "viewport", "1280", "900", "2");
+  browser("click", "body");
   evaluate(`
     window.wait = ms => new Promise(r => setTimeout(r, ms));
     window.assert = (value, message) => { if (!value) throw new Error(message); };
@@ -58,16 +59,17 @@ try {
       .then(value => {window.capture = value; window.originalTrack = value.track; window.originalNatural = value.naturalTrack;})
       .catch(error => {window.captureError = String(error);});
   `);
-  browser('wait', '--fn', '!!window.capture || !!window.captureError', '--timeout', '70000');
+  browser("wait", "--fn", "!!window.capture || !!window.captureError", "--timeout", "70000");
   evaluate(`assert(workerProfiles[0] === 8 && workerProfiles[1] === 8, 'startup failure must retry 8 HR first');`);
-  browser('wait', '--fn', "window.capture?.status.includes('DPDFNet-2 HR active')", '--timeout', '70000');
+  browser("wait", "--fn", "window.capture?.status.includes('DPDFNet-2 HR active')", "--timeout", "70000");
   evaluate(`assert(JSON.stringify(workerProfiles) === '[8,8,2]', 'overload must move directly to 2 HR');`);
-  for (const engine of ['DPDFNet-2 HR', 'RNNoise']) {
-    if (engine === 'RNNoise') {
-      evaluate('window.stallTwo = true;');
-      browser('wait', '--fn', "window.capture?.status.includes('RNNoise active')", '--timeout', '30000');
+  for (const engine of ["DPDFNet-2 HR", "RNNoise"]) {
+    if (engine === "RNNoise") {
+      evaluate("window.stallTwo = true;");
+      browser("wait", "--fn", "window.capture?.status.includes('RNNoise active')", "--timeout", "30000");
     }
-    console.log(evaluate(`
+    console.log(
+      evaluate(`
     assert(window.capture, window.captureError);
     const track = window.originalTrack, natural = window.originalNatural;
     assert(capture.status.includes('${engine} active'), capture.status);
@@ -87,7 +89,8 @@ try {
     if ('${engine}' === 'DPDFNet-2 HR') assert(capture.diagnostics().dpdfnet.processedHops > 100, '2 HR must process real hops');
     window.filteredStream = new MediaStream([natural]);
     return {status: capture.status, reductionDb: 20 * Math.log10(rms[0] / rms[1])};
-    `));
+    `),
+    );
   }
   evaluate(`
     const {default: React} = await import('/node_modules/.vite/deps/react.js');
@@ -99,10 +102,10 @@ try {
       React.createElement('p', null, 'Synthetic microphone fixture — real RNNoise fallback'),
       React.createElement(MicPlayback, {stream: filteredStream, output: '', processingStrength: 50, noiseStatus: capture.status, onProcessingStrengthChange: () => {}})));
   `);
-  browser('wait', '.mic-test-card');
+  browser("wait", ".mic-test-card");
   for (const width of [1280, 390]) {
-    browser('set', 'viewport', String(width), '900', '2');
-    browser('click', '[aria-label="About On-device noise cancellation"]');
+    browser("set", "viewport", String(width), "900", "2");
+    browser("click", '[aria-label="About On-device noise cancellation"]');
     evaluate(`
       const tip = document.querySelector('#noise-cancellation-detail');
       assert(tip.matches(':popover-open'), 'tooltip must open on click');
@@ -110,13 +113,17 @@ try {
       assert(box.left >= 0 && box.right <= innerWidth && box.top >= 0 && box.bottom <= innerHeight, 'tooltip clipped by viewport');
       assert(document.elementFromPoint(box.left + 10, box.top + 10) === tip, 'tooltip must be above the modal');
     `);
-    browser('press', 'Escape');
-    evaluate(`assert(!document.querySelector(':popover-open') && document.querySelector('dialog[open]'), 'Escape should dismiss only the tooltip');`);
+    browser("press", "Escape");
+    evaluate(
+      `assert(!document.querySelector(':popover-open') && document.querySelector('dialog[open]'), 'Escape should dismiss only the tooltip');`,
+    );
   }
-  console.log('PASS: 8 HR startup retry; overload skips retries; real DPDFNet-2 HR and RNNoise attenuate synthetic noise; stable tracks; desktop/narrow tooltip and Escape. Not hardware/SFU validation.');
+  console.log(
+    "PASS: 8 HR startup retry; overload skips retries; real DPDFNet-2 HR and RNNoise attenuate synthetic noise; stable tracks; desktop/narrow tooltip and Escape. Not hardware/SFU validation.",
+  );
 } catch (error) {
   console.error(evaluate(`return {context: window.context?.state, capture: window.capture?.status};`));
   throw error;
 } finally {
-  browser('close');
+  browser("close");
 }

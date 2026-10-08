@@ -1,12 +1,4 @@
-import {
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type FormEvent,
-  type ReactNode,
-} from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
   Ban,
   ChevronDown,
@@ -141,19 +133,34 @@ function Dialog({
       }}
       onPointerDown={(event) => {
         const rect = event.currentTarget.getBoundingClientRect();
-        backdropPress.current = event.target === event.currentTarget &&
-          (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom);
+        backdropPress.current =
+          event.target === event.currentTarget &&
+          (event.clientX < rect.left ||
+            event.clientX > rect.right ||
+            event.clientY < rect.top ||
+            event.clientY > rect.bottom);
       }}
       onClick={(event) => {
         const rect = event.currentTarget.getBoundingClientRect();
-        if (dismissOnBackdrop && backdropPress.current && event.target === event.currentTarget &&
-          (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)) onClose();
+        if (
+          dismissOnBackdrop &&
+          backdropPress.current &&
+          event.target === event.currentTarget &&
+          (event.clientX < rect.left ||
+            event.clientX > rect.right ||
+            event.clientY < rect.top ||
+            event.clientY > rect.bottom)
+        )
+          onClose();
         backdropPress.current = false;
       }}
     >
       <header>
         <div>
-          <h2 id={titleId}>{titleIcon}{title}</h2>
+          <h2 id={titleId}>
+            {titleIcon}
+            {title}
+          </h2>
           {description && <p>{description}</p>}
         </div>
         <button type="button" aria-label={`Close ${title}`} onClick={onClose}>
@@ -165,7 +172,12 @@ function Dialog({
   );
 }
 
-function DeleteConfirmation({ kind, name, onClose, onDelete }: {
+function DeleteConfirmation({
+  kind,
+  name,
+  onClose,
+  onDelete,
+}: {
   kind: "space" | "channel";
   name: string;
   onClose: () => void;
@@ -182,24 +194,56 @@ function DeleteConfirmation({ kind, name, onClose, onDelete }: {
     }
   }, []);
   return (
-    <Dialog title={`Delete ${kind}`} dismissOnBackdrop onClose={() => { if (!submitting.current) onClose(); }}>
+    <Dialog
+      title={`Delete ${kind}`}
+      dismissOnBackdrop
+      onClose={() => {
+        if (!submitting.current) onClose();
+      }}
+    >
       <div className="delete-confirmation">
-        <p>Delete <strong>{kind === "channel" ? "#" : ""}{name}</strong> for everyone? {kind === "space" ? "All its channels and their messages will disappear from the space." : "This channel and its messages will disappear from the space."} This cannot be undone.</p>
-        {error && <p className="space-form-error" role="alert">{error}</p>}
+        <p>
+          Delete{" "}
+          <strong>
+            {kind === "channel" ? "#" : ""}
+            {name}
+          </strong>{" "}
+          for everyone?{" "}
+          {kind === "space"
+            ? "All its channels and their messages will disappear from the space."
+            : "This channel and its messages will disappear from the space."}{" "}
+          This cannot be undone.
+        </p>
+        {error && (
+          <p className="space-form-error" role="alert">
+            {error}
+          </p>
+        )}
         <div className="space-dialog-actions">
-          <button type="button" className="secondary" data-initial-focus disabled={pending} onClick={onClose}>Cancel</button>
-          <button type="button" className="danger" disabled={pending} onClick={(event) => {
-            // A second click from the opener's double-click must not confirm deletion.
-            if (event.detail > 1 || submitting.current) return;
-            submitting.current = true;
-            setPending(true);
-            setError(undefined);
-            void onDelete().then(() => playSound("delete")).catch((reason) => {
-              setError(errorMessage(reason));
-              submitting.current = false;
-              setPending(false);
-            });
-          }}>{pending ? "Deleting…" : `Delete ${kind}`}</button>
+          <button type="button" className="secondary" data-initial-focus disabled={pending} onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="danger"
+            disabled={pending}
+            onClick={(event) => {
+              // A second click from the opener's double-click must not confirm deletion.
+              if (event.detail > 1 || submitting.current) return;
+              submitting.current = true;
+              setPending(true);
+              setError(undefined);
+              void onDelete()
+                .then(() => playSound("delete"))
+                .catch((reason) => {
+                  setError(errorMessage(reason));
+                  submitting.current = false;
+                  setPending(false);
+                });
+            }}
+          >
+            {pending ? "Deleting…" : `Delete ${kind}`}
+          </button>
         </div>
       </div>
     </Dialog>
@@ -247,7 +291,11 @@ function NameField({
   );
 }
 
-function ChannelPrivacy({ spaceName, checked, onChange }: {
+function ChannelPrivacy({
+  spaceName,
+  checked,
+  onChange,
+}: {
   spaceName: string;
   checked: boolean;
   onChange: (checked: boolean) => void;
@@ -255,10 +303,30 @@ function ChannelPrivacy({ spaceName, checked, onChange }: {
   return (
     <div className="channel-privacy">
       <label>
-        <span><LockKeyhole aria-hidden="true" />Private channel</span>
-        <input type="checkbox" role="switch" checked={checked} onChange={(event) => { playSound(event.target.checked ? "toggle-on" : "toggle-off"); onChange(event.target.checked); }} aria-describedby="channel-privacy-help" />
+        <span>
+          <LockKeyhole aria-hidden="true" />
+          Private channel
+        </span>
+        <input
+          type="checkbox"
+          role="switch"
+          checked={checked}
+          onChange={(event) => {
+            playSound(event.target.checked ? "toggle-on" : "toggle-off");
+            onChange(event.target.checked);
+          }}
+          aria-describedby="channel-privacy-help"
+        />
       </label>
-      <p id="channel-privacy-help">{checked ? "Only you and the people you add can view or join." : <>Anyone in <strong>{spaceName}</strong> can view or join this channel.</>}</p>
+      <p id="channel-privacy-help">
+        {checked ? (
+          "Only you and the people you add can view or join."
+        ) : (
+          <>
+            Anyone in <strong>{spaceName}</strong> can view or join this channel.
+          </>
+        )}
+      </p>
     </div>
   );
 }
@@ -279,11 +347,7 @@ function SubmitRow({
       <button type="button" className="secondary" onClick={onCancel}>
         Cancel
       </button>
-      <button
-        type="submit"
-        className={destructive ? "danger" : "primary"}
-        disabled={pending}
-      >
+      <button type="submit" className={destructive ? "danger" : "primary"} disabled={pending}>
         {pending ? "Saving…" : label}
       </button>
     </div>
@@ -325,18 +389,27 @@ function CreateSpaceForm({
         </p>
       )}
       <div className="space-dialog-actions">
-        {onCancel && <button type="button" className="secondary" disabled={pending} onClick={onCancel}>Cancel</button>}
-        <button type="submit" className="primary" disabled={pending || disabled || !name.trim()}>{pending ? "Creating…" : "Create space"}</button>
+        {onCancel && (
+          <button type="button" className="secondary" disabled={pending} onClick={onCancel}>
+            Cancel
+          </button>
+        )}
+        <button type="submit" className="primary" disabled={pending || disabled || !name.trim()}>
+          {pending ? "Creating…" : "Create space"}
+        </button>
       </div>
     </form>
   );
-  return onCancel ? <Dialog title="Create a space" dismissOnBackdrop={!pending} onClose={onCancel}>{form}</Dialog> : form;
+  return onCancel ? (
+    <Dialog title="Create a space" dismissOnBackdrop={!pending} onClose={onCancel}>
+      {form}
+    </Dialog>
+  ) : (
+    form
+  );
 }
 
-function CreateSpaceDialog({ onClose, onCreated }: {
-  onClose: () => void;
-  onCreated: (space: Space) => void;
-}) {
+function CreateSpaceDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (space: Space) => void }) {
   return <CreateSpaceForm onCancel={onClose} onCreated={onCreated} />;
 }
 
@@ -368,11 +441,7 @@ function CreateChannelDialog({
     }
   };
   return (
-    <Dialog
-      title="Create a channel"
-      dismissOnBackdrop={!pending}
-      onClose={onClose}
-    >
+    <Dialog title="Create a channel" dismissOnBackdrop={!pending} onClose={onClose}>
       <form onSubmit={(event) => void submit(event)}>
         <NameField
           channel
@@ -382,18 +451,16 @@ function CreateChannelDialog({
           value={name}
           onChange={setName}
         />
-        <p className="channel-name-guidance">Channels are where conversations happen around a topic. Use a name that is easy to find and understand.</p>
+        <p className="channel-name-guidance">
+          Channels are where conversations happen around a topic. Use a name that is easy to find and understand.
+        </p>
         <ChannelPrivacy spaceName={space.space.name} checked={privateChannel} onChange={setPrivateChannel} />
         {error && (
           <p className="space-form-error" role="alert">
             {error}
           </p>
         )}
-        <SubmitRow
-          pending={pending}
-          label="Create channel"
-          onCancel={onClose}
-        />
+        <SubmitRow pending={pending} label="Create channel" onCancel={onClose} />
       </form>
     </Dialog>
   );
@@ -436,12 +503,7 @@ function LeaveSpaceDialog({
             {error}
           </p>
         )}
-        <SubmitRow
-          pending={pending}
-          label="Leave space"
-          destructive
-          onCancel={onClose}
-        />
+        <SubmitRow pending={pending} label="Leave space" destructive onCancel={onClose} />
       </form>
     </Dialog>
   );
@@ -479,15 +541,22 @@ function MemberManager({
           if (submitting.current || pending) return;
           const invalid = usernameError(username);
           if (invalid) return setError(invalid);
-          if (invitations && members.some((member) => member.username === username)) return setError("This person is already in the space.");
-          if (invitations?.some((member) => member.username === username)) return setError("This person already has a pending invitation.");
+          if (invitations && members.some((member) => member.username === username))
+            return setError("This person is already in the space.");
+          if (invitations?.some((member) => member.username === username))
+            return setError("This person already has a pending invitation.");
           submitting.current = true;
           setError(undefined);
           setSuccess(undefined);
           void onAdd(username)
-            .then(() => { setUsername(""); setSuccess(invitations ? "Invitation sent. They must accept before joining." : "Access granted."); })
+            .then(() => {
+              setUsername("");
+              setSuccess(invitations ? "Invitation sent. They must accept before joining." : "Access granted.");
+            })
             .catch((reason) => setError(errorMessage(reason)))
-            .finally(() => { submitting.current = false; });
+            .finally(() => {
+              submitting.current = false;
+            });
         }}
       >
         <label className="sr-only" htmlFor="member-username">
@@ -506,14 +575,24 @@ function MemberManager({
           required
           disabled={pending}
           placeholder="Exact username"
-          onChange={(event) => { setUsername(normalizeUsername(event.target.value)); setError(undefined); setSuccess(undefined); }}
+          onChange={(event) => {
+            setUsername(normalizeUsername(event.target.value));
+            setError(undefined);
+            setSuccess(undefined);
+          }}
         />
         <button type="submit" disabled={pending}>
           {invitations ? "Invite" : "Add"}
         </button>
       </form>
-      <p className="channel-name-guidance">3–32 lowercase letters, numbers, or underscores.{invitations && " Invitations expire after 7 days."}</p>
-      {success && <p className="channel-name-guidance" role="status">{success}</p>}
+      <p className="channel-name-guidance">
+        3–32 lowercase letters, numbers, or underscores.{invitations && " Invitations expire after 7 days."}
+      </p>
+      {success && (
+        <p className="channel-name-guidance" role="status">
+          {success}
+        </p>
+      )}
       {error && (
         <p className="space-form-error" role="alert">
           {error}
@@ -537,11 +616,7 @@ function MemberManager({
               <button
                 type="button"
                 disabled={pending}
-                onClick={() =>
-                  void onRemove(member).catch((reason) =>
-                    setError(errorMessage(reason)),
-                  )
-                }
+                onClick={() => void onRemove(member).catch((reason) => setError(errorMessage(reason)))}
               >
                 Remove
               </button>
@@ -549,16 +624,34 @@ function MemberManager({
           </li>
         ))}
       </ul>
-      {invitations && <>
-        <div className="dialog-section-heading"><h3>Pending invitations</h3><span>{invitations.length}</span></div>
-        <ul>
-          {invitations.map((member) => <li key={member.id}>
-            <span className="member-avatar" aria-hidden="true">{member.displayName.slice(0, 1).toUpperCase()}</span>
-            <span><strong>{member.displayName}</strong><small>@{member.username} · Invited</small></span>
-            <button type="button" disabled={pending} onClick={() => void onCancel?.(member).catch((reason) => setError(errorMessage(reason)))}>Cancel invite</button>
-          </li>)}
-        </ul>
-      </>}
+      {invitations && (
+        <>
+          <div className="dialog-section-heading">
+            <h3>Pending invitations</h3>
+            <span>{invitations.length}</span>
+          </div>
+          <ul>
+            {invitations.map((member) => (
+              <li key={member.id}>
+                <span className="member-avatar" aria-hidden="true">
+                  {member.displayName.slice(0, 1).toUpperCase()}
+                </span>
+                <span>
+                  <strong>{member.displayName}</strong>
+                  <small>@{member.username} · Invited</small>
+                </span>
+                <button
+                  type="button"
+                  disabled={pending}
+                  onClick={() => void onCancel?.(member).catch((reason) => setError(errorMessage(reason)))}
+                >
+                  Cancel invite
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
     </section>
   );
 }
@@ -582,9 +675,16 @@ function ManageSpaceDialog({
   const [pending, setPending] = useState(false);
   useEffect(() => {
     let current = true;
-    void listSpaceInvitations(detail.space.id).then((result) => { if (current) setInvitations(result.members); })
-      .catch((reason) => { if (current) setError(errorMessage(reason)); });
-    return () => { current = false; };
+    void listSpaceInvitations(detail.space.id)
+      .then((result) => {
+        if (current) setInvitations(result.members);
+      })
+      .catch((reason) => {
+        if (current) setError(errorMessage(reason));
+      });
+    return () => {
+      current = false;
+    };
   }, [detail.space.id]);
   const run = async (action: () => Promise<void>) => {
     setPending(true);
@@ -618,11 +718,7 @@ function ManageSpaceDialog({
         <fieldset disabled={pending}>
           <NameField label="Space name" value={name} onChange={setName} />
           <div className="inline-save">
-            <button
-              className="secondary"
-              disabled={pending || name.trim() === detail.space.name}
-              type="submit"
-            >
+            <button className="secondary" disabled={pending || name.trim() === detail.space.name} type="submit">
               Save name
             </button>
           </div>
@@ -643,10 +739,12 @@ function ManageSpaceDialog({
             setInvitations((current) => [...current.filter((item) => item.id !== member.id), member]);
           })
         }
-        onCancel={(member) => run(async () => {
-          await cancelSpaceInvitation(detail.space.id, member.id);
-          setInvitations((current) => current.filter((item) => item.id !== member.id));
-        })}
+        onCancel={(member) =>
+          run(async () => {
+            await cancelSpaceInvitation(detail.space.id, member.id);
+            setInvitations((current) => current.filter((item) => item.id !== member.id));
+          })
+        }
         onRemove={async (member) =>
           run(async () => {
             await removeSpaceMember(detail.space.id, member.id);
@@ -659,12 +757,21 @@ function ManageSpaceDialog({
       <section className="danger-zone">
         <h3>Delete space</h3>
         <p>Delete this space and all its channels for every member.</p>
-        <button className="danger-outline" type="button" disabled={pending} onClick={() => setConfirmDelete(true)}>Delete space</button>
+        <button className="danger-outline" type="button" disabled={pending} onClick={() => setConfirmDelete(true)}>
+          Delete space
+        </button>
       </section>
-      {confirmDelete && <DeleteConfirmation kind="space" name={detail.space.name} onClose={() => setConfirmDelete(false)} onDelete={async () => {
-        await deleteSpace(detail.space.id);
-        onDeleted();
-      }} />}
+      {confirmDelete && (
+        <DeleteConfirmation
+          kind="space"
+          name={detail.space.name}
+          onClose={() => setConfirmDelete(false)}
+          onDelete={async () => {
+            await deleteSpace(detail.space.id);
+            onDeleted();
+          }}
+        />
+      )}
     </Dialog>
   );
 }
@@ -702,16 +809,14 @@ function ManageChannelDialog({
   useEffect(() => {
     if (channel.private)
       void listChannelMembers(detail.space.id, channel.id)
-        .then((value) => { setMembers(value.members); setInvitations(value.invitations ?? []); })
+        .then((value) => {
+          setMembers(value.members);
+          setInvitations(value.invitations ?? []);
+        })
         .catch((reason) => setError(errorMessage(reason)));
   }, [channel.id, channel.private, detail.space.id]);
   return (
-    <Dialog
-      title="Overview"
-      onClose={onClose}
-      width="wide"
-      dismissOnBackdrop
-    >
+    <Dialog title="Overview" onClose={onClose} width="wide" dismissOnBackdrop>
       <form
         id="channel-overview"
         onSubmit={(event) => {
@@ -721,24 +826,14 @@ function ManageChannelDialog({
           const invalid = channelNameError(channelName);
           if (invalid) return setError(invalid);
           void run(async () => {
-            const updated = await updateChannel(
-              detail.space.id,
-              channel.id,
-              channelName,
-              privateChannel,
-            );
+            const updated = await updateChannel(detail.space.id, channel.id, channelName, privateChannel);
             setName(updated.name);
             onChanged(updated);
           }).catch((reason) => setError(errorMessage(reason)));
         }}
       >
         <fieldset disabled={pending}>
-          <NameField
-            channel
-            label="Channel name"
-            value={name}
-            onChange={setName}
-          />
+          <NameField channel label="Channel name" value={name} onChange={setName} />
           <ChannelPrivacy spaceName={detail.space.name} checked={privateChannel} onChange={setPrivateChannel} />
         </fieldset>
       </form>
@@ -754,27 +849,20 @@ function ManageChannelDialog({
           pending={pending}
           onAdd={async (username) =>
             run(async () => {
-              const member = await addChannelMember(
-                detail.space.id,
-                channel.id,
-                username,
-              );
-              setInvitations((current) => [
-                ...current.filter((item) => item.id !== member.id),
-                member,
-              ]);
+              const member = await addChannelMember(detail.space.id, channel.id, username);
+              setInvitations((current) => [...current.filter((item) => item.id !== member.id), member]);
             })
           }
-          onCancel={(member) => run(async () => {
-            await removeChannelMember(detail.space.id, channel.id, member.id);
-            setInvitations((items) => items.filter((item) => item.id !== member.id));
-          })}
+          onCancel={(member) =>
+            run(async () => {
+              await removeChannelMember(detail.space.id, channel.id, member.id);
+              setInvitations((items) => items.filter((item) => item.id !== member.id));
+            })
+          }
           onRemove={async (member) =>
             run(async () => {
               await removeChannelMember(detail.space.id, channel.id, member.id);
-              setMembers((current) =>
-                current.filter((item) => item.id !== member.id),
-              );
+              setMembers((current) => current.filter((item) => item.id !== member.id));
             })
           }
         />
@@ -782,68 +870,162 @@ function ManageChannelDialog({
       <section className="danger-zone">
         <h3>Delete channel</h3>
         <p>Delete this channel for everyone in the space.</p>
-        <button className="danger-outline" type="button" disabled={pending} onClick={() => setConfirmDelete(true)}>Delete channel</button>
+        <button className="danger-outline" type="button" disabled={pending} onClick={() => setConfirmDelete(true)}>
+          Delete channel
+        </button>
       </section>
       <footer className="channel-save-bar" aria-hidden={!dirty} inert={!dirty}>
         <span role="status">You have unsaved changes.</span>
         <div>
-          <button type="button" className="secondary" disabled={pending} onClick={() => {
-            setName(channel.name);
-            setPrivateChannel(channel.private);
-            setError(undefined);
-          }}>Reset</button>
-          <button type="submit" form="channel-overview" className="primary" disabled={pending}>{pending ? "Saving…" : "Save changes"}</button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={pending}
+            onClick={() => {
+              setName(channel.name);
+              setPrivateChannel(channel.private);
+              setError(undefined);
+            }}
+          >
+            Reset
+          </button>
+          <button type="submit" form="channel-overview" className="primary" disabled={pending}>
+            {pending ? "Saving…" : "Save changes"}
+          </button>
         </div>
       </footer>
-      {confirmDelete && <DeleteConfirmation kind="channel" name={channel.name} onClose={() => setConfirmDelete(false)} onDelete={async () => {
-        await deleteChannel(detail.space.id, channel.id);
-        onDeleted();
-      }} />}
+      {confirmDelete && (
+        <DeleteConfirmation
+          kind="channel"
+          name={channel.name}
+          onClose={() => setConfirmDelete(false)}
+          onDelete={async () => {
+            await deleteChannel(detail.space.id, channel.id);
+            onDeleted();
+          }}
+        />
+      )}
     </Dialog>
   );
 }
 
-function StartDirectDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (conversation: DirectConversation) => void }) {
+function StartDirectDialog({
+  onClose,
+  onCreated,
+}: {
+  onClose: () => void;
+  onCreated: (conversation: DirectConversation) => void;
+}) {
   const [username, setUsername] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
-  return <Dialog title="New direct message" description="Enter an exact username. Conversations stay private across all your spaces." dismissOnBackdrop onClose={onClose}>
-    <form onSubmit={(event) => {
-      event.preventDefault();
-      if (pending || !username.trim()) return;
-      setPending(true);
-      setError(undefined);
-      void createDirectConversation(username).then(onCreated).catch((reason) => { setError(errorMessage(reason)); setPending(false); });
-    }}>
-      <label className="space-field">Username<input autoFocus autoComplete="off" value={username} maxLength={33} placeholder="@username" onChange={(event) => setUsername(event.target.value)} /></label>
-      {error && <p className="space-form-error" role="alert">{error}</p>}
-      <SubmitRow pending={pending} label="Open conversation" onCancel={onClose} />
-    </form>
-  </Dialog>;
+  return (
+    <Dialog
+      title="New direct message"
+      description="Enter an exact username. Conversations stay private across all your spaces."
+      dismissOnBackdrop
+      onClose={onClose}
+    >
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (pending || !username.trim()) return;
+          setPending(true);
+          setError(undefined);
+          void createDirectConversation(username)
+            .then(onCreated)
+            .catch((reason) => {
+              setError(errorMessage(reason));
+              setPending(false);
+            });
+        }}
+      >
+        <label className="space-field">
+          Username
+          <input
+            autoFocus
+            autoComplete="off"
+            value={username}
+            maxLength={33}
+            placeholder="@username"
+            onChange={(event) => setUsername(event.target.value)}
+          />
+        </label>
+        {error && (
+          <p className="space-form-error" role="alert">
+            {error}
+          </p>
+        )}
+        <SubmitRow pending={pending} label="Open conversation" onCancel={onClose} />
+      </form>
+    </Dialog>
+  );
 }
 
 /** Confirms a block. Blocking also declines any request they sent you. */
-function BlockDialog({ person, onClose, onBlocked }: { person: BlockedAccount; onClose: () => void; onBlocked: () => void }) {
+function BlockDialog({
+  person,
+  onClose,
+  onBlocked,
+}: {
+  person: BlockedAccount;
+  onClose: () => void;
+  onBlocked: () => void;
+}) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
-  return <Dialog title={`Block ${person.displayName}?`} dismissOnBackdrop onClose={() => { if (!pending) onClose(); }}>
-    <div className="delete-confirmation">
-      <p>You won’t see their messages unless you choose to, and they can’t send you DMs or requests. They aren’t told. You can unblock them in Edit profile.</p>
-      {error && <p className="space-form-error" role="alert">{error}</p>}
-      <div className="space-dialog-actions">
-        <button type="button" className="secondary" data-initial-focus disabled={pending} onClick={onClose}>Cancel</button>
-        <button type="button" className="danger" disabled={pending} onClick={() => {
-          setPending(true);
-          setError(undefined);
-          void block(person).then(onBlocked).catch((reason) => { setError(errorMessage(reason)); setPending(false); });
-        }}>{pending ? "Blocking…" : "Block"}</button>
+  return (
+    <Dialog
+      title={`Block ${person.displayName}?`}
+      dismissOnBackdrop
+      onClose={() => {
+        if (!pending) onClose();
+      }}
+    >
+      <div className="delete-confirmation">
+        <p>
+          You won’t see their messages unless you choose to, and they can’t send you DMs or requests. They aren’t told.
+          You can unblock them in Edit profile.
+        </p>
+        {error && (
+          <p className="space-form-error" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="space-dialog-actions">
+          <button type="button" className="secondary" data-initial-focus disabled={pending} onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="danger"
+            disabled={pending}
+            onClick={() => {
+              setPending(true);
+              setError(undefined);
+              void block(person)
+                .then(onBlocked)
+                .catch((reason) => {
+                  setError(errorMessage(reason));
+                  setPending(false);
+                });
+            }}
+          >
+            {pending ? "Blocking…" : "Block"}
+          </button>
+        </div>
       </div>
-    </div>
-  </Dialog>;
+    </Dialog>
+  );
 }
 
 /** Shown instead of the composer while a request for you is open. */
-function RequestBar({ conversation, onAccept, onDecline, onBlock }: {
+function RequestBar({
+  conversation,
+  onAccept,
+  onDecline,
+  onBlock,
+}: {
   conversation: DirectConversation;
   onAccept: () => Promise<void>;
   onDecline: () => Promise<void>;
@@ -855,49 +1037,86 @@ function RequestBar({ conversation, onAccept, onDecline, onBlock }: {
     if (pending) return;
     setPending(action);
     setError(undefined);
-    void task().catch((reason) => setError(errorMessage(reason))).finally(() => setPending(undefined));
+    void task()
+      .catch((reason) => setError(errorMessage(reason)))
+      .finally(() => setPending(undefined));
   };
-  return <div className="direct-request-bar" role="group" aria-label="Message request">
-    <p><strong>{conversation.peer.displayName}</strong> (@{conversation.peer.username}) wants to message you. You don’t share a space.</p>
-    <div>
-      <button type="button" className="primary" disabled={!!pending} onClick={() => run("accept", onAccept)}>{pending === "accept" ? "Accepting…" : "Accept"}</button>
-      <button type="button" className="secondary" disabled={!!pending} onClick={() => run("decline", onDecline)}>{pending === "decline" ? "Declining…" : "Decline"}</button>
-      <button type="button" className="danger-outline" disabled={!!pending} onClick={onBlock}>Block</button>
+  return (
+    <div className="direct-request-bar" role="group" aria-label="Message request">
+      <p>
+        <strong>{conversation.peer.displayName}</strong> (@{conversation.peer.username}) wants to message you. You don’t
+        share a space.
+      </p>
+      <div>
+        <button type="button" className="primary" disabled={!!pending} onClick={() => run("accept", onAccept)}>
+          {pending === "accept" ? "Accepting…" : "Accept"}
+        </button>
+        <button type="button" className="secondary" disabled={!!pending} onClick={() => run("decline", onDecline)}>
+          {pending === "decline" ? "Declining…" : "Decline"}
+        </button>
+        <button type="button" className="danger-outline" disabled={!!pending} onClick={onBlock}>
+          Block
+        </button>
+      </div>
+      {error && <p role="alert">{error}</p>}
     </div>
-    {error && <p role="alert">{error}</p>}
-  </div>;
+  );
 }
 
 function BlockedBar({ conversation }: { conversation: DirectConversation }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
-  return <div className="direct-request-bar" role="group" aria-label="Blocked conversation">
-    <p>You blocked @{conversation.peer.username}.</p>
-    <div>
-      <button type="button" className="secondary" disabled={pending} onClick={() => {
-        setPending(true);
-        setError(undefined);
-        void unblock(conversation.peer.id).catch((reason) => setError(errorMessage(reason))).finally(() => setPending(false));
-      }}>{pending ? "Unblocking…" : "Unblock"}</button>
+  return (
+    <div className="direct-request-bar" role="group" aria-label="Blocked conversation">
+      <p>You blocked @{conversation.peer.username}.</p>
+      <div>
+        <button
+          type="button"
+          className="secondary"
+          disabled={pending}
+          onClick={() => {
+            setPending(true);
+            setError(undefined);
+            void unblock(conversation.peer.id)
+              .catch((reason) => setError(errorMessage(reason)))
+              .finally(() => setPending(false));
+          }}
+        >
+          {pending ? "Unblocking…" : "Unblock"}
+        </button>
+      </div>
+      {error && <p role="alert">{error}</p>}
     </div>
-    {error && <p role="alert">{error}</p>}
-  </div>;
+  );
 }
 
 function SpacesLoading() {
-  return <main className="call-page" aria-busy="true">
-    <header className="call-header">
-      <Wordmark />
-    </header>
-    <section className="call-room spaces-room spaces-loading">
-      <div className="space-rail" aria-hidden="true" />
-      <ChannelSidebar><div className="sidebar-channels" /></ChannelSidebar>
-      <div className="stage"><p className="sr-only" role="status">Loading your spaces…</p></div>
-    </section>
-  </main>;
+  return (
+    <main className="call-page" aria-busy="true">
+      <header className="call-header">
+        <Wordmark />
+      </header>
+      <section className="call-room spaces-room spaces-loading">
+        <div className="space-rail" aria-hidden="true" />
+        <ChannelSidebar>
+          <div className="sidebar-channels" />
+        </ChannelSidebar>
+        <div className="stage">
+          <p className="sr-only" role="status">
+            Loading your spaces…
+          </p>
+        </div>
+      </section>
+    </main>
+  );
 }
 
-function InvitationDialog({ space, onClose, onAccepted, onDeclined }: {
+function InvitationDialog({
+  space,
+  onClose,
+  onAccepted,
+  onDeclined,
+}: {
   space: Space;
   onClose: () => void;
   onAccepted: (space: Space) => void;
@@ -913,7 +1132,10 @@ function InvitationDialog({ space, onClose, onAccepted, onDeclined }: {
     setError(undefined);
     try {
       if (accept) onAccepted(await acceptSpaceInvitation(space.id));
-      else { await declineSpaceInvitation(space.id); onDeclined(); }
+      else {
+        await declineSpaceInvitation(space.id);
+        onDeclined();
+      }
     } catch (reason) {
       if (reason instanceof SpacesApiError && reason.status === 404) {
         setError("This invitation is no longer available. Close this dialog to refresh your spaces.");
@@ -923,20 +1145,51 @@ function InvitationDialog({ space, onClose, onAccepted, onDeclined }: {
       setPending(false);
     }
   };
-  return <Dialog title="You’re invited!" titleIcon={<img src="/images/invitation/1f4e8.png" width={32} height={32} alt="" />} onClose={() => { if (!submitting.current) onClose(); }}>
-    <div className="invitation-consent">
-      <h3>Join {space.name}?</h3>
-      {space.inviter && <p><strong>{space.inviter.displayName}</strong> (@{space.inviter.username}) invited you.</p>}
-      {error && <p className="space-form-error" role="alert">{error}</p>}
-      <div className="space-dialog-actions">
-        <button className="secondary" type="button" data-initial-focus disabled={pending} onClick={() => void respond(false)}>Decline</button>
-        <button className="primary" type="button" disabled={pending} onClick={() => void respond(true)}>{pending ? "Saving…" : "Accept invitation"}</button>
+  return (
+    <Dialog
+      title="You’re invited!"
+      titleIcon={<img src="/images/invitation/1f4e8.png" width={32} height={32} alt="" />}
+      onClose={() => {
+        if (!submitting.current) onClose();
+      }}
+    >
+      <div className="invitation-consent">
+        <h3>Join {space.name}?</h3>
+        {space.inviter && (
+          <p>
+            <strong>{space.inviter.displayName}</strong> (@{space.inviter.username}) invited you.
+          </p>
+        )}
+        {error && (
+          <p className="space-form-error" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="space-dialog-actions">
+          <button
+            className="secondary"
+            type="button"
+            data-initial-focus
+            disabled={pending}
+            onClick={() => void respond(false)}
+          >
+            Decline
+          </button>
+          <button className="primary" type="button" disabled={pending} onClick={() => void respond(true)}>
+            {pending ? "Saving…" : "Accept invitation"}
+          </button>
+        </div>
       </div>
-    </div>
-  </Dialog>;
+    </Dialog>
+  );
 }
 
-function BrowseChannelsDialog({ detail, onClose, onPreview, onManage }: {
+function BrowseChannelsDialog({
+  detail,
+  onClose,
+  onPreview,
+  onManage,
+}: {
   detail: SpaceDetail;
   onClose: () => void;
   onPreview: (channel: Channel) => void;
@@ -944,24 +1197,58 @@ function BrowseChannelsDialog({ detail, onClose, onPreview, onManage }: {
 }) {
   const [query, setQuery] = useState("");
   const channels = detail.channels.filter((item) => item.name.includes(query.trim().toLowerCase()));
-  return <Dialog title="Browse channels" description={`Find conversations in ${detail.space.name}. Previewing a channel doesn’t join it.`} onClose={onClose} width="wide">
-    <div className="channel-directory">
-      <label className="space-field">Search channels<input data-initial-focus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by name" /></label>
-      <ul>
-        {channels.map((item) => <li key={item.id}>
-          <button type="button" aria-label={`Preview #${item.name}`} onClick={() => onPreview(item)}>
-            {item.private ? <LockKeyhole aria-hidden="true" /> : <Hash aria-hidden="true" />}
-            <span>{item.name}<small>{item.joined !== false ? "Joined" : "Read-only preview"}</small></span>
-          </button>
-          {onManage && <button className="directory-manage" type="button" aria-label={`Manage ${item.name}`} onClick={() => onManage(item)}><Settings aria-hidden="true" /></button>}
-        </li>)}
-      </ul>
-      {!channels.length && <p role="status">No channels match your search.</p>}
-    </div>
-  </Dialog>;
+  return (
+    <Dialog
+      title="Browse channels"
+      description={`Find conversations in ${detail.space.name}. Previewing a channel doesn’t join it.`}
+      onClose={onClose}
+      width="wide"
+    >
+      <div className="channel-directory">
+        <label className="space-field">
+          Search channels
+          <input
+            data-initial-focus
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search by name"
+          />
+        </label>
+        <ul>
+          {channels.map((item) => (
+            <li key={item.id}>
+              <button type="button" aria-label={`Preview #${item.name}`} onClick={() => onPreview(item)}>
+                {item.private ? <LockKeyhole aria-hidden="true" /> : <Hash aria-hidden="true" />}
+                <span>
+                  {item.name}
+                  <small>{item.joined !== false ? "Joined" : "Read-only preview"}</small>
+                </span>
+              </button>
+              {onManage && (
+                <button
+                  className="directory-manage"
+                  type="button"
+                  aria-label={`Manage ${item.name}`}
+                  onClick={() => onManage(item)}
+                >
+                  <Settings aria-hidden="true" />
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+        {!channels.length && <p role="status">No channels match your search.</p>}
+      </div>
+    </Dialog>
+  );
 }
 
-function ChannelInvitationDialog({ invitation, spaceName, onClose, onRespond }: {
+function ChannelInvitationDialog({
+  invitation,
+  spaceName,
+  onClose,
+  onRespond,
+}: {
   invitation: ChannelInvitation;
   spaceName: string;
   onClose: () => void;
@@ -973,49 +1260,131 @@ function ChannelInvitationDialog({ invitation, spaceName, onClose, onRespond }: 
   const respond = async (accept: boolean) => {
     if (submitting.current) return;
     submitting.current = true;
-    setPending(true); setError(undefined);
-    try { await onRespond(accept); }
-    catch (reason) { setError(errorMessage(reason)); }
-    finally { submitting.current = false; setPending(false); }
+    setPending(true);
+    setError(undefined);
+    try {
+      await onRespond(accept);
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      submitting.current = false;
+      setPending(false);
+    }
   };
-  return <Dialog title="Private channel invitation" onClose={() => { if (!submitting.current) onClose(); }}>
-    <div className="invitation-consent channel-invitation-consent">
-      <LockKeyhole aria-hidden="true" />
-      <h3>Join #{invitation.channel.name}?</h3>
-      <p><strong>{invitation.inviter.displayName}</strong> (@{invitation.inviter.username}) invited you to this private channel in <strong>{spaceName}</strong>.</p>
-      <p>Messages stay hidden until you accept. Acceptance joins the channel; it does not enter voice. Invitations expire seven days after they’re sent.</p>
-      {error && <p className="space-form-error" role="alert">{error}</p>}
-      <div className="space-dialog-actions">
-        <button type="button" className="secondary" data-initial-focus disabled={pending} onClick={() => void respond(false)}>Decline</button>
-        <button type="button" className="primary" disabled={pending} onClick={() => void respond(true)}>{pending ? "Saving…" : "Accept invitation"}</button>
+  return (
+    <Dialog
+      title="Private channel invitation"
+      onClose={() => {
+        if (!submitting.current) onClose();
+      }}
+    >
+      <div className="invitation-consent channel-invitation-consent">
+        <LockKeyhole aria-hidden="true" />
+        <h3>Join #{invitation.channel.name}?</h3>
+        <p>
+          <strong>{invitation.inviter.displayName}</strong> (@{invitation.inviter.username}) invited you to this private
+          channel in <strong>{spaceName}</strong>.
+        </p>
+        <p>
+          Messages stay hidden until you accept. Acceptance joins the channel; it does not enter voice. Invitations
+          expire seven days after they’re sent.
+        </p>
+        {error && (
+          <p className="space-form-error" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="space-dialog-actions">
+          <button
+            type="button"
+            className="secondary"
+            data-initial-focus
+            disabled={pending}
+            onClick={() => void respond(false)}
+          >
+            Decline
+          </button>
+          <button type="button" className="primary" disabled={pending} onClick={() => void respond(true)}>
+            {pending ? "Saving…" : "Accept invitation"}
+          </button>
+        </div>
       </div>
-    </div>
-  </Dialog>;
+    </Dialog>
+  );
 }
 
-function LeaveChannelDialog({ channel, owner, onClose, onLeave }: {
-  channel: Channel; owner: boolean; onClose: () => void; onLeave: () => Promise<void>;
+function LeaveChannelDialog({
+  channel,
+  owner,
+  onClose,
+  onLeave,
+}: {
+  channel: Channel;
+  owner: boolean;
+  onClose: () => void;
+  onLeave: () => Promise<void>;
 }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
   const submitting = useRef(false);
-  return <Dialog title="Leave channel" onClose={() => { if (!submitting.current) onClose(); }}>
-    <div className="delete-confirmation leave-channel-consent">
-      <p>Leave <strong>#{channel.name}</strong>? {channel.private && !owner ? "You’ll lose access and need another invitation to return." : owner && channel.private ? "It will leave your sidebar. You keep owner access and can rejoin from Browse channels." : "It will leave your sidebar. You can still preview it and rejoin from Browse channels."} If you’re in its voice call, you’ll disconnect.</p>
-      {error && <p className="space-form-error" role="alert">{error}</p>}
-      <div className="space-dialog-actions">
-        <button type="button" className="secondary" data-initial-focus disabled={pending} onClick={onClose}>Cancel</button>
-        <button type="button" className="primary" disabled={pending} onClick={() => {
-          if (submitting.current) return;
-          submitting.current = true; setPending(true); setError(undefined);
-          void onLeave().catch((reason) => setError(errorMessage(reason))).finally(() => { submitting.current = false; setPending(false); });
-        }}>{pending ? "Leaving…" : "Leave channel"}</button>
+  return (
+    <Dialog
+      title="Leave channel"
+      onClose={() => {
+        if (!submitting.current) onClose();
+      }}
+    >
+      <div className="delete-confirmation leave-channel-consent">
+        <p>
+          Leave <strong>#{channel.name}</strong>?{" "}
+          {channel.private && !owner
+            ? "You’ll lose access and need another invitation to return."
+            : owner && channel.private
+              ? "It will leave your sidebar. You keep owner access and can rejoin from Browse channels."
+              : "It will leave your sidebar. You can still preview it and rejoin from Browse channels."}{" "}
+          If you’re in its voice call, you’ll disconnect.
+        </p>
+        {error && (
+          <p className="space-form-error" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="space-dialog-actions">
+          <button type="button" className="secondary" data-initial-focus disabled={pending} onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="primary"
+            disabled={pending}
+            onClick={() => {
+              if (submitting.current) return;
+              submitting.current = true;
+              setPending(true);
+              setError(undefined);
+              void onLeave()
+                .catch((reason) => setError(errorMessage(reason)))
+                .finally(() => {
+                  submitting.current = false;
+                  setPending(false);
+                });
+            }}
+          >
+            {pending ? "Leaving…" : "Leave channel"}
+          </button>
+        </div>
       </div>
-    </div>
-  </Dialog>;
+    </Dialog>
+  );
 }
 
-export default function Spaces({ embedded = false, initialAccount, initialSpaceList, engaged = true, onChatOnlineChange }: {
+export default function Spaces({
+  embedded = false,
+  initialAccount,
+  initialSpaceList,
+  engaged = true,
+  onChatOnlineChange,
+}: {
   embedded?: boolean;
   initialAccount?: Account;
   initialSpaceList?: { spaces: Space[]; invitations?: Space[]; limits: SpaceLimits };
@@ -1040,12 +1409,24 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
   useEffect(() => {
     if (!directId) return;
     let current = true;
-    void listPeople().then((result) => { if (current) setPeople(result.people); }).catch(() => {});
-    return () => { current = false; };
+    void listPeople()
+      .then((result) => {
+        if (current) setPeople(result.people);
+      })
+      .catch(() => {});
+    return () => {
+      current = false;
+    };
   }, [directId]);
-  const detail = view?.detail ?? (!spaces.length ? { space: { id: "", name: "Direct messages", ownerId: "" }, channels: [], members: [] } : undefined);
+  const detail =
+    view?.detail ??
+    (!spaces.length
+      ? { space: { id: "", name: "Direct messages", ownerId: "" }, channels: [], members: [] }
+      : undefined);
   const navigation = useRef(createSpaceNavigation());
-  const [selected, setSelected] = useState<{ spaceId?: string; channelId?: string; dmId?: string }>(() => embedded ? {} : selectedFromUrl());
+  const [selected, setSelected] = useState<{ spaceId?: string; channelId?: string; dmId?: string }>(() =>
+    embedded ? {} : selectedFromUrl(),
+  );
   const navigationRevision = useRef(0);
   const activeSpace = useRef(selected.spaceId);
   activeSpace.current = selected.spaceId;
@@ -1061,9 +1442,7 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const invitation = invitations.find((item) => item.id === selected.spaceId);
-  const [dialog, setDialog] = useState<
-    "space" | "channel" | "manage-space" | "leave-space" | "direct"
-  >();
+  const [dialog, setDialog] = useState<"space" | "channel" | "manage-space" | "leave-space" | "direct">();
   const [manageChannel, setManageChannel] = useState<Channel>();
   const [navigationOpen, setNavigationOpen] = useState(false);
   const spaceMenu = useRef<HTMLDetailsElement>(null);
@@ -1073,7 +1452,11 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
 
   useEffect(() => {
     const dismiss = (event: PointerEvent) => {
-      for (const menu of [spaceMenu.current, channelMenu.current, ...channelNavigationRef.current?.querySelectorAll<HTMLDetailsElement>(".channel-menu[open]") ?? []]) {
+      for (const menu of [
+        spaceMenu.current,
+        channelMenu.current,
+        ...(channelNavigationRef.current?.querySelectorAll<HTMLDetailsElement>(".channel-menu[open]") ?? []),
+      ]) {
         if (menu && !menu.contains(event.target as Node)) menu.open = false;
       }
     };
@@ -1085,7 +1468,9 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
     navigationRevision.current++;
     if (spaceMenu.current) spaceMenu.current.open = false;
     if (channelMenu.current) channelMenu.current.open = false;
-    channelNavigationRef.current?.querySelectorAll<HTMLDetailsElement>(".channel-menu[open]").forEach((menu) => { menu.open = false; });
+    channelNavigationRef.current?.querySelectorAll<HTMLDetailsElement>(".channel-menu[open]").forEach((menu) => {
+      menu.open = false;
+    });
     // A repeated click must not replace `selected`: that would restart the
     // navigation effect and remount Chat, losing its draft and scroll state.
     // Comparing with the requested selection (rather than `view`) also folds
@@ -1105,11 +1490,8 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
     if (spaceId) query.set("space", spaceId);
     if (channelId) query.set("channel", channelId);
     if (dmId) query.set("dm", dmId);
-    if (!embedded) window.history[replace ? "replaceState" : "pushState"](
-      {},
-      "",
-      `/spaces${query.size ? `?${query}` : ""}`,
-    );
+    if (!embedded)
+      window.history[replace ? "replaceState" : "pushState"]({}, "", `/spaces${query.size ? `?${query}` : ""}`);
     setSelected({ spaceId, channelId, dmId });
   };
 
@@ -1129,13 +1511,20 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
       const conversation = await createDirectConversation(account.username);
       setDirects((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
       if (request === navigationRevision.current) openDirect(conversation);
-    } catch (reason) { setDirectError(errorMessage(reason)); }
-    finally { setSelfDirectPending(false); }
+    } catch (reason) {
+      setDirectError(errorMessage(reason));
+    } finally {
+      setSelfDirectPending(false);
+    }
   };
 
   const refreshDirects = async () => {
-    try { setDirects((await listDirectConversations()).conversations); setDirectError(undefined); }
-    catch (reason) { setDirectError(errorMessage(reason)); }
+    try {
+      setDirects((await listDirectConversations()).conversations);
+      setDirectError(undefined);
+    } catch (reason) {
+      setDirectError(errorMessage(reason));
+    }
   };
 
   useEffect(() => {
@@ -1143,22 +1532,41 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
     let current = true;
     const refresh = () => {
       if (document.visibilityState !== "visible") return;
-      void listDirectConversations().then((result) => { if (current) { setDirects(result.conversations); setDirectError(undefined); } })
-        .catch((reason) => { if (current) setDirectError(errorMessage(reason)); });
+      void listDirectConversations()
+        .then((result) => {
+          if (current) {
+            setDirects(result.conversations);
+            setDirectError(undefined);
+          }
+        })
+        .catch((reason) => {
+          if (current) setDirectError(errorMessage(reason));
+        });
     };
     refresh();
     const timer = setInterval(refresh, 15_000);
     document.addEventListener("visibilitychange", refresh);
     // Blocked accounts' messages collapse in every chat.
     void refreshBlocks().catch(() => undefined);
-    return () => { current = false; clearInterval(timer); document.removeEventListener("visibilitychange", refresh); };
+    return () => {
+      current = false;
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+    };
   }, [account?.id]);
 
   const directAccessible = directs.some((item) => item.id === selected.dmId);
   useEffect(() => {
-    if (loading || !selected.dmId) { setDirectView(undefined); return; }
+    if (loading || !selected.dmId) {
+      setDirectView(undefined);
+      return;
+    }
     const conversation = directs.find((item) => item.id === selected.dmId);
-    if (!conversation) { setDirectView(undefined); setDirectError("This conversation is not accessible."); return; }
+    if (!conversation) {
+      setDirectView(undefined);
+      setDirectError("This conversation is not accessible.");
+      return;
+    }
     // ChatClient owns the history read, its cancellation, and explicit retries.
     // Mounting it while also fetching here issued two reads for every DM open.
     setDirectView({ conversation });
@@ -1170,10 +1578,21 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
     if (!conversation) return;
     const latest = directs.find((item) => item.id === conversation.id);
     if (latest && BigInt(latest.readSeq) >= BigInt(seq)) return;
-    void readDirectConversation(conversation.id, seq).then(() => setDirects((current) => current.map((item) => item.id === conversation.id ? {
-      ...item, readSeq: BigInt(item.readSeq) > BigInt(seq) ? item.readSeq : seq,
-      lastSeq: BigInt(item.lastSeq) > BigInt(seq) ? item.lastSeq : seq,
-    } : item))).catch(() => undefined);
+    void readDirectConversation(conversation.id, seq)
+      .then(() =>
+        setDirects((current) =>
+          current.map((item) =>
+            item.id === conversation.id
+              ? {
+                  ...item,
+                  readSeq: BigInt(item.readSeq) > BigInt(seq) ? item.readSeq : seq,
+                  lastSeq: BigInt(item.lastSeq) > BigInt(seq) ? item.lastSeq : seq,
+                }
+              : item,
+          ),
+        ),
+      )
+      .catch(() => undefined);
   };
 
   const prefetch = (spaceId: string, channelId?: string) => {
@@ -1200,17 +1619,20 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
         if (nextAccount && (!nextAccount.username || !nextAccount.displayName))
           return void window.location.assign("/profile");
         if (!nextAccount) return void window.location.replace("/login");
-        const result = initialSpaceList ?? await listSpaces();
+        const result = initialSpaceList ?? (await listSpaces());
         if (!current) return;
         setAccount(nextAccount);
         setSpaces(result.spaces);
         setInvitations(result.invitations ?? []);
         setLimits(result.limits);
-        try { setDirects((await listDirectConversations()).conversations); }
-        catch (reason) { if (current) setDirectError(errorMessage(reason)); }
+        try {
+          setDirects((await listDirectConversations()).conversations);
+        } catch (reason) {
+          if (current) setDirectError(errorMessage(reason));
+        }
         if (!current) return;
         setLoading(false);
-        if (![...result.spaces, ...result.invitations ?? []].some((space) => space.id === selected.spaceId))
+        if (![...result.spaces, ...(result.invitations ?? [])].some((space) => space.id === selected.spaceId))
           choose(result.spaces[0]?.id, undefined, true, selected.dmId);
       })
       .catch((reason) => {
@@ -1242,7 +1664,8 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
       setView(cached);
       setNavigationOpen(false);
     }
-    void navigation.current.take(selected.spaceId, selected.channelId)
+    void navigation.current
+      .take(selected.spaceId, selected.channelId)
       .then((next) => {
         if (!current) return;
         // Commit the channel list and first history together. Until this point,
@@ -1253,14 +1676,20 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
         setNavigationOpen(false);
         const query = new URLSearchParams({ space: next.detail.space.id });
         if (next.channelId) query.set("channel", next.channelId);
-        if (selected.dmId) { query.delete("channel"); query.set("dm", selected.dmId); }
+        if (selected.dmId) {
+          query.delete("channel");
+          query.set("dm", selected.dmId);
+        }
         if (!embedded) window.history.replaceState({}, "", `/spaces?${query}`);
       })
       .catch((reason) => {
         if (current) {
-          if ((reason instanceof SpacesApiError || reason instanceof ChatHistoryError) && [401, 403, 404].includes(reason.status)) {
+          if (
+            (reason instanceof SpacesApiError || reason instanceof ChatHistoryError) &&
+            [401, 403, 404].includes(reason.status)
+          ) {
             navigation.current.forget(selected.spaceId!);
-            setView((shown) => shown?.detail.space.id === selected.spaceId ? undefined : shown);
+            setView((shown) => (shown?.detail.space.id === selected.spaceId ? undefined : shown));
             if (reason instanceof SpacesApiError && reason.status === 404 && reason.message === "resource not found") {
               const remaining = spaces.filter((space) => space.id !== selected.spaceId);
               setSpaces(remaining);
@@ -1306,64 +1735,88 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
           setNotice("This space is no longer available.");
           choose(result.spaces[0]?.id, undefined, true, selected.dmId);
         }
-        if (invitation && !(result.invitations ?? []).some((item) => item.id === invitation.id)) choose(result.spaces[0]?.id, undefined, true, selected.dmId);
+        if (invitation && !(result.invitations ?? []).some((item) => item.id === invitation.id))
+          choose(result.spaces[0]?.id, undefined, true, selected.dmId);
         if (!selected.dmId && detail?.space.id && available.has(detail.space.id) && !membershipSubmitting.current) {
           const next = await getSpace(detail.space.id);
-          if (current && revision === membershipRevision.current && activeSpace.current === next.space.id) replaceDetail(next);
+          if (current && revision === membershipRevision.current && activeSpace.current === next.space.id)
+            replaceDetail(next);
         }
-      } catch { /* An outage is not revocation; keep known navigation. */ }
-      finally { refreshing = false; }
+      } catch {
+        /* An outage is not revocation; keep known navigation. */
+      } finally {
+        refreshing = false;
+      }
     };
     const interval = window.setInterval(() => void refresh(), 15_000);
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", refresh);
-    return () => { current = false; clearInterval(interval); window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); };
+    return () => {
+      current = false;
+      clearInterval(interval);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
   }, [loading, account?.id, detail?.space.id, selected.spaceId, selected.dmId, invitation?.id]);
 
   // The list is polled and updated on accept, so read the latest status from it.
-  const currentDirect = directView ? directs.find((conversation) => conversation.id === directView.conversation.id) ?? directView.conversation : undefined;
+  const currentDirect = directView
+    ? (directs.find((conversation) => conversation.id === directView.conversation.id) ?? directView.conversation)
+    : undefined;
   const directBlocked = !!currentDirect && blockedIds.has(currentDirect.peer.id);
   const directLocked = !!currentDirect && (directBlocked || directStatus(currentDirect) === "incoming");
   const acceptRequest = async (request: DirectConversation) => {
     const accepted = await acceptDirectRequest(request.id);
-    setDirects((current) => current.map((conversation) => conversation.id === accepted.id ? accepted : conversation));
+    setDirects((current) => current.map((conversation) => (conversation.id === accepted.id ? accepted : conversation)));
   };
   const declineRequest = async (request: DirectConversation) => {
     await declineDirectRequest(request.id);
     leaveRequest(request);
   };
   const directPeer = (conversation: DirectConversation): BlockedAccount => ({ ...conversation.peer });
-  const directActions = !currentDirect || currentDirect.peer.id === account?.id ? undefined
-    : directBlocked ? <BlockedBar conversation={currentDirect} />
-    : directStatus(currentDirect) === "incoming" ? <RequestBar key={currentDirect.id} conversation={currentDirect}
-      onAccept={() => acceptRequest(currentDirect)} onDecline={() => declineRequest(currentDirect)} onBlock={() => setBlockTarget(directPeer(currentDirect))} />
-    : <Tooltip content={`Block @${currentDirect.peer.username}`}><button type="button" className="member-list-toggle" aria-label={`Block @${currentDirect.peer.username}`}
-      onClick={() => setBlockTarget(directPeer(currentDirect))}><Ban aria-hidden="true" /></button></Tooltip>;
-  const channel = directView ? { id: directView.conversation.id, name: directView.conversation.peer.displayName, spaceId: "", private: true } : detail?.channels.find(
-    (item) => item.id === view?.channelId,
-  );
+  const directActions =
+    !currentDirect || currentDirect.peer.id === account?.id ? undefined : directBlocked ? (
+      <BlockedBar conversation={currentDirect} />
+    ) : directStatus(currentDirect) === "incoming" ? (
+      <RequestBar
+        key={currentDirect.id}
+        conversation={currentDirect}
+        onAccept={() => acceptRequest(currentDirect)}
+        onDecline={() => declineRequest(currentDirect)}
+        onBlock={() => setBlockTarget(directPeer(currentDirect))}
+      />
+    ) : (
+      <Tooltip content={`Block @${currentDirect.peer.username}`}>
+        <button
+          type="button"
+          className="member-list-toggle"
+          aria-label={`Block @${currentDirect.peer.username}`}
+          onClick={() => setBlockTarget(directPeer(currentDirect))}
+        >
+          <Ban aria-hidden="true" />
+        </button>
+      </Tooltip>
+    );
+  const channel = directView
+    ? { id: directView.conversation.id, name: directView.conversation.peer.displayName, spaceId: "", private: true }
+    : detail?.channels.find((item) => item.id === view?.channelId);
   const owner = !!account && detail?.space.ownerId === account.id;
-  const ownedCount = account
-    ? spaces.filter((space) => space.ownerId === account.id).length
-    : 0;
+  const ownedCount = account ? spaces.filter((space) => space.ownerId === account.id).length : 0;
   const canCreateSpace =
-    !!limits &&
-    ownedCount < limits.ownedSpaces &&
-    spaces.filter((space) => !space.demo).length < limits.totalSpaces;
-  const canCreateChannel =
-    !!limits && !!detail && detail.channels.length < limits.channelsPerSpace;
+    !!limits && ownedCount < limits.ownedSpaces && spaces.filter((space) => !space.demo).length < limits.totalSpaces;
+  const canCreateChannel = !!limits && !!detail && detail.channels.length < limits.channelsPerSpace;
   const replaceDetail = (next: SpaceDetail) => {
     navigation.current.forget(next.space.id);
     setView((current) => {
       if (!current || current.detail.space.id !== next.space.id) return current;
       const retained = next.channels.some((item) => item.id === current.channelId);
-      const updated = retained ? { ...current, detail: next } : { detail: next, channelId: next.channels.find((item) => item.joined !== false)?.id };
+      const updated = retained
+        ? { ...current, detail: next }
+        : { detail: next, channelId: next.channels.find((item) => item.joined !== false)?.id };
       navigation.current.remember(updated);
       return updated;
     });
-    setSpaces((current) =>
-      current.map((space) => (space.id === next.space.id ? next.space : space)),
-    );
+    setSpaces((current) => current.map((space) => (space.id === next.space.id ? next.space : space)));
   };
   const changeChannelMembership = async (action: () => Promise<unknown>, openChannel?: string, left?: Channel) => {
     if (!detail || membershipSubmitting.current) return;
@@ -1377,7 +1830,14 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
       navigation.current.forget(spaceId);
       // Stop local participation after the acknowledged leave even if the
       // subsequent metadata refresh fails. Do not stop another channel's call.
-      if (left && activeSpace.current === spaceId) replaceDetail({ ...detail, channels: left.private && !owner ? detail.channels.filter((item) => item.id !== left.id) : detail.channels.map((item) => item.id === left.id ? { ...item, joined: false } : item) });
+      if (left && activeSpace.current === spaceId)
+        replaceDetail({
+          ...detail,
+          channels:
+            left.private && !owner
+              ? detail.channels.filter((item) => item.id !== left.id)
+              : detail.channels.map((item) => (item.id === left.id ? { ...item, joined: false } : item)),
+        });
       const next = await getSpace(spaceId);
       if (activeSpace.current !== spaceId) return;
       replaceDetail(next);
@@ -1402,7 +1862,8 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
   };
 
   const incomingRequests = directs.filter((conversation) => directStatus(conversation) === "incoming");
-  const requestsShown = requestsOpen || incomingRequests.some((conversation) => conversation.id === directView?.conversation.id);
+  const requestsShown =
+    requestsOpen || incomingRequests.some((conversation) => conversation.id === directView?.conversation.id);
   const leaveRequest = (request: DirectConversation) => {
     const next = incomingRequests.find((conversation) => conversation.id !== request.id);
     if (directView?.conversation.id === request.id) {
@@ -1411,88 +1872,211 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
     }
     setDirects((current) => current.filter((conversation) => conversation.id !== request.id));
   };
-  const directNavigation = <section className="direct-section" aria-label="Direct messages">
-    <div className="channel-section-heading">
-      <span className="direct-section-title"><MessageCircle aria-hidden="true" />Direct messages</span>
-      <span className="channel-section-actions">
-        <button type="button" aria-label="New direct message" title="New direct message" onClick={() => setDialog("direct")}><Plus aria-hidden="true" /></button>
-      </span>
-    </div>
-    <ul>
-      {account && <li>
-        <button type="button" className="channel-select direct-select direct-self" disabled={selfDirectPending} aria-busy={selfDirectPending}
-          aria-current={selfDirect && selfDirect.id === directView?.conversation.id ? "page" : undefined}
-          title="Your private notes" onClick={() => void openSelfDirect()}>
-          <span className="direct-avatar"><Avatar avatarId={account.avatarId} name={account.displayName ?? account.username ?? "You"} /></span>
-          <span>{account.displayName ?? account.username ?? "You"}</span><small>you</small>
-          {selfDirect && directUnread(selfDirect) && <span className="direct-unread" aria-label="Unread messages" />}
-        </button>
-      </li>}
-      {incomingRequests.length > 0 && <li>
-        <button type="button" className="channel-select direct-select direct-requests" aria-expanded={requestsShown} aria-controls="direct-request-list" onClick={() => setRequestsOpen(!requestsShown)}>
-          {requestsShown ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
-          <span>Message requests</span>
-          <span className="direct-request-count" aria-label={`${incomingRequests.length} ${incomingRequests.length === 1 ? "request" : "requests"}`}>{incomingRequests.length}</span>
-        </button>
-      </li>}
-      {requestsShown && incomingRequests.length > 0 && <li className="direct-request-group">
-        <ul id="direct-request-list" aria-label="Message requests">
-          {incomingRequests.map((conversation) => <li key={conversation.id}>
-            <button type="button" className="channel-select direct-select" aria-current={conversation.id === directView?.conversation.id ? "page" : undefined}
-              onClick={() => openDirect(conversation)}>
-              <span className="direct-avatar"><Avatar avatarId={conversation.peer.avatarId} name={conversation.peer.displayName} /></span>
-              <span>{conversation.peer.displayName}</span><small>@{conversation.peer.username}</small>
+  const directNavigation = (
+    <section className="direct-section" aria-label="Direct messages">
+      <div className="channel-section-heading">
+        <span className="direct-section-title">
+          <MessageCircle aria-hidden="true" />
+          Direct messages
+        </span>
+        <span className="channel-section-actions">
+          <button
+            type="button"
+            aria-label="New direct message"
+            title="New direct message"
+            onClick={() => setDialog("direct")}
+          >
+            <Plus aria-hidden="true" />
+          </button>
+        </span>
+      </div>
+      <ul>
+        {account && (
+          <li>
+            <button
+              type="button"
+              className="channel-select direct-select direct-self"
+              disabled={selfDirectPending}
+              aria-busy={selfDirectPending}
+              aria-current={selfDirect && selfDirect.id === directView?.conversation.id ? "page" : undefined}
+              title="Your private notes"
+              onClick={() => void openSelfDirect()}
+            >
+              <span className="direct-avatar">
+                <Avatar avatarId={account.avatarId} name={account.displayName ?? account.username ?? "You"} />
+              </span>
+              <span>{account.displayName ?? account.username ?? "You"}</span>
+              <small>you</small>
+              {selfDirect && directUnread(selfDirect) && (
+                <span className="direct-unread" aria-label="Unread messages" />
+              )}
             </button>
-          </li>)}
-        </ul>
-      </li>}
-      {directs.filter((conversation) => conversation.peer.id !== account?.id && directStatus(conversation) !== "incoming").map((conversation) => <li key={conversation.id}>
-        <button type="button" className="channel-select direct-select" aria-current={conversation.id === directView?.conversation.id ? "page" : undefined}
-          title={`@${conversation.peer.username}`} onClick={() => openDirect(conversation)}>
-          <span className="direct-avatar" aria-hidden="true">{conversation.peer.displayName.slice(0, 1).toUpperCase()}</span>
-          <span>{conversation.peer.displayName}</span>
-          {blockedIds.has(conversation.peer.id) ? <small>Blocked</small> : directStatus(conversation) === "outgoing" && <small>Request sent</small>}
-          {directUnread(conversation) && <span className="direct-unread" aria-label="Unread messages" />}
-        </button>
-      </li>)}
-    </ul>
-    <button type="button" className="channel-select direct-action" onClick={() => setDialog(owner ? "manage-space" : "direct")}>
-      <Plus aria-hidden="true" /><span>{owner ? "Invite people" : "New message"}</span>
+          </li>
+        )}
+        {incomingRequests.length > 0 && (
+          <li>
+            <button
+              type="button"
+              className="channel-select direct-select direct-requests"
+              aria-expanded={requestsShown}
+              aria-controls="direct-request-list"
+              onClick={() => setRequestsOpen(!requestsShown)}
+            >
+              {requestsShown ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
+              <span>Message requests</span>
+              <span
+                className="direct-request-count"
+                aria-label={`${incomingRequests.length} ${incomingRequests.length === 1 ? "request" : "requests"}`}
+              >
+                {incomingRequests.length}
+              </span>
+            </button>
+          </li>
+        )}
+        {requestsShown && incomingRequests.length > 0 && (
+          <li className="direct-request-group">
+            <ul id="direct-request-list" aria-label="Message requests">
+              {incomingRequests.map((conversation) => (
+                <li key={conversation.id}>
+                  <button
+                    type="button"
+                    className="channel-select direct-select"
+                    aria-current={conversation.id === directView?.conversation.id ? "page" : undefined}
+                    onClick={() => openDirect(conversation)}
+                  >
+                    <span className="direct-avatar">
+                      <Avatar avatarId={conversation.peer.avatarId} name={conversation.peer.displayName} />
+                    </span>
+                    <span>{conversation.peer.displayName}</span>
+                    <small>@{conversation.peer.username}</small>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </li>
+        )}
+        {directs
+          .filter((conversation) => conversation.peer.id !== account?.id && directStatus(conversation) !== "incoming")
+          .map((conversation) => (
+            <li key={conversation.id}>
+              <button
+                type="button"
+                className="channel-select direct-select"
+                aria-current={conversation.id === directView?.conversation.id ? "page" : undefined}
+                title={`@${conversation.peer.username}`}
+                onClick={() => openDirect(conversation)}
+              >
+                <span className="direct-avatar" aria-hidden="true">
+                  {conversation.peer.displayName.slice(0, 1).toUpperCase()}
+                </span>
+                <span>{conversation.peer.displayName}</span>
+                {blockedIds.has(conversation.peer.id) ? (
+                  <small>Blocked</small>
+                ) : (
+                  directStatus(conversation) === "outgoing" && <small>Request sent</small>
+                )}
+                {directUnread(conversation) && <span className="direct-unread" aria-label="Unread messages" />}
+              </button>
+            </li>
+          ))}
+      </ul>
+      <button
+        type="button"
+        className="channel-select direct-action"
+        onClick={() => setDialog(owner ? "manage-space" : "direct")}
+      >
+        <Plus aria-hidden="true" />
+        <span>{owner ? "Invite people" : "New message"}</span>
+      </button>
+      {directError && (
+        <p className="space-sidebar-error" role="alert">
+          {directError}
+          <button type="button" onClick={() => void refreshDirects()}>
+            Retry direct messages
+          </button>
+        </p>
+      )}
+      {dialog === "direct" && (
+        <StartDirectDialog
+          onClose={() => setDialog(undefined)}
+          onCreated={(conversation) => {
+            setDirects((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
+            setDialog(undefined);
+            openDirect(conversation);
+          }}
+        />
+      )}
+      {blockTarget && (
+        <BlockDialog
+          person={blockTarget}
+          onClose={() => setBlockTarget(undefined)}
+          onBlocked={() => {
+            const request = directs.find(
+              (conversation) => conversation.peer.id === blockTarget.id && directStatus(conversation) === "incoming",
+            );
+            setBlockTarget(undefined);
+            // The server declines their request, so it leaves the list now.
+            if (request) leaveRequest(request);
+          }}
+        />
+      )}
+    </section>
+  );
+  const invitationButtons = invitations.map((space) => (
+    <button
+      key={space.id}
+      type="button"
+      className="pending-space-invite"
+      aria-label={`Invitation to ${space.name}`}
+      onClick={() => choose(space.id)}
+    >
+      <LockKeyhole aria-hidden="true" />
+      <span>{space.name}</span>
+      <small>Invited</small>
     </button>
-    {directError && <p className="space-sidebar-error" role="alert">{directError}<button type="button" onClick={() => void refreshDirects()}>Retry direct messages</button></p>}
-    {dialog === "direct" && <StartDirectDialog onClose={() => setDialog(undefined)} onCreated={(conversation) => {
-      setDirects((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
-      setDialog(undefined);
-      openDirect(conversation);
-    }} />}
-    {blockTarget && <BlockDialog person={blockTarget} onClose={() => setBlockTarget(undefined)} onBlocked={() => {
-      const request = directs.find((conversation) => conversation.peer.id === blockTarget.id && directStatus(conversation) === "incoming");
-      setBlockTarget(undefined);
-      // The server declines their request, so it leaves the list now.
-      if (request) leaveRequest(request);
-    }} />}
-  </section>;
-  const invitationButtons = invitations.map((space) => <button key={space.id} type="button" className="pending-space-invite" aria-label={`Invitation to ${space.name}`} onClick={() => choose(space.id)}>
-    <LockKeyhole aria-hidden="true" /><span>{space.name}</span><small>Invited</small>
-  </button>);
+  ));
 
   if (loading) return <SpacesLoading />;
-  if (invitation) return <>
-    <main className="call-page">
-      <header className="call-header"><Wordmark /></header>
-      <section className="call-room spaces-room invitation-shell" aria-hidden="true" inert>
-        <div className="space-rail" /><ChannelSidebar><div className="sidebar-channels" /></ChannelSidebar><div className="stage" />
-      </section>
-    </main>
-    <InvitationDialog key={invitation.id} space={invitation} onClose={() => { choose(spaces[0]?.id, undefined, true); void listSpaces().then((result) => { setSpaces(result.spaces); setInvitations(result.invitations ?? []); }).catch(() => undefined); }}
-      onAccepted={(space) => {
-        setInvitations((items) => items.filter((item) => item.id !== space.id));
-        setSpaces((items) => [...items.filter((item) => item.id !== space.id), space]);
-        navigation.current.forget(space.id);
-        choose(space.id, undefined, true);
-      }}
-      onDeclined={() => { setInvitations((items) => items.filter((item) => item.id !== invitation.id)); choose(spaces[0]?.id, undefined, true); }} />
-  </>;
+  if (invitation)
+    return (
+      <>
+        <main className="call-page">
+          <header className="call-header">
+            <Wordmark />
+          </header>
+          <section className="call-room spaces-room invitation-shell" aria-hidden="true" inert>
+            <div className="space-rail" />
+            <ChannelSidebar>
+              <div className="sidebar-channels" />
+            </ChannelSidebar>
+            <div className="stage" />
+          </section>
+        </main>
+        <InvitationDialog
+          key={invitation.id}
+          space={invitation}
+          onClose={() => {
+            choose(spaces[0]?.id, undefined, true);
+            void listSpaces()
+              .then((result) => {
+                setSpaces(result.spaces);
+                setInvitations(result.invitations ?? []);
+              })
+              .catch(() => undefined);
+          }}
+          onAccepted={(space) => {
+            setInvitations((items) => items.filter((item) => item.id !== space.id));
+            setSpaces((items) => [...items.filter((item) => item.id !== space.id), space]);
+            navigation.current.forget(space.id);
+            choose(space.id, undefined, true);
+          }}
+          onDeclined={() => {
+            setInvitations((items) => items.filter((item) => item.id !== invitation.id));
+            choose(spaces[0]?.id, undefined, true);
+          }}
+        />
+      </>
+    );
   if (error && !spaces.length)
     return (
       <main className="spaces-state">
@@ -1510,11 +2094,14 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
         <Wordmark />
         <section>
           {notice && <p role="status">{notice}</p>}
-          {invitations.length > 0 && <div className="pending-space-invites"><h2>Pending invitations</h2>{invitationButtons}</div>}
+          {invitations.length > 0 && (
+            <div className="pending-space-invites">
+              <h2>Pending invitations</h2>
+              {invitationButtons}
+            </div>
+          )}
           <h1>Name your space</h1>
-          <p>
-            Choose something you will recognize easily. You can always change it later!
-          </p>
+          <p>Choose something you will recognize easily. You can always change it later!</p>
           <CreateSpaceForm
             disabled={!canCreateSpace}
             onCreated={(space) => {
@@ -1533,25 +2120,65 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
       <main className="spaces-state">
         <Wordmark />
         <p role="alert">{error}</p>
-        <button type="button" onClick={() => setSelected({ ...selected })}>Try again</button>
+        <button type="button" onClick={() => setSelected({ ...selected })}>
+          Try again
+        </button>
       </main>
     );
 
   const joinedChannels = detail.channels.filter((item) => item.joined !== false);
-  const channelDialogs = <>
-    {browseOpen && <BrowseChannelsDialog detail={detail} onClose={() => setBrowseOpen(false)} onPreview={(item) => choose(detail.space.id, item.id)} onManage={owner ? (item) => { setBrowseOpen(false); setManageChannel(item); } : undefined} />}
-    {channelInvitation && <ChannelInvitationDialog key={channelInvitation.channel.id} invitation={channelInvitation} spaceName={detail.space.name} onClose={() => setChannelInvitation(undefined)} onRespond={(accept) => changeChannelMembership(() => accept ? acceptChannelInvitation(detail.space.id, channelInvitation.channel.id) : declineChannelInvitation(detail.space.id, channelInvitation.channel.id), accept ? channelInvitation.channel.id : undefined)} />}
-    {leavingChannel && <LeaveChannelDialog key={leavingChannel.id} channel={leavingChannel} owner={owner} onClose={() => setLeavingChannel(undefined)} onLeave={() => changeChannelMembership(() => leaveChannel(detail.space.id, leavingChannel.id), undefined, leavingChannel)} />}
-  </>;
+  const channelDialogs = (
+    <>
+      {browseOpen && (
+        <BrowseChannelsDialog
+          detail={detail}
+          onClose={() => setBrowseOpen(false)}
+          onPreview={(item) => choose(detail.space.id, item.id)}
+          onManage={
+            owner
+              ? (item) => {
+                  setBrowseOpen(false);
+                  setManageChannel(item);
+                }
+              : undefined
+          }
+        />
+      )}
+      {channelInvitation && (
+        <ChannelInvitationDialog
+          key={channelInvitation.channel.id}
+          invitation={channelInvitation}
+          spaceName={detail.space.name}
+          onClose={() => setChannelInvitation(undefined)}
+          onRespond={(accept) =>
+            changeChannelMembership(
+              () =>
+                accept
+                  ? acceptChannelInvitation(detail.space.id, channelInvitation.channel.id)
+                  : declineChannelInvitation(detail.space.id, channelInvitation.channel.id),
+              accept ? channelInvitation.channel.id : undefined,
+            )
+          }
+        />
+      )}
+      {leavingChannel && (
+        <LeaveChannelDialog
+          key={leavingChannel.id}
+          channel={leavingChannel}
+          owner={owner}
+          onClose={() => setLeavingChannel(undefined)}
+          onLeave={() =>
+            changeChannelMembership(() => leaveChannel(detail.space.id, leavingChannel.id), undefined, leavingChannel)
+          }
+        />
+      )}
+    </>
+  );
 
   const rail = (
     <nav className="space-rail" aria-label="Spaces">
       {spaces.map((space) => (
-        <div
-          className="space-rail-item"
-          key={space.id}
-          data-active={space.id === detail.space.id}
-        >
+        <div className="space-rail-item" key={space.id} data-active={space.id === detail.space.id}>
           <button
             type="button"
             title={space.name}
@@ -1566,23 +2193,47 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
           </button>
         </div>
       ))}
-      {invitations.map((space) => <button key={space.id} className="invited-space" type="button" title={`Invitation to ${space.name}`} aria-label={`Invitation to ${space.name}`} onClick={() => choose(space.id)}><LockKeyhole aria-hidden="true" /></button>)}
+      {invitations.map((space) => (
+        <button
+          key={space.id}
+          className="invited-space"
+          type="button"
+          title={`Invitation to ${space.name}`}
+          aria-label={`Invitation to ${space.name}`}
+          onClick={() => choose(space.id)}
+        >
+          <LockKeyhole aria-hidden="true" />
+        </button>
+      ))}
       <button
         className="add-space"
         type="button"
         title={
-          !account ? "Sign in to create a space" : canCreateSpace
-            ? "Create space"
-            : `Space limit reached (${limits?.ownedSpaces ?? 20} owned, ${limits?.totalSpaces ?? 100} total)`
+          !account
+            ? "Sign in to create a space"
+            : canCreateSpace
+              ? "Create space"
+              : `Space limit reached (${limits?.ownedSpaces ?? 20} owned, ${limits?.totalSpaces ?? 100} total)`
         }
         aria-label="Create space"
         disabled={!!account && !canCreateSpace}
-        onClick={() => account ? setDialog("space") : window.location.assign("/login")}
+        onClick={() => (account ? setDialog("space") : window.location.assign("/login"))}
       >
         <Plus aria-hidden="true" />
       </button>
-      {pending && <span className="sr-only" role="status">Opening {spaces.find((space) => space.id === selected.spaceId)?.name}…</span>}
-      {notice && <p className="space-access-notice" role="status">{notice}<button type="button" aria-label="Dismiss notice" onClick={() => setNotice(undefined)}><X aria-hidden="true" /></button></p>}
+      {pending && (
+        <span className="sr-only" role="status">
+          Opening {spaces.find((space) => space.id === selected.spaceId)?.name}…
+        </span>
+      )}
+      {notice && (
+        <p className="space-access-notice" role="status">
+          {notice}
+          <button type="button" aria-label="Dismiss notice" onClick={() => setNotice(undefined)}>
+            <X aria-hidden="true" />
+          </button>
+        </p>
+      )}
     </nav>
   );
   const channelNavigation = (voiceFor: (channelId: string) => VoiceSlot | null) => (
@@ -1592,123 +2243,102 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
       data-demo={detail.space.demo ? "" : undefined}
       aria-label={`${detail.space.name} channels`}
     >
-      {(!detail.space.demo || navigationOpen) && <header>
-        {!detail.space.id && <h1 className="demo-space-title">Conversations</h1>}
-        {!!detail.space.id && !detail.space.demo && <details
-          ref={spaceMenu}
-          className="space-menu"
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.currentTarget.open = false;
-              event.currentTarget.querySelector("summary")?.focus();
-            }
-          }}
-          onBlur={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget))
-              event.currentTarget.open = false;
-          }}
-        >
-          <summary aria-label={`${detail.space.name} actions`}>
-            <h1 title={detail.space.name}>{detail.space.name}</h1>
-            <ChevronDown aria-hidden="true" />
-          </summary>
-          <div className="space-actions">
-            <button type="button" onClick={() => {
-              spaceMenu.current!.open = false;
-              setBrowseOpen(true);
-            }}><Search aria-hidden="true" />Browse channels</button>
-            {owner ? (
-              <>
+      {(!detail.space.demo || navigationOpen) && (
+        <header>
+          {!detail.space.id && <h1 className="demo-space-title">Conversations</h1>}
+          {!!detail.space.id && !detail.space.demo && (
+            <details
+              ref={spaceMenu}
+              className="space-menu"
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.currentTarget.open = false;
+                  event.currentTarget.querySelector("summary")?.focus();
+                }
+              }}
+              onBlur={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
+              }}
+            >
+              <summary aria-label={`${detail.space.name} actions`}>
+                <h1 title={detail.space.name}>{detail.space.name}</h1>
+                <ChevronDown aria-hidden="true" />
+              </summary>
+              <div className="space-actions">
                 <button
                   type="button"
                   onClick={() => {
                     spaceMenu.current!.open = false;
-                    setDialog("manage-space");
+                    setBrowseOpen(true);
                   }}
                 >
-                  <Settings aria-hidden="true" />
-                  Space settings
+                  <Search aria-hidden="true" />
+                  Browse channels
                 </button>
-              </>
-            ) : (
+                {owner ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        spaceMenu.current!.open = false;
+                        setDialog("manage-space");
+                      }}
+                    >
+                      <Settings aria-hidden="true" />
+                      Space settings
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    className="leave-space"
+                    onClick={() => {
+                      spaceMenu.current!.open = false;
+                      setDialog("leave-space");
+                    }}
+                  >
+                    <LogOut aria-hidden="true" />
+                    Leave space…
+                  </button>
+                )}
+              </div>
+            </details>
+          )}
+          {navigationOpen && (
+            <button type="button" aria-label="Close navigation" onClick={() => setNavigationOpen(false)}>
+              <X aria-hidden="true" />
+            </button>
+          )}
+        </header>
+      )}
+      {!!detail.space.id && !detail.space.demo && (
+        <div className="channel-section-heading">
+          <button
+            className="channel-section-toggle"
+            type="button"
+            aria-expanded={channelsExpanded}
+            aria-controls="space-channel-list"
+            onClick={() => setChannelsExpanded(!channelsExpanded)}
+          >
+            <ChevronDown aria-hidden="true" />
+            Channels<span className="section-count">{joinedChannels.length}</span>
+          </button>
+          {owner && (
+            <div className="channel-section-actions">
               <button
                 type="button"
-                className="leave-space"
-                onClick={() => {
-                  spaceMenu.current!.open = false;
-                  setDialog("leave-space");
-                }}
+                aria-label="Create channel"
+                title={
+                  canCreateChannel ? "Create channel" : `Channel limit reached (${limits?.channelsPerSpace ?? 100})`
+                }
+                disabled={!canCreateChannel}
+                onClick={() => setDialog("channel")}
               >
-                <LogOut aria-hidden="true" />
-                Leave space…
+                <Plus aria-hidden="true" />
               </button>
-            )}
-          </div>
-        </details>}
-        {navigationOpen && (
-          <button
-            type="button"
-            aria-label="Close navigation"
-            onClick={() => setNavigationOpen(false)}
-          >
-            <X aria-hidden="true" />
-          </button>
-        )}
-      </header>}
-      {!!detail.space.id && !detail.space.demo && <div className="channel-section-heading">
-        <button className="channel-section-toggle" type="button" aria-expanded={channelsExpanded} aria-controls="space-channel-list" onClick={() => setChannelsExpanded(!channelsExpanded)}>
-          <ChevronDown aria-hidden="true" />Channels<span className="section-count">{joinedChannels.length}</span>
-        </button>
-        {owner && <div className="channel-section-actions">
-          <button type="button" aria-label="Create channel" title={canCreateChannel ? "Create channel" : `Channel limit reached (${limits?.channelsPerSpace ?? 100})`} disabled={!canCreateChannel} onClick={() => setDialog("channel")}><Plus aria-hidden="true" /></button>
-          <details ref={channelMenu} className="channel-section-menu" onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.currentTarget.open = false;
-              event.currentTarget.querySelector("summary")?.focus();
-            }
-          }} onBlur={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
-          }}>
-            <summary aria-label="Channel options" title="Channel options"><MoreHorizontal aria-hidden="true" /></summary>
-            <div className="space-actions">
-              <button type="button" disabled={!canCreateChannel} onClick={() => {
-                channelMenu.current!.open = false;
-                setDialog("channel");
-              }}><Plus aria-hidden="true" />Create channel</button>
-              <button type="button" onClick={() => {
-                channelMenu.current!.open = false;
-                setChannelsExpanded((value) => !value);
-              }}>{channelsExpanded ? "Collapse" : "Expand"} channels</button>
-            </div>
-          </details>
-        </div>}
-      </div>}
-      <ul id="space-channel-list" data-collapsed={detail.space.demo || channelsExpanded ? undefined : ""}>
-        {joinedChannels.map((item) => {
-          const voice = voiceFor(item.id);
-          return (
-          <li key={item.id} data-voice={voice ? "" : undefined}>
-            <div className="channel-line">
-            <button
-              className="channel-select"
-              type="button"
-              aria-current={item.id === channel?.id ? "page" : undefined}
-              aria-busy={pending && detail.space.id === selected.spaceId && item.id === selected.channelId}
-              onMouseEnter={() => prefetch(detail.space.id, item.id)}
-              onFocus={() => prefetch(detail.space.id, item.id)}
-              onClick={() => choose(detail.space.id, item.id)}
-            >
-              {item.private ? (
-                <LockKeyhole aria-hidden="true" />
-              ) : (
-                <Hash aria-hidden="true" />
-              )}
-              <span>{item.name}</span>
-              {voice?.timer}
-            </button>
-            {!detail.space.demo && (
               <details
-                className="channel-menu"
+                ref={channelMenu}
+                className="channel-section-menu"
                 onKeyDown={(event) => {
                   if (event.key === "Escape") {
                     event.currentTarget.open = false;
@@ -1719,39 +2349,137 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
                   if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
                 }}
               >
-                <summary className="channel-manage" aria-label={`Manage ${item.name}`} title={`Channel actions for ${item.name}`}><MoreHorizontal aria-hidden="true" /></summary>
+                <summary aria-label="Channel options" title="Channel options">
+                  <MoreHorizontal aria-hidden="true" />
+                </summary>
                 <div className="space-actions">
-                  {owner && <button type="button" onClick={(event) => {
-                    const menu = event.currentTarget.closest("details")!;
-                    menu.open = false;
-                    menu.querySelector("summary")?.focus();
-                    setManageChannel(item);
-                  }}><Settings aria-hidden="true" />Channel settings</button>}
-                  <button type="button" disabled={membershipPending} onClick={(event) => {
-                    const menu = event.currentTarget.closest("details")!;
-                    menu.open = false;
-                    menu.querySelector("summary")?.focus();
-                    setLeavingChannel(item);
-                  }}><LogOut aria-hidden="true" />Leave channel</button>
+                  <button
+                    type="button"
+                    disabled={!canCreateChannel}
+                    onClick={() => {
+                      channelMenu.current!.open = false;
+                      setDialog("channel");
+                    }}
+                  >
+                    <Plus aria-hidden="true" />
+                    Create channel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      channelMenu.current!.open = false;
+                      setChannelsExpanded((value) => !value);
+                    }}
+                  >
+                    {channelsExpanded ? "Collapse" : "Expand"} channels
+                  </button>
                 </div>
               </details>
-            )}
-            {voice?.summary}
             </div>
-            {voice?.list}
-          </li>
+          )}
+        </div>
+      )}
+      <ul id="space-channel-list" data-collapsed={detail.space.demo || channelsExpanded ? undefined : ""}>
+        {joinedChannels.map((item) => {
+          const voice = voiceFor(item.id);
+          return (
+            <li key={item.id} data-voice={voice ? "" : undefined}>
+              <div className="channel-line">
+                <button
+                  className="channel-select"
+                  type="button"
+                  aria-current={item.id === channel?.id ? "page" : undefined}
+                  aria-busy={pending && detail.space.id === selected.spaceId && item.id === selected.channelId}
+                  onMouseEnter={() => prefetch(detail.space.id, item.id)}
+                  onFocus={() => prefetch(detail.space.id, item.id)}
+                  onClick={() => choose(detail.space.id, item.id)}
+                >
+                  {item.private ? <LockKeyhole aria-hidden="true" /> : <Hash aria-hidden="true" />}
+                  <span>{item.name}</span>
+                  {voice?.timer}
+                </button>
+                {!detail.space.demo && (
+                  <details
+                    className="channel-menu"
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") {
+                        event.currentTarget.open = false;
+                        event.currentTarget.querySelector("summary")?.focus();
+                      }
+                    }}
+                    onBlur={(event) => {
+                      if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
+                    }}
+                  >
+                    <summary
+                      className="channel-manage"
+                      aria-label={`Manage ${item.name}`}
+                      title={`Channel actions for ${item.name}`}
+                    >
+                      <MoreHorizontal aria-hidden="true" />
+                    </summary>
+                    <div className="space-actions">
+                      {owner && (
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            const menu = event.currentTarget.closest("details")!;
+                            menu.open = false;
+                            menu.querySelector("summary")?.focus();
+                            setManageChannel(item);
+                          }}
+                        >
+                          <Settings aria-hidden="true" />
+                          Channel settings
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        disabled={membershipPending}
+                        onClick={(event) => {
+                          const menu = event.currentTarget.closest("details")!;
+                          menu.open = false;
+                          menu.querySelector("summary")?.focus();
+                          setLeavingChannel(item);
+                        }}
+                      >
+                        <LogOut aria-hidden="true" />
+                        Leave channel
+                      </button>
+                    </div>
+                  </details>
+                )}
+                {voice?.summary}
+              </div>
+              {voice?.list}
+            </li>
           );
         })}
       </ul>
-      {!!detail.channelInvitations?.length && <div className="pending-channel-invites">
-        <h2>Invitations</h2>
-        {detail.channelInvitations.map((item) => <button className="pending-channel-invite" key={item.channel.id} type="button" onClick={() => setChannelInvitation(item)}><LockKeyhole aria-hidden="true" /><span>{item.channel.name}</span><small>Invited</small></button>)}
-      </div>}
+      {!!detail.channelInvitations?.length && (
+        <div className="pending-channel-invites">
+          <h2>Invitations</h2>
+          {detail.channelInvitations.map((item) => (
+            <button
+              className="pending-channel-invite"
+              key={item.channel.id}
+              type="button"
+              onClick={() => setChannelInvitation(item)}
+            >
+              <LockKeyhole aria-hidden="true" />
+              <span>{item.channel.name}</span>
+              <small>Invited</small>
+            </button>
+          ))}
+        </div>
+      )}
       {directNavigation}
       {error && (
         <p className="space-sidebar-error" role="alert">
           {error}
-          <button type="button" onClick={() => setSelected({ ...selected })}>Retry opening</button>
+          <button type="button" onClick={() => setSelected({ ...selected })}>
+            Retry opening
+          </button>
         </p>
       )}
     </nav>
@@ -1764,9 +2492,7 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
           <header className="call-header">
             <Wordmark />
           </header>
-          <section
-            className={`call-room spaces-room empty-channel-room${navigationOpen ? " navigation-open" : ""}`}
-          >
+          <section className={`call-room spaces-room empty-channel-room${navigationOpen ? " navigation-open" : ""}`}>
             {rail}
             <ChannelSidebar>
               <div className="sidebar-channels">{channelNavigation(() => null)}</div>
@@ -1790,18 +2516,28 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
               <Hash aria-hidden="true" />
               <h2>{spaces.length ? "No joined channels" : "Start a conversation."}</h2>
               <p>
-                {!spaces.length ? "Create a space for your people, or start a direct message." : owner
-                  ? "Browse channels or create one to start a conversation."
-                  : "Browse channels to find a conversation, or accept a private channel invitation."}
+                {!spaces.length
+                  ? "Create a space for your people, or start a direct message."
+                  : owner
+                    ? "Browse channels or create one to start a conversation."
+                    : "Browse channels to find a conversation, or accept a private channel invitation."}
               </p>
-              <button type="button" onClick={() => setBrowseOpen(true)}>Browse channels</button>
+              <button type="button" onClick={() => setBrowseOpen(true)}>
+                Browse channels
+              </button>
               {owner && (
                 <button type="button" onClick={() => setDialog("channel")}>
                   Create channel
                 </button>
               )}
-              {!spaces.length && <button type="button" onClick={() => setDialog("space")}>Create your first space</button>}
-              <button type="button" onClick={() => setDialog("direct")}>New direct message</button>
+              {!spaces.length && (
+                <button type="button" onClick={() => setDialog("space")}>
+                  Create your first space
+                </button>
+              )}
+              <button type="button" onClick={() => setDialog("direct")}>
+                New direct message
+              </button>
             </div>
           </section>
         </main>
@@ -1843,7 +2579,24 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
           />
         )}
         {channelDialogs}
-        {manageChannel && <ManageChannelDialog detail={detail} channel={manageChannel} onClose={() => setManageChannel(undefined)} onChanged={(updated) => { replaceDetail({ ...detail, channels: detail.channels.map((item) => item.id === updated.id ? updated : item) }); setManageChannel(updated); }} onDeleted={() => { replaceDetail({ ...detail, channels: detail.channels.filter((item) => item.id !== manageChannel.id) }); setManageChannel(undefined); }} />}
+        {manageChannel && (
+          <ManageChannelDialog
+            detail={detail}
+            channel={manageChannel}
+            onClose={() => setManageChannel(undefined)}
+            onChanged={(updated) => {
+              replaceDetail({
+                ...detail,
+                channels: detail.channels.map((item) => (item.id === updated.id ? updated : item)),
+              });
+              setManageChannel(updated);
+            }}
+            onDeleted={() => {
+              replaceDetail({ ...detail, channels: detail.channels.filter((item) => item.id !== manageChannel.id) });
+              setManageChannel(undefined);
+            }}
+          />
+        )}
       </>
     );
 
@@ -1864,23 +2617,70 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
           joined: currentDirect ? !directLocked : channel.joined,
         }}
         voiceChannels={directView ? [] : joinedChannels.map((item) => ({ id: item.id, name: item.name }))}
-        channelActions={currentDirect ? directActions : channel.joined === false ? <div className="channel-preview">
-          <div><strong>Preview</strong><span>Join <strong>#{channel.name}</strong> to interact with people here</span></div>
-          <button type="button" className="primary" disabled={membershipPending} onClick={() => void changeChannelMembership(() => joinChannel(detail.space.id, channel.id)).catch((reason) => setMembershipError(errorMessage(reason)))}>{membershipPending ? "Joining…" : "Join channel"}</button>
-          {membershipError && <p role="alert">{membershipError}</p>}
-        </div> : undefined}
-        composerBanner={currentDirect && directStatus(currentDirect) === "outgoing" && !directLocked
-          ? <p className="direct-waiting" role="status">Waiting for @{currentDirect.peer.username} to accept. They’ll see your messages when they do.</p> : undefined}
-        onBlockAuthor={(author) => setBlockTarget({ id: author.id, username: "", displayName: author.name, avatarId: author.avatarId ?? undefined })}
+        channelActions={
+          currentDirect ? (
+            directActions
+          ) : channel.joined === false ? (
+            <div className="channel-preview">
+              <div>
+                <strong>Preview</strong>
+                <span>
+                  Join <strong>#{channel.name}</strong> to interact with people here
+                </span>
+              </div>
+              <button
+                type="button"
+                className="primary"
+                disabled={membershipPending}
+                onClick={() =>
+                  void changeChannelMembership(() => joinChannel(detail.space.id, channel.id)).catch((reason) =>
+                    setMembershipError(errorMessage(reason)),
+                  )
+                }
+              >
+                {membershipPending ? "Joining…" : "Join channel"}
+              </button>
+              {membershipError && <p role="alert">{membershipError}</p>}
+            </div>
+          ) : undefined
+        }
+        composerBanner={
+          currentDirect && directStatus(currentDirect) === "outgoing" && !directLocked ? (
+            <p className="direct-waiting" role="status">
+              Waiting for @{currentDirect.peer.username} to accept. They’ll see your messages when they do.
+            </p>
+          ) : undefined
+        }
+        onBlockAuthor={(author) =>
+          setBlockTarget({
+            id: author.id,
+            username: "",
+            displayName: author.name,
+            avatarId: author.avatarId ?? undefined,
+          })
+        }
         initialAccount={account}
         initialHistory={!directView && view?.history?.channel.id === channel.id ? view.history : undefined}
         initialHistoryError={!directView && view?.channelId === channel.id ? view.historyError : undefined}
         onReadCursor={directView ? readDirect : undefined}
-        mentionMembers={directView ? people ?? [directView.conversation.peer] : view?.detail ? detail.members : undefined}
+        mentionMembers={
+          directView ? (people ?? [directView.conversation.peer]) : view?.detail ? detail.members : undefined
+        }
         onHistoryChange={navigation.current.rememberHistory}
         spaceRail={rail}
         channelNavigation={channelNavigation}
-        membersPanel={directView || channel.joined === false ? undefined : (onClose) => <MemberPresence spaceId={detail.space.id} members={detail.members} demo={detail.space.demo} onClose={onClose} />}
+        membersPanel={
+          directView || channel.joined === false
+            ? undefined
+            : (onClose) => (
+                <MemberPresence
+                  spaceId={detail.space.id}
+                  members={detail.members}
+                  demo={detail.space.demo}
+                  onClose={onClose}
+                />
+              )
+        }
         navigationOpen={navigationOpen}
         onNavigationToggle={() => setNavigationOpen((open) => !open)}
       />
@@ -1933,16 +2733,12 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
           onChanged={(updated) => {
             replaceDetail({
               ...detail,
-              channels: detail.channels.map((item) =>
-                item.id === updated.id ? updated : item,
-              ),
+              channels: detail.channels.map((item) => (item.id === updated.id ? updated : item)),
             });
             setManageChannel(updated);
           }}
           onDeleted={() => {
-            const remaining = detail.channels.filter(
-              (item) => item.id !== manageChannel.id,
-            );
+            const remaining = detail.channels.filter((item) => item.id !== manageChannel.id);
             replaceDetail({ ...detail, channels: remaining });
             setManageChannel(undefined);
             choose(detail.space.id, remaining.find((item) => item.joined !== false)?.id, true);

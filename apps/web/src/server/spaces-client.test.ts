@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test, vi } from "vitest";
 import { createSpaceNavigation } from "../spaces/navigation.ts";
 import {
   SpacesApiError,
@@ -15,11 +15,13 @@ import {
   spaceNameError,
 } from "../spaces/client.ts";
 
-test("DM requests are global and unread comparisons preserve large sequence values", async (t) => {
+test("DM requests are global and unread comparisons preserve large sequence values", async () => {
   const calls: Array<{ path: string; body?: string }> = [];
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
     calls.push({ path: String(input), body: init?.body as string | undefined });
-    return init?.method === "POST" && String(input).endsWith("/read") ? new Response(null, { status: 204 }) : Response.json({ conversations: [] });
+    return init?.method === "POST" && String(input).endsWith("/read")
+      ? new Response(null, { status: 204 })
+      : Response.json({ conversations: [] });
   });
   await listDirectConversations();
   await createDirectConversation(" @Mira ");
@@ -30,8 +32,14 @@ test("DM requests are global and unread comparisons preserve large sequence valu
     { path: "/api/dms/direct000001/read", body: '{"seq":"9007199254740993"}' },
   ]);
   const peer = { id: "account00002", username: "mira", displayName: "Mira" };
-  assert.equal(directUnread({ id: "direct000001", peer, lastSeq: "9007199254740993", readSeq: "9007199254740992" }), true);
-  assert.equal(directUnread({ id: "direct000001", peer, lastSeq: "9007199254740992", readSeq: "9007199254740993" }), false);
+  assert.equal(
+    directUnread({ id: "direct000001", peer, lastSeq: "9007199254740993", readSeq: "9007199254740992" }),
+    true,
+  );
+  assert.equal(
+    directUnread({ id: "direct000001", peer, lastSeq: "9007199254740992", readSeq: "9007199254740993" }),
+    false,
+  );
 });
 
 test("space and channel names enforce the browser-visible API rules", () => {
@@ -52,12 +60,14 @@ test("channel input normalizes pasted names while allowing a word separator duri
   assert.equal(normalizeChannelName("UPDATES".repeat(12)), "updates".repeat(11) + "upd");
 });
 
-test("CRUD sends only the specified payload and preserves server error details", async (t) => {
+test("CRUD sends only the specified payload and preserves server error details", async () => {
   const requests: Array<{ path: string; init?: RequestInit }> = [];
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
     requests.push({ path: String(input), init });
-    if (String(input) === "/api/spaces") return Response.json({ id: "space1234567", name: "Studio", ownerId: "owner1234567" });
-    if (init?.method === "DELETE") return Response.json({ error: "The default space cannot be deleted." }, { status: 409 });
+    if (String(input) === "/api/spaces")
+      return Response.json({ id: "space1234567", name: "Studio", ownerId: "owner1234567" });
+    if (init?.method === "DELETE")
+      return Response.json({ error: "The default space cannot be deleted." }, { status: 409 });
     return Response.json({ id: "chanl1234567", spaceId: "space1234567", name: "launch-plans", private: true });
   });
 
@@ -85,22 +95,31 @@ const spaceDetail = {
   members: [],
 };
 const history = (id: string) => ({
-  space: spaceDetail.space, channel: { id, name: id }, messages: [], cursor: "7", hasMore: false,
+  space: spaceDetail.space,
+  channel: { id, name: id },
+  messages: [],
+  cursor: "7",
+  hasMore: false,
 });
 
-test("hover and click share one read, wait for history, and consume the snapshot only once", async (t) => {
+test("hover and click share one read, wait for history, and consume the snapshot only once", async () => {
   const paths: string[] = [];
   let release!: (response: Response) => void;
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
-    const path = String(input); paths.push(path);
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
+    const path = String(input);
+    paths.push(path);
     if (path === "/api/spaces/space1234567") return Response.json(spaceDetail);
-    return new Promise<Response>((resolve) => { release = resolve; });
+    return new Promise<Response>((resolve) => {
+      release = resolve;
+    });
   });
   const navigation = createSpaceNavigation();
   const hover = navigation.prepare("space1234567", "other1234567");
   assert.equal(navigation.take("space1234567", "other1234567"), hover);
   let settled = false;
-  void hover.then(() => { settled = true; });
+  void hover.then(() => {
+    settled = true;
+  });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(settled, false, "a channel list alone must not replace the visible space");
   assert.deepEqual(paths, ["/api/spaces/space1234567", "/api/chat/channels/other1234567/messages"]);
@@ -114,17 +133,22 @@ test("hover and click share one read, wait for history, and consume the snapshot
   assert.equal(paths.length, 4, "revisits must recheck access and current history");
 });
 
-test("expired and invalidated speculation is not reused; genuinely empty spaces do not fetch history", async (t) => {
+test("expired and invalidated speculation is not reused; genuinely empty spaces do not fetch history", async () => {
   let now = 100;
   let requests = 0;
-  t.mock.method(Date, "now", () => now);
-  t.mock.method(globalThis, "fetch", async () => {
+  vi.spyOn(Date, "now").mockImplementation(() => now);
+  vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
     requests++;
     return Response.json({ ...spaceDetail, channels: [] });
   });
   const navigation = createSpaceNavigation();
   const first = navigation.prepare("space1234567");
-  assert.deepEqual(await first, { detail: { ...spaceDetail, channels: [] }, channelId: undefined, history: undefined, historyError: undefined });
+  assert.deepEqual(await first, {
+    detail: { ...spaceDetail, channels: [] },
+    channelId: undefined,
+    history: undefined,
+    historyError: undefined,
+  });
   now = 5_099;
   assert.equal(navigation.prepare("space1234567"), first);
   now = 5_100;
@@ -136,9 +160,9 @@ test("expired and invalidated speculation is not reused; genuinely empty spaces 
   assert.equal(requests, 3);
 });
 
-test("failed speculation retries and rejects history for another space", async (t) => {
+test("failed speculation retries and rejects history for another space", async () => {
   let denied = true;
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
     if (denied) return Response.json({ error: "Access removed" }, { status: 404 });
     if (String(input).startsWith("/api/spaces/")) return Response.json(spaceDetail);
     return Response.json({ ...history("first1234567"), space: { id: "wrong1234567", name: "Wrong" } });
@@ -149,10 +173,12 @@ test("failed speculation retries and rejects history for another space", async (
   await assert.rejects(navigation.take("space1234567"), /wrong space/);
 });
 
-test("a message outage preserves channel navigation and space management", async (t) => {
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) =>
-    String(input).startsWith("/api/spaces/") ? Response.json(spaceDetail)
-      : Response.json({ error: "Messaging unavailable" }, { status: 503 }));
+test("a message outage preserves channel navigation and space management", async () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) =>
+    String(input).startsWith("/api/spaces/")
+      ? Response.json(spaceDetail)
+      : Response.json({ error: "Messaging unavailable" }, { status: 503 }),
+  );
   const next = await createSpaceNavigation().take("space1234567");
   assert.deepEqual(next.detail, spaceDetail);
   assert.equal(next.channelId, "first1234567");
@@ -160,13 +186,14 @@ test("a message outage preserves channel navigation and space management", async
   assert.equal(next.historyError, "Messaging unavailable");
 });
 
-test("returning restores each channel snapshot, rechecks access, and forgets revoked data", async (t) => {
+test("returning restores each channel snapshot, rechecks access, and forgets revoked data", async () => {
   const paths: string[] = [];
   let denied = false;
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
-    const path = String(input); paths.push(path);
-    if (path.startsWith("/api/spaces/")) return denied
-      ? Response.json({ error: "Access removed" }, { status: 404 }) : Response.json(spaceDetail);
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
+    const path = String(input);
+    paths.push(path);
+    if (path.startsWith("/api/spaces/"))
+      return denied ? Response.json({ error: "Access removed" }, { status: 404 }) : Response.json(spaceDetail);
     return Response.json(history(path.includes("other") ? "other1234567" : "first1234567"));
   });
   const navigation = createSpaceNavigation();
@@ -177,7 +204,11 @@ test("returning restores each channel snapshot, rechecks access, and forgets rev
   assert.deepEqual(navigation.peek("space1234567", "first1234567")?.history, liveSnapshot);
   const returning = await navigation.take("space1234567", "first1234567");
   assert.deepEqual(returning.history, liveSnapshot);
-  assert.equal(paths.filter((path) => path.startsWith("/api/chat/")).length, 2, "visited channels resume replay instead of fetching another first page");
+  assert.equal(
+    paths.filter((path) => path.startsWith("/api/chat/")).length,
+    2,
+    "visited channels resume replay instead of fetching another first page",
+  );
   assert.equal(paths.filter((path) => path.startsWith("/api/spaces/")).length, 3);
   assert.equal(navigation.peek("space1234567", "other1234567")?.history?.cursor, "7");
   denied = true;

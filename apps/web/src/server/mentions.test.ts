@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { insertMention, mentionName, mentionSegments, mentionSuggestions, mentionToken, mentionsAccount, type MentionCandidate } from "../chat/mentions.ts";
+import { test } from "vitest";
+import {
+  insertMention,
+  mentionName,
+  mentionSegments,
+  mentionSuggestions,
+  mentionToken,
+  mentionsAccount,
+  type MentionCandidate,
+} from "../chat/mentions.ts";
 import type { ChatMessage } from "../chat/types.ts";
 
 const members: MentionCandidate[] = [
@@ -60,12 +68,18 @@ test("only server-resolved names render as mentions", () => {
   ]);
   assert.deepEqual(mentionSegments("@maya", undefined), [{ text: "@maya", mention: false }]);
   assert.deepEqual(mentionSegments("@maya", "bad" as never), [{ text: "@maya", mention: false }]);
-  assert.deepEqual(mentionSegments(`@${"m".repeat(33)}`, [{ type: "user", id: "x", username: "m".repeat(33) }]), [{ text: `@${"m".repeat(33)}`, mention: false }]);
+  assert.deepEqual(mentionSegments(`@${"m".repeat(33)}`, [{ type: "user", id: "x", username: "m".repeat(33) }]), [
+    { text: `@${"m".repeat(33)}`, mention: false },
+  ]);
 });
 
 test("a message mentions the reader by id or by everyone/here from someone else", () => {
   const message = (author: string, mentions: unknown): ChatMessage => ({
-    id: "m", channelId: "c", seq: "1", createdAt: "", clientMessageId: "x",
+    id: "m",
+    channelId: "c",
+    seq: "1",
+    createdAt: "",
+    clientMessageId: "x",
     author: { id: author, name: author, isGuest: false },
     content: { version: 1, type: "text", text: "", mentions: mentions as never },
   });

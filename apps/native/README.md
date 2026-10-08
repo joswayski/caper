@@ -236,10 +236,11 @@ roughly similar colors. Both use Satoshi; acquire the official, unmodified nativ
 fonts with `python3 scripts/native_fonts.py`. See [font licensing and integrity
 checks](../../shared/fonts/README.md). Do not commit or separately publish fonts.
 
-For disposable visual and interaction checks, Node 24 can run the shared fixture:
+For disposable visual and interaction checks, install the repository's npm dependencies
+with `npm ci`, test the shared fixture with Vitest, then run it with Node 24:
 
 ```sh
-node --test tests/native-parity-fixture.test.mjs
+npm run test:native
 node scripts/native-parity-fixture.mjs
 ```
 

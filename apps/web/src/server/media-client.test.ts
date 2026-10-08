@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test, type TestContext } from "node:test";
+import { test, type TestContext, vi } from "vitest";
 import { AppGateway, setAppGatewayForTests } from "../gateway/client.ts";
 import { PublicCallClient, prepareVoiceJoin, waitFor } from "../media/client.ts";
 import { NoiseAssets } from "../media/noise-assets.ts";
@@ -12,14 +12,24 @@ class Track extends EventTarget {
   enabled = true;
   readyState = "live";
   onended?: () => void;
-  stop() { this.readyState = "ended"; }
-  getSettings() { return { noiseSuppression: true }; }
+  stop() {
+    this.readyState = "ended";
+  }
+  getSettings() {
+    return { noiseSuppression: true };
+  }
 }
 class Stream {
   tracks: Track[];
-  constructor(tracks: Track[]) { this.tracks = tracks; }
-  getTracks() { return this.tracks; }
-  getAudioTracks() { return this.tracks.filter((t) => t.kind === "audio"); }
+  constructor(tracks: Track[]) {
+    this.tracks = tracks;
+  }
+  getTracks() {
+    return this.tracks;
+  }
+  getAudioTracks() {
+    return this.tracks.filter((t) => t.kind === "audio");
+  }
 }
 class Peer extends EventTarget {
   static latest: Peer;
@@ -32,32 +42,64 @@ class Peer extends EventTarget {
   ontrack?: (event: { track: Track; transceiver: { mid: string }; streams: Stream[] }) => void;
   onconnectionstatechange?: () => void;
   senders: Array<{ track: Track | null; replaceTrack(t: Track | null): Promise<void> }> = [];
-  constructor() { super(); Peer.latest = this; Peer.all.push(this); }
+  constructor() {
+    super();
+    Peer.latest = this;
+    Peer.all.push(this);
+  }
   configuration: RTCConfiguration = {};
   addTransceiver(track: Track | string) {
-    const sender = { track: typeof track === "string" ? null : track as Track | null, async replaceTrack(t: Track | null) { this.track = t; } };
+    const sender = {
+      track: typeof track === "string" ? null : (track as Track | null),
+      async replaceTrack(t: Track | null) {
+        this.track = t;
+      },
+    };
     this.senders.push(sender);
     return { mid: "0", sender };
   }
-  getConfiguration() { return this.configuration; }
-  setConfiguration(configuration: RTCConfiguration) { this.configuration = configuration; }
-  async createOffer() { return { type: "offer", sdp: "v=0\r\na=mid:0\r\n" }; }
-  async createAnswer() { return { type: "answer", sdp: "v=0" }; }
-  async setLocalDescription(description: object) { this.localDescription = { toJSON: () => description }; }
+  getConfiguration() {
+    return this.configuration;
+  }
+  setConfiguration(configuration: RTCConfiguration) {
+    this.configuration = configuration;
+  }
+  async createOffer() {
+    return { type: "offer", sdp: "v=0\r\na=mid:0\r\n" };
+  }
+  async createAnswer() {
+    return { type: "answer", sdp: "v=0" };
+  }
+  async setLocalDescription(description: object) {
+    this.localDescription = { toJSON: () => description };
+  }
   async setRemoteDescription(description: RTCSessionDescriptionInit) {
     this.remoteDescriptions.push(description);
     if (description?.type === "offer") this.ontrack?.({ track: new Track(), transceiver: { mid: "1" }, streams: [] });
   }
   dataChannels: RTCDataChannelInit[] = [];
-  createDataChannel(_label: string, options: RTCDataChannelInit) { this.dataChannels.push(options); return {}; }
-  getSenders() { return this.senders; }
-  getReceivers() { return []; }
-  async getStats() { return Peer.stats; }
-  close() { this.connectionState = "closed"; }
+  createDataChannel(_label: string, options: RTCDataChannelInit) {
+    this.dataChannels.push(options);
+    return {};
+  }
+  getSenders() {
+    return this.senders;
+  }
+  getReceivers() {
+    return [];
+  }
+  async getStats() {
+    return Peer.stats;
+  }
+  close() {
+    this.connectionState = "closed";
+  }
 }
 
-const providerSdp = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 109\r\na=rtpmap:109 opus/48000/2\r\na=fmtp:109 useinbandfec=1;usedtx=0\r\n";
-const senderSdp = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 109\r\na=rtpmap:109 opus/48000/2\r\na=fmtp:109 useinbandfec=1;usedtx=1\r\n";
+const providerSdp =
+  "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 109\r\na=rtpmap:109 opus/48000/2\r\na=fmtp:109 useinbandfec=1;usedtx=0\r\n";
+const senderSdp =
+  "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 109\r\na=rtpmap:109 opus/48000/2\r\na=fmtp:109 useinbandfec=1;usedtx=1\r\n";
 
 interface MediaSocket {
   event(id: string, value: object): void;
@@ -81,8 +123,14 @@ class MediaFeed {
     const payload = new TextDecoder().decode(chunk);
     const name = /^event: ([^\n]+)/m.exec(payload)?.[1];
     const data = JSON.parse(/^data: (.+)$/m.exec(payload)?.[1] ?? "{}") as Record<string, unknown>;
-    if (name === "draining") { this.socket.migrate(); return; }
-    if (name === "ready") { this.ready(); return; }
+    if (name === "draining") {
+      this.socket.migrate();
+      return;
+    }
+    if (name === "ready") {
+      this.ready();
+      return;
+    }
     if (name === "snapshot") {
       this.socket.event(this.id, { type: "snapshot", ...data, revision: data.revision ?? this.revision() });
       return;
@@ -99,7 +147,9 @@ class MediaFeed {
     this.socket.subscribed(this.id);
   }
 
-  close() { this.socket.disconnect(); }
+  close() {
+    this.socket.disconnect();
+  }
 }
 
 function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
@@ -118,18 +168,29 @@ function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
     muted = false;
     srcObject: MediaStream | null = null;
     playing = false;
-    constructor() { audioSinks.push(this); }
-    async play() { this.playing = true; }
-    pause() { this.playing = false; }
+    constructor() {
+      audioSinks.push(this);
+    }
+    async play() {
+      this.playing = true;
+    }
+    pause() {
+      this.playing = false;
+    }
   }
   const install = (key: string, value: unknown) => {
     const descriptor = Object.getOwnPropertyDescriptor(globalThis, key);
     Object.defineProperty(globalThis, key, { value, configurable: true });
-    restore.push(() => { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); });
+    restore.push(() => {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    });
   };
   install("window", globalThis);
   install("location", { protocol: "https:", host: "caper.test" });
-  install("navigator", { mediaDevices: { getUserMedia: async () => new Stream([track.readyState === "ended" ? new Track() : track]) } });
+  install("navigator", {
+    mediaDevices: { getUserMedia: async () => new Stream([track.readyState === "ended" ? new Track() : track]) },
+  });
   install("MediaStream", Stream);
   install("RTCPeerConnection", Peer);
   install("Audio", FakeAudio);
@@ -141,11 +202,23 @@ function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
       const role = JSON.parse(options.body as string).monitor;
       return Response.json({ token: role ?? "capability", id: role ?? "self", iceServers: [] });
     }
-    if (op === "publish") return Response.json({ trackId: "private-track", sessionDescription: { type: "answer", sdp: providerSdp } });
+    if (op === "publish")
+      return Response.json({ trackId: "private-track", sessionDescription: { type: "answer", sdp: providerSdp } });
     if (op === "subscribe") {
       const { trackIds, receive } = JSON.parse(options.body as string) as { trackIds?: string[]; receive?: boolean };
-      if (trackIds) return Response.json({ ...(receive ? { receive: true } : {}), requiresImmediateRenegotiation: true, tracks: trackIds.map((trackId, index) => ({ trackId, mid: String(index + 1) })), gone: [], sessionDescription: { type: "offer", sdp: providerSdp } });
-      return Response.json({ requiresImmediateRenegotiation: true, tracks: [{ mid: "1" }], sessionDescription: { type: "offer", sdp: providerSdp } });
+      if (trackIds)
+        return Response.json({
+          ...(receive ? { receive: true } : {}),
+          requiresImmediateRenegotiation: true,
+          tracks: trackIds.map((trackId, index) => ({ trackId, mid: String(index + 1) })),
+          gone: [],
+          sessionDescription: { type: "offer", sdp: providerSdp },
+        });
+      return Response.json({
+        requiresImmediateRenegotiation: true,
+        tracks: [{ mid: "1" }],
+        sessionDescription: { type: "offer", sdp: providerSdp },
+      });
     }
     if (op === "snapshot") return Response.json({ participants: [] });
     if (op === "state") {
@@ -169,20 +242,35 @@ function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
       events.push(feed);
       if (config.eventsReady !== false) feed.ready();
     }
-    close() { this.closed = true; }
-    event(id: string, event: object) { this.raw({ type: "event", id, event }); }
-    subscribed(id: string) { this.raw({ type: "subscribed", id }); }
-    migrate() { this.raw({ type: "migrating" }); }
-    disconnect() { this.dispatchEvent(new Event("close")); }
-    private raw(value: unknown) { this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(value) })); }
+    close() {
+      this.closed = true;
+    }
+    event(id: string, event: object) {
+      this.raw({ type: "event", id, event });
+    }
+    subscribed(id: string) {
+      this.raw({ type: "subscribed", id });
+    }
+    migrate() {
+      this.raw({ type: "migrating" });
+    }
+    disconnect() {
+      this.dispatchEvent(new Event("close"));
+    }
+    private raw(value: unknown) {
+      this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(value) }));
+    }
   }
-  const gateway = new AppGateway(() => new Socket(), () => 0);
+  const gateway = new AppGateway(
+    () => new Socket(),
+    () => 0,
+  );
   setAppGatewayForTests(gateway);
   const transport: typeof fetch = (input, init) => fetch(input, init);
   const client = new PublicCallClient((state) => states.push(state), "/api/media", transport);
   // These tests isolate signaling with raw mock tracks; enhanced audio is tested separately.
   void client.setNoiseSuppression("off");
-  t.after(async () => {
+  t.onTestFinished(async () => {
     client.leaveImmediately();
     await tick();
     gateway.destroy();
@@ -214,10 +302,10 @@ test("state requests carry increasing sequences across mute/deafen and retries",
   assert.deepEqual(stateSequences, [1, 2, 3, 4, 5]);
 });
 
-test("DPDFNet suppression is the fixed default and prepares before capture", async (t) => {
-  const dpdfnet = t.mock.method(DpdfnetPreparation.prototype, "prepare", async () => undefined);
+test("DPDFNet suppression is the fixed default and prepares before capture", async () => {
+  const dpdfnet = vi.spyOn(DpdfnetPreparation.prototype, "prepare").mockImplementation(async () => undefined);
   const engines: string[] = [];
-  t.mock.method(NoiseAssets.prototype, "load", async (engine: string) => {
+  vi.spyOn(NoiseAssets.prototype, "load").mockImplementation(async (engine: string) => {
     engines.push(engine);
     return { module: {} as WebAssembly.Module };
   });
@@ -226,7 +314,7 @@ test("DPDFNet suppression is the fixed default and prepares before capture", asy
   await client.setAudioSetup("headphones");
   assert.equal(states.at(-1)?.noiseSuppression, "dpdfnet8");
   client.prepareMicrophone();
-  assert.equal(dpdfnet.mock.callCount(), 1);
+  assert.equal(dpdfnet.mock.calls.length, 1);
   assert.deepEqual(engines, []);
   await client.setNoiseSuppression("deepfilter-gentle");
   client.prepareMicrophone();
@@ -237,21 +325,23 @@ test("DPDFNet suppression is the fixed default and prepares before capture", asy
 
 test("preparation does not allocate a spare during a call; Leave warms the next join, page exit does not", async (t) => {
   const { client, track } = setup(t);
-  const prepare = t.mock.method(DpdfnetPreparation.prototype, "prepare", async () => undefined);
-  const stop = t.mock.method(DpdfnetPreparation.prototype, "stop", () => undefined);
+  const prepare = vi.spyOn(DpdfnetPreparation.prototype, "prepare").mockImplementation(async () => undefined);
+  const stop = vi.spyOn(DpdfnetPreparation.prototype, "stop").mockImplementation(() => undefined);
   // Isolate client lifecycle here; real processed capture and worker handoff have separate tests.
-  t.mock.method(client as unknown as { openMicrophone(): Promise<MediaStreamTrack> }, "openMicrophone", async () => track as unknown as MediaStreamTrack);
+  vi.spyOn(client as unknown as { openMicrophone(): Promise<MediaStreamTrack> }, "openMicrophone").mockImplementation(
+    async () => track as unknown as MediaStreamTrack,
+  );
   await client.setNoiseSuppression("dpdfnet8");
   client.prepareMicrophone();
   await client.join();
   client.prepareMicrophone();
-  assert.equal(prepare.mock.callCount(), 1);
+  assert.equal(prepare.mock.calls.length, 1);
   await client.leave();
-  assert.equal(prepare.mock.callCount(), 2);
-  assert.equal(stop.mock.callCount(), 1);
+  assert.equal(prepare.mock.calls.length, 2);
+  assert.equal(stop.mock.calls.length, 1);
   client.leaveImmediately();
-  assert.equal(prepare.mock.callCount(), 2);
-  assert.equal(stop.mock.callCount(), 2);
+  assert.equal(prepare.mock.calls.length, 2);
+  assert.equal(stop.mock.calls.length, 2);
 });
 
 test("connection diagnostics are structured and include live transport rates", async (t) => {
@@ -260,7 +350,16 @@ test("connection diagnostics are structured and include live transport rates", a
     ["outbound", { type: "outbound-rtp", bytesSent: 1_500 }],
     ["inbound", { type: "inbound-rtp", bytesReceived: 2_500, packetsLost: 3, jitter: 0.006 }],
     ["local", { type: "local-candidate", candidateType: "relay" }],
-    ["pair", { type: "candidate-pair", state: "succeeded", nominated: true, currentRoundTripTime: 0.004, localCandidateId: "local" }],
+    [
+      "pair",
+      {
+        type: "candidate-pair",
+        state: "succeeded",
+        nominated: true,
+        currentRoundTripTime: 0.004,
+        localCandidateId: "local",
+      },
+    ],
   ]);
   await client.join();
   await tick();
@@ -278,11 +377,16 @@ test("mode/device replacement preserves mute, releases old capture, and can sele
   const { client, states, install, calls } = setup(t);
   const tracks: Track[] = [];
   const constraints: MediaTrackConstraints[] = [];
-  install("navigator", { mediaDevices: { getUserMedia: async (value: MediaStreamConstraints) => {
-    constraints.push(value.audio as MediaTrackConstraints);
-    const track = new Track(); tracks.push(track);
-    return new Stream([track]);
-  } } });
+  install("navigator", {
+    mediaDevices: {
+      getUserMedia: async (value: MediaStreamConstraints) => {
+        constraints.push(value.audio as MediaTrackConstraints);
+        const track = new Track();
+        tracks.push(track);
+        return new Stream([track]);
+      },
+    },
+  });
   await client.join("Guest", "usb");
   assert.equal(states.at(-1)?.noiseSuppression, "off");
   assert.equal(states.at(-1)?.audioSetup, "headphones");
@@ -310,18 +414,26 @@ test("mode/device replacement preserves mute, releases old capture, and can sele
 test("failed mode replacement keeps the old microphone and rolls back selection", async (t) => {
   const { client, track, install, states } = setup(t);
   await client.join();
-  const capture = (client as unknown as { captures: Map<Track, { pause(): Promise<void>; resume(): Promise<void> }> }).captures.get(track)!;
-  const pause = t.mock.method(capture, "pause");
-  const resume = t.mock.method(capture, "resume");
+  const capture = (
+    client as unknown as { captures: Map<Track, { pause(): Promise<void>; resume(): Promise<void> }> }
+  ).captures.get(track)!;
+  const pause = vi.spyOn(capture, "pause");
+  const resume = vi.spyOn(capture, "resume");
   const replacement = new Track();
-  install("navigator", { mediaDevices: { getUserMedia: async () => {
-    assert.equal(pause.mock.callCount(), 1, "old processing pauses before replacement capture starts");
-    return new Stream([replacement]);
-  } } });
-  Peer.latest.senders[0].replaceTrack = async () => { throw new Error("replace failed"); };
+  install("navigator", {
+    mediaDevices: {
+      getUserMedia: async () => {
+        assert.equal(pause.mock.calls.length, 1, "old processing pauses before replacement capture starts");
+        return new Stream([replacement]);
+      },
+    },
+  });
+  Peer.latest.senders[0].replaceTrack = async () => {
+    throw new Error("replace failed");
+  };
   await assert.rejects(client.setNoiseSuppression("browser"), /replace failed/);
-  assert.equal(pause.mock.callCount(), 1);
-  assert.equal(resume.mock.callCount(), 1);
+  assert.equal(pause.mock.calls.length, 1);
+  assert.equal(resume.mock.calls.length, 1);
   assert.equal(track.readyState, "live");
   assert.equal(replacement.readyState, "ended");
   assert.equal(states.at(-1)?.noiseSuppression, "off");
@@ -402,7 +514,11 @@ test("mic test stays local, detaches channel audio, and restores prior state", a
   const monitorTrack = states.at(-1)?.monitorStream?.getAudioTracks()[0] as unknown as Track;
   assert.equal(monitorTrack, naturalTrack, "the test records the local denoised tap");
   assert.equal(Peer.all.length, 1, "the test must not create a private SFU connection");
-  assert.equal(calls.filter((operation) => operation === "join").length, 1, "the test must not join a fake participant");
+  assert.equal(
+    calls.filter((operation) => operation === "join").length,
+    1,
+    "the test must not join a fake participant",
+  );
   assert.equal(track.enabled, true, "sender detachment, not track disabling, isolates the channel");
   assert.equal(channelPeer.senders[0].track, null, "the microphone must not reach the channel");
   assert.deepEqual(stateUpdates.at(-1), { muted: true, deafened: true });
@@ -433,9 +549,11 @@ test("pre-join mic test uses the local denoised track and releases it before joi
 test("a failed join can open a local mic test", async (t) => {
   const { client, states, install } = setup(t);
   const original = fetch;
-  install("fetch", (url: string, init: RequestInit) => url.endsWith("/publish")
-    ? Promise.resolve(Response.json({ error: "publication unavailable" }, { status: 503 }))
-    : original(url, init));
+  install("fetch", (url: string, init: RequestInit) =>
+    url.endsWith("/publish")
+      ? Promise.resolve(Response.json({ error: "publication unavailable" }, { status: 503 }))
+      : original(url, init),
+  );
   await client.join();
   assert.equal(states.at(-1)?.phase, "failed");
 
@@ -452,9 +570,14 @@ test("stopping a pending local mic test releases capture that arrives later", as
   const { client, states, install } = setup(t);
   const lateTrack = new Track();
   let finish!: () => void;
-  install("navigator", { mediaDevices: { getUserMedia: () => new Promise<Stream>((resolve) => {
-    finish = () => resolve(new Stream([lateTrack]));
-  }) } });
+  install("navigator", {
+    mediaDevices: {
+      getUserMedia: () =>
+        new Promise<Stream>((resolve) => {
+          finish = () => resolve(new Stream([lateTrack]));
+        }),
+    },
+  });
 
   const starting = client.startLocalMicTest();
   await tick();
@@ -473,20 +596,27 @@ test("stopping a pending local mic test releases capture that arrives later", as
 });
 
 test("local mic test times out unanswered permission and releases a late grant", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const { client, states, install } = setup(t);
   let finish!: () => void;
   const lateTrack = new Track();
-  install("navigator", { mediaDevices: { getUserMedia: () => new Promise<Stream>((resolve) => {
-    finish = () => resolve(new Stream([lateTrack]));
-  }) } });
+  install("navigator", {
+    mediaDevices: {
+      getUserMedia: () =>
+        new Promise<Stream>((resolve) => {
+          finish = () => resolve(new Stream([lateTrack]));
+        }),
+    },
+  });
   let settled = false;
   const starting = client.startLocalMicTest();
-  const rejected = assert.rejects(starting, /Microphone setup timed out/).then(() => { settled = true; });
-  t.mock.timers.tick(29_999);
+  const rejected = assert.rejects(starting, /Microphone setup timed out/).then(() => {
+    settled = true;
+  });
+  vi.advanceTimersByTime(29_999);
   await tick();
   assert.equal(settled, false);
-  t.mock.timers.tick(1);
+  vi.advanceTimersByTime(1);
   await rejected;
   finish();
   await tick();
@@ -501,8 +631,18 @@ test("local mic test times out unanswered permission and releases a late grant",
 test("local mic test explains missing, denied, and busy devices", async (t) => {
   const { client, install } = setup(t);
   assert.equal(client.getAudioDiagnostics().captureAttempt, "not-started");
-  for (const [name, expected] of [["NotFoundError", /Connect a microphone/], ["NotAllowedError", /permission was denied/], ["NotReadableError", /another app/]] as const) {
-    install("navigator", { mediaDevices: { getUserMedia: async () => { throw new DOMException("Browser error", name); } } });
+  for (const [name, expected] of [
+    ["NotFoundError", /Connect a microphone/],
+    ["NotAllowedError", /permission was denied/],
+    ["NotReadableError", /another app/],
+  ] as const) {
+    install("navigator", {
+      mediaDevices: {
+        getUserMedia: async () => {
+          throw new DOMException("Browser error", name);
+        },
+      },
+    });
     await assert.rejects(client.startLocalMicTest(), expected);
     assert.equal(client.getAudioDiagnostics().captureAttempt, "failed");
     assert.equal(client.getAudioDiagnostics().captureError, name);
@@ -552,10 +692,14 @@ test("pre-join undeafen restores the prior mute intent without capturing or sign
 test("pre-join microphone selection is retained and can be supplied when testing", async (t) => {
   const { client, install } = setup(t);
   const deviceIds: Array<ConstrainDOMString | undefined> = [];
-  install("navigator", { mediaDevices: { getUserMedia: async (constraints: MediaStreamConstraints) => {
-    deviceIds.push((constraints.audio as MediaTrackConstraints).deviceId);
-    return new Stream([new Track()]);
-  } } });
+  install("navigator", {
+    mediaDevices: {
+      getUserMedia: async (constraints: MediaStreamConstraints) => {
+        deviceIds.push((constraints.audio as MediaTrackConstraints).deviceId);
+        return new Stream([new Track()]);
+      },
+    },
+  });
 
   await client.changeMicrophone("desk-mic");
   await client.startLocalMicTest();
@@ -579,11 +723,13 @@ test("voice processing defaults to 25%, clamps updates, and changes the live cap
   const { client, track, states } = setup(t);
   await client.join();
   assert.equal(states.at(-1)?.voiceProcessingStrength, 25);
-  const capture = (client as unknown as { captures: Map<Track, { setVoiceProcessingStrength(strength: number): void }> }).captures.get(track)!;
-  const update = t.mock.method(capture, "setVoiceProcessingStrength");
+  const capture = (
+    client as unknown as { captures: Map<Track, { setVoiceProcessingStrength(strength: number): void }> }
+  ).captures.get(track)!;
+  const update = vi.spyOn(capture, "setVoiceProcessingStrength");
   client.setVoiceProcessingStrength(125);
   assert.equal(states.at(-1)?.voiceProcessingStrength, 100);
-  assert.deepEqual(update.mock.calls.map((call) => call.arguments), [[100]]);
+  assert.deepEqual(update.mock.calls, [[100]]);
 });
 
 test("monitor capture replacement stays private and uses the replacement local stream", async (t) => {
@@ -609,8 +755,11 @@ test("mic test still starts when state synchronization is unavailable", async (t
   const { client, track, states, install } = setup(t);
   await client.join();
   const originalFetch = fetch;
-  install("fetch", (url: string, options: RequestInit) => url.endsWith("/state")
-    ? Promise.resolve(Response.json({ error: "state unavailable" }, { status: 503 })) : originalFetch(url, options));
+  install("fetch", (url: string, options: RequestInit) =>
+    url.endsWith("/state")
+      ? Promise.resolve(Response.json({ error: "state unavailable" }, { status: 503 }))
+      : originalFetch(url, options),
+  );
   await client.setMonitoring(true);
   assert.equal(Peer.all[0].senders[0].track, null);
   assert.equal(states.at(-1)!.monitorStream?.getAudioTracks()[0], track);
@@ -628,9 +777,12 @@ test("transient heartbeat failures preserve audio, recover the same session, and
   const originalFetch = fetch;
   let now = 0;
   let status = 503;
-  t.mock.method(performance, "now", () => now);
-  install("fetch", (url: string, options: RequestInit) => url.endsWith("/snapshot") && status !== 200
-    ? Promise.resolve(Response.json({}, { status })) : originalFetch(url, options));
+  vi.spyOn(performance, "now").mockImplementation(() => now);
+  install("fetch", (url: string, options: RequestInit) =>
+    url.endsWith("/snapshot") && status !== 200
+      ? Promise.resolve(Response.json({}, { status }))
+      : originalFetch(url, options),
+  );
   for (status of [503, 502, 429, 408]) {
     now += 3_000;
     await polling.poll();
@@ -655,8 +807,10 @@ test("prolonged control outage still triggers rejoin", async (t) => {
   await new Promise((resolve) => setImmediate(resolve));
   const polling = client as unknown as { poll(): Promise<void> };
   let now = 0;
-  t.mock.method(performance, "now", () => now);
-  install("fetch", async () => { throw new TypeError("Network unavailable"); });
+  vi.spyOn(performance, "now").mockImplementation(() => now);
+  install("fetch", async () => {
+    throw new TypeError("Network unavailable");
+  });
   await polling.poll();
   assert.equal(states.at(-1)?.phase, "connected");
   now = 30_000;
@@ -682,14 +836,19 @@ test("heartbeat timeout covers response bodies without closing healthy media", a
   const { client, track, states, install } = setup(t);
   await client.join();
   await new Promise((resolve) => setImmediate(resolve));
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   install("fetch", async (_url: string, options: RequestInit) => ({
-    ok: true, status: 200, headers: new Headers(),
-    text: () => new Promise((_resolve, reject) => options.signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")))),
+    ok: true,
+    status: 200,
+    headers: new Headers(),
+    text: () =>
+      new Promise((_resolve, reject) =>
+        options.signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError"))),
+      ),
   }));
   const pending = (client as unknown as { poll(): Promise<void> }).poll();
   await Promise.resolve();
-  t.mock.timers.tick(5_000);
+  vi.advanceTimersByTime(5_000);
   await pending;
   assert.equal(states.at(-1)?.phase, "connected");
   assert.equal(track.readyState, "live");
@@ -697,20 +856,23 @@ test("heartbeat timeout covers response bodies without closing healthy media", a
 
 test("failed mute state synchronization retries the latest state after API recovery", async (t) => {
   const { client, track, stateUpdates, states, install } = setup(t);
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   await client.join();
   await new Promise((resolve) => setImmediate(resolve));
   const originalFetch = fetch;
   let unavailable = true;
-  install("fetch", (url: string, options: RequestInit) => unavailable && url.endsWith("/state")
-    ? Promise.resolve(Response.json({}, { status: 503 })) : originalFetch(url, options));
+  install("fetch", (url: string, options: RequestInit) =>
+    unavailable && url.endsWith("/state")
+      ? Promise.resolve(Response.json({}, { status: 503 }))
+      : originalFetch(url, options),
+  );
   await client.setMuted(true);
   assert.equal(track.enabled, false);
   assert.equal(Peer.latest.senders[0].track, null);
   await client.setDeafened(true);
   assert.equal(states.at(-1)?.stateSyncPending, true);
   unavailable = false;
-  t.mock.timers.tick(250);
+  vi.advanceTimersByTime(250);
   await tick();
   assert.deepEqual(stateUpdates.at(-1), { muted: true, deafened: true });
   assert.equal(states.at(-1)?.stateSyncPending, false);
@@ -721,19 +883,19 @@ test("temporary RTC disconnect recovers without rejoin, but persistent disconnec
   const { client, states } = setup(t);
   await client.join();
   await new Promise((resolve) => setImmediate(resolve));
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const peer = Peer.latest;
   peer.connectionState = "disconnected";
   peer.onconnectionstatechange!();
-  t.mock.timers.tick(9_000);
+  vi.advanceTimersByTime(9_000);
   assert.equal(states.at(-1)?.phase, "connected");
   peer.connectionState = "connected";
   peer.onconnectionstatechange!();
-  t.mock.timers.tick(1_000);
+  vi.advanceTimersByTime(1_000);
   assert.equal(states.at(-1)?.phase, "connected");
   peer.connectionState = "disconnected";
   peer.onconnectionstatechange!();
-  t.mock.timers.tick(10_000);
+  vi.advanceTimersByTime(10_000);
   assert.equal(states.at(-1)?.phase, "reconnecting");
 });
 
@@ -741,16 +903,16 @@ for (const intermediate of ["connecting", "disconnected"]) {
   test(`RTC recovery keeps the original deadline through ${intermediate} events`, async (t) => {
     const { client, states } = setup(t);
     await client.join();
-    t.mock.timers.enable({ apis: ["setTimeout"] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const peer = Peer.latest;
     peer.connectionState = "disconnected";
     peer.onconnectionstatechange!();
-    t.mock.timers.tick(9_000);
+    vi.advanceTimersByTime(9_000);
     peer.connectionState = intermediate;
     peer.onconnectionstatechange!();
     await (client as unknown as { poll(): Promise<void> }).poll();
     assert.equal(states.at(-1)?.phase, "connected", "a healthy heartbeat does not prove transport recovery");
-    t.mock.timers.tick(1_000);
+    vi.advanceTimersByTime(1_000);
     assert.equal(states.at(-1)?.phase, "reconnecting", "recover at the original ten-second deadline");
   });
 }
@@ -759,14 +921,14 @@ test("RTC failure immediately schedules recovery and leave cancels delayed recov
   const { client, states, calls } = setup(t);
   await client.join();
   await new Promise((resolve) => setImmediate(resolve));
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const peer = Peer.latest;
   peer.connectionState = "failed";
   peer.onconnectionstatechange!();
   assert.equal(states.at(-1)?.phase, "reconnecting");
   assert.equal(client.getAudioDiagnostics().voice.lastReconnect?.reason, "connection failed");
   await client.leave();
-  t.mock.timers.tick(20_000);
+  vi.advanceTimersByTime(20_000);
   assert.equal(states.at(-1)?.phase, "idle");
   assert.equal(calls.filter((op) => op === "join").length, 1);
 });
@@ -796,7 +958,10 @@ test("mute and deafen update local media and view state without waiting for rost
   await client.join("Guest");
   let finishState!: () => void;
   install("fetch", async (url: string) => {
-    if (url.endsWith("/state")) return new Promise<Response>((resolve) => { finishState = () => resolve(new Response(null, { status: 204 })); });
+    if (url.endsWith("/state"))
+      return new Promise<Response>((resolve) => {
+        finishState = () => resolve(new Response(null, { status: 204 }));
+      });
     return new Response(null, { status: 204 });
   });
 
@@ -821,7 +986,10 @@ test("mute media changes are not queued behind roster synchronization", async (t
   await client.join("Guest");
   const finishStates: Array<() => void> = [];
   install("fetch", async (url: string) => {
-    if (url.endsWith("/state")) return new Promise<Response>((resolve) => { finishStates.push(() => resolve(new Response(null, { status: 204 }))); });
+    if (url.endsWith("/state"))
+      return new Promise<Response>((resolve) => {
+        finishStates.push(() => resolve(new Response(null, { status: 204 })));
+      });
     return new Response(null, { status: 204 });
   });
 
@@ -847,15 +1015,16 @@ test("unmute during a pending microphone switch attaches the new track", async (
   const nextTrack = new Track();
   const replacements: Array<{ next: Track | null; finish: () => void }> = [];
   const flush = () => new Promise((resolve) => setImmediate(resolve));
-  Peer.latest.senders[0].replaceTrack = (next) => new Promise<void>((resolve) => {
-    replacements.push({
-      next,
-      finish: () => {
-        Peer.latest.senders[0].track = next;
-        resolve();
-      },
+  Peer.latest.senders[0].replaceTrack = (next) =>
+    new Promise<void>((resolve) => {
+      replacements.push({
+        next,
+        finish: () => {
+          Peer.latest.senders[0].track = next;
+          resolve();
+        },
+      });
     });
-  });
   install("navigator", { mediaDevices: { getUserMedia: async () => new Stream([nextTrack]) } });
 
   const switching = client.changeMicrophone("mic-2");
@@ -897,10 +1066,14 @@ test("failed join reports immediately while old capability cleanup remains isola
   let joins = 0;
   let finishLeave!: () => void;
   install("fetch", (url: string, init: RequestInit) => {
-    if (url.endsWith("/join")) return Promise.resolve(Response.json({ token: `session-${++joins}`, id: "self", iceServers: [] }));
-    if (url.endsWith("/publish") && joins === 1) return Promise.resolve(Response.json({ error: "publication unavailable" }, { status: 503 }));
+    if (url.endsWith("/join"))
+      return Promise.resolve(Response.json({ token: `session-${++joins}`, id: "self", iceServers: [] }));
+    if (url.endsWith("/publish") && joins === 1)
+      return Promise.resolve(Response.json({ error: "publication unavailable" }, { status: 503 }));
     if (url.endsWith("/leave") && new Headers(init.headers).get("x-caper-media-token") === "session-1") {
-      return new Promise<Response>((resolve) => { finishLeave = () => resolve(new Response(null, { status: 204 })); });
+      return new Promise<Response>((resolve) => {
+        finishLeave = () => resolve(new Response(null, { status: 204 }));
+      });
     }
     return original(url, init);
   });
@@ -925,9 +1098,12 @@ test("automatic rejoin is not blocked by old capability cleanup", async (t) => {
   let joins = 0;
   let finishLeave!: () => void;
   install("fetch", (url: string, init: RequestInit) => {
-    if (url.endsWith("/join")) return Promise.resolve(Response.json({ token: `session-${++joins}`, id: "self", iceServers: [] }));
+    if (url.endsWith("/join"))
+      return Promise.resolve(Response.json({ token: `session-${++joins}`, id: "self", iceServers: [] }));
     if (url.endsWith("/leave") && new Headers(init.headers).get("x-caper-media-token") === "session-1") {
-      return new Promise<Response>((resolve) => { finishLeave = () => resolve(new Response(null, { status: 204 })); });
+      return new Promise<Response>((resolve) => {
+        finishLeave = () => resolve(new Response(null, { status: 204 }));
+      });
     }
     return original(url, init);
   });
@@ -943,42 +1119,62 @@ test("automatic rejoin is not blocked by old capability cleanup", async (t) => {
   assert.equal(states.at(-1)?.phase, "connected");
 });
 
-for (const occupied of [false, true]) test(`join timer starts at click and adopts shared time (occupied: ${occupied})`, async (t) => {
-  const { client, states, install } = setup(t);
-  const clicked = 1_800_000_000_000;
-  const existing = clicked - 601_000;
-  const originalNow = Date.now;
-  let now = clicked;
-  Date.now = () => now;
-  t.after(() => { Date.now = originalNow; });
-  let offer!: () => void;
-  install("RTCPeerConnection", class extends Peer {
-    async createOffer() {
-      await new Promise<void>((resolve) => { offer = resolve; });
-      return super.createOffer();
-    }
+for (const occupied of [false, true])
+  test(`join timer starts at click and adopts shared time (occupied: ${occupied})`, async (t) => {
+    const { client, states, install } = setup(t);
+    const clicked = 1_800_000_000_000;
+    const existing = clicked - 601_000;
+    const originalNow = Date.now;
+    let now = clicked;
+    Date.now = () => now;
+    t.onTestFinished(() => {
+      Date.now = originalNow;
+    });
+    let offer!: () => void;
+    install(
+      "RTCPeerConnection",
+      class extends Peer {
+        async createOffer() {
+          await new Promise<void>((resolve) => {
+            offer = resolve;
+          });
+          return super.createOffer();
+        }
+      },
+    );
+    const original = fetch;
+    install("fetch", async (url: string, init: RequestInit) => {
+      if (url.endsWith("/join"))
+        assert.equal(
+          JSON.parse(init.body as string).joinStartedAt,
+          clicked,
+          "offer preparation cannot move the click timestamp",
+        );
+      if (url.endsWith("/snapshot")) return Response.json({ participants: [], sessionStartedAt: existing });
+      return original(url, init);
+    });
+    const joining = client.join("Guest", undefined, occupied ? existing : undefined);
+    assert.equal(states.at(-1)?.phase, "joining");
+    assert.equal(states.at(-1)?.sessionStartedAt, occupied ? existing : clicked);
+    assert.deepEqual(states.at(-1)?.participants, [], "a provisional timer cannot invent occupancy");
+    now += 2_345;
+    offer();
+    await joining;
+    assert.equal(states.at(-1)?.phase, "connected");
+    assert.equal(states.at(-1)?.sessionStartedAt, existing, "the server's shared start replaces provisional time");
   });
-  const original = fetch;
-  install("fetch", async (url: string, init: RequestInit) => {
-    if (url.endsWith("/join")) assert.equal(JSON.parse(init.body as string).joinStartedAt, clicked, "offer preparation cannot move the click timestamp");
-    if (url.endsWith("/snapshot")) return Response.json({ participants: [], sessionStartedAt: existing });
-    return original(url, init);
-  });
-  const joining = client.join("Guest", undefined, occupied ? existing : undefined);
-  assert.equal(states.at(-1)?.phase, "joining");
-  assert.equal(states.at(-1)?.sessionStartedAt, occupied ? existing : clicked);
-  assert.deepEqual(states.at(-1)?.participants, [], "a provisional timer cannot invent occupancy");
-  now += 2_345;
-  offer();
-  await joining;
-  assert.equal(states.at(-1)?.phase, "connected");
-  assert.equal(states.at(-1)?.sessionStartedAt, existing, "the server's shared start replaces provisional time");
-});
 
 test("join provisioning overlaps permission and leave cleans up both late results", async (t) => {
   const { client, track, calls, states, install } = setup(t);
   let grant!: (s: Stream) => void;
-  install("navigator", { mediaDevices: { getUserMedia: () => new Promise((resolve) => { grant = resolve; }) } });
+  install("navigator", {
+    mediaDevices: {
+      getUserMedia: () =>
+        new Promise((resolve) => {
+          grant = resolve;
+        }),
+    },
+  });
   const joining = client.join("Guest");
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(calls, ["join"]);
@@ -993,9 +1189,13 @@ test("join provisioning overlaps permission and leave cleans up both late result
 
 test("denied microphone permission leaves the call and shows an actionable error", async (t) => {
   const { client, calls, states, install } = setup(t);
-  install("navigator", { mediaDevices: { getUserMedia: async () => {
-    throw new DOMException("Permission denied", "NotAllowedError");
-  } } });
+  install("navigator", {
+    mediaDevices: {
+      getUserMedia: async () => {
+        throw new DOMException("Permission denied", "NotAllowedError");
+      },
+    },
+  });
 
   await client.join("Guest");
 
@@ -1005,57 +1205,74 @@ test("denied microphone permission leaves the call and shows an actionable error
   assert.equal(states.at(-1)?.error, "Microphone permission was denied. Allow access and try again.");
 });
 
-for (const cleanupFails of [false, true]) test(`leave releases local media and permits rejoin before old cleanup ${cleanupFails ? "fails" : "finishes"}`, async (t) => {
-  const { client, track, states, install } = setup(t);
-  let completeLeave!: () => void;
-  let joins = 0;
-  let leaveRequest!: RequestInit;
-  let cleanupRequests = 0;
-  const original = fetch;
-  install("fetch", (url: string, init: RequestInit) => {
-    if (url.endsWith("/join")) return Promise.resolve(Response.json({ token: `session-${++joins}`, id: "self", iceServers: [] }));
-    if (url.endsWith("/leave") && new Headers(init.headers).get("x-caper-media-token") === "session-1") {
-      leaveRequest = init;
-      cleanupRequests++;
-      return new Promise<Response>((resolve, reject) => {
-        completeLeave = () => cleanupFails ? reject(new Error("cleanup unavailable")) : resolve(new Response(null, { status: 204 }));
-      });
-    }
-    return original(url, init);
+for (const cleanupFails of [false, true])
+  test(`leave releases local media and permits rejoin before old cleanup ${cleanupFails ? "fails" : "finishes"}`, async (t) => {
+    const { client, track, states, install } = setup(t);
+    let completeLeave!: () => void;
+    let joins = 0;
+    let leaveRequest!: RequestInit;
+    let cleanupRequests = 0;
+    const original = fetch;
+    install("fetch", (url: string, init: RequestInit) => {
+      if (url.endsWith("/join"))
+        return Promise.resolve(Response.json({ token: `session-${++joins}`, id: "self", iceServers: [] }));
+      if (url.endsWith("/leave") && new Headers(init.headers).get("x-caper-media-token") === "session-1") {
+        leaveRequest = init;
+        cleanupRequests++;
+        return new Promise<Response>((resolve, reject) => {
+          completeLeave = () =>
+            cleanupFails ? reject(new Error("cleanup unavailable")) : resolve(new Response(null, { status: 204 }));
+        });
+      }
+      return original(url, init);
+    });
+    await client.join("Guest");
+    const oldPeer = Peer.latest;
+    const leaving = client.leave();
+    assert.equal(track.readyState, "ended", "capture stops synchronously");
+    assert.equal(oldPeer.connectionState, "closed");
+    assert.equal(states.at(-1)?.localMedia, undefined);
+    assert.deepEqual(states.at(-1)?.remoteMedia, []);
+    assert.deepEqual(states.at(-1)?.participants, []);
+    assert.equal(states.at(-1)?.selfId, undefined);
+    await leaving; // The old HTTP request is deliberately unresolved.
+    assert.equal(states.at(-1)?.phase, "idle");
+    assert.equal(leaveRequest.keepalive, true, "cleanup can outlive navigation");
+    await client.leave(); // Repeated Leave must not send another cleanup request.
+    assert.equal(cleanupRequests, 1);
+    await client.join("Second guest");
+    const currentTrack = Peer.latest.senders[0].track!;
+    assert.equal(joins, 2);
+    assert.equal(states.at(-1)?.phase, "connected");
+    assert.equal(leaveRequest.signal?.aborted, false, "new capture must not cancel old cleanup");
+    completeLeave();
+    await tick();
+    assert.equal(states.at(-1)?.phase, "connected");
+    assert.equal(currentTrack.readyState, "live");
+    assert.equal(currentTrack.enabled, true);
+    assert.equal(new Headers(leaveRequest.headers).get("x-caper-media-token"), "session-1");
   });
-  await client.join("Guest");
-  const oldPeer = Peer.latest;
-  const leaving = client.leave();
-  assert.equal(track.readyState, "ended", "capture stops synchronously");
-  assert.equal(oldPeer.connectionState, "closed");
-  assert.equal(states.at(-1)?.localMedia, undefined);
-  assert.deepEqual(states.at(-1)?.remoteMedia, []);
-  assert.deepEqual(states.at(-1)?.participants, []);
-  assert.equal(states.at(-1)?.selfId, undefined);
-  await leaving; // The old HTTP request is deliberately unresolved.
-  assert.equal(states.at(-1)?.phase, "idle");
-  assert.equal(leaveRequest.keepalive, true, "cleanup can outlive navigation");
-  await client.leave(); // Repeated Leave must not send another cleanup request.
-  assert.equal(cleanupRequests, 1);
-  await client.join("Second guest");
-  const currentTrack = Peer.latest.senders[0].track!;
-  assert.equal(joins, 2);
-  assert.equal(states.at(-1)?.phase, "connected");
-  assert.equal(leaveRequest.signal?.aborted, false, "new capture must not cancel old cleanup");
-  completeLeave();
-  await tick();
-  assert.equal(states.at(-1)?.phase, "connected");
-  assert.equal(currentTrack.readyState, "live");
-  assert.equal(currentTrack.enabled, true);
-  assert.equal(new Headers(leaveRequest.headers).get("x-caper-media-token"), "session-1");
-});
 
 test("old peer events after leave cannot reconnect or replace the next call's audio", async (t) => {
   const { client, states, install } = setup(t);
   const original = fetch;
-  install("fetch", (url: string, init: RequestInit) => url.endsWith("/snapshot")
-    ? Promise.resolve(Response.json({ participants: [{ id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "remote", kind: "microphone" }] }] }))
-    : original(url, init));
+  install("fetch", (url: string, init: RequestInit) =>
+    url.endsWith("/snapshot")
+      ? Promise.resolve(
+          Response.json({
+            participants: [
+              {
+                id: "other",
+                name: "Other",
+                muted: false,
+                deafened: false,
+                tracks: [{ id: "remote", kind: "microphone" }],
+              },
+            ],
+          }),
+        )
+      : original(url, init),
+  );
   await client.join();
   const oldPeer = Peer.latest;
   const oldTrack = states.at(-1)!.remoteMedia[0].stream.getAudioTracks()[0] as unknown as Track;
@@ -1078,9 +1295,14 @@ test("a microphone replacement finishing after leave cannot overwrite the new ca
   const replacement = new Track();
   const nextCapture = new Track();
   let captures = 0;
-  install("navigator", { mediaDevices: { getUserMedia: async () => new Stream([captures++ === 0 ? replacement : nextCapture]) } });
+  install("navigator", {
+    mediaDevices: { getUserMedia: async () => new Stream([captures++ === 0 ? replacement : nextCapture]) },
+  });
   let finishReplacement!: () => void;
-  Peer.latest.senders[0].replaceTrack = () => new Promise<void>((resolve) => { finishReplacement = resolve; });
+  Peer.latest.senders[0].replaceTrack = () =>
+    new Promise<void>((resolve) => {
+      finishReplacement = resolve;
+    });
   const replacing = assert.rejects(client.changeMicrophone("old-device"), /Call session changed/);
   await tick();
   await client.leave();
@@ -1099,7 +1321,10 @@ test("leave during join closes the late capability and never creates a PeerConne
   let finish!: (r: Response) => void;
   let leaveToken: string | undefined;
   install("fetch", (url: string, init: RequestInit) => {
-    if (url.endsWith("/join")) return new Promise((resolve) => { finish = resolve; });
+    if (url.endsWith("/join"))
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
     leaveToken = new Headers(init.headers).get("x-caper-media-token") ?? undefined;
     return Promise.resolve(new Response(null, { status: 204 }));
   });
@@ -1114,9 +1339,10 @@ test("leave during join closes the late capability and never creates a PeerConne
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 const changedEvent = () => new TextEncoder().encode("event: changed\ndata: {}\n\n");
-const snapshotEvent = (participants: object[], revision?: number) => new TextEncoder().encode(
-  `event: snapshot\ndata: ${JSON.stringify({ participants, ...(revision === undefined ? {} : { revision }) })}\n\n`,
-);
+const snapshotEvent = (participants: object[], revision?: number) =>
+  new TextEncoder().encode(
+    `event: snapshot\ndata: ${JSON.stringify({ participants, ...(revision === undefined ? {} : { revision }) })}\n\n`,
+  );
 
 test("Join overlaps silent publication with SSE and state with transport, but gates audio on all readiness", async (t) => {
   const { client, track, calls, states, events, install } = setup(t, { eventsReady: false });
@@ -1126,8 +1352,14 @@ test("Join overlaps silent publication with SSE and state with transport, but ga
   let state!: () => void;
   install("fetch", async (url: string, init: RequestInit) => {
     if (url.endsWith("/join")) await client.setMuted(false);
-    if (url.endsWith("/snapshot")) return new Promise<Response>((resolve) => { snapshot = () => resolve(Response.json({ participants: [] })); });
-    if (url.endsWith("/state")) return new Promise<Response>((resolve) => { state = () => resolve(new Response(null, { status: 204 })); });
+    if (url.endsWith("/snapshot"))
+      return new Promise<Response>((resolve) => {
+        snapshot = () => resolve(Response.json({ participants: [] }));
+      });
+    if (url.endsWith("/state"))
+      return new Promise<Response>((resolve) => {
+        state = () => resolve(new Response(null, { status: 204 }));
+      });
     return original(url, init);
   });
   const joining = client.join();
@@ -1158,35 +1390,54 @@ test("Join overlaps silent publication with SSE and state with transport, but ga
   assert.equal(track.enabled, true);
 });
 
-for (const status of [200, 503]) test(`initial roster (${status}) overlaps publication without opening audio early`, async (t) => {
-  const { client, track, calls, states, install } = setup(t);
-  const original = fetch;
-  let publish!: () => void;
-  let snapshots = 0;
-  install("fetch", (url: string, init: RequestInit) => {
-    if (url.endsWith("/publish")) return new Promise<Response>((resolve) => {
-      publish = () => { void original(url, init).then(resolve); };
+for (const status of [200, 503])
+  test(`initial roster (${status}) overlaps publication without opening audio early`, async (t) => {
+    const { client, track, calls, states, install } = setup(t);
+    const original = fetch;
+    let publish!: () => void;
+    let snapshots = 0;
+    install("fetch", (url: string, init: RequestInit) => {
+      if (url.endsWith("/publish"))
+        return new Promise<Response>((resolve) => {
+          publish = () => {
+            void original(url, init).then(resolve);
+          };
+        });
+      if (url.endsWith("/snapshot")) {
+        snapshots++;
+        return Promise.resolve(
+          Response.json(
+            status === 200
+              ? {
+                  participants: [
+                    {
+                      id: "other",
+                      name: "Other",
+                      muted: false,
+                      deafened: false,
+                      tracks: [{ id: "remote", kind: "microphone" }],
+                    },
+                  ],
+                }
+              : { error: "roster unavailable" },
+            { status },
+          ),
+        );
+      }
+      return original(url, init);
     });
-    if (url.endsWith("/snapshot")) {
-      snapshots++;
-      return Promise.resolve(Response.json(status === 200
-        ? { participants: [{ id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "remote", kind: "microphone" }] }] }
-        : { error: "roster unavailable" }, { status }));
-    }
-    return original(url, init);
+    const joining = client.join();
+    await tick();
+    assert.equal(snapshots, 1, "snapshot completes while publication is still pending");
+    assert.equal(calls.includes("subscribe"), false, "subscription reconciliation must wait for publication");
+    assert.equal(track.enabled, false);
+    assert.equal(states.at(-1)?.phase, "joining");
+    publish();
+    await joining;
+    assert.equal(states.at(-1)?.phase, status === 200 ? "connected" : "failed");
+    assert.equal(track.enabled, status === 200);
+    assert.equal(calls.includes("subscribe"), status === 200);
   });
-  const joining = client.join();
-  await tick();
-  assert.equal(snapshots, 1, "snapshot completes while publication is still pending");
-  assert.equal(calls.includes("subscribe"), false, "subscription reconciliation must wait for publication");
-  assert.equal(track.enabled, false);
-  assert.equal(states.at(-1)?.phase, "joining");
-  publish();
-  await joining;
-  assert.equal(states.at(-1)?.phase, status === 200 ? "connected" : "failed");
-  assert.equal(track.enabled, status === 200);
-  assert.equal(calls.includes("subscribe"), status === 200);
-});
 
 test("deafen changed during a warm Join is acknowledged before readiness", async (t) => {
   const { client, track, states, install } = setup(t);
@@ -1199,12 +1450,19 @@ test("deafen changed during a warm Join is acknowledged before readiness", async
       assert.equal(body.warm, "ticket");
       assert.equal(body.deafened, false);
       await client.setDeafened(true);
-      return Response.json({ token: "capability", id: "self", iceServers: [], warm: true,
-        publish: { trackId: "mine", sessionDescription: { type: "answer", sdp: providerSdp } } });
+      return Response.json({
+        token: "capability",
+        id: "self",
+        iceServers: [],
+        warm: true,
+        publish: { trackId: "mine", sessionDescription: { type: "answer", sdp: providerSdp } },
+      });
     }
     if (url.endsWith("/state")) {
       assert.deepEqual(JSON.parse(init.body as string), { muted: true, deafened: true, sequence: 1 });
-      return new Promise<Response>((resolve) => { acknowledge = () => resolve(new Response(null, { status: 204 })); });
+      return new Promise<Response>((resolve) => {
+        acknowledge = () => resolve(new Response(null, { status: 204 }));
+      });
     }
     return original(url, init);
   });
@@ -1222,12 +1480,16 @@ test("deafen changed during a warm Join is acknowledged before readiness", async
 });
 
 /** Holds the microphone transport in "connecting" and records request bodies. */
-function holdTransport(t: TestContext, install: (key: string, value: unknown) => void, roster: object[], reject?: (op: string, body: Record<string, unknown>) => Response | undefined) {
+function holdTransport(
+  install: (key: string, value: unknown) => void,
+  roster: object[],
+  reject?: (op: string, body: Record<string, unknown>) => Response | undefined,
+) {
   const original = fetch;
   const bodies: Array<{ op: string; body: Record<string, unknown> }> = [];
   install("fetch", (url: string, init: RequestInit) => {
     const op = url.split("?")[0].split("/").at(-1)!;
-    const body = init?.body ? JSON.parse(init.body as string) as Record<string, unknown> : {};
+    const body = init?.body ? (JSON.parse(init.body as string) as Record<string, unknown>) : {};
     bodies.push({ op, body });
     const rejected = reject?.(op, body);
     if (rejected) return Promise.resolve(rejected);
@@ -1236,30 +1498,45 @@ function holdTransport(t: TestContext, install: (key: string, value: unknown) =>
   });
   const applyRemote = Peer.prototype.setRemoteDescription;
   let answers = 0;
-  t.mock.method(Peer.prototype, "setRemoteDescription", async function (this: Peer, description: RTCSessionDescriptionInit) {
+  vi.spyOn(Peer.prototype, "setRemoteDescription").mockImplementation(async function (
+    this: Peer,
+    description: RTCSessionDescriptionInit,
+  ) {
     // Only the publication answer starts the microphone transport.
-    if (answers++ === 0) { this.connectionState = "connecting"; return; }
+    if (answers++ === 0) {
+      this.connectionState = "connecting";
+      return;
+    }
     return applyRemote.call(this, description);
   });
   return bodies;
 }
 
-const otherSpeaker = [{ id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "remote", kind: "microphone" }] }];
+const otherSpeaker = [
+  { id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "remote", kind: "microphone" }] },
+];
 
 /** A join answer that also pulled everyone present, as an API with join-time pulls returns. */
-const joinWithPulls = (trackIds: string[]) => Response.json({
-  token: "capability", id: "self", iceServers: [],
-  publish: { trackId: "mine", tracks: [{ mid: "0" }], sessionDescription: { type: "answer", sdp: providerSdp } },
-  receive: {
-    tracks: trackIds.map((trackId, index) => ({ trackId, mid: String(index + 1) })), gone: [],
-    requiresImmediateRenegotiation: true, sessionDescription: { type: "offer", sdp: providerSdp },
-  },
-});
+const joinWithPulls = (trackIds: string[]) =>
+  Response.json({
+    token: "capability",
+    id: "self",
+    iceServers: [],
+    publish: { trackId: "mine", tracks: [{ mid: "0" }], sessionDescription: { type: "answer", sdp: providerSdp } },
+    receive: {
+      tracks: trackIds.map((trackId, index) => ({ trackId, mid: String(index + 1) })),
+      gone: [],
+      requiresImmediateRenegotiation: true,
+      sessionDescription: { type: "offer", sdp: providerSdp },
+    },
+  });
 
 test("join pulls everyone present onto a receive connection that comes up with the microphone", async (t) => {
   const { client, track, states, install } = setup(t);
-  const bodies = holdTransport(t, install, otherSpeaker, (op, body) => op === "join" && body.receive ? joinWithPulls(["remote"]) : undefined);
-  t.mock.method(Peer.prototype, "createAnswer", async function (this: Peer) {
+  const bodies = holdTransport(install, otherSpeaker, (op, body) =>
+    op === "join" && body.receive ? joinWithPulls(["remote"]) : undefined,
+  );
+  vi.spyOn(Peer.prototype, "createAnswer").mockImplementation(async function (this: Peer) {
     // The receive connection is still connecting when its answer is sent.
     this.connectionState = "connecting";
     return { type: "answer", sdp: "v=0" };
@@ -1269,14 +1546,31 @@ test("join pulls everyone present onto a receive connection that comes up with t
   const [main, receiver] = Peer.all;
   assert.ok(receiver, "a second connection receives");
   assert.equal(bodies.find((entry) => entry.op === "join")?.body.receive, true);
-  assert.equal(bodies.some((entry) => entry.op === "subscribe"), false, "no pull after joining");
-  assert.equal(bodies.some((entry) => entry.op === "publish"), false);
+  assert.equal(
+    bodies.some((entry) => entry.op === "subscribe"),
+    false,
+    "no pull after joining",
+  );
+  assert.equal(
+    bodies.some((entry) => entry.op === "publish"),
+    false,
+  );
   assert.equal(receiver.remoteDescriptions[0]?.type, "offer", "the join's pull offer goes to the receive connection");
-  assert.equal(main.remoteDescriptions.some((description) => description.type === "offer"), false);
-  assert.ok(bodies.some((entry) => entry.op === "negotiate"), "answered while the microphone connection is still connecting");
+  assert.equal(
+    main.remoteDescriptions.some((description) => description.type === "offer"),
+    false,
+  );
+  assert.ok(
+    bodies.some((entry) => entry.op === "negotiate"),
+    "answered while the microphone connection is still connecting",
+  );
   assert.equal(main.connectionState, "connecting");
   assert.equal(track.enabled, false);
-  assert.equal(states.some((state) => state.remoteMedia.length > 0), false, "received audio is withheld while joining");
+  assert.equal(
+    states.some((state) => state.remoteMedia.length > 0),
+    false,
+    "received audio is withheld while joining",
+  );
   main.connectionState = "connected";
   main.dispatchEvent(new Event("connectionstatechange"));
   await joining;
@@ -1296,13 +1590,19 @@ test("join pulls everyone present onto a receive connection that comes up with t
 
 test("Join does not wait for the receive answer's round trip", async (t) => {
   const { client, track, states, install } = setup(t);
-  holdTransport(t, install, otherSpeaker, (op, body) => op === "join" && body.receive ? joinWithPulls(["remote"]) : undefined);
+  holdTransport(install, otherSpeaker, (op, body) =>
+    op === "join" && body.receive ? joinWithPulls(["remote"]) : undefined,
+  );
   const held = fetch;
   let answered!: () => void;
-  install("fetch", (url: string, init: RequestInit) => url.endsWith("/negotiate")
-    ? new Promise<Response>((resolve) => { answered = () => resolve(Response.json({})); })
-    : held(url, init));
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  install("fetch", (url: string, init: RequestInit) =>
+    url.endsWith("/negotiate")
+      ? new Promise<Response>((resolve) => {
+          answered = () => resolve(Response.json({}));
+        })
+      : held(url, init),
+  );
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const joining = client.join();
   await tick();
   const [main] = Peer.all;
@@ -1321,12 +1621,14 @@ test("Join does not wait for the receive answer's round trip", async (t) => {
 
 test("a receive connection that never comes up after Join reconnects the call", async (t) => {
   const { client, states, install } = setup(t);
-  holdTransport(t, install, otherSpeaker, (op, body) => op === "join" && body.receive ? joinWithPulls(["remote"]) : undefined);
-  t.mock.method(Peer.prototype, "createAnswer", async function (this: Peer) {
+  holdTransport(install, otherSpeaker, (op, body) =>
+    op === "join" && body.receive ? joinWithPulls(["remote"]) : undefined,
+  );
+  vi.spyOn(Peer.prototype, "createAnswer").mockImplementation(async function (this: Peer) {
     this.connectionState = "connecting";
     return { type: "answer", sdp: "v=0" };
   });
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const joining = client.join();
   await tick();
   const [main] = Peer.all;
@@ -1334,7 +1636,7 @@ test("a receive connection that never comes up after Join reconnects the call", 
   main.dispatchEvent(new Event("connectionstatechange"));
   await joining;
   assert.equal(states.at(-1)?.phase, "connected");
-  t.mock.timers.tick(15_000);
+  vi.advanceTimersByTime(15_000);
   await tick();
   assert.equal(states.at(-1)?.phase, "reconnecting");
   assert.equal(client.getAudioDiagnostics().voice.lastReconnect?.reason, "hearing others failed: Error");
@@ -1343,7 +1645,9 @@ test("a receive connection that never comes up after Join reconnects the call", 
 
 test("later pulls and closes use the receive connection", async (t) => {
   const { client, events, install } = setup(t);
-  const bodies = holdTransport(t, install, otherSpeaker, (op, body) => op === "join" && body.receive ? joinWithPulls(["remote"]) : undefined);
+  const bodies = holdTransport(install, otherSpeaker, (op, body) =>
+    op === "join" && body.receive ? joinWithPulls(["remote"]) : undefined,
+  );
   const joining = client.join();
   await tick();
   const [main, receiver] = Peer.all;
@@ -1351,12 +1655,18 @@ test("later pulls and closes use the receive connection", async (t) => {
   main.dispatchEvent(new Event("connectionstatechange"));
   await joining;
   // A newcomer arrives; the pull uses the receive session, not a new connection.
-  const roster = [...otherSpeaker, { id: "late", name: "Late", muted: false, deafened: false, tracks: [{ id: "fresh", kind: "microphone" }] }];
+  const roster = [
+    ...otherSpeaker,
+    { id: "late", name: "Late", muted: false, deafened: false, tracks: [{ id: "fresh", kind: "microphone" }] },
+  ];
   events[0].enqueue(snapshotEvent(roster, 1));
   await tick();
   assert.equal(bodies.filter((entry) => entry.op === "subscribe").length, 1);
   assert.equal(receiver.remoteDescriptions.length, 2);
-  assert.equal(main.remoteDescriptions.some((description) => description.type === "offer"), false);
+  assert.equal(
+    main.remoteDescriptions.some((description) => description.type === "offer"),
+    false,
+  );
   assert.equal(Peer.all.length, 2);
   // Departures are closed as subscriptions, since MIDs may repeat across sessions.
   events[0].enqueue(snapshotEvent(roster.slice(1), 2));
@@ -1366,8 +1676,9 @@ test("later pulls and closes use the receive connection", async (t) => {
 
 test("an API without join-time pulls keeps combined publication and pulls after connecting", async (t) => {
   const { client, states, install } = setup(t);
-  const bodies = holdTransport(t, install, otherSpeaker, (op, body) =>
-    op === "join" && body.receive ? Response.json({ error: "unknown field `receive`" }, { status: 422 }) : undefined);
+  const bodies = holdTransport(install, otherSpeaker, (op, body) =>
+    op === "join" && body.receive ? Response.json({ error: "unknown field `receive`" }, { status: 422 }) : undefined,
+  );
   const joining = client.join();
   await tick();
   const main = Peer.all[0];
@@ -1375,7 +1686,11 @@ test("an API without join-time pulls keeps combined publication and pulls after 
   assert.equal(joins.length, 2);
   assert.equal(joins[1].body.receive, undefined);
   assert.ok(joins[1].body.publish, "combined publication is kept");
-  assert.equal(bodies.some((entry) => entry.op === "subscribe"), false, "pulls wait for the transport");
+  assert.equal(
+    bodies.some((entry) => entry.op === "subscribe"),
+    false,
+    "pulls wait for the transport",
+  );
   main.connectionState = "connected";
   main.dispatchEvent(new Event("connectionstatechange"));
   await joining;
@@ -1425,9 +1740,11 @@ test("startup renews the lease despite a pushed roster and keeps newer pushed st
 test("publication failure cancels an unfinished SSE handshake without enabling audio", async (t) => {
   const { client, track, states, install } = setup(t, { eventsReady: false });
   const original = fetch;
-  install("fetch", (url: string, init: RequestInit) => url.endsWith("/publish")
-    ? Promise.resolve(Response.json({ error: "publication unavailable" }, { status: 503 }))
-    : original(url, init));
+  install("fetch", (url: string, init: RequestInit) =>
+    url.endsWith("/publish")
+      ? Promise.resolve(Response.json({ error: "publication unavailable" }, { status: 503 }))
+      : original(url, init),
+  );
   await client.join();
   assert.equal(states.at(-1)?.phase, "failed");
   assert.equal(track.enabled, false);
@@ -1437,7 +1754,9 @@ test("publication failure cancels an unfinished SSE handshake without enabling a
 
 test("state failure cancels an unfinished transport handshake without enabling audio", async (t) => {
   const { client, track, calls, states, install } = setup(t);
-  t.mock.method(Peer.prototype, "setRemoteDescription", async () => { Peer.latest.connectionState = "connecting"; });
+  vi.spyOn(Peer.prototype, "setRemoteDescription").mockImplementation(async () => {
+    Peer.latest.connectionState = "connecting";
+  });
   const original = fetch;
   install("fetch", async (url: string, init: RequestInit) => {
     if (url.endsWith("/join")) await client.setMuted(true);
@@ -1461,11 +1780,18 @@ test("a newer unsynchronized mute change during the initial roster is repaired b
   let latestState!: () => void;
   const updates: Array<{ muted: boolean }> = [];
   install("fetch", (url: string, init: RequestInit) => {
-    if (url.endsWith("/snapshot")) return new Promise<Response>((resolve) => { snapshot = () => resolve(Response.json({ participants: [] })); });
+    if (url.endsWith("/snapshot"))
+      return new Promise<Response>((resolve) => {
+        snapshot = () => resolve(Response.json({ participants: [] }));
+      });
     if (url.endsWith("/state")) {
       updates.push(JSON.parse(init.body as string));
-      if (updates.length === 1) return Promise.resolve(Response.json({ error: "temporary state failure" }, { status: 503 }));
-      if (updates.length === 2) return new Promise<Response>((resolve) => { latestState = () => resolve(new Response(null, { status: 204 })); });
+      if (updates.length === 1)
+        return Promise.resolve(Response.json({ error: "temporary state failure" }, { status: 503 }));
+      if (updates.length === 2)
+        return new Promise<Response>((resolve) => {
+          latestState = () => resolve(new Response(null, { status: 204 }));
+        });
     }
     return original(url, init);
   });
@@ -1474,7 +1800,10 @@ test("a newer unsynchronized mute change during the initial roster is repaired b
   await assert.rejects(client.setMuted(false), /temporary state failure/);
   snapshot();
   await tick();
-  assert.deepEqual(updates.map((update) => update.muted), [false, false]);
+  assert.deepEqual(
+    updates.map((update) => update.muted),
+    [false, false],
+  );
   assert.equal(track.enabled, false);
   assert.equal(states.at(-1)?.phase, "joining");
   latestState();
@@ -1488,8 +1817,24 @@ test("initial subscription negotiation completes before microphone audio is enab
   const original = fetch;
   let negotiate!: () => void;
   install("fetch", (url: string, init: RequestInit) => {
-    if (url.endsWith("/snapshot")) return Promise.resolve(Response.json({ participants: [{id:"other",name:"Other",muted:false,deafened:false,tracks:[{id:"remote",kind:"microphone"}]}] }));
-    if (url.endsWith("/negotiate")) return new Promise<Response>((resolve) => { negotiate = () => resolve(new Response(null,{status:204})); });
+    if (url.endsWith("/snapshot"))
+      return Promise.resolve(
+        Response.json({
+          participants: [
+            {
+              id: "other",
+              name: "Other",
+              muted: false,
+              deafened: false,
+              tracks: [{ id: "remote", kind: "microphone" }],
+            },
+          ],
+        }),
+      );
+    if (url.endsWith("/negotiate"))
+      return new Promise<Response>((resolve) => {
+        negotiate = () => resolve(new Response(null, { status: 204 }));
+      });
     return original(url, init);
   });
   const joining = client.join();
@@ -1506,12 +1851,28 @@ test("initial subscription negotiation completes before microphone audio is enab
 test("subscription renegotiation may reconnect transport before Join enables audio", async (t) => {
   const { client, track, states, install } = setup(t);
   const original = fetch;
-  install("fetch", (url: string, init: RequestInit) => url.endsWith("/snapshot")
-    ? Promise.resolve(Response.json({ participants: [{id:"other",name:"Other",muted:false,deafened:false,tracks:[{id:"remote",kind:"microphone"}]}] }))
-    : original(url, init));
-  t.mock.method(Peer.prototype, "setRemoteDescription", async (description: RTCSessionDescriptionInit) => {
-    if (description.type === "offer") Peer.latest.connectionState = "connecting";
-  });
+  install("fetch", (url: string, init: RequestInit) =>
+    url.endsWith("/snapshot")
+      ? Promise.resolve(
+          Response.json({
+            participants: [
+              {
+                id: "other",
+                name: "Other",
+                muted: false,
+                deafened: false,
+                tracks: [{ id: "remote", kind: "microphone" }],
+              },
+            ],
+          }),
+        )
+      : original(url, init),
+  );
+  vi.spyOn(Peer.prototype, "setRemoteDescription").mockImplementation(
+    async (description: RTCSessionDescriptionInit) => {
+      if (description.type === "offer") Peer.latest.connectionState = "connecting";
+    },
+  );
 
   const joining = client.join();
   await tick();
@@ -1530,12 +1891,28 @@ test("subscription renegotiation may reconnect transport before Join enables aud
 test("leaving while subscription transport reconnects cancels Join and keeps audio closed", async (t) => {
   const { client, track, states, install } = setup(t);
   const original = fetch;
-  install("fetch", (url: string, init: RequestInit) => url.endsWith("/snapshot")
-    ? Promise.resolve(Response.json({ participants: [{id:"other",name:"Other",muted:false,deafened:false,tracks:[{id:"remote",kind:"microphone"}]}] }))
-    : original(url, init));
-  t.mock.method(Peer.prototype, "setRemoteDescription", async (description: RTCSessionDescriptionInit) => {
-    if (description.type === "offer") Peer.latest.connectionState = "connecting";
-  });
+  install("fetch", (url: string, init: RequestInit) =>
+    url.endsWith("/snapshot")
+      ? Promise.resolve(
+          Response.json({
+            participants: [
+              {
+                id: "other",
+                name: "Other",
+                muted: false,
+                deafened: false,
+                tracks: [{ id: "remote", kind: "microphone" }],
+              },
+            ],
+          }),
+        )
+      : original(url, init),
+  );
+  vi.spyOn(Peer.prototype, "setRemoteDescription").mockImplementation(
+    async (description: RTCSessionDescriptionInit) => {
+      if (description.type === "offer") Peer.latest.connectionState = "connecting";
+    },
+  );
 
   const joining = client.join();
   await tick();
@@ -1551,20 +1928,36 @@ test("leaving while subscription transport reconnects cancels Join and keeps aud
 
 test("subscription transport reconnection still times out without enabling audio", async (t) => {
   const { client, track, states, install } = setup(t);
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const original = fetch;
-  install("fetch", (url: string, init: RequestInit) => url.endsWith("/snapshot")
-    ? Promise.resolve(Response.json({ participants: [{id:"other",name:"Other",muted:false,deafened:false,tracks:[{id:"remote",kind:"microphone"}]}] }))
-    : original(url, init));
-  t.mock.method(Peer.prototype, "setRemoteDescription", async (description: RTCSessionDescriptionInit) => {
-    if (description.type === "offer") Peer.latest.connectionState = "connecting";
-  });
+  install("fetch", (url: string, init: RequestInit) =>
+    url.endsWith("/snapshot")
+      ? Promise.resolve(
+          Response.json({
+            participants: [
+              {
+                id: "other",
+                name: "Other",
+                muted: false,
+                deafened: false,
+                tracks: [{ id: "remote", kind: "microphone" }],
+              },
+            ],
+          }),
+        )
+      : original(url, init),
+  );
+  vi.spyOn(Peer.prototype, "setRemoteDescription").mockImplementation(
+    async (description: RTCSessionDescriptionInit) => {
+      if (description.type === "offer") Peer.latest.connectionState = "connecting";
+    },
+  );
 
   const joining = client.join();
   await tick();
   await tick();
   assert.equal(Peer.latest.connectionState, "connecting");
-  t.mock.timers.tick(12_000);
+  vi.advanceTimersByTime(12_000);
   await joining;
   assert.equal(states.at(-1)?.phase, "failed");
   assert.match(states.at(-1)?.error ?? "", /Timed out waiting for connectionstatechange/);
@@ -1576,9 +1969,20 @@ test("a received participant track is exposed for that participant's speaking in
   const { client, states, install } = setup(t);
   const original = fetch;
   install("fetch", (url: string, options: RequestInit) => {
-    if (url.endsWith("/snapshot")) return Promise.resolve(Response.json({
-      participants: [{ id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "remote", kind: "microphone" }] }],
-    }));
+    if (url.endsWith("/snapshot"))
+      return Promise.resolve(
+        Response.json({
+          participants: [
+            {
+              id: "other",
+              name: "Other",
+              muted: false,
+              deafened: false,
+              tracks: [{ id: "remote", kind: "microphone" }],
+            },
+          ],
+        }),
+      );
     return original(url, options);
   });
 
@@ -1594,9 +1998,20 @@ test("remote audio is withheld until the join has completed", async (t) => {
   const { client, states, install } = setup(t);
   const original = fetch;
   install("fetch", (url: string, options: RequestInit) => {
-    if (url.endsWith("/snapshot")) return Promise.resolve(Response.json({
-      participants: [{ id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "remote", kind: "microphone" }] }],
-    }));
+    if (url.endsWith("/snapshot"))
+      return Promise.resolve(
+        Response.json({
+          participants: [
+            {
+              id: "other",
+              name: "Other",
+              muted: false,
+              deafened: false,
+              tracks: [{ id: "remote", kind: "microphone" }],
+            },
+          ],
+        }),
+      );
     return original(url, options);
   });
 
@@ -1604,7 +2019,13 @@ test("remote audio is withheld until the join has completed", async (t) => {
 
   // Subscription happens during joining; no state before "connected" may carry it.
   assert.ok(states.some((state) => state.phase === "joining"));
-  assert.deepEqual(states.filter((state) => state.phase !== "connected").map((state) => state.remoteMedia.length).filter(Boolean), []);
+  assert.deepEqual(
+    states
+      .filter((state) => state.phase !== "connected")
+      .map((state) => state.remoteMedia.length)
+      .filter(Boolean),
+    [],
+  );
   assert.equal(states.at(-1)?.phase, "connected");
   assert.equal(states.at(-1)?.remoteMedia.length, 1);
 });
@@ -1636,16 +2057,20 @@ test("gateway loss during startup and an established call preserves media while 
   const { client, track, events, states, install } = setup(t);
   const original = fetch;
   let publish!: () => void;
-  install("fetch", (url: string, init: RequestInit) => url.endsWith("/publish")
-    ? new Promise<Response>((resolve) => { publish = () => resolve(Response.json({sessionDescription:{type:"answer",sdp:"v=0"}})); })
-    : original(url, init));
+  install("fetch", (url: string, init: RequestInit) =>
+    url.endsWith("/publish")
+      ? new Promise<Response>((resolve) => {
+          publish = () => resolve(Response.json({ sessionDescription: { type: "answer", sdp: "v=0" } }));
+        })
+      : original(url, init),
+  );
   const joining = client.join();
   await tick();
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   events[0].close();
   await tick();
   assert.equal(track.readyState, "live");
-  t.mock.timers.tick(188);
+  vi.advanceTimersByTime(188);
   await tick();
   publish();
   await joining;
@@ -1658,7 +2083,7 @@ test("gateway loss during startup and an established call preserves media while 
   assert.equal(outgoing.readyState, "live");
   assert.equal(outgoing.enabled, true);
   assert.equal(states.at(-1)?.phase, "connected");
-  t.mock.timers.tick(375);
+  vi.advanceTimersByTime(375);
   await tick();
   await tick();
   assert.equal(events.length, 3, "reopen the gateway subscription using the existing voice session");
@@ -1669,7 +2094,7 @@ test("gateway loss during startup and an established call preserves media while 
 
 test("gateway-only outage never restarts healthy voice while authenticated renewals succeed", async (t) => {
   const { client, events, states } = setup(t);
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval"] });
   await client.join();
   const peer = Peer.latest;
   events[0].close();
@@ -1678,7 +2103,7 @@ test("gateway-only outage never restarts healthy voice while authenticated renew
   assert.equal(states.at(-1)?.liveUpdatesPending, true);
   assert.equal(Peer.latest, peer);
   assert.equal(peer.senders[0].track?.enabled, true);
-  t.mock.timers.tick(188);
+  vi.advanceTimersByTime(188);
   await tick();
   await tick();
   assert.equal(events.length, 2);
@@ -1718,16 +2143,23 @@ test("rejoin restores local microphone testing without reattaching the public se
 test("a pushed gateway snapshot subscribes without waiting for the heartbeat timer", async (t) => {
   const { client, events, calls, states } = setup(t);
   await client.join();
-  events[0].enqueue(snapshotEvent([
-    { id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "remote", kind: "microphone" }] },
-  ], 1));
+  events[0].enqueue(
+    snapshotEvent(
+      [{ id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "remote", kind: "microphone" }] }],
+      1,
+    ),
+  );
   await tick();
   assert.ok(calls.includes("subscribe"));
   assert.ok(calls.includes("negotiate"));
-  assert.deepEqual(Peer.latest.remoteDescriptions, [
-    { type: "answer", sdp: senderSdp },
-    { type: "offer", sdp: senderSdp },
-  ], "subscription renegotiation must not reset the microphone's DTX preference");
+  assert.deepEqual(
+    Peer.latest.remoteDescriptions,
+    [
+      { type: "answer", sdp: senderSdp },
+      { type: "offer", sdp: senderSdp },
+    ],
+    "subscription renegotiation must not reset the microphone's DTX preference",
+  );
   assert.equal(states.at(-1)?.remoteMedia[0]?.trackId, "remote");
 });
 
@@ -1736,9 +2168,11 @@ test("pushed gateway snapshots reconcile immediately without an extra roster req
   await client.join();
   const original = fetch;
   let snapshots = 0;
-  install("fetch", (url: string, init: RequestInit) => url.endsWith("/snapshot")
-    ? (snapshots++, Promise.resolve(Response.json({ participants: [] })))
-    : original(url, init));
+  install("fetch", (url: string, init: RequestInit) =>
+    url.endsWith("/snapshot")
+      ? (snapshots++, Promise.resolve(Response.json({ participants: [] })))
+      : original(url, init),
+  );
   events[0].enqueue(snapshotEvent([{ id: "one", name: "One", muted: false, deafened: false, tracks: [] }], 1));
   await tick();
   events[0].enqueue(snapshotEvent([{ id: "two", name: "Two", muted: true, deafened: false, tracks: [] }], 2));
@@ -1752,9 +2186,13 @@ test("a pushed newer revision supersedes an older HTTP snapshot already in fligh
   await client.join();
   const original = fetch;
   let finish!: () => void;
-  install("fetch", (url: string, init: RequestInit) => url.endsWith("/snapshot")
-    ? new Promise<Response>((resolve) => { finish = () => resolve(Response.json({ participants: [], revision: 1 })); })
-    : original(url, init));
+  install("fetch", (url: string, init: RequestInit) =>
+    url.endsWith("/snapshot")
+      ? new Promise<Response>((resolve) => {
+          finish = () => resolve(Response.json({ participants: [], revision: 1 }));
+        })
+      : original(url, init),
+  );
   const polling = (client as unknown as { poll(): Promise<void> }).poll();
   await tick();
   events[0].enqueue(snapshotEvent([{ id: "new", name: "New", muted: false, deafened: false, tracks: [] }], 2));
@@ -1770,11 +2208,11 @@ test("draining reopens control with the same call and does not rejoin or replace
   await client.join();
   const peer = Peer.latest;
   const joins = calls.filter((call) => call === "join").length;
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   events[0].enqueue(new TextEncoder().encode("event: draining\ndata: {}\n\n"));
   events[0].close();
   await tick();
-  t.mock.timers.tick(50);
+  vi.advanceTimersByTime(50);
   await tick();
   assert.equal(events.length, 2);
   assert.equal(Peer.latest, peer);
@@ -1805,24 +2243,30 @@ test("repeated gateway migrations preserve the active call and stop after leavin
 });
 
 test("queued pushed snapshots never suppress a scheduled lease heartbeat", async (t) => {
-  t.mock.timers.enable({ apis: ["setInterval"] });
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   const { client, events, install, states } = setup(t);
   await client.join();
   const original = fetch;
   let requests = 0;
   let finish!: () => void;
-  const latest = { participants: [{ id: "other", name: "Other", muted: true, deafened: false, tracks: [] }], revision: 2 };
+  const latest = {
+    participants: [{ id: "other", name: "Other", muted: true, deafened: false, tracks: [] }],
+    revision: 2,
+  };
   install("fetch", (url: string, init: RequestInit) => {
     if (!url.endsWith("/snapshot")) return original(url, init);
     requests++;
-    if (requests === 1) return new Promise<Response>((resolve) => { finish = () => resolve(Response.json({ participants: [], revision: 1 })); });
+    if (requests === 1)
+      return new Promise<Response>((resolve) => {
+        finish = () => resolve(Response.json({ participants: [], revision: 1 }));
+      });
     return Promise.resolve(Response.json(latest));
   });
   events[0].enqueue(changedEvent());
   await tick();
   events[0].enqueue(snapshotEvent(latest.participants, 2));
   await tick();
-  t.mock.timers.tick(15_000);
+  vi.advanceTimersByTime(15_000);
   finish();
   await tick();
   await tick();
@@ -1834,9 +2278,12 @@ test("shared session start follows fenced snapshots and clears on leave", async 
   const { client, events, states } = setup(t);
   await client.join();
   const people = [{ id: "self", name: "Self", muted: false, deafened: false, tracks: [] }];
-  const push = (revision: number, sessionStartedAt: number | null) => events[0].enqueue(new TextEncoder().encode(
-    `event: snapshot\ndata: ${JSON.stringify({ participants: people, revision, sessionStartedAt })}\n\n`,
-  ));
+  const push = (revision: number, sessionStartedAt: number | null) =>
+    events[0].enqueue(
+      new TextEncoder().encode(
+        `event: snapshot\ndata: ${JSON.stringify({ participants: people, revision, sessionStartedAt })}\n\n`,
+      ),
+    );
   push(8, 1_234_567);
   await tick();
   assert.equal(states.at(-1)?.sessionStartedAt, 1_234_567);
@@ -1861,7 +2308,10 @@ test("rapid mute changes coalesce to the latest intent behind an in-flight state
   install("fetch", (url: string, init: RequestInit) => {
     if (!url.endsWith("/state")) return original(url, init);
     updates.push(JSON.parse(init.body as string).muted);
-    if (updates.length === 1) return new Promise<Response>((resolve) => { finish = () => resolve(new Response(null, { status: 204 })); });
+    if (updates.length === 1)
+      return new Promise<Response>((resolve) => {
+        finish = () => resolve(new Response(null, { status: 204 }));
+      });
     return Promise.resolve(new Response(null, { status: 204 }));
   });
   const first = client.setMuted(true);
@@ -1877,7 +2327,7 @@ test("rapid mute changes coalesce to the latest intent behind an in-flight state
 
 test("mute writes and pushed roster updates cannot block the scheduled lease renewal", async (t) => {
   const { client, install, states, events, calls } = setup(t);
-  t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setInterval", "setTimeout", "clearInterval", "clearTimeout"] });
   await client.join();
   const original = fetch;
   const participants = [{ id: "other", name: "Other", muted: true, deafened: false, tracks: [] }];
@@ -1888,10 +2338,11 @@ test("mute writes and pushed roster updates cannot block the scheduled lease ren
       renewals++;
       return Promise.resolve(Response.json({ participants, revision: 1 }));
     }
-    if (url.endsWith("/state")) return new Promise<Response>((resolve, reject) => {
-      finish = () => resolve(new Response(null, { status: 204 }));
-      init.signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
-    });
+    if (url.endsWith("/state"))
+      return new Promise<Response>((resolve, reject) => {
+        finish = () => resolve(new Response(null, { status: 204 }));
+        init.signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+      });
     return original(url, init);
   });
   const muting = client.setMuted(true).catch(() => undefined);
@@ -1899,7 +2350,7 @@ test("mute writes and pushed roster updates cannot block the scheduled lease ren
   events[0].enqueue(snapshotEvent(participants, 1));
   await tick();
   const pushedMuted = states.at(-1)?.participants[0]?.muted;
-  t.mock.timers.tick(15_000);
+  vi.advanceTimersByTime(15_000);
   await tick();
   assert.ok(renewals > 0, "lease renewal must not queue behind a state request");
   assert.equal(pushedMuted, true, "show pushed state before heartbeat, without waiting for our own write");
@@ -1911,7 +2362,7 @@ test("mute writes and pushed roster updates cannot block the scheduled lease ren
 
 test("draining with failed state writes retries latest intent without replacing the voice session", async (t) => {
   const { client, events, install, states, calls } = setup(t);
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval"] });
   await client.join();
   const peer = Peer.latest;
   const original = fetch;
@@ -1921,9 +2372,11 @@ test("draining with failed state writes retries latest intent without replacing 
     tokens.push((init.headers as Record<string, string>)["x-caper-media-token"]);
     if (!url.endsWith("/state")) return original(url, init);
     updates.push(JSON.parse(init.body as string));
-    return Promise.resolve(updates.length <= 2
-      ? Response.json({}, { status: updates.length === 1 ? 503 : 504 })
-      : new Response(null, { status: 204 }));
+    return Promise.resolve(
+      updates.length <= 2
+        ? Response.json({}, { status: updates.length === 1 ? 503 : 504 })
+        : new Response(null, { status: 204 }),
+    );
   });
   await client.setMuted(true);
   assert.equal(peer.senders[0].track, null);
@@ -1931,16 +2384,19 @@ test("draining with failed state writes retries latest intent without replacing 
   events[0].enqueue(new TextEncoder().encode("event: draining\ndata: {}\n\n"));
   events[0].close();
   await tick();
-  t.mock.timers.tick(50);
+  vi.advanceTimersByTime(50);
   await tick();
   await client.setDeafened(true);
   await Promise.all([client.setDeafened(false), client.setMuted(false)]);
-  t.mock.timers.tick(300);
+  vi.advanceTimersByTime(300);
   await tick();
   assert.deepEqual(updates.at(-1), { muted: false, deafened: false, sequence: 4 });
   assert.equal(states.at(-1)?.stateSyncPending, false);
   assert.equal(states.at(-1)?.phase, "connected");
-  assert.equal(states.some((state) => state.error !== undefined), false);
+  assert.equal(
+    states.some((state) => state.error !== undefined),
+    false,
+  );
   assert.equal(events.length, 2);
   assert.equal(Peer.latest, peer);
   assert.equal(peer.getSenders()[0].track?.enabled, true);
@@ -1951,17 +2407,22 @@ test("draining with failed state writes retries latest intent without replacing 
 
 test("blocked subscription negotiation cannot delay roster, mute synchronization, or lease renewal", async (t) => {
   const { client, events, install, states, stateUpdates } = setup(t);
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval"] });
   await client.join();
   const original = fetch;
   let finish!: () => void;
   let renewals = 0;
   let muted = false;
-  const roster = () => [{ id: "other", name: "Other", muted, deafened: false, tracks: [{ id: "remote", kind: "microphone" }] }];
+  const roster = () => [
+    { id: "other", name: "Other", muted, deafened: false, tracks: [{ id: "remote", kind: "microphone" }] },
+  ];
   install("fetch", (url: string, init: RequestInit) => {
-    if (url.endsWith("/subscribe")) return new Promise<Response>((resolve) => {
-      finish = () => { void original(url, init).then(resolve); };
-    });
+    if (url.endsWith("/subscribe"))
+      return new Promise<Response>((resolve) => {
+        finish = () => {
+          void original(url, init).then(resolve);
+        };
+      });
     if (url.endsWith("/snapshot")) {
       renewals++;
       return Promise.resolve(Response.json({ participants: roster(), revision: muted ? 2 : 1 }));
@@ -1978,7 +2439,7 @@ test("blocked subscription negotiation cannot delay roster, mute synchronization
   await client.setMuted(true);
   assert.equal(stateUpdates.at(-1)?.muted, true);
   for (let heartbeat = 0; heartbeat < 2; heartbeat++) {
-    t.mock.timers.tick(15_000);
+    vi.advanceTimersByTime(15_000);
     await tick();
   }
   assert.equal(renewals, 2, "heartbeat must run while SDP work is still pending");
@@ -1991,21 +2452,22 @@ test("blocked subscription negotiation cannot delay roster, mute synchronization
 
 test("a late timed-out mute write is repaired from a newer pushed self snapshot", async (t) => {
   const { client, events, install, states } = setup(t);
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval"] });
   await client.join();
   const original = fetch;
   const updates: boolean[] = [];
   install("fetch", (url: string, init: RequestInit) => {
     if (!url.endsWith("/state")) return original(url, init);
     updates.push(JSON.parse(init.body as string).muted);
-    if (updates.length === 1) return new Promise<Response>((_resolve, reject) => {
-      init.signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
-    });
+    if (updates.length === 1)
+      return new Promise<Response>((_resolve, reject) => {
+        init.signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+      });
     return Promise.resolve(new Response(null, { status: 204 }));
   });
   const muting = client.setMuted(true);
   await tick();
-  t.mock.timers.tick(5_000);
+  vi.advanceTimersByTime(5_000);
   await muting;
   await client.setMuted(false);
   assert.deepEqual(updates, [true, false]);
@@ -2024,7 +2486,7 @@ test("a late timed-out mute write is repaired from a newer pushed self snapshot"
 
 test("leaving cancels pending state retries and ignores an old mute action after rejoin", async (t) => {
   const { client, install, states } = setup(t);
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval"] });
   await client.join();
   const original = fetch;
   let writes = 0;
@@ -2042,36 +2504,53 @@ test("leaving cancels pending state retries and ignores an old mute action after
   await oldAction;
   install("fetch", original);
   await client.join();
-  t.mock.timers.tick(1_000);
+  vi.advanceTimersByTime(1_000);
   await tick();
   assert.equal(writes, 1, "no old-generation write or retry");
   assert.equal(states.at(-1)?.phase, "connected");
   assert.equal(states.at(-1)?.muted, false);
   assert.equal(states.at(-1)?.stateSyncPending, false);
-  assert.equal(states.some((state) => state.error !== undefined), false);
+  assert.equal(
+    states.some((state) => state.error !== undefined),
+    false,
+  );
 });
 
 for (const operation of ["join", "publish", "subscribe", "negotiate", "close"]) {
   test(`${operation} retries explicit drain rejection without replacing the call`, async (t) => {
     const { client, install, events, states, calls } = setup(t);
-    t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval"] });
     const startup = operation === "join" || operation === "publish";
     if (!startup) await client.join();
     const original = fetch;
     let attempts = 0;
     install("fetch", (url: string, init: RequestInit) => {
-      if (url.endsWith(`/${operation}`) && ++attempts === 1) return Promise.resolve(Response.json({ error: "API is draining", code: "api_draining" }, { status: 503 }));
+      if (url.endsWith(`/${operation}`) && ++attempts === 1)
+        return Promise.resolve(Response.json({ error: "API is draining", code: "api_draining" }, { status: 503 }));
       return original(url, init);
     });
     const joining = startup ? client.join() : Promise.resolve();
     if (!startup) {
-      events[0].enqueue(snapshotEvent([{ id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "remote", kind: "microphone" }] }], 1));
+      events[0].enqueue(
+        snapshotEvent(
+          [
+            {
+              id: "other",
+              name: "Other",
+              muted: false,
+              deafened: false,
+              tracks: [{ id: "remote", kind: "microphone" }],
+            },
+          ],
+          1,
+        ),
+      );
       await tick();
       if (operation === "close") events[0].enqueue(snapshotEvent([], 2));
     }
     await tick();
     assert.equal(attempts, 1);
-    t.mock.timers.tick(250);
+    vi.advanceTimersByTime(250);
     await tick();
     await joining;
     assert.equal(attempts, 2);
@@ -2085,7 +2564,7 @@ for (const operation of ["join", "publish", "subscribe", "negotiate", "close"]) 
 for (const status of [502, 503, 504]) {
   test(`ambiguous subscription ${status} is never blindly replayed`, async (t) => {
     const { client, install, events, states } = setup(t);
-    t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval"] });
     await client.join();
     const original = fetch;
     let attempts = 0;
@@ -2096,7 +2575,12 @@ for (const status of [502, 503, 504]) {
       }
       return original(url, init);
     });
-    events[0].enqueue(snapshotEvent([{ id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "remote", kind: "microphone" }] }], 1));
+    events[0].enqueue(
+      snapshotEvent(
+        [{ id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "remote", kind: "microphone" }] }],
+        1,
+      ),
+    );
     await tick();
     assert.equal(attempts, 1);
     assert.equal(states.at(-1)?.phase, "reconnecting", "uncertain SDP still needs a new session");
@@ -2113,9 +2597,32 @@ test("a departure before subscribing skips only that track and retains the calle
     if (!url.endsWith("/subscribe")) return original(url, init);
     requests.push(JSON.parse(init.body as string));
     // One batched pull: the live source is allocated, the departed one is reported gone.
-    return Promise.resolve(Response.json({ requiresImmediateRenegotiation: true, tracks: [{ trackId: "live", mid: "1" }], gone: ["gone"], sessionDescription: { type: "offer", sdp: providerSdp } }));
+    return Promise.resolve(
+      Response.json({
+        requiresImmediateRenegotiation: true,
+        tracks: [{ trackId: "live", mid: "1" }],
+        gone: ["gone"],
+        sessionDescription: { type: "offer", sdp: providerSdp },
+      }),
+    );
   });
-  events[0].enqueue(snapshotEvent([{ id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "gone", kind: "microphone" }, { id: "live", kind: "microphone" }] }], 1));
+  events[0].enqueue(
+    snapshotEvent(
+      [
+        {
+          id: "other",
+          name: "Other",
+          muted: false,
+          deafened: false,
+          tracks: [
+            { id: "gone", kind: "microphone" },
+            { id: "live", kind: "microphone" },
+          ],
+        },
+      ],
+      1,
+    ),
+  );
   await tick();
   assert.deepEqual(requests[0], { trackIds: ["gone", "live"] }, "several sources share one pull");
   assert.equal(states.at(-1)?.phase, "connected");
@@ -2136,11 +2643,19 @@ test("an API without batched pulls falls back to one pull per source and remembe
     if (body.trackIds) return Promise.resolve(Response.json({ error: "unknown field `trackIds`" }, { status: 422 }));
     return original(url, init);
   });
-  const person = (id: string, tracks: string[]) => ({ id, name: id, muted: false, deafened: false, tracks: tracks.map((track) => ({ id: track, kind: "microphone" as const })) });
+  const person = (id: string, tracks: string[]) => ({
+    id,
+    name: id,
+    muted: false,
+    deafened: false,
+    tracks: tracks.map((track) => ({ id: track, kind: "microphone" as const })),
+  });
   events[0].enqueue(snapshotEvent([person("a", ["a-mic"]), person("b", ["b-mic"])], 1));
   await tick();
   assert.deepEqual(requests, [{ trackIds: ["a-mic", "b-mic"] }, { trackId: "a-mic" }, { trackId: "b-mic" }]);
-  events[0].enqueue(snapshotEvent([person("a", ["a-mic"]), person("b", ["b-mic"]), person("c", ["c-mic"]), person("d", ["d-mic"])], 2));
+  events[0].enqueue(
+    snapshotEvent([person("a", ["a-mic"]), person("b", ["b-mic"]), person("c", ["c-mic"]), person("d", ["d-mic"])], 2),
+  );
   await tick();
   assert.deepEqual(requests.slice(3), [{ trackId: "c-mic" }, { trackId: "d-mic" }], "no repeated batch attempt");
   assert.equal(states.at(-1)?.phase, "connected");
@@ -2152,17 +2667,39 @@ test("a source leaving during subscription completes negotiation then closes onl
   const peer = Peer.latest;
   const original = fetch;
   let finish!: () => void;
-  install("fetch", (url: string, init: RequestInit) => url.endsWith("/subscribe")
-    ? new Promise<Response>((resolve) => { finish = () => { void original(url, init).then(resolve); }; })
-    : original(url, init));
-  events[0].enqueue(snapshotEvent([{ id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "departing", kind: "microphone" }] }], 1));
+  install("fetch", (url: string, init: RequestInit) =>
+    url.endsWith("/subscribe")
+      ? new Promise<Response>((resolve) => {
+          finish = () => {
+            void original(url, init).then(resolve);
+          };
+        })
+      : original(url, init),
+  );
+  events[0].enqueue(
+    snapshotEvent(
+      [
+        {
+          id: "other",
+          name: "Other",
+          muted: false,
+          deafened: false,
+          tracks: [{ id: "departing", kind: "microphone" }],
+        },
+      ],
+      1,
+    ),
+  );
   await tick();
   events[0].enqueue(snapshotEvent([], 2));
   await tick();
   finish();
   await tick();
   await tick();
-  assert.deepEqual(calls.filter((op) => ["negotiate", "close"].includes(op)), ["negotiate", "close"]);
+  assert.deepEqual(
+    calls.filter((op) => ["negotiate", "close"].includes(op)),
+    ["negotiate", "close"],
+  );
   assert.equal(states.at(-1)?.phase, "connected");
   assert.equal(Peer.latest, peer);
   assert.equal(peer.senders[0].track?.enabled, true);
@@ -2172,7 +2709,7 @@ test("a source leaving during subscription completes negotiation then closes onl
 
 test("drain retries are bounded and leave cancels retry backoff", async (t) => {
   const { client, install } = setup(t);
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval"] });
   await client.join();
   const original = fetch;
   let attempts = 0;
@@ -2184,14 +2721,17 @@ test("drain retries are bounded and leave cancels retry backoff", async (t) => {
   const api = client as unknown as { api(operation: string): Promise<void> };
   const exhausted = assert.rejects(api.api("subscribe"), /API is draining/);
   await tick();
-  for (const delay of [250, 500, 1_000]) { t.mock.timers.tick(delay); await tick(); }
+  for (const delay of [250, 500, 1_000]) {
+    vi.advanceTimersByTime(delay);
+    await tick();
+  }
   await exhausted;
   assert.equal(attempts, 4);
   const cancelled = assert.rejects(api.api("subscribe"));
   await tick();
   await client.leave();
   await cancelled;
-  t.mock.timers.tick(2_000);
+  vi.advanceTimersByTime(2_000);
   await tick();
   assert.equal(attempts, 5, "no retry after leaving");
 });
@@ -2209,26 +2749,43 @@ test("successful recovery resets the consecutive failure budget", async (t) => {
 test("a pending old microphone request cannot block controls in a replacement call", async (t) => {
   const { client, install, states, stateUpdates } = setup(t);
   await client.join();
-  const capture = [...(client as unknown as { captures: Map<Track, { resume(): Promise<void> }> }).captures.values()][0];
-  const resume = t.mock.method(capture, "resume", async () => { throw new Error("old pipeline was stopped"); });
+  const capture = [
+    ...(client as unknown as { captures: Map<Track, { resume(): Promise<void> }> }).captures.values(),
+  ][0];
+  const resume = vi.spyOn(capture, "resume").mockImplementation(async () => {
+    throw new Error("old pipeline was stopped");
+  });
   let finish!: () => void;
   let captures = 0;
-  install("navigator", { mediaDevices: { getUserMedia: () => ++captures === 1
-    ? new Promise<Stream>((resolve) => { finish = () => resolve(new Stream([new Track()])); })
-    : Promise.resolve(new Stream([new Track()])) } });
+  install("navigator", {
+    mediaDevices: {
+      getUserMedia: () =>
+        ++captures === 1
+          ? new Promise<Stream>((resolve) => {
+              finish = () => resolve(new Stream([new Track()]));
+            })
+          : Promise.resolve(new Stream([new Track()])),
+    },
+  });
   const replacing = assert.rejects(client.changeMicrophone("old-device"), { name: "AbortError" });
   await tick();
   await client.leave();
   await client.join();
   let applied = false;
-  const muting = client.setMuted(true).then(() => { applied = true; });
+  const muting = client.setMuted(true).then(() => {
+    applied = true;
+  });
   await tick();
   assert.equal(applied, true, "new media queue must not wait for uncancellable old getUserMedia");
   assert.equal(stateUpdates.at(-1)?.muted, true);
   finish();
   await replacing;
   await muting;
-  assert.equal(resume.mock.callCount(), 0, "never resurrect an old pipeline or let its failed rollback restart the new call");
+  assert.equal(
+    resume.mock.calls.length,
+    0,
+    "never resurrect an old pipeline or let its failed rollback restart the new call",
+  );
   assert.equal(states.at(-1)?.phase, "connected");
 });
 
@@ -2238,8 +2795,12 @@ test("a late ended-track cleanup failure cannot reconnect a replacement call", a
   const original = fetch;
   let failClose!: () => void;
   install("fetch", (url: string, init: RequestInit) => {
-    if (url.endsWith("/join")) return Promise.resolve(Response.json({token:"replacement-capability",id:"new-self",iceServers:[]}));
-    if (url.endsWith("/close")) return new Promise<Response>((_resolve, reject) => { failClose = () => reject(new TypeError("late close failure")); });
+    if (url.endsWith("/join"))
+      return Promise.resolve(Response.json({ token: "replacement-capability", id: "new-self", iceServers: [] }));
+    if (url.endsWith("/close"))
+      return new Promise<Response>((_resolve, reject) => {
+        failClose = () => reject(new TypeError("late close failure"));
+      });
     return original(url, init);
   });
   track.dispatchEvent(new Event("ended"));
@@ -2257,11 +2818,24 @@ test("a late ended-track cleanup failure cannot reconnect a replacement call", a
 for (const failure of [502, 503, 504, "network", "timeout"] as const) {
   test(`remote departure with ${failure} cleanup failure keeps the existing call and retries`, async (t) => {
     const { client, install, events, states, calls, track } = setup(t);
-    t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval"] });
     await client.join();
     const peer = Peer.latest;
     const before = states.length;
-    events[0].enqueue(snapshotEvent([{ id: "phone", name: "Phone", muted: false, deafened: false, tracks: [{ id: "phone-mic", kind: "microphone" }] }], 1));
+    events[0].enqueue(
+      snapshotEvent(
+        [
+          {
+            id: "phone",
+            name: "Phone",
+            muted: false,
+            deafened: false,
+            tracks: [{ id: "phone-mic", kind: "microphone" }],
+          },
+        ],
+        1,
+      ),
+    );
     await tick();
     assert.equal(states.at(-1)?.remoteMedia.length, 1);
     const original = fetch;
@@ -2269,9 +2843,12 @@ for (const failure of [502, 503, 504, "network", "timeout"] as const) {
     install("fetch", (url: string, init: RequestInit) => {
       if (url.endsWith("/close") && ++attempts === 1) {
         if (failure === "network") return Promise.reject(new TypeError("connection lost"));
-        if (failure === "timeout") return new Promise<Response>((_resolve, reject) => {
-          init.signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
-        });
+        if (failure === "timeout")
+          return new Promise<Response>((_resolve, reject) => {
+            init.signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), {
+              once: true,
+            });
+          });
         return Promise.resolve(Response.json({ error: "temporary failure" }, { status: failure }));
       }
       return original(url, init);
@@ -2279,8 +2856,11 @@ for (const failure of [502, 503, 504, "network", "timeout"] as const) {
     events[0].enqueue(snapshotEvent([], 2));
     await tick();
     assert.equal(states.at(-1)?.remoteMedia.length, 0, "remove departed audio before waiting for cleanup");
-    if (failure === "timeout") { t.mock.timers.tick(5_000); await tick(); }
-    t.mock.timers.tick(15_000);
+    if (failure === "timeout") {
+      vi.advanceTimersByTime(5_000);
+      await tick();
+    }
+    vi.advanceTimersByTime(15_000);
     await tick();
     await tick();
     assert.equal(attempts, 2, "cleanup retries without creating another session");
@@ -2302,9 +2882,12 @@ test("join carries current mute/deafen intent without a redundant state write du
   let finish!: () => void;
   install("fetch", (url: string, init: RequestInit) => {
     if (url.endsWith("/join")) joinBody = JSON.parse(init.body as string);
-    if (url.endsWith("/publish")) return new Promise<Response>((resolve) => {
-      finish = () => { void original(url, init).then(resolve); };
-    });
+    if (url.endsWith("/publish"))
+      return new Promise<Response>((resolve) => {
+        finish = () => {
+          void original(url, init).then(resolve);
+        };
+      });
     return original(url, init);
   });
   const joining = client.join("Laptop");
@@ -2314,11 +2897,17 @@ test("join carries current mute/deafen intent without a redundant state write du
     const { joinStartedAt, ...body } = joinBody;
     assert.equal(typeof joinStartedAt, "number");
     assert.deepEqual(body, {
-      name: "Laptop", muted: true, deafened: true, receive: true,
+      name: "Laptop",
+      muted: true,
+      deafened: true,
+      receive: true,
       publish: { mid: "0", sessionDescription: { type: "offer", sdp: "v=0\r\na=mid:0\r\n" } },
     });
     assert.deepEqual(stateUpdates, [], "Join already committed unchanged intent");
-  } finally { finish(); await joining; }
+  } finally {
+    finish();
+    await joining;
+  }
 });
 
 test("connection event wait ignores intermediate states", async (t) => {
@@ -2326,7 +2915,9 @@ test("connection event wait ignores intermediate states", async (t) => {
   const target = new EventTarget();
   let ready = false;
   let resolved = false;
-  const waiting = waitFor(target, "change", 1000, () => ready).then(() => { resolved = true; });
+  const waiting = waitFor(target, "change", 1000, () => ready).then(() => {
+    resolved = true;
+  });
   target.dispatchEvent(new Event("change"));
   await Promise.resolve();
   assert.equal(resolved, false);
@@ -2343,7 +2934,12 @@ test("join publishes the microphone in the same request when the API answers it"
   install("fetch", async (url: string, init: RequestInit) => {
     if (!url.endsWith("/join")) return original(url, init);
     calls.push("join");
-    return Response.json({ token: "capability", id: "self", iceServers, publish: { trackId: "mine", tracks: [{ mid: "0" }], sessionDescription: { type: "answer", sdp: providerSdp } } });
+    return Response.json({
+      token: "capability",
+      id: "self",
+      iceServers,
+      publish: { trackId: "mine", tracks: [{ mid: "0" }], sessionDescription: { type: "answer", sdp: providerSdp } },
+    });
   });
   await client.join();
   assert.equal(states.at(-1)?.phase, "connected");
@@ -2379,7 +2975,9 @@ test("a listed source that cannot be pulled yet is retried shortly", async (t) =
   await client.join();
   const original = fetch;
   let refusals = 0;
-  const roster = [{ id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "fresh", kind: "microphone" }] }];
+  const roster = [
+    { id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "fresh", kind: "microphone" }] },
+  ];
   install("fetch", (url: string, init: RequestInit) => {
     // A newcomer is refused until its own transport sends media.
     if (url.endsWith("/subscribe") && refusals++ < 2) {
@@ -2406,20 +3004,28 @@ test("join preparation targets member channels only, at most every few seconds",
   const commands: Array<{ method: string; channelId?: string }> = [];
   const restoreWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
   Object.defineProperty(globalThis, "window", { value: globalThis, configurable: true });
-  setAppGatewayForTests({ command: async (request: { method: string; channelId?: string }) => { commands.push(request); } } as unknown as AppGateway);
-  t.after(() => {
+  setAppGatewayForTests({
+    command: async (request: { method: string; channelId?: string }) => {
+      commands.push(request);
+    },
+  } as unknown as AppGateway);
+  t.onTestFinished(() => {
     setAppGatewayForTests(undefined);
-    if (restoreWindow) Object.defineProperty(globalThis, "window", restoreWindow); else Reflect.deleteProperty(globalThis, "window");
+    if (restoreWindow) Object.defineProperty(globalThis, "window", restoreWindow);
+    else Reflect.deleteProperty(globalThis, "window");
   });
   prepareVoiceJoin("/api/media");
   assert.equal(commands.length, 0, "the public demo creates sessions on join");
   prepareVoiceJoin("/api/channels/prepareAAAAA/media");
   prepareVoiceJoin("/api/channels/prepareAAAAA/media");
   prepareVoiceJoin("/api/channels/prepareBBBBB/media");
-  assert.deepEqual(commands.map(({ method, channelId }) => [method, channelId]), [
-    ["media.prepare", "prepareAAAAA"],
-    ["media.prepare", "prepareBBBBB"],
-  ]);
+  assert.deepEqual(
+    commands.map(({ method, channelId }) => [method, channelId]),
+    [
+      ["media.prepare", "prepareAAAAA"],
+      ["media.prepare", "prepareBBBBB"],
+    ],
+  );
 });
 
 test("people who leave together are closed concurrently, keeping transient failures for retry", async (t) => {
@@ -2430,18 +3036,23 @@ test("people who leave together are closed concurrently, keeping transient failu
     { id: "b", name: "B", muted: false, deafened: false, tracks: [{ id: "track-b", kind: "microphone" }] },
   ];
   let roster = people;
-  let inFlight = 0, peak = 0;
+  let inFlight = 0,
+    peak = 0;
   const closed: string[] = [];
   let failB = true;
   install("fetch", async (url: string, init: RequestInit) => {
     if (url.endsWith("/snapshot")) return Response.json({ participants: roster });
     if (url.endsWith("/close")) {
       const { mid } = JSON.parse(init.body as string) as { mid: string };
-      inFlight++; peak = Math.max(peak, inFlight);
+      inFlight++;
+      peak = Math.max(peak, inFlight);
       await new Promise((resolve) => setTimeout(resolve, 30));
       inFlight--;
       closed.push(mid);
-      if (mid === "2" && failB) { failB = false; return Response.json({ error: "busy" }, { status: 503 }); }
+      if (mid === "2" && failB) {
+        failB = false;
+        return Response.json({ error: "busy" }, { status: 503 });
+      }
       return new Response(null, { status: 204 });
     }
     return original(url, init);
@@ -2466,15 +3077,21 @@ test("people who leave together are closed concurrently, keeping transient failu
 
 const WARM_ROOT = "/api/channels/warm00000000/media";
 const warmAnswer = (ticket = "ticket") => ({
-  ticket, adoptWithinMs: 25 * 60_000, iceServers: [{ urls: "turn:turn.test", username: "u", credential: "c" }],
-  main: { type: "answer", sdp: "v=0 main" }, receive: { type: "answer", sdp: "v=0 receive" },
+  ticket,
+  adoptWithinMs: 25 * 60_000,
+  iceServers: [{ urls: "turn:turn.test", username: "u", credential: "c" }],
+  main: { type: "answer", sdp: "v=0 main" },
+  receive: { type: "answer", sdp: "v=0 receive" },
 });
 
 /** Creates the warm pair through the module's own flow, with the API call stubbed. */
 async function warmed(t: TestContext, respond: () => Promise<object> = async () => warmAnswer()) {
   const requests: Array<{ channelId?: string; body: any }> = [];
-  setWarmRequestForTests(async (channelId, body) => { requests.push({ channelId, body }); return await respond() as never; });
-  t.after(() => setWarmRequestForTests());
+  setWarmRequestForTests(async (channelId, body) => {
+    requests.push({ channelId, body });
+    return (await respond()) as never;
+  });
+  t.onTestFinished(() => setWarmRequestForTests());
   keepVoiceWarm(WARM_ROOT);
   await tick();
   return requests;
@@ -2493,7 +3110,10 @@ test("a signed-in page keeps a connected, trackless session pair ready for Join"
     assert.equal(peer.senders.length, 0);
     assert.equal((peer.configuration.iceServers as RTCIceServer[])[0].urls, "turn:turn.test", "TURN before gathering");
   }
-  assert.deepEqual(Peer.all.map((peer) => peer.remoteDescriptions[0]?.sdp), ["v=0 main", "v=0 receive"]);
+  assert.deepEqual(
+    Peer.all.map((peer) => peer.remoteDescriptions[0]?.sdp),
+    ["v=0 main", "v=0 receive"],
+  );
   assert.equal(hasWarmVoice(), true);
   keepVoiceWarm(WARM_ROOT);
   await tick();
@@ -2503,8 +3123,11 @@ test("a signed-in page keeps a connected, trackless session pair ready for Join"
 test("the signed-in live demo warms the public endpoint and Join adopts its connections", async (t) => {
   const { client, install } = setup(t);
   const requests: Array<string | undefined> = [];
-  setWarmRequestForTests(async (channelId) => { requests.push(channelId); return warmAnswer() as never; });
-  t.after(() => setWarmRequestForTests());
+  setWarmRequestForTests(async (channelId) => {
+    requests.push(channelId);
+    return warmAnswer() as never;
+  });
+  t.onTestFinished(() => setWarmRequestForTests());
   keepVoiceWarm("/api/media");
   await tick();
   assert.deepEqual(requests, [undefined], "the public demo has no account-channel ID");
@@ -2515,7 +3138,10 @@ test("the signed-in live demo warms the public endpoint and Join adopts its conn
     assert.equal(url, "/api/media/join");
     assert.equal(JSON.parse(init.body as string).warm, "ticket");
     return Response.json({
-      token: "capability", id: "self", iceServers: warmAnswer().iceServers, warm: true,
+      token: "capability",
+      id: "self",
+      iceServers: warmAnswer().iceServers,
+      warm: true,
       publish: { trackId: "mine", tracks: [{ mid: "0" }], sessionDescription: { type: "answer", sdp: providerSdp } },
     });
   });
@@ -2535,9 +3161,17 @@ test("Join adopts the warm pair: publishes and pulls on connected sessions, crea
     if (!url.endsWith("/join")) return original(url, init);
     joinBody = JSON.parse(init.body as string);
     return Response.json({
-      token: "capability", id: "self", iceServers: warmAnswer().iceServers, warm: true,
+      token: "capability",
+      id: "self",
+      iceServers: warmAnswer().iceServers,
+      warm: true,
       publish: { trackId: "mine", tracks: [{ mid: "0" }], sessionDescription: { type: "answer", sdp: providerSdp } },
-      receive: { tracks: [{ trackId: "remote", mid: "1" }], gone: [], requiresImmediateRenegotiation: true, sessionDescription: { type: "offer", sdp: providerSdp } },
+      receive: {
+        tracks: [{ trackId: "remote", mid: "1" }],
+        gone: [],
+        requiresImmediateRenegotiation: true,
+        sessionDescription: { type: "offer", sdp: providerSdp },
+      },
     });
   });
   await client.join();
@@ -2547,51 +3181,58 @@ test("Join adopts the warm pair: publishes and pulls on connected sessions, crea
   assert.equal(Peer.all.length, 2, "no new PeerConnection: both came from the warm pair");
   assert.equal(warmMain.senders.length, 1, "the microphone is added to the warm connection");
   assert.equal(warmMain.remoteDescriptions.at(-1)?.type, "answer");
-  assert.equal(warmReceive.remoteDescriptions.at(-1)?.type, "offer", "people present are pulled onto the warm receive connection");
+  assert.equal(
+    warmReceive.remoteDescriptions.at(-1)?.type,
+    "offer",
+    "people present are pulled onto the warm receive connection",
+  );
   assert.equal(states.at(-1)?.phase, "connected");
   assert.match(states.at(-1)?.diagnostics?.join ?? (client as any).joinTiming.join, /pre-connected/);
   assert.equal(hasWarmVoice(), false, "the pair now belongs to the call");
   assert.equal(takeWarmVoice(), undefined);
 });
 
-for (const refusal of [{ status: 409, code: "warm_unavailable" }, { status: 422 }]) test(`a refused warm ticket (${refusal.status}) closes the pair and joins the ordinary way`, async (t) => {
-  const { client, states, install } = setup(t);
-  await warmed(t);
-  const [warmMain, warmReceive] = Peer.all;
-  const original = fetch;
-  const joins: any[] = [];
-  install("fetch", async (url: string, init: RequestInit) => {
-    if (url.endsWith("/join")) {
-      const body = JSON.parse(init.body as string);
-      joins.push(body);
-      if (body.warm) return Response.json({ error: "refused", ...refusal }, { status: refusal.status });
-    }
-    return original(url, init);
+for (const refusal of [{ status: 409, code: "warm_unavailable" }, { status: 422 }])
+  test(`a refused warm ticket (${refusal.status}) closes the pair and joins the ordinary way`, async (t) => {
+    const { client, states, install } = setup(t);
+    await warmed(t);
+    const [warmMain, warmReceive] = Peer.all;
+    const original = fetch;
+    const joins: any[] = [];
+    install("fetch", async (url: string, init: RequestInit) => {
+      if (url.endsWith("/join")) {
+        const body = JSON.parse(init.body as string);
+        joins.push(body);
+        if (body.warm) return Response.json({ error: "refused", ...refusal }, { status: refusal.status });
+      }
+      return original(url, init);
+    });
+    await client.join();
+    assert.equal(joins.length, 2);
+    assert.equal(joins[1].warm, undefined);
+    assert.equal(warmMain.connectionState, "closed");
+    assert.equal(warmReceive.connectionState, "closed");
+    assert.equal(Peer.all.length, 3, "a fresh connection for the ordinary join");
+    assert.equal(states.at(-1)?.phase, "connected");
   });
-  await client.join();
-  assert.equal(joins.length, 2);
-  assert.equal(joins[1].warm, undefined);
-  assert.equal(warmMain.connectionState, "closed");
-  assert.equal(warmReceive.connectionState, "closed");
-  assert.equal(Peer.all.length, 3, "a fresh connection for the ordinary join");
-  assert.equal(states.at(-1)?.phase, "connected");
-});
 
 test("a warm connection that fails is replaced; an API without warm sessions is not asked again", async (t) => {
   setup(t);
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const requests = await warmed(t);
   const [warmMain] = Peer.all;
   warmMain.connectionState = "failed";
   warmMain.dispatchEvent(new Event("connectionstatechange"));
   assert.equal(hasWarmVoice(), false);
-  t.mock.timers.tick(0);
+  vi.advanceTimersByTime(0);
   await tick();
   assert.equal(requests.length, 2, "rebuilt at once");
   assert.equal(hasWarmVoice(), true);
 
-  const unsupported = await warmed(t, async () => { throw Object.assign(new Error("not found"), { status: 404 }); });
-  t.mock.timers.tick(120_000);
+  const unsupported = await warmed(t, async () => {
+    throw Object.assign(new Error("not found"), { status: 404 });
+  });
+  vi.advanceTimersByTime(120_000);
   await tick();
   assert.equal(unsupported.length, 1);
   assert.equal(hasWarmVoice(), false);

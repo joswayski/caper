@@ -23,7 +23,9 @@ const aliases = [
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity-alias>`,
-  ...Array.from({ length: 800 }, (_, index) => `        <activity-alias
+  ...Array.from(
+    { length: 800 },
+    (_, index) => `        <activity-alias
             android:name="chat.caper.android.launcher.Avatar${index}"
             android:enabled="false"
             android:exported="true"
@@ -34,13 +36,18 @@ const aliases = [
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-        </activity-alias>`),
+        </activity-alias>`,
+  ),
 ].join("\n");
 
 const replacement = `${start}\n${aliases}\n${end}`;
-const pattern = new RegExp(`${start.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]*?${end.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`);
+const pattern = new RegExp(
+  `${start.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]*?${end.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
+);
 if (!pattern.test(manifest)) throw new Error("Generated launcher alias markers are missing from AndroidManifest.xml");
 const generated = manifest.replace(pattern, replacement);
 if (process.argv.includes("--check")) assert.equal(manifest, generated, "Android launcher alias drift");
 else writeFileSync(manifestPath, generated);
-console.log(`${process.argv.includes("--check") ? "Verified" : "Exported"} the original mascot for the default launcher and all 800 legacy aliases.`);
+console.log(
+  `${process.argv.includes("--check") ? "Verified" : "Exported"} the original mascot for the default launcher and all 800 legacy aliases.`,
+);

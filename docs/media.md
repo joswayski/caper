@@ -1267,7 +1267,7 @@ CHAT_TEST_DATABASE_URL=<disposable-loopback-postgres-admin-url> \
 CHAT_TEST_VALKEY_URL=redis://127.0.0.1:6379 \
 TEST_VALKEY_URL=redis://127.0.0.1:6379 \
 cargo test --workspace -- --ignored --test-threads=1
-node --test tests/native-parity-fixture.test.mjs
+npm run test:native -- tests/native-parity-fixture.test.mjs
 CHANNEL_TEST_WEB_URL=http://localhost:5174/spaces node scripts/test-channel-joining.mjs
 ```
 
@@ -1395,7 +1395,7 @@ are pruned. Pins do not send system messages, play message sounds, or create pus
 With the disposable fixture and Vite running, use:
 
 ```sh
-node --test tests/native-parity-fixture.test.mjs
+npm run test:native -- tests/native-parity-fixture.test.mjs
 MESSAGE_TEST_WEB_URL=http://127.0.0.1:5174 node scripts/test-message-pins.mjs
 CHAT_TEST_DATABASE_URL=postgres://user@127.0.0.1:55432/postgres \
 CHAT_TEST_VALKEY_URL=redis://127.0.0.1:6379 \
@@ -1506,7 +1506,7 @@ need platform validation before release.
 With the disposable fixture and Vite running:
 
 ```sh
-node --test tests/native-parity-fixture.test.mjs
+npm run test:native -- tests/native-parity-fixture.test.mjs
 MESSAGE_TEST_WEB_URL=http://127.0.0.1:5174 node scripts/test-message-threads.mjs
 DATABASE_URL=postgres://user@127.0.0.1:55432/postgres \
   cargo test --locked -p caper-api threads_isolate -- --ignored
@@ -1640,7 +1640,7 @@ With the disposable fixture/Vite and a disposable local Postgres/Valkey running:
 ```sh
 npm run check
 npm test --workspace @caper/web
-node --test tests/native-parity-fixture.test.mjs
+npm run test:native -- tests/native-parity-fixture.test.mjs
 MESSAGE_TEST_WEB_URL=http://127.0.0.1:5174 node scripts/test-message-forwarding.mjs
 MESSAGE_TEST_WEB_URL=http://127.0.0.1:5174 node scripts/test-message-edits.mjs
 DATABASE_URL=postgres://user@127.0.0.1:55432/postgres \
@@ -1759,7 +1759,7 @@ automatic version purge or restore-to-version action.
 With the disposable fixture and Vite running:
 
 ```sh
-node --test tests/native-parity-fixture.test.mjs
+npm run test:native -- tests/native-parity-fixture.test.mjs
 MESSAGE_TEST_WEB_URL=http://127.0.0.1:5174 node scripts/test-message-edits.mjs
 CHAT_TEST_DATABASE_URL=postgres://user@127.0.0.1:55432/postgres \
   CHAT_TEST_VALKEY_URL=redis://127.0.0.1:56379 \

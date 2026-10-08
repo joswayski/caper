@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
-import { test, type TestContext } from "node:test";
+import { test, type TestContext } from "vitest";
 import { MAX_RECORDING_SECONDS, recordReceivedAudio } from "../media/recording.ts";
 
 function install(t: TestContext, key: string, value: unknown) {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, key);
   Object.defineProperty(globalThis, key, { configurable: true, value });
-  t.after(() => descriptor
-    ? Object.defineProperty(globalThis, key, descriptor)
-    : Reflect.deleteProperty(globalThis, key));
+  t.onTestFinished(() => {
+    if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+    else Reflect.deleteProperty(globalThis, key);
+  });
 }
 
 test("received recordings have a 30-second maximum", () => {
@@ -23,13 +24,21 @@ test("received recording keeps browser timestamps and finishes without stopping 
     muted = false;
     srcObject: MediaStream | null = null;
     playing = false;
-    constructor() { receiver = this; }
-    async play() { this.playing = true; }
-    pause() { this.playing = false; }
+    constructor() {
+      receiver = this;
+    }
+    async play() {
+      this.playing = true;
+    }
+    pause() {
+      this.playing = false;
+    }
   }
 
   class FakeMediaRecorder {
-    static isTypeSupported(type: string) { return type === "audio/webm;codecs=opus"; }
+    static isTypeSupported(type: string) {
+      return type === "audio/webm;codecs=opus";
+    }
     state: RecordingState = "inactive";
     mimeType: string;
     ondataavailable: ((event: { data: Blob }) => void) | null = null;
@@ -79,15 +88,22 @@ test("cancelling a recording rejects without stopping borrowed audio", async (t)
     pause() {}
   }
   class FakeMediaRecorder {
-    static isTypeSupported() { return false; }
+    static isTypeSupported() {
+      return false;
+    }
     state: RecordingState = "inactive";
     mimeType = "audio/webm";
     ondataavailable = null;
     onerror = null;
     onstop: (() => void) | null = null;
     constructor(_stream: MediaStream) {}
-    start() { this.state = "recording"; }
-    stop() { this.state = "inactive"; queueMicrotask(() => this.onstop?.()); }
+    start() {
+      this.state = "recording";
+    }
+    stop() {
+      this.state = "inactive";
+      queueMicrotask(() => this.onstop?.());
+    }
   }
   install(t, "MediaRecorder", FakeMediaRecorder);
   install(t, "Audio", FakeAudio);

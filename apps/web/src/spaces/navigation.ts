@@ -15,7 +15,9 @@ export function createSpaceNavigation() {
   const entries = new Map<string, { expires: number; result: Promise<PreparedSpace> }>();
   const visited = new Map<string, PreparedSpace>();
   const peek = (spaceId: string, channelId?: string) => {
-    const match = [...visited.values()].reverse().find((view) => view.detail.space.id === spaceId && (!channelId || view.channelId === channelId));
+    const match = [...visited.values()]
+      .reverse()
+      .find((view) => view.detail.space.id === spaceId && (!channelId || view.channelId === channelId));
     return match;
   };
   const remember = (view: PreparedSpace) => {
@@ -40,27 +42,39 @@ export function createSpaceNavigation() {
         forget(spaceId);
         throw new SpacesApiError(404, "This channel is no longer accessible.");
       }
-      const channel = detail.channels.find((item) => item.id === requestedChannel && (channelId !== undefined || item.joined !== false))
-        ?? detail.channels.find((item) => item.joined !== false);
+      const channel =
+        detail.channels.find(
+          (item) => item.id === requestedChannel && (channelId !== undefined || item.joined !== false),
+        ) ?? detail.channels.find((item) => item.joined !== false);
       let history: GeneralChatHistory | undefined;
       let historyError: string | undefined;
       try {
         // Visited channels resume live replay from their saved cursor. Keep
         // their messages on screen instead of fetching the first page again.
-        history = channel && previous?.history?.channel.id === channel.id ? previous.history : (channel ? await loadChatHistory(channel.id) : undefined);
+        history =
+          channel && previous?.history?.channel.id === channel.id
+            ? previous.history
+            : channel
+              ? await loadChatHistory(channel.id)
+              : undefined;
       } catch (error) {
         if (error instanceof ChatHistoryError && [401, 403, 404].includes(error.status)) throw error;
         // Messaging being unavailable must not hide space settings/navigation.
         historyError = error instanceof Error ? error.message : "Messages are unavailable.";
       }
-      if (history && history.space.id !== detail.space.id) throw new Error("The chat service returned the wrong space.");
+      if (history && history.space.id !== detail.space.id)
+        throw new Error("The chat service returned the wrong space.");
       return { detail, channelId: channel?.id, history, historyError };
     })();
     entries.delete(key);
     entries.set(key, { expires: Date.now() + 5_000, result });
     if (entries.size > 4) entries.delete(entries.keys().next().value!);
     void result.catch((error) => {
-      if ((error instanceof SpacesApiError || error instanceof ChatHistoryError) && [401, 403, 404].includes(error.status)) forget(spaceId);
+      if (
+        (error instanceof SpacesApiError || error instanceof ChatHistoryError) &&
+        [401, 403, 404].includes(error.status)
+      )
+        forget(spaceId);
       if (entries.get(key)?.result === result) entries.delete(key);
     });
     return result;
@@ -81,6 +95,9 @@ export function createSpaceNavigation() {
       entries.delete(`${spaceId}:${channelId ?? ""}`);
       return result;
     },
-    clear() { entries.clear(); visited.clear(); },
+    clear() {
+      entries.clear();
+      visited.clear();
+    },
   };
 }

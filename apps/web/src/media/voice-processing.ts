@@ -64,12 +64,9 @@ export function createVoiceProcessingNodes(context: BaseAudioContext, strength: 
   return nodes;
 }
 
-export function connectVoiceProcessing(
-  source: AudioNode,
-  destination: AudioNode,
-  nodes: VoiceProcessingNodes,
-) {
-  source.connect(nodes.highpass)
+export function connectVoiceProcessing(source: AudioNode, destination: AudioNode, nodes: VoiceProcessingNodes) {
+  source
+    .connect(nodes.highpass)
     .connect(nodes.warmth)
     .connect(nodes.presence)
     .connect(nodes.compressor)

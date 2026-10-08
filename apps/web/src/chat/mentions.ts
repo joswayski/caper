@@ -8,11 +8,13 @@ export interface MentionCandidate {
   avatarId?: number | null;
 }
 
-export type MentionSuggestion =
-  | { kind: "member"; member: MentionCandidate }
-  | { kind: "everyone" | "here" };
+export type MentionSuggestion = { kind: "member"; member: MentionCandidate } | { kind: "everyone" | "here" };
 
-export interface MentionToken { start: number; end: number; query: string }
+export interface MentionToken {
+  start: number;
+  end: number;
+  query: string;
+}
 
 const nameCharacter = /^[A-Za-z0-9_]$/;
 const startBoundary = /[\s([{]/u;
@@ -40,14 +42,23 @@ export function mentionSuggestions(members: MentionCandidate[], query: string, s
   const special = specials
     ? (["everyone", "here"] as const).filter((name) => name.startsWith(needle)).map((kind) => ({ kind }))
     : [];
-  const ranked = members.flatMap((member) => {
-    const username = member.username.toLowerCase();
-    const displayName = member.displayName.toLowerCase();
-    const rank = username === needle ? 0 : username.startsWith(needle) ? 1
-      : displayName.startsWith(needle) || displayName.split(" ").some((word) => word.startsWith(needle)) ? 2
-      : username.includes(needle) ? 3 : 4;
-    return rank < 4 ? [{ member, rank, username }] : [];
-  }).sort((a, b) => a.rank - b.rank || (a.username < b.username ? -1 : a.username > b.username ? 1 : 0));
+  const ranked = members
+    .flatMap((member) => {
+      const username = member.username.toLowerCase();
+      const displayName = member.displayName.toLowerCase();
+      const rank =
+        username === needle
+          ? 0
+          : username.startsWith(needle)
+            ? 1
+            : displayName.startsWith(needle) || displayName.split(" ").some((word) => word.startsWith(needle))
+              ? 2
+              : username.includes(needle)
+                ? 3
+                : 4;
+      return rank < 4 ? [{ member, rank, username }] : [];
+    })
+    .sort((a, b) => a.rank - b.rank || (a.username < b.username ? -1 : a.username > b.username ? 1 : 0));
   return [
     ...ranked.slice(0, 6 - special.length).map(({ member }) => ({ kind: "member" as const, member })),
     ...special,
@@ -68,12 +79,18 @@ export function insertMention(text: string, token: MentionToken, name: string) {
 /** Well-formed entries only; a malformed list must never hide the message itself. */
 function mentionList(mentions: unknown): ChatMention[] {
   return Array.isArray(mentions)
-    ? mentions.filter((mention): mention is ChatMention => !!mention && typeof mention === "object" && typeof mention.type === "string")
+    ? mentions.filter(
+        (mention): mention is ChatMention =>
+          !!mention && typeof mention === "object" && typeof mention.type === "string",
+      )
     : [];
 }
 
 /** Splits message text into plain runs and mentions the server resolved. */
-export function mentionSegments(text: string, mentions: ChatMention[] | undefined): Array<{ text: string; mention: boolean }> {
+export function mentionSegments(
+  text: string,
+  mentions: ChatMention[] | undefined,
+): Array<{ text: string; mention: boolean }> {
   const resolved = new Set<string>();
   for (const mention of mentionList(mentions)) {
     if (mention.type === "user" && typeof mention.username === "string") resolved.add(mention.username.toLowerCase());
@@ -84,7 +101,10 @@ export function mentionSegments(text: string, mentions: ChatMention[] | undefine
   let plainStart = 0;
   let index = 0;
   while (index < text.length) {
-    if (text[index] !== "@" || (index > 0 && !startBoundary.test(text[index - 1]))) { index++; continue; }
+    if (text[index] !== "@" || (index > 0 && !startBoundary.test(text[index - 1]))) {
+      index++;
+      continue;
+    }
     let end = index + 1;
     while (end < text.length && nameCharacter.test(text[end])) end++;
     const name = text.slice(index + 1, end).toLowerCase();
@@ -102,7 +122,9 @@ export function mentionSegments(text: string, mentions: ChatMention[] | undefine
 /** Highlights a message that names the reader, or `@everyone`/`@here` from someone else. */
 export function mentionsAccount(message: ChatMessage, accountId: string | undefined) {
   if (!accountId) return false;
-  return mentionList(message.content.mentions).some((mention) => mention.type === "user"
-    ? mention.id === accountId
-    : (mention.type === "everyone" || mention.type === "here") && message.author.id !== accountId);
+  return mentionList(message.content.mentions).some((mention) =>
+    mention.type === "user"
+      ? mention.id === accountId
+      : (mention.type === "everyone" || mention.type === "here") && message.author.id !== accountId,
+  );
 }

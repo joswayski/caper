@@ -8,8 +8,14 @@ const BACKOFF = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000];
 
 function wait(ms: number, signal: AbortSignal) {
   return new Promise<void>((resolve, reject) => {
-    const timer = window.setTimeout(() => { signal.removeEventListener("abort", abort); resolve(); }, ms);
-    const abort = () => { window.clearTimeout(timer); reject(signal.reason); };
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    }, ms);
+    const abort = () => {
+      window.clearTimeout(timer);
+      reject(signal.reason);
+    };
     signal.addEventListener("abort", abort, { once: true });
     if (signal.aborted) abort();
   });
@@ -86,7 +92,16 @@ export class TurnRenewal {
         if (http === 401 || http === 403 || code(error) === "ice_restart_invalid") throw error;
         // restart-ice is uniquely replay-safe. ACK is idempotent. A pending 409
         // means admission is busy and must not disturb the healthy transport.
-        if (!((http === 409 && code(error) === "ice_restart_pending") || http === 408 || http === 429 || (http !== undefined && http >= 500) || http === undefined)) throw error;
+        if (
+          !(
+            (http === 409 && code(error) === "ice_restart_pending") ||
+            http === 408 ||
+            http === 429 ||
+            (http !== undefined && http >= 500) ||
+            http === undefined
+          )
+        )
+          throw error;
         await wait(BACKOFF[Math.min(attempt, BACKOFF.length - 1)], this.controller.signal);
         this.live();
       }
@@ -98,9 +113,9 @@ export class TurnRenewal {
     let signaling = false;
     try {
       // Credential minting intentionally stays outside the SDP serialization queue.
-      const credentials = await this.retry(() => this.request<TurnResponse>(
-        "turn", { generation: this.generation }, this.token, this.controller.signal,
-      ));
+      const credentials = await this.retry(() =>
+        this.request<TurnResponse>("turn", { generation: this.generation }, this.token, this.controller.signal),
+      );
       this.live();
       if (credentials.turn.generation === this.generation) {
         this.schedule(credentials.turn.refreshAfterMs - (performance.now() - started));
@@ -117,16 +132,29 @@ export class TurnRenewal {
         const offer = await localDescription(this.pc, this.controller.signal);
         this.live();
         const body = { generation: credentials.turn.generation, sequence: this.sequence, sessionDescription: offer };
-        const answer = await this.retry(() => this.request<{ sessionDescription: RTCSessionDescriptionInit }>(
-          "restart-ice", body, this.token, this.controller.signal,
-        ));
+        const answer = await this.retry(() =>
+          this.request<{ sessionDescription: RTCSessionDescriptionInit }>(
+            "restart-ice",
+            body,
+            this.token,
+            this.controller.signal,
+          ),
+        );
         this.live();
         if (!answer.sessionDescription) throw new Error("The media service did not answer ICE restart.");
         await this.pc.setRemoteDescription(withOpusDtx(answer.sessionDescription));
         this.live();
-        await this.retry(() => this.request<void>("restart-ice-ack", {
-          generation: credentials.turn.generation, sequence: this.sequence,
-        }, this.token, this.controller.signal));
+        await this.retry(() =>
+          this.request<void>(
+            "restart-ice-ack",
+            {
+              generation: credentials.turn.generation,
+              sequence: this.sequence,
+            },
+            this.token,
+            this.controller.signal,
+          ),
+        );
         this.live();
         this.sequence++;
         this.generation = credentials.turn.generation;
