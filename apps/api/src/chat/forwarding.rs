@@ -198,6 +198,10 @@ async fn source_snapshot(
     Ok(row.map(|(message, head, avatar, name)| json!({"message":shared_message(enrich_author(message,avatar,name.as_deref())),"seq":head.to_string()})))
 }
 
+/// One forward and its source: forward id, source payload (absent when the
+/// source's conversation is gone), source channel head, author avatar and name.
+type ForwardSourceRow = (String, Option<Value>, i64, Option<i16>, Option<String>);
+
 pub(super) async fn hydrate(
     tx: &mut Transaction<'_, Postgres>,
     messages: &mut [Value],
@@ -212,7 +216,7 @@ pub(super) async fn hydrate(
     }
     // Hydrate the whole page in one round trip, including repeated sources.
     // Keep unavailable sources in the result so cached content is cleared.
-    let rows: Vec<(String, Option<Value>, i64, Option<i16>, Option<String>)> = sqlx::query_as(
+    let rows: Vec<ForwardSourceRow> = sqlx::query_as(
         "SELECT f.external_id,
                 CASE WHEN c.deleted_at IS NULL AND (c.space_id IS NULL OR s.deleted_at IS NULL) THEN m.payload END,
                 c.last_seq,u.avatar_id,u.display_name
