@@ -112,14 +112,19 @@ needed; only updated Apple binaries receive this fix.
 
 Web channel names and `⋯` actions have a separate row above voice
 activity. Join, Joining and Switch here use one fixed-width action slot;
-connected channels reserve that space without an inline Leave action.
-Disconnect lives in the bottom voice dock beside the account.
+web uses quiet text-only actions and replaces Join with Leave in the active
+channel. Its roster opens automatically on connection. Mic, deafen and device
+settings stay in the account footer, including before joining. When navigation
+hides the active channel, its roster, channel/space status and single Leave
+action pin above that footer; participant audio menus open upward. Browsing
+other chats, spaces or DMs does not leave voice.
 Voice actions are neutral until hover/focus, and empty channels have no voice
-status text. Only occupied channels show a voice count. Hover and connection/roster
-updates do not shift the action target. The Channels count stays beside its label
+status text. Only occupied channels show a voice count. Hover and connection
+updates do not shift the active channel's action target; expanding its roster
+moves later channels down. The Channels count stays beside its label
 in both owned and shared spaces. Selecting a channel
-opens text without switching voice. Participant lists start collapsed and expand
-from the voice count. Joined-channel menus offer Leave channel to members;
+opens text without switching voice. Other participant lists start collapsed and
+expand from the voice count. Joined-channel menus offer Leave channel to members;
 owners also have the existing privacy/member settings. Leave channel requires
 confirmation and no longer appears in the chat header on web, Apple or Rust
 desktop; Android already uses its channel menu.
@@ -129,9 +134,15 @@ Run `VOICE_TEST_CHANNEL_ROWS=1 node scripts/test-voice-controls.mjs http://local
 against Vite for mocked desktop/narrow/minimum-width geometry, roster disclosure,
 owner permissions, settings focus return, voice switching and pending/error/cancel
 states. This is browser UI coverage, not live SFU or physical-device validation.
-Web, Android, Apple and Rust desktop implement these stable rows independently.
-No shared protocol change is required, but updated native binaries must be
-released separately; browser checks do not establish native rendering parity.
+Run `VOICE_TEST_REDESIGN=1 node scripts/test-voice-controls.mjs` for pre-join
+audio settings, inline/pinned Leave, automatic rosters and chat/space call
+persistence. `VOICE_TEST_PREVIEW=1 node scripts/test-voice-controls.mjs` serves
+the explicitly simulated, interactive UI on port 5180 beside local Vite; it
+does not capture a real microphone or contact the SFU. No production mock route
+is added. The channel-centric redesign is web-only at the owner's request.
+Android, Apple and Rust desktop retain their independent rows and bottom
+disconnect control; no native release or shared protocol/configuration change
+is required. Web can deploy independently; merging does not deploy it.
 Browser modals use viewport-bounded, stable-height shells with scrollable overflow;
 errors, pending states and member loading do not resize or recenter them. Channel
 settings reserve the hidden save bar, and profile forms reserve error space so
