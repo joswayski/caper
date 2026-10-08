@@ -51,6 +51,26 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 @Serializable data class Person(val id: String, val username: String, val displayName: String, val avatarId: Int? = null)
 @Serializable data class PeopleList(val people: List<Person>)
 @Serializable data class PushConfig(val platforms: List<String>)
+/**
+ * `GET /api/notifications/settings`: the account [level] (`all`, `mentions` or `nothing`),
+ * [mobile] (`whenInactive` or `always`) and the overrides that still set something.
+ */
+@Serializable data class NotificationSettings(
+    val level: String = "all",
+    val mobile: String = "whenInactive",
+    val overrides: List<NotificationOverride> = emptyList(),
+)
+/**
+ * One space, channel (with its space) or DM override. [level] is null to inherit; a DM only
+ * uses `nothing`. [mutedUntil] is an RFC 3339 UTC time, `forever`, or null.
+ */
+@Serializable data class NotificationOverride(
+    val spaceId: String? = null,
+    val channelId: String? = null,
+    val conversationId: String? = null,
+    val level: String? = null,
+    val mutedUntil: String? = null,
+)
 @Serializable data class ChannelInvitation(val channel: Channel, val inviter: Inviter)
 @Serializable data class Member(val id: String, val username: String, val displayName: String, val owner: Boolean, val avatarId: Int? = null)
 @Serializable data class SpaceDetail(
@@ -254,6 +274,12 @@ data class AppUiState(
     val blocksError: String? = null,
     /** The sidebar's "Message requests" list is expanded. */
     val requestsOpen: Boolean = false,
+    /** Notification settings with unsaved changes applied; null until they load. */
+    val notificationSettings: NotificationSettings? = null,
+    /** Why notification settings could not load, while none are shown. */
+    val notificationSettingsError: String? = null,
+    /** Failed notification saves by setting key (see `data/Notifications.kt`), shown beside that control. */
+    val notificationErrors: Map<String, String> = emptyMap(),
     val selectedDirectId: String? = null,
     val messages: List<ChatMessage> = emptyList(),
     val thread: ThreadUi? = null,
@@ -294,10 +320,33 @@ data class AppUiState(
     val reactionSaves: Map<String, ReactionSaveUi> = emptyMap(),
     val pinnedMessages: List<ChatMessage> = emptyList(),
     val pinSaves: Map<String, PinSaveUi> = emptyMap(),
+    val pinIntents: Map<String, PinIntentUi> = emptyMap(),
+    val editIntents: Map<String, EditIntentUi> = emptyMap(),
     val chatAuthorId: String? = null,
+    /** Ask Android 13+ for notification permission now; set once per account by app open. */
+    val pushPrompt: Boolean = false,
     val busy: Boolean = false,
     val error: String? = null,
 ) {
+    /** Local presentation never enters history, replay cursors or revision caches. */
+    private fun project(message: ChatMessage): ChatMessage {
+        var result = message
+        pinIntents[message.id]?.let { result = result.copy(pin = it.pin) }
+        editIntents[message.id]?.takeIf { message.revision <= it.expectedRevision }?.let {
+            result = result.copy(content = message.content.copy(text = it.text, mentions = emptyList()))
+        }
+        return result
+    }
+    val displayedMessages: List<ChatMessage> get() = messages.map(::project)
+    val displayedPins: List<ChatMessage> get() {
+        val rows = pinnedMessages.associateBy { it.id }.toMutableMap()
+        pinIntents.forEach { (id, intent) ->
+            if (intent.pin == null) rows.remove(id)
+            else rows[id] = messages.firstOrNull { it.id == id } ?: rows[id] ?: intent.message
+        }
+        return rows.values.map(::project).sortedByDescending { it.pinSeq?.toBigIntegerOrNull() }
+    }
+
     /** Each channel's media root decides its own stable sidebar Join action. */
     fun voiceAvailable(channel: Channel): Boolean? =
         voiceAvailability[voiceRootKey(selectedSpace?.space?.demo == true, channel.id)]
@@ -311,6 +360,7 @@ data class AppUiState(
             (contextStart == null || it.seq.toBigInteger() >= contextStart.toBigInteger()) &&
             (contextEnd == null || it.seq.toBigInteger() <= contextEnd.toBigInteger())
     }
+    val displayedChannelMessages: List<ChatMessage> get() = channelMessages.map(::project)
 
     /** You can write here: a joined channel, and not a message request still waiting for your answer. */
     val canParticipate: Boolean get() = selectedChannel?.joined == true && selectedDirect?.incoming != true
@@ -332,3 +382,5 @@ data class PendingMessageUi(
 
 data class ReactionSaveUi(val emoji: String, val active: Boolean, val saving: Boolean = true, val error: String? = null)
 data class PinSaveUi(val active: Boolean, val saving: Boolean = true, val error: String? = null)
+data class PinIntentUi(val message: ChatMessage, val pin: MessagePin?)
+data class EditIntentUi(val text: String, val expectedRevision: Int)

@@ -50,6 +50,12 @@ internal fun mergeReaction(message: ChatMessage, update: ReactionUpdate): ChatMe
     return message.copy(reactions = update.reactions, reactionSeq = update.seq)
 }
 
+/** A pin/history payload can carry reactions without sharing the pin's revision. */
+internal fun mergeReaction(message: ChatMessage, snapshot: ChatMessage): ChatMessage {
+    val seq = snapshot.reactionSeq ?: return message
+    return mergeReaction(message, ReactionUpdate("message.reactions", 1, snapshot.channelId, seq, snapshot.id, snapshot.reactions))
+}
+
 /** Monotonically merges messages and consumes cached updates once their message appears. */
 internal fun mergeMessages(
     loaded: List<ChatMessage>, incoming: List<ChatMessage>, unseen: MutableMap<String, ReactionUpdate>,

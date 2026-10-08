@@ -113,6 +113,7 @@ internal const val ShowReactorsLabel = "Show who reacted"
     var attempt by remember(message.id) { mutableIntStateOf(0) }
     // The loader reuses its cache until the snapshot's reaction revision changes.
     LaunchedEffect(message.id, message.reactionSeq, attempt) {
+        list = null
         loading = true
         failed = false
         try {

@@ -24,7 +24,12 @@ internal class ReactorCache(private val limit: Int = 64) {
     @Synchronized fun get(messageId: String, reactionSeq: String?): ReactorList? =
         entries[messageId]?.takeIf { it.reactionSeq == (reactionSeq ?: "0") }
 
-    @Synchronized fun put(list: ReactorList) { entries[list.messageId] = list }
+    @Synchronized fun put(list: ReactorList) {
+        val previous = entries[list.messageId]
+        // Concurrent requests can finish out of order without evicting the newest revision.
+        if (previous == null || list.reactionSeq.toBigInteger() >= previous.reactionSeq.toBigInteger())
+            entries[list.messageId] = list
+    }
 
     @Synchronized fun clear() { entries.clear() }
 }

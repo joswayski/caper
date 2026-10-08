@@ -62,8 +62,29 @@ class CaperApi(
         request<Unit>("/api/dms/${id.pathId()}/read", "POST", token, buildJsonObject { put("seq", seq) }.toString())
     }
     suspend fun pushConfig(token: String): PushConfig = get("/api/push/config", token)
-    suspend fun registerPush(token: String, deviceToken: String) { request<Unit>("/api/push/devices", "POST", token, buildJsonObject { put("platform", "fcm"); put("token", deviceToken) }.toString()) }
-    suspend fun unregisterPush(token: String, deviceToken: String) { request<Unit>("/api/push/devices", "DELETE", token, buildJsonObject { put("platform", "fcm"); put("token", deviceToken) }.toString()) }
+    /** Registers this FCM token for the calling sign-in session; [appId] is the application ID. */
+    suspend fun registerPush(token: String, deviceToken: String, appId: String) { request<Unit>("/api/push/devices", "POST", token, pushDevice(deviceToken, appId)) }
+    suspend fun unregisterPush(token: String, deviceToken: String, appId: String) { request<Unit>("/api/push/devices", "DELETE", token, pushDevice(deviceToken, appId)) }
+    private fun pushDevice(deviceToken: String, appId: String) =
+        buildJsonObject { put("platform", "fcm"); put("token", deviceToken); put("appId", appId) }.toString()
+    suspend fun notificationSettings(token: String): NotificationSettings =
+        get<NotificationSettings>("/api/notifications/settings", token).normalized()
+    /** Changes the account [level] and/or [mobile]; a null argument is left out and stays as it is. */
+    suspend fun updateNotificationSettings(token: String, level: String? = null, mobile: String? = null): NotificationSettings = request<NotificationSettings>(
+        "/api/notifications/settings", "PUT", token,
+        buildJsonObject { level?.let { put("level", it) }; mobile?.let { put("mobile", it) } }.toString(),
+    ).normalized()
+    suspend fun setSpaceNotifications(token: String, space: String, change: OverrideChange): NotificationOverride =
+        setOverride("/api/spaces/${space.pathId()}/notifications", token, change, spaceKey(space))
+    suspend fun setChannelNotifications(token: String, space: String, channel: String, change: OverrideChange): NotificationOverride =
+        setOverride("/api/spaces/${space.pathId()}/channels/${channel.pathId()}/notifications", token, change, channelKey(channel))
+    suspend fun setDirectNotifications(token: String, conversation: String, change: OverrideChange): NotificationOverride =
+        setOverride("/api/dms/${conversation.pathId()}/notifications", token, change, directKey(conversation))
+    private suspend fun setOverride(path: String, token: String, change: OverrideChange, key: String): NotificationOverride {
+        val result = request<NotificationOverride>(path, "PUT", token, change.body().toString()).normalized()
+        require(result.key == key) { "Notification setting mismatch." }
+        return result
+    }
     suspend fun general(): ChatHistory = validatedHistory(get("/api/chat/general"))
     suspend fun history(token: String?, channel: String, before: String? = null, after: String? = null, around: String? = null): ChatHistory {
         val query = historyQuery(before, after, around)

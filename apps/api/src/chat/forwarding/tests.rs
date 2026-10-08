@@ -572,3 +572,156 @@ async fn live_forwards_are_destination_authorized_flattened_and_replayable(pool:
         StatusCode::OK
     );
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL"]
+async fn batched_hydration_and_projection_preserve_sources_and_unavailability(pool: PgPool) {
+    let user: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,display_name,avatar_id) VALUES('author','Current name',31) RETURNING id")
+        .fetch_one(&pool).await.unwrap();
+    let session: i64 = sqlx::query_scalar("INSERT INTO public.chat_sessions(external_id,token_hash,user_id,name) VALUES('session',$1,$2,'Old name') RETURNING id")
+        .bind(b"fixture-hash".as_slice()).bind(user).fetch_one(&pool).await.unwrap();
+    let mut spaces = Vec::new();
+    for name in ["live-space", "gone-space"] {
+        spaces.push(
+            sqlx::query_scalar::<_, i64>(
+                "INSERT INTO public.spaces(external_id,name,owner_id) VALUES($1,$1,$2) RETURNING id",
+            )
+            .bind(name)
+            .bind(user)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        );
+    }
+    let mut channels = Vec::new();
+    let mut sources = Vec::new();
+    for (index, space) in [Some(spaces[0]), Some(spaces[0]), Some(spaces[1]), None]
+        .into_iter()
+        .enumerate()
+    {
+        let channel: i64 = sqlx::query_scalar("INSERT INTO public.channels(external_id,space_id,name,last_seq,private) VALUES($1,$2,$1,$3,true) RETURNING id")
+            .bind(format!("channel-{index}")).bind(space).bind(40 + index as i64).fetch_one(&pool).await.unwrap();
+        channels.push(channel);
+        let payload = json!({"id":format!("source-{index}"),"author":{"id":"author","name":"Old name","avatarId":0},
+            "content":{"version":1,"type":"text","text":format!("Current source {index}")},
+            "threadRootId":"private-root","thread":{"replyCount":9},"pin":{"author":"private"},"pinSeq":"8"});
+        sources.push(sqlx::query_scalar::<_, i64>("INSERT INTO public.messages(external_id,channel_id,session_id,client_message_id,request_hash,channel_seq,payload) VALUES($1,$2,$3,$4,$5,1,$6) RETURNING id")
+            .bind(format!("source-{index}")).bind(channel).bind(session).bind(Uuid::new_v4()).bind(b"hash".as_slice()).bind(payload).fetch_one(&pool).await.unwrap());
+    }
+    let destination: i64 = sqlx::query_scalar("INSERT INTO public.channels(external_id,space_id,name,last_seq) VALUES('destination',$1,'destination',149) RETURNING id")
+        .bind(spaces[0]).fetch_one(&pool).await.unwrap();
+    let plain = json!({"id":"plain","content":{"text":"Ordinary message"}});
+    let mut page = vec![plain.clone()];
+    for index in 0..50 {
+        let message = json!({"id":format!("forward-{index}"),"seq":(100 + index).to_string(),
+            "content":{"text":format!("Note {index}")},"forwardSeq":"7",
+            "forward":{"message":{"content":{"text":"Stale source"}},"seq":"1"}});
+        sqlx::query("INSERT INTO public.messages(external_id,channel_id,session_id,client_message_id,request_hash,channel_seq,payload,forward_source_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
+            .bind(message["id"].as_str()).bind(destination).bind(session).bind(Uuid::new_v4()).bind(b"hash".as_slice())
+            .bind(100 + index as i64).bind(&message).bind(sources[index % sources.len()]).execute(&pool).await.unwrap();
+        page.push(message);
+    }
+    sqlx::query("UPDATE public.channels SET deleted_at=now() WHERE id=$1")
+        .bind(channels[1])
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE public.spaces SET deleted_at=now() WHERE id=$1")
+        .bind(spaces[1])
+        .execute(&pool)
+        .await
+        .unwrap();
+    // The same source can occur many times; caller order need not match SQL order.
+    page.reverse();
+    page.push(page[0].clone());
+    let original = page.clone();
+    let mut tx = pool.begin().await.unwrap();
+    hydrate(&mut tx, &mut page).await.unwrap();
+    for (message, before) in page.iter().zip(original) {
+        assert_eq!(message["id"], before["id"]);
+        assert_eq!(message["content"], before["content"]);
+        assert_eq!(message["seq"], before["seq"]);
+        assert_eq!(message["forwardSeq"], before["forwardSeq"]);
+    }
+    let events: Vec<_> = channels
+        .iter()
+        .enumerate()
+        .map(|(index, channel)| {
+            (
+                *channel,
+                40 + index as i64,
+                json!({"type":"message.edited","message":{"id":format!("source-{index}")}}),
+                None,
+                None,
+            )
+        })
+        .collect();
+    project_events(&mut tx, &events).await.unwrap();
+    tx.commit().await.unwrap();
+    // Retrying a committed projection must not produce more destination events.
+    let mut tx = pool.begin().await.unwrap();
+    project_events(&mut tx, &events).await.unwrap();
+    let projected: Vec<Value> = sqlx::query_scalar(
+        "SELECT payload FROM public.channel_events WHERE channel_id=$1 ORDER BY seq",
+    )
+    .bind(destination)
+    .fetch_all(&mut *tx)
+    .await
+    .unwrap();
+    assert_eq!(projected.len(), 50);
+    for (index, event) in projected.iter().enumerate() {
+        assert_eq!(event["type"], "message.forward");
+        assert_eq!(event["channelId"], "destination");
+        assert_eq!(event["seq"], (150 + index).to_string());
+        assert_eq!(event["message"]["forwardSeq"], event["seq"]);
+        assert_eq!(event["message"]["id"], format!("forward-{index}"));
+        assert_eq!(event["message"]["seq"], (100 + index).to_string());
+        assert_eq!(event["message"]["content"]["text"], format!("Note {index}"));
+        let stored: Value =
+            sqlx::query_scalar("SELECT payload FROM public.messages WHERE external_id=$1")
+                .bind(format!("forward-{index}"))
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        assert_eq!(stored, event["message"]);
+    }
+    // Verify both read hydration and durable projection against the seeded
+    // values, not against one another: both must clear unavailable originals.
+    for message in page
+        .iter()
+        .chain(projected.iter().map(|event| &event["message"]))
+    {
+        if message["id"] == "plain" {
+            assert_eq!(message, &plain);
+            continue;
+        }
+        let index: usize = message["id"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("forward-")
+            .parse()
+            .unwrap();
+        let source = index % 4;
+        if source == 1 || source == 2 {
+            assert_eq!(message["forward"], json!({"message":null,"seq":"0"}));
+        } else {
+            assert_eq!(message["forward"]["seq"], (40 + source).to_string());
+            let shared = &message["forward"]["message"];
+            assert_eq!(shared["id"], format!("source-{source}"));
+            assert_eq!(
+                shared["content"]["text"],
+                format!("Current source {source}")
+            );
+            assert_eq!(shared["author"]["name"], "Current name");
+            assert_eq!(shared["author"]["avatarId"], 31);
+            for private in ["threadRootId", "thread", "pin", "pinSeq"] {
+                assert!(shared.get(private).is_none(), "leaked {private}");
+            }
+        }
+    }
+    // Neither an empty page nor an ordinary message needs a forward query.
+    hydrate(&mut tx, &mut []).await.unwrap();
+    let mut ordinary = vec![plain.clone()];
+    hydrate(&mut tx, &mut ordinary).await.unwrap();
+    assert_eq!(ordinary, vec![plain]);
+}

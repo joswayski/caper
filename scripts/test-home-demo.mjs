@@ -54,7 +54,10 @@ const nextMoments = (count) =>
   evaluate(
     `for (let i = 0; i < ${count}; i++) { window.advanceDemoClock(1); await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))); }`,
   );
-const members = () => evaluate('return [...document.querySelectorAll(".sim-member strong")].map(el => el.textContent)');
+const memberCount = () =>
+  evaluate(
+    'return Number(document.querySelector(".member-list-toggle").getAttribute("aria-label").match(/(\\d+) online/)[1])',
+  );
 const voices = () => evaluate('return [...document.querySelectorAll(".sim-person strong")].map(el => el.textContent)');
 const speakers = () =>
   evaluate('return [...document.querySelectorAll(".sim-person[data-speaking] strong")].map(el => el.textContent)');
@@ -110,6 +113,7 @@ const pointFor = (selector) =>
   `);
 const checkReadOnlyHover = (selectors) => {
   for (const selector of selectors) {
+    browser("scrollintoview", selector);
     browser("mouse", "move", "0", "0");
     const appearance = () =>
       evaluate(`
@@ -251,13 +255,35 @@ try {
     evaluate('return document.querySelector(".sim-direct .direct-section-title").textContent'),
     "Direct messages",
   );
+  assert.deepEqual(
+    evaluate(
+      'return [...document.querySelectorAll(".sim-direct .direct-select > span:nth-child(2)")].map(el => el.textContent)',
+    ),
+    ["Maya", "Theo", "June"],
+    "The demo shows private notes and peer DMs",
+  );
+  assert.equal(
+    evaluate('return document.querySelector(".sim-message .chat-thread-summary strong").textContent'),
+    "1 reply",
+  );
+  assert.equal(evaluate('return document.querySelector(".chat-pin-marker").textContent'), "Pinned by Maya");
+  assert.equal(
+    evaluate('return document.querySelector(".chat-message-pinned p").textContent'),
+    "game night at 8. bringing the playlist 🎶",
+  );
+  assert.equal(evaluate('return document.querySelector(".chat-edited")'), null, "Edits do not appear early");
+  assert.equal(evaluate('return document.querySelector(".chat-forward-card")'), null, "Forwards do not appear early");
   assert.equal(
     evaluate('return document.querySelector(".sim-sidebar .voice-dock strong").textContent'),
     "Voice connected",
   );
   assert.equal(evaluate('return document.querySelector(".sim-channel .voice-session-timer").textContent'), "00:03");
-  assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-members")).width'), "220px");
-  assert.equal(evaluate('return document.querySelectorAll(".sim-member .presence-dot[data-status=online]").length'), 3);
+  assert.equal(
+    evaluate('return document.querySelector(".sim-members")'),
+    null,
+    "Members stay closed like the app default",
+  );
+  assert.equal(memberCount(), 3);
   assert.deepEqual(
     evaluate(
       'return [".sim-sidebar .channel-navigation > header", ".sim-chat > header"].map(s => document.querySelector(s).offsetHeight)',
@@ -316,6 +342,8 @@ try {
     ".voice-icon-button",
     ".call-settings-trigger",
     ".member-list-toggle",
+    ".chat-thread-summary",
+    ".chat-pin-marker",
   ]);
   browser("hover", ".live-invite");
   wait('getComputedStyle(document.querySelector(".live-invite")).backgroundColor === "rgb(182, 77, 50)"');
@@ -338,16 +366,16 @@ try {
   );
   for (const selector of [
     ".sim-brand",
-    ".sim-members-heading",
     ".sim-chat > header h2",
     ".sim-message:last-of-type p",
     ".sim-meme",
     ".sim-reaction img",
+    ".chat-thread-summary",
     ".sim-composer",
   ])
     drag(selector);
   console.log(
-    "PASS: both sidebars, chat header, message text, meme image and composer drag the preview without navigating",
+    "PASS: sidebar, chat header, message text, meme image, thread summary and composer drag the preview without navigating",
   );
   assert.equal(evaluate('return document.querySelector(".sim-composer").tagName'), "DIV");
   assert.equal(
@@ -367,7 +395,6 @@ try {
     ),
     ["general", "feedback"],
   );
-  assert.notEqual(evaluate('return getComputedStyle(document.querySelector(".sim-members")).display'), "none");
   assert.ok(
     evaluate(
       'return !!document.querySelector(".sim-people").closest("li[data-voice]")?.querySelector(".channel-select[aria-current=page]")',
@@ -392,9 +419,9 @@ try {
 
   // Joining a channel must not automatically join voice; leaving voice keeps
   // membership. Drive the real timer callback through the local clock fixture.
-  assert.deepEqual(members(), ["Maya", "Theo", "June"]);
+  assert.equal(memberCount(), 3);
   nextMoments(1); // 4
-  assert.deepEqual(members(), ["Maya", "Theo", "June", "Leo"]);
+  assert.equal(memberCount(), 4);
   assert.deepEqual(voices(), ["Maya", "Theo", "June"]);
   assert.deepEqual(speakers(), ["Maya", "Theo", "June"]);
   nextMoments(1); // 5: Maya stops while Theo and June continue
@@ -405,6 +432,18 @@ try {
     "Leo posted at 4.75; no bundled reaction",
   );
   nextMoments(1); // 6: Leo's message is 1.25 seconds old
+  assert.equal(
+    evaluate('return document.querySelector(".chat-message-pinned p").textContent'),
+    "game night at 8:30. bringing the playlist 🎶",
+  );
+  assert.equal(evaluate('return document.querySelector(".chat-message-pinned .chat-edited").textContent'), "edited");
+  assert.deepEqual(
+    evaluate(
+      'const style = getComputedStyle(document.querySelector(".chat-edited")); return [style.borderWidth, style.textTransform]',
+    ),
+    ["0px", "none"],
+    "Edited text must not inherit the guest badge's border or uppercase styling",
+  );
   assert.equal(
     evaluate('return document.querySelectorAll(".sim-message:last-of-type .sim-reaction").length'),
     0,
@@ -419,7 +458,14 @@ try {
     "First reaction arrives after the message",
   );
   nextMoments(1); // 8
-  assert.ok(members().includes("Noor"));
+  assert.equal(memberCount(), 5);
+  assert.equal(evaluate('return document.querySelector(".chat-thread-summary strong").textContent'), "2 replies");
+  assert.deepEqual(
+    evaluate(
+      'return [...document.querySelectorAll(".chat-thread-avatars .sim-avatar")].map(el => el.getAttribute("aria-label"))',
+    ),
+    ["Theo's caper avatar", "June's caper avatar"],
+  );
   assert.ok(!voices().includes("Noor"));
   assert.equal(evaluate('return document.querySelector(".sim-typing").textContent.trim()'), "Noor and Theo are typing");
   assert.deepEqual(speakers(), ["Maya", "Theo"]);
@@ -435,7 +481,8 @@ try {
   );
   assert.deepEqual(speakers(), ["Maya", "June", "Leo"]);
   nextMoments(3); // 15
-  assert.equal(members().length, 6);
+  assert.equal(memberCount(), 6);
+  assert.equal(evaluate('return document.querySelector(".chat-thread-summary strong").textContent'), "3 replies");
   assert.ok(!voices().includes("Sam"));
   assert.equal(
     evaluate('return document.querySelectorAll(".sim-message").length'),
@@ -455,8 +502,27 @@ try {
   );
   browser("scroll", "up", "10000", "--selector", ".sim-messages");
   wait('document.querySelector(".sim-messages").scrollTop === 0');
-  nextMoments(7); // 22
-  assert.ok(members().includes("Maya"));
+  nextMoments(2); // 17: a forwarded message arrives before its source replies
+  assert.equal(evaluate('return document.querySelector(".chat-forward-label").textContent'), "Forwarded · live");
+  assert.equal(evaluate('return document.querySelector(".chat-forward-original strong").textContent'), "June");
+  assert.deepEqual(
+    evaluate(
+      'const style = getComputedStyle(document.querySelector(".chat-forward-original .sim-avatar")); return [style.width, style.height, style.padding, style.borderWidth, style.borderRadius]',
+    ),
+    ["24px", "24px", "0px", "0px", "30%"],
+    "The original author's avatar must not inherit guest badge padding or borders",
+  );
+  assert.equal(
+    evaluate('return document.querySelector(".chat-forward-original p").textContent'),
+    "petition for everyone to wear a tiny hat to game night",
+  );
+  assert.equal(evaluate('return document.querySelector(".sim-forward-summary").textContent'), "View conversation");
+  nextMoments(5); // 22
+  assert.equal(memberCount(), 6);
+  assert.equal(
+    evaluate('return document.querySelector(".sim-forward-summary").textContent'),
+    "1 reply · View conversation",
+  );
   assert.ok(!voices().includes("Maya"));
   assert.equal(
     evaluate('return document.querySelector(".sim-sidebar .voice-dock")'),
@@ -473,14 +539,18 @@ try {
     'const el = document.querySelector(".sim-messages"); el.scrollTop = el.scrollHeight; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));',
   );
   nextMoments(16); // 38
+  assert.equal(
+    evaluate('return document.querySelector(".sim-forward-summary").textContent'),
+    "2 replies · View conversation",
+  );
   assert.equal(voices().length, 6);
   checkVoiceSummary(["Maya", "Theo", "June", "Leo", "Noor", "Sam"]);
   nextMoments(1); // 39
-  assert.ok(!members().includes("June"));
+  assert.equal(memberCount(), 5);
   assert.ok(!voices().includes("June"));
   checkVoiceSummary(["Maya", "Theo", "Leo", "Noor", "Sam"]);
   nextMoments(6); // 45
-  assert.equal(members().length, 6);
+  assert.equal(memberCount(), 6);
   assert.equal(voices().length, 6);
   checkVoiceSummary(["Maya", "Theo", "June", "Leo", "Noor", "Sam"]);
   assert.equal(
@@ -493,7 +563,7 @@ try {
   );
   assert.equal(evaluate('return document.querySelectorAll(".sim-message").length'), 24);
   nextMoments(4); // 0: new loop, but the previous conversation stays
-  assert.deepEqual(members(), ["Maya", "Theo", "June"]);
+  assert.equal(memberCount(), 3);
   assert.deepEqual(voices(), ["Maya", "Theo", "June"]);
   checkVoiceSummary(["Maya", "Theo", "June"]);
   assert.equal(evaluate('return document.querySelectorAll(".sim-message").length'), 25);
@@ -514,6 +584,21 @@ try {
     "Older messages do not receive all remaining reactions instantly at the loop boundary",
   );
   nextMoments(3); // June posts again; her original message remains too
+  assert.deepEqual(
+    evaluate('return [...document.querySelectorAll(".chat-message-pinned p")].map(el => el.textContent)'),
+    ["game night at 8:30. bringing the playlist 🎶", "game night at 8. bringing the playlist 🎶"],
+    "Old edits persist while the new loop starts unedited",
+  );
+  assert.deepEqual(
+    evaluate('return [...document.querySelectorAll(".chat-thread-summary strong")].map(el => el.textContent)'),
+    ["3 replies", "1 reply"],
+    "Old thread replies persist independently of the new loop",
+  );
+  assert.equal(
+    evaluate('return document.querySelector(".sim-forward-summary").textContent'),
+    "2 replies · View conversation",
+    "Live forwards do not rewind across loops",
+  );
   assert.equal(evaluate('return document.querySelectorAll(".sim-message:last-of-type .sim-reaction").length'), 0);
   const firstCycleReactions = () =>
     evaluate(
@@ -543,6 +628,9 @@ try {
     "PASS: full message history persists across two loops; auto-follow and reading older messages work; reactions remain delayed and read-only",
   );
   console.log(
+    "PASS: pinned edits, thread avatars/counts and live-forward replies arrive on schedule and persist across loops; peer DMs and closed members match the app",
+  );
+  console.log(
     "PASS: general/feedback channels, no join notices/hints/actions, nested voice roster, simultaneous speakers, burst messages and multi-person typing",
   );
 
@@ -552,9 +640,32 @@ try {
     browser("set", "viewport", String(width), "844", "2");
     evaluate("await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));");
     checkVoiceSummary(["Maya", "Theo", "June", "Leo", "Noor", "Sam"]);
+    assert.equal(
+      evaluate('return getComputedStyle(document.querySelector(".sim-message > .chat-avatar + div")).paddingRight'),
+      "0px",
+      "The read-only illustration must not reserve space for the app's mobile message actions",
+    );
+    assert.ok(
+      evaluate(
+        'return document.querySelector(".sim-messages").clientHeight >= document.querySelector(".chat-forward-card").closest(".sim-message").offsetHeight',
+      ),
+      `The complete forwarded message must fit beneath all six voice participants at ${width}px`,
+    );
+    assert.equal(
+      evaluate(
+        'return document.querySelector(".sim-messages").scrollWidth > document.querySelector(".sim-messages").clientWidth',
+      ),
+      false,
+      `Threads, pins and forwards must not overflow horizontally at ${width}px`,
+    );
   }
   browser("set", "viewport", "1280", "800", "2");
   evaluate("await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));");
+  assert.equal(
+    evaluate('return document.querySelectorAll(".sim-demo :is(button, a, input, textarea, [role=button])").length'),
+    0,
+    "Edits, thread summaries and forwards remain illustrations, not working controls",
+  );
 
   // Mock only clipboard rejection: browsers may deny it, and we must not claim success.
   evaluate('navigator.clipboard.writeText = async () => { throw new Error("Test denial"); };');

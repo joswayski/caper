@@ -431,6 +431,7 @@ export class AppGateway {
         value.type === "message.created" ||
         value.type === "message.reactions" ||
         value.type === "message.pin" ||
+        value.type === "message.forward" ||
         value.type === "message.edited"
       ) {
         if (typeof value.seq !== "string") throw new Error("Invalid chat event.");

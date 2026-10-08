@@ -148,7 +148,55 @@ function initialState() {
       ],
     ]),
     mediaDenied: new Set(),
+    // Push and notification settings, like apps/api/src/push.rs. Platforms are
+    // advertised only through the control route.
+    pushPlatforms: [],
+    pushDevices: [],
+    pushRequests: [],
+    notificationSettings: new Map(),
+    notificationOverrides: new Map(),
   };
+}
+
+const pushPlatformNames = ["apns", "apnsSandbox", "fcm"];
+const notificationLevels = ["all", "mentions", "nothing"];
+const visibleAscii = (value, max) => typeof value === "string" && new RegExp(`^[\\x21-\\x7e]{1,${max}}$`).test(value);
+// Same shapes as push::device_input: APNs tokens are hex, FCM tokens are opaque.
+function pushDeviceProblem(body, platforms) {
+  if (!platforms.includes(body?.platform)) return "push platform unavailable";
+  const valid =
+    body.platform === "fcm" ? visibleAscii(body.token, 4096) : /^[0-9a-fA-F]{64,200}$/.test(body.token ?? "");
+  if (!valid) return "invalid push token";
+  if (body.appId !== undefined && body.appId !== null && !visibleAscii(body.appId, 255)) return "invalid app id";
+  return undefined;
+}
+const rfc3339 = /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})$/;
+const yearMs = 365 * 24 * 60 * 60 * 1000;
+// Mutes read as null once they expire; stored times are whole UTC seconds.
+const activeMute = (mutedUntil) =>
+  mutedUntil === "forever" || (mutedUntil && Date.parse(mutedUntil) > Date.now()) ? mutedUntil : null;
+// Same rules and messages as push::settings::OverrideInput. Missing keys keep the field.
+function overrideChanges(body, direct) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return { error: "invalid notification settings" };
+  if (Object.keys(body).some((key) => key !== "level" && key !== "mutedUntil"))
+    return { error: "invalid notification settings" };
+  const changes = {};
+  if ("level" in body) {
+    if (!(direct ? [null, "nothing"] : [null, ...notificationLevels]).includes(body.level))
+      return { error: direct ? "level must be nothing or null" : "level must be all, mentions, nothing or null" };
+    changes.level = body.level;
+  }
+  if ("mutedUntil" in body) {
+    const value = body.mutedUntil;
+    if (value === null || value === "forever") changes.mutedUntil = value;
+    else {
+      const at = typeof value === "string" && rfc3339.test(value) ? Date.parse(value) : NaN;
+      if (!(at > Date.now() && at <= Date.now() + yearMs))
+        return { error: "mutedUntil must be forever or a time within the next year" };
+      changes.mutedUntil = new Date(Math.floor(at / 1000) * 1000).toISOString().replace(".000Z", "Z");
+    }
+  }
+  return { changes };
 }
 
 function socketFrame(value, opcode = 1) {
@@ -385,8 +433,18 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       const body = chunks.length ? JSON.parse(Buffer.concat(chunks)) : {};
       const method = request.method;
       if (path === "/health") return json(response, 200, { fixture: true });
+      if (path === "/__fixture/push-devices" && method === "GET")
+        return json(response, 200, { devices: state.pushDevices, requests: state.pushRequests });
       if (path === "/__fixture/control" && method === "POST") {
         if (body.reset) state = initialState();
+        if (body.pushPlatforms !== undefined) {
+          if (
+            !Array.isArray(body.pushPlatforms) ||
+            body.pushPlatforms.some((platform) => !pushPlatformNames.includes(platform))
+          )
+            return reject(response, 400, "Invalid fixture push platforms.");
+          state.pushPlatforms = [...new Set(body.pushPlatforms)];
+        }
         if (body.noSpaces) state.spaces = [];
         if (body.clearFailures) state.failures = [];
         if (body.failure) state.failures.push(body.failure);
@@ -537,7 +595,103 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       }
       const user = identity(request);
       if (path === "/api/push/config")
-        return user ? json(response, 200, { platforms: [] }) : reject(response, 401, "Sign in required.");
+        return user
+          ? json(response, 200, { platforms: [...state.pushPlatforms] })
+          : reject(response, 401, "Sign in required.");
+      if (path === "/api/push/devices" && (method === "POST" || method === "DELETE")) {
+        if (!user) return reject(response, 401, "Sign in required.");
+        // DELETE still works for a platform that is no longer advertised.
+        const problem = pushDeviceProblem(body, method === "POST" ? state.pushPlatforms : pushPlatformNames);
+        if (problem) return reject(response, 400, problem);
+        const token = body.platform === "fcm" ? body.token : body.token.toLowerCase();
+        const device = { platform: body.platform, token, appId: body.appId ?? null, userId: user.id };
+        state.pushRequests.push({ method, ...device });
+        const same = (entry) => entry.platform === device.platform && entry.token === token;
+        // One registration per session: a new address replaces the previous one,
+        // and registering an address another account holds takes it over.
+        state.pushDevices = state.pushDevices.filter((entry) =>
+          method === "POST" ? !same(entry) && entry.userId !== user.id : !same(entry) || entry.userId !== user.id,
+        );
+        if (method === "POST") state.pushDevices.push(device);
+        return json(response, 204);
+      }
+      const settingsFor = (user) => ({
+        level: "all",
+        mobile: "whenInactive",
+        ...state.notificationSettings.get(user.id),
+      });
+      const overrideTarget = (user, { spaceId, channelId, conversationId }) => {
+        if (conversationId !== undefined) {
+          const channel = channelFor(conversationId);
+          return channel?.direct && canRead(channel, user) ? { conversationId } : undefined;
+        }
+        if (channelId !== undefined) {
+          const channel = channelFor(channelId);
+          return channel &&
+            !channel.direct &&
+            channel.id !== ids.demo &&
+            channel.spaceId === spaceId &&
+            canRead(channel, user)
+            ? { spaceId, channelId }
+            : undefined;
+        }
+        return state.spaces.some(
+          (detail) => detail.space.id === spaceId && detail.members.some((member) => member.id === user.id),
+        )
+          ? { spaceId }
+          : undefined;
+      };
+      const settingsDTO = (user) => ({
+        ...settingsFor(user),
+        overrides: (state.notificationOverrides.get(user.id) ?? [])
+          .map((entry) => ({ ...entry, mutedUntil: activeMute(entry.mutedUntil) }))
+          .filter((entry) => (entry.level !== null || entry.mutedUntil !== null) && overrideTarget(user, entry)),
+      });
+      if (path === "/api/notifications/settings" && (method === "GET" || method === "PUT")) {
+        if (!user) return reject(response, 401, "Sign in required.");
+        if (method === "PUT") {
+          if (!body || typeof body !== "object" || Array.isArray(body))
+            return reject(response, 400, "invalid notification settings");
+          if (Object.keys(body).some((key) => key !== "level" && key !== "mobile"))
+            return reject(response, 400, "invalid notification settings");
+          if ("level" in body && !notificationLevels.includes(body.level))
+            return reject(response, 400, "level must be all, mentions or nothing");
+          if ("mobile" in body && !["always", "whenInactive"].includes(body.mobile))
+            return reject(response, 400, "mobile must be always or whenInactive");
+          state.notificationSettings.set(user.id, { ...settingsFor(user), ...body });
+        }
+        return json(response, 200, settingsDTO(user));
+      }
+      const overridePath = /^\/api\/(?:spaces\/([^/]+)(?:\/channels\/([^/]+))?|dms\/([^/]+))\/notifications$/.exec(
+        path,
+      );
+      if (overridePath && method === "PUT") {
+        if (!user) return reject(response, 401, "Sign in required.");
+        const [, spaceId, channelId, conversationId] = overridePath;
+        const { changes, error } = overrideChanges(body, conversationId !== undefined);
+        if (error) return reject(response, 400, error);
+        const target = overrideTarget(user, { spaceId, channelId, conversationId });
+        if (!target)
+          return reject(
+            response,
+            404,
+            conversationId !== undefined
+              ? "conversation not found"
+              : channelId !== undefined
+                ? "channel not found"
+                : "space not found",
+          );
+        const overrides = state.notificationOverrides.get(user.id) ?? [];
+        const key = (entry) => entry.conversationId ?? entry.channelId ?? `space:${entry.spaceId}`;
+        let entry = overrides.find((candidate) => key(candidate) === key(target));
+        if (!entry) {
+          entry = { ...target, level: null, mutedUntil: null };
+          overrides.push(entry);
+        }
+        Object.assign(entry, changes);
+        state.notificationOverrides.set(user.id, overrides);
+        return json(response, 200, { ...entry, mutedUntil: activeMute(entry.mutedUntil) });
+      }
       if (path === "/api/people" && method === "GET") {
         // Like direct::people: everyone sharing a space or a DM, never yourself.
         if (!user) return reject(response, 401, "Sign in required.");

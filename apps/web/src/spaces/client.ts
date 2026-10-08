@@ -118,6 +118,96 @@ export function setDirectPrivacy(directMessages: DirectPrivacy) {
   });
 }
 
+/** `mentions` reads as "Only @mentions and DMs" at the account level. */
+export type NotificationLevel = "all" | "mentions" | "nothing";
+/** When phone push is sent; phones only, web leaves it alone. */
+export type MobileNotifications = "whenInactive" | "always";
+/** An RFC 3339 UTC timestamp, `forever`, or null (not muted). */
+export type MutedUntil = string | null;
+
+/** A space (`spaceId`), channel (`spaceId` + `channelId`) or DM (`conversationId`) override. */
+export interface NotificationOverride {
+  spaceId?: string;
+  channelId?: string;
+  conversationId?: string;
+  /** null inherits; a DM only uses `nothing` (notifications off). */
+  level: NotificationLevel | null;
+  mutedUntil: MutedUntil;
+}
+
+export interface NotificationSettings {
+  level: NotificationLevel;
+  mobile: MobileNotifications;
+  overrides: NotificationOverride[];
+}
+
+/** A missing key leaves that field unchanged; null resets it. */
+export interface NotificationChange {
+  level?: NotificationLevel | null;
+  mutedUntil?: MutedUntil;
+}
+
+// Clients read an unknown future level as `mentions`.
+function notificationLevel(value: unknown): NotificationLevel {
+  return value === "all" || value === "nothing" ? value : "mentions";
+}
+
+function notificationOverride(value: NotificationOverride): NotificationOverride {
+  return {
+    ...value,
+    level: value.level == null ? null : notificationLevel(value.level),
+    mutedUntil: value.mutedUntil ?? null,
+  };
+}
+
+function notificationSettings(value: NotificationSettings): NotificationSettings {
+  return {
+    level: notificationLevel(value.level),
+    mobile: value.mobile === "always" ? "always" : "whenInactive",
+    overrides: (value.overrides ?? []).map(notificationOverride),
+  };
+}
+
+export async function getNotificationSettings() {
+  return notificationSettings(await request<NotificationSettings>("/api/notifications/settings"));
+}
+
+export async function updateNotificationSettings(change: { level?: NotificationLevel; mobile?: MobileNotifications }) {
+  return notificationSettings(
+    await request<NotificationSettings>("/api/notifications/settings", { method: "PUT", body: JSON.stringify(change) }),
+  );
+}
+
+export async function setSpaceNotifications(spaceId: string, change: NotificationChange) {
+  return notificationOverride(
+    await request<NotificationOverride>(`/api/spaces/${pathId(spaceId)}/notifications`, {
+      method: "PUT",
+      body: JSON.stringify(change),
+    }),
+  );
+}
+
+export async function setChannelNotifications(spaceId: string, channelId: string, change: NotificationChange) {
+  return notificationOverride(
+    await request<NotificationOverride>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/notifications`, {
+      method: "PUT",
+      body: JSON.stringify(change),
+    }),
+  );
+}
+
+export async function setDirectNotifications(
+  conversationId: string,
+  change: { level?: "nothing" | null; mutedUntil?: MutedUntil },
+) {
+  return notificationOverride(
+    await request<NotificationOverride>(`/api/dms/${pathId(conversationId)}/notifications`, {
+      method: "PUT",
+      body: JSON.stringify(change),
+    }),
+  );
+}
+
 export interface SpaceLimits {
   ownedSpaces: number;
   totalSpaces: number;

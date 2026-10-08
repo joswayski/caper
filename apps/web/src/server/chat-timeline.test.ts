@@ -97,6 +97,69 @@ test("pins interleave with messages and reactions without changing creation orde
   assert.ok(isChatPinEvent(pin("9007199254740993")));
 });
 
+test("pinned reaction snapshots stay current across replay, pin acknowledgements and stale pages", () => {
+  for (const loaded of [false, true]) {
+    const timeline = new ChatTimeline();
+    const original = pin("2").message;
+    timeline.reset(loaded ? [original, message("10")] : [message("10")], "10", [original]);
+    timeline.mergeReactions(reaction("12", ["alice", "bob"]));
+    assert.equal(timeline.cursor, "10", "HTTP confirmation does not advance replay");
+    assert.deepEqual(timeline.pinnedMessages[0].reactions, [{ emoji: "👍🏽", authorIds: ["alice", "bob"] }]);
+    assert.equal(timeline.applyEvent(reaction("11", ["alice"])), "applied");
+    timeline.mergePin(pin("13", true, original));
+    assert.equal(timeline.pinnedMessages[0].reactionSeq, "12", "a later pin has an independent revision");
+    timeline.prepend([original]);
+    assert.equal(timeline.messages[0].reactionSeq, "12", "old pages cannot overwrite the reaction");
+    timeline.mergeReactions(reaction("14", []));
+    timeline.mergePin(pin("13", true, original));
+    assert.deepEqual(timeline.pinnedMessages[0].reactions, [], "a delayed pin must not resurrect reactions");
+    assert.equal(timeline.pinnedMessages[0].reactionSeq, "14");
+    assert.equal(timeline.messages.length, 2, "pins never insert rows into channel pagination");
+    timeline.mergePin(
+      pin("2", true, { ...original, reactionSeq: "15", reactions: reaction("15", ["carol"]).reactions }),
+    );
+    assert.equal(timeline.pinnedMessages[0].pinSeq, "13", "old pin metadata stays rejected");
+    assert.deepEqual(timeline.pinnedMessages[0].reactions, [{ emoji: "👍🏽", authorIds: ["carol"] }]);
+    assert.equal(timeline.messages[0].reactionSeq, "15", "a no-op pin can still carry newer reactions");
+  }
+});
+
+for (const loaded of [true, false]) {
+  test(`pinned reactions stay current across live updates and stale pin snapshots (loaded=${loaded})`, () => {
+    const timeline = new ChatTimeline();
+    const pinned = pin("8").message;
+    timeline.reset(loaded ? [pinned, message("10")] : [message("10")], "10", [pinned]);
+    const before = timeline.pinnedMessages[0];
+    timeline.applyEvent(reaction("11", ["peer", "guest"]));
+    assert.deepEqual(timeline.pinnedMessages[0].reactions, [{ emoji: "👍🏽", authorIds: ["peer", "guest"] }]);
+    assert.equal(before.reactions, undefined, "published snapshots stay immutable");
+    assert.equal(timeline.messages.length, loaded ? 2 : 1, "pins never fill gaps in channel pagination");
+
+    timeline.mergeReactions(reaction("14", []));
+    timeline.applyEvent(pin("12", false));
+    timeline.applyEvent(pin("13", true, { ...pinned, reactionSeq: "11", reactions: reaction("11").reactions }));
+    assert.deepEqual(timeline.pinnedMessages[0].reactions, [], "repinning cannot resurrect a removed reaction");
+    assert.equal(timeline.pinnedMessages[0].reactionSeq, "14");
+    assert.equal(timeline.cursor, "13", "HTTP snapshots do not advance replay");
+    timeline.prepend([pinned]);
+    assert.equal(timeline.messages[0].reactionSeq, "14", "stale history retains the newest reaction");
+    assert.deepEqual(timeline.messages[0].reactions, []);
+  });
+}
+
+test("pin snapshots merge reaction revisions independently of pin revisions", () => {
+  const timeline = new ChatTimeline();
+  timeline.reset([message("10")], "10", []);
+  timeline.applyEvent(reaction("11", ["peer"]));
+  timeline.applyEvent(pin("12"));
+  assert.equal(timeline.pinnedMessages[0].reactionSeq, "11", "unseen reactions survive the first pin");
+  timeline.mergePin(pin("12", true, { ...message("1"), reactionSeq: "15", reactions: [] }));
+  assert.equal(timeline.pinnedMessages[0].reactionSeq, "15", "a pin snapshot may carry newer reactions");
+  timeline.prepend([message("1")]);
+  assert.equal(timeline.messages[0].reactionSeq, "15");
+  assert.deepEqual(timeline.messages[0].reactions, []);
+});
+
 test("an old pin outside the loaded page updates live and stale snapshots cannot resurrect its unpin", () => {
   const timeline = new ChatTimeline();
   const old = message("1", "old-pin");

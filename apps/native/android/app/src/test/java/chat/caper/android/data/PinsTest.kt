@@ -36,4 +36,50 @@ class PinsTest {
         assertEquals("5", replayCursorAfterPin("5", update, false))
         assertEquals("9", replayCursorAfterPin("5", update, true))
     }
+
+    @Test fun `local pin and edit projections never replace authoritative revisions`() {
+        val original = message("4", false).let { it.copy(content = it.content.copy(text = "@peer original",
+            mentions = listOf(MessageMention("user", "peer", "peer")))) }
+        val pin = MessagePin(author, "2026-10-08T00:00:00Z")
+        val pending = AppUiState(messages = listOf(original),
+            pinIntents = mapOf(original.id to PinIntentUi(original, pin)),
+            editIntents = mapOf(original.id to EditIntentUi("local draft", 1)))
+        assertEquals(pin, pending.displayedMessages.single().pin)
+        assertEquals("local draft", pending.displayedPins.single().content.text)
+        assertEquals(original, pending.messages.single())
+        assertEquals(1, pending.displayedPins.single().revision)
+        assertEquals("4", pending.displayedPins.single().pinSeq)
+        assertNull(pending.displayedPins.single().editSeq)
+        assertTrue(pending.displayedMessages.single().content.mentions.isEmpty())
+        assertTrue(pending.pinnedMessages.isEmpty())
+        val remote = original.copy(content = original.content.copy(text = "other tab"), revision = 2,
+            editSeq = "9", editedAt = "2026-10-08T01:00:00Z",
+            reactions = listOf(MessageReaction("🚀", listOf("peer"))), pin = pin, pinSeq = "10")
+        val updated = pending.copy(messages = listOf(remote), pinnedMessages = listOf(remote))
+        assertEquals("other tab", updated.displayedMessages.single().content.text)
+        val unpin = updated.copy(pinIntents = mapOf(original.id to PinIntentUi(original, null)))
+        assertTrue(unpin.displayedPins.isEmpty())
+        assertNull(unpin.displayedMessages.single().pin)
+        val rolledBack = unpin.copy(pinIntents = emptyMap(), editIntents = emptyMap())
+        assertEquals(remote, rolledBack.displayedMessages.single())
+        assertEquals(remote, rolledBack.displayedPins.single())
+        val unloaded = unpin.copy(messages = emptyList())
+        assertTrue(unloaded.displayedMessages.isEmpty())
+        assertEquals(remote, unloaded.copy(pinIntents = emptyMap()).displayedPins.single())
+    }
+
+    @Test fun `displayed channel context is bounded and includes local mutations`() {
+        val original = message("4", false)
+        val before = original.copy(id = "before", seq = "2")
+        val after = original.copy(id = "after", seq = "4")
+        val pin = MessagePin(author, "2026-10-08T00:00:00Z")
+        val pending = AppUiState(messages = listOf(before, original, after),
+            contextStart = "3", contextEnd = "3",
+            pinIntents = mapOf(original.id to PinIntentUi(original, pin)),
+            editIntents = mapOf(original.id to EditIntentUi("local draft", 1)))
+        assertEquals(listOf(original.id), pending.displayedChannelMessages.map { it.id })
+        assertEquals(pin, pending.displayedChannelMessages.single().pin)
+        assertEquals("local draft", pending.displayedChannelMessages.single().content.text)
+        assertEquals(listOf(before, original, after), pending.messages)
+    }
 }

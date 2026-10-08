@@ -14,7 +14,7 @@
   --voice-session-green: #4aa86b;
   --pin-gold: #e4c76a;
   --pin-wash: rgb(228 199 106 / 6%);
-  --radius: 6px;
+  --radius: 8px;
   /* Avatars are squircles: rounded squares that match the 8px control corners. */
   --radius-avatar: 30%;
   font-family: "Satoshi", "Avenir Next", "Segoe UI", sans-serif;
@@ -31,6 +31,12 @@
 
 html {
   scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
 }
 
 body {

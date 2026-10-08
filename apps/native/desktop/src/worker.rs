@@ -2,8 +2,9 @@ use crate::api::Api;
 use crate::gateway::{self, GatewayEvent};
 use crate::model::{
     Account, BlockedAccount, Channel, ChatSession, DirectConversation, History, Member, Message,
-    Person, Space, SpaceDetail, Spaces,
+    NotificationSettings, Person, Space, SpaceDetail, Spaces,
 };
+use crate::notifications::{Change, Saved, Scope};
 use eframe::egui;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
@@ -23,8 +24,8 @@ pub enum Command {
         generation: u64,
         token: String,
     },
-    /// Message requests, blocks and DM privacy, fenced by the account epoch
-    /// rather than the conversation generation.
+    /// Message requests, blocks, DM privacy and notification settings, fenced
+    /// by the account epoch rather than the conversation generation.
     Account {
         epoch: u64,
         token: String,
@@ -238,6 +239,14 @@ pub enum AccountOperation {
         value: String,
         previous: Option<String>,
     },
+    /// `revision` comes back so an answer older than a change is dropped.
+    LoadNotifications {
+        revision: u64,
+    },
+    SaveNotifications {
+        scope: Scope,
+        change: Change,
+    },
 }
 
 #[derive(Debug)]
@@ -261,6 +270,14 @@ pub enum AccountResult {
     PrivacySaved {
         previous: Option<String>,
         result: Result<String, String>,
+    },
+    Notifications {
+        revision: u64,
+        result: Result<NotificationSettings, String>,
+    },
+    NotificationsSaved {
+        scope: Scope,
+        result: Result<Saved, String>,
     },
 }
 
@@ -1326,6 +1343,24 @@ fn execute_account(api: &Api, token: &str, operation: AccountOperation) -> Accou
                 .map(|value| value.direct_messages)
                 .map_err(text),
         },
+        AccountOperation::LoadNotifications { revision } => AccountResult::Notifications {
+            revision,
+            result: api.notification_settings(token).map_err(text),
+        },
+        AccountOperation::SaveNotifications { scope, change } => {
+            let result = match (&scope, &change) {
+                (Scope::Account, Change::Level(Some(level))) => api
+                    .save_notification_level(token, *level)
+                    .map(Saved::Settings),
+                _ => api
+                    .save_notification_override(token, &scope, &change)
+                    .map(Saved::Override),
+            };
+            AccountResult::NotificationsSaved {
+                scope,
+                result: result.map_err(text),
+            }
+        }
     }
 }
 

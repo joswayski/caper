@@ -44,6 +44,14 @@ const screenshot = (name) => {
   assert.equal(evaluate("devicePixelRatio"), 2);
   browser("screenshot", `${artifacts}/${name}.png`);
 };
+const holdPinRequest = () =>
+  evaluate(`(() => {
+    const original = window.fetch.bind(window);
+    window.fetch = (input, init) => String(input).endsWith('/pin') && init?.method === 'PUT'
+      ? new Promise((resolve, reject) => { window.releasePin = () => original(input, init).then(resolve, reject); })
+      : original(input, init);
+    window.restorePinFetch = () => { window.fetch = original; };
+  })()`);
 async function control(body) {
   const response = await fetch(`${api}/__fixture/control`, {
     method: "POST",
@@ -242,8 +250,13 @@ try {
   wait('!document.querySelector(".chat-mention-card")');
   openMenu();
   screenshot("pins-narrow-actions");
+  // Preserve main's optimistic mutation coverage with the new menu/modal UI:
+  // hold the request so the empty state cannot be caused by a fast server echo.
+  holdPinRequest();
   action("Unpin message");
   wait('document.querySelector(".chat-pins-dialog")?.textContent.includes("No pinned messages.")');
+  assert.equal((await history()).pinnedMessages.length, 1, "optimistic unpin has not reached the server");
+  evaluate("(() => { window.restorePinFetch(); return window.releasePin(); })()");
   assert.equal((await history()).pinnedMessages.length, 0);
   screenshot("pins-empty");
   action("Close pins");
@@ -274,7 +287,7 @@ try {
     `document.querySelector('.chat-thread-panel')?.textContent.includes('Sent from pinned thread context') && !document.querySelector('.chat-thread-panel')?.textContent.includes('Load newer replies')`,
   );
   console.log(
-    "PASS: icon-only Pins; quiet Go link; pinner hover profile by ID; profile outside/Escape dismissal; synthetic touch hold/release guard; no timeline pin notice/count; hover-menu unpin; outside/Escape dismissal; nested menu; failed jump retry; old-message context (30 before/30 after); centered target; back to newest message; sending from channel/thread context; narrow layout/unpin; pinned thread reply navigation.",
+    "PASS: icon-only Pins; quiet Go link; pinner hover profile by ID; profile outside/Escape dismissal; synthetic touch hold/release guard; no timeline pin notice/count; hover-menu optimistic unpin before server echo; outside/Escape dismissal; nested menu; failed jump retry; old-message context (30 before/30 after); centered target; back to newest message; sending from channel/thread context; narrow layout/unpin; pinned thread reply navigation.",
   );
 } catch (error) {
   console.error(browser("snapshot", "-i").snapshot);

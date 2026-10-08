@@ -27,6 +27,7 @@ import {
   X,
 } from "lucide-react";
 import ProfileForm from "../account/ProfileForm";
+import NotificationSettings from "../account/NotificationSettings";
 import PrivacySettings from "../account/PrivacySettings";
 import { getAccount, logout, type Account } from "../account/client";
 import { routeOutput } from "../audio/output";
@@ -491,7 +492,7 @@ export default function Call({
     () => setOutputSelectable(typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype),
     [],
   );
-  const [membersVisible, setMembersVisible] = useState(!embedded);
+  const [membersVisible, setMembersVisible] = useState(false);
   const [narrow, setNarrow] = useState(false);
   const navigationSwipe = useRef<{ id: number; x: number; y: number; time: number } | undefined>(undefined);
   const suppressNavigationClick = useRef(false);
@@ -501,7 +502,6 @@ export default function Call({
       setNarrow(media.matches);
       navigationSwipe.current = undefined;
     };
-    if (media.matches) setMembersVisible(false);
     update();
     media.addEventListener("change", update);
     return () => media.removeEventListener("change", update);
@@ -1558,6 +1558,7 @@ export default function Call({
             key={`${channel?.id ?? "general"}:${channelJoined}`}
             name={name}
             signedIn={!!account}
+            accountId={account?.id}
             identityReady={identityReady && engaged}
             direct={channel?.direct}
             onReadCursor={onReadCursor}
@@ -1677,6 +1678,7 @@ export default function Call({
             }}
           />
         )}
+        {profileOpen && account?.username && <NotificationSettings />}
         {profileOpen && account?.username && <PrivacySettings />}
       </dialog>
       <dialog

@@ -113,16 +113,30 @@ export class ChatTimeline {
 
   // HTTP acknowledgements update the snapshot, never the replay cursor.
   mergeReactions(event: ChatReactionEvent) {
-    const existing = this.byId.get(event.messageId);
-    if (existing) {
-      if (sequence(event.seq) > sequence(existing.reactionSeq ?? "0")) {
-        this.byId.set(existing.id, { ...existing, reactions: event.reactions, reactionSeq: event.seq });
-        this.sortedMessages = undefined;
+    for (const collection of [this.byId, this.pinnedById, this.pinUpdates]) {
+      const existing = collection.get(event.messageId);
+      if (existing && sequence(event.seq) > sequence(existing.reactionSeq ?? "0")) {
+        collection.set(existing.id, { ...existing, reactions: event.reactions, reactionSeq: event.seq });
+        if (collection === this.byId) this.sortedMessages = undefined;
       }
-    } else {
+    }
+    if (!this.byId.has(event.messageId)) {
       const previous = this.unseenReactions.get(event.messageId);
       if (!previous || sequence(event.seq) > sequence(previous.seq)) this.unseenReactions.set(event.messageId, event);
     }
+  }
+
+  private withReactions(message: ChatMessage) {
+    const unseen = this.unseenReactions.get(message.id);
+    for (const snapshot of [
+      this.byId.get(message.id),
+      this.pinnedById.get(message.id),
+      unseen && { reactions: unseen.reactions, reactionSeq: unseen.seq },
+    ]) {
+      if (snapshot && sequence(snapshot.reactionSeq ?? "0") > sequence(message.reactionSeq ?? "0"))
+        message = { ...message, reactions: snapshot.reactions, reactionSeq: snapshot.reactionSeq };
+    }
+    return message;
   }
 
   mergePin(event: ChatPinEvent) {
@@ -167,9 +181,13 @@ export class ChatTimeline {
     if (!previous || (message.revision ?? 1) > (previous.revision ?? 1)) this.editUpdates.set(message.id, message);
     for (const collection of [this.byId, this.pinnedById, this.pinUpdates]) {
       const current = collection.get(message.id);
-      if (current) collection.set(message.id, mergeEditedContent(current, message));
+      if (!current) continue;
+      const updated = mergeEditedContent(current, message);
+      if (updated !== current) {
+        collection.set(message.id, updated);
+        if (collection === this.byId) this.sortedMessages = undefined;
+      }
     }
-    this.sortedMessages = undefined;
   }
 
   private withEdit(message: ChatMessage) {
@@ -179,6 +197,15 @@ export class ChatTimeline {
 
   private mergePinMessage(message: ChatMessage) {
     this.mergeEdit(message);
+    if (message.reactionSeq !== undefined)
+      this.mergeReactions({
+        type: "message.reactions",
+        schemaVersion: 1,
+        channelId: message.channelId,
+        messageId: message.id,
+        seq: message.reactionSeq,
+        reactions: message.reactions ?? [],
+      });
     message = this.withEdit(message);
     const previous = this.pinUpdates.get(message.id);
     if (this.pinSnapshotCursor > 0n && sequence(message.pinSeq ?? "0") <= this.pinSnapshotCursor) {
@@ -193,8 +220,12 @@ export class ChatTimeline {
       }
       return;
     }
-    const snapshot = this.withEdit(
-      previous && sequence(previous.pinSeq ?? "0") > sequence(message.pinSeq ?? "0") ? previous : message,
+    // Pin revisions and reaction revisions are independent. A delayed pin
+    // response must not replace newer reactions, including on unloaded pins.
+    const snapshot = this.withReactions(
+      this.withEdit(
+        previous && sequence(previous.pinSeq ?? "0") > sequence(message.pinSeq ?? "0") ? previous : message,
+      ),
     );
     if (snapshot.pinSeq !== undefined) this.pinUpdates.set(snapshot.id, snapshot);
     if (snapshot.pin) {
@@ -220,7 +251,7 @@ export class ChatTimeline {
       return;
     }
     this.mergeEdit(message);
-    message = this.withEdit(message);
+    message = this.withReactions(this.withEdit(message));
     const rootId = message.threadRootId ?? message.id;
     const previous = this.threadSummaries.get(rootId);
     if (message.thread && (!previous || sequence(message.thread.seq) > sequence(previous.seq))) {

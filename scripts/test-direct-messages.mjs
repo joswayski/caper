@@ -95,6 +95,13 @@ try {
   browser("cookies", "set", "caper_fixture", "owner", "--url", web, "--path", "/", "--sameSite", "Lax");
   browser("open", `${web}/spaces`);
   wait('!!document.querySelector(".direct-section") && !!document.querySelector(".chat-composer textarea")');
+  const initialReads = evaluate(`performance.getEntriesByType('resource')
+    .filter(entry => new URL(entry.name).pathname === '/api/dms').map(entry => entry.startTime)`);
+  assert.equal(
+    initialReads.filter((start) => start < initialReads[0] + 10_000).length,
+    1,
+    "Initialization owns one DM read; the 15-second poll must not duplicate it on mount",
+  );
   assert.equal(evaluate('document.querySelector(".chat-heading").textContent.includes("Leave channel")'), false);
   browser("click", '[aria-label="Manage general"]');
   assert.ok(
@@ -230,6 +237,13 @@ try {
   wait(
     'document.querySelector(".chat-heading")?.textContent.includes("TEST FIXTURE Alex") && !document.querySelector(".space-dialog[open]")',
   );
+  assert.equal(
+    evaluate(
+      'document.querySelector(".direct-select:not(.direct-self) .direct-avatar [data-avatar-id]")?.dataset.avatarId',
+    ),
+    "799",
+    "Accepted DMs show the saved peer avatar, not a generic initial",
+  );
   assert.equal(evaluate('document.querySelector(".space-member-presence")'), null);
   assert.equal(
     evaluate('document.querySelectorAll("#space-channel-list > li").length'),
@@ -328,6 +342,13 @@ try {
   screenshot("dm-narrow");
   browser("click", ".navigation-toggle");
   wait('!!document.querySelector(".spaces-room.navigation-open")');
+  assert.equal(
+    evaluate(
+      'document.querySelector(".direct-select:not(.direct-self) .direct-avatar [data-avatar-id]")?.dataset.avatarId',
+    ),
+    "799",
+    "The narrow sidebar keeps the same peer artwork",
+  );
   screenshot("dm-narrow-browse");
   browser("click", ".direct-select:not(.direct-self)");
   wait('!document.querySelector(".spaces-room.navigation-open")');

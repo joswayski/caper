@@ -92,7 +92,12 @@ async fn two_person_privacy_durability_read_cursors_and_gateway_replay(pool: PgP
         .await,
         (StatusCode::OK, json!({"platforms":[]})),
     );
-    for method in ["POST", "DELETE"] {
+    // With notifications off no platform is advertised, so registration is
+    // refused; unregistering stays idempotent.
+    for (method, expected) in [
+        ("POST", StatusCode::BAD_REQUEST),
+        ("DELETE", StatusCode::NO_CONTENT),
+    ] {
         assert_eq!(
             request(
                 &app,
@@ -104,8 +109,7 @@ async fn two_person_privacy_durability_read_cursors_and_gateway_replay(pool: PgP
             )
             .await
             .0,
-            StatusCode::NOT_FOUND,
-            "device registration is deferred until direct provider integrations exist",
+            expected,
         );
     }
     let (notes, reopened) = tokio::join!(
@@ -161,13 +165,14 @@ async fn two_person_privacy_durability_read_cursors_and_gateway_replay(pool: PgP
             StatusCode::NOT_FOUND
         );
     }
+    // Account messages enqueue one notification job each; expansion (see
+    // push::tests) decides that notes notify nobody.
     assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM push_notifications")
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM notification_jobs")
             .fetch_one(&pool)
             .await
             .unwrap(),
-        0,
-        "notes must not send notifications to their author"
+        1,
     );
     mark_read(&pool, users[0], &notes, 99).await.unwrap();
     mark_read(&pool, users[0], &notes, 0).await.unwrap();
@@ -279,12 +284,12 @@ async fn two_person_privacy_durability_read_cursors_and_gateway_replay(pool: PgP
     assert_eq!(first, retry);
     assert_eq!(first.1["seq"], "1");
     assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM push_notifications")
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM notification_jobs")
             .fetch_one(&pool)
             .await
             .unwrap(),
-        0,
-        "DM sends must not enqueue deferred push notifications",
+        2,
+        "a retried send enqueues its notification job once",
     );
     let history = request(&app, "GET", &path, Some("bob"), None, Value::Null)
         .await
@@ -324,13 +329,13 @@ async fn two_person_privacy_durability_read_cursors_and_gateway_replay(pool: PgP
         sqlx::query_as::<_, (i64, i64, i64)>(
             "SELECT (SELECT count(*) FROM messages),
                     (SELECT count(*) FROM channel_events),
-                    (SELECT count(*) FROM push_notifications)",
+                    (SELECT count(*) FROM notification_jobs)",
         )
         .fetch_one(&pool)
         .await
         .unwrap(),
-        (2, 2, 0),
-        "only the earlier note and peer message remain after a failed outbox insert; no push is queued",
+        (2, 2, 2),
+        "only the earlier note and peer message remain after a failed outbox insert, with one notification job each",
     );
     sqlx::query("ALTER TABLE channel_events DROP CONSTRAINT reject_dm")
         .execute(&pool)

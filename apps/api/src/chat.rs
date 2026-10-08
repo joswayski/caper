@@ -807,8 +807,14 @@ async fn persist_message(
         .await
         .map_err(database_error)?;
     }
-    sqlx::query("INSERT INTO public.messages (external_id, channel_id, session_id, client_message_id, request_hash, channel_seq, payload, thread_root_id, broadcast) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)")
-        .bind(id).bind(channel_id).bind(session_id).bind(client_id).bind(hash).bind(seq).bind(&payload).bind(thread_root.as_ref().map(|row| row.0)).bind(broadcast).execute(&mut *tx).await.map_err(database_error)?;
+    let message_id: i64 = sqlx::query_scalar("INSERT INTO public.messages (external_id, channel_id, session_id, client_message_id, request_hash, channel_seq, payload, thread_root_id, broadcast) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id")
+        .bind(id).bind(channel_id).bind(session_id).bind(client_id).bind(hash).bind(seq).bind(&payload).bind(thread_root.as_ref().map(|row| row.0)).bind(broadcast).fetch_one(&mut *tx).await.map_err(database_error)?;
+    // Notifications are decided later from this outbox row; edits never add one.
+    if user_id.is_some() {
+        crate::push::enqueue(&mut tx, message_id)
+            .await
+            .map_err(database_error)?;
+    }
     if let Some(user) = user_id
         && space_id.is_none()
     {

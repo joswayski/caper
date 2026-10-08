@@ -166,11 +166,19 @@ async fn grant_runtime_access(pool: &PgPool, runtime_role: &str) -> Result<(), S
             "GRANT SELECT, INSERT, UPDATE ON public.space_invitations, public.space_invite_limits, public.channel_invitations TO {role}"
         ),
         format!(
-            "GRANT SELECT, INSERT, UPDATE, DELETE ON public.direct_conversations, public.direct_reads, public.push_devices, public.push_notifications, public.push_deliveries TO {role}"
+            "GRANT SELECT, INSERT, UPDATE, DELETE ON public.direct_conversations, public.direct_reads TO {role}"
         ),
         format!("GRANT SELECT, INSERT, UPDATE ON public.user_blocks TO {role}"),
+        // Devices are revoked and preferences updated in place; only finished
+        // jobs and deliveries (operational state) are pruned.
         format!(
-            "GRANT USAGE ON SEQUENCE public.push_devices_id_seq, public.push_notifications_id_seq TO {role}"
+            "GRANT SELECT, INSERT, UPDATE ON public.notification_devices, public.notification_settings, public.notification_overrides, public.notifications TO {role}"
+        ),
+        format!(
+            "GRANT SELECT, INSERT, UPDATE, DELETE ON public.notification_jobs, public.notification_deliveries TO {role}"
+        ),
+        format!(
+            "GRANT USAGE ON SEQUENCE public.notification_devices_id_seq, public.notification_overrides_id_seq, public.notification_jobs_id_seq, public.notifications_id_seq, public.notification_deliveries_id_seq TO {role}"
         ),
         format!(
             "GRANT USAGE ON SEQUENCE public.spaces_id_seq, public.channels_id_seq, public.chat_sessions_id_seq, public.messages_id_seq, public.message_reaction_activity_id_seq, public.message_reactions_id_seq, public.space_members_id_seq, public.channel_members_id_seq, public.channel_joins_id_seq, public.message_pin_activity_id_seq TO {role}"
@@ -319,12 +327,15 @@ mod tests {
         )
         .await
         .unwrap();
+        // The unused SNS-era tables are gone; their replacements exist and are empty.
         assert_eq!(
-            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM push_devices")
-                .fetch_one(&pool)
-                .await
-                .unwrap(),
-            0,
+            sqlx::query_as::<_, (Option<String>, i64)>(
+                "SELECT to_regclass('public.push_devices')::text, count(*) FROM notification_devices",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            (None, 0),
         );
     }
 
@@ -402,6 +413,10 @@ mod tests {
             ("public.message_reactions", "UPDATE"),
             ("public.message_versions", "SELECT"),
             ("public.message_versions", "INSERT"),
+            ("public.notification_devices", "UPDATE"),
+            ("public.notification_overrides", "INSERT"),
+            ("public.notification_jobs", "DELETE"),
+            ("public.notification_deliveries", "DELETE"),
         ] {
             assert!(
                 sqlx::query_scalar::<_, bool>("SELECT has_table_privilege($1, $2, $3)")
@@ -424,6 +439,22 @@ mod tests {
                     .await
                     .unwrap(),
                 "retained message versions must be append-only for {runtime_role}"
+            );
+        }
+        for object in [
+            "public.notification_devices",
+            "public.notification_settings",
+            "public.notification_overrides",
+            "public.notifications",
+        ] {
+            assert!(
+                !sqlx::query_scalar::<_, bool>("SELECT has_table_privilege($1, $2, 'DELETE')")
+                    .bind(&runtime_role)
+                    .bind(object)
+                    .fetch_one(&verify)
+                    .await
+                    .unwrap(),
+                "{object} is revoked or updated in place, never deleted"
             );
         }
         assert!(

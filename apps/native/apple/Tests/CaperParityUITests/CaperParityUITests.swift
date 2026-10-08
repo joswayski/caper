@@ -388,6 +388,24 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertLessThan(send.frame.minY - composer.frame.maxY, 32)
         XCTAssertTrue(send.isHittable)
         capture("thread-composer-single-line-keyboard", app: app)
+
+        hold(row)
+        let actions = try require(app.descendants(matching: .any)["message-actions-sheet"], timeout: 5,
+                                  "Missing thread root actions")
+        XCTAssertFalse(actions.buttons["Reply in thread"].exists, "The root is already open in its thread")
+        XCTAssertTrue(actions.buttons["Copy text"].exists)
+        actions.buttons["Copy text"].tap()
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: actions)
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed)
+
+        send.tap()
+        let reply = try require(app.staticTexts["Short reply"], timeout: 5, "Reply was not sent")
+        hold(reply)
+        let replyActions = try require(app.descendants(matching: .any)["message-actions-sheet"], timeout: 5,
+                                       "Missing thread reply actions")
+        XCTAssertFalse(replyActions.buttons["Reply in thread"].exists, "Replies cannot start nested threads")
+        XCTAssertTrue(replyActions.buttons["Copy text"].exists)
+        capture("thread-reply-actions-fixture", app: app)
     }
     #endif
 
@@ -687,9 +705,9 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(staticTexts("caper", in: app).count, 0, "The workspace must not have a web-style branding header")
         #if os(macOS)
         assertElement("selected-space-name", label: "Fixture Studio", in: app)
-        XCTAssertTrue(app.buttons["Hide member list"].exists)
-        assertStaticText("Members", in: app, timeout: 2)
+        XCTAssertTrue(app.buttons["Show member list"].exists)
         #endif
+        XCTAssertEqual(staticTexts("Members", in: app).count, 0, "Chat opens with the members list closed")
         capture("populated", app: app)
     }
 
@@ -768,6 +786,83 @@ final class CaperParityUITests: XCTestCase {
         assertElement("selected-channel-name", label: "# general", in: app)
         XCTAssertFalse(app.buttons["Leave channel"].exists)
         capture("channel-leave-from-menu", app: app)
+    }
+
+    /// The signed-in fixture account's overrides, each as "scope id:mutedUntil".
+    private nonisolated static func fixtureNotificationOverrides() async throws -> [String] {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:3001/api/notifications/settings")!)
+        request.setValue("Bearer fixture-owner-token", forHTTPHeaderField: "authorization")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        let settings = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let overrides = try XCTUnwrap(settings["overrides"] as? [[String: Any]])
+        return overrides.map { entry in
+            let channel: String? = entry["channelId"] as? String
+            let conversation: String? = entry["conversationId"] as? String
+            let space: String? = entry["spaceId"] as? String
+            let id: String = channel ?? conversation ?? space ?? "?"
+            let mute: String = entry["mutedUntil"] as? String ?? "null"
+            return "\(id):\(mute)"
+        }
+    }
+
+    /// Waits until the element's accessibility value does (or does not) mention "Muted".
+    private func waitForMuted(_ element: XCUIElement, _ muted: Bool, _ message: String) {
+        let format = muted ? "value CONTAINS %@" : "NOT (value CONTAINS %@)"
+        let matches = XCTNSPredicateExpectation(predicate: NSPredicate(format: format, "Muted"), object: element)
+        XCTAssertEqual(XCTWaiter.wait(for: [matches], timeout: 5), .completed, message)
+    }
+
+    func testMuteChannelFromItsOptionsMenu() async throws {
+        try await Self.fixtureControl(["reset": true])
+        addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+        let app = launch()
+        assertElement("selected-channel-name", label: "# general", in: app)
+        #if os(iOS)
+        app.buttons["Back to Browse"].tap()
+        #endif
+        let design = app.buttons["channel-chan00000002"]
+        XCTAssertTrue(design.waitForExistence(timeout: 10))
+        XCTAssertEqual(design.value as? String ?? "", "", "An unselected, unmuted channel has no state")
+
+        let options = app.descendants(matching: .any)["channel-options-chan00000002"]
+        options.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["Notifications"].firstMatch.waitForExistence(timeout: 5))
+        let mute = app.descendants(matching: .any)["Mute channel"].firstMatch
+        XCTAssertTrue(mute.waitForExistence(timeout: 5), "The channel menu offers Mute channel")
+        let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: mute)
+        XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 5), .completed, "Mute is available once settings load")
+        #if os(macOS)
+        // Keyboard only, without touching the submenu through accessibility.
+        // In CI's recordings the open "Mute channel" submenu closed whenever
+        // the test looked up one of its items (an existence check, or a hover,
+        // which XCUITest starts by re-hovering the parent), so the choice
+        // never landed. ↓↓↓ reaches "Mute channel" after Channel settings and
+        // Notifications, → opens its submenu at "For 15 minutes", and ↓↓↓↓
+        // reaches the last preset.
+        for _ in 0..<3 { app.typeKey(.downArrow, modifierFlags: []) }
+        app.typeKey(.rightArrow, modifierFlags: [])
+        for _ in 0..<4 { app.typeKey(.downArrow, modifierFlags: []) }
+        app.typeKey(.return, modifierFlags: [])
+        #else
+        let forever = app.descendants(matching: .any)["Until I turn it back on"].firstMatch
+        mute.tap()
+        XCTAssertTrue(forever.waitForExistence(timeout: 3))
+        forever.tap()
+        #endif
+        waitForMuted(design, true, "A muted channel is marked in the sidebar")
+        var overrides = try await Self.fixtureNotificationOverrides()
+        XCTAssertEqual(overrides, ["chan00000002:forever"], "The fixture stored the channel mute")
+        capture("channel-muted", app: app)
+
+        options.tap()
+        let unmute = app.descendants(matching: .any)["Unmute channel"].firstMatch
+        XCTAssertTrue(unmute.waitForExistence(timeout: 3), "A muted channel's menu offers Unmute channel")
+        XCTAssertTrue(app.descendants(matching: .any)["Muted"].firstMatch.exists, "The menu says it is muted")
+        unmute.tap()
+        waitForMuted(design, false, "Unmuting clears the sidebar mark")
+        overrides = try await Self.fixtureNotificationOverrides()
+        XCTAssertEqual(overrides, [], "Unmuting clears the override on the server")
     }
 
     func testSpectatorRosterCollapsesAndVoiceTargetDoesNotChangeChat() async throws {
@@ -945,16 +1040,20 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(app.buttons["account-profile"].isHittable)
     }
 
-    func testMembersCanBeHiddenWithoutChangingConversation() {
+    func testMembersStartClosedAndCanBeToggledWithoutChangingConversation() {
         let app = launch()
-        let toggle = app.buttons["Hide member list"]
+        let toggle = app.buttons["Show member list"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 10))
+        XCTAssertEqual(staticTexts("Members", in: app).count, 0)
+        capture("members-hidden", app: app)
         toggle.tap()
+        assertStaticText("Members", in: app, timeout: 2)
+        assertElement("selected-channel-name", label: "# general", in: app, timeout: 2)
+        app.buttons["Hide member list"].tap()
         XCTAssertTrue(app.buttons["Show member list"].waitForExistence(timeout: 2))
         assertElement("selected-channel-name", label: "# general", in: app, timeout: 2)
         assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app, timeout: 2)
         XCTAssertEqual(staticTexts("Members", in: app).count, 0)
-        capture("members-hidden", app: app)
     }
 
     func testCompletedLocalRecordingLayoutWithoutCapture() {
