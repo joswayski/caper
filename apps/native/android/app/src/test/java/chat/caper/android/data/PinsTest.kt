@@ -67,4 +67,19 @@ class PinsTest {
         assertTrue(unloaded.displayedMessages.isEmpty())
         assertEquals(remote, unloaded.copy(pinIntents = emptyMap()).displayedPins.single())
     }
+
+    @Test fun `displayed channel context is bounded and includes local mutations`() {
+        val original = message("4", false)
+        val before = original.copy(id = "before", seq = "2")
+        val after = original.copy(id = "after", seq = "4")
+        val pin = MessagePin(author, "2026-10-08T00:00:00Z")
+        val pending = AppUiState(messages = listOf(before, original, after),
+            contextStart = "3", contextEnd = "3",
+            pinIntents = mapOf(original.id to PinIntentUi(original, pin)),
+            editIntents = mapOf(original.id to EditIntentUi("local draft", 1)))
+        assertEquals(listOf(original.id), pending.displayedChannelMessages.map { it.id })
+        assertEquals(pin, pending.displayedChannelMessages.single().pin)
+        assertEquals("local draft", pending.displayedChannelMessages.single().content.text)
+        assertEquals(listOf(before, original, after), pending.messages)
+    }
 }

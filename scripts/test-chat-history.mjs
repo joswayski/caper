@@ -192,7 +192,10 @@ const anchorOffset = (key) =>
   );
 
 function togglePins() {
-  if (evaluate('!!document.querySelector(".chat-channel-menu")')) browser("click", ".chat-channel-menu summary");
+  if (evaluate('!!document.querySelector(".chat-pins-dialog")')) {
+    browser("click", 'button[aria-label="Close pins"]');
+    return;
+  }
   browser("click", ".chat-pins-toggle");
 }
 
@@ -207,10 +210,11 @@ function pinsRoundTrip(name, { incoming = false, atBottom = false } = {}) {
       document.querySelector('.chat-scroller').focus();
       return timeline.inert && timeline.getAttribute('aria-hidden') === 'true'
         && !timeline.contains(document.activeElement)
-        && !timeline.querySelector('.chat-message').checkVisibility({ opacityProperty: true });
+        && timeline.querySelector('.chat-message').checkVisibility({ opacityProperty: true })
+        && document.querySelector('.chat-pins-dialog').checkVisibility({ visibilityProperty: true });
     })()`),
     true,
-    "The retained timeline must be invisible, inaccessible and unfocusable behind Pins",
+    "The retained timeline must stay visible but inaccessible and unfocusable behind the Pins modal",
   );
   if (incoming) {
     evaluate('chatHistoryFixture.append("TEST FIXTURE arrival while reading pins")');

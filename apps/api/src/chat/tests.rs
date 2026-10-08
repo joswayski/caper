@@ -357,6 +357,172 @@ async fn threads_isolate_replies_and_broadcast_once_with_transactional_summaries
         .unwrap();
     assert_eq!(channel_page["messages"].as_array().unwrap().len(), 3);
     assert_eq!(channel_page["cursor"], "57");
+
+    // An asymmetric thread boundary counts messages, not event sequences:
+    // sequences 5 and 6 are reaction events, not context rows.
+    let boundary = conversation_window(
+        &pool,
+        channel,
+        &HistoryQuery {
+            around: Some(replies[0]["id"].as_str().unwrap().into()),
+            ..Default::default()
+        },
+        Some(users[0]),
+        Some(root),
+    )
+    .await
+    .unwrap();
+    let rows = boundary["messages"].as_array().unwrap();
+    assert_eq!(rows.len(), 34);
+    assert_eq!(rows[0]["seq"], "3");
+    assert_eq!(rows[3]["seq"], "8");
+    assert_eq!(rows[33]["seq"], "38");
+    assert_eq!(boundary["hasMore"], false);
+    assert_eq!(boundary["hasNewer"], true);
+    for index in 0..40 {
+        // Simulate history accumulated over time, not a send-rate stress test.
+        pool.execute("UPDATE public.messages SET created_at=now()-interval '2 minutes'")
+            .await
+            .unwrap();
+        persist_message(
+            &pool,
+            channel,
+            "alice",
+            Uuid::new_v4(),
+            &format!("later reply {index}"),
+            Some(root),
+            false,
+        )
+        .await
+        .unwrap();
+    }
+    let middle = conversation_window(
+        &pool,
+        channel,
+        &HistoryQuery {
+            around: Some(replies[29]["id"].as_str().unwrap().into()),
+            ..Default::default()
+        },
+        Some(users[0]),
+        Some(root),
+    )
+    .await
+    .unwrap();
+    let rows = middle["messages"].as_array().unwrap();
+    assert_eq!(rows.len(), 61);
+    assert_eq!(rows[0]["seq"], "7");
+    assert_eq!(rows[30]["seq"], "37");
+    assert_eq!(rows[60]["seq"], "67");
+    assert_eq!(middle["hasMore"], true);
+    assert_eq!(middle["hasNewer"], true);
+
+    let mut messages = Vec::new();
+    for index in 0..95 {
+        pool.execute("UPDATE public.messages SET created_at=now()-interval '2 minutes'")
+            .await
+            .unwrap();
+        messages.push(
+            persist(
+                &pool,
+                channel,
+                "bob",
+                Uuid::new_v4(),
+                &format!("channel context {index}"),
+            )
+            .await
+            .unwrap(),
+        );
+    }
+    let query = HistoryQuery {
+        around: Some(messages[35]["id"].as_str().unwrap().into()),
+        ..Default::default()
+    };
+    let middle = conversation_window(&pool, channel, &query, Some(users[0]), None)
+        .await
+        .unwrap();
+    let rows = middle["messages"].as_array().unwrap();
+    assert_eq!(rows.len(), 61);
+    for (offset, row) in rows.iter().enumerate() {
+        assert_eq!(row["id"], messages[5 + offset]["id"]);
+    }
+    assert_eq!(middle["cursor"], "192");
+    assert_eq!(middle["hasMore"], true);
+    assert_eq!(middle["hasNewer"], true);
+    let after = conversation_window(
+        &pool,
+        channel,
+        &HistoryQuery {
+            after: Some("163".into()),
+            ..Default::default()
+        },
+        Some(users[0]),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(after["messages"].as_array().unwrap().len(), 29);
+    assert_eq!(after["messages"][0]["seq"], "164");
+    assert_eq!(after["messages"][28]["seq"], "192");
+    assert_eq!(after["hasNewer"], false);
+    let after = conversation_window(
+        &pool,
+        channel,
+        &HistoryQuery {
+            after: Some("98".into()),
+            ..Default::default()
+        },
+        Some(users[0]),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(after["messages"].as_array().unwrap().len(), 50);
+    assert_eq!(after["messages"][0]["seq"], "99");
+    assert_eq!(after["messages"][49]["seq"], "148");
+    assert_eq!(after["hasNewer"], true);
+    for (channel, user, root, anchor) in [
+        ("other-channel", Some(users[0]), None, query.around.clone()),
+        (channel, Some(users[3]), None, query.around.clone()),
+        (channel, None, None, query.around.clone()),
+        (
+            channel,
+            Some(users[0]),
+            None,
+            Some(one["id"].as_str().unwrap().into()),
+        ),
+        (
+            channel,
+            Some(users[0]),
+            Some(other),
+            Some(one["id"].as_str().unwrap().into()),
+        ),
+    ] {
+        assert_eq!(
+            conversation_window(
+                &pool,
+                channel,
+                &HistoryQuery {
+                    around: anchor,
+                    ..Default::default()
+                },
+                user,
+                root
+            )
+            .await
+            .unwrap_err()
+            .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert!(
+        HistoryQuery {
+            before: Some("2".into()),
+            around: query.around,
+            ..Default::default()
+        }
+        .validate()
+        .is_err()
+    );
 }
 
 #[tokio::test]
