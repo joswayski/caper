@@ -265,11 +265,13 @@ struct PendingReaction {
 struct ReactorCache {
     revision: String,
     state: ReactorState,
+    // Retain names while refreshing; displayed reaction IDs own membership.
+    groups: Vec<model::ReactorGroup>,
 }
 
 enum ReactorState {
     Loading(Instant),
-    Loaded(Vec<model::ReactorGroup>),
+    Loaded,
     /// Hovering again retries after `REACTOR_RETRY`.
     Failed(Instant),
 }
@@ -279,7 +281,7 @@ impl ReactorCache {
     fn wants_request(&self, revision: &str) -> bool {
         self.revision != revision
             || match self.state {
-                ReactorState::Loaded(_) => false,
+                ReactorState::Loaded => false,
                 // The API client times out after 15 s, so this request is lost.
                 ReactorState::Loading(at) => at.elapsed() >= Duration::from_secs(20),
                 ReactorState::Failed(at) => at.elapsed() >= REACTOR_RETRY,
@@ -1845,7 +1847,8 @@ impl CaperApp {
                     }) {
                         cached.state = match result {
                             Ok(list) if list.message_id == message => {
-                                ReactorState::Loaded(list.reactions)
+                                cached.groups = list.reactions;
+                                ReactorState::Loaded
                             }
                             _ => ReactorState::Failed(Instant::now()),
                         };
@@ -8524,18 +8527,23 @@ impl CaperApp {
                 message.id.clone(),
                 ReactorCache {
                     revision,
-                    state: ReactorState::Loaded(reactions),
+                    state: ReactorState::Loaded,
+                    groups: reactions,
                 },
             );
             return;
         }
-        self.reactors.insert(
-            message.id.clone(),
-            ReactorCache {
+        self.reactors
+            .entry(message.id.clone())
+            .and_modify(|cached| {
+                cached.revision = revision.clone();
+                cached.state = ReactorState::Loading(Instant::now());
+            })
+            .or_insert_with(|| ReactorCache {
                 revision: revision.clone(),
                 state: ReactorState::Loading(Instant::now()),
-            },
-        );
+                groups: Vec::new(),
+            });
         self.worker.send(Command::LoadReactors {
             generation: self.generation,
             token: self.token.clone(),
@@ -8545,33 +8553,50 @@ impl CaperApp {
         });
     }
 
-    /// Names once they load for this exact set of people (a pending toggle
-    /// of your own changes the set); the snapshot's count until then.
+    /// Project known names onto the displayed IDs, including pending own toggles.
+    /// A refresh must not replace those names with a temporary count.
     fn reactor_summary(&self, message: &model::Message, reaction: &model::Reaction) -> String {
         let self_id = self.reactor_self_id();
         let name = emoji::name(&reaction.emoji);
-        let revision = message.reaction_seq.as_deref().unwrap_or("0");
-        let loaded = self
+        let groups = self
             .reactors
             .get(&message.id)
-            .filter(|cached| cached.revision == revision)
-            .and_then(|cached| match &cached.state {
-                ReactorState::Loaded(groups) => {
-                    groups.iter().find(|group| group.emoji == reaction.emoji)
-                }
-                _ => None,
-            })
-            .filter(|group| {
-                group.authors.len() == reaction.author_ids.len()
-                    && group
-                        .authors
-                        .iter()
-                        .all(|author| reaction.author_ids.contains(&author.id))
-            });
-        match loaded {
-            Some(group) => model::reactor_summary(&group.authors, self_id, name, &reaction.emoji),
-            None => model::reactor_fallback(&reaction.author_ids, self_id, name, &reaction.emoji),
+            .map_or(&[][..], |cached| cached.groups.as_slice());
+        let mut authors: Vec<_> = groups
+            .iter()
+            .find(|group| group.emoji == reaction.emoji)
+            .into_iter()
+            .flat_map(|group| &group.authors)
+            .filter(|author| reaction.author_ids.contains(&author.id))
+            .cloned()
+            .collect();
+        for id in &reaction.author_ids {
+            if authors.iter().any(|author| author.id == *id) {
+                continue;
+            }
+            if Some(id.as_str()) == self_id {
+                authors.push(model::Reactor {
+                    id: id.clone(),
+                    username: None,
+                    display_name: None,
+                    avatar_id: None,
+                });
+            } else if let Some(author) = groups
+                .iter()
+                .flat_map(|group| &group.authors)
+                .find(|author| author.id == *id)
+            {
+                authors.push(author.clone());
+            } else {
+                return model::reactor_fallback(
+                    &reaction.author_ids,
+                    self_id,
+                    name,
+                    &reaction.emoji,
+                );
+            }
         }
+        model::reactor_summary(&authors, self_id, name, &reaction.emoji)
     }
 
     fn set_reaction(&mut self, message: &str, emoji: &str, active: bool) {
@@ -14247,10 +14272,7 @@ mod tests {
             .unwrap();
         assert!(card.y < chip.y, "the card opens above the chip");
         assert!(
-            matches!(
-                app.reactors[&message.id].state,
-                super::ReactorState::Loaded(_)
-            ),
+            matches!(app.reactors[&message.id].state, super::ReactorState::Loaded),
             "fixtures answer locally instead of contacting Caper"
         );
 
@@ -14336,22 +14358,37 @@ mod tests {
         let heart = &message.reactions[1];
         assert_eq!(
             app.reactor_summary(&message, heart),
-            "1 person reacted with :red-heart:",
-            "emoji missing from the list keep the snapshot count"
+            "Maya B reacted with :red-heart:",
+            "another emoji can supply the name for a current reactor ID"
         );
 
         // Cached for this revision: hovering again sends nothing new.
         app.load_reactors(&message);
         assert!(matches!(
             app.reactors[&message.id].state,
-            super::ReactorState::Loaded(_)
+            super::ReactorState::Loaded
         ));
-        // Your own pending toggle changes the people, so the count shows.
+        // Local removals use the displayed IDs, not the cached membership.
         let mut toggled = thumbs.clone();
         toggled.author_ids.retain(|id| id != "fixture-owner");
         assert_eq!(
             app.reactor_summary(&message, &toggled),
-            "1 person reacted with :thumbs-up:"
+            "Maya B reacted with :thumbs-up:"
+        );
+        app.reactors.get_mut(&message.id).unwrap().groups[0]
+            .authors
+            .retain(|author| author.id != "fixture-owner");
+        assert_eq!(
+            app.reactor_summary(&message, &thumbs),
+            "You and Maya B reacted with :thumbs-up:",
+            "a local add names you even before the endpoint includes you"
+        );
+        let mut unknown = toggled.clone();
+        unknown.author_ids.push("new-person".into());
+        assert_eq!(
+            app.reactor_summary(&message, &unknown),
+            "2 people reacted with :thumbs-up:",
+            "unknown IDs must not inherit removed people's names"
         );
         // A new reaction revision reloads.
         let mut changed = message.clone();
@@ -14362,6 +14399,16 @@ mod tests {
             app.reactors[&message.id].state,
             super::ReactorState::Loading(_)
         ));
+        assert_eq!(
+            app.reactor_summary(&changed, &thumbs),
+            "You and Maya B reacted with :thumbs-up:"
+        );
+        events.send(answer("4", "Stale Maya")).unwrap();
+        app.receive();
+        assert_eq!(
+            app.reactor_summary(&changed, &toggled),
+            "Maya B reacted with :thumbs-up:"
+        );
         events
             .send(crate::worker::Event::Reactors {
                 generation: app.generation,
@@ -14378,8 +14425,8 @@ mod tests {
         ));
         assert_eq!(
             app.reactor_summary(&changed, &thumbs),
-            "2 people reacted with :thumbs-up:",
-            "failures keep the snapshot count"
+            "You and Maya B reacted with :thumbs-up:",
+            "refresh failures keep known names"
         );
         app.load_reactors(&changed);
         assert!(
@@ -14388,6 +14435,14 @@ mod tests {
                 super::ReactorState::Failed(_)
             ),
             "failures are not retried on every frame"
+        );
+        changed.reaction_seq = Some("6".into());
+        app.load_reactors(&changed);
+        events.send(answer("6", "Maya Updated")).unwrap();
+        app.receive();
+        assert_eq!(
+            app.reactor_summary(&changed, &toggled),
+            "Maya Updated reacted with :thumbs-up:"
         );
     }
 
