@@ -1,13 +1,19 @@
 package chat.caper.android
 
+import android.Manifest
 import android.app.Application
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import chat.caper.android.data.*
 import chat.caper.android.model.*
 import chat.caper.android.push.CaperNotifications
 import chat.caper.android.push.ForegroundConversation
+import chat.caper.android.push.PushOffer
 import chat.caper.android.push.PushRegistration
+import chat.caper.android.push.pushOffer
 import chat.caper.android.voice.VoiceCallService
 import chat.caper.android.voice.VoiceState
 import java.io.IOException
@@ -107,7 +113,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 startDirectRefresh()
                 if (PushRegistration.enabled(getApplication())) viewModelScope.launch {
                     runCatching { PushRegistration.enable(getApplication()) }
-                }
+                } else offerPush(account.id, requestAccountGeneration)
                 val pending = pendingDirectIntent?.let { id -> mutable.value.directConversations.firstOrNull { it.id == id } }
                 val pendingChannel = pendingChannelIntent?.takeIf { (space, _) -> list.spaces.any { it.id == space } }
                 pendingChannelIntent = null
@@ -210,17 +216,49 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     /** Turns on push for this sign-in session; [done] gets the error to show, or null. */
     fun enablePush(done: (String?) -> Unit) {
         val request = accountGeneration
+        val accountId = mutable.value.account?.id
         viewModelScope.launch {
             val error = try { PushRegistration.enable(getApplication()); null }
             catch (error: CancellationException) { throw error }
             catch (error: Throwable) { error.message ?: "Notifications could not be enabled." }
+            if (error == null && accountId != null) PushRegistration.setTurnedOff(getApplication(), accountId, false)
             if (request == accountGeneration) done(error)
         }
     }
 
+    /** Turns push off on this phone and remembers it, so opening the app doesn't turn it back on. */
     fun disablePush(done: () -> Unit) {
         val token = accountToken
+        mutable.value.account?.id?.let { PushRegistration.setTurnedOff(getApplication(), it, true) }
         viewModelScope.launch { PushRegistration.disable(getApplication(), token); done() }
+    }
+
+    /** Push is on by default (see [pushOffer]); this runs each time the app opens with an account. */
+    private fun offerPush(accountId: String, request: Long) {
+        val app = getApplication<Application>()
+        if (!BuildConfig.FIREBASE_ENABLED || PushRegistration.turnedOff(app, accountId)) return
+        viewModelScope.launch {
+            val offered = canEnablePush()
+            if (request != accountGeneration) return@launch
+            val permitted = Build.VERSION.SDK_INT < 33 ||
+                ContextCompat.checkSelfPermission(app, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+            when (pushOffer(BuildConfig.FIREBASE_ENABLED, PushRegistration.turnedOff(app, accountId), offered, permitted, PushRegistration.asked(app, accountId))) {
+                PushOffer.ENABLE -> runCatching { PushRegistration.enable(app) }
+                PushOffer.ASK -> mutable.value = mutable.value.copy(pushPrompt = true)
+                PushOffer.NONE -> Unit
+            }
+        }
+    }
+
+    /** The activity is showing the prompt [offerPush] asked for. App open never asks this account again. */
+    fun pushPromptShown() {
+        mutable.value.account?.id?.let { PushRegistration.markAsked(getApplication(), it) }
+        mutable.value = mutable.value.copy(pushPrompt = false)
+    }
+
+    /** The answer to that prompt, for the account that was signed in when it was shown ([epoch]). */
+    fun pushPromptAnswered(granted: Boolean, epoch: Long) {
+        if (granted && epoch == accountGeneration) enablePush { }
     }
 
     /** Opens a space at [preferredChannelId] when it has one, otherwise its first joined channel. */
@@ -698,7 +736,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun setReaction(messageId: String, emoji: String, active: Boolean) {
         val channel = mutable.value.selectedChannel?.takeIf { it.joined } ?: return
         val key = "$messageId:$emoji"
-        val target = mutable.value.messages.firstOrNull { it.id == messageId } ?: return
+        val target = (mutable.value.messages + mutable.value.pinnedMessages).firstOrNull { it.id == messageId } ?: return
         val own = mutable.value.chatAuthorId ?: mutable.value.account?.id ?: return
         authoritativeReactionMessages.putIfAbsent(messageId, target)
         reactionIntents.getOrPut(messageId) { linkedMapOf() }[emoji] = ReactionIntent(emoji, active, ++reactionIntentVersion)
@@ -815,9 +853,13 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun projectPendingReaction(messageId: String, own: String) {
         val authoritative = authoritativeReactionMessages[messageId] ?: return
         val intents = reactionIntents[messageId]?.values.orEmpty().map { ReactionSaveUi(it.emoji, it.active) }
-        mutable.value = mutable.value.copy(messages = mutable.value.messages.map {
-            if (it.id == messageId) projectReactionIntents(authoritative, own, intents) else it
-        })
+        fun project(message: ChatMessage): ChatMessage = if (message.id == messageId)
+            projectReactionIntents(message.copy(reactions = authoritative.reactions, reactionSeq = authoritative.reactionSeq), own, intents)
+        else message
+        mutable.value = mutable.value.copy(
+            messages = mutable.value.messages.map(::project),
+            pinnedMessages = mutable.value.pinnedMessages.map(::project),
+        )
     }
 
     fun retryReaction(messageId: String, emoji: String) {
@@ -1101,24 +1143,23 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         durableReplayCursor = replayCursorAfterReaction(durableReplayCursor, update, sequenced)
         if (sequenced && mutable.value.selectedDirectId == update.channelId) markDirectRead(update.channelId, update.seq)
         pinSnapshots[update.messageId]?.let { pinSnapshots[update.messageId] = mergeReaction(it, update) }
-        mutable.value = mutable.value.copy(pinnedMessages = mutable.value.pinnedMessages.map { mergeReaction(it, update) })
-        val index = mutable.value.messages.indexOfFirst { it.id == update.messageId }
-        if (index < 0) {
+        val current = authoritativeReactionMessages[update.messageId]
+            ?: (mutable.value.messages + mutable.value.pinnedMessages).firstOrNull { it.id == update.messageId }
+        if (current == null) {
             if (!cacheUnseenReaction(unloadedReactions, update)) {
                 mutable.value.selectedChannel?.id?.let(::resyncChannel)
                 return
             }
             return
         }
-        val current = authoritativeReactionMessages[update.messageId]
-            ?: mutable.value.messages.first { it.id == update.messageId }
         val authoritative = mergeReaction(current, update)
         authoritativeReactionMessages[update.messageId] = authoritative
+        mutable.value = mutable.value.copy(
+            messages = mutable.value.messages.map { mergeReaction(it, update) },
+            pinnedMessages = mutable.value.pinnedMessages.map { mergeReaction(it, update) },
+        )
         val own = mutable.value.chatAuthorId ?: mutable.value.account?.id
-        val intents = reactionIntents[update.messageId]?.values.orEmpty().map { ReactionSaveUi(it.emoji, it.active) }
-        mutable.value = mutable.value.copy(messages = mutable.value.messages.map {
-            if (it.id == update.messageId && own != null) projectReactionIntents(authoritative, own, intents) else mergeReaction(it, update)
-        })
+        if (own != null) projectPendingReaction(update.messageId, own)
     }
 
     private fun receiveEdit(update: EditUpdate) {
@@ -1194,6 +1235,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             messages = mutable.value.messages.map { if (it.id == merged.id) mergeReaction(mergeEdit(mergePin(it, merged), merged), merged) else it },
             pinnedMessages = pinSnapshots.values.filter { it.pin != null }.sortedByDescending { it.pinSeq?.toBigIntegerOrNull() },
         )
+        val own = mutable.value.chatAuthorId ?: mutable.value.account?.id
+        if (own != null) projectPendingReaction(merged.id, own)
     }
 
     private fun receiveForward(update: ForwardUpdate) {
@@ -1245,9 +1288,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun mergeTimelinePins(messages: List<ChatMessage>) = messages.map { message ->
-        val snapshot = pinSnapshots[message.id]
-        val reactions = snapshot?.let { mergeReaction(message, it) } ?: message
-        val pinned = overlayEdit(overlayPin(reactions, snapshot, pinSnapshotCursor))
+        val pinned = overlayReactions(overlayEdit(overlayPin(message, pinSnapshots[message.id], pinSnapshotCursor)))
         forwardSnapshots[message.id]?.let { mergeForward(pinned, it) } ?: pinned
     }
 
