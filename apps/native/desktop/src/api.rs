@@ -814,9 +814,10 @@ fn checked(response: Response) -> Result<Response, ApiError> {
     let message = match code.as_deref() {
         Some("dm_not_accepted") => "This person isn't accepting direct messages.".into(),
         Some("dm_blocked") => "You blocked this person. Unblock them to message them.".into(),
+        // Only for display: callers branch on `status` and `code`, never this text.
         _ => body
             .as_ref()
-            .and_then(|body| body["error"].as_str().map(str::to_owned))
+            .and_then(|body| body["error"].as_str().map(friendly_error))
             .unwrap_or_else(|| format!("Caper request failed ({status}).")),
     };
     Err(ApiError {
@@ -825,6 +826,136 @@ fn checked(response: Response) -> Result<Response, ApiError> {
         attempts_remaining: body.and_then(|body| body["attemptsRemaining"].as_u64()),
         code,
     })
+}
+
+/// Sentences for the API's lowercase error text, copied from web's
+/// `friendlyError` (`apps/web/src/spaces/errors.ts`). Keys are the server's
+/// exact strings.
+const SERVER_ERRORS: &[(&str, &str)] = &[
+    (
+        "user not found",
+        "User not found. Check the username and try again.",
+    ),
+    (
+        "account not found",
+        "User not found. Check the username and try again.",
+    ),
+    ("enter an exact username", "Enter an exact username."),
+    (
+        "invalid username",
+        "Use 3–32 lowercase letters, numbers, or underscores.",
+    ),
+    ("user already in space", "This person is already a member."),
+    (
+        "user already in channel",
+        "This person already has access to this channel.",
+    ),
+    (
+        "user already invited",
+        "This person already has a pending invitation.",
+    ),
+    (
+        "user must join the space first",
+        "This person needs to join the space before you can add them to a channel.",
+    ),
+    (
+        "invitation cooldown; try again after 24 hours",
+        "This person recently responded to an invitation. You can invite them again after 24 hours.",
+    ),
+    (
+        "too many invitation attempts; try again in 10 minutes",
+        "Too many invitations. Try again in 10 minutes.",
+    ),
+    (
+        "pending invitation limit reached",
+        "Too many invitations are waiting for a response. Try again later.",
+    ),
+    (
+        "membership limit reached",
+        "You’ve reached the limit of spaces you can join. Leave one to join this space.",
+    ),
+    ("space limit reached", "You’ve reached your space limit."),
+    (
+        "channel limit reached",
+        "This space has reached its channel limit.",
+    ),
+    (
+        "channel name already exists",
+        "A channel with that name already exists.",
+    ),
+    (
+        "invalid channel name",
+        "Use lowercase letters separated by single dashes.",
+    ),
+    (
+        "invalid space name",
+        "Enter a space name up to 80 characters.",
+    ),
+    (
+        "owner cannot be removed",
+        "The space owner can’t be removed.",
+    ),
+    (
+        "public channels are self-joined",
+        "Anyone in the space can join a public channel without an invitation.",
+    ),
+    ("resource not found", "That’s no longer available."),
+    ("channel not found", "This channel is no longer available."),
+    (
+        "conversation not found",
+        "This conversation is no longer available.",
+    ),
+    (
+        "request not found",
+        "This message request is no longer available.",
+    ),
+    ("you can't block yourself", "You can’t block yourself."),
+    (
+        "too many blocked accounts",
+        "You’ve blocked the maximum number of accounts.",
+    ),
+    ("complete profile required", "Finish your profile first."),
+    (
+        "unauthorized",
+        "You’re signed out. Sign in again to continue.",
+    ),
+    (
+        "spaces unavailable",
+        "Caper is having trouble right now. Try again in a moment.",
+    ),
+    (
+        "messages unavailable",
+        "Messages are unavailable right now. Try again in a moment.",
+    ),
+];
+
+/// Readable text for a server `error`, as web's `friendlyError`: a known
+/// sentence, or the text capitalized and punctuated ("a; b" reads "A. B.").
+fn friendly_error(message: &str) -> String {
+    if message.trim().is_empty() {
+        return "That didn’t work. Try again.".into();
+    }
+    if let Some((_, sentence)) = SERVER_ERRORS.iter().find(|(key, _)| *key == message) {
+        return (*sentence).into();
+    }
+    let text = message
+        .trim()
+        .split(';')
+        .map(str::trim_start)
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut characters = part.chars();
+            characters.next().map_or_else(String::new, |first| {
+                first.to_uppercase().chain(characters).collect()
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(". ");
+    if text.ends_with(['.', '!', '?', '…']) {
+        text
+    } else {
+        format!("{text}.")
+    }
 }
 
 fn invalid(message: &str) -> ApiError {
@@ -838,8 +969,43 @@ fn invalid(message: &str) -> ApiError {
 
 #[cfg(test)]
 mod tests {
-    use super::Api;
+    use super::{Api, friendly_error};
     use std::io::{BufRead, BufReader, Write};
+
+    #[test]
+    fn server_errors_read_as_web_sentences() {
+        assert_eq!(
+            friendly_error("channel name already exists"),
+            "A channel with that name already exists."
+        );
+        assert_eq!(
+            friendly_error("user must join the space first"),
+            "This person needs to join the space before you can add them to a channel."
+        );
+        assert_eq!(
+            friendly_error("user already in space"),
+            "This person is already a member."
+        );
+        assert_eq!(
+            friendly_error("resource not found"),
+            "That’s no longer available."
+        );
+        assert_eq!(
+            friendly_error("invitation cooldown; try again after 24 hours"),
+            "This person recently responded to an invitation. You can invite them again after 24 hours."
+        );
+        // Unknown text is capitalized and punctuated; readable text is kept.
+        assert_eq!(
+            friendly_error("too many things; try again later"),
+            "Too many things. Try again later."
+        );
+        assert_eq!(friendly_error("message not found"), "Message not found.");
+        assert_eq!(
+            friendly_error("This channel is no longer accessible."),
+            "This channel is no longer accessible."
+        );
+        assert_eq!(friendly_error("  "), "That didn’t work. Try again.");
+    }
 
     #[test]
     fn reactor_list_uses_history_auth_and_decodes_people() {
@@ -896,6 +1062,7 @@ mod tests {
         assert_eq!(list.reactions[0].authors[1].avatar_id, Some(100));
         let missing = api.reactors(Some("account"), "c1", "m1").unwrap_err();
         assert_eq!(missing.status.map(|status| status.as_u16()), Some(404));
+        assert_eq!(missing.message, "Message not found.");
         worker.join().unwrap();
     }
 
