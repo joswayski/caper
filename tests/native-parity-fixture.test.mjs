@@ -333,6 +333,50 @@ test("send is idempotent, conflicts on changed payload, and history uses stable 
   assert.equal((await request(`/api/chat/channels/${ids.demo}/messages?before=-1`)).response.status, 400);
 });
 
+test("held sends remain absent from history and gateway until released, then confirm once", async (t) => {
+  const { fixture, request } = await setup(t);
+  const path = `/api/chat/channels/${ids.demo}/messages`;
+  const stream = socket(`ws://127.0.0.1:${fixture.gatewayPort}/api/chat/events`);
+  t.onTestFinished(() => stream.ws.close());
+  await stream.opened;
+  await stream.next(); // hello
+  stream.ws.send(JSON.stringify({ type: "subscribe", id: "chat", kind: "chat", channelId: ids.demo, after: "4" }));
+  await stream.next(); // ready
+  await stream.next(); // subscribed
+  const events = [];
+  stream.ws.addEventListener("message", ({ data }) => {
+    const frame = JSON.parse(data);
+    if (frame.event?.type === "message.created") events.push(frame.event.message);
+  });
+  const session = await request("/api/chat/session", { method: "POST", body: { name: "Pending Sender" } });
+  await request("/__fixture/control", { method: "POST", body: { holdSends: true } });
+  const options = {
+    method: "POST",
+    headers: { "x-caper-chat-token": session.value.token },
+    body: { clientMessageId: randomUUID(), text: "Hello" },
+  };
+  const sending = request(path, options);
+  await vi.waitFor(async () => {
+    const control = await request("/__fixture/control", { method: "POST", body: {} });
+    assert.equal(control.value.heldSends, 1);
+  });
+  assert.equal((await request(path)).value.messages.length, 4);
+  assert.deepEqual(events, [], "The pending row must not be a gateway confirmation");
+
+  await request("/__fixture/control", { method: "POST", body: { holdSends: false } });
+  const sent = await sending;
+  assert.equal(sent.response.status, 200);
+  assert.equal((await stream.next()).event.message.id, sent.value.id);
+  const retry = await request(path, options);
+  assert.equal(retry.value.id, sent.value.id);
+  assert.equal(
+    (await request(path)).value.messages.filter((message) => message.clientMessageId === options.body.clientMessageId)
+      .length,
+    1,
+  );
+  assert.equal(events.length, 1);
+});
+
 test("loopback WebSocket replays, delivers live messages/typing/presence, failures, and disconnects", async (t) => {
   const { fixture, base, request } = await setup(t);
   const stream = socket(`ws://127.0.0.1:${fixture.gatewayPort}/api/chat/events`);
