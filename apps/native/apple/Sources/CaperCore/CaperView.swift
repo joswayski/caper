@@ -711,7 +711,7 @@ private struct ChannelSidebar: View {
                             ForEach(model.visibleDirectMessages.filter { $0.peer.id != model.account?.id }) { conversation in
                                 Button { Task { await model.select(directMessage: conversation) } } label: {
                                     HStack(spacing: 9) {
-                                        CaperIcon(name: "speech", size: 17).frame(width: 24)
+                                        Avatar(name: conversation.peer.displayName, size: 20, avatarID: conversation.peer.avatarId).frame(width: 24, height: 20)
                                         Text(conversation.peer.displayName).lineLimit(1)
                                         Spacer()
                                         if conversation.unread { Circle().fill(CaperTheme.terracottaBright).frame(width: 8, height: 8).accessibilityLabel("Unread") }
