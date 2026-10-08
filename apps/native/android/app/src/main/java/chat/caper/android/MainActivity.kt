@@ -1484,8 +1484,12 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         } }
         if (messages.isEmpty() && state.pendingMessage == null && !(inThread && state.thread?.loading == true)) item { Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                Text("No messages yet.", color = TextMuted)
-                Text("Start the conversation in #${state.selectedChannel?.name.orEmpty()}.", color = TextMuted, fontSize = 12.sp)
+                if (state.selectedDirect?.let { it.peer.id == state.account?.id } == true) {
+                    Text("You can message yourself here to keep notes, reminders, and ideas.", color = TextMuted, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                } else {
+                    Text("No messages yet.", color = TextMuted)
+                    Text("Start the conversation in #${state.selectedChannel?.name.orEmpty()}.", color = TextMuted, fontSize = 12.sp)
+                }
             }
         } }
         if (!inThread && state.hasNewerMessages) item {

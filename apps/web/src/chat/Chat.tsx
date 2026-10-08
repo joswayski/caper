@@ -139,6 +139,7 @@ export default function Chat({
   channelId,
   channelName: expectedChannelName,
   direct = false,
+  directPeerId,
   onReadCursor,
   initialHistory,
   initialHistoryError,
@@ -167,6 +168,7 @@ export default function Chat({
   channelId?: string;
   channelName?: string;
   direct?: boolean;
+  directPeerId?: string;
   onReadCursor?: (seq: string) => void;
   initialHistory?: GeneralChatHistory;
   initialHistoryError?: string;
@@ -1211,12 +1213,18 @@ export default function Chat({
             )}
             {state.phase === "ready" && !messages.length && (
               <div className="chat-state">
-                <p>No messages yet.</p>
-                <small>
-                  {direct
-                    ? `Only you and ${channelName} can read this conversation.`
-                    : `Start the conversation in #${channelName}.`}
-                </small>
+                {direct && viewerId && directPeerId === viewerId ? (
+                  <p>You can message yourself here to keep notes, reminders, and ideas.</p>
+                ) : (
+                  <>
+                    <p>No messages yet.</p>
+                    <small>
+                      {direct
+                        ? `Only you and ${channelName} can read this conversation.`
+                        : `Start the conversation in #${channelName}.`}
+                    </small>
+                  </>
+                )}
               </div>
             )}
             {state.phase === "ready" && messages.length > 0 && hydrated && (

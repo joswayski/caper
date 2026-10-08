@@ -1836,8 +1836,13 @@ private struct ChatView: View {
                             }.padding(.top, 80).padding(.horizontal, 24)
                         } else if chat.messages.isEmpty && !chat.loading && chat.pendingMessage == nil {
                             VStack(spacing: 7) {
-                                Text("No messages yet.").font(CaperTheme.font(14, weight: .medium))
-                                Text(model.selectedDirectMessageID == nil ? "Start the conversation in #\(chat.channelName.lowercased())." : "Only you and \(chat.channelName) can read this conversation.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                                if let conversation = model.selectedDirectMessage, conversation.peer.id == model.account?.id {
+                                    Text("You can message yourself here to keep notes, reminders, and ideas.")
+                                        .font(CaperTheme.font(14, weight: .medium)).foregroundStyle(CaperTheme.muted).multilineTextAlignment(.center)
+                                } else {
+                                    Text("No messages yet.").font(CaperTheme.font(14, weight: .medium))
+                                    Text(model.selectedDirectMessageID == nil ? "Start the conversation in #\(chat.channelName.lowercased())." : "Only you and \(chat.channelName) can read this conversation.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                                }
                             }.padding(.top, 80)
                         }
                     }
