@@ -253,9 +253,16 @@ final class CaperParityUITests: XCTestCase {
         #else
         let row = try require(app.descendants(matching: .any)["message-row-\(messageID)"], timeout: 10,
                               "Missing message-row-\(messageID)")
-        hoverMessage(row)
-        let add = try require(app.buttons["add-reaction-\(messageID)"], timeout: 10,
-                              "Hovering \(messageID) did not reveal Add reaction")
+        // Just after launch the timeline can still move the row out from
+        // under a pointer that stays put (CI saw the controls appear and then
+        // vanish), so hover again until they stay up.
+        let add = app.buttons["add-reaction-\(messageID)"]
+        var shown = false
+        for _ in 0..<4 where !shown {
+            hoverMessage(row)
+            shown = add.waitForExistence(timeout: 3) && add.isHittable
+        }
+        XCTAssertTrue(shown, "Hovering \(messageID) did not reveal Add reaction")
         #endif
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: add)
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
@@ -902,13 +909,17 @@ final class CaperParityUITests: XCTestCase {
         let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: mute)
         XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 5), .completed, "Mute is available once settings load")
         #if os(macOS)
-        // One typeText call. Each XCUITest action first snapshots the app's
-        // accessibility tree, and in CI's recordings that closed the open
-        // "Mute channel" submenu every time (after a hover, an existence check,
-        // or the next separate key press), so the choice never landed. One
-        // call snapshots once, while only the top-level menu is open. ↓↓↓
-        // reaches "Mute channel" after Channel settings and Notifications,
-        // → opens its submenu at "For 15 minutes", ↓↓↓↓ reaches the last preset.
+        // Notification settings load just after launch, so this menu opened
+        // with both submenus disabled, and the Mac menu keeps that for
+        // keyboard navigation: in CI's recording ↓ only alternated between
+        // Channel settings and Leave channel. Reopen it now that they are
+        // enabled, then type the keys in one call, which snapshots the app
+        // once while only the top-level menu is open. ↓↓↓ reaches "Mute
+        // channel", → opens its submenu at "For 15 minutes", ↓↓↓↓ reaches the
+        // last preset.
+        app.typeKey(.escape, modifierFlags: [])
+        options.tap()
+        XCTAssertTrue(mute.waitForExistence(timeout: 5))
         let down = XCUIKeyboardKey.downArrow.rawValue
         app.typeText(String(repeating: down, count: 3) + XCUIKeyboardKey.rightArrow.rawValue
                      + String(repeating: down, count: 4) + XCUIKeyboardKey.return.rawValue)
@@ -1314,8 +1325,10 @@ final class CaperParityUITests: XCTestCase {
                 let text = pending.staticTexts[message].firstMatch
                 XCTAssertTrue(text.exists)
                 XCTAssertTrue(timeline.frame.contains(text.frame), "Pending text must be in the visible timeline")
-                XCTAssertEqual(pending.frame.minX, timeline.frame.minX, accuracy: 2)
-                XCTAssertEqual(pending.frame.width, timeline.frame.width, accuracy: 2)
+                // The row's own frame can't be checked: accessibility reports a
+                // `.contain` container as the union of its children (in CI 130
+                // points wide from the avatar, on iPhone and macOS alike), not
+                // the full-width row. The text inset below checks the alignment.
                 XCTAssertEqual(text.frame.minX, timeline.frame.minX + 62, accuracy: 2,
                                "Pending text must share confirmed messages' 18 + 34 + 10 point inset")
                 #if os(iOS)
