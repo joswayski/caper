@@ -1450,7 +1450,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             setReaction = viewModel::setReaction,
             openPicker = { actionTarget = null; pickerTarget = presented },
             setPin = { id, active -> viewModel.setPin(id, active); actionTarget = null },
-            onReply = { actionTarget = null; viewModel.openThread(presented.threadRootId ?: presented.id) },
+            onReply = if (inThread) null else ({ actionTarget = null; viewModel.openThread(presented.threadRootId ?: presented.id) }),
             forward = { actionTarget = null; forwardTarget = presented },
             onEdit = if (viewModel.canEdit(presented)) ({ actionTarget = null; editTarget = presented }) else null,
             onHistory = { actionTarget = null; historyTarget = presented },

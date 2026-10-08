@@ -2179,7 +2179,7 @@ private struct NativeThreadView: View {
                     canReact: !chat.isPreview && chat.currentAuthor != nil,
                     canPin: !chat.isPreview && chat.currentAuthor != nil && !chat.pendingPins.contains(message.id),
                     togglePin: { reactionMessage = nil; Task { await chat.setPin(messageID: message.id, active: message.pin == nil) } },
-                    reply: { reactionMessage = nil; Task { await chat.openThread(message.threadRootId ?? message.id) } },
+                    reply: nil,
                     // Thread actions don't forward: the forward sheets belong to the conversation under this cover.
                     canForward: false, forward: {},
                     quickReaction: { emoji in
@@ -2998,7 +2998,7 @@ private struct MessageActionsSheet: View {
     let canReact: Bool
     let canPin: Bool
     let togglePin: () -> Void
-    let reply: () -> Void
+    let reply: (() -> Void)?
     let canForward: Bool
     let forward: () -> Void
     let quickReaction: (String) -> Void
@@ -3012,7 +3012,8 @@ private struct MessageActionsSheet: View {
 
     /// Fits every offered action without scrolling.
     private var actionsHeight: CGFloat {
-        var height: CGFloat = 330
+        var height: CGFloat = 286
+        if reply != nil { height += 44 }
         if canForward { height += 50 }
         if chat.canEdit(message) { height += 44 }
         if message.forward == nil && (message.revision ?? 1) > 1 { height += 44 }
@@ -3056,9 +3057,11 @@ private struct MessageActionsSheet: View {
                 Label(message.pin == nil ? "Pin message" : "Unpin message", systemImage: message.pin == nil ? "pin" : "pin.slash")
                     .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             }.disabled(!canPin)
-            Divider()
-            Button(action: reply) {
-                Label("Reply in thread", systemImage: "bubble.right").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            if let reply {
+                Divider()
+                Button(action: reply) {
+                    Label("Reply in thread", systemImage: "bubble.right").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                }
             }
             if canForward {
                 Divider()

@@ -388,6 +388,24 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertLessThan(send.frame.minY - composer.frame.maxY, 32)
         XCTAssertTrue(send.isHittable)
         capture("thread-composer-single-line-keyboard", app: app)
+
+        hold(row)
+        let actions = try require(app.descendants(matching: .any)["message-actions-sheet"], timeout: 5,
+                                  "Missing thread root actions")
+        XCTAssertFalse(actions.buttons["Reply in thread"].exists, "The root is already open in its thread")
+        XCTAssertTrue(actions.buttons["Copy text"].exists)
+        actions.buttons["Copy text"].tap()
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: actions)
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed)
+
+        send.tap()
+        let reply = try require(app.staticTexts["Short reply"], timeout: 5, "Reply was not sent")
+        hold(reply)
+        let replyActions = try require(app.descendants(matching: .any)["message-actions-sheet"], timeout: 5,
+                                       "Missing thread reply actions")
+        XCTAssertFalse(replyActions.buttons["Reply in thread"].exists, "Replies cannot start nested threads")
+        XCTAssertTrue(replyActions.buttons["Copy text"].exists)
+        capture("thread-reply-actions-fixture", app: app)
     }
     #endif
 

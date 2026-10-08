@@ -35,6 +35,7 @@ export interface MessageActionTarget {
   anchorRect?: DOMRect;
   mode: "actions" | "emoji";
   drawer: boolean;
+  inThread: boolean;
 }
 
 const quickReactions = ["👍", "❤️", "😂", "🎉", "👀"];
@@ -78,7 +79,7 @@ export default function MessageActions({
   onClose: () => void;
   onCopied: (status: string) => void;
   onViewReactions: (emoji: string) => void;
-  onReply: () => void;
+  onReply?: () => void;
   onEdit: () => void;
   onHistory: () => void;
   /** Another signed-in author. Blocking is confirmed by the caller; unblocking is immediate. */
@@ -204,10 +205,12 @@ export default function MessageActions({
               </div>
             )}
             <div className="chat-copy-actions">
-              <button type="button" onClick={onReply}>
-                <MessageSquare size={20} aria-hidden="true" />
-                Reply in thread
-              </button>
+              {onReply && (
+                <button type="button" onClick={onReply}>
+                  <MessageSquare size={20} aria-hidden="true" />
+                  Reply in thread
+                </button>
+              )}
               {canForward && (
                 <button type="button" onClick={onForward}>
                   <Forward size={16} aria-hidden="true" />
