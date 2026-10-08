@@ -29,21 +29,23 @@
 .chat-pins-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  min-height: 34px;
-  padding: 6px 9px;
-  border: 1px solid var(--border);
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
   border-radius: 8px;
   background: transparent;
   color: var(--text-muted);
-  font: inherit;
-  font-size: 0.72rem;
-  font-weight: 750;
   cursor: pointer;
 }
 .chat-pins-toggle:hover {
   color: var(--text);
-  border-color: var(--terracotta);
+  background: var(--surface);
+}
+.chat-pins-toggle:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
 }
 .chat-channel-title {
   min-width: 0;
@@ -662,6 +664,23 @@
 .chat-pinned-message .chat-pin-marker {
   margin-bottom: 6px;
   padding-right: 0;
+  color: var(--text-muted);
+}
+.chat-pin-author {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.chat-pin-author:hover {
+  text-decoration: underline;
+}
+.chat-pin-author:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
 }
 .chat-pinned-navigation {
   grid-column: 2;
@@ -672,14 +691,21 @@
   margin-top: 4px;
 }
 .chat-pinned-navigation > button {
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 4px 0;
+  border: 0;
+  background: none;
   color: var(--text-muted);
   font: inherit;
   font-size: 0.68rem;
   cursor: pointer;
+}
+.chat-pinned-navigation > button:hover:not(:disabled) {
+  color: var(--text);
+  text-decoration: underline;
 }
 .chat-pinned-navigation > button:focus-visible {
   outline: 2px solid var(--terracotta);

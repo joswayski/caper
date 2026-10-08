@@ -24,6 +24,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -1055,8 +1058,6 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     Icon(painterResource(R.drawable.lucide_chevron_down), null, Modifier.size(16.dp), tint = TextMuted)
                 }
                 DropdownMenu(channelMenuOpen, { channelMenuOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
-                    DropdownMenuItem(text = { Text("Pins") },
-                        onClick = { channelMenuOpen = false; showingPins = !showingPins })
                     if (!channel.direct && joined) DropdownMenuItem(text = { Text(if (membersVisible) "Hide member list" else "Members") },
                         leadingIcon = { Icon(painterResource(R.drawable.lucide_users), null) },
                         onClick = { channelMenuOpen = false; toggleMembers() })
@@ -1064,8 +1065,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         onClick = { channelMenuOpen = false; toggleBlock() })
                 }
             } else Text(if (channel.direct) channel.name else "# ${channel.name}", Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (!narrow) TextButton({ showingPins = !showingPins }, Modifier.heightIn(min = 48.dp)) {
-                Text("Pins", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            IconButton({ showingPins = !showingPins }, Modifier.sizeIn(minWidth = 44.dp, minHeight = 44.dp)) {
+                Icon(painterResource(R.drawable.lucide_pin), "Pins", Modifier.size(20.dp), tint = TextMuted)
             }
             if (!narrow && direct != null) TextButton(::toggleBlock, Modifier.heightIn(min = 48.dp)) {
                 Text(if (direct.blocked) "Unblock" else "Block", color = if (direct.blocked) TextMuted else ErrorText, fontSize = 11.sp, fontWeight = FontWeight.Bold)
@@ -1455,7 +1456,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     mentionTarget?.let { target ->
         val card = mentionCard(target.id, target.username.orEmpty(), state)
         key(target) {
-            MentionCardSheet(card, { done, failed -> viewModel.messageMentioned(card.id, card.username, done, failed) }) { mentionTarget = null }
+            MentionCardSheet(card, { done, failed -> card.username?.let { viewModel.messageMentioned(card.id, it, done, failed) } }) { mentionTarget = null }
         }
     }
     pickerTarget?.let { target ->
@@ -1652,7 +1653,8 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     var pickerTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var forwardTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var reactorsTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
-    LaunchedEffect(state.account?.id, state.selectedChannel?.id, state.selectedDirectId) { conversationTarget = null; editTarget = null; historyTarget = null }
+    var pinnerTarget by remember { mutableStateOf<ChatAuthor?>(null) }
+    LaunchedEffect(state.account?.id, state.selectedChannel?.id, state.selectedDirectId) { conversationTarget = null; editTarget = null; historyTarget = null; pinnerTarget = null }
     LazyColumn(modifier.fillMaxWidth(), contentPadding = PaddingValues(vertical = 10.dp)) {
         item {
             state.messageContextError?.let { Text(it, Modifier.padding(18.dp), color = ErrorText) }
@@ -1662,19 +1664,39 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
         }
         items(state.pinnedMessages, key = { "pin:${it.id}" }) { message ->
             Column(Modifier.background(PinGoldWash)) {
-                message.pin?.let { Text("Pinned by ${it.author.name}", Modifier.padding(start = 62.dp, end = 18.dp, top = 4.dp), color = PinGold, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
+                message.pin?.let { pin ->
+                    val interaction = remember(message.id) { MutableInteractionSource() }
+                    val hovered by interaction.collectIsHoveredAsState()
+                    LaunchedEffect(hovered) { if (hovered) pinnerTarget = pin.author }
+                    Text("Pinned by ${pin.author.name}", Modifier.padding(start = 62.dp, end = 18.dp)
+                        .heightIn(min = 44.dp).wrapContentHeight()
+                        .hoverable(interaction)
+                        .combinedClickable(role = Role.Button, onClick = { pinnerTarget = pin.author }, onLongClick = { pinnerTarget = pin.author })
+                        .semantics { contentDescription = "Open profile for ${pin.author.name}" },
+                        color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                }
                 Text(fullDateLabel(message.createdAt), Modifier.padding(start = 62.dp, end = 18.dp), color = TextMuted, fontSize = 10.sp)
                 ReactionMessageRow(message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
                     openReactors = { target, emoji -> reactorsTarget = target.id to emoji }, openActions = { actionTarget = it },
                     openConversation = { conversationTarget = it }, openHistory = { historyTarget = it },
                     retryPin = viewModel::retryPin, dismissPinError = viewModel::dismissPinError)
                 Row(Modifier.fillMaxWidth().padding(start = 62.dp, end = 18.dp), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton({ viewModel.goToMessage(message, close) }, enabled = !state.loadingMessageContext, modifier = Modifier.weight(1f)) {
+                    TextButton({ pinnerTarget = null; viewModel.goToMessage(message, close) }, enabled = !state.loadingMessageContext,
+                        colors = ButtonDefaults.textButtonColors(contentColor = TextMuted), contentPadding = PaddingValues(vertical = 8.dp)) {
                         Text(if (state.loadingMessageContext) "Loading message…" else "Go to message")
+                        Spacer(Modifier.width(6.dp))
+                        Icon(painterResource(R.drawable.lucide_arrow_right), null, Modifier.size(14.dp))
                     }
+                    Spacer(Modifier.weight(1f))
                     IconButton({ actionTarget = message }) { Icon(painterResource(R.drawable.lucide_ellipsis), "Message actions for ${message.author.name}", tint = TextMuted) }
                 }
             }
+        }
+    }
+    pinnerTarget?.let { author ->
+        val card = authorCard(author, state)
+        key(author.id) {
+            MentionCardSheet(card, { done, failed -> card.username?.let { viewModel.messageMentioned(card.id, it, { pinnerTarget = null; close(); done() }, failed) } }) { pinnerTarget = null }
         }
     }
     actionTarget?.let { target ->

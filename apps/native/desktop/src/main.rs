@@ -67,6 +67,7 @@ enum NavIcon {
     Hash,
     Lock,
     Users,
+    Pin,
     Speech,
     Mic,
     MicOff,
@@ -202,6 +203,9 @@ struct PillClick {
 #[derive(Clone, Debug)]
 struct MentionCard {
     pill: PillClick,
+    /// Pin metadata supplies the fallback identity, not a made-up username.
+    author: Option<model::Author>,
+    focus_on_open: bool,
     /// The `CreateDirect` navigation while **Message** is opening a DM.
     opening: Option<u64>,
     error: Option<String>,
@@ -3639,6 +3643,7 @@ impl CaperApp {
         let Some(channel) = self.selected_channel.clone() else {
             return;
         };
+        self.mention_card = None;
         self.history_request += 1;
         self.thread_request += 1;
         self.loading_older = false;
@@ -7117,7 +7122,9 @@ impl CaperApp {
             self.channel_conversation(ui, narrow);
         }
         // Once per pass, for pills in the channel and in thread replies.
-        self.mention_card(ui.ctx());
+        if !self.showing_pins {
+            self.mention_card(ui.ctx());
+        }
     }
 
     fn thread_panel(&mut self, ui: &mut egui::Ui) {
@@ -7277,7 +7284,7 @@ impl CaperApp {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    if ui.button("Pins").clicked() {
+                                    if drawn_icon_button(ui, NavIcon::Pin, "Pins").clicked() {
                                         self.showing_pins = true;
                                     }
                                     if self.selected_direct.is_none() {
@@ -7924,11 +7931,49 @@ impl CaperApp {
                             bottom: 0,
                         })
                         .show(ui, |ui| {
-                            ui.label(
-                                RichText::new(format!("Pinned by {}", pin.author.name))
-                                    .size(11.0)
-                                    .color(MUTED),
+                            let response = ui.add(
+                                egui::Button::new(
+                                    RichText::new(format!("Pinned by {}", pin.author.name))
+                                        .size(11.0)
+                                        .color(MUTED),
+                                )
+                                .frame(false),
                             );
+                            response.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Button,
+                                    true,
+                                    format!("Open profile for {}", pin.author.name),
+                                )
+                            });
+                            let hover_id = response.id.with("was-hovered");
+                            let was_hovered = ui
+                                .data(|data| data.get_temp::<bool>(hover_id))
+                                .unwrap_or(false);
+                            ui.data_mut(|data| data.insert_temp(hover_id, response.hovered()));
+                            if response.clicked()
+                                || response.long_touched()
+                                || (response.hovered()
+                                    && !was_hovered
+                                    && !ui.input(|input| input.pointer.any_down()))
+                            {
+                                self.mention_card = Some(MentionCard {
+                                    pill: PillClick {
+                                        id: response.id,
+                                        rect: response.rect,
+                                        entry: model::Mention {
+                                            kind: "user".into(),
+                                            id: Some(pin.author.id.clone()),
+                                            username: None,
+                                        },
+                                    },
+                                    author: Some(pin.author.clone()),
+                                    focus_on_open: response.clicked() || response.long_touched(),
+                                    opening: None,
+                                    error: None,
+                                    fresh: true,
+                                });
+                            }
                         });
                 }
                 let (timestamp, pill) = message_row(
@@ -7982,6 +8027,8 @@ impl CaperApp {
             // Opening another pill replaces the card.
             self.mention_card = Some(MentionCard {
                 pill,
+                author: None,
+                focus_on_open: true,
                 opening: None,
                 error: None,
                 fresh: true,
@@ -8358,6 +8405,7 @@ impl CaperApp {
         }
         let pins: Vec<_> = self.timeline.pinned_messages().cloned().collect();
         let mut close = false;
+        let card_was_open = self.mention_card.is_some();
         let modal = egui::Modal::new(egui::Id::new("pinned-messages"))
             .frame(
                 egui::Frame::popup(&context.style())
@@ -8428,10 +8476,11 @@ impl CaperApp {
                                                     bottom: 12,
                                                 })
                                                 .show(ui, |ui| {
-                                                    if secondary_button(
-                                                        ui,
-                                                        "Go to message",
-                                                        !self.context_loading,
+                                                    if ui.add_enabled(!self.context_loading,
+                                                        egui::Button::image_and_text(
+                                                            egui::Image::new(egui::include_image!("../resources/icons/arrow-right.svg")).tint(MUTED).fit_to_exact_size(egui::vec2(14.0, 14.0)),
+                                                            RichText::new(if self.context_loading { "Loading message…" } else { "Go to message" }).size(11.0).color(MUTED),
+                                                        ).frame(false).min_size(egui::vec2(0.0, 28.0)),
                                                     )
                                                     .clicked()
                                                     {
@@ -8448,9 +8497,12 @@ impl CaperApp {
                         });
                 });
                 self.emoji_picker(context);
+                context.set_sublayer(ui.layer_id(), egui::LayerId::new(egui::Order::Foreground, egui::Id::new("mention-card")));
+                self.mention_card(context);
             });
-        if close || modal.should_close() {
+        if close || (!card_was_open && self.mention_card.is_none() && modal.should_close()) {
             self.showing_pins = false;
+            self.mention_card = None;
         }
     }
 
@@ -8867,7 +8919,22 @@ impl CaperApp {
         let Some(card) = self.mention_card.clone() else {
             return;
         };
-        let Some(profile) = self.mention_profile(&card.pill.entry) else {
+        let profile = card
+            .author
+            .as_ref()
+            .map(|author| {
+                mentions::author_profile(
+                    author,
+                    self.account.as_ref().map(|account| account.id.as_str()),
+                    self.detail
+                        .as_ref()
+                        .map_or(&[][..], |detail| detail.members.as_slice()),
+                    self.people.as_deref().unwrap_or_default(),
+                    &self.directs,
+                )
+            })
+            .or_else(|| self.mention_profile(&card.pill.entry));
+        let Some(profile) = profile else {
             self.mention_card = None;
             return;
         };
@@ -8907,14 +8974,20 @@ impl CaperApp {
                         // 280px including the padding and the border.
                         ui.set_width(246.0);
                         ui.spacing_mut().item_spacing.y = 12.0;
-                        let initial = profile.display_name.as_ref().unwrap_or(&profile.username);
+                        let initial = profile
+                            .display_name
+                            .as_deref()
+                            .or(profile.username.as_deref())
+                            .unwrap_or("Profile");
                         avatar(ui, initial, profile.avatar_id, 48.0, false);
                         ui.vertical(|ui| {
                             ui.spacing_mut().item_spacing.y = 2.0;
                             ui.label(bold(profile.title()).size(15.0).color(TEXT));
-                            if profile.display_name.is_some() {
+                            if profile.display_name.is_some()
+                                && let Some(username) = &profile.username
+                            {
                                 ui.label(
-                                    RichText::new(format!("@{}", profile.username))
+                                    RichText::new(format!("@{username}"))
                                         .size(12.0)
                                         .color(MUTED),
                                 );
@@ -8922,6 +8995,9 @@ impl CaperApp {
                         });
                         if profile.me {
                             ui.label(RichText::new("You").size(12.0).color(MUTED));
+                            return;
+                        }
+                        if profile.username.is_none() {
                             return;
                         }
                         let opening = card.opening.is_some();
@@ -8941,7 +9017,7 @@ impl CaperApp {
                                 )
                             })
                             .inner;
-                        if card.fresh {
+                        if card.fresh && card.focus_on_open {
                             button.request_focus();
                         }
                         message = button.clicked();
@@ -8962,8 +9038,8 @@ impl CaperApp {
         if let Some(open) = &mut self.mention_card {
             open.fresh = false;
         }
-        if message {
-            self.message_from_card(&card.pill.entry, &profile.username);
+        if message && let Some(username) = &profile.username {
+            self.message_from_card(&card.pill.entry, username);
         }
     }
 
@@ -10346,6 +10422,7 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::Hash => egui::include_image!("../resources/icons/hash.svg"),
         NavIcon::Lock => egui::include_image!("../resources/icons/lock.svg"),
         NavIcon::Users => egui::include_image!("../resources/icons/users.svg"),
+        NavIcon::Pin => egui::include_image!("../resources/icons/pin.svg"),
         NavIcon::Speech => egui::include_image!("../resources/icons/speech.svg"),
         NavIcon::Mic => egui::include_image!("../resources/icons/mic.svg"),
         NavIcon::MicOff => egui::include_image!("../resources/icons/mic-off.svg"),
@@ -11864,6 +11941,62 @@ mod tests {
         assert!(!pins.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Unpin")), "unpin belongs only in the actions menu");
         click(&mut app, &context, egui::pos2(20.0, 20.0));
         assert!(!app.showing_pins, "clicking outside closes Pins");
+    }
+
+    #[test]
+    fn pinner_hover_preview_is_above_pins_and_dismisses_before_its_parent() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-pins"),
+        );
+        app.token = Some("fixture-only".into());
+        let mut message = app.timeline.pinned_messages().next().unwrap().clone();
+        assert_ne!(message.author.id, "fixture-maya");
+        let pinner = &mut message.pin.as_mut().unwrap().author;
+        pinner.id = "fixture-maya".into();
+        pinner.name = "Old pinner name".into();
+        app.timeline.reset(vec![message.clone()], "5").unwrap();
+        app.timeline.reset_pins(vec![message]).unwrap();
+        for _ in 0..3 {
+            render(&mut app, &context, vec![]);
+        }
+        let output = render(&mut app, &context, vec![]);
+        let anchor = text_position(&output, "Pinned by Old pinner name") + egui::vec2(30.0, 5.0);
+        render(&mut app, &context, vec![egui::Event::PointerMoved(anchor)]);
+        let output = render(&mut app, &context, vec![]);
+        assert_eq!(card_entry(&app), Some("fixture-maya"));
+        assert!(
+            shows(&output, "@maya") && shows(&output, "Message"),
+            "pinner profile, not the message author: {:?}",
+            text_shapes(&output)
+        );
+        assert!(!shows(&output, "You"));
+        click(
+            &mut app,
+            &context,
+            text_position(&output, "Message") + egui::vec2(20.0, 8.0),
+        );
+        assert!(
+            app.mention_card.as_ref().unwrap().opening.is_some(),
+            "the card's Message button is interactive above the modal"
+        );
+        render(&mut app, &context, press(egui::Key::Escape));
+        assert!(app.mention_card.is_none());
+        assert!(app.showing_pins, "Escape closes the child first");
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerMoved(egui::pos2(20.0, 20.0))],
+        );
+        render(&mut app, &context, vec![egui::Event::PointerMoved(anchor)]);
+        render(&mut app, &context, vec![]);
+        click(&mut app, &context, egui::pos2(20.0, 20.0));
+        assert!(app.mention_card.is_none());
+        assert!(app.showing_pins, "outside click dismisses the child first");
+        click(&mut app, &context, egui::pos2(20.0, 20.0));
+        assert!(!app.showing_pins);
     }
 
     #[test]

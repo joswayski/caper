@@ -33,7 +33,7 @@ import chat.caper.android.ui.*
             Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 24.dp).semantics { paneTitle = card.title },
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Avatar(card.displayName ?: card.username, 48.dp, avatarId = card.avatarId)
+            Avatar(card.displayName ?: card.username ?: card.title, 48.dp, avatarId = card.avatarId)
             Column {
                 Text(
                     card.title, Modifier.semantics { heading() }, color = Text, fontSize = 16.sp,
@@ -42,7 +42,7 @@ import chat.caper.android.ui.*
                 card.subtitle?.let { Text(it, color = TextMuted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
             }
             if (card.self) Text("You", color = TextMuted, fontSize = 13.sp)
-            else {
+            else if (card.username != null) {
                 Button(
                     {
                         opening = true

@@ -1624,8 +1624,6 @@ private struct ChatView: View {
                 }
                 if narrow {
                     Menu {
-                        Button("Pins") { showingPins = true }
-                            .accessibilityIdentifier("channel-pins")
                         if model.selectedDirectMessageID == nil && !model.previewingChannel {
                             Button(membersVisible ? "Hide member list" : "Members", action: toggleMembers)
                         }
@@ -1645,13 +1643,9 @@ private struct ChatView: View {
                         .accessibilityIdentifier("selected-channel-name")
                 }
                 Spacer()
-                if !narrow {
-                    Button { showingPins = true } label: {
-                        Label("Pins", systemImage: "pin").font(CaperTheme.font(11, weight: .bold))
-                    }
-                    .buttonStyle(.plain).foregroundStyle(CaperTheme.muted).frame(minHeight: 44)
+                Button { showingPins = true } label: { CaperIcon(name: "pin", size: 20) }
+                    .buttonStyle(SidebarIconButton()).help("Pins").accessibilityLabel("Pins")
                     .accessibilityIdentifier("channel-pins")
-                }
                 if chat.liveState != .connected && showConnectionStatus {
                     Text(chat.liveState == .disconnected ? "Offline" : "Connecting…").font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.muted)
                         .accessibilityIdentifier("chat-connection-status")
@@ -2227,11 +2221,25 @@ private struct MessageRow: View {
         let pills = MentionAutocomplete.pills(in: message.content.text, mentions: message.content.mentions)
         let row = VStack(alignment: .leading, spacing: 5) {
             if inPins, let pin = message.pin {
-                Label("Pinned by \(pin.author.name)", systemImage: "pin.fill")
-                    .font(CaperTheme.font(10, weight: .medium)).foregroundStyle(CaperTheme.pinGold)
+                Button { mentionCards.openAuthor?(pin.author) } label: {
+                    HStack(spacing: 4) {
+                        CaperIcon(name: "pin", size: 12)
+                        Text("Pinned by \(pin.author.name)")
+                    }.contentShape(Rectangle())
+                }
+                    .buttonStyle(.plain).font(CaperTheme.font(10, weight: .medium)).foregroundStyle(CaperTheme.muted)
+                    .accessibilityLabel("Open profile for \(pin.author.name)")
                     .padding(.leading, 44)
                     #if os(macOS)
                     .padding(.trailing, 56)
+                    .onContinuousHover(coordinateSpace: CoordinateSpace.named(MentionCard.timelineSpace)) { phase in
+                        if case .active(let point) = phase {
+                            mentionCards.pointer.location = point
+                            mentionCards.openAuthor?(pin.author)
+                        }
+                    }
+                    #else
+                    .highPriorityGesture(LongPressGesture(minimumDuration: 0.5).onEnded { _ in mentionCards.openAuthor?(pin.author) })
                     #endif
                     .accessibilityIdentifier("pinned-by-\(message.id)")
             }
@@ -2404,6 +2412,7 @@ private struct MentionCardContext {
     /// "Open profile for <display name or @username>".
     let name: (MentionPill) -> String
     let open: (MentionPill) -> Void
+    var openAuthor: ((ChatAuthor) -> Void)? = nil
 }
 
 /// The pointer over message text, in the timeline's space, read only when a
@@ -2413,14 +2422,26 @@ private final class MentionPointer {
 }
 
 private struct MentionCardTarget: Identifiable {
+    enum Reference {
+        case mention(MentionPill)
+        case author(ChatAuthor)
+    }
     let id = UUID()
-    let pill: MentionPill
+    let reference: Reference
     /// macOS: the click point; nil (keyboard or VoiceOver) centres the popover.
     let anchor: CGRect?
 
     /// The click point becomes a pill-high rect, so the popover sits below the pill.
     init(pill: MentionPill, pointer: CGPoint?) {
-        self.pill = pill
+        self.init(reference: .mention(pill), pointer: pointer)
+    }
+
+    init(author: ChatAuthor, pointer: CGPoint?) {
+        self.init(reference: .author(author), pointer: pointer)
+    }
+
+    private init(reference: Reference, pointer: CGPoint?) {
+        self.reference = reference
         anchor = pointer.map { CGRect(x: $0.x - 1, y: $0.y - 9, width: 2, height: 18) }
     }
 }
@@ -2430,6 +2451,14 @@ private extension AppModel {
     func mentionPerson(_ pill: MentionPill, viewerID: String?) -> MentionCardPerson {
         MentionCard.resolve(pill, members: detail?.members ?? [], people: people,
                             peers: directMessages.map(\.peer), account: account, viewerID: viewerID)
+    }
+
+    func mentionPerson(_ target: MentionCardTarget, viewerID: String?) -> MentionCardPerson {
+        switch target.reference {
+        case .mention(let pill): mentionPerson(pill, viewerID: viewerID)
+        case .author(let author): MentionCard.resolve(author, members: detail?.members ?? [], people: people,
+            peers: directMessages.map(\.peer), account: account, viewerID: viewerID)
+        }
     }
 }
 
@@ -2445,11 +2474,11 @@ private struct MentionCardHost: ViewModifier {
     @ViewBuilder func body(content: Content) -> some View {
         #if os(macOS)
         content.popover(item: $target, attachmentAnchor: anchor, arrowEdge: .bottom) { target in
-            MentionCardView(model: model, person: model.mentionPerson(target.pill, viewerID: viewerID)) { self.target = nil }
+            MentionCardView(model: model, person: model.mentionPerson(target, viewerID: viewerID)) { self.target = nil }
         }
         #else
         content.sheet(item: $target) { target in
-            MentionCardView(model: model, person: model.mentionPerson(target.pill, viewerID: viewerID)) { self.target = nil }
+            MentionCardView(model: model, person: model.mentionPerson(target, viewerID: viewerID)) { self.target = nil }
         }
         #endif
     }
@@ -2525,7 +2554,7 @@ private struct MentionCardView: View {
             if person.isSelf {
                 Text("You").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
                     .accessibilityIdentifier("mention-card-you")
-            } else {
+            } else if person.username != nil {
                 Button(opening ? "Opening…" : "Message") { Task { await message() } }
                     .buttonStyle(CaperPrimaryButton())
                     .disabled(opening)
@@ -2554,10 +2583,10 @@ private struct MentionCardView: View {
     }
 
     private func message() async {
-        guard !opening else { return }
+        guard !opening, let username = person.username else { return }
         opening = true; error = nil
         model.error = nil
-        let opened = await model.createDirectMessage(username: person.username)
+        let opened = await model.createDirectMessage(username: username)
         opening = false
         if opened { close(); return }
         // Shown in the card, which stays open, rather than in the sidebar.
@@ -3043,6 +3072,10 @@ private struct PinnedMessagesView: View {
         MentionCardContext(pointer: mentionPointer, name: { model.mentionPerson($0, viewerID: viewerID).title }, open: { pill in
             actionTarget = nil; showingEmojiPicker = false; reactorsTarget = nil
             mentionCard = MentionCardTarget(pill: pill, pointer: mentionPointer.location)
+        }, openAuthor: { author in
+            if case .author(let shown)? = mentionCard?.reference, shown.id == author.id { return }
+            actionTarget = nil; showingEmojiPicker = false; reactorsTarget = nil
+            mentionCard = MentionCardTarget(author: author, pointer: mentionPointer.location)
         })
     }
     var body: some View {
@@ -3066,10 +3099,16 @@ private struct PinnedMessagesView: View {
                                 MessageRow(message: message, chat: chat, currentUserID: viewerID,
                                     reactors: ReactorContext(viewerID: chat.currentAuthor?.id, sheetOpen: reactorsTarget != nil) { id, emoji in reactorsTarget = ReactorsTarget(messageID: id, emoji: emoji) },
                                     mentionCards: mentionCards, inThread: true, inPins: true) { actionTarget = message }
-                                Button(chat.jumpingToMessage ? "Loading message…" : "Go to message") {
+                                Button {
+                                    mentionCard = nil
                                     Task { if await chat.goToMessage(message) { close() } }
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Text(chat.jumpingToMessage ? "Loading message…" : "Go to message")
+                                        CaperIcon(name: "arrow-right", size: 14)
+                                    }
                                 }.buttonStyle(.plain).font(CaperTheme.font(12, weight: .medium))
-                                    .foregroundStyle(CaperTheme.terracottaBright).disabled(chat.jumpingToMessage)
+                                    .foregroundStyle(CaperTheme.muted).disabled(chat.jumpingToMessage)
                                     .frame(minHeight: 44).padding(.leading, 62).padding(.bottom, 8)
                                     .accessibilityIdentifier("go-to-message-\(message.id)")
                             }.frame(maxWidth: .infinity, alignment: .leading)

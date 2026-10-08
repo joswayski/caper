@@ -483,10 +483,12 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           projectForwards(reply);
         }
         if (body.incomingPin) {
-          const { channelId, messageId, active = true } = body.incomingPin;
+          const { channelId, messageId, active = true, userId = ids.other } = body.incomingPin;
           const message = state.messages.get(channelId)?.find((message) => message.id === messageId);
           if (!message) return reject(response, 404, "Fixture message not found.");
-          pin(channelId, message, author(members[2]), active);
+          const pinner = members.find((member) => member.id === userId);
+          if (!pinner) return reject(response, 404, "Fixture pinner not found.");
+          pin(channelId, message, author(pinner), active);
         }
         if (body.media) {
           const channelId = body.media.channelId ?? ids.demo;

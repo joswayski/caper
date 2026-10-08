@@ -24,6 +24,20 @@ const browser = (...args) => {
 const evaluate = (source) => browser("eval", source).result;
 const wait = (source) => browser("wait", "--fn", source);
 const action = (name) => browser("find", "role", "button", "click", "--name", name, "--exact");
+const waitCentered = (selector) => {
+  evaluate("delete window.pinCenteredSince");
+  // Stay visible across Virtuoso's deferred size/follow corrections, not just
+  // for a single frame before a queued scroll-to-bottom overrides the jump.
+  wait(`(() => {
+    const r = document.querySelector(${JSON.stringify(selector)})?.getBoundingClientRect();
+    if (!r || r.top <= 100 || r.bottom >= innerHeight - 100) {
+      delete window.pinCenteredSince;
+      return false;
+    }
+    window.pinCenteredSince ??= performance.now();
+    return performance.now() - window.pinCenteredSince > 300;
+  })()`);
+};
 const screenshot = (name) => {
   if (!artifacts) return;
   evaluate("document.fonts.ready.then(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))");
@@ -47,7 +61,6 @@ async function history(query = "", root) {
   return response.json();
 }
 const openPins = () => {
-  if (evaluate("innerWidth < 600")) browser("click", ".chat-channel-menu summary");
   browser("click", ".chat-pins-toggle");
   wait('!!document.querySelector(".chat-pins-dialog")');
 };
@@ -66,7 +79,7 @@ try {
     await control({ incomingMessage: { channelId: "chan00000001", text: `Context message ${i}` } });
     if (i === 45) old = (await history()).messages.at(-1);
   }
-  await control({ incomingPin: { channelId: "chan00000001", messageId: old.id } });
+  await control({ incomingPin: { channelId: "chan00000001", messageId: old.id, userId: "member000001" } });
   assert.ok(!(await history()).messages.some((m) => m.id === old.id), "target is older than the latest page");
   const context = await history(`?around=${old.id}`);
   assert.equal(context.messages.length, 61);
@@ -84,6 +97,12 @@ try {
     '!!document.querySelector(".chat-message-actions-trigger") && !document.querySelector(".chat-initial-messages")',
   );
   assert.equal(evaluate('document.querySelector(".chat-pins-toggle").getAttribute("aria-label")'), "Pins");
+  assert.equal(
+    evaluate('document.querySelector(".chat-pins-toggle").textContent.trim()'),
+    "",
+    "icon-only header control",
+  );
+  assert.equal(evaluate('!!document.querySelector(".chat-pins-toggle svg.lucide-pin")'), true);
   assert.equal(evaluate('!!document.querySelector(".chat-message .chat-pin-marker")'), false);
   openPins();
   assert.equal(evaluate('document.querySelector(".chat-pins-dialog").getAttribute("role")'), "dialog");
@@ -108,6 +127,35 @@ try {
     );
   }
   screenshot("pins-desktop");
+  assert.deepEqual(
+    evaluate(`(() => {
+    const style = getComputedStyle(document.querySelector('.chat-pinned-navigation button'));
+    return [style.backgroundColor, style.borderTopWidth];
+  })()`),
+    ["rgba(0, 0, 0, 0)", "0px"],
+    "Go is a quiet text action",
+  );
+  assert.notEqual(old.author.id, (await history()).pinnedMessages[0].pin.author.id);
+  browser("hover", ".chat-pin-author");
+  wait('document.querySelector(".chat-mention-card")?.textContent.includes("@maya")');
+  assert.equal(evaluate('document.querySelector(".chat-mention-card strong").textContent'), "Maya");
+  assert.equal(evaluate('!!document.querySelector(".chat-mention-card-message")'), true);
+  screenshot("pins-desktop-profile");
+  browser("press", "Escape");
+  wait('!document.querySelector(".chat-mention-card")');
+  assert.equal(evaluate('!!document.querySelector(".chat-pins-dialog")'), true, "profile Escape keeps Pins open");
+  browser("mouse", "move", "30", "100");
+  browser("hover", ".chat-pin-author");
+  wait('!!document.querySelector(".chat-mention-card")');
+  browser("mouse", "move", "30", "100");
+  browser("mouse", "down");
+  browser("mouse", "up");
+  wait('!document.querySelector(".chat-mention-card")');
+  assert.equal(
+    evaluate('!!document.querySelector(".chat-pins-dialog")'),
+    true,
+    "profile outside dismissal keeps Pins open",
+  );
   openMenu();
   assert.equal(evaluate('document.querySelector(".chat-message-actions").textContent.includes("Unpin message")'), true);
   screenshot("pins-desktop-actions");
@@ -142,9 +190,7 @@ try {
   wait(
     `!document.querySelector('.chat-pins-dialog') && !!document.querySelector('${target}.chat-message-jump-target')`,
   );
-  wait(
-    `(() => { const r = document.querySelector('${target}').getBoundingClientRect(); return r.top > 100 && r.bottom < innerHeight - 100; })()`,
-  );
+  waitCentered(target);
   assert.equal(evaluate(`!!document.querySelector('${target} .chat-pin-marker')`), false);
   assert.equal(
     evaluate('!![...document.querySelectorAll("button")].find(b => b.textContent === "Back to latest")'),
@@ -161,6 +207,7 @@ try {
   openPins();
   action("Go to message");
   wait(`!!document.querySelector('${target}.chat-message-jump-target')`);
+  waitCentered(target);
   browser("fill", "#chat-message", "Sent from pinned context");
   browser("press", "Enter");
   wait(
@@ -173,6 +220,26 @@ try {
   openPins();
   assert.equal(evaluate("document.documentElement.scrollWidth > innerWidth"), false);
   screenshot("pins-narrow");
+  // Synthetic touch input checks the hold handler and release-click guard;
+  // Chromium viewport emulation is not physical-device acceptance.
+  evaluate(`(() => {
+    const button = document.querySelector('.chat-pin-author');
+    const rect = button.getBoundingClientRect();
+    button.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true, pointerType: 'touch', pointerId: 777, isPrimary: true, clientX: rect.x + 5, clientY: rect.y + 5}));
+  })()`);
+  wait('document.querySelector(".chat-mention-card-drawer")?.textContent.includes("@maya")');
+  evaluate(`(() => {
+    document.querySelector('.chat-pin-author').dispatchEvent(new PointerEvent('pointerup', {bubbles: true, pointerType: 'touch', pointerId: 777, isPrimary: true}));
+    document.querySelector('.chat-mention-card-message').dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true}));
+  })()`);
+  assert.equal(
+    evaluate('!!document.querySelector(".chat-mention-card-drawer") && !!document.querySelector(".chat-pins-dialog")'),
+    true,
+    "hold release must not activate Message",
+  );
+  screenshot("pins-narrow-profile");
+  browser("press", "Escape");
+  wait('!document.querySelector(".chat-mention-card")');
   openMenu();
   screenshot("pins-narrow-actions");
   action("Unpin message");
@@ -207,7 +274,7 @@ try {
     `document.querySelector('.chat-thread-panel')?.textContent.includes('Sent from pinned thread context') && !document.querySelector('.chat-thread-panel')?.textContent.includes('Load newer replies')`,
   );
   console.log(
-    "PASS: no timeline pin notice/count; hover-menu unpin; outside/Escape dismissal; nested menu; failed jump retry; old-message context (30 before/30 after); centered target; back to newest message; sending from channel/thread context; narrow layout/unpin; pinned thread reply navigation.",
+    "PASS: icon-only Pins; quiet Go link; pinner hover profile by ID; profile outside/Escape dismissal; synthetic touch hold/release guard; no timeline pin notice/count; hover-menu unpin; outside/Escape dismissal; nested menu; failed jump retry; old-message context (30 before/30 after); centered target; back to newest message; sending from channel/thread context; narrow layout/unpin; pinned thread reply navigation.",
   );
 } catch (error) {
   console.error(browser("snapshot", "-i").snapshot);
