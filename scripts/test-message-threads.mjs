@@ -190,8 +190,11 @@ try {
   );
   close();
 
+  browser("find", "role", "button", "click", "--name", "Show member list", "--exact");
+  wait('!!document.querySelector("#space-member-list")');
   browser("set", "viewport", "390", "844", "2");
-  // The already-open desktop member list becomes a mobile overlay on resize.
+  // Explicitly open it above: members now start closed on desktop too.
+  // The open desktop member list becomes a mobile overlay on resize.
   browser("click", ".member-list-close");
   wait('!document.querySelector("#space-member-list")');
   socket = new WebSocket(browser("get", "cdp-url").cdpUrl);

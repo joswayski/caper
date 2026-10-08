@@ -1658,9 +1658,11 @@
 .chat-edit-dialog small {
   display: block;
   margin-top: 6px;
-  color: var(--text-muted);
   font-size: 0.72rem;
   text-align: right;
+}
+.chat-edit-dialog small:not(.chat-action-error) {
+  color: var(--text-muted);
 }
 .chat-edit-dialog button {
   padding: 8px 12px;
