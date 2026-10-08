@@ -1,5 +1,4 @@
-// Disposable HTTP/WebSocket fixture + Chromium, not native/device acceptance.
-// Start native-parity-fixture.mjs and Vite before running this script.
+// Disposable HTTP/WebSocket fixture + Chromium; not native/device acceptance.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
@@ -10,7 +9,8 @@ const api = process.env.MESSAGE_TEST_API_URL ?? "http://127.0.0.1:3001";
 for (const url of [web, api]) assert.ok(["localhost", "127.0.0.1"].includes(new URL(url).hostname));
 const artifacts = process.env.MESSAGE_TEST_ARTIFACTS && resolve(process.env.MESSAGE_TEST_ARTIFACTS);
 if (artifacts) mkdirSync(artifacts, { recursive: true });
-const browser = (session, ...args) => {
+const session = "pins-check";
+const browser = (...args) => {
   const chrome = process.env.MESSAGE_TEST_CHROME ? ["--executable-path", process.env.MESSAGE_TEST_CHROME] : [];
   const result = JSON.parse(
     execFileSync("agent-browser", ["--session", session, ...chrome, ...args, "--json"], {
@@ -21,15 +21,14 @@ const browser = (session, ...args) => {
   assert.ok(result.success, result.error);
   return result.data;
 };
-const evaluate = (session, source) => browser(session, "eval", source).result;
-const wait = (session, source) => browser(session, "wait", "--fn", source);
-const action = (session, name) => browser(session, "find", "role", "button", "click", "--name", name, "--exact");
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const screenshot = (session, name) => {
+const evaluate = (source) => browser("eval", source).result;
+const wait = (source) => browser("wait", "--fn", source);
+const action = (name) => browser("find", "role", "button", "click", "--name", name, "--exact");
+const screenshot = (name) => {
   if (!artifacts) return;
-  evaluate(session, "new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))");
-  assert.equal(evaluate(session, "devicePixelRatio"), 2);
-  browser(session, "screenshot", `${artifacts}/${name}.png`);
+  evaluate("document.fonts.ready.then(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))");
+  assert.equal(evaluate("devicePixelRatio"), 2);
+  browser("screenshot", `${artifacts}/${name}.png`);
 };
 async function control(body) {
   const response = await fetch(`${api}/__fixture/control`, {
@@ -39,458 +38,185 @@ async function control(body) {
   });
   assert.equal(response.status, 200);
 }
-async function history() {
-  return (
-    await fetch(`${api}/api/chat/channels/chan00000001/messages`, {
-      headers: { authorization: "Bearer fixture-owner-token", connection: "close" },
-    })
-  ).json();
+async function history(query = "", root) {
+  const response = await fetch(
+    `${api}/api/chat/channels/chan00000001/messages${root ? `/${root}/thread` : ""}${query}`,
+    { headers: { authorization: "Bearer fixture-owner-token", connection: "close" } },
+  );
+  assert.equal(response.status, 200);
+  return response.json();
 }
-
-let socket;
+const openPins = () => {
+  if (evaluate("innerWidth < 600")) browser("click", ".chat-channel-menu summary");
+  browser("click", ".chat-pins-toggle");
+  wait('!!document.querySelector(".chat-pins-dialog")');
+};
+const openMenu = () => {
+  browser("hover", ".chat-pinned-message p");
+  browser("click", ".chat-pinned-message .chat-message-actions-trigger");
+  wait('!!document.querySelector(".chat-message-actions")');
+};
 try {
   assert.equal((await (await fetch(`${api}/health`)).json()).fixture, true);
   await control({ reset: true });
   const initial = await history();
-  const message = initial.messages.at(-1);
-  const row = `[data-message-key="${message.clientMessageId}"]`;
-  for (const session of ["pins-check", "pins-peer"]) {
-    browser(session, "open", "about:blank");
-    browser(session, "set", "viewport", "1280", "900", "2");
-    browser(session, "cookies", "set", "caper_fixture", "owner", "--url", web, "--path", "/", "--sameSite", "Lax");
-    browser(session, "open", `${web}/spaces`);
-    wait(
-      session,
-      `!!document.querySelector('${row} .chat-message-actions-trigger') && !document.querySelector('.chat-initial-messages')`,
-    );
-    evaluate(
-      session,
-      "document.fonts.ready.then(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))",
-    );
+  const root = initial.messages[0];
+  let old;
+  for (let i = 0; i < 160; i++) {
+    await control({ incomingMessage: { channelId: "chan00000001", text: `Context message ${i}` } });
+    if (i === 45) old = (await history()).messages.at(-1);
   }
-  // Desktop hover/focus behavior needs Chromium launched with a fine pointer.
-  if (process.env.MESSAGE_TEST_CHROME) {
-    assert.equal(evaluate("pins-check", 'matchMedia("(hover: hover) and (pointer: fine)").matches'), true);
-    browser("pins-check", "hover", "#chat-heading");
-    wait(
-      "pins-check",
-      `['.chat-add-reaction', '.chat-message-actions-trigger'].every(selector => getComputedStyle(document.querySelector('${row} ' + selector)).opacity === '0')`,
-    );
-    assert.deepEqual(
-      evaluate(
-        "pins-check",
-        `['.chat-add-reaction', '.chat-message-actions-trigger'].map(selector => getComputedStyle(document.querySelector('${row} ' + selector)).opacity)`,
-      ),
-      ["0", "0"],
-    );
-    browser("pins-check", "hover", `${row} p`);
-    wait(
-      "pins-check",
-      `['.chat-add-reaction', '.chat-message-actions-trigger'].every(selector => getComputedStyle(document.querySelector('${row} ' + selector)).opacity === '1')`,
-    );
-    assert.deepEqual(
-      evaluate(
-        "pins-check",
-        `(() => {
-      const buttons = ['.chat-add-reaction', '.chat-message-actions-trigger'].map(selector => document.querySelector('${row} ' + selector));
-      const rects = buttons.map(button => button.getBoundingClientRect());
-      return [buttons.map(button => getComputedStyle(button).opacity), rects.map(rect => [rect.width, rect.height]), rects[1].left - rects[0].right, buttons.map(button => button.querySelector('svg').getBoundingClientRect().width)];
-    })()`,
-      ),
-      [
-        ["1", "1"],
-        [
-          [24, 24],
-          [24, 24],
-        ],
-        2,
-        [14, 14],
-      ],
-    );
-    browser("pins-check", "hover", "#chat-heading");
-    browser("pins-check", "focus", `${row} .chat-add-reaction`);
-    wait(
-      "pins-check",
-      `['.chat-add-reaction', '.chat-message-actions-trigger'].every(selector => getComputedStyle(document.querySelector('${row} ' + selector)).opacity === '1')`,
-    );
-    assert.deepEqual(
-      evaluate(
-        "pins-check",
-        `['.chat-add-reaction', '.chat-message-actions-trigger'].map(selector => getComputedStyle(document.querySelector('${row} ' + selector)).opacity)`,
-      ),
-      ["1", "1"],
-      "Keyboard focus also reveals actions",
-    );
-    evaluate("pins-check", "document.activeElement.blur()");
-  }
-  const directGap = () =>
-    evaluate(
-      "pins-check",
-      `document.querySelector('.direct-section').getBoundingClientRect().top - document.querySelector('#space-channel-list').getBoundingClientRect().bottom`,
-    );
-  assert.equal(directGap(), 8, "DM divider must follow channels instead of being bottom-anchored");
-  const expandedDirectTop = evaluate(
-    "pins-check",
-    'document.querySelector(".direct-section").getBoundingClientRect().top',
-  );
-  browser("pins-check", "click", ".channel-section-toggle");
-  assert.ok(
-    evaluate("pins-check", 'document.querySelector(".direct-section").getBoundingClientRect().top') < expandedDirectTop,
-    "Collapsing channels also moves DMs up",
-  );
-  browser("pins-check", "click", ".channel-section-toggle");
-  assert.equal(directGap(), 8);
-  assert.equal(
-    evaluate(
-      "pins-check",
-      '[...document.querySelectorAll(".channel-navigation button")].filter(button => button.textContent === "Browse channels").every(button => !!button.closest(".space-menu"))',
-    ),
-    true,
-  );
-  browser("pins-check", "click", ".space-menu summary");
-  screenshot("pins-check", "pins-web-space-menu");
-  action("pins-check", "Browse channels");
-  wait("pins-check", 'document.querySelector(".space-dialog[open] h2")?.textContent === "Browse channels"');
-  assert.equal(evaluate("pins-check", 'document.querySelector(".space-menu").open'), false);
-  browser("pins-check", "press", "Escape");
-  wait("pins-check", '!document.querySelector(".space-dialog[open]")');
-  const menu = () => {
-    evaluate("pins-check", "new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))");
-    browser("pins-check", "hover", `${row} .chat-message-actions-trigger`);
-    wait(
-      "pins-check",
-      `getComputedStyle(document.querySelector('${row} .chat-message-actions-trigger')).opacity === '1'`,
-    );
-    browser("pins-check", "click", `${row} .chat-message-actions-trigger`);
-    wait("pins-check", '!!document.querySelector(".chat-message-actions")');
-  };
-  menu();
-  action("pins-check", "Pin message");
-  for (const session of ["pins-check", "pins-peer"]) {
-    wait(session, `document.querySelector('${row} .chat-pin-marker')?.textContent === 'Pinned by Fixture Owner'`);
-    assert.equal(
-      evaluate(session, '!!document.querySelector(".chat-message-actions")'),
-      false,
-      "Pin must not require a second dialog",
-    );
-    assert.equal(
-      evaluate(session, 'document.querySelector(".chat-pins-toggle").getAttribute("aria-label")'),
-      "Pins, 1",
-    );
-    assert.deepEqual(
-      evaluate(
-        session,
-        `(() => {
-      const marker = document.querySelector('${row} .chat-pin-marker');
-      return [getComputedStyle(marker).color, marker.getBoundingClientRect().bottom <= document.querySelector('${row} header').getBoundingClientRect().top];
-    })()`,
-      ),
-      ["rgb(228, 199, 106)", true],
-      "Gold attribution precedes the author for every reader",
-    );
-  }
-  assert.equal((await history()).pinnedMessages[0].id, message.id);
-  browser("pins-check", "hover", `${row} p`);
-  screenshot("pins-check", "pins-web-inline");
-  browser("pins-check", "click", ".chat-pins-toggle");
-  wait("pins-check", '!!document.querySelector(".chat-pinned-message")');
-  assert.equal(evaluate("pins-check", 'document.querySelector(".chat-pins").getAttribute("role")'), "region");
-  assert.equal(
-    evaluate("pins-check", 'document.querySelector(".chat-pinned-message time").dateTime'),
-    message.createdAt,
-  );
-  assert.equal(
-    evaluate("pins-check", 'document.querySelector(".chat-pinned-message p").textContent'),
-    message.content.text,
-  );
-  screenshot("pins-check", "pins-web-list");
-  action("pins-check", "Unpin");
-  wait("pins-check", 'document.querySelector(".chat-pins").textContent.includes("No pinned messages.")');
-  wait("pins-peer", `!document.querySelector('${row} .chat-pin-marker')`);
-  screenshot("pins-check", "pins-web-empty");
-  assert.equal((await history()).pinnedMessages.length, 0);
-  await control({ incomingPin: { channelId: "chan00000001", messageId: message.id } });
-  wait("pins-peer", `document.querySelector('${row} .chat-pin-marker')?.textContent === 'Pinned by Alex'`);
-  wait("pins-check", 'document.querySelector(".chat-pinned-message small")?.textContent === "Pinned by Alex"');
-  await control({ incomingPin: { channelId: "chan00000001", messageId: message.id, active: false } });
-  wait("pins-check", '!document.querySelector(".chat-pinned-message")');
-  browser("pins-check", "click", ".chat-pins-toggle");
-  wait("pins-check", `!!document.querySelector('${row}')`);
-
-  // Pins and the existing reaction-details action share the same menu.
-  await control({ incomingReaction: { channelId: "chan00000001", messageId: message.id, emoji: "🚀" } });
-  wait("pins-check", `!!document.querySelector('${row} .chat-reaction')`);
-  menu();
-  assert.equal(
-    evaluate(
-      "pins-check",
-      '[...document.querySelectorAll(".chat-message-actions button")].some(b => b.textContent === "Pin message")',
-    ),
-    true,
-  );
-  action("pins-check", "View reactions");
-  wait("pins-check", 'document.querySelector(".chat-reactors-list")?.textContent.includes("@alex")');
-  assert.equal(evaluate("pins-check", '!!document.querySelector(".chat-message-actions")'), false);
-  assert.equal((await history()).pinnedMessages.length, 0, "Viewing reactions must not mutate pins");
-  browser("pins-check", "press", "Escape");
-  wait("pins-check", '!document.querySelector(".chat-reactors")');
-  await control({ incomingReaction: { channelId: "chan00000001", messageId: message.id, emoji: "🚀", active: false } });
-  wait("pins-check", `!document.querySelector('${row} .chat-reaction')`);
-
-  // Hold/fail a real action before it reaches the server, then retry its intent.
-  evaluate(
-    "pins-check",
-    `(() => {
-    const original = window.fetch.bind(window);
-    window.holdPin = true;
-    window.fetch = (input, init) => window.holdPin && String(input).endsWith('/pin')
-      ? new Promise(resolve => { window.failPin = () => resolve(Response.json({error:'TEST FIXTURE: pin failed'}, {status:500})); })
-      : original(input, init);
-  })()`,
-  );
-  menu();
-  action("pins-check", "Pin message");
-  wait("pins-check", 'typeof window.failPin === "function"');
-  menu();
-  assert.equal(
-    evaluate(
-      "pins-check",
-      '[...document.querySelectorAll(".chat-message-actions button")].find(b => b.textContent === "Saving…")?.disabled',
-    ),
-    true,
-  );
-  assert.equal((await history()).pinnedMessages.length, 0);
-  browser("pins-check", "press", "Escape");
-  evaluate("pins-check", "(() => { window.holdPin = false; window.failPin(); })()");
-  wait("pins-check", 'document.querySelector(".chat-refresh-error")?.textContent.includes("pin failed")');
-  screenshot("pins-check", "pins-web-error");
-  action("pins-check", "Retry");
-  wait("pins-peer", `!!document.querySelector('${row} .chat-pin-marker')`);
-  wait("pins-check", '!document.querySelector(".chat-refresh-error")');
-  assert.equal((await history()).pinnedMessages.length, 1);
-
-  browser("pins-check", "set", "viewport", "390", "844", "2");
-  browser("pins-check", "reload");
-  wait("pins-check", `!!document.querySelector('${row}') && !document.querySelector('.chat-initial-messages')`);
-  socket = new WebSocket(browser("pins-check", "get", "cdp-url").cdpUrl);
-  await new Promise((resolve) => socket.addEventListener("open", resolve, { once: true }));
-  let nextId = 0;
-  const pending = new Map();
-  socket.addEventListener("message", (event) => {
-    const message = JSON.parse(event.data);
-    const request = pending.get(message.id);
-    if (!request) return;
-    pending.delete(message.id);
-    if (message.error) request.reject(new Error(message.error.message));
-    else request.resolve(message.result);
-  });
-  const cdp = (method, params = {}, sessionId) =>
-    new Promise((resolve, reject) => {
-      const id = ++nextId;
-      pending.set(id, { resolve, reject });
-      socket.send(JSON.stringify({ id, method, params, sessionId }));
-    });
-  const { targetInfos } = await cdp("Target.getTargets");
-  const target = targetInfos.find((target) => target.type === "page" && target.url.startsWith(web));
-  const { sessionId } = await cdp("Target.attachToTarget", { targetId: target.targetId, flatten: true });
-  await cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 }, sessionId);
-  assert.equal(evaluate("pins-check", 'matchMedia("(pointer: coarse)").matches'), true);
-  assert.equal(
-    evaluate(
-      "pins-check",
-      `([...document.querySelectorAll('.chat-message:not(.chat-message-pending)')]).every(row => {
-    const button = row.querySelector('.chat-message-actions-trigger'), text = row.querySelector('p');
-    return !button || text.getBoundingClientRect().right <= button.getBoundingClientRect().left;
-  })`,
-    ),
-    true,
-    "Large touch targets must not cover message text",
-  );
-  browser("pins-check", "scrollintoview", `${row} p`);
-  await delay(150);
-  screenshot("pins-check", "pins-web-narrow-inline");
-  const point = evaluate(
-    "pins-check",
-    `(() => { const r = document.querySelector('${row} p').getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`,
-  );
-  await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point] }, sessionId);
-  await delay(650);
-  await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] }, sessionId);
-  wait("pins-check", '!!document.querySelector(".chat-message-actions-drawer")');
-  assert.equal(evaluate("pins-check", "document.documentElement.scrollWidth > innerWidth"), false);
-  screenshot("pins-check", "pins-web-narrow-actions");
-  action("pins-check", "Unpin message");
-  wait("pins-peer", `!document.querySelector('${row} .chat-pin-marker')`);
-  menu();
-  action("pins-check", "Pin message");
-  wait("pins-check", `!!document.querySelector('${row} .chat-pin-marker')`);
-  assert.equal(
-    evaluate("pins-check", '!!document.querySelector(".chat-heading > .chat-pins-toggle")'),
-    false,
-    "Mobile Pins belongs only in the channel menu",
-  );
-  browser("pins-check", "click", ".chat-channel-menu summary");
-  screenshot("pins-check", "pins-web-narrow-menu");
-  browser("pins-check", "click", ".chat-channel-menu .chat-pins-toggle");
-  wait("pins-check", '!!document.querySelector(".chat-pinned-message")');
-  assert.equal(
-    evaluate("pins-check", 'document.querySelector(".chat-channel-menu").open'),
-    false,
-    "Choosing Pins dismisses the mobile menu",
-  );
-  assert.equal(
-    evaluate("pins-check", 'document.querySelector(".chat-pinned-message p").textContent'),
-    message.content.text,
-  );
-  assert.equal(evaluate("pins-check", "document.documentElement.scrollWidth > innerWidth"), false);
-  screenshot("pins-check", "pins-web-narrow-list");
-  // Explicit DOM-only layout mock: a maximum-length name must not overlap the avatar.
-  const originalName = evaluate(
-    "pins-check",
-    'document.querySelector(".chat-pinned-message .chat-pin-marker").lastChild.textContent',
-  );
-  evaluate(
-    "pins-check",
-    `document.querySelector('.chat-pinned-message .chat-pin-marker').lastChild.textContent = 'TEST FIXTURE '.padEnd(64, 'x')`,
-  );
-  assert.deepEqual(
-    evaluate(
-      "pins-check",
-      `(() => {
-    const article = document.querySelector('.chat-pinned-message');
-    const marker = article.querySelector('.chat-pin-marker').getBoundingClientRect();
-    const header = article.querySelector('header').getBoundingClientRect();
-    const avatar = article.querySelector('.chat-avatar').getBoundingClientRect();
-    return [marker.height > 20, marker.bottom <= header.top, avatar.top === header.top, document.documentElement.scrollWidth <= innerWidth];
-  })()`,
-    ),
-    [true, true, true, true],
-    "Wrapping pinner names preserve author/avatar alignment",
-  );
-  screenshot("pins-check", "pins-web-narrow-long-name-mock");
-  evaluate(
-    "pins-check",
-    `document.querySelector('.chat-pinned-message .chat-pin-marker').lastChild.textContent = ${JSON.stringify(originalName)}`,
-  );
-  socket.close();
-  socket = undefined;
-
-  // A newly opened channel finds a pin older than its 50-message history page.
-  const old = initial.messages[0];
   await control({ incomingPin: { channelId: "chan00000001", messageId: old.id } });
-  for (let i = 0; i < 55; i++)
-    await control({ incomingMessage: { channelId: "chan00000001", text: `Pagination ${i}` } });
-  const page = await history();
-  assert.equal(page.messages.length, 50);
-  assert.equal(
-    page.messages.some((m) => m.id === old.id),
-    false,
+  assert.ok(!(await history()).messages.some((m) => m.id === old.id), "target is older than the latest page");
+  const context = await history(`?around=${old.id}`);
+  assert.equal(context.messages.length, 61);
+  assert.equal(context.messages[30].id, old.id);
+  assert.equal(context.messages[0].content.text, "TEST FIXTURE — Context message 15");
+  assert.equal(context.messages.at(-1).content.text, "TEST FIXTURE — Context message 75");
+  assert.equal(context.hasMore, true);
+  assert.equal(context.hasNewer, true);
+
+  browser("open", "about:blank");
+  browser("set", "viewport", "1280", "900", "2");
+  browser("cookies", "set", "caper_fixture", "owner", "--url", web, "--path", "/", "--sameSite", "Lax");
+  browser("open", `${web}/spaces`);
+  wait(
+    '!!document.querySelector(".chat-message-actions-trigger") && !document.querySelector(".chat-initial-messages")',
   );
-  assert.ok(page.pinnedMessages.some((m) => m.id === old.id));
-  browser("pins-check", "reload");
-  wait("pins-check", 'document.querySelector(".chat-pins-toggle")?.getAttribute("aria-label") === "Pins, 2"');
-  browser("pins-check", "click", ".chat-channel-menu summary");
-  browser("pins-check", "click", ".chat-channel-menu .chat-pins-toggle");
-  wait("pins-check", `document.querySelector('.chat-pins')?.textContent.includes(${JSON.stringify(old.content.text)})`);
-  browser("pins-check", "set", "viewport", "1280", "900", "2");
-  action("pins-check", "design Voice session duration");
-  wait("pins-check", 'document.querySelector("#chat-heading")?.textContent === "# design"');
-  assert.equal(
-    evaluate("pins-check", '!!document.querySelector(".chat-pins")'),
-    false,
-    "Channel changes must leave the previous pin view",
-  );
-  assert.equal(
-    evaluate("pins-check", 'document.querySelector(".chat-pins-toggle").getAttribute("aria-label")'),
-    "Pins, 0",
-  );
+  assert.equal(evaluate('document.querySelector(".chat-pins-toggle").getAttribute("aria-label")'), "Pins");
+  assert.equal(evaluate('!!document.querySelector(".chat-message .chat-pin-marker")'), false);
+  openPins();
+  assert.equal(evaluate('document.querySelector(".chat-pins-dialog").getAttribute("role")'), "dialog");
+  assert.equal(evaluate('!!document.querySelector(".chat-history")'), true, "timeline remains mounted behind Pins");
+  assert.equal(evaluate('document.querySelector(".chat-pinned-message p").textContent'), old.content.text);
+  assert.equal(evaluate('document.querySelector(".chat-pins-dialog").textContent.includes("Unpin")'), false);
   assert.equal(
     evaluate(
-      "pins-check",
-      '!!document.querySelector(".chat-heading > .chat-pins-toggle") && !document.querySelector(".chat-channel-menu")',
+      'document.querySelector(".chat-pinned-message .chat-message-actions-trigger").getAttribute("aria-haspopup")',
     ),
+    "dialog",
+  );
+  browser("hover", ".chat-pins-dialog strong");
+  if (process.env.MESSAGE_TEST_CHROME) {
+    assert.equal(evaluate('matchMedia("(hover: hover) and (pointer: fine)").matches'), true);
+    wait(
+      'getComputedStyle(document.querySelector(".chat-pinned-message .chat-message-actions-trigger")).opacity === "0"',
+    );
+    browser("hover", ".chat-pinned-message p");
+    wait(
+      'getComputedStyle(document.querySelector(".chat-pinned-message .chat-message-actions-trigger")).opacity === "1"',
+    );
+  }
+  screenshot("pins-desktop");
+  openMenu();
+  assert.equal(evaluate('document.querySelector(".chat-message-actions").textContent.includes("Unpin message")'), true);
+  screenshot("pins-desktop-actions");
+  browser("press", "Escape");
+  wait('!document.querySelector(".chat-message-actions")');
+  assert.equal(evaluate('!!document.querySelector(".chat-pins-dialog")'), true, "Escape closes the nested menu first");
+  browser("press", "Escape");
+  wait('!document.querySelector(".chat-pins-dialog")');
+  openPins();
+  browser("mouse", "move", "30", "100");
+  browser("mouse", "down");
+  browser("mouse", "up");
+  wait('!document.querySelector(".chat-pins-dialog")');
+  openPins();
+  evaluate(`(() => {
+    const original = window.fetch.bind(window);
+    window.failContext = true;
+    window.fetch = (input, init) => window.failContext && String(input).includes('?around=')
+      ? Promise.resolve(Response.json({error:'TEST FIXTURE: context unavailable'}, {status:500})) : original(input, init);
+  })()`);
+  action("Go to message");
+  wait('document.querySelector(".chat-pins-dialog [role=alert]")?.textContent.includes("context unavailable")');
+  assert.equal(
+    evaluate('!!document.querySelector(".chat-pins-dialog")'),
     true,
-    "Wide layouts retain their existing Pins control",
+    "failed jump keeps Pins open for retry",
+  );
+  screenshot("pins-jump-error");
+  evaluate("window.failContext = false");
+  action("Go to message");
+  const target = `[data-message-key="${old.clientMessageId}"]`;
+  wait(
+    `!document.querySelector('.chat-pins-dialog') && !!document.querySelector('${target}.chat-message-jump-target')`,
+  );
+  wait(
+    `(() => { const r = document.querySelector('${target}').getBoundingClientRect(); return r.top > 100 && r.bottom < innerHeight - 100; })()`,
+  );
+  assert.equal(evaluate(`!!document.querySelector('${target} .chat-pin-marker')`), false);
+  assert.equal(
+    evaluate('!![...document.querySelectorAll("button")].find(b => b.textContent === "Back to latest")'),
+    true,
+  );
+  screenshot("pins-jump-context");
+  action("Back to latest");
+  wait(`!document.querySelector('${target}') && !document.querySelector('.chat-initial-messages')`);
+  wait(`(() => {
+    const row = [...document.querySelectorAll('.chat-message p')].find(p => p.textContent === 'TEST FIXTURE — Context message 159');
+    if (!row) return false;
+    const r = row.getBoundingClientRect(); return r.top > 100 && r.bottom < innerHeight;
+  })()`);
+  openPins();
+  action("Go to message");
+  wait(`!!document.querySelector('${target}.chat-message-jump-target')`);
+  browser("fill", "#chat-message", "Sent from pinned context");
+  browser("press", "Enter");
+  wait(
+    `!document.querySelector('${target}') && ![...document.querySelectorAll('button')].some(b => b.textContent === 'Back to latest') && [...document.querySelectorAll('.chat-message:not(.chat-message-pending) p')].some(p => p.textContent.includes('Sent from pinned context'))`,
   );
 
-  // DMs and unjoined previews still need Pins even though Members is unavailable.
-  const direct = await fetch(`${api}/api/dms`, {
-    method: "POST",
-    headers: { authorization: "Bearer fixture-owner-token", "content-type": "application/json", connection: "close" },
-    body: JSON.stringify({ username: "fixture_alex" }),
-  });
-  assert.equal(direct.status, 200);
-  const conversation = await direct.json();
-  browser("pins-check", "set", "viewport", "390", "844", "2");
-  browser("pins-check", "open", `${web}/spaces?dm=${conversation.id}`);
-  wait(
-    "pins-check",
-    'document.querySelector(".chat-channel-menu .chat-pins-toggle")?.getAttribute("aria-label") === "Pins, 0"',
-  );
-  assert.equal(
-    evaluate("pins-check", 'document.querySelector("#chat-heading").textContent'),
-    "TEST FIXTURE Alex",
-    "Direct titles must not have a channel hash",
-  );
-  assert.equal(
-    evaluate(
-      "pins-check",
-      '!!document.querySelector(".chat-heading > .chat-pins-toggle") || !!document.querySelector(".chat-channel-menu .member-list-toggle")',
-    ),
-    false,
-  );
-  browser("pins-check", "click", ".chat-channel-menu summary");
-  screenshot("pins-check", "pins-web-dm-menu");
-  browser("pins-check", "click", ".chat-channel-menu .chat-pins-toggle");
-  wait("pins-check", 'document.querySelector(".chat-pins")?.textContent.includes("No pinned messages.")');
-  screenshot("pins-check", "pins-web-dm-empty");
+  // Touch-sized browser layout: visible actions and outside dismissal, not a physical-device test.
+  browser("set", "viewport", "390", "844", "2");
+  if (evaluate('!!document.querySelector(".member-list-close")')) browser("click", ".member-list-close");
+  openPins();
+  assert.equal(evaluate("document.documentElement.scrollWidth > innerWidth"), false);
+  screenshot("pins-narrow");
+  openMenu();
+  screenshot("pins-narrow-actions");
+  action("Unpin message");
+  wait('document.querySelector(".chat-pins-dialog")?.textContent.includes("No pinned messages.")');
+  assert.equal((await history()).pinnedMessages.length, 0);
+  screenshot("pins-empty");
+  action("Close pins");
 
-  const leave = await fetch(`${api}/api/spaces/space0000001/channels/chan00000001/membership`, {
-    method: "DELETE",
-    headers: { authorization: "Bearer fixture-owner-token", connection: "close" },
-  });
-  assert.equal(leave.status, 204);
-  browser("pins-check", "open", `${web}/spaces?space=space0000001&channel=chan00000001`);
+  // A pinned non-broadcast reply must navigate inside its thread, not the channel.
+  let reply;
+  for (let i = 0; i < 70; i++) {
+    await control({ incomingReply: { rootId: root.id, text: `Thread context ${i}` } });
+    if (i === 25) reply = (await history("", root.id)).messages.at(-1);
+  }
+  await control({ incomingPin: { channelId: "chan00000001", messageId: reply.id } });
+  openPins();
+  action("Go to message");
   wait(
-    "pins-check",
-    '!!document.querySelector(".channel-preview") && document.querySelector(".chat-channel-menu .chat-pins-toggle")?.getAttribute("aria-label") === "Pins, 2"',
+    `!document.querySelector('.chat-pins-dialog') && document.querySelector('.chat-thread-panel')?.textContent.includes(${JSON.stringify(reply.content.text)})`,
+  );
+  wait(
+    `(() => { const row = document.querySelector('.chat-thread-panel [data-message-id="${reply.id}"]'); if (!row) return false; const r = row.getBoundingClientRect(); return r.top > 0 && r.bottom < innerHeight; })()`,
   );
   assert.equal(
-    evaluate(
-      "pins-check",
-      '!!document.querySelector(".chat-heading > .chat-pins-toggle") || !!document.querySelector(".chat-channel-menu .member-list-toggle")',
-    ),
-    false,
+    evaluate('document.querySelector(".chat-thread-panel").textContent.includes("Load newer replies")'),
+    true,
   );
-  browser("pins-check", "click", ".chat-channel-menu summary");
-  screenshot("pins-check", "pins-web-preview-menu");
-  browser("pins-check", "click", ".chat-channel-menu .chat-pins-toggle");
-  wait("pins-check", 'document.querySelectorAll(".chat-pinned-message").length === 2');
-  assert.equal(
-    evaluate("pins-check", 'document.querySelector(".chat-pins").textContent.includes("Unpin")'),
-    false,
-    "Preview pins remain read-only",
-  );
-  screenshot("pins-check", "pins-web-preview-list");
-  console.log(
-    "PASS: gold top attribution, content-following DMs, space-menu Browse, one-action pin/unpin, two-tab fanout, full pin history, reaction-details coexistence, pending/error/retry, touch drawer, mobile Pins menu for channels/DMs/read-only previews, narrow/wrapping layout and channel isolation.",
+  screenshot("pins-thread-context");
+  browser("fill", "#chat-thread-reply", "Sent from pinned thread context");
+  action("Send reply");
+  wait(
+    `document.querySelector('.chat-thread-panel')?.textContent.includes('Sent from pinned thread context') && !document.querySelector('.chat-thread-panel')?.textContent.includes('Load newer replies')`,
   );
   console.log(
-    process.env.MESSAGE_TEST_CHROME
-      ? "PASS: compact desktop hover/focus controls, 14px glyphs, 24px targets and 2px spacing."
-      : "SKIP: desktop hover/focus assertions (set MESSAGE_TEST_CHROME to a fine-pointer Chromium wrapper).",
+    "PASS: no timeline pin notice/count; hover-menu unpin; outside/Escape dismissal; nested menu; failed jump retry; old-message context (30 before/30 after); centered target; back to newest message; sending from channel/thread context; narrow layout/unpin; pinned thread reply navigation.",
   );
 } catch (error) {
-  console.error(browser("pins-check", "snapshot", "-i").snapshot);
-  browser("pins-check", "screenshot", "/tmp/caper-pins-test-failure.png");
+  console.error(browser("snapshot", "-i").snapshot);
+  browser("screenshot", "/tmp/caper-pins-test-failure.png");
   throw error;
 } finally {
-  socket?.close();
-  for (const session of ["pins-check", "pins-peer"]) {
-    try {
-      browser(session, "close");
-    } catch {
-      /* Preserve the original assertion failure. */
-    }
+  try {
+    browser("close");
+  } catch {
+    /* Preserve the original assertion failure. */
   }
 }

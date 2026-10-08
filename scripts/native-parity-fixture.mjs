@@ -36,6 +36,36 @@ const demoSpace = { id: ids.demoSpace, name: "Caper", ownerId: ids.owner, demo: 
 const demoChannel = { id: ids.demo, spaceId: ids.demoSpace, name: "general", private: false };
 const clone = (value) => structuredClone(value);
 
+function historyWindow(messages, url) {
+  const before = url.searchParams.get("before"),
+    after = url.searchParams.get("after"),
+    around = url.searchParams.get("around");
+  if (
+    [before, after, around].filter((value) => value !== null).length > 1 ||
+    [before, after].some((value) => value !== null && !/^(0|[1-9]\d*)$/.test(value))
+  )
+    return { status: 400, error: "invalid history anchor" };
+  if (around !== null) {
+    const index = messages.findIndex((message) => message.id === around);
+    if (index < 0) return { status: 404, error: "Message not found." };
+    return {
+      messages: messages.slice(Math.max(0, index - 30), index + 31),
+      hasMore: index > 30,
+      hasNewer: index + 31 < messages.length,
+    };
+  }
+  const rows = messages.filter(
+    (message) =>
+      (before === null || BigInt(message.seq) < BigInt(before)) &&
+      (after === null || BigInt(message.seq) > BigInt(after)),
+  );
+  return {
+    messages: after === null ? rows.slice(-50) : rows.slice(0, 50),
+    hasMore: after === null && rows.length > 50,
+    hasNewer: after !== null && rows.length > 50,
+  };
+}
+
 function initialState() {
   const account = clone(initialAccount);
   const space = { id: ids.space, name: "Fixture Studio", ownerId: ids.owner };
@@ -881,15 +911,14 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         const messages = state.messages.get(thread[1]) ?? [];
         const root = messages.find((message) => message.id === thread[2] && !message.threadRootId);
         if (!root) return reject(response, 404, "Thread not found.");
-        const before = url.searchParams.get("before");
-        if (before !== null && !/^(0|[1-9]\d*)$/.test(before)) return reject(response, 400, "invalid cursor");
-        const replies = messages.filter(
-          (message) => message.threadRootId === root.id && (before === null || BigInt(message.seq) < BigInt(before)),
+        const page = historyWindow(
+          messages.filter((message) => message.threadRootId === root.id),
+          url,
         );
+        if (page.error) return reject(response, page.status, page.error);
         return json(response, 200, {
           root,
-          messages: replies.slice(-50),
-          hasMore: replies.length > 50,
+          ...page,
           cursor: channelHead(channel.id),
         });
       }
@@ -961,22 +990,20 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           created(message);
           return json(response, 200, message);
         }
-        const before = url.searchParams.get("before");
-        if (before !== null && !/^(0|[1-9]\d*)$/.test(before)) return reject(response, 400, "invalid cursor");
-        const available = messages.filter(
-          (message) =>
-            (!message.threadRootId || message.broadcast) && (before === null || BigInt(message.seq) < BigInt(before)),
+        const page = historyWindow(
+          messages.filter((message) => !message.threadRootId || message.broadcast),
+          url,
         );
+        if (page.error) return reject(response, page.status, page.error);
         const pinnedMessages = messages
           .filter((message) => message.pin)
           .sort((a, b) => (BigInt(a.pinSeq) > BigInt(b.pinSeq) ? -1 : 1));
         return json(response, 200, {
           space: spaceFor(channel.spaceId),
           channel,
-          messages: available.slice(-50),
+          ...page,
           pinnedMessages,
           cursor: channelHead(channel.id),
-          hasMore: available.length > 50,
         });
       }
       const spacePath =

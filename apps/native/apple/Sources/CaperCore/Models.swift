@@ -384,6 +384,7 @@ public struct ThreadHistory: Codable, Sendable {
     public let messages: [ChatMessage]
     public let cursor: String
     public let hasMore: Bool
+    public let hasNewer: Bool?
 }
 public struct ForwardDestination: Codable, Identifiable, Sendable {
     public let id: String
@@ -577,11 +578,12 @@ public struct ChatHistory: Codable, Sendable {
     public let pinnedMessages: [ChatMessage]
     public let cursor: String
     public let hasMore: Bool
+    public let hasNewer: Bool
 
-    private enum CodingKeys: String, CodingKey { case space, channel, messages, pinnedMessages, cursor, hasMore }
-    public init(space: HistoryIdentity?, channel: HistoryIdentity?, messages: [ChatMessage], pinnedMessages: [ChatMessage] = [], cursor: String, hasMore: Bool) {
+    private enum CodingKeys: String, CodingKey { case space, channel, messages, pinnedMessages, cursor, hasMore, hasNewer }
+    public init(space: HistoryIdentity?, channel: HistoryIdentity?, messages: [ChatMessage], pinnedMessages: [ChatMessage] = [], cursor: String, hasMore: Bool, hasNewer: Bool = false) {
         self.space = space; self.channel = channel; self.messages = messages; self.pinnedMessages = pinnedMessages
-        self.cursor = cursor; self.hasMore = hasMore
+        self.cursor = cursor; self.hasMore = hasMore; self.hasNewer = hasNewer
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -591,6 +593,7 @@ public struct ChatHistory: Codable, Sendable {
         pinnedMessages = try values.decodeIfPresent([ChatMessage].self, forKey: .pinnedMessages) ?? []
         cursor = try values.decode(String.self, forKey: .cursor)
         hasMore = try values.decode(Bool.self, forKey: .hasMore)
+        hasNewer = try values.decodeIfPresent(Bool.self, forKey: .hasNewer) ?? false
     }
 }
 

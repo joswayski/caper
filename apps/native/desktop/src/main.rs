@@ -127,6 +127,21 @@ struct ThreadView {
     has_more: bool,
     before: Option<String>,
     error: Option<String>,
+    window: Option<MessageWindow>,
+    has_newer: bool,
+}
+
+#[derive(Clone, Copy)]
+struct MessageWindow {
+    start: u64,
+    end: Option<u64>,
+}
+
+impl MessageWindow {
+    fn contains(self, message: &model::Message) -> bool {
+        model::sequence(&message.seq)
+            .is_ok_and(|seq| seq >= self.start && self.end.is_none_or(|end| seq <= end))
+    }
 }
 
 fn permanent_send_rejection(status: Option<u16>) -> bool {
@@ -346,6 +361,12 @@ struct CaperApp {
     history_height: f32,
     history_offset: Option<f32>,
     has_more: bool,
+    history_request: u64,
+    context_window: Option<MessageWindow>,
+    has_newer: bool,
+    context_loading: bool,
+    focused_message: Option<String>,
+    scroll_to_target: bool,
     error: Option<String>,
     warning: Option<String>,
     token: Option<String>,
@@ -489,6 +510,12 @@ impl CaperApp {
             history_height: 0.0,
             history_offset: None,
             has_more: false,
+            history_request: 0,
+            context_window: None,
+            has_newer: false,
+            context_loading: false,
+            focused_message: None,
+            scroll_to_target: false,
             error: None,
             warning: None,
             token: None,
@@ -621,7 +648,16 @@ impl CaperApp {
             Some("login") => app.dialog = Some(Dialog::SignIn),
             Some(name) if name.starts_with("parity") => {
                 app.install_fixture();
-                if name.starts_with("parity-settings") {
+                if name == "parity-pins" {
+                    let mut message = app.timeline.messages().next().unwrap().clone();
+                    message.pin = Some(model::Pin {
+                        author: message.author.clone(),
+                        created_at: message.created_at.clone(),
+                    });
+                    message.pin_seq = Some(app.timeline.cursor());
+                    app.timeline.reset_pins(vec![message]).unwrap();
+                    app.showing_pins = true;
+                } else if name.starts_with("parity-settings") {
                     app.dialog = Some(Dialog::Settings);
                     app.updates = updates::Updates::preview_status(match name {
                         "parity-settings-checking" => updates::Status::Checking,
@@ -1567,13 +1603,30 @@ impl CaperApp {
                 }
                 Event::OlderLoaded {
                     generation,
+                    request,
                     channel,
                     result,
                 } if generation == self.generation
+                    && request == self.history_request
                     && self.selected_channel.as_deref() == Some(&channel) =>
                 {
                     self.loading_older = false;
                     self.accept_older(&channel, result);
+                }
+                Event::ContextLoaded {
+                    generation,
+                    request,
+                    channel,
+                    root,
+                    anchor,
+                    newer,
+                    result,
+                } if generation == self.generation
+                    && request == self.history_request
+                    && self.selected_channel.as_deref() == Some(&channel) =>
+                {
+                    self.context_loading = false;
+                    self.accept_context(root, &anchor, newer, result);
                 }
                 Event::ThreadLoaded {
                     generation,
@@ -1624,6 +1677,11 @@ impl CaperApp {
                                 thread.loading = false;
                                 thread.has_more = page.has_more;
                                 thread.before = before.or(thread.before.take());
+                                if let (Some(window), Some(before)) =
+                                    (&mut thread.window, &thread.before)
+                                {
+                                    window.start = model::sequence(before).unwrap_or(window.start);
+                                }
                             }
                         }
                         Err(error) if error.access_denied => {
@@ -2286,6 +2344,7 @@ impl CaperApp {
             })
             && model::sequence(&history.cursor) == Ok(accounted);
         let retained_older = contiguous
+            && self.context_window.is_none()
             && self
                 .timeline
                 .messages()
@@ -2305,6 +2364,7 @@ impl CaperApp {
             .messages()
             .filter(|message| {
                 (contiguous
+                    && self.context_window.is_none()
                     && message.is_channel_message()
                     && !self.thread_only_rows.contains(&message.id))
                     || fresh_ids.contains(&message.id)
@@ -2327,6 +2387,10 @@ impl CaperApp {
         if !retained_older {
             self.has_more = history.has_more;
         }
+        self.context_window = None;
+        self.has_newer = false;
+        self.context_loading = false;
+        self.history_request += 1;
         self.selected_channel = Some(history.channel.id.clone());
         if general {
             let demo = model::Space {
@@ -2954,11 +3018,13 @@ impl CaperApp {
                 self.selected_channel.as_deref(),
             ) =>
             {
-                if self.pending.as_ref().is_some_and(|pending| {
+                let root = message.thread_root_id.clone();
+                let confirmed = self.pending.as_ref().is_some_and(|pending| {
                     self.session
                         .as_ref()
                         .is_some_and(|session| pending.confirmed_by(&message, &session.author.id))
-                }) {
+                });
+                if confirmed {
                     self.pending = None;
                     self.error = None;
                 }
@@ -2985,6 +3051,16 @@ impl CaperApp {
                     }
                     Ok(model::Apply::Resync) | Err(_) => self.reload_channel(),
                     _ => {}
+                }
+                if confirmed && !self.loading {
+                    self.focused_message = None;
+                    if root.is_none() && self.has_newer {
+                        self.reload_channel();
+                    } else if self.thread_view.as_ref().is_some_and(|thread| {
+                        Some(thread.root.as_str()) == root.as_deref() && thread.has_newer
+                    }) {
+                        self.load_thread(false);
+                    }
                 }
             }
             GatewayEvent::Reactions {
@@ -3138,6 +3214,7 @@ impl CaperApp {
     fn sent(&mut self, result: Result<model::Message, worker::SendFailure>) {
         match result {
             Ok(message) => {
+                let root = message.thread_root_id.clone();
                 let confirmed = self.selected_channel.as_deref() == Some(&message.channel_id)
                     && self.pending.as_ref().is_some_and(|pending| {
                         self.session.as_ref().is_some_and(|session| {
@@ -3146,6 +3223,14 @@ impl CaperApp {
                     });
                 if confirmed && self.timeline.merge_sent(message).is_ok() {
                     self.pending = None;
+                    self.focused_message = None;
+                    if root.is_none() && self.has_newer {
+                        self.reload_channel();
+                    } else if self.thread_view.as_ref().is_some_and(|thread| {
+                        Some(thread.root.as_str()) == root.as_deref() && thread.has_newer
+                    }) {
+                        self.load_thread(false);
+                    }
                 } else {
                     if let Some(pending) = &mut self.pending {
                         pending.sending = false;
@@ -3201,6 +3286,8 @@ impl CaperApp {
             let drafts = std::mem::take(&mut self.thread_drafts);
             let rows = std::mem::take(&mut self.thread_only_rows);
             let has_more = self.has_more;
+            let window = self.context_window;
+            let has_newer = self.has_newer;
             if let Some(pending) = &mut pending {
                 pending.sending = false;
             }
@@ -3212,6 +3299,8 @@ impl CaperApp {
             self.thread_drafts = drafts;
             self.thread_only_rows = rows;
             self.has_more = has_more;
+            self.context_window = window;
+            self.has_newer = has_newer;
         }
     }
 
@@ -3248,6 +3337,11 @@ impl CaperApp {
                 for message in &history.messages {
                     self.thread_only_rows.remove(&message.id);
                 }
+                if let (Some(window), Some(first)) =
+                    (&mut self.context_window, history.messages.first())
+                {
+                    window.start = model::sequence(&first.seq).unwrap_or(window.start);
+                }
                 if let Err(error) = self.timeline.prepend(history.messages) {
                     self.older_error = Some(error);
                 }
@@ -3281,6 +3375,12 @@ impl CaperApp {
         self.loading_older = false;
         self.older_error = None;
         self.has_more = false;
+        self.history_request += 1;
+        self.context_window = None;
+        self.has_newer = false;
+        self.context_loading = false;
+        self.focused_message = None;
+        self.scroll_to_target = false;
         self.timeline = Timeline::default();
         self.forwarding.close();
         self.older_armed = false;
@@ -3348,6 +3448,8 @@ impl CaperApp {
             has_more: false,
             before: None,
             error: None,
+            window: None,
+            has_newer: false,
         });
         self.load_thread(false);
     }
@@ -3358,6 +3460,10 @@ impl CaperApp {
         };
         thread.loading = true;
         thread.error = None;
+        if !older {
+            thread.window = None;
+            thread.has_newer = false;
+        }
         self.thread_request += 1;
         self.worker.send(Command::LoadThread {
             generation: self.generation,
@@ -3475,7 +3581,7 @@ impl CaperApp {
     }
 
     fn load_older(&mut self) {
-        if self.loading || self.loading_older || !self.has_more {
+        if self.loading || self.loading_older || self.context_loading || !self.has_more {
             return;
         }
         let Some(channel) = self.selected_channel.clone() else {
@@ -3485,7 +3591,11 @@ impl CaperApp {
             .timeline
             .messages()
             .find(|message| {
-                message.is_channel_message() && !self.thread_only_rows.contains(&message.id)
+                message.is_channel_message()
+                    && !self.thread_only_rows.contains(&message.id)
+                    && self
+                        .context_window
+                        .is_none_or(|window| window.contains(message))
             })
             .map(|message| message.seq.clone())
         else {
@@ -3495,10 +3605,157 @@ impl CaperApp {
         self.older_error = None;
         self.worker.send(Command::LoadOlder {
             generation: self.generation,
+            request: self.history_request,
             token: self.token.clone(),
             channel,
             before,
         });
+    }
+
+    fn load_context(&mut self, root: Option<String>, anchor: String, newer: bool) {
+        let Some(channel) = self.selected_channel.clone() else {
+            return;
+        };
+        self.history_request += 1;
+        self.thread_request += 1;
+        self.loading_older = false;
+        self.context_loading = true;
+        self.error = None;
+        self.worker.send(Command::LoadContext {
+            generation: self.generation,
+            request: self.history_request,
+            token: self.token.clone(),
+            channel,
+            root,
+            anchor,
+            newer,
+        });
+    }
+
+    fn load_newer_context(&mut self, root: Option<String>) {
+        let window = root
+            .as_ref()
+            .and_then(|_| self.thread_view.as_ref().and_then(|thread| thread.window))
+            .or(self.context_window);
+        if let Some(end) = window.and_then(|window| window.end) {
+            self.load_context(root, end.to_string(), true);
+        }
+    }
+
+    fn accept_context(
+        &mut self,
+        root: Option<String>,
+        anchor: &str,
+        newer: bool,
+        result: Result<model::MessageContext, worker::LoadError>,
+    ) {
+        let page = match result {
+            Ok(page) => page,
+            Err(error) if error.access_denied => {
+                self.clear_channel(&error.message);
+                return;
+            }
+            Err(error) => {
+                self.error = Some(error.message);
+                return;
+            }
+        };
+        let valid_root = root.as_ref().is_none_or(|root| {
+            page.root.as_ref().is_some_and(|message| {
+                message.id == *root
+                    && message.thread_root_id.is_none()
+                    && Some(&message.channel_id) == self.selected_channel.as_ref()
+                    && message.validate().is_ok()
+            })
+        });
+        if !valid_root
+            || !page.messages.iter().all(|message| {
+                Some(&message.channel_id) == self.selected_channel.as_ref()
+                    && message.validate().is_ok()
+                    && root.as_ref().map_or_else(
+                        || message.is_channel_message(),
+                        |root| message.thread_root_id.as_ref() == Some(root),
+                    )
+            })
+            || (!newer && !page.messages.iter().any(|message| message.id == anchor))
+        {
+            self.error = Some("Caper returned invalid message context.".into());
+            return;
+        }
+        let start = page
+            .messages
+            .first()
+            .and_then(|message| model::sequence(&message.seq).ok())
+            .unwrap_or(0);
+        let end = page
+            .messages
+            .last()
+            .and_then(|message| model::sequence(&message.seq).ok());
+        let window = MessageWindow {
+            start,
+            end: if page.has_newer { end } else { None },
+        };
+        let before = page.messages.first().map(|message| message.seq.clone());
+        let rows: Vec<_> = page.root.into_iter().chain(page.messages).collect();
+        if root.is_some() {
+            self.thread_only_rows.extend(
+                rows.iter()
+                    .filter(|message| {
+                        message.is_channel_message()
+                            && !self
+                                .timeline
+                                .messages()
+                                .any(|loaded| loaded.id == message.id)
+                    })
+                    .map(|message| message.id.clone()),
+            );
+        } else {
+            for message in &rows {
+                self.thread_only_rows.remove(&message.id);
+            }
+        }
+        if let Err(error) = self.timeline.prepend(rows) {
+            self.error = Some(error);
+            return;
+        }
+        if let Some(root) = root {
+            if newer {
+                if let Some(thread) = &mut self.thread_view {
+                    if let Some(window) = &mut thread.window {
+                        window.end = if page.has_newer { end } else { None };
+                    }
+                    thread.has_newer = page.has_newer;
+                }
+            } else {
+                self.thread_view = Some(ThreadView {
+                    root,
+                    loading: false,
+                    has_more: page.has_more,
+                    before,
+                    error: None,
+                    window: Some(window),
+                    has_newer: page.has_newer,
+                });
+            }
+        } else if newer {
+            if let Some(window) = &mut self.context_window {
+                window.end = if page.has_newer { end } else { None };
+            }
+            self.has_newer = page.has_newer;
+        } else {
+            self.thread_view = None;
+            self.context_window = Some(window);
+            self.has_more = page.has_more;
+            self.has_newer = page.has_newer;
+            self.older_armed = false;
+            self.older_anchor = None;
+            self.history_offset = None;
+        }
+        if !newer {
+            self.focused_message = Some(anchor.into());
+            self.scroll_to_target = true;
+            self.showing_pins = false;
+        }
     }
 
     fn admin(&mut self, operation: AdminOperation) {
@@ -3848,6 +4105,7 @@ impl CaperApp {
         } else {
             let dialog_was_open = self.dialog.is_some();
             self.shell(context);
+            self.pins_dialog(context);
             self.dialogs(context, dialog_was_open);
             self.message_edit_dialogs(context);
         }
@@ -5264,6 +5522,13 @@ impl CaperApp {
             let range = match row {
                 blocking::Row::Message(index) => index..index + 1,
                 blocking::Row::Blocked { range, key } => {
+                    if self.scroll_to_target
+                        && messages[range.clone()]
+                            .iter()
+                            .any(|message| self.focused_message.as_deref() == Some(&message.id))
+                    {
+                        self.revealed_blocked.insert(key.clone());
+                    }
                     if !self.blocked_row(ui, &key, range.len()) {
                         continue;
                     }
@@ -6839,6 +7104,8 @@ impl CaperApp {
         let root = thread.root.clone();
         let loading = thread.loading;
         let has_more = thread.has_more;
+        let has_newer = thread.has_newer;
+        let window = thread.window;
         let error = thread.error.clone();
         let broadcast_label = format!("Also send to #{}", self.channel_name());
         ui.set_min_height(ui.available_height());
@@ -6889,7 +7156,9 @@ impl CaperApp {
                     .timeline
                     .messages()
                     .filter(|message| {
-                        message.id == root || message.thread_root_id.as_deref() == Some(&root)
+                        message.id == root
+                            || (message.thread_root_id.as_deref() == Some(&root)
+                                && window.is_none_or(|window| window.contains(message)))
                     })
                     .cloned()
                     .collect();
@@ -6920,6 +7189,19 @@ impl CaperApp {
                     ui.label("No replies yet. Start the thread.");
                 }
                 self.messages_or_blocked(ui, &replies);
+                if has_newer
+                    && ui
+                        .add_enabled(
+                            !self.context_loading,
+                            egui::Button::new("Load newer replies"),
+                        )
+                        .clicked()
+                {
+                    self.load_newer_context(Some(root.clone()));
+                }
+                if window.is_some() && ui.button("Back to latest replies").clicked() {
+                    self.open_thread(root.clone());
+                }
             });
         self.emoji_picker(ui.ctx());
     }
@@ -6962,9 +7244,6 @@ impl CaperApp {
                                 Some(item) => item.peer.display_name.clone(),
                                 None => format!("# {}", self.channel_name()),
                             }).size(13.76));
-                            if self.showing_pins {
-                                ui.label(RichText::new("Pinned messages").size(12.0).color(MUTED));
-                            }
                             // Web: a failed refresh keeps the conversation and offers Retry in the header.
                             if let Some(error) = self.load_error.clone().filter(|_| self.timeline.messages().next().is_some()) {
                                 ui.add(egui::Label::new(RichText::new(error).size(11.2).color(ERROR)).truncate());
@@ -6975,10 +7254,7 @@ impl CaperApp {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    let pin_count = self.timeline.pinned_messages().count();
-                                    if self.showing_pins {
-                                        if ui.button("Messages").clicked() { self.showing_pins = false; }
-                                    } else if ui.button(format!("Pins ({pin_count})")).clicked() {
+                                    if ui.button("Pins").clicked() {
                                         self.showing_pins = true;
                                     }
                                     if self.selected_direct.is_none() {
@@ -7305,15 +7581,6 @@ impl CaperApp {
                 history = history.vertical_scroll_offset(f32::MAX);
             }
             let history = history.show(ui, |ui| {
-                    if self.showing_pins {
-                        let pins: Vec<_> = self.timeline.pinned_messages().cloned().collect();
-                        if pins.is_empty() {
-                            chat_state(ui, 2, |ui| { ui.label(RichText::new("No pinned messages.").color(MUTED)); });
-                        } else {
-                            for message in &pins { self.message(ui, message, false); }
-                        }
-                        return;
-                    }
                     if let Some(error) = self.load_error.clone().filter(|_| empty) {
                         chat_state(ui, 2, |ui| {
                             ui.label(RichText::new(error).color(MUTED));
@@ -7343,7 +7610,7 @@ impl CaperApp {
                     // pending/empty state and paging can inspect the timeline.
                     let timeline = std::mem::take(&mut self.timeline);
                     let mut last_date = None;
-                    let messages: Vec<_> = timeline.messages().filter(|message| message.is_channel_message() && !self.thread_only_rows.contains(&message.id)).collect();
+                    let messages: Vec<_> = timeline.messages().filter(|message| message.is_channel_message() && !self.thread_only_rows.contains(&message.id) && self.context_window.is_none_or(|window| window.contains(message))).collect();
                     let me = self.account.as_ref().map(|account| account.id.clone());
                     for row in blocking::rows(&messages, &self.blocked_ids(), me.as_deref()) {
                         let (range, blocked) = match row {
@@ -7355,6 +7622,9 @@ impl CaperApp {
                                 && take_date_divider(&mut last_date, &date.key)
                             {
                                 date_divider(ui, &date.label);
+                            }
+                            if self.scroll_to_target && messages[range.clone()].iter().any(|message| self.focused_message.as_deref() == Some(&message.id)) {
+                                self.revealed_blocked.insert(key.clone());
                             }
                             if !self.blocked_row(ui, &key, range.len()) {
                                 continue;
@@ -7370,6 +7640,8 @@ impl CaperApp {
                         }
                     }
                     self.timeline = timeline;
+                    if self.has_newer && ui.add_enabled(!self.context_loading, egui::Button::new("Load newer messages")).clicked() { self.load_newer_context(None); }
+                    if self.context_window.is_some() && ui.button("Back to latest messages").clicked() { self.reload_channel(); }
                     if let Some(pending) = self.pending.clone().filter(|pending| pending.thread_root_id.is_none()) {
                         if let Some(pending_date) = display_date(&pending.created_at)
                             && take_date_divider(&mut last_date, &pending_date.key)
@@ -7568,7 +7840,17 @@ impl CaperApp {
     }
 
     fn message(&mut self, ui: &mut egui::Ui, message: &model::Message, in_thread: bool) {
-        let time = if self.showing_pins {
+        self.message_in(ui, message, in_thread, false);
+    }
+
+    fn message_in(
+        &mut self,
+        ui: &mut egui::Ui,
+        message: &model::Message,
+        in_thread: bool,
+        in_pins: bool,
+    ) {
+        let time = if in_pins {
             DateTime::parse_from_rfc3339(&message.created_at).map_or_else(
                 |_| message.created_at.clone(),
                 |date| {
@@ -7602,15 +7884,15 @@ impl CaperApp {
                         .is_some_and(|thread| thread.root == message.id)
                 {
                     Color32::from_rgba_unmultiplied(228, 199, 106, 26)
-                } else if pinned.is_some() {
-                    Color32::from_rgba_unmultiplied(228, 199, 106, 15)
+                } else if !in_pins && self.focused_message.as_deref() == Some(&message.id) {
+                    Color32::from_rgba_unmultiplied(182, 77, 50, 35)
                 } else {
                     Color32::TRANSPARENT
                 },
             )
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
-                if let Some(pin) = pinned {
+                if in_pins && let Some(pin) = pinned {
                     egui::Frame::new()
                         .inner_margin(egui::Margin {
                             left: 62,
@@ -7953,17 +8235,6 @@ impl CaperApp {
                             self.set_reaction(&message.id, &reaction.emoji, !owned);
                         }
                     }
-                    if self.showing_pins
-                        && can_react
-                        && ui
-                            .add_enabled(
-                                !self.pending_pins.contains(&message.id),
-                                egui::Button::new("Unpin").small(),
-                            )
-                            .clicked()
-                    {
-                        self.set_pin(&message.id, false);
-                    }
                     if !in_thread
                         && self.selected_request().is_none()
                         && ui.small_button("Reply in thread").clicked()
@@ -8047,6 +8318,62 @@ impl CaperApp {
                 0.0,
                 TERRACOTTA,
             );
+        }
+        if !in_pins && self.scroll_to_target && self.focused_message.as_deref() == Some(&message.id)
+        {
+            ui.scroll_to_rect(message_rect, Some(egui::Align::Center));
+            self.scroll_to_target = false;
+        }
+    }
+
+    fn pins_dialog(&mut self, context: &egui::Context) {
+        if !self.showing_pins {
+            return;
+        }
+        let pins: Vec<_> = self.timeline.pinned_messages().cloned().collect();
+        let mut close = false;
+        let modal = egui::Modal::new(egui::Id::new("pinned-messages")).show(context, |ui| {
+            ui.set_width(560.0_f32.min(context.content_rect().width() - 48.0));
+            ui.horizontal(|ui| {
+                ui.heading("Pinned messages");
+                if ui.button("Close").clicked() {
+                    close = true;
+                }
+            });
+            if let Some(error) = &self.error {
+                ui.colored_label(ERROR, error);
+            }
+            egui::ScrollArea::vertical()
+                .max_height(context.content_rect().height() * 0.7)
+                .min_scrolled_height(280.0_f32.min(context.content_rect().height() * 0.65))
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    if pins.is_empty() {
+                        ui.label("No pinned messages.");
+                    }
+                    for message in &pins {
+                        ui.push_id(&message.id, |ui| {
+                            self.message_in(ui, message, false, true);
+                            if ui
+                                .add_enabled(
+                                    !self.context_loading,
+                                    egui::Button::new("Go to message"),
+                                )
+                                .clicked()
+                            {
+                                self.load_context(
+                                    message.thread_root_id.clone(),
+                                    message.id.clone(),
+                                    false,
+                                );
+                            }
+                        });
+                    }
+                });
+            self.emoji_picker(context);
+        });
+        if close || modal.should_close() {
+            self.showing_pins = false;
         }
     }
 
@@ -11349,7 +11676,7 @@ mod tests {
     }
 
     #[test]
-    fn pinned_message_has_gold_attribution_above_only_two_compact_hover_actions() {
+    fn pins_use_normal_hover_actions_and_a_dismissible_navigation_dialog() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
             &context,
@@ -11372,32 +11699,14 @@ mod tests {
         render(&mut app, &context, vec![]);
         context.enable_accesskit();
         let output = render(&mut app, &context, vec![]);
-        assert!(
-            text_position(&output, "Pinned by Fixture Pinner").y
-                < text_position(&output, "Pinned original author").y
-        );
+        assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Pinned by Fixture Pinner")));
         assert!(
             text_position(&output, "Pinned original author").y
                 < text_position(&output, "Pinned original text").y
         );
-        let gold = output
-            .shapes
-            .iter()
-            .find_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) if text.galley.job.text == "Pinned by Fixture Pinner" => {
-                    Some(&text.galley.job)
-                }
-                _ => None,
-            })
-            .unwrap();
-        assert!(
-            gold.sections
-                .iter()
-                .all(|section| section.format.color == egui::Color32::from_rgb(228, 199, 106))
-        );
-        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+        assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
             egui::Shape::Rect(rect) if rect.fill == egui::Color32::from_rgba_unmultiplied(228, 199, 106, 15) && rect.rect.width() > 700.0
-        )), "a short pinned message must still highlight the full conversation row");
+        )), "pins must not add a highlight to the channel timeline");
         let nodes = &output
             .platform_output
             .accesskit_update
@@ -11470,8 +11779,14 @@ mod tests {
         egui::Popup::close_all(&context);
         app.showing_pins = true;
         app.timeline.reset_pins(vec![message]).unwrap();
+        render(&mut app, &context, vec![]);
         let pins = render(&mut app, &context, vec![]);
-        assert!(pins.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Unpin")), "pin list retains direct Unpin");
+        for label in ["Pinned by Fixture Pinner", "Go to message"] {
+            assert!(pins.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == label)));
+        }
+        assert!(!pins.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Unpin")), "unpin belongs only in the actions menu");
+        click(&mut app, &context, egui::pos2(20.0, 20.0));
+        assert!(!app.showing_pins, "clicking outside closes Pins");
     }
 
     #[test]

@@ -39,6 +39,12 @@ export interface ThreadViewState {
   loading: boolean;
   loadingOlder: boolean;
   hasMore: boolean;
+  hasNewer?: boolean;
+  loadingNewer?: boolean;
+  after?: string;
+  windowStart?: string;
+  windowEnd?: string;
+  focusMessageId?: string;
   before?: string;
   error?: string;
 }
@@ -54,6 +60,9 @@ export interface ChatViewState {
   channelMessages?: ChatMessage[];
   typingAuthors: ChatAuthor[];
   hasMore: boolean;
+  hasNewer?: boolean;
+  loadingNewer?: boolean;
+  newerError?: string;
   loadingOlder: boolean;
   olderError?: string;
   author?: ChatAuthor;
@@ -89,6 +98,7 @@ export function initialChatView(history?: GeneralChatHistory, error?: string): C
         messages: history.messages,
         pinnedMessages: history.pinnedMessages ?? [],
         hasMore: history.hasMore,
+        hasNewer: history.hasNewer,
       }
     : initialState;
 }
@@ -128,6 +138,7 @@ function validHistory(value: unknown, general: boolean): value is ChatHistory | 
         history.pinnedMessages.length <= 100 &&
         history.pinnedMessages.every(isChatMessage))) &&
     typeof history.hasMore === "boolean" &&
+    (history.hasNewer === undefined || typeof history.hasNewer === "boolean") &&
     (!general ||
       (!!history.space &&
         typeof history.space.id === "string" &&
@@ -253,6 +264,8 @@ export class ChatClient {
   >();
   private readonly reactionRequests = new Map<string, Promise<void>>();
   private threadRequest?: AbortController;
+  private historyAnchorGeneration = 0;
+  private contextWindow?: { start: bigint; end?: bigint };
   // Fetching a thread's older rows must not insert them into the channel page
   // or move the channel's exclusive pagination boundary past a history gap.
   private readonly threadOnlyRows = new Set<string>();
@@ -281,14 +294,14 @@ export class ChatClient {
   snapshotHistory(): GeneralChatHistory | undefined {
     if (this.state.phase !== "ready" || this.spaceId === undefined || !this.channel) return;
     const pinnedMessages = this.timeline.pinnedMessages;
+    const visible = new Set(this.state.channelMessages?.map((message) => message.id));
     return {
       space: { id: this.spaceId, name: this.state.spaceName },
       channel: this.channel,
-      messages: this.timeline.messages.filter(
-        (message) => isChannelMessage(message) && !this.threadOnlyRows.has(message.id),
-      ),
+      messages: this.timeline.messages.filter((message) => visible.has(message.id)),
       cursor: this.timeline.cursor,
       hasMore: this.state.hasMore,
+      ...(this.state.hasNewer ? { hasNewer: true } : {}),
       ...(pinnedMessages.length ? { pinnedMessages } : {}),
     };
   }
@@ -396,10 +409,10 @@ export class ChatClient {
     this.update({ thread: undefined });
   }
 
-  async openThread(rootId: string) {
+  async openThread(rootId: string, around?: string) {
     this.threadRequest?.abort();
     this.update({ thread: { rootId, loading: true, loadingOlder: false, hasMore: false } });
-    await this.loadThreadPage();
+    await this.loadThreadPage(false, around);
   }
 
   async loadOlderThread() {
@@ -407,22 +420,37 @@ export class ChatClient {
       await this.loadThreadPage(true);
   }
 
-  private async loadThreadPage(older = false) {
+  async loadNewerThread() {
+    if (this.state.thread?.hasNewer && !this.state.thread.loading && !this.state.thread.loadingNewer)
+      await this.loadThreadPage(false, undefined, true);
+  }
+
+  private async loadThreadPage(older = false, around?: string, newer = false) {
     const thread = this.state.thread;
     const channelId = this.state.channelId;
     if (!thread || !channelId || this.controller.signal.aborted) return;
     const controller = new AbortController();
-    this.threadRequest = controller;
     const generation = this.generation;
     const current = () =>
       !controller.signal.aborted &&
       !this.controller.signal.aborted &&
       generation === this.generation &&
       this.state.thread?.rootId === thread.rootId;
-    this.update({ thread: { ...thread, error: undefined, loading: !older, loadingOlder: older } });
+    this.threadRequest?.abort();
+    this.threadRequest = controller;
+    this.update({
+      thread: { ...thread, error: undefined, loading: !older && !newer, loadingOlder: older, loadingNewer: newer },
+    });
     try {
+      const query = around
+        ? `?around=${encodeURIComponent(around)}`
+        : newer && thread.after
+          ? `?after=${thread.after}`
+          : older && thread.before
+            ? `?before=${thread.before}`
+            : "";
       const response = await fetch(
-        `/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(thread.rootId)}/thread${older && thread.before ? `?before=${thread.before}` : ""}`,
+        `/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(thread.rootId)}/thread${query}`,
         {
           cache: "no-store",
           signal: AbortSignal.any([controller.signal, this.controller.signal, AbortSignal.timeout(10_000)]),
@@ -446,7 +474,8 @@ export class ChatClient {
         history.root.id !== thread.rootId ||
         history.root.channelId !== channelId ||
         history.root.threadRootId ||
-        history.messages.some((message) => message.channelId !== channelId || message.threadRootId !== thread.rootId)
+        history.messages.some((message) => message.channelId !== channelId || message.threadRootId !== thread.rootId) ||
+        (around && !history.messages.some((message) => message.id === around))
       )
         throw new Error("The chat service returned an invalid thread.");
       // Merge instead of replacing: live replies/reactions may arrive during GET.
@@ -461,8 +490,14 @@ export class ChatClient {
           rootId: thread.rootId,
           loading: false,
           loadingOlder: false,
-          hasMore: history.hasMore,
-          before: history.messages[0]?.seq ?? thread.before,
+          loadingNewer: false,
+          hasMore: newer ? thread.hasMore : history.hasMore,
+          hasNewer: older ? thread.hasNewer : history.hasNewer,
+          before: newer ? thread.before : (history.messages[0]?.seq ?? thread.before),
+          after: older ? thread.after : (history.messages.at(-1)?.seq ?? thread.after),
+          windowStart: newer ? thread.windowStart : history.messages[0]?.seq,
+          windowEnd: older ? thread.windowEnd : history.hasNewer ? history.messages.at(-1)?.seq : undefined,
+          focusMessageId: around ?? thread.focusMessageId,
         },
       });
     } catch (error) {
@@ -472,6 +507,7 @@ export class ChatClient {
             ...this.state.thread!,
             loading: false,
             loadingOlder: false,
+            loadingNewer: false,
             error: error instanceof Error ? error.message : "Thread could not be loaded.",
           },
         });
@@ -497,6 +533,7 @@ export class ChatClient {
     )
       return;
     const generation = this.generation;
+    const anchorGeneration = this.historyAnchorGeneration;
     const channelId = this.state.channelId;
     this.update({ loadingOlder: true, olderError: undefined });
     try {
@@ -515,17 +552,110 @@ export class ChatClient {
       if (!response.ok) throw await apiError(response, "Older messages could not be loaded.");
       const history: unknown = await response.json();
       if (!validHistory(history, false)) throw new Error("The chat service returned invalid history.");
-      if (generation !== this.generation) return;
+      if (generation !== this.generation || anchorGeneration !== this.historyAnchorGeneration) return;
       if (history.messages.some((message) => message.channelId !== channelId))
         throw new Error("The chat service returned messages from another channel.");
       for (const message of history.messages) this.threadOnlyRows.delete(message.id);
       this.timeline.prepend(history.messages);
+      if (this.contextWindow && history.messages[0]) this.contextWindow.start = sequence(history.messages[0].seq);
       this.update({ messages: this.timeline.messages, hasMore: history.hasMore, loadingOlder: false });
     } catch (error) {
-      if (!this.controller.signal.aborted && generation === this.generation)
+      if (
+        !this.controller.signal.aborted &&
+        generation === this.generation &&
+        anchorGeneration === this.historyAnchorGeneration
+      )
         this.update({
           loadingOlder: false,
           olderError: error instanceof Error ? error.message : "Older messages could not be loaded.",
+        });
+    }
+  }
+
+  async loadMessageContext(message: ChatMessage): Promise<boolean> {
+    if (this.loadingHistory || this.controller.signal.aborted || message.channelId !== this.state.channelId)
+      return false;
+    if (message.threadRootId) {
+      await this.openThread(message.threadRootId, message.id);
+      return this.state.thread?.focusMessageId === message.id && !this.state.thread.error;
+    }
+    const generation = this.generation;
+    const anchorGeneration = ++this.historyAnchorGeneration;
+    this.update({ loadingOlder: false, loadingNewer: false });
+    const response = await fetch(
+      `/api/chat/channels/${encodeURIComponent(message.channelId)}/messages?around=${encodeURIComponent(message.id)}`,
+      {
+        cache: "no-store",
+        signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
+      },
+    );
+    if (!response.ok) throw await apiError(response, "Message could not be found.");
+    const history: unknown = await response.json();
+    if (generation !== this.generation || anchorGeneration !== this.historyAnchorGeneration) return false;
+    if (
+      !validHistory(history, true) ||
+      history.channel.id !== message.channelId ||
+      history.messages.some((row) => row.channelId !== message.channelId || !isChannelMessage(row)) ||
+      !history.messages.some((row) => row.id === message.id)
+    )
+      throw new Error("The chat service returned invalid message context.");
+    // Merge snapshots without advancing replay; expose only the contiguous
+    // context window, not retained latest rows beyond a history gap.
+    this.contextWindow = {
+      start: sequence(history.messages[0].seq),
+      end: history.hasNewer ? sequence(history.messages.at(-1)!.seq) : undefined,
+    };
+    for (const row of history.messages) this.threadOnlyRows.delete(row.id);
+    this.timeline.prepend(history.messages);
+    this.closeThread();
+    this.update({
+      messages: this.timeline.messages,
+      hasMore: history.hasMore,
+      hasNewer: history.hasNewer,
+      loadingOlder: false,
+      olderError: undefined,
+      loadingNewer: false,
+      newerError: undefined,
+    });
+    return true;
+  }
+
+  async loadNewer() {
+    const after = this.state.channelMessages?.at(-1)?.seq;
+    if (!after || !this.state.hasNewer || this.state.loadingNewer || this.loadingHistory) return;
+    const generation = this.generation;
+    const anchorGeneration = this.historyAnchorGeneration;
+    this.update({ loadingNewer: true, newerError: undefined });
+    try {
+      const response = await fetch(
+        `/api/chat/channels/${encodeURIComponent(this.state.channelId!)}/messages?after=${after}`,
+        {
+          cache: "no-store",
+          signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
+        },
+      );
+      if (!response.ok) throw await apiError(response, "Newer messages could not be loaded.");
+      const history: unknown = await response.json();
+      if (generation !== this.generation || anchorGeneration !== this.historyAnchorGeneration) return;
+      if (
+        !validHistory(history, false) ||
+        history.messages.some((row) => row.channelId !== this.state.channelId || sequence(row.seq) <= sequence(after))
+      )
+        throw new Error("The chat service returned invalid newer messages.");
+      if (this.contextWindow)
+        this.contextWindow.end = history.hasNewer ? sequence(history.messages.at(-1)?.seq ?? after) : undefined;
+      for (const row of history.messages) this.threadOnlyRows.delete(row.id);
+      this.timeline.prepend(history.messages);
+      this.update({ messages: this.timeline.messages, hasNewer: history.hasNewer, loadingNewer: false });
+    } catch (error) {
+      if (
+        !this.controller.signal.aborted &&
+        generation === this.generation &&
+        anchorGeneration === this.historyAnchorGeneration
+      )
+        this.update({
+          loadingNewer: false,
+          newerError: error instanceof Error ? error.message : "Newer messages could not be loaded.",
         });
     }
   }
@@ -625,6 +755,9 @@ export class ChatClient {
         sendError: undefined,
         sendRejected: undefined,
       });
+      if (message.threadRootId && this.state.thread?.rootId === message.threadRootId && this.state.thread.hasNewer)
+        void this.openThread(message.threadRootId);
+      else if (!message.threadRootId && this.state.hasNewer) void this.loadInitial();
       return true;
     } catch (error) {
       if (!current()) return false;
@@ -848,6 +981,7 @@ export class ChatClient {
   private async loadInitial(prepared?: GeneralChatHistory) {
     if (this.controller.signal.aborted) return;
     const generation = ++this.generation;
+    ++this.historyAnchorGeneration;
     this.loadingHistory = true;
     const previous = this.state.phase === "ready" ? this.snapshotHistory() : undefined;
     this.connection?.stop();
@@ -881,6 +1015,7 @@ export class ChatClient {
       let accounted = applied;
       const contiguous =
         previous &&
+        !previous.hasNewer &&
         history.messages.length > 0 &&
         history.messages.every((message) => {
           const next = sequence(message.seq);
@@ -903,6 +1038,10 @@ export class ChatClient {
           (contiguous && isChannelMessage(message) && !this.threadOnlyRows.has(message.id)) || freshIds.has(message.id),
       );
       this.threadOnlyRows.clear();
+      this.contextWindow =
+        prepared?.hasNewer && prepared.messages.length
+          ? { start: sequence(prepared.messages[0].seq), end: sequence(prepared.messages.at(-1)!.seq) }
+          : undefined;
       this.timeline.reset([...history.messages, ...retained], history.cursor, history.pinnedMessages ?? []);
       this.update({
         phase: "ready",
@@ -912,6 +1051,9 @@ export class ChatClient {
         messages: this.timeline.messages,
         pinnedMessages: this.timeline.pinnedMessages,
         hasMore: retainedOlder ? previous.hasMore : history.hasMore,
+        hasNewer: history.hasNewer,
+        loadingNewer: false,
+        newerError: undefined,
       });
       this.connection = new ChatConnection(history.channel.id, {
         cursor: () => this.timeline.cursor,
@@ -1011,7 +1153,12 @@ export class ChatClient {
     this.state = { ...this.state, ...change };
     if (change.messages)
       this.state.channelMessages = change.messages.filter(
-        (message) => isChannelMessage(message) && !this.threadOnlyRows.has(message.id),
+        (message) =>
+          isChannelMessage(message) &&
+          !this.threadOnlyRows.has(message.id) &&
+          (!this.contextWindow ||
+            (sequence(message.seq) >= this.contextWindow.start &&
+              (this.contextWindow.end === undefined || sequence(message.seq) <= this.contextWindow.end))),
       );
     if (change.author) {
       this.typers.delete(change.author.id);

@@ -184,17 +184,9 @@
 .chat-message:focus-within {
   background: rgb(255 255 255 / 2%);
 }
-.chat-message-pinned {
-  row-gap: 4px;
-  background: var(--pin-wash);
-}
-.chat-message-pinned:hover,
-.chat-message-pinned:focus-within {
-  background: rgb(228 199 106 / 9%);
-}
-.chat-message-pinned > .chat-avatar,
-.chat-message-pinned > .chat-avatar + div {
-  grid-row: 2;
+.chat-message-jump-target {
+  background: rgb(182 77 50 / 12%);
+  box-shadow: inset 3px 0 var(--terracotta);
 }
 .chat-message header {
   padding-right: 82px;
@@ -620,22 +612,22 @@
   flex: 0 0 12px;
 }
 .chat-pins {
-  position: absolute;
-  inset: 0;
   overflow-y: auto;
-  padding: 16px 18px;
+  padding: 16px;
   background: var(--surface-conversation);
 }
-.chat-pins h3 {
-  margin: 0 0 14px;
-  font-size: 0.9rem;
+.chat-forward-overlay.chat-pins-overlay {
+  z-index: 999;
+}
+.chat-pins-dialog {
+  width: min(580px, 100%);
 }
 .chat-pinned-message {
   position: relative;
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr);
   column-gap: 10px;
-  padding: 12px 70px 12px 12px;
+  padding: 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--pin-wash);
@@ -671,24 +663,7 @@
   margin-bottom: 6px;
   padding-right: 0;
 }
-.chat-pinned-message > button {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: transparent;
-  color: var(--text-muted);
-  font: inherit;
-  font-size: 0.68rem;
-  cursor: pointer;
-}
-.chat-pinned-message > button:disabled {
-  opacity: 0.55;
-  cursor: wait;
-}
-.chat-pinned-edit-actions {
+.chat-pinned-navigation {
   grid-column: 2;
   display: flex;
   flex-wrap: wrap;
@@ -696,7 +671,7 @@
   gap: 8px;
   margin-top: 4px;
 }
-.chat-pinned-edit-actions > button:not(.chat-edited) {
+.chat-pinned-navigation > button {
   padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -706,7 +681,7 @@
   font-size: 0.68rem;
   cursor: pointer;
 }
-.chat-pinned-edit-actions > button:focus-visible {
+.chat-pinned-navigation > button:focus-visible {
   outline: 2px solid var(--terracotta);
   outline-offset: 2px;
 }

@@ -1054,6 +1054,89 @@ async function paginationFixture(t: TestContext) {
   };
 }
 
+test("pin context fences older pages, hides history gaps and never advances gateway replay", async (t) => {
+  const f = await paginationFixture(t);
+  const older = f.client.loadOlder();
+  const target = f.message(-99);
+  const jump = f.client.loadMessageContext(target);
+  assert.equal(f.requests[1].url, `/api/chat/channels/general/messages?around=${target.id}`);
+  const context = {
+    ...f.client.snapshotHistory(),
+    messages: [f.message(-100), target, f.message(-98)],
+    cursor: f.message(20).seq,
+    hasMore: true,
+    hasNewer: true,
+  };
+  f.requests[1].resolve(Response.json(context));
+  assert.equal(await jump, true);
+  f.requests[0].resolve(
+    Response.json({ messages: [f.message(2), f.message(3)], cursor: f.history.cursor, hasMore: false }),
+  );
+  await older;
+  assert.deepEqual(
+    f.state.channelMessages?.map((m) => m.seq),
+    [-100, -99, -98].map((i) => f.message(i).seq),
+  );
+  assert.equal(f.state.hasMore, true, "obsolete older request cannot change context flags");
+  assert.equal(f.state.loadingOlder, false);
+  assert.equal(
+    f.client.snapshotHistory()?.cursor,
+    f.history.cursor,
+    "HTTP context cursor is not an applied event cursor",
+  );
+  f.sockets[0].message(f.message(6));
+  assert.equal(f.client.snapshotHistory()?.cursor, f.message(6).seq);
+  assert.equal(
+    f.state.channelMessages?.some((m) => m.id === f.message(6).id),
+    false,
+    "live rows beyond the gap stay hidden",
+  );
+  const next = f.client.loadNewer();
+  assert.equal(f.requests[2].url, `/api/chat/channels/general/messages?after=${f.message(-98).seq}`);
+  f.requests[2].resolve(
+    Response.json({ messages: [f.message(-97)], cursor: f.message(20).seq, hasMore: false, hasNewer: true }),
+  );
+  await next;
+  assert.deepEqual(
+    f.state.channelMessages?.map((m) => m.seq),
+    [-100, -99, -98, -97].map((i) => f.message(i).seq),
+  );
+  const latest = f.client.loadNewer();
+  f.requests[3].resolve(
+    Response.json({
+      messages: [f.message(4), f.message(5), f.message(6)],
+      cursor: f.message(20).seq,
+      hasMore: false,
+      hasNewer: false,
+    }),
+  );
+  await latest;
+  assert.equal(f.state.hasNewer, false);
+  assert.equal(f.client.snapshotHistory()?.cursor, f.message(6).seq);
+  assert.equal(f.state.channelMessages?.at(-1)?.id, f.message(6).id);
+});
+
+test("the newest pin jump wins even when context responses arrive out of order", async (t) => {
+  const f = await paginationFixture(t);
+  const first = f.client.loadMessageContext(f.message(-20));
+  const second = f.client.loadMessageContext(f.message(-10));
+  const context = (offset: number) => ({
+    ...f.client.snapshotHistory(),
+    messages: [f.message(offset - 1), f.message(offset), f.message(offset + 1)],
+    hasMore: true,
+    hasNewer: true,
+  });
+  f.requests[1].resolve(Response.json(context(-10)));
+  assert.equal(await second, true);
+  f.requests[0].resolve(Response.json(context(-20)));
+  assert.equal(await first, false);
+  assert.deepEqual(
+    f.state.channelMessages?.map((m) => m.id),
+    [-11, -10, -9].map((i) => f.message(i).id),
+  );
+  assert.equal(f.client.snapshotHistory()?.cursor, f.history.cursor);
+});
+
 test("history gaps discard older rows without erasing concurrent HTTP reaction snapshots", async (t) => {
   const f = await sendingFixture(t);
   const message = (seq: string) => committed({ clientMessageId: `command-${seq}`, text: `Message ${seq}` }, seq);

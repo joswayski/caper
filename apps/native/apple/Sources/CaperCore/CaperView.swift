@@ -1624,7 +1624,7 @@ private struct ChatView: View {
                 }
                 if narrow {
                     Menu {
-                        Button(chat.pinnedMessages.isEmpty ? "Pins" : "Pins \(chat.pinnedMessages.count)") { showingPins = true }
+                        Button("Pins") { showingPins = true }
                             .accessibilityIdentifier("channel-pins")
                         if model.selectedDirectMessageID == nil && !model.previewingChannel {
                             Button(membersVisible ? "Hide member list" : "Members", action: toggleMembers)
@@ -1647,7 +1647,7 @@ private struct ChatView: View {
                 Spacer()
                 if !narrow {
                     Button { showingPins = true } label: {
-                        Label(chat.pinnedMessages.isEmpty ? "Pins" : "Pins \(chat.pinnedMessages.count)", systemImage: "pin").font(CaperTheme.font(11, weight: .bold))
+                        Label("Pins", systemImage: "pin").font(CaperTheme.font(11, weight: .bold))
                     }
                     .buttonStyle(.plain).foregroundStyle(CaperTheme.muted).frame(minHeight: 44)
                     .accessibilityIdentifier("channel-pins")
@@ -1763,7 +1763,16 @@ private struct ChatView: View {
                 #endif
                 .onChange(of: chat.channelMessages.last?.id) { _, id in
                     if chat.pendingMessage != nil { revealPending(proxy) }
-                    else if let id { proxy.scrollTo(id, anchor: .bottom) }
+                    else if chat.focusedMessageID == nil, let id { proxy.scrollTo(id, anchor: .bottom) }
+                }
+                .onChange(of: chat.focusRevision) { _, _ in
+                    if let id = chat.focusedMessageID, chat.channelMessages.contains(where: { $0.id == id }) {
+                        revealedBlocked.insert(id)
+                        Task { @MainActor in
+                            await Task.yield()
+                            if chat.focusedMessageID == id { proxy.scrollTo(id, anchor: .center) }
+                        }
+                    }
                 }
                 .onChange(of: chat.pendingMessage?.id, initial: true) { _, _ in revealPending(proxy) }
                 // A rejection adds the "Not sent" line with Edit and Dismiss after
@@ -1772,6 +1781,12 @@ private struct ChatView: View {
                 .onChange(of: chat.error) { _, _ in revealPending(proxy) }
             }
 
+            if chat.hasNewer {
+                HStack {
+                    Button(chat.loadingNewer ? "Loading…" : "Load newer messages") { Task { await chat.loadNewer() } }.disabled(chat.loadingNewer)
+                    Button("Back to latest") { Task { await chat.retryLoad() } }
+                }.font(CaperTheme.font(11)).padding(10)
+            }
             HStack(spacing: 7) {
                 if !chat.typingNames.isEmpty {
                     TypingDots()
@@ -1917,9 +1932,15 @@ private struct ChatView: View {
                                         ? { blockTarget = BlockTarget(author: message.author) } : nil)
             }
             #endif
-            .sheet(isPresented: $showingPins) {
-                PinnedMessagesView(chat: chat, close: { showingPins = false })
+            #if os(macOS)
+            .popover(isPresented: $showingPins, attachmentAnchor: .point(.center), arrowEdge: .top) {
+                PinnedMessagesView(chat: chat, model: model, close: { showingPins = false }).frame(width: 470, height: 360)
             }
+            #else
+            .sheet(isPresented: $showingPins) {
+                PinnedMessagesView(chat: chat, model: model, close: { showingPins = false })
+            }
+            #endif
             .modifier(BlockConfirmation(target: $blockTarget) { target in
                 do { try await model.block(target) } catch { chat.error = error.localizedDescription }
             })
@@ -2008,7 +2029,7 @@ private struct NativeThreadView: View {
             }
         }
     }
-    private var replies: [ChatMessage] { chat.messages.filter { $0.threadRootId == chat.threadRootID && $0.threadRootId != nil } }
+    private var replies: [ChatMessage] { chat.threadMessages }
     private var reactors: ReactorContext {
         ReactorContext(viewerID: chat.currentAuthor?.id, sheetOpen: reactorsTarget != nil) { messageID, emoji in
             reactorsTarget = ReactorsTarget(messageID: messageID, emoji: emoji)
@@ -2033,6 +2054,7 @@ private struct NativeThreadView: View {
                         if let error = chat.threadError { Text(error).padding(12); Button("Retry") { Task { await chat.loadThread() } } }
                         if chat.threadHasMore { Button("Load older replies") { Task { await chat.loadThread(older: true) } }.disabled(chat.threadLoading).padding(12) }
                         threadEntries(replies)
+                        if chat.threadHasNewer { Button("Load newer replies") { Task { await chat.loadThread(newer: true) } }.disabled(chat.threadLoading).padding(12) }
                         if replies.isEmpty && !chat.threadLoading && chat.threadError == nil { Text("No replies yet. Start the thread.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).padding(18) }
                         if let pending = chat.pendingMessage, pending.threadRootId == chat.threadRootID {
                             PendingMessageRow(pending: pending, author: chat.currentAuthor, error: chat.error, rejected: chat.sendRejected, canEdit: chat.threadDraft.isEmpty,
@@ -2043,7 +2065,16 @@ private struct NativeThreadView: View {
                 }
                 .coordinateSpace(.named(MentionCard.timelineSpace))
                 .modifier(MentionCardHost(target: $mentionCard, model: model, viewerID: viewerID))
-                .onChange(of: replies.last?.id) { _, id in if let id { proxy.scrollTo(id, anchor: .bottom) } }
+                .onChange(of: replies.last?.id) { _, id in if chat.focusedMessageID == nil, let id { proxy.scrollTo(id, anchor: .bottom) } }
+                    .onChange(of: chat.focusRevision, initial: true) { _, _ in
+                        if let id = chat.focusedMessageID, replies.contains(where: { $0.id == id }) {
+                            revealedBlocked.insert(id)
+                            Task { @MainActor in
+                                await Task.yield()
+                                if chat.focusedMessageID == id { proxy.scrollTo(id, anchor: .center) }
+                            }
+                        }
+                    }
             }
             if chat.isPreview { Text("Join the channel to reply.").font(CaperTheme.font(12)).padding(18) }
             else { VStack(alignment: .leading, spacing: 8) {
@@ -2176,6 +2207,7 @@ private struct MessageRow: View {
     let reactors: ReactorContext
     let mentionCards: MentionCardContext
     var inThread = false
+    var inPins = false
     /// Asks the containing view to confirm blocking this message's author.
     var requestBlock: ((ChatAuthor) -> Void)? = nil
     let showReactionPicker: () -> Void
@@ -2194,7 +2226,7 @@ private struct MessageRow: View {
         let mentionsMe = MentionAutocomplete.mentionsCurrentUser(message, currentUserID: currentUserID)
         let pills = MentionAutocomplete.pills(in: message.content.text, mentions: message.content.mentions)
         let row = VStack(alignment: .leading, spacing: 5) {
-            if let pin = message.pin {
+            if inPins, let pin = message.pin {
                 Label("Pinned by \(pin.author.name)", systemImage: "pin.fill")
                     .font(CaperTheme.font(10, weight: .medium)).foregroundStyle(CaperTheme.pinGold)
                     .padding(.leading, 44)
@@ -2209,7 +2241,7 @@ private struct MessageRow: View {
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
                     Text(message.author.name).font(CaperTheme.font(13, weight: .bold))
                     if message.author.isGuest { Text("GUEST").font(CaperTheme.font(9, weight: .bold)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 5).overlay(RoundedRectangle(cornerRadius: 4).stroke(CaperTheme.border)) }
-                    Text(timeLabel(message.createdAt)).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
+                    Text(inPins ? ChatDateDivider.date(message.createdAt)?.formatted(date: .abbreviated, time: .shortened) ?? timeLabel(message.createdAt) : timeLabel(message.createdAt)).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
                     if message.forward == nil && (message.revision ?? 1) > 1 { Button("(edited)") { history = true }.buttonStyle(.plain).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).accessibilityLabel("View edit history") }
                 }
                 #if os(macOS)
@@ -2249,8 +2281,6 @@ private struct MessageRow: View {
             }
             }
         }.padding(.horizontal, 18).padding(.vertical, 10)
-            // The open thread's root, then a message that mentions the signed-in
-            // account (8% terracotta with a 2pt terracotta leading edge), then a pin.
             .background(rowBackground(mentionsMe: mentionsMe))
             .overlay(alignment: .leading) {
                 if mentionsMe { Rectangle().fill(CaperTheme.terracotta).frame(width: 2).accessibilityHidden(true) }
@@ -2333,9 +2363,10 @@ private struct MessageRow: View {
         #endif
     }
     private func rowBackground(mentionsMe: Bool) -> Color {
+        if !inPins && chat.focusedMessageID == message.id { return CaperTheme.terracotta.opacity(0.15) }
         if !inThread && chat.threadRootID == message.id { return CaperTheme.pinGold.opacity(0.1) }
         if mentionsMe { return CaperTheme.terracotta.opacity(0.08) }
-        return message.pin == nil ? .clear : CaperTheme.pinGold.opacity(0.06)
+        return inPins && message.pin != nil ? CaperTheme.pinGold.opacity(0.06) : .clear
     }
     /// Resolved `@mention` tokens render as pills: #F3F4F5 medium text on 24%
     /// terracotta. SwiftUI `Text` styles an inline run's background but cannot
@@ -3000,9 +3031,20 @@ private struct MessageActionsSheet: View {
 
 private struct PinnedMessagesView: View {
     @Bindable var chat: ChatModel
+    let model: AppModel
     let close: () -> Void
-    @State private var editTarget: ChatMessage?
-    @State private var historyTarget: ChatMessage?
+    @State private var actionTarget: ChatMessage?
+    @State private var showingEmojiPicker = false
+    @State private var reactorsTarget: ReactorsTarget?
+    @State private var mentionCard: MentionCardTarget?
+    @State private var mentionPointer = MentionPointer()
+    private var viewerID: String? { chat.currentAuthor?.id ?? model.account?.id }
+    private var mentionCards: MentionCardContext {
+        MentionCardContext(pointer: mentionPointer, name: { model.mentionPerson($0, viewerID: viewerID).title }, open: { pill in
+            actionTarget = nil; showingEmojiPicker = false; reactorsTarget = nil
+            mentionCard = MentionCardTarget(pill: pill, pointer: mentionPointer.location)
+        })
+    }
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -3010,9 +3052,10 @@ private struct PinnedMessagesView: View {
                 Spacer()
                 Text("Pins").font(CaperTheme.font(15, weight: .bold))
                 Spacer()
-                Button("Close", action: close).buttonStyle(.plain).opacity(0)
+                Button("Close", action: close).buttonStyle(.plain)
             }.padding(.horizontal, 18).frame(height: 50)
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+            if let error = chat.jumpError { Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright).padding(12) }
             if chat.pinnedMessages.isEmpty {
                 ContentUnavailableView("No pinned messages", systemImage: "pin", description: Text("Pinned messages in this channel will appear here."))
             } else {
@@ -3020,42 +3063,16 @@ private struct PinnedMessagesView: View {
                     LazyVStack(spacing: 0) {
                         ForEach(chat.pinnedMessages) { message in
                             VStack(alignment: .leading, spacing: 5) {
-                                if let pin = message.pin {
-                                    Label("Pinned by \(pin.author.name)", systemImage: "pin.fill")
-                                        .font(CaperTheme.font(10, weight: .medium)).foregroundStyle(CaperTheme.pinGold)
-                                        .padding(.leading, 44)
-                                        .accessibilityIdentifier("pinned-by-\(message.id)")
-                                }
-                                HStack(alignment: .top, spacing: 10) {
-                                    Avatar(name: message.author.name, size: 34, avatarID: message.author.avatarId)
-                                    VStack(alignment: .leading, spacing: 5) {
-                                        Text(message.author.name).font(CaperTheme.font(13, weight: .bold))
-                                        if let date = ChatDateDivider.date(message.createdAt) {
-                                            Text(date.formatted(date: .abbreviated, time: .shortened))
-                                                .font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
-                                        }
-                                        if message.forward == nil && (message.revision ?? 1) > 1 { Button("(edited)") { historyTarget = message }.buttonStyle(.plain).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).accessibilityLabel("View edit history") }
-                                        Text(message.content.text).font(CaperTheme.font(14))
-                                        ForwardCardView(message: message) { chat.forwardConversationTarget = message }
-                                        if chat.canEdit(message) { Button("Edit message") { editTarget = message }.buttonStyle(.plain).font(CaperTheme.font(11)) }
-                                        if let error = chat.pinErrors[message.id] {
-                                            HStack {
-                                                Text(error)
-                                                Button("Retry") { Task { await chat.retryPin(messageID: message.id) } }
-                                                    .disabled(chat.pendingPins.contains(message.id))
-                                            }.font(CaperTheme.font(11)).foregroundStyle(CaperTheme.terracottaBright)
-                                        }
-                                    }.frame(maxWidth: .infinity, alignment: .leading)
-                                    if !chat.isPreview && chat.currentAuthor != nil {
-                                        Button(chat.pendingPins.contains(message.id) ? "Unpinning…" : "Unpin") {
-                                            Task { await chat.setPin(messageID: message.id, active: false) }
-                                        }.buttonStyle(.plain).font(CaperTheme.font(11, weight: .medium))
-                                            .disabled(chat.pendingPins.contains(message.id))
-                                            .frame(minHeight: 44)
-                                    }
-                                }
-                            }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 18).padding(.vertical, 12)
-                                .background(CaperTheme.pinGold.opacity(0.06))
+                                MessageRow(message: message, chat: chat, currentUserID: viewerID,
+                                    reactors: ReactorContext(viewerID: chat.currentAuthor?.id, sheetOpen: reactorsTarget != nil) { id, emoji in reactorsTarget = ReactorsTarget(messageID: id, emoji: emoji) },
+                                    mentionCards: mentionCards, inThread: true, inPins: true) { actionTarget = message }
+                                Button(chat.jumpingToMessage ? "Loading message…" : "Go to message") {
+                                    Task { if await chat.goToMessage(message) { close() } }
+                                }.buttonStyle(.plain).font(CaperTheme.font(12, weight: .medium))
+                                    .foregroundStyle(CaperTheme.terracottaBright).disabled(chat.jumpingToMessage)
+                                    .frame(minHeight: 44).padding(.leading, 62).padding(.bottom, 8)
+                                    .accessibilityIdentifier("go-to-message-\(message.id)")
+                            }.frame(maxWidth: .infinity, alignment: .leading)
                                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
                                 .accessibilityIdentifier("pinned-message-\(message.id)")
                         }
@@ -3063,9 +3080,26 @@ private struct PinnedMessagesView: View {
                 }
             }
         }.background(CaperTheme.conversation)
-            .sheet(item: $editTarget) { target in MessageEditorView(chat: chat, message: target) { editTarget = nil } }
-            .sheet(item: $historyTarget) { target in MessageHistoryView(chat: chat, message: target) { historyTarget = nil } }
-            .onChange(of: chat.editingContext) { _, _ in editTarget = nil; historyTarget = nil; close() }
+            .coordinateSpace(.named(MentionCard.timelineSpace))
+            .modifier(MentionCardHost(target: $mentionCard, model: model, viewerID: viewerID))
+            .sheet(item: $reactorsTarget) { target in ReactorsSheet(chat: chat, messageID: target.messageID, emoji: target.emoji, viewerID: chat.currentAuthor?.id) }
+            #if os(iOS)
+            .sheet(item: $actionTarget) { message in
+                MessageActionsSheet(message: message, chat: chat, showingEmojiPicker: $showingEmojiPicker,
+                    canReact: !chat.isPreview && chat.currentAuthor != nil,
+                    canPin: !chat.isPreview && chat.currentAuthor != nil && !chat.pendingPins.contains(message.id),
+                    togglePin: { actionTarget = nil; Task { await chat.setPin(messageID: message.id, active: message.pin == nil) } },
+                    reply: { actionTarget = nil; close(); Task { await chat.openThread(message.threadRootId ?? message.id) } },
+                    canForward: chat.canForward, forward: { actionTarget = nil; close(); chat.forwardTarget = message },
+                    quickReaction: { emoji in
+                        let active = !(message.reactions?.first(where: { $0.emoji == emoji })?.authorIds.contains(chat.currentAuthor?.id ?? "") ?? false)
+                        actionTarget = nil; Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: active) }
+                    }, selectReaction: { emoji in actionTarget = nil; Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) } })
+            }
+            #else
+            .popover(item: $actionTarget) { message in ReactionPicker { emoji in actionTarget = nil; Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) } } }
+            #endif
+            .onChange(of: chat.editingContext) { _, _ in actionTarget = nil; reactorsTarget = nil; close() }
             .accessibilityIdentifier("pinned-messages")
     }
 }
