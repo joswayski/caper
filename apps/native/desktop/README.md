@@ -48,6 +48,16 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   rather than 4px rounded ones, including in thread replies and edited messages.
   Messages that mention you get a terracotta tint with a 2px leading edge.
   Mentions do not notify anyone.
+- Message requests: a DM from someone you share no space with waits under
+  "Message requests" (with a count, never unread dots or sounds) and opens
+  read-only with Accept, Decline or Block; your own pending requests say
+  "Waiting for @name to accept". Blocking (confirmed first) from a DM header,
+  a request or a message's actions hides that account's messages everywhere as
+  collapsed "⊘ N blocked messages — Show" runs, including thread panels; a
+  blocked DM replaces the composer with Unblock. Settings lists blocked
+  accounts and "Who can start a DM with you" (Anyone, People in my spaces, No
+  one new), saved on change and reverted if saving fails. Pinned-message lists
+  still show blocked authors' pins.
 - Message reactions. Hovering or keyboard-focusing a reaction chip shows who
   reacted (large emoji plus the shared summary wording); names load on demand
   with history's read access and are cached per message reaction revision.
@@ -261,6 +271,10 @@ exact-username dialog without a live account or notification provider.
 mention you; type `@` in its composer for space suggestions.
 `parity-direct-no-spaces` previews the first-space page's Direct messages entry
 and the global list without any space membership.
+`parity-requests` previews an open incoming request and the requests list;
+`parity-requests-outgoing` an unaccepted request you sent; `parity-blocked`
+Maya's #general messages collapsed after blocking her; `parity-blocked-dm` the
+blocked-DM composer.
 `parity-reactions` adds reaction chips whose hover cards name the labelled
 fixture members locally instead of requesting who reacted.
 `parity-opening`, `parity-opening-narrow`, and `parity-opening-error` preview

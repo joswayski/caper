@@ -2724,3 +2724,93 @@ async fn mentions_tag_existing_accounts_with_specials_only_in_spaces(pool: PgPoo
     .unwrap();
     assert_eq!(event["message"]["content"], public["content"]);
 }
+
+#[test]
+fn served_messages_use_current_author_profile_when_known() {
+    let message = json!({"author":{"id":"a","name":"Old","isGuest":false}});
+    let renamed = enrich_author(message.clone(), Some(7), Some("New"));
+    assert_eq!(renamed["author"]["name"], "New");
+    assert_eq!(renamed["author"]["avatarId"], 7);
+    let kept = enrich_author(message, None, None);
+    assert_eq!(kept["author"]["name"], "Old");
+    assert_eq!(kept["author"]["avatarId"], Value::Null);
+    let event = json!({"type":"message.created","message":{"author":{"name":"Old"}}});
+    assert_eq!(
+        enrich_author(event, None, Some("New"))["message"]["author"]["name"],
+        "New"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL"]
+async fn history_shows_current_display_names_but_stores_the_original(pool: PgPool) {
+    let mut users = Vec::new();
+    for name in ["alice", "bob"] {
+        let user: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name) VALUES($1||'-id',$1,$1) RETURNING id")
+            .bind(name).fetch_one(&pool).await.unwrap();
+        let hash = Sha256::digest(name.as_bytes()).to_vec();
+        sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 day')")
+            .bind(&hash).bind(user).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO public.chat_sessions(external_id,token_hash,name,user_id,account_session_hash) VALUES($1,$2,$1,$3,$2)")
+            .bind(name).bind(hash).bind(user).execute(&pool).await.unwrap();
+        users.push(user);
+    }
+    let [alice, bob] = users[..] else {
+        unreachable!()
+    };
+    let space: i64 = sqlx::query_scalar("INSERT INTO public.spaces(external_id,name,owner_id) VALUES('names-space','Names',$1) RETURNING id")
+        .bind(alice).fetch_one(&pool).await.unwrap();
+    let channel: i64 = sqlx::query_scalar("INSERT INTO public.channels(external_id,space_id,name) VALUES('names-channel',$1,'names') RETURNING id")
+        .bind(space).fetch_one(&pool).await.unwrap();
+    for user in [alice, bob] {
+        sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+            .bind(space)
+            .bind(user)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) VALUES($1,$2)")
+            .bind(channel)
+            .bind(user)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let retry = Uuid::new_v4();
+    let sent = persist(&pool, "names-channel", "alice", retry, "hello")
+        .await
+        .unwrap();
+    assert_eq!(sent["author"]["name"], "alice");
+    sqlx::query("UPDATE public.users SET display_name='Alice Renamed' WHERE id=$1")
+        .bind(alice)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let history = history_page(&pool, "names-channel", None, Some(bob))
+        .await
+        .unwrap();
+    assert_eq!(history["messages"][0]["author"]["name"], "Alice Renamed");
+    // An idempotent retry answers with the same current identity.
+    let retried = persist(&pool, "names-channel", "alice", retry, "hello")
+        .await
+        .unwrap();
+    assert_eq!(retried["author"]["name"], "Alice Renamed");
+    // The stored message keeps what was shown at send time.
+    let stored: Value =
+        sqlx::query_scalar("SELECT payload FROM public.messages WHERE channel_id=$1")
+            .bind(channel)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored["author"]["name"], "alice");
+    // A deleted account falls back to the stored name.
+    sqlx::query("UPDATE public.users SET deleted_at=now() WHERE id=$1")
+        .bind(alice)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let history = history_page(&pool, "names-channel", None, Some(bob))
+        .await
+        .unwrap();
+    assert_eq!(history["messages"][0]["author"]["name"], "alice");
+}

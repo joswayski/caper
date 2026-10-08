@@ -60,6 +60,7 @@ internal enum class AudioPanel { Test, Connection, Diagnostics }
     open: (AudioPanel) -> Unit,
     logout: () -> Unit,
     signIn: () -> Unit,
+    openPrivacy: () -> Unit = {},
 ) = CaperDialog("Audio settings", close) {
     var soundEffects by remember { mutableStateOf(CaperEffects.enabled) }
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -71,6 +72,8 @@ internal enum class AudioPanel { Test, Connection, Diagnostics }
     if (voice.phase == VoiceState.Phase.CONNECTED && voice.diagnostics != null) MenuButton("Connection details") { open(AudioPanel.Connection) }
     if (state.account?.debugEnabled == true && voice.phase == VoiceState.Phase.CONNECTED && voice.processing.size == 5)
         MenuButton("Audio diagnostics") { open(AudioPanel.Diagnostics) }
+    // Who can start a DM with you, and the accounts you blocked.
+    if (state.account != null) MenuButton("Privacy and blocked accounts") { openPrivacy() }
     if (state.account != null) MenuButton("Log out") { close(); logout() }
     else MenuButton("Sign in") { close(); signIn() }
 }

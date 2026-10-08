@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ComponentType } from "react";
 import { autoUpdate, flip, FloatingFocusManager, FloatingOverlay, FloatingPortal, offset, shift, useDismiss, useFloating, useInteractions, useRole } from "@floating-ui/react";
-import { Copy, Forward, Hash, History, MessageSquare, Pencil, Pin, PinOff, SmilePlus, Users, X } from "lucide-react";
+import { Ban, Copy, Forward, Hash, History, MessageSquare, Pencil, Pin, PinOff, SmilePlus, Users, X } from "lucide-react";
 import type { ChatMessage } from "./types.ts";
 import { emojiAsset, emojiCode, preloadEmojiImages } from "./emoji.ts";
 
@@ -19,7 +19,7 @@ export function preloadReactionPicker() {
   void preloadEmojiImages();
 }
 
-export default function MessageActions({ message, target, authorId, canReact, canPin, canForward = false, canEdit, pinning, onReact, onPin, onForward, onClose, onCopied, onViewReactions, onReply, onEdit, onHistory }: {
+export default function MessageActions({ message, target, authorId, canReact, canPin, canForward = false, canEdit, pinning, onReact, onPin, onForward, onClose, onCopied, onViewReactions, onReply, onEdit, onHistory, block }: {
   message: ChatMessage;
   target: MessageActionTarget;
   authorId?: string;
@@ -37,6 +37,8 @@ export default function MessageActions({ message, target, authorId, canReact, ca
   onReply: () => void;
   onEdit: () => void;
   onHistory: () => void;
+  /** Another signed-in author. Blocking is confirmed by the caller; unblocking is immediate. */
+  block?: { blocked: boolean; name: string; onBlock: () => void; onUnblock: () => Promise<void> };
 }) {
   const [mode, setMode] = useState(target.mode);
   const [Picker, setPicker] = useState<ComponentType<{ onSelect: (emoji: string) => void }>>();
@@ -108,6 +110,11 @@ export default function MessageActions({ message, target, authorId, canReact, ca
           </button>}
           <button type="button" onClick={() => void copy(message.content.text, "Text")}><Copy size={16} aria-hidden="true" />Copy text</button>
           <button type="button" onClick={() => void copy(message.id, "Message ID")}><Hash size={16} aria-hidden="true" />Copy message ID</button>
+          {block && <button type="button" className={block.blocked ? undefined : "message-action-danger"} onClick={() => {
+            onClose();
+            if (block.blocked) void block.onUnblock().catch(() => onCopied(`Couldn’t unblock ${block.name}. Try again.`));
+            else block.onBlock();
+          }}><Ban size={16} aria-hidden="true" />{block.blocked ? `Unblock ${block.name}` : `Block ${block.name}`}</button>}
         </div>
         {copyError && <p className="chat-action-error" role="alert">{copyError}</p>}
       </div> : <div className="chat-reaction-picker-body">

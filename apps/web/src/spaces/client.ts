@@ -1,3 +1,5 @@
+import { directMessageErrors } from "./direct-errors.ts";
+
 export interface Space {
   id: string;
   name: string;
@@ -29,13 +31,23 @@ export interface Member {
 
 export interface DirectConversation {
   id: string;
-  peer: { id: string; username: string; displayName: string };
+  peer: { id: string; username: string; displayName: string; avatarId?: number };
   lastSeq: string;
   readSeq: string;
+  /** Older servers omit it: treat as accepted. */
+  status?: "accepted" | "outgoing" | "incoming";
+  /** You blocked the peer. The other side is never told. */
+  blocked?: boolean;
 }
 
+/** `incoming` is a message request for you; `outgoing` waits for the other person. */
+export function directStatus(conversation: DirectConversation) {
+  return conversation.status ?? "accepted";
+}
+
+/** Requests for you never count as unread. */
 export function directUnread(conversation: DirectConversation) {
-  return BigInt(conversation.lastSeq) > BigInt(conversation.readSeq);
+  return directStatus(conversation) !== "incoming" && BigInt(conversation.lastSeq) > BigInt(conversation.readSeq);
 }
 
 /** People sharing a space or DM with you, for `@` suggestions in DMs. */
@@ -60,6 +72,39 @@ export function createDirectConversation(username: string) {
 
 export function readDirectConversation(id: string, seq: string) {
   return request<void>(`/api/dms/${pathId(id)}/read`, { method: "POST", body: JSON.stringify({ seq }) });
+}
+
+export function acceptDirectRequest(id: string) {
+  return request<DirectConversation>(`/api/dms/${pathId(id)}/accept`, { method: "POST" });
+}
+
+export function declineDirectRequest(id: string) {
+  return request<void>(`/api/dms/${pathId(id)}/decline`, { method: "POST" });
+}
+
+export interface BlockedAccount { id: string; username: string; displayName: string; avatarId?: number }
+
+export function listBlocks() {
+  return request<{ blocks: BlockedAccount[] }>("/api/blocks");
+}
+
+export function blockAccount(id: string) {
+  return request<void>(`/api/blocks/${pathId(id)}`, { method: "PUT" });
+}
+
+export function unblockAccount(id: string) {
+  return request<void>(`/api/blocks/${pathId(id)}`, { method: "DELETE" });
+}
+
+/** Who can start a DM with you: anyone (as a request), people in your spaces, or no one new. */
+export type DirectPrivacy = "anyone" | "spaces" | "nobody";
+
+export function getDirectPrivacy() {
+  return request<{ directMessages: DirectPrivacy }>("/api/account/privacy");
+}
+
+export function setDirectPrivacy(directMessages: DirectPrivacy) {
+  return request<{ directMessages: DirectPrivacy }>("/api/account/privacy", { method: "PUT", body: JSON.stringify({ directMessages }) });
 }
 
 export interface SpaceLimits {
@@ -115,8 +160,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers: init?.body ? { "content-type": "application/json", ...init.headers } : init?.headers,
   });
   if (!response.ok) {
-    const body = await response.json().catch(() => null) as { error?: unknown } | null;
-    throw new SpacesApiError(response.status, typeof body?.error === "string" ? body.error : "That request did not work.");
+    const body = await response.json().catch(() => null) as { error?: unknown; code?: unknown } | null;
+    const known = typeof body?.code === "string" ? directMessageErrors[body.code] : undefined;
+    throw new SpacesApiError(response.status, known ?? (typeof body?.error === "string" ? body.error : "That request did not work."));
   }
   return response.status === 204 ? undefined as T : response.json() as Promise<T>;
 }

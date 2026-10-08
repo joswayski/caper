@@ -8,7 +8,9 @@ import {
   type ReactNode,
 } from "react";
 import {
+  Ban,
   ChevronDown,
+  ChevronRight,
   Hash,
   LockKeyhole,
   LogOut,
@@ -27,9 +29,12 @@ import Avatar from "../components/Avatar";
 import Call, { type VoiceSlot } from "../pages/Call";
 import ChannelSidebar from "../pages/ChannelSidebar";
 import MemberPresence from "./MemberPresence";
+import { block, refreshBlocks, unblock, useBlockedIds } from "./blocks";
+import Tooltip from "../components/Tooltip";
 import { createSpaceNavigation, type PreparedSpace } from "./navigation";
 import {
   acceptChannelInvitation,
+  acceptDirectRequest,
   acceptSpaceInvitation,
   addChannelMember,
   addSpaceMember,
@@ -38,9 +43,11 @@ import {
   createChannel,
   createSpace,
   createDirectConversation,
+  declineDirectRequest,
   listDirectConversations,
   listPeople,
   readDirectConversation,
+  directStatus,
   directUnread,
   deleteChannel,
   deleteSpace,
@@ -59,6 +66,7 @@ import {
   updateChannel,
   updateSpace,
   SpacesApiError,
+  type BlockedAccount,
   type Channel,
   type DirectConversation,
   type Person,
@@ -814,6 +822,68 @@ function StartDirectDialog({ onClose, onCreated }: { onClose: () => void; onCrea
   </Dialog>;
 }
 
+/** Confirms a block. Blocking also declines any request they sent you. */
+function BlockDialog({ person, onClose, onBlocked }: { person: BlockedAccount; onClose: () => void; onBlocked: () => void }) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string>();
+  return <Dialog title={`Block ${person.displayName}?`} dismissOnBackdrop onClose={() => { if (!pending) onClose(); }}>
+    <div className="delete-confirmation">
+      <p>You won’t see their messages unless you choose to, and they can’t send you DMs or requests. They aren’t told. You can unblock them in Edit profile.</p>
+      {error && <p className="space-form-error" role="alert">{error}</p>}
+      <div className="space-dialog-actions">
+        <button type="button" className="secondary" data-initial-focus disabled={pending} onClick={onClose}>Cancel</button>
+        <button type="button" className="danger" disabled={pending} onClick={() => {
+          setPending(true);
+          setError(undefined);
+          void block(person).then(onBlocked).catch((reason) => { setError(errorMessage(reason)); setPending(false); });
+        }}>{pending ? "Blocking…" : "Block"}</button>
+      </div>
+    </div>
+  </Dialog>;
+}
+
+/** Shown instead of the composer while a request for you is open. */
+function RequestBar({ conversation, onAccept, onDecline, onBlock }: {
+  conversation: DirectConversation;
+  onAccept: () => Promise<void>;
+  onDecline: () => Promise<void>;
+  onBlock: () => void;
+}) {
+  const [pending, setPending] = useState<"accept" | "decline">();
+  const [error, setError] = useState<string>();
+  const run = (action: "accept" | "decline", task: () => Promise<void>) => {
+    if (pending) return;
+    setPending(action);
+    setError(undefined);
+    void task().catch((reason) => setError(errorMessage(reason))).finally(() => setPending(undefined));
+  };
+  return <div className="direct-request-bar" role="group" aria-label="Message request">
+    <p><strong>{conversation.peer.displayName}</strong> (@{conversation.peer.username}) wants to message you. You don’t share a space.</p>
+    <div>
+      <button type="button" className="primary" disabled={!!pending} onClick={() => run("accept", onAccept)}>{pending === "accept" ? "Accepting…" : "Accept"}</button>
+      <button type="button" className="secondary" disabled={!!pending} onClick={() => run("decline", onDecline)}>{pending === "decline" ? "Declining…" : "Decline"}</button>
+      <button type="button" className="danger-outline" disabled={!!pending} onClick={onBlock}>Block</button>
+    </div>
+    {error && <p role="alert">{error}</p>}
+  </div>;
+}
+
+function BlockedBar({ conversation }: { conversation: DirectConversation }) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string>();
+  return <div className="direct-request-bar" role="group" aria-label="Blocked conversation">
+    <p>You blocked @{conversation.peer.username}.</p>
+    <div>
+      <button type="button" className="secondary" disabled={pending} onClick={() => {
+        setPending(true);
+        setError(undefined);
+        void unblock(conversation.peer.id).catch((reason) => setError(errorMessage(reason))).finally(() => setPending(false));
+      }}>{pending ? "Unblocking…" : "Unblock"}</button>
+    </div>
+    {error && <p role="alert">{error}</p>}
+  </div>;
+}
+
 function SpacesLoading() {
   return <main className="call-page" aria-busy="true">
     <header className="call-header">
@@ -960,6 +1030,9 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
   const [directs, setDirects] = useState<DirectConversation[]>([]);
   const [directError, setDirectError] = useState<string>();
   const [selfDirectPending, setSelfDirectPending] = useState(false);
+  const [requestsOpen, setRequestsOpen] = useState(false);
+  const [blockTarget, setBlockTarget] = useState<BlockedAccount>();
+  const blockedIds = useBlockedIds();
   const [directView, setDirectView] = useState<{ conversation: DirectConversation }>();
   // DM `@` suggestions; the previous list stays while a refresh is in flight.
   const [people, setPeople] = useState<Person[]>();
@@ -1076,6 +1149,8 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
     refresh();
     const timer = setInterval(refresh, 15_000);
     document.addEventListener("visibilitychange", refresh);
+    // Blocked accounts' messages collapse in every chat.
+    void refreshBlocks().catch(() => undefined);
     return () => { current = false; clearInterval(timer); document.removeEventListener("visibilitychange", refresh); };
   }, [account?.id]);
 
@@ -1245,6 +1320,25 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
     return () => { current = false; clearInterval(interval); window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); };
   }, [loading, account?.id, detail?.space.id, selected.spaceId, selected.dmId, invitation?.id]);
 
+  // The list is polled and updated on accept, so read the latest status from it.
+  const currentDirect = directView ? directs.find((conversation) => conversation.id === directView.conversation.id) ?? directView.conversation : undefined;
+  const directBlocked = !!currentDirect && blockedIds.has(currentDirect.peer.id);
+  const directLocked = !!currentDirect && (directBlocked || directStatus(currentDirect) === "incoming");
+  const acceptRequest = async (request: DirectConversation) => {
+    const accepted = await acceptDirectRequest(request.id);
+    setDirects((current) => current.map((conversation) => conversation.id === accepted.id ? accepted : conversation));
+  };
+  const declineRequest = async (request: DirectConversation) => {
+    await declineDirectRequest(request.id);
+    leaveRequest(request);
+  };
+  const directPeer = (conversation: DirectConversation): BlockedAccount => ({ ...conversation.peer });
+  const directActions = !currentDirect || currentDirect.peer.id === account?.id ? undefined
+    : directBlocked ? <BlockedBar conversation={currentDirect} />
+    : directStatus(currentDirect) === "incoming" ? <RequestBar key={currentDirect.id} conversation={currentDirect}
+      onAccept={() => acceptRequest(currentDirect)} onDecline={() => declineRequest(currentDirect)} onBlock={() => setBlockTarget(directPeer(currentDirect))} />
+    : <Tooltip content={`Block @${currentDirect.peer.username}`}><button type="button" className="member-list-toggle" aria-label={`Block @${currentDirect.peer.username}`}
+      onClick={() => setBlockTarget(directPeer(currentDirect))}><Ban aria-hidden="true" /></button></Tooltip>;
   const channel = directView ? { id: directView.conversation.id, name: directView.conversation.peer.displayName, spaceId: "", private: true } : detail?.channels.find(
     (item) => item.id === view?.channelId,
   );
@@ -1307,6 +1401,16 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
     choose(remaining[0]?.id, undefined, true, selected.dmId);
   };
 
+  const incomingRequests = directs.filter((conversation) => directStatus(conversation) === "incoming");
+  const requestsShown = requestsOpen || incomingRequests.some((conversation) => conversation.id === directView?.conversation.id);
+  const leaveRequest = (request: DirectConversation) => {
+    const next = incomingRequests.find((conversation) => conversation.id !== request.id);
+    if (directView?.conversation.id === request.id) {
+      if (next) openDirect(next);
+      else choose(detail?.space.id || undefined);
+    }
+    setDirects((current) => current.filter((conversation) => conversation.id !== request.id));
+  };
   const directNavigation = <section className="direct-section" aria-label="Direct messages">
     <div className="channel-section-heading">
       <span className="direct-section-title"><MessageCircle aria-hidden="true" />Direct messages</span>
@@ -1324,11 +1428,30 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
           {selfDirect && directUnread(selfDirect) && <span className="direct-unread" aria-label="Unread messages" />}
         </button>
       </li>}
-      {directs.filter((conversation) => conversation.peer.id !== account?.id).map((conversation) => <li key={conversation.id}>
+      {incomingRequests.length > 0 && <li>
+        <button type="button" className="channel-select direct-select direct-requests" aria-expanded={requestsShown} aria-controls="direct-request-list" onClick={() => setRequestsOpen(!requestsShown)}>
+          {requestsShown ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
+          <span>Message requests</span>
+          <span className="direct-request-count" aria-label={`${incomingRequests.length} ${incomingRequests.length === 1 ? "request" : "requests"}`}>{incomingRequests.length}</span>
+        </button>
+      </li>}
+      {requestsShown && incomingRequests.length > 0 && <li className="direct-request-group">
+        <ul id="direct-request-list" aria-label="Message requests">
+          {incomingRequests.map((conversation) => <li key={conversation.id}>
+            <button type="button" className="channel-select direct-select" aria-current={conversation.id === directView?.conversation.id ? "page" : undefined}
+              onClick={() => openDirect(conversation)}>
+              <span className="direct-avatar"><Avatar avatarId={conversation.peer.avatarId} name={conversation.peer.displayName} /></span>
+              <span>{conversation.peer.displayName}</span><small>@{conversation.peer.username}</small>
+            </button>
+          </li>)}
+        </ul>
+      </li>}
+      {directs.filter((conversation) => conversation.peer.id !== account?.id && directStatus(conversation) !== "incoming").map((conversation) => <li key={conversation.id}>
         <button type="button" className="channel-select direct-select" aria-current={conversation.id === directView?.conversation.id ? "page" : undefined}
           title={`@${conversation.peer.username}`} onClick={() => openDirect(conversation)}>
           <span className="direct-avatar" aria-hidden="true">{conversation.peer.displayName.slice(0, 1).toUpperCase()}</span>
           <span>{conversation.peer.displayName}</span>
+          {blockedIds.has(conversation.peer.id) ? <small>Blocked</small> : directStatus(conversation) === "outgoing" && <small>Request sent</small>}
           {directUnread(conversation) && <span className="direct-unread" aria-label="Unread messages" />}
         </button>
       </li>)}
@@ -1341,6 +1464,12 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
       setDirects((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
       setDialog(undefined);
       openDirect(conversation);
+    }} />}
+    {blockTarget && <BlockDialog person={blockTarget} onClose={() => setBlockTarget(undefined)} onBlocked={() => {
+      const request = directs.find((conversation) => conversation.peer.id === blockTarget.id && directStatus(conversation) === "incoming");
+      setBlockTarget(undefined);
+      // The server declines their request, so it leaves the list now.
+      if (request) leaveRequest(request);
     }} />}
   </section>;
   const invitationButtons = invitations.map((space) => <button key={space.id} type="button" className="pending-space-invite" aria-label={`Invitation to ${space.name}`} onClick={() => choose(space.id)}>
@@ -1731,14 +1860,18 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
           spaceId: detail.space.id,
           demo: detail.space.demo,
           direct: !!directView,
-          joined: directView ? true : channel.joined,
+          // An open request or a blocked DM replaces the composer.
+          joined: currentDirect ? !directLocked : channel.joined,
         }}
         voiceChannels={directView ? [] : joinedChannels.map((item) => ({ id: item.id, name: item.name }))}
-        channelActions={!directView && channel.joined === false ? <div className="channel-preview">
+        channelActions={currentDirect ? directActions : channel.joined === false ? <div className="channel-preview">
           <div><strong>Preview</strong><span>Join <strong>#{channel.name}</strong> to interact with people here</span></div>
           <button type="button" className="primary" disabled={membershipPending} onClick={() => void changeChannelMembership(() => joinChannel(detail.space.id, channel.id)).catch((reason) => setMembershipError(errorMessage(reason)))}>{membershipPending ? "Joining…" : "Join channel"}</button>
           {membershipError && <p role="alert">{membershipError}</p>}
         </div> : undefined}
+        composerBanner={currentDirect && directStatus(currentDirect) === "outgoing" && !directLocked
+          ? <p className="direct-waiting" role="status">Waiting for @{currentDirect.peer.username} to accept. They’ll see your messages when they do.</p> : undefined}
+        onBlockAuthor={(author) => setBlockTarget({ id: author.id, username: "", displayName: author.name, avatarId: author.avatarId ?? undefined })}
         initialAccount={account}
         initialHistory={!directView && view?.history?.channel.id === channel.id ? view.history : undefined}
         initialHistoryError={!directView && view?.channelId === channel.id ? view.historyError : undefined}

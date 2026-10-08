@@ -48,6 +48,15 @@ class CaperApi(
     suspend fun startDirectConversation(token: String, username: String): DirectConversation = post(
         "/api/dms", buildJsonObject { put("username", username.trim()) }, token,
     )
+    suspend fun acceptDirectRequest(token: String, id: String): DirectConversation = post("/api/dms/${id.pathId()}/accept", token = token)
+    suspend fun declineDirectRequest(token: String, id: String) { request<Unit>("/api/dms/${id.pathId()}/decline", "POST", token) }
+    suspend fun blocks(token: String): BlockList = get("/api/blocks", token)
+    suspend fun block(token: String, account: String) { request<Unit>("/api/blocks/${account.pathId()}", "PUT", token) }
+    suspend fun unblock(token: String, account: String) { request<Unit>("/api/blocks/${account.pathId()}", "DELETE", token) }
+    suspend fun directPrivacy(token: String): DirectPrivacy = get("/api/account/privacy", token)
+    suspend fun setDirectPrivacy(token: String, value: String): DirectPrivacy = request(
+        "/api/account/privacy", "PUT", token, buildJsonObject { put("directMessages", value) }.toString(),
+    )
     suspend fun markDirectConversationRead(token: String, id: String, seq: String) {
         require(Regex("^(0|[1-9][0-9]*)$").matches(seq)) { "Invalid read sequence." }
         request<Unit>("/api/dms/${id.pathId()}/read", "POST", token, buildJsonObject { put("seq", seq) }.toString())
