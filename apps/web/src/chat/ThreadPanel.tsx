@@ -255,7 +255,7 @@ export default function ThreadPanel({
                 )}
               </p>
             )}
-            {blocked && (
+            {blocked && state.sendError && (
               <p className="chat-inline-error">Confirm or dismiss the pending message before sending a reply.</p>
             )}
             <form

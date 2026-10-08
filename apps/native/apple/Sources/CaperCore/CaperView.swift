@@ -1930,8 +1930,13 @@ private struct ChatView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .accessibilityIdentifier("message-request-waiting")
                     }
-                    if let root = chat.pendingMessage?.threadRootId {
-                        Button("Pending reply · Open thread") { Task { await chat.openThread(root) } }.font(CaperTheme.font(11))
+                    if let root = chat.pendingMessage?.threadRootId, !chat.sending,
+                       chat.error != nil || chat.sendRejected, chat.threadRootID != root {
+                        HStack(spacing: 8) {
+                            Text(chat.sendRejected ? "A thread reply wasn’t sent." : "A thread reply couldn’t be confirmed.")
+                                .foregroundStyle(CaperTheme.terracottaBright)
+                            Button("Review reply") { Task { await chat.openThread(root) } }
+                        }.font(CaperTheme.font(11))
                     }
                     ComposerSuggestionsView(controller: composerAutocomplete)
                     ZStack(alignment: .topLeading) {
@@ -2169,7 +2174,10 @@ private struct NativeThreadView: View {
                     Button("Send reply") { Task { await chat.send(inThread: true) } }.buttonStyle(CaperPrimaryButton())
                         .disabled(chat.sending || chat.sendRejected || chat.threadLoading || chat.pendingMessage != nil || MessageValidation.error(for: chat.threadDraft) != nil)
                 }
-                if let pending = chat.pendingMessage, pending.threadRootId != chat.threadRootID { Text("Confirm or dismiss the pending message first.").font(CaperTheme.font(11)) }
+                if let pending = chat.pendingMessage, pending.threadRootId != chat.threadRootID,
+                   !chat.sending, chat.error != nil || chat.sendRejected {
+                    Text("Confirm or dismiss the pending message first.").font(CaperTheme.font(11))
+                }
             }.padding(12) }
         }.background(CaperTheme.conversation)
             .overlay(alignment: .leading) { Rectangle().fill(CaperTheme.border).frame(width: 1) }
