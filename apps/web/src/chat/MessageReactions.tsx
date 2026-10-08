@@ -22,8 +22,9 @@ import {
   emojiName,
   fallbackSummary,
   loadReactors,
+  reactionPeople,
   reactionSummary,
-  reactorName,
+  type ReactionList,
 } from "./reactors.ts";
 
 export interface ReactionSave {
@@ -55,7 +56,14 @@ function ReactionChip({
   const mine = !!authorId && authorIds.includes(authorId);
   const [open, setOpen] = useState(false);
   const [name, setName] = useState<string>();
-  const [summary, setSummary] = useState<string>();
+  const [list, setList] = useState<ReactionList>();
+  const people = reactionPeople(
+    reaction,
+    authorId,
+    (channelId ? cachedReactors(channelId, message.id, message.reactionSeq) : undefined) ?? list,
+  );
+  const label = emojiLabel(emoji, name);
+  const summary = people ? reactionSummary(people, authorId, label) : fallbackSummary(reaction, authorId, label);
   const hold = useRef<{ timer: ReturnType<typeof setTimeout>; x: number; y: number }>(undefined);
   const held = useRef(false);
   const { refs, floatingStyles, context } = useFloating({
@@ -77,21 +85,13 @@ function ReactionChip({
   useEffect(() => {
     if (!open) return;
     let active = true;
-    const label = () => emojiLabel(emoji, name);
-    const names = (list = channelId ? cachedReactors(channelId, message.id, message.reactionSeq) : undefined) =>
-      list?.reactions
-        .find((item) => item.emoji === emoji)
-        ?.authors.map((author) => ({ id: author.id, name: reactorName(author) }));
-    const known = names();
-    setSummary(known ? reactionSummary(known, authorId, label()) : fallbackSummary(reaction, authorId, label()));
     void emojiName(emoji).then((found) => {
-      if (active && found !== name) setName(found);
+      if (active) setName(found);
     });
-    if (!known && channelId) {
+    if (channelId) {
       loadReactors(channelId, message.id, message.reactionSeq).then(
-        (list) => {
-          const loaded = names(list);
-          if (active && loaded) setSummary(reactionSummary(loaded, authorId, label()));
+        (loaded) => {
+          if (active) setList(loaded);
         },
         () => {},
       );
@@ -99,7 +99,7 @@ function ReactionChip({
     return () => {
       active = false;
     };
-  }, [open, name, emoji, reaction, channelId, message.id, message.reactionSeq, authorId]);
+  }, [open, emoji, channelId, message.id, message.reactionSeq]);
 
   const cancelHold = () => {
     clearTimeout(hold.current?.timer);
