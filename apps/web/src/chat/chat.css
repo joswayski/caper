@@ -530,12 +530,10 @@
     height: 44px;
   }
   .chat-reply-thread {
-    right: 62px;
-    width: 44px;
-    height: 44px;
+    display: none;
   }
   .chat-message:not(.chat-message-pending) > .chat-avatar + div {
-    padding-right: 96px;
+    padding-right: 44px;
   }
   .chat-thread-panel .chat-message:not(.chat-message-pending) > .chat-avatar + div {
     padding-right: 44px;
