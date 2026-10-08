@@ -6,6 +6,39 @@ import CaperRTCBridge
 #endif
 
 final class ProtocolTests: XCTestCase {
+    func testOptimisticMutationsPreserveConfirmedRevisionsAndRollbackToLatestState() {
+        let author = ChatAuthor(id: "author", name: "Author", isGuest: false)
+        let original = ChatMessage(id: "message", channelId: "channel", seq: "3", author: author,
+            content: ChatContent(version: 1, type: "text", text: "@peer original", mentions: [.user(id: "peer", username: "peer")]),
+            createdAt: "2026-10-01T00:00:00Z", clientMessageId: "client")
+        let pin = MessagePin(author: author, createdAt: "2026-10-08T00:00:00Z")
+        var mutations = MessageMutations()
+        mutations.pins[original.id] = MessageMutations.PinIntent(message: original, pin: pin)
+        mutations.edits[original.id] = ("local draft", 1)
+        let projected = mutations.project(original)
+        XCTAssertEqual(projected.pin, pin)
+        XCTAssertEqual(projected.content.text, "local draft")
+        XCTAssertNil(projected.revision)
+        XCTAssertNil(projected.pinSeq)
+        XCTAssertNil(projected.editSeq)
+        XCTAssertTrue(projected.content.mentions.isEmpty)
+        XCTAssertEqual(original.content.mentions, [.user(id: "peer", username: "peer")])
+        XCTAssertNil(original.pin)
+        XCTAssertEqual(mutations.pinned(messages: [original], confirmed: []).first?.content.text, "local draft")
+        var remote = original
+        remote.content = ChatContent(version: 1, type: "text", text: "other tab")
+        remote.revision = 2; remote.editSeq = "9"; remote.editedAt = "2026-10-08T01:00:00Z"
+        remote.pin = pin; remote.pinSeq = "10"
+        remote.reactions = [MessageReaction(emoji: "🚀", authorIds: ["peer"])]
+        XCTAssertEqual(mutations.project(remote).content.text, "other tab")
+        mutations.pins[original.id] = MessageMutations.PinIntent(message: original, pin: nil)
+        XCTAssertNil(mutations.project(remote).pin)
+        XCTAssertTrue(mutations.pinned(messages: [remote], confirmed: [remote]).isEmpty)
+        mutations = MessageMutations()
+        XCTAssertEqual(mutations.project(remote), remote)
+        XCTAssertEqual(mutations.pinned(messages: [], confirmed: [remote]), [remote], "Rollback does not insert unloaded pins into history")
+    }
+
     func testMessageHistoryDiffPreservesSeparateEditsAndUnicode() {
         let before = "Meet Friday 🙂\nKeep this unchanged\nAt 9"
         let after = "Meet Saturday 🚀\nKeep this unchanged\nAt 11"

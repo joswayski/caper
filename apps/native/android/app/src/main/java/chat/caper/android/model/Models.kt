@@ -284,10 +284,31 @@ data class AppUiState(
     val reactionSaves: Map<String, ReactionSaveUi> = emptyMap(),
     val pinnedMessages: List<ChatMessage> = emptyList(),
     val pinSaves: Map<String, PinSaveUi> = emptyMap(),
+    val pinIntents: Map<String, PinIntentUi> = emptyMap(),
+    val editIntents: Map<String, EditIntentUi> = emptyMap(),
     val chatAuthorId: String? = null,
     val busy: Boolean = false,
     val error: String? = null,
 ) {
+    /** Local presentation never enters history, replay cursors or revision caches. */
+    private fun project(message: ChatMessage): ChatMessage {
+        var result = message
+        pinIntents[message.id]?.let { result = result.copy(pin = it.pin) }
+        editIntents[message.id]?.takeIf { message.revision <= it.expectedRevision }?.let {
+            result = result.copy(content = message.content.copy(text = it.text, mentions = emptyList()))
+        }
+        return result
+    }
+    val displayedMessages: List<ChatMessage> get() = messages.map(::project)
+    val displayedPins: List<ChatMessage> get() {
+        val rows = pinnedMessages.associateBy { it.id }.toMutableMap()
+        pinIntents.forEach { (id, intent) ->
+            if (intent.pin == null) rows.remove(id)
+            else rows[id] = messages.firstOrNull { it.id == id } ?: rows[id] ?: intent.message
+        }
+        return rows.values.map(::project).sortedByDescending { it.pinSeq?.toBigIntegerOrNull() }
+    }
+
     /** Each channel's media root decides its own stable sidebar Join action. */
     fun voiceAvailable(channel: Channel): Boolean? =
         voiceAvailability[voiceRootKey(selectedSpace?.space?.demo == true, channel.id)]
@@ -316,3 +337,5 @@ data class PendingMessageUi(
 
 data class ReactionSaveUi(val emoji: String, val active: Boolean, val saving: Boolean = true, val error: String? = null)
 data class PinSaveUi(val active: Boolean, val saving: Boolean = true, val error: String? = null)
+data class PinIntentUi(val message: ChatMessage, val pin: MessagePin?)
+data class EditIntentUi(val text: String, val expectedRevision: Int)

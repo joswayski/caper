@@ -659,6 +659,69 @@ pub struct Timeline {
     edits: BTreeMap<String, Message>,
 }
 
+/// Presentation-only intents: snapshots and replay cursors remain authoritative.
+#[derive(Default)]
+pub struct MessageMutations {
+    pub pins: BTreeMap<String, (Message, Option<Pin>)>,
+    pub edits: BTreeMap<String, (String, u32)>,
+}
+
+impl MessageMutations {
+    pub fn project<'a>(&self, message: &'a Message) -> std::borrow::Cow<'a, Message> {
+        let pin = self.pins.get(&message.id);
+        let edit = self
+            .edits
+            .get(&message.id)
+            .filter(|(_, revision)| message.revision <= *revision);
+        if pin.is_none() && edit.is_none() {
+            return std::borrow::Cow::Borrowed(message);
+        }
+        let mut result = message.clone();
+        if let Some((_, pin)) = pin {
+            result.pin.clone_from(pin);
+        }
+        if let Some((text, _)) = edit {
+            result.content.text.clone_from(text);
+            result.content.mentions.clear();
+        }
+        std::borrow::Cow::Owned(result)
+    }
+
+    pub fn pinned(&self, timeline: &Timeline) -> Vec<Message> {
+        let mut rows: BTreeMap<_, _> = timeline
+            .pinned_messages()
+            .map(|message| (message.id.clone(), message.clone()))
+            .collect();
+        for (id, (original, pin)) in &self.pins {
+            if pin.is_none() {
+                rows.remove(id);
+            } else {
+                let message = timeline
+                    .messages()
+                    .find(|message| &message.id == id)
+                    .or_else(|| rows.get(id))
+                    .unwrap_or(original)
+                    .clone();
+                rows.insert(id.clone(), message);
+            }
+        }
+        let mut rows: Vec<_> = rows
+            .values()
+            .map(|message| self.project(message).into_owned())
+            .collect();
+        rows.sort_by_key(|message| {
+            std::cmp::Reverse(
+                message
+                    .pin_seq
+                    .as_deref()
+                    .and_then(|seq| seq.parse::<u64>().ok())
+                    .unwrap_or(0),
+            )
+        });
+        rows
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Apply {
     Applied,
@@ -1294,6 +1357,86 @@ mod tests {
             seq: seq.to_string(),
             message,
         }
+    }
+
+    #[test]
+    fn optimistic_mutations_are_cursor_neutral_and_rollback_to_latest_shared_state() {
+        let mut original = message("target", 1);
+        original.content.text = "@peer target".into();
+        original.content.mentions = vec![Mention {
+            kind: "user".into(),
+            id: Some("peer".into()),
+            username: Some("peer".into()),
+        }];
+        let pin = Pin {
+            author: original.author.clone(),
+            created_at: "2026-10-08T00:00:00Z".into(),
+        };
+        let mut timeline = Timeline::default();
+        timeline.reset(vec![original.clone()], "1").unwrap();
+        let mut mutations = MessageMutations::default();
+        mutations
+            .pins
+            .insert(original.id.clone(), (original.clone(), Some(pin.clone())));
+        mutations
+            .edits
+            .insert(original.id.clone(), ("local draft".into(), 1));
+        let projected = mutations.project(timeline.messages().next().unwrap());
+        assert_eq!(projected.pin, Some(pin.clone()));
+        assert_eq!(projected.content.text, "local draft");
+        assert_eq!(projected.revision, 1);
+        assert_eq!(projected.edit_seq, None);
+        assert_eq!(projected.pin_seq, None);
+        assert!(projected.content.mentions.is_empty());
+        assert_eq!(
+            timeline.messages().next().unwrap().content.mentions,
+            original.content.mentions
+        );
+        assert_eq!(mutations.pinned(&timeline)[0].content.text, "local draft");
+        assert_eq!(timeline.cursor(), "1");
+        assert_eq!(
+            timeline.messages().next().unwrap().content.text,
+            "@peer target"
+        );
+        assert!(timeline.pinned_messages().next().is_none());
+        let edit = edit_update(original.clone(), 2, 2);
+        let remote_text = edit.message.content.text.clone();
+        timeline.apply_edit(edit).unwrap();
+        timeline
+            .apply_pin(pin_update(original.clone(), 3, true))
+            .unwrap();
+        assert_eq!(
+            mutations
+                .project(timeline.messages().next().unwrap())
+                .content
+                .text,
+            remote_text
+        );
+        mutations
+            .pins
+            .insert(original.id.clone(), (original.clone(), None));
+        assert!(mutations.pinned(&timeline).is_empty());
+        assert!(
+            mutations
+                .project(timeline.messages().next().unwrap())
+                .pin
+                .is_none()
+        );
+        mutations = MessageMutations::default();
+        let restored = mutations.pinned(&timeline);
+        assert_eq!(restored[0].content.text, remote_text);
+        assert_eq!(restored[0].pin_seq.as_deref(), Some("3"));
+        assert_eq!(timeline.cursor(), "3");
+        // An unloaded pin is a separate collection, never a page insertion.
+        timeline.reset(vec![], "3").unwrap();
+        timeline.reset_pins(restored.clone()).unwrap();
+        mutations
+            .pins
+            .insert(original.id, (restored[0].clone(), None));
+        assert!(mutations.pinned(&timeline).is_empty());
+        assert_eq!(timeline.messages().count(), 0);
+        mutations.pins.clear();
+        assert_eq!(mutations.pinned(&timeline), restored);
     }
 
     #[test]

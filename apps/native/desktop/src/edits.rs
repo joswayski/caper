@@ -169,6 +169,7 @@ impl CaperApp {
             .as_ref()
             .is_some_and(|editor| !self.can_edit(&editor.original))
         {
+            self.mutations.edits.remove(message);
             self.message_editor = None;
             return;
         }
@@ -180,6 +181,7 @@ impl CaperApp {
             return;
         };
         editor.busy = false;
+        self.mutations.edits.remove(message);
         match result {
             Ok(snapshot) if snapshot.author.id == editor.original.author.id => {
                 if reloaded {
@@ -221,6 +223,10 @@ impl CaperApp {
                 message: editor.original.id.clone(),
             });
         } else if let Some(session) = &self.session {
+            self.mutations.edits.insert(
+                editor.original.id.clone(),
+                (editor.draft.clone(), editor.original.revision),
+            );
             self.worker.send(Command::EditMessage {
                 generation: self.generation,
                 request: editor.request,

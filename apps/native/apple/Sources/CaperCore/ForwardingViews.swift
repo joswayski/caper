@@ -72,6 +72,7 @@ struct ForwardPickerView: View {
                                 Spacer()
                             }.frame(minHeight: 44)
                         }.buttonStyle(.plain).disabled(key != nil)
+                            .modifier(ControlPointer())
                     }
                     if destinations == nil && error == nil { ProgressView("Loading destinations…") }
                     if destinations?.isEmpty == true { Text("Join a channel or start a DM to forward here.") }
