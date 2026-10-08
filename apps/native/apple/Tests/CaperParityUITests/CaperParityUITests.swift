@@ -253,9 +253,16 @@ final class CaperParityUITests: XCTestCase {
         #else
         let row = try require(app.descendants(matching: .any)["message-row-\(messageID)"], timeout: 10,
                               "Missing message-row-\(messageID)")
-        hoverMessage(row)
-        let add = try require(app.buttons["add-reaction-\(messageID)"], timeout: 10,
-                              "Hovering \(messageID) did not reveal Add reaction")
+        // Just after launch the timeline can still move the row out from
+        // under a pointer that stays put (CI saw the controls appear and then
+        // vanish), so hover again until they stay up.
+        let add = app.buttons["add-reaction-\(messageID)"]
+        var shown = false
+        for _ in 0..<4 where !shown {
+            hoverMessage(row)
+            shown = add.waitForExistence(timeout: 3) && add.isHittable
+        }
+        XCTAssertTrue(shown, "Hovering \(messageID) did not reveal Add reaction")
         #endif
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: add)
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
@@ -1318,8 +1325,14 @@ final class CaperParityUITests: XCTestCase {
                 let text = pending.staticTexts[message].firstMatch
                 XCTAssertTrue(text.exists)
                 XCTAssertTrue(timeline.frame.contains(text.frame), "Pending text must be in the visible timeline")
+                #if os(iOS)
+                // macOS reports a `.contain` container's frame as the union of
+                // its children (CI: x 358, 130 wide), not the row's full width,
+                // so only iPhone can check the row itself. The text inset below
+                // checks the left alignment on both.
                 XCTAssertEqual(pending.frame.minX, timeline.frame.minX, accuracy: 2)
                 XCTAssertEqual(pending.frame.width, timeline.frame.width, accuracy: 2)
+                #endif
                 XCTAssertEqual(text.frame.minX, timeline.frame.minX + 62, accuracy: 2,
                                "Pending text must share confirmed messages' 18 + 34 + 10 point inset")
                 #if os(iOS)
