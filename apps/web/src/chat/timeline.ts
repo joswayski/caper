@@ -168,9 +168,13 @@ export class ChatTimeline {
     if (!previous || (message.revision ?? 1) > (previous.revision ?? 1)) this.editUpdates.set(message.id, message);
     for (const collection of [this.byId, this.pinnedById, this.pinUpdates]) {
       const current = collection.get(message.id);
-      if (current) collection.set(message.id, mergeEditedContent(current, message));
+      if (!current) continue;
+      const updated = mergeEditedContent(current, message);
+      if (updated !== current) {
+        collection.set(message.id, updated);
+        if (collection === this.byId) this.sortedMessages = undefined;
+      }
     }
-    this.sortedMessages = undefined;
   }
 
   private withEdit(message: ChatMessage) {

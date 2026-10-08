@@ -113,6 +113,24 @@ test("edit event ordering uses editSeq, not creation seq, and rejects stale vers
   assert.equal(timeline.cursor, "2");
 });
 
+test("duplicate, stale and unloaded edits reuse the sorted visible snapshot", () => {
+  const timeline = new ChatTimeline();
+  const current = edit(root, 3, "4", "Current text");
+  timeline.reset([current.message], "4");
+  const snapshot = timeline.messages;
+  timeline.applyEvent(current);
+  assert.strictEqual(timeline.messages, snapshot, "duplicate delivery must not sort history again");
+  timeline.mergeEdit(edit(root, 2, "3", "Stale text").message);
+  assert.strictEqual(timeline.messages, snapshot, "stale HTTP acknowledgements change nothing visible");
+  timeline.applyEvent(edit({ ...root, id: "unloaded" }, 2, "5", "Hidden edit"));
+  assert.strictEqual(timeline.messages, snapshot, "unloaded edits only update their overlay");
+  assert.equal(timeline.cursor, "5");
+  timeline.mergeEdit(edit(root, 4, "6", "New visible text").message);
+  assert.notStrictEqual(timeline.messages, snapshot, "a real visible edit must invalidate the snapshot");
+  assert.equal(timeline.messages[0].content.text, "New visible text");
+  assert.equal(snapshot[0].content.text, "Current text", "past render snapshots stay immutable");
+});
+
 test("edit validators require matching channel/event revision and tolerate legacy messages", () => {
   assert.ok(isChatMessage(root));
   const event = edit(root, 2, "7", "Changed");

@@ -641,32 +641,57 @@ test("public watchPresence delivers scoped member states", (t) => {
   assert.deepEqual(received, [[{ userId: "one", status: "idle" }]]);
 });
 
-test("edited messages advance gateway handoff positions independently of original message sequence", (t) => {
-  const f = setup(t);
-  let cursor = "4";
-  const subscription = f.gateway.subscribe(
-    { kind: "chat", channelId: "room", after: cursor },
-    {
-      cursor: () => cursor,
-      event: (event) => {
-        const seq = (event as { seq?: string }).seq;
-        if (seq && BigInt(seq) > BigInt(cursor)) cursor = seq;
+for (const type of ["message.created", "message.reactions", "message.pin", "message.forward", "message.edited"]) {
+  test(`${type} advances gateway handoff positions using the event sequence`, (t) => {
+    const f = setup(t);
+    let cursor = "4";
+    const subscription = f.gateway.subscribe(
+      { kind: "chat", channelId: "room", after: cursor },
+      {
+        cursor: () => cursor,
+        event: (event) => {
+          const seq = (event as { seq?: string }).seq;
+          if (seq && BigInt(seq) > BigInt(cursor)) cursor = seq;
+        },
       },
-    },
+    );
+    t.onTestFinished(() => subscription.unsubscribe());
+    f.hello(0);
+    const id = f.subscribe(0).id;
+    f.sockets[0].frame({ type: "event", id, event: { type: "ready", cursor } });
+    f.sockets[0].frame({ type: "subscribed", id });
+    f.sockets[0].frame({ type: "migrating" });
+    f.hello(1);
+    const event = { type, channelId: "room", seq: "5", message: { seq: "1" } };
+    f.sockets[0].frame({ type: "event", id, event });
+    f.sockets[1].frame({ type: "event", id, event });
+    f.sockets[1].frame({ type: "event", id, event: { type: "ready", cursor: "5" } });
+    f.sockets[1].frame({ type: "subscribed", id });
+    assert.equal(f.sockets[1].closed, false, "ready checkpoint accounts for every durable event");
+    assert.equal(f.sockets[0].closed, true, "caught-up candidate replaces the original socket");
+    assert.equal(cursor, "5");
+
+    f.sockets[1].frame({ type: "event", id, event: { type: "message.created", seq: "6" } });
+    assert.equal(cursor, "6", "the next live message must not be mistaken for a replay gap");
+    assert.equal(f.sockets[1].closed, false);
+  });
+}
+
+test("forward updates reject replay gaps before delivering to the consumer", (t) => {
+  const f = setup(t);
+  const delivered: unknown[] = [];
+  const subscription = f.gateway.subscribe(
+    { kind: "chat", channelId: "room", after: "9007199254740992" },
+    { event: (event) => delivered.push(event) },
   );
+  void subscription.ready.catch(() => undefined);
   t.onTestFinished(() => subscription.unsubscribe());
   f.hello(0);
-  const id = f.subscribe(0).id;
-  f.sockets[0].frame({ type: "event", id, event: { type: "ready", cursor } });
-  f.sockets[0].frame({ type: "subscribed", id });
-  f.sockets[0].frame({ type: "migrating" });
-  f.hello(1);
-  const edit = { type: "message.edited", channelId: "room", seq: "5", message: { seq: "1", editSeq: "5" } };
-  f.sockets[0].frame({ type: "event", id, event: edit });
-  f.sockets[1].frame({ type: "event", id, event: edit });
-  f.sockets[1].frame({ type: "event", id, event: { type: "ready", cursor: "5" } });
-  f.sockets[1].frame({ type: "subscribed", id });
-  assert.equal(f.sockets[1].closed, false, "ready checkpoint accounts for the edit event");
-  assert.equal(f.sockets[0].closed, true, "caught-up candidate replaces the original socket");
-  assert.equal(cursor, "5");
+  f.sockets[0].frame({
+    type: "event",
+    id: subscription.id,
+    event: { type: "message.forward", seq: "9007199254740994" },
+  });
+  assert.equal(f.sockets[0].closed, true, "forward updates obey the same gap check as messages");
+  assert.deepEqual(delivered, []);
 });
