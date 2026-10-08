@@ -409,6 +409,7 @@ interface CallProps {
     spaceId?: string;
     demo?: boolean;
     direct?: boolean;
+    directPeerId?: string;
     joined?: boolean;
   };
   onReadCursor?: (seq: string) => void;
@@ -1561,6 +1562,7 @@ export default function Call({
             accountId={account?.id}
             identityReady={identityReady && engaged}
             direct={channel?.direct}
+            directPeerId={channel?.directPeerId}
             onReadCursor={onReadCursor}
             readOnly={!channelJoined}
             composerNotice={channelActions}

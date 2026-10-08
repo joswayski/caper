@@ -12,6 +12,35 @@ test("members start closed in the initial markup, before responsive hydration", 
   expect(markup).toContain('aria-label="Show member list" aria-expanded="false"');
 });
 
+test.each([
+  [true, "me", "me", "You can message yourself here to keep notes, reminders, and ideas."],
+  [true, "other", "me", "Only you and Same name can read this conversation."],
+  [true, undefined, undefined, "Only you and Same name can read this conversation."],
+  [false, "me", "me", "Start the conversation in #same name."],
+])("empty conversation copy uses account IDs, not display names: %j %j %j", (direct, directPeerId, accountId, copy) => {
+  const markup = renderToStaticMarkup(
+    <Call
+      initialAccount={accountId ? { id: accountId, username: "me", displayName: "Same name" } : undefined}
+      channel={{ id: "conversation", name: "Same name", spaceName: "Space", direct, directPeerId }}
+      initialHistory={{
+        space: { id: "space", name: "Space" },
+        channel: { id: "conversation", name: "Same name", direct },
+        cursor: "0",
+        hasMore: false,
+        messages: [],
+      }}
+    />,
+  );
+  expect(markup).toContain(copy);
+  if (direct && directPeerId === "me" && accountId === "me") {
+    expect(markup).not.toContain("No messages yet.");
+    expect(markup).not.toContain("Only you and");
+  } else {
+    expect(markup).toContain("No messages yet.");
+    expect(markup).not.toContain("You can message yourself here");
+  }
+});
+
 test("reaction ownership is correct in the first markup, before a chat session exists", () => {
   const history: GeneralChatHistory = {
     space: { id: "space", name: "Space" },
