@@ -713,6 +713,19 @@
 .chat-message-pending p {
   color: var(--text-muted);
 }
+.chat-mention {
+  padding: 0 2px;
+  border-radius: 4px;
+  background: rgb(182 77 50 / 24%);
+  color: var(--text);
+  font-weight: 600;
+}
+.chat-message-mentioned,
+.chat-message-mentioned:hover,
+.chat-message-mentioned:focus-within {
+  background: rgb(182 77 50 / 8%);
+  box-shadow: inset 2px 0 0 var(--terracotta);
+}
 .chat-send-status {
   display: flex;
   flex-wrap: wrap;
@@ -795,6 +808,32 @@
   padding: 10px;
   color: var(--text-muted);
   font-size: 0.8rem;
+}
+.chat-mention-suggestions small {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-mention-avatar {
+  display: grid;
+  flex: 0 0 24px;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  overflow: hidden;
+  border-radius: var(--radius-avatar);
+  font-style: normal;
+  font-size: 0.7rem;
+}
+.chat-mention-special {
+  background: var(--surface-composer);
+  color: var(--text);
+  font-weight: 700;
 }
 .chat-typing {
   display: flex;

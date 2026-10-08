@@ -29,6 +29,55 @@ data. This is not native keyboard/device coverage. Android and Apple tests requi
 their platform toolchains; physical touch/IME, software keyboard viewport changes
 and Windows rendering remain separate acceptance checks.
 
+Composers also suggest people after `@` on web, Android, Apple and Rust desktop.
+An `@` at the start of a draft, after whitespace or after an opening bracket
+starts a name of up to 32 ASCII letters, digits or underscores; emails such as
+`bob@maya.com` and `x/@maya` do not. Space channels suggest the open space's
+loaded members except you, then `@everyone` ("Everyone in this channel") and
+`@here` ("Everyone online in this channel"). DMs suggest everyone you share a
+space or DM with, from authenticated `GET /api/people` (`{"people":[{"id",
+"username","displayName","avatarId"}]}`, excluding you, at most 500), fetched when
+a DM opens; until it loads the DM peer is offered. Selecting inserts `@username `
+without sending; keys and limits match emoji. Anyone who can post may use `@everyone`/`@here`; permissions are deferred.
+
+On send, `chat::persist` resolves names inside the message transaction (shared
+grammar in `apps/api/src/mentions.rs`) to any non-deleted account with that
+username, in channels and DMs alike, so people can point each other at someone
+("that's @alex"). The message's `content.mentions` lists resolved
+users (`{"type":"user","id","username"}`) and, in space channels only,
+`{"type":"everyone"}` / `{"type":"here"}`, in first-appearance order with at most
+20 distinct names. Unresolved names stay plain text and the field is omitted when
+empty. `content.version` stays `1`; history, live gateway events and replay carry
+the same payload. Clients ignore unknown entry types, render resolved tokens as
+terracotta pills, and tint messages that mention the reader (their id, or
+`@everyone`/`@here` from someone else). `everyone` and `here` are reserved
+usernames. Tagging is not access: someone tagged in a conversation they cannot
+open still cannot read it, and future notifications go only to people who can read
+the conversation. Mention ids are the 12-character random account `external_id`,
+never the internal sequence key. Pills are not yet clickable. Mentions do not notify anyone yet; see
+[notifications.md](notifications.md).
+
+No migration, gateway, infrastructure or secret change is required. The API and
+clients deploy independently in either order: older clients ignore
+`content.mentions`, and newer clients render plain text from an older API. Rolling
+the API back only stops resolving new mentions. Validation:
+- API: unit grammar tests and a Postgres test of resolution (public and private
+  channels, a member without the private grant, a non-member, DMs naming third
+  parties, deleted and unknown accounts, history and outbox payloads) and of
+  `/api/people`, plus the full ignored Postgres/Valkey suite.
+- Web: unit tests, and a real Chromium check against the fixture at 1280px and
+  390px (suggestion order, Enter inserts without sending, Escape, no overlap with
+  emoji, pills, mentioned-row tint).
+- Fixture: `native-parity-fixture.mjs` resolves mentions on send like the API and
+  seeds one message mentioning `fixture_owner`.
+- Android: JVM unit tests and lint; no device, emulator or IME check.
+- Rust desktop: unit and headless egui tests, fmt, clippy and the full desktop
+  suite with the pinned toolchain, plus Linux Xvfb rendering of the
+  `parity-mentions` and `parity-direct` fixtures; no Windows or IME check.
+- Apple: the pure mention logic and its 13 tests ran with a Linux Swift toolchain;
+  SwiftUI/UIKit/AppKit code and the parity UI test need Apple CI. SwiftUI,
+  Android and egui inline pills are square-cornered background spans.
+
 Apple composer frames use their measured content height rather than filling the
 174-point maximum: channel/DM drafts start at 42 points; thread replies retain
 their 72-point minimum. Longer drafts grow and then scroll. iPhone parity tests
@@ -4699,25 +4748,29 @@ controls. `POST`/`DELETE /api/push/devices` are not exposed. DM persistence, unr
 cursors and live gateway events do not depend on push and continue unchanged.
 
 When mobile push is needed, implement direct APNs delivery for iOS and FCM HTTP v1
-delivery for Android. Provider credentials belong only in the server's secret
-store, never in client builds or source control. The native permission, token and
+delivery for Android. [notifications.md](notifications.md) holds the research and
+proposed design (preferences, transports and phases); it is not implemented.
+Provider credentials belong only in the server's secret store, never in client
+builds or source control. The native permission, token and
 tap handlers are dormant scaffolding, not working end-to-end notifications;
 Firebase build configuration and Apple push entitlements alone cannot enable them.
 Browser Web Push, macOS push and Rust desktop OS notifications are not implemented.
 
 Future work must include explicit opt-in, session-bound device ownership, token
 rotation/invalidation, logout/account switching, durable enqueue/retry/deduplication,
-and authenticated notification-tap navigation. Keep payloads limited to opaque
-conversation/message IDs and generic copy; do not send sender names or message
-text to providers. Provider acceptance does not prove device receipt, and already
+and authenticated notification-tap navigation. On October 6, 2026 the owner decided
+payloads may include the sender name and a truncated message preview, as Slack and
+Discord do; see [notifications.md](notifications.md#payload-content). Provider acceptance does not prove device receipt, and already
 submitted notifications cannot be recalled. Validate direct delivery on physical
 Android and signed iOS devices before advertising supported platforms.
 
 `202610030002_push.sql` and its tables remain only for published migration-history
 compatibility. The API no longer uses them to register devices or queue/deliver
-notifications, including previously queued rows. Do not edit applied migrations,
-drop existing data or reuse the legacy `endpoint_arn` column as a direct-provider
-token contract. Future direct delivery needs its own reviewed schema migration.
+notifications, including previously queued rows. Do not edit applied migrations or
+reuse the legacy `endpoint_arn` column as a direct-provider token contract. The
+owner approved dropping these unused tables in the future direct-delivery
+migration, together with their runtime grants. That migration needs the rollback
+caveat in [notifications.md](notifications.md#proposed-schema-new-migration-that-also-drops-the-legacy-push_-tables).
 
 ### Deployment order
 

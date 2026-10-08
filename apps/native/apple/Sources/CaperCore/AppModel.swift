@@ -14,6 +14,9 @@ public final class AppModel {
     public var selectedChannelID: String?
     public var directMessages: [DirectMessageConversation] = []
     public var selectedDirectMessageID: String?
+    /// `GET /api/people` for `@` suggestions in DMs; nil until the first load
+    /// succeeds. A refresh keeps the previous list until it completes.
+    public private(set) var people: [Person]?
     /// The main "Direct messages" list: accepted and outgoing conversations.
     public var visibleDirectMessages: [DirectMessageConversation] { MessageRequests.visible(directMessages) }
     /// Incoming message requests. They never count as unread or chime.
@@ -65,6 +68,7 @@ public final class AppModel {
     private var generation = 0
     private var navigationGeneration = 0
     private var voiceJoinGeneration = 0
+    private var peopleRequest = 0
     private var navigationCacheEpoch = 0
     private var navigationTarget: (space: Space, channelID: String?)?
     private struct PreparedNavigation {
@@ -209,7 +213,7 @@ public final class AppModel {
         voice.leaveImmediately()
         directMessageRefreshTask?.cancel(); directMessageRefreshTask = nil
         account = nil; spaces = []; invitations = []; pendingMembers = []; detail = nil
-        directMessages = []; selectedDirectMessageID = nil; showingMessageRequests = false
+        directMessages = []; selectedDirectMessageID = nil; people = nil; showingMessageRequests = false
         blockedAccounts = []; blockedIDs = []; blocksLoaded = false; blocksError = nil
         directMessagePrivacy = nil; privacyError = nil; chat.setBlockedAuthors([])
         spacesLoaded = false; spacesError = nil
@@ -293,6 +297,20 @@ public final class AppModel {
         }
     }
 
+    /// Refreshes DM `@` candidates. Failure is silent: suggestions keep the
+    /// last list, or fall back to the DM peer when none has loaded.
+    public func refreshPeople() async {
+        guard account != nil else { return }
+        let attempt = generation
+        peopleRequest += 1
+        let request = peopleRequest
+        do {
+            let loaded = try await api.people()
+            guard generation == attempt, peopleRequest == request, account != nil else { return }
+            people = loaded
+        } catch {}
+    }
+
     public func createDirectMessage(username: String) async -> Bool {
         let exact = username.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !exact.isEmpty, account != nil, !busy else { return false }
@@ -337,6 +355,7 @@ public final class AppModel {
             }
             selectedDirectMessageID = conversation.id; selectedChannelID = nil
             navigationOpen = false
+            Task { [weak self] in await self?.refreshPeople() }
             await presence.stop(); await voicePresence.stop()
             // An incoming request opens read-only: no chat session, no composer,
             // no read cursor and no chimes. Opening it never accepts it.

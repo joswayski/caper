@@ -37,6 +37,7 @@ import {
   createDirectConversation,
   declineDirectRequest,
   listDirectConversations,
+  listPeople,
   readDirectConversation,
   directStatus,
   directUnread,
@@ -60,6 +61,7 @@ import {
   type BlockedAccount,
   type Channel,
   type DirectConversation,
+  type Person,
   type ChannelInvitation,
   type Member,
   type Space,
@@ -1401,6 +1403,21 @@ export default function Spaces({
   const [blockTarget, setBlockTarget] = useState<BlockedAccount>();
   const blockedIds = useBlockedIds();
   const [directView, setDirectView] = useState<{ conversation: DirectConversation }>();
+  // DM `@` suggestions; the previous list stays while a refresh is in flight.
+  const [people, setPeople] = useState<Person[]>();
+  const directId = directView?.conversation.id;
+  useEffect(() => {
+    if (!directId) return;
+    let current = true;
+    void listPeople()
+      .then((result) => {
+        if (current) setPeople(result.people);
+      })
+      .catch(() => {});
+    return () => {
+      current = false;
+    };
+  }, [directId]);
   const detail =
     view?.detail ??
     (!spaces.length
@@ -2646,6 +2663,9 @@ export default function Spaces({
         initialHistory={!directView && view?.history?.channel.id === channel.id ? view.history : undefined}
         initialHistoryError={!directView && view?.channelId === channel.id ? view.historyError : undefined}
         onReadCursor={directView ? readDirect : undefined}
+        mentionMembers={
+          directView ? (people ?? [directView.conversation.peer]) : view?.detail ? detail.members : undefined
+        }
         onHistoryChange={navigation.current.rememberHistory}
         spaceRail={rail}
         channelNavigation={channelNavigation}

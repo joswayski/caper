@@ -25,6 +25,13 @@ export interface ChatReactionEvent {
   reactions: ChatReaction[];
 }
 
+/** Server-resolved `@mentions`; clients ignore unknown types. */
+export type ChatMention =
+  | { type: "user"; id: string; username: string }
+  | { type: "everyone" }
+  | { type: "here" }
+  | { type: string; id?: string; username?: string };
+
 export interface ChatPinEvent {
   type: "message.pin";
   schemaVersion: 1;
@@ -60,7 +67,7 @@ export interface ChatMessage {
   channelId: string;
   seq: string;
   author: ChatAuthor;
-  content: { version: 1; type: "text"; text: string };
+  content: { version: 1; type: "text"; text: string; mentions?: ChatMention[] };
   createdAt: string;
   clientMessageId: string;
   reactions?: ChatReaction[];

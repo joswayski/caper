@@ -49,6 +49,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
@@ -76,6 +78,7 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -1126,38 +1129,46 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             val catalog = remember { EmojiArtwork.catalog(context) }
             var dismissedAt by remember(channel.id) { mutableStateOf<TextFieldValue?>(null) }
             var composerFocused by remember(channel.id) { mutableStateOf(false) }
+            // `:` emoji and `@` mention tokens never overlap; both share one popup.
             val token = emojiToken(draft)
-            val suggestions = if (composerFocused && token != null && draft != dismissedAt) emojiSuggestions(catalog, token.query) else emptyList()
+            val mention = if (token == null) mentionToken(draft) else null
+            val open = composerFocused && draft != dismissedAt
+            val emojiRows = if (open && token != null) emojiSuggestions(catalog, token.query) else emptyList()
+            val mentionRows = if (open && mention != null) mentionSuggestions(mentionSource(state), mention.query) else emptyList()
+            val suggestionCount = emojiRows.size + mentionRows.size
             var selectedSuggestion by remember(channel.id) { mutableIntStateOf(0) }
-            LaunchedEffect(token) { selectedSuggestion = 0 }
+            LaunchedEffect(token, mention) { selectedSuggestion = 0 }
             val suggestionList = rememberLazyListState()
-            LaunchedEffect(selectedSuggestion, token) {
-                if (suggestions.isNotEmpty()) suggestionList.animateScrollToItem(selectedSuggestion.coerceAtMost(suggestions.lastIndex))
+            LaunchedEffect(selectedSuggestion, token, mention) {
+                if (suggestionCount > 0) suggestionList.animateScrollToItem(selectedSuggestion.coerceAtMost(suggestionCount - 1))
             }
-            fun chooseEmoji(index: Int): Boolean {
-                val currentToken = emojiToken(draft) ?: return false
-                val entry = suggestions.getOrNull(index) ?: return false
-                insertEmoji(draft, currentToken, entry.emoji)?.let { draft = it; dismissedAt = null; viewModel.reportActivity(); viewModel.setTyping(it.text.isNotBlank()) }
+            fun accept(next: TextFieldValue?) {
+                next?.let { draft = it; dismissedAt = null; viewModel.reportActivity(); viewModel.setTyping(it.text.isNotBlank()) }
+            }
+            fun chooseSuggestion(index: Int): Boolean {
+                emojiToken(draft)?.let { current ->
+                    val entry = emojiRows.getOrNull(index) ?: return false
+                    accept(insertEmoji(draft, current, entry.emoji))
+                    return true
+                }
+                val current = mentionToken(draft) ?: return false
+                val candidate = mentionRows.getOrNull(index) ?: return false
+                accept(insertMention(draft, current, candidate.username))
                 return true
             }
-            if (suggestions.isNotEmpty()) Surface(
+            if (suggestionCount > 0) Surface(
                 Modifier.widthIn(max = 260.dp).fillMaxWidth().padding(bottom = 6.dp), color = SurfaceRaised,
                 shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border),
             ) {
                 LazyColumn(Modifier.heightIn(max = 192.dp).padding(vertical = 4.dp), state = suggestionList) {
-                    itemsIndexed(suggestions, key = { _, entry -> entry.id }) { index, entry ->
-                        Row(
-                            Modifier.fillMaxWidth().heightIn(min = 48.dp)
-                                .background(if (index == selectedSuggestion) Terracotta.copy(alpha = 0.18f) else Color.Transparent)
-                                .clickable { selectedSuggestion = index; chooseEmoji(index) }
-                                .semantics { contentDescription = "Insert emoji ${emojiShortcodeLabel(entry.name)}" }
-                                .padding(horizontal = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
+                    itemsIndexed(emojiRows, key = { _, entry -> entry.id }) { index, entry ->
+                        SuggestionRow(index == selectedSuggestion, "Insert emoji ${emojiShortcodeLabel(entry.name)}", { selectedSuggestion = index; chooseSuggestion(index) }) {
                             EmojiImage(entry.emoji, null, Modifier.size(28.dp))
                             Text(emojiShortcodeLabel(entry.name), color = if (index == selectedSuggestion) Text else TextMuted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
+                    }
+                    itemsIndexed(mentionRows, key = { _, candidate -> "@${candidate.username}" }) { index, candidate ->
+                        MentionSuggestionRow(candidate, index == selectedSuggestion) { selectedSuggestion = index; chooseSuggestion(index) }
                     }
                 }
             }
@@ -1171,10 +1182,10 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         draft = limited; dismissedAt = null; viewModel.reportActivity(); viewModel.setTyping(limited.text.isNotBlank())
                     },
                     modifier = Modifier.weight(1f).onFocusChanged { composerFocused = it.isFocused }.onPreviewKeyEvent { event ->
-                        if (event.type != KeyEventType.KeyDown || suggestions.isEmpty()) false else when (event.key) {
-                            Key.DirectionDown -> { selectedSuggestion = (selectedSuggestion + 1) % suggestions.size; true }
-                            Key.DirectionUp -> { selectedSuggestion = (selectedSuggestion - 1 + suggestions.size) % suggestions.size; true }
-                            Key.Enter, Key.Tab -> if (event.isShiftPressed) false else chooseEmoji(selectedSuggestion.coerceAtMost(suggestions.lastIndex))
+                        if (event.type != KeyEventType.KeyDown || suggestionCount == 0) false else when (event.key) {
+                            Key.DirectionDown -> { selectedSuggestion = (selectedSuggestion + 1) % suggestionCount; true }
+                            Key.DirectionUp -> { selectedSuggestion = (selectedSuggestion - 1 + suggestionCount) % suggestionCount; true }
+                            Key.Enter, Key.Tab -> if (event.isShiftPressed) false else chooseSuggestion(selectedSuggestion.coerceAtMost(suggestionCount - 1))
                             Key.Escape -> { dismissedAt = draft; true }
                             else -> false
                         }
@@ -1182,7 +1193,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     enabled = !state.messagesLoading && state.messagesError == null,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(onSend = {
-                        if (suggestions.isNotEmpty()) { chooseEmoji(selectedSuggestion.coerceAtMost(suggestions.lastIndex)); return@KeyboardActions }
+                        if (suggestionCount > 0) { chooseSuggestion(selectedSuggestion.coerceAtMost(suggestionCount - 1)); return@KeyboardActions }
                         val pending = state.pendingMessage
                         // Web: Enter retries an unconfirmed send; a rejected one waits for Edit or Dismiss.
                         if (state.chatAuthorId != null) {
@@ -1204,6 +1215,33 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             }
             val count = draft.text.codePointCount(0, draft.text.length)
             if (count >= 3000) Text("${"%,d".format(java.util.Locale.US, count)} / 4,000", Modifier.align(Alignment.End), color = counterTone(count), fontSize = 10.sp)
+        }
+    }
+}
+
+/** One flat row of the composer's `:` emoji / `@` mention popup. */
+@Composable private fun SuggestionRow(selected: Boolean, description: String, choose: () -> Unit, content: @Composable RowScope.() -> Unit) = Row(
+    Modifier.fillMaxWidth().heightIn(min = 48.dp)
+        .background(if (selected) Terracotta.copy(alpha = 0.18f) else Color.Transparent)
+        .clickable(onClick = choose)
+        .semantics { contentDescription = description }
+        .padding(horizontal = 12.dp),
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(12.dp),
+    content = content,
+)
+
+/** A person (avatar, display name, muted `@username`) or a special (`@everyone`, muted description). */
+@Composable private fun MentionSuggestionRow(candidate: MentionCandidate, selected: Boolean, choose: () -> Unit) {
+    val primary = if (candidate.special) "@${candidate.username}" else candidate.label
+    val secondary = if (candidate.special) candidate.label else "@${candidate.username}"
+    SuggestionRow(selected, "Mention $primary, $secondary", choose) {
+        if (candidate.special) Box(Modifier.size(28.dp), contentAlignment = Alignment.Center) {
+            Icon(painterResource(R.drawable.lucide_users), null, Modifier.size(18.dp), tint = TextMuted)
+        } else Avatar(candidate.label, 28.dp, avatarId = candidate.avatarId)
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(primary, Modifier.weight(1f, fill = false), color = Text, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(secondary, Modifier.weight(1f, fill = false), color = TextMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -1444,7 +1482,12 @@ private fun timelineRows(entries: List<TimelineEntry>): List<TimelineRow> = buil
     val own = state.chatAuthorId ?: state.account?.id
     val canReact = state.canParticipate && own != null
     val saves = state.reactionSaves.filterKeys { it.startsWith("${message.id}:") }.values
-    Column(Modifier.background(if (message.pin != null) PinGoldWash else Color.Transparent)) {
+    // A message that mentions you: terracotta wash with a 2dp leading edge (over a pinned message's gold wash).
+    val mentioned = mentionsMe(message.content.mentions, message.author.id, state.account?.id ?: state.chatAuthorId)
+    Column(Modifier.background(if (message.pin != null) PinGoldWash else Color.Transparent).then(if (!mentioned) Modifier else Modifier.background(Terracotta.copy(alpha = 0.08f)).drawBehind {
+        val edge = 2.dp.toPx()
+        drawRect(Terracotta, topLeft = Offset(if (layoutDirection == LayoutDirection.Rtl) size.width - edge else 0f, 0f), size = Size(edge, size.height))
+    })) {
         message.pin?.let { pin ->
             Text("Pinned by ${pin.author.name}", Modifier.padding(start = 62.dp, end = 18.dp, top = 6.dp), color = PinGold, fontSize = 10.sp, fontWeight = FontWeight.Bold)
         }
@@ -1628,8 +1671,14 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
         }
     }
 }
-@Composable private fun MessageRow(message: ChatMessage, openHistory: () -> Unit = {}) = MessageRow(message.author.name, message.author.isGuest, message.createdAt, message.content.text, false, message.author.avatarId, message.forward == null && message.revision > 1, openHistory)
-@Composable private fun MessageRow(author: String, guest: Boolean, createdAt: String, text: String, pending: Boolean, avatarId: Int? = null, edited: Boolean = false, openHistory: () -> Unit = {}) {
+@Composable private fun MessageRow(message: ChatMessage, openHistory: () -> Unit = {}) = MessageRow(
+    message.author.name, message.author.isGuest, message.createdAt, message.content.text, false, message.author.avatarId,
+    message.forward == null && message.revision > 1, openHistory, highlightedMentions(message.content.text, message.content.mentions),
+)
+@Composable private fun MessageRow(
+    author: String, guest: Boolean, createdAt: String, text: String, pending: Boolean, avatarId: Int? = null,
+    edited: Boolean = false, openHistory: () -> Unit = {}, mentions: List<MentionSpan> = emptyList(),
+) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp)) {
         Avatar(author, 34.dp, avatarId = avatarId)
         Spacer(Modifier.width(10.dp))
@@ -1640,9 +1689,19 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                 Spacer(Modifier.width(7.dp)); Text(timeLabel(createdAt), color = TextMuted, fontSize = 10.sp)
                 if (edited) { Spacer(Modifier.width(7.dp)); Text("(edited)", Modifier.clickable(onClickLabel = "View edit history", onClick = openHistory), color = TextMuted, fontSize = 10.sp) }
             }
-            Text(text, color = if (pending) TextMuted else MessageText, fontSize = 14.sp, lineHeight = 21.sp)
+            if (mentions.isEmpty()) Text(text, color = if (pending) TextMuted else MessageText, fontSize = 14.sp, lineHeight = 21.sp)
+            else Text(remember(text, mentions) { mentionText(text, mentions) }, color = if (pending) TextMuted else MessageText, fontSize = 14.sp, lineHeight = 21.sp)
         }
     }
+}
+
+/**
+ * Resolved mentions as pills: text #F3F4F5, one weight step bolder, terracotta at 24%.
+ * `SpanStyle` backgrounds cannot round corners or pad, so Android pills are square-edged.
+ */
+internal fun mentionText(text: String, mentions: List<MentionSpan>) = buildAnnotatedString {
+    append(text)
+    mentions.forEach { addStyle(SpanStyle(color = Text, fontWeight = FontWeight.Medium, background = Terracotta.copy(alpha = 0.24f)), it.start, it.end) }
 }
 
 @Composable private fun TypingLine(authors: List<ChatAuthor>) {

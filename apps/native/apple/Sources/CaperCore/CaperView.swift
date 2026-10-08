@@ -1531,7 +1531,7 @@ private struct ChatView: View {
             reactorsTarget = ReactorsTarget(messageID: messageID, emoji: emoji)
         }
     }
-    @StateObject private var emojiComposer = EmojiComposerController()
+    @StateObject private var composerAutocomplete = ComposerAutocompleteController()
     @State private var showingPins = false
     /// Block confirmation, from the DM header, the request bar or message actions.
     @State private var blockTarget: BlockTarget?
@@ -1546,7 +1546,7 @@ private struct ChatView: View {
         BlockedMessages.entries(chat.channelMessages, blocked: chat.blockedAuthorIDs, viewerID: viewerID, revealed: revealedBlocked)
     }
     private func channelRow(_ message: ChatMessage) -> some View {
-        MessageRow(message: message, chat: chat, reactors: reactorContext, requestBlock: { blockTarget = BlockTarget(author: $0) }) {
+        MessageRow(message: message, chat: chat, currentUserID: viewerID, reactors: reactorContext, requestBlock: { blockTarget = BlockTarget(author: $0) }) {
             // Holding a chip opens who reacted, not message actions.
             guard reactorsTarget == nil else { return }
             showingEmojiPicker = false
@@ -1589,14 +1589,14 @@ private struct ChatView: View {
         #if os(iOS)
         HStack(spacing: 0) {
             channelBody
-            if !narrow, chat.threadRootID != nil { NativeThreadView(chat: chat).frame(width: 340) }
+            if !narrow, chat.threadRootID != nil { NativeThreadView(chat: chat, viewerID: viewerID, mentions: mentionSource).frame(width: 340) }
         }.fullScreenCover(isPresented: Binding(get: { narrow && chat.threadRootID != nil }, set: { if !$0 { chat.closeThread() } })) {
-            NativeThreadView(chat: chat)
+            NativeThreadView(chat: chat, viewerID: viewerID, mentions: mentionSource)
         }
         #else
         HStack(spacing: 0) {
             if !narrow || chat.threadRootID == nil { channelBody }
-            if chat.threadRootID != nil { NativeThreadView(chat: chat).frame(maxWidth: narrow ? .infinity : 380) }
+            if chat.threadRootID != nil { NativeThreadView(chat: chat, viewerID: viewerID, mentions: mentionSource).frame(maxWidth: narrow ? .infinity : 380) }
         }
         #endif
         }
@@ -1810,14 +1810,15 @@ private struct ChatView: View {
                     if let root = chat.pendingMessage?.threadRootId {
                         Button("Pending reply · Open thread") { Task { await chat.openThread(root) } }.font(CaperTheme.font(11))
                     }
-                    EmojiSuggestionsView(controller: emojiComposer)
+                    ComposerSuggestionsView(controller: composerAutocomplete)
                     ZStack(alignment: .topLeading) {
                         if chat.draft.isEmpty {
                             Text("Message #\(chat.channelName.lowercased())").font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
                                 .padding(.leading, 11).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
                         }
                         NativeMessageComposer(text: $chat.draft, placeholder: "Message #\(chat.channelName.lowercased())",
-                                              controller: emojiComposer, submit: { Task { await chat.send() } })
+                                              controller: composerAutocomplete, mentions: mentionSource,
+                                              submit: { Task { await chat.send() } })
                     }
                     .frame(minHeight: 42, maxHeight: 174)
                     // The flexible frame otherwise fills its proposal up to 174,
@@ -1924,6 +1925,16 @@ private struct ChatView: View {
                 showConnectionStatus = true
             }
     }
+    /// `@` suggestions: the open space's members as `GET /api/spaces/{space}`
+    /// returned them (only the specials until loaded), or in a DM everyone from
+    /// `GET /api/people` (the DM's other participant until that loads). The
+    /// signed-in account is never suggested.
+    private var mentionSource: MentionSource {
+        if let id = model.selectedDirectMessageID {
+            return .direct(peer: model.directMessages.first { $0.id == id }?.peer, people: model.people, accountID: viewerID)
+        }
+        return .space(members: model.detail?.members ?? [], excluding: viewerID)
+    }
     /// Web's counter tones at 3500 / 3750 / 3900 characters.
     private var counterTone: Color {
         let count = chat.draft.unicodeScalars.count
@@ -1941,7 +1952,11 @@ private struct ChatView: View {
 
 private struct NativeThreadView: View {
     @Bindable var chat: ChatModel
-    @StateObject private var emojiComposer = EmojiComposerController()
+    /// The signed-in person, for the mentions-me tint on replies.
+    let viewerID: String?
+    /// The conversation's `@` candidates, shared with the main composer.
+    let mentions: MentionSource
+    @StateObject private var composerAutocomplete = ComposerAutocompleteController()
     @State private var reactionMessage: ChatMessage?
     @State private var showingEmojiPicker = false
     @State private var reactorsTarget: ReactorsTarget?
@@ -1951,7 +1966,7 @@ private struct NativeThreadView: View {
         BlockedMessages.entries(messages, blocked: chat.blockedAuthorIDs, viewerID: chat.viewerID, revealed: revealedBlocked)
     }
     private func threadRow(_ message: ChatMessage) -> some View {
-        MessageRow(message: message, chat: chat, reactors: reactors, inThread: true,
+        MessageRow(message: message, chat: chat, currentUserID: viewerID, reactors: reactors, inThread: true,
                    requestBlock: { blockTarget = BlockTarget(author: $0) }) { reactionMessage = message }
     }
     /// The root and replies collapse like the channel: blocked runs show "Show".
@@ -2005,8 +2020,9 @@ private struct NativeThreadView: View {
             else { VStack(alignment: .leading, spacing: 8) {
                 if let error = chat.error, chat.pendingMessage == nil { Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.terracottaBright) }
                 if let error = chat.sessionError { Text(error); Button("Retry session") { Task { await chat.retrySession() } } }
-                EmojiSuggestionsView(controller: emojiComposer)
-                NativeMessageComposer(text: $chat.threadDraft, placeholder: "Reply to thread…", controller: emojiComposer, submit: { Task { await chat.send(inThread: true) } })
+                ComposerSuggestionsView(controller: composerAutocomplete)
+                NativeMessageComposer(text: $chat.threadDraft, placeholder: "Reply to thread…", controller: composerAutocomplete,
+                                      mentions: mentions, submit: { Task { await chat.send(inThread: true) } })
                     .frame(minHeight: 72, maxHeight: 174)
                     .fixedSize(horizontal: false, vertical: true)
                     .background(CaperTheme.composer)
@@ -2127,6 +2143,7 @@ struct ChatDateDivider: View {
 private struct MessageRow: View {
     let message: ChatMessage
     @Bindable var chat: ChatModel
+    let currentUserID: String?
     let reactors: ReactorContext
     var inThread = false
     /// Asks the containing view to confirm blocking this message's author.
@@ -2144,6 +2161,7 @@ private struct MessageRow: View {
     @FocusState private var actionsFocused: Bool
     #endif
     var body: some View {
+        let mentionsMe = MentionAutocomplete.mentionsCurrentUser(message, currentUserID: currentUserID)
         let row = VStack(alignment: .leading, spacing: 5) {
             if let pin = message.pin {
                 Label("Pinned by \(pin.author.name)", systemImage: "pin.fill")
@@ -2166,7 +2184,7 @@ private struct MessageRow: View {
                 #if os(macOS)
                 .padding(.trailing, 56)
                 #endif
-                Text(message.content.text).font(CaperTheme.font(14)).foregroundStyle(Color(red: 222/255, green: 223/255, blue: 224/255))
+                messageText.font(CaperTheme.font(14)).foregroundStyle(Color(red: 222/255, green: 223/255, blue: 224/255))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     #if os(macOS)
                     .textSelection(.enabled)
@@ -2200,7 +2218,12 @@ private struct MessageRow: View {
             }
             }
         }.padding(.horizontal, 18).padding(.vertical, 10)
-            .background(!inThread && chat.threadRootID == message.id ? CaperTheme.pinGold.opacity(0.1) : message.pin == nil ? .clear : CaperTheme.pinGold.opacity(0.06))
+            // The open thread's root, then a message that mentions the signed-in
+            // account (8% terracotta with a 2pt terracotta leading edge), then a pin.
+            .background(rowBackground(mentionsMe: mentionsMe))
+            .overlay(alignment: .leading) {
+                if mentionsMe { Rectangle().fill(CaperTheme.terracotta).frame(width: 2).accessibilityHidden(true) }
+            }
             // An identifier on a plain container is copied onto every child,
             // replacing their own (add-reaction-…, reaction chips). Make the
             // row a containing element so children keep their identifiers.
@@ -2277,6 +2300,31 @@ private struct MessageRow: View {
                 }
             }
         #endif
+    }
+    private func rowBackground(mentionsMe: Bool) -> Color {
+        if !inThread && chat.threadRootID == message.id { return CaperTheme.pinGold.opacity(0.1) }
+        if mentionsMe { return CaperTheme.terracotta.opacity(0.08) }
+        return message.pin == nil ? .clear : CaperTheme.pinGold.opacity(0.06)
+    }
+    /// Resolved `@mention` tokens render as pills: #F3F4F5 medium text on 24%
+    /// terracotta. SwiftUI `Text` styles an inline run's background but cannot
+    /// pad or round it, so the pill is a square-cornered span tight to its
+    /// glyphs (spec: 2pt padding, 4pt corners). Unresolved names stay plain.
+    private var messageText: Text {
+        let content = message.content
+        let segments = MentionAutocomplete.segments(in: content.text, mentions: content.mentions)
+        guard segments.contains(where: { $0.highlighted }) else { return Text(content.text) }
+        var attributed = AttributedString()
+        for segment in segments {
+            var part = AttributedString(segment.text)
+            if segment.highlighted {
+                part.font = CaperTheme.font(14, weight: .medium)
+                part.foregroundColor = CaperTheme.text
+                part.backgroundColor = CaperTheme.terracotta.opacity(0.24)
+            }
+            attributed.append(part)
+        }
+        return Text(attributed)
     }
     private func timeLabel(_ value: String) -> String {
         let fractional = ISO8601DateFormatter()

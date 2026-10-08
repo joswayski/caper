@@ -44,6 +44,7 @@ class CaperApi(
     suspend fun spaces(token: String): SpaceList = get("/api/spaces", token)
     suspend fun space(token: String, id: String): SpaceDetail = get("/api/spaces/${id.pathId()}", token)
     suspend fun directConversations(token: String): DirectConversationList = get("/api/dms", token)
+    suspend fun people(token: String): PeopleList = get("/api/people", token)
     suspend fun startDirectConversation(token: String, username: String): DirectConversation = post(
         "/api/dms", buildJsonObject { put("username", username.trim()) }, token,
     )

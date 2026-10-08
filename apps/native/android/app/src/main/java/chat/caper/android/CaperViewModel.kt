@@ -53,6 +53,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private val pinWorkers = mutableMapOf<String, Job>()
     private var reactionIntentVersion = 0L
     private var directRefresh: Job? = null
+    private var peopleRefresh: Job? = null
     private var pendingDirectIntent: String? = null
     private var foreground = false
     private var threadRequest = 0L
@@ -157,6 +158,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         chatToken = null
         chatAuthor = null
         directRefresh?.cancel(); directRefresh = null
+        peopleRefresh?.cancel(); peopleRefresh = null
         tokens.clear()
         if (token != null) {
             viewModelScope.launch { PushRegistration.disable(getApplication(), token) }
@@ -240,6 +242,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         closeChannel(clearPending = true)
         val channel = Channel(conversation.id, "", conversation.peer.displayName, private = true, direct = true)
         mutable.value = mutable.value.copy(selectedChannel = channel, selectedDirectId = conversation.id, messages = emptyList(), busy = true, error = null, messagesLoading = true)
+        refreshPeople()
         viewModelScope.launch {
             try {
                 val history = api.history(requireAccountToken(), conversation.id)
@@ -268,6 +271,18 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val account = mutable.value.account ?: return
         mutable.value.directConversations.firstOrNull { it.peer.id == account.id }?.let(::selectDirect)
             ?: account.username?.let { startDirect(it) }
+    }
+
+    /** Refreshes DM mention candidates; the previous list (or the DM peer) stays until it succeeds. */
+    private fun refreshPeople() {
+        val token = accountToken ?: return
+        val request = accountGeneration
+        peopleRefresh?.cancel()
+        peopleRefresh = viewModelScope.launch {
+            runCatching { api.people(token) }.onSuccess { result ->
+                if (request == accountGeneration) mutable.value = mutable.value.copy(people = result.people)
+            }
+        }
     }
 
     fun refreshDirectConversations() {

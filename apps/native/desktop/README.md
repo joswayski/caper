@@ -38,6 +38,16 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
 - Global two-person direct messages, including exact-username conversation
   creation, unread state, account-wide read cursors, paging, typing, retry, and gateway
   replay. Desktop does not provide OS push notifications in this stage.
+- The channel/DM composer suggests after `:` (emoji) and `@` (people) in one
+  popup; the thread reply box and message editor do not yet. Space channels
+  offer the open space's loaded members except you, then `@everyone`/`@here`.
+  DMs, self-notes included, offer the people you share a space or DM with
+  (`GET /api/people`, fetched when a DM opens); until that loads, only the
+  other participant. Names the API resolved in
+  `content.mentions` render as pills: egui background spans with square corners
+  rather than 4px rounded ones, including in thread replies and edited messages.
+  Messages that mention you get a terracotta tint with a 2px leading edge.
+  Mentions do not notify anyone.
 - Message requests: a DM from someone you share no space with waits under
   "Message requests" (with a count, never unread dots or sounds) and opens
   read-only with Accept, Decline or Block; your own pending requests say
@@ -257,6 +267,8 @@ speaking rings for you and Maya.
 the voice dock and Audio test dialog without starting capture or a transport.
 `parity-direct` and `parity-direct-new` preview a two-person DM and its
 exact-username dialog without a live account or notification provider.
+`parity-mentions` previews mention pills, an unresolved `@name`, and rows that
+mention you; type `@` in its composer for space suggestions.
 `parity-direct-no-spaces` previews the first-space page's Direct messages entry
 and the global list without any space membership.
 `parity-requests` previews an open incoming request and the requests list;
