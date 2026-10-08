@@ -1,0 +1,22 @@
+[project]
+name = "caper-tooling"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = ["ruff==0.16.10"]
+publish = ["pyjwt[crypto]==2.10.1"]
+dmg = ["dmgbuild==1.6.7; sys_platform == 'darwin'"]
+audio = ["onnx==1.23.2"]
+
+[tool.uv]
+package = false
+required-version = "==0.12.23"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

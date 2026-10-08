@@ -36,19 +36,29 @@ def access_token(account: dict) -> str:
         algorithm="RS256",
         headers={"kid": account.get("private_key_id")},
     )
-    form = urllib.parse.urlencode({
-        "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion": assertion,
-    }).encode()
+    form = urllib.parse.urlencode(
+        {
+            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "assertion": assertion,
+        }
+    ).encode()
     with urllib.request.urlopen(urllib.request.Request(account["token_uri"], data=form), timeout=60) as response:
         return json.load(response)["access_token"]
 
 
-def call(token: str, method: str, url: str, body: dict | bytes | None = None,
-         content_type: str = "application/json") -> tuple[int, dict]:
+def call(
+    token: str, method: str, url: str, body: dict | bytes | None = None, content_type: str = "application/json"
+) -> tuple[int, dict]:
     data = body if isinstance(body, bytes) else (json.dumps(body).encode() if body is not None else None)
-    request = urllib.request.Request(url, data=data, method=method, headers={
-        "Authorization": f"Bearer {token}", "Content-Type": content_type,
-    })
+    request = urllib.request.Request(
+        url,
+        data=data,
+        method=method,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": content_type,
+        },
+    )
     try:
         with urllib.request.urlopen(request, timeout=600) as response:
             raw = response.read()
@@ -82,10 +92,16 @@ def main() -> None:
     token = access_token(account)
     edit = must(call(token, "POST", f"{API}/{package}/edits", {}), "Starting a Play edit")["id"]
     with open(bundle, "rb") as file:
-        uploaded = must(call(
-            token, "POST", f"{UPLOAD}/{package}/edits/{edit}/bundles?uploadType=media",
-            file.read(), "application/octet-stream",
-        ), "Uploading the bundle")
+        uploaded = must(
+            call(
+                token,
+                "POST",
+                f"{UPLOAD}/{package}/edits/{edit}/bundles?uploadType=media",
+                file.read(),
+                "application/octet-stream",
+            ),
+            "Uploading the bundle",
+        )
     version_code = str(uploaded["versionCode"])
     print(f"Uploaded {bundle} as version code {version_code}")
 

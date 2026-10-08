@@ -36,14 +36,21 @@ class ArtifactTests(unittest.TestCase):
         self.assertEqual(manifest["distribution"], "not-distribution-signed")
         self.assertFalse(manifest["featureParityVerified"])
         self.assertFalse(manifest["nativeVoiceVerified"])
-        self.assertEqual(manifest["packages"], [
-            {"name": "Caper-windows-x64-Setup.exe", "bytes": 3, "sha256": digest},
-            {"name": "Caper-windows-x64.zip", "bytes": 3, "sha256": digest}
-        ])
-        self.assertEqual((self.destination / "SHA256SUMS").read_text(),
-                         f"{digest}  Caper-windows-x64-Setup.exe\n{digest}  Caper-windows-x64.zip\n")
-        self.assertEqual({p.name for p in self.destination.iterdir()},
-                         {"Caper-windows-x64-Setup.exe", "Caper-windows-x64.zip", "BUILD.json", "SHA256SUMS"})
+        self.assertEqual(
+            manifest["packages"],
+            [
+                {"name": "Caper-windows-x64-Setup.exe", "bytes": 3, "sha256": digest},
+                {"name": "Caper-windows-x64.zip", "bytes": 3, "sha256": digest},
+            ],
+        )
+        self.assertEqual(
+            (self.destination / "SHA256SUMS").read_text(),
+            f"{digest}  Caper-windows-x64-Setup.exe\n{digest}  Caper-windows-x64.zip\n",
+        )
+        self.assertEqual(
+            {p.name for p in self.destination.iterdir()},
+            {"Caper-windows-x64-Setup.exe", "Caper-windows-x64.zip", "BUILD.json", "SHA256SUMS"},
+        )
         self.assertEqual((self.destination / "Caper-windows-x64.zip").read_bytes(), b"abc")
 
     def test_windows_requires_installer_and_update_archive(self):
@@ -83,11 +90,9 @@ class ArtifactTests(unittest.TestCase):
             self.stage()
 
     def test_mobile_distribution_labels_are_not_interchangeable(self):
-        for target, distribution in [
-            ("ios-simulator-arm64", "simulator-only"), ("android-debug", "debug-signed")
-        ]:
+        for target, distribution in [("ios-simulator-arm64", "simulator-only"), ("android-debug", "debug-signed")]:
             with self.subTest(target=target):
-                name, = artifacts.PACKAGES[target]
+                (name,) = artifacts.PACKAGES[target]
                 (self.source / name).write_bytes(b"abc")
                 output = self.root / target
                 artifacts.stage(target, self.revision, self.source, output)

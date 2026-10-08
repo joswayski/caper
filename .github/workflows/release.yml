@@ -76,6 +76,18 @@ jobs:
           git merge-base --is-ancestor "$sha" "$GITHUB_SHA" || { echo "$sha is not on main." >&2; exit 1; }
           echo "sha=$sha" >>"$GITHUB_OUTPUT"
           echo "Releasing $sha"
+      # Release tooling belongs to this workflow revision, not the chosen app
+      # revision: rebuilding an older commit must not require it to have uv.lock.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-tooling
+          path: |
+            pyproject.toml
+            uv.lock
+            .python-version
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
       - uses: aws-actions/configure-aws-credentials@v6.2.3
         with:
           role-to-assume: ${{ env.RELEASE_SIGNER_ROLE }}
@@ -123,8 +135,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-tooling
+          path: ${{ runner.temp }}/python-tooling
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          working-directory: ${{ runner.temp }}/python-tooling
       - name: Install the headless disk-image builder
-        run: python3 -m pip install dmgbuild==1.6.7
+        run: uv sync --project "$RUNNER_TEMP/python-tooling" --locked --only-group dmg
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -180,7 +199,7 @@ jobs:
       - name: Build and test
         run: bash apps/native/apple/build.sh macos
       - name: Sign with Developer ID, notarize and staple
-        run: bash apps/native/apple/sign-and-notarize.sh "${{ matrix.label }}"
+        run: uv run --project "$RUNNER_TEMP/python-tooling" --locked --only-group dmg bash apps/native/apple/sign-and-notarize.sh "${{ matrix.label }}"
       - uses: actions/upload-artifact@v4
         with:
           name: release-macos-${{ matrix.label }}
@@ -244,6 +263,13 @@ jobs:
           # Unique and increasing across runs and re-runs, e.g. 12.1 then 12.2.
           BUILD_NUMBER: ${{ github.run_number }}.${{ github.run_attempt }}
         run: bash apps/native/apple/upload-testflight.sh
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-tooling
+          path: ${{ runner.temp }}/python-tooling
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          working-directory: ${{ runner.temp }}/python-tooling
       - name: Give the build to every TestFlight tester group
         env:
           BUILD_NUMBER: ${{ github.run_number }}.${{ github.run_attempt }}
@@ -251,9 +277,8 @@ jobs:
           RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
         run: |
           set -euo pipefail
-          python -m pip install --quiet 'pyjwt[crypto]==2.10.1'
           export WHAT_TO_TEST="$(bash scripts/release-notes.sh "$RELEASE_SHA")"
-          python scripts/testflight-distribute.py
+          uv run --project "$RUNNER_TEMP/python-tooling" --locked --only-group publish python scripts/testflight-distribute.py
       - name: Remove signing material
         if: always()
         run: rm -f "$RUNNER_TEMP/asc.p8" "$RUNNER_TEMP/apple.json"
@@ -348,6 +373,15 @@ jobs:
           path: apps/native/android/play/Caper-Android-Play.aab
           if-no-files-found: error
           retention-days: 30
+      - uses: actions/download-artifact@v4
+        if: env.GOOGLE_PLAY_SERVICE_ACCOUNT != ''
+        with:
+          name: python-tooling
+          path: ${{ runner.temp }}/python-tooling
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        if: env.GOOGLE_PLAY_SERVICE_ACCOUNT != ''
+        with:
+          working-directory: ${{ runner.temp }}/python-tooling
       - name: Roll out to Google Play internal testers
         if: env.GOOGLE_PLAY_SERVICE_ACCOUNT != ''
         env:
@@ -355,10 +389,9 @@ jobs:
           RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
         run: |
           set -euo pipefail
-          python -m pip install --quiet 'pyjwt[crypto]==2.10.1'
           export PLAY_RELEASE_NAME="0.1.${CAPER_BUILD_NUMBER}"
           export PLAY_RELEASE_NOTES="$(bash scripts/release-notes.sh "$RELEASE_SHA")"
-          python scripts/play-upload.py apps/native/android/play/Caper-Android-Play.aab
+          uv run --project "$RUNNER_TEMP/python-tooling" --locked --only-group publish python scripts/play-upload.py apps/native/android/play/Caper-Android-Play.aab
       - name: Remove signing material
         if: always()
         run: rm -f "$RUNNER_TEMP/caper-release.jks" "$RUNNER_TEMP/android.json" "$RUNNER_TEMP/play.json"

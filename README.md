@@ -99,6 +99,25 @@ formatting also leaves versioned public assets untouched to preserve immutable
 cache URLs. Lint permits side-effect ternaries and object-rest omission;
 test mocks may retain their constructed instances via `this` aliases.
 
+Python tooling uses [uv](https://docs.astral.sh/uv/getting-started/installation/)
+0.12.23 and Ruff. `uv sync --locked` creates an isolated environment using the
+existing Python 3.12 CI version; it installs only development checks by default.
+
+```bash
+uv sync --locked
+uv run --locked ruff check .
+uv run --locked ruff format --check .  # Omit --check to format Python
+uv run --locked python -m unittest discover -s tests -p 'test_*.py' -v
+uv run --locked python shared/fonts/test_native_fonts.py -v
+```
+
+The `publish`, `dmg`, and `audio` dependency groups separately lock store-upload,
+Mac disk-image, and offline ONNX-authoring tools. CI selects only the group each
+job needs; it no longer installs Python dependencies into the runner's global
+environment. Dependency-free scripts can still run directly with Python 3.11+.
+Native releases carry the workflow revision's Python tooling separately, so
+rebuilding historical app source does not require that source to contain a lockfile.
+
 ## Repository
 
 - [apps/web](apps/web) — TanStack Start web app

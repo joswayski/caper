@@ -59,13 +59,16 @@ Each command first runs the macOS XCTest suite. Outputs are ignored and credenti
 
 The script verifies app/framework architectures, embedded WebRTC, runpaths/signature on macOS, and embedded font/WebRTC license resources. Bundle IDs default to `chat.caper.macos` and `chat.caper.ios` and may be overridden with `CAPER_MACOS_BUNDLE_ID` / `CAPER_IOS_BUNDLE_ID`.
 
-Signed Mac releases additionally use `dmgbuild==1.6.7` (installed by the release
-workflow) to create the standard app → Applications Finder window without GUI
+Signed Mac releases additionally use `dmgbuild==1.6.7` (locked in the `dmg`
+dependency group) to create the standard app → Applications Finder window without GUI
 automation. `sign-and-notarize.sh` notarizes/staples the app first, preserves the
 ZIP self-update payload, then signs, notarizes, staples and assesses the DMG.
+From the repository root, run it through
+`uv run --locked --only-group dmg bash apps/native/apple/sign-and-notarize.sh <label>`
+with the existing signing environment; this supplies dmgbuild without a global pip install.
 No additional signing identity or production configuration is required.
 Both Mac development jobs also build/mount a disposable fixture DMG using
-`python3 -m unittest discover -s tests -p test_apple_release_signing.py -v`;
+`uv run --locked --only-group dmg python -m unittest discover -s tests -p test_apple_release_signing.py -v`;
 the test skips the real disk-image check on non-Mac hosts. XCTest covers release
 installation eligibility and the existing parity suite covers development startup.
 Actual Finder layout, downloaded-app Gatekeeper behavior, the install prompt,
