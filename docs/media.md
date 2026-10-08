@@ -1683,6 +1683,15 @@ their retained history. Individual message deletion is not implemented.
 
 - `GET /api/chat/forward-destinations` returns writable joined channels and existing
   DMs for the signed-in account.
+- Web, Android, Apple and Rust desktop pickers support selecting multiple
+  destinations. Search matches case-insensitive words across space and channel/DM
+  names in either order (including `#channel`); filtering keeps hidden selections.
+  Each row keeps the space subtitle directly below its channel/DM name.
+  Clients send sequentially with a separate UUID per destination. Confirmed
+  destinations leave the selection; an ambiguous failure freezes the remaining
+  keys and note for retry. A definitive rejection unlocks only the remaining
+  selection/note. This is not an atomic batch: earlier confirmed forwards remain
+  delivered if a later destination fails or the picker is closed.
 - `POST /api/chat/channels/{destination}/forwards` uses `X-Caper-Chat-Token` and
   `{sourceChannelId,sourceMessageId,clientMessageId,text?}`. The source must be
   readable and the destination writable. Same-session retries reuse the exact
@@ -1716,9 +1725,9 @@ independently from reactions, pins and destination thread summaries.
 | Platform | Evidence and remaining gap |
 | --- | --- |
 | API | Workspace tests/Clippy plus disposable Postgres/Valkey checks: private cross-space/DM reads, canonical re-forwarding, authorization denial/revocation, stable retry/conflict, 54-reply pagination, separate destination thread, real edit handler, wrapper edit rejection, source-version denial, real outbox Pub/Sub and replay deduplication. The existing editing database regression also passes |
-| Web | Production build, 387 unit tests, 15 fixture tests and both `scripts/test-message-forwarding.mjs` and `scripts/test-message-edits.mjs`: lost response after commit/retry, destination-only live edit/reaction/future reply, read-only original/wrapper controls, independent destination reply, editing/history regression and inspected 2x desktop/narrow/retry captures. Chromium narrow layout is not Safari, a physical phone or native acceptance |
-| Rust desktop | Full libwebrtc-linked Linux build/tests and package Clippy; 224 tests pass, 9 existing opt-in tests ignored, including wrapper-author edit/history rejection. Native picker/card/read-only conversation implemented. Disposable HTTP fixture rendering is separate from production/Windows/device acceptance |
-| Android | Compose picker/card/read-only view, protocol/gateway/merge and regression tests implemented. JDK/Android SDK unavailable in this orb; compilation, native rendering and device checks remain required |
+| Web | `npm run check` and `npm test` pass (470 web/shared tests). `scripts/test-message-forwarding.mjs` checks aligned 2px subtitles, space/channel token search, selection surviving filtering, delivery across spaces/channels/DMs, partial unknown-response retries without duplicates, definitive rejection edits to remaining destinations, destination-only live edits/reactions/replies, read-only originals and independent destination threads. Default/selected/search/empty/retry/rejected desktop and narrow captures inspected at 2x. Chromium narrow layout is not Safari, a physical phone or native acceptance |
+| Rust desktop | Full libwebrtc-linked Linux build and 288 tests pass, 9 existing opt-in tests ignored. Headless picker tests cover compact same-space rows, token search and hidden selections; retry tests cover partial success and preserved UUIDs. Application Clippy passes with `--no-deps`; unrestricted Clippy still fails on existing vendored `webrtc-sys` safety-documentation warnings. Native default/selected/search renders inspected and one forward per destination confirmed via the disposable HTTP fixture for two spaces and a DM. Not production/Windows/device acceptance |
+| Android | Compose multi-select picker/card/read-only view, protocol/gateway/merge and regression tests implemented. JDK is available, but Android SDK/Kotlin compiler are not; compilation, native rendering and device checks remain required |
 | Apple | SwiftUI picker/card/read-only view, protocol/gateway/merge and regression tests implemented. Swift/Xcode unavailable in this Linux orb; iOS/macOS compilation, sheet transitions and device checks remain required |
 | Containers/live | No Docker daemon; build stages validated directly. No deployed multi-account/cross-client or physical-device acceptance is claimed |
 

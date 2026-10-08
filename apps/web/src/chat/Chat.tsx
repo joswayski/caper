@@ -1385,8 +1385,8 @@ export default function Chat({
               if (!clientRef.current) return Promise.reject(new Error("Chat session is unavailable."));
               return clientRef.current.forward(destination, messageId, key, text);
             }}
-            onSent={(destination) => {
-              setActionStatus(`Forwarded to ${destination.direct ? "" : "#"}${destination.name}.`);
+            onSent={(count) => {
+              setActionStatus(`Forwarded to ${count} ${count === 1 ? "destination" : "destinations"}.`);
               setForwardTarget(undefined);
             }}
           />
