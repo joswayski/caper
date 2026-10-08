@@ -106,7 +106,9 @@ async fn persist_edit(
         ));
     }
     let mut tx = pool.begin().await.map_err(database_error)?;
-    let (_, _, _, user, avatar) = authorize_sender(&mut tx, token).await?;
+    let (_, _, name, user, avatar) = authorize_sender(&mut tx, token).await?;
+    // The editor is the author, so their session already carries the current name.
+    let current_name = user.map(|_| name.as_str());
     let (channel_id, head) = locked_channel(&mut tx, channel, user, true).await?;
     let row: Option<(i64, Value, Option<i64>)> = sqlx::query_as(
         "SELECT m.id,m.payload,cs.user_id FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id WHERE m.channel_id=$1 AND m.external_id=$2 AND m.forward_source_id IS NULL FOR UPDATE OF m",
@@ -131,7 +133,7 @@ async fn persist_edit(
         return if i64::from(revision) == i64::from(expected_revision) + 1
             && payload["content"]["text"] == content["text"]
         {
-            Ok(enrich_author(payload, avatar))
+            Ok(enrich_author(payload, avatar, current_name))
         } else {
             Err(ApiError::new(
                 StatusCode::CONFLICT,
@@ -140,7 +142,7 @@ async fn persist_edit(
         };
     }
     if payload["content"]["text"] == content["text"] {
-        return Ok(enrich_author(payload, avatar));
+        return Ok(enrich_author(payload, avatar, current_name));
     }
     let recent: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM public.message_versions v JOIN public.messages m ON m.id=v.message_id JOIN public.chat_sessions cs ON cs.id=m.session_id WHERE m.channel_id=$1 AND cs.user_id=$2 AND v.revision>1 AND v.created_at>now()-interval '1 minute'",
@@ -195,7 +197,7 @@ async fn persist_edit(
         .await
         .map_err(database_error)?;
     tx.commit().await.map_err(database_error)?;
-    Ok(enrich_author(payload, avatar))
+    Ok(enrich_author(payload, avatar, current_name))
 }
 
 #[derive(Deserialize)]
@@ -225,11 +227,11 @@ pub(super) async fn message(
     let user = request_user(&chat.pool, &headers).await?;
     let mut tx = chat.pool.begin().await.map_err(database_error)?;
     let (channel_id, _) = locked_channel(&mut tx, &channel, user, false).await?;
-    let (payload, avatar): (Value, Option<i16>) = sqlx::query_as(
-        "SELECT m.payload,u.avatar_id FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.channel_id=$1 AND m.external_id=$2",
+    let (payload, avatar, name): (Value, Option<i16>, Option<String>) = sqlx::query_as(
+        "SELECT m.payload,u.avatar_id,u.display_name FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.channel_id=$1 AND m.external_id=$2",
     ).bind(channel_id).bind(message).fetch_optional(&mut *tx).await.map_err(database_error)?
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "message not found"))?;
-    Ok(Json(enrich_author(payload, avatar)))
+    Ok(Json(enrich_author(payload, avatar, name.as_deref())))
 }
 
 async fn versions_page(

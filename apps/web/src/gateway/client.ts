@@ -149,10 +149,7 @@ export class AppGateway {
   private readonly socketFactory: SocketFactory;
   private readonly random: () => number;
 
-  constructor(
-    socketFactory: SocketFactory = (url) => new WebSocket(url),
-    random: () => number = Math.random,
-  ) {
+  constructor(socketFactory: SocketFactory = (url) => new WebSocket(url), random: () => number = Math.random) {
     this.socketFactory = socketFactory;
     this.random = random;
     if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
@@ -170,9 +167,18 @@ export class AppGateway {
     const id = crypto.randomUUID();
     let resolve!: () => void;
     let reject!: (error: Error) => void;
-    const ready = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+    const ready = new Promise<void>((yes, no) => {
+      resolve = yes;
+      reject = no;
+    });
     const subscription: LogicalSubscription = {
-      id, request, callbacks, readySettled: false, retries: 0, resolve, reject,
+      id,
+      request,
+      callbacks,
+      readySettled: false,
+      retries: 0,
+      resolve,
+      reject,
     };
     this.subscriptions.set(id, subscription);
     callbacks.status?.(false);
@@ -196,7 +202,9 @@ export class AppGateway {
     const createdAt = Date.now();
     const timeoutMs = Math.min(request.timeoutMs ?? 25_000, MAX_COMMAND_TIMEOUT_MS);
     const frame = {
-      type: "command", id, method: request.method,
+      type: "command",
+      id,
+      method: request.method,
       ...(request.channelId ? { channelId: request.channelId } : {}),
       ...(request.token ? { token: request.token } : {}),
       ...(request.chatToken ? { chatToken: request.chatToken } : {}),
@@ -207,8 +215,13 @@ export class AppGateway {
         this.finishCommand(id, undefined, new DOMException("The request timed out.", "AbortError"));
       }, timeoutMs);
       const pending: PendingCommand = {
-        frame, resolve, reject, timer, signal: request.signal,
-        deadline: createdAt + timeoutMs, retries: 0,
+        frame,
+        resolve,
+        reject,
+        timer,
+        signal: request.signal,
+        deadline: createdAt + timeoutMs,
+        retries: 0,
       };
       if (request.signal) {
         pending.abort = () => this.finishCommand(id, undefined, request.signal!.reason);
@@ -248,7 +261,9 @@ export class AppGateway {
       if (!subscription.readySettled) subscription.reject(new DOMException("Gateway closed.", "AbortError"));
     }
     this.subscriptions.clear();
-    for (const id of [...this.commands.keys()]) this.finishCommand(id, undefined, new DOMException("Gateway closed.", "AbortError"));
+    // oxlint-disable-next-line unicorn/no-useless-spread -- Cleanup mutates the commands map; keep the original key set.
+    for (const id of [...this.commands.keys()])
+      this.finishCommand(id, undefined, new DOMException("Gateway closed.", "AbortError"));
     clearTimeout(this.idleTimer);
     this.idleTimer = undefined;
     this.close(this.active, "gateway closed");
@@ -284,16 +299,23 @@ export class AppGateway {
   private open(replacement: boolean) {
     if (replacement ? this.candidate : this.active) return;
     let socket: SocketLike;
-    try { socket = this.socketFactory(socketUrl()); }
-    catch { this.scheduleReconnect(replacement); return; }
+    try {
+      socket = this.socketFactory(socketUrl());
+    } catch {
+      this.scheduleReconnect(replacement);
+      return;
+    }
     const stream: Stream = { socket, hello: false, serverOffsetMs: 0, closed: false, subscriptions: new Map() };
     if (replacement) this.candidate = stream;
     else this.active = stream;
     stream.openTimer = setTimeout(() => this.failed(stream), OPEN_TIMEOUT_MS);
     socket.addEventListener("message", (event) => {
       if (stream.closed) return;
-      try { this.receive(stream, frameData((event as MessageEvent).data)); }
-      catch { this.failed(stream); }
+      try {
+        this.receive(stream, frameData((event as MessageEvent).data));
+      } catch {
+        this.failed(stream);
+      }
     });
     socket.addEventListener("close", () => this.failed(stream));
     socket.addEventListener("error", () => undefined);
@@ -301,8 +323,12 @@ export class AppGateway {
 
   private receive(stream: Stream, frame: Record<string, unknown>) {
     if (frame.type === "hello") {
-      if (stream.hello || typeof frame.idleTimeoutSeconds !== "number"
-        || typeof frame.serverTime !== "number" || !Number.isFinite(frame.serverTime)) {
+      if (
+        stream.hello ||
+        typeof frame.idleTimeoutSeconds !== "number" ||
+        typeof frame.serverTime !== "number" ||
+        !Number.isFinite(frame.serverTime)
+      ) {
         throw new Error("Invalid gateway hello.");
       }
       stream.hello = true;
@@ -318,7 +344,10 @@ export class AppGateway {
       return;
     }
     if (!stream.hello) throw new Error("Gateway frame received before hello.");
-    if (frame.type === "heartbeat") { this.armWatchdog(stream); return; }
+    if (frame.type === "heartbeat") {
+      this.armWatchdog(stream);
+      return;
+    }
     if (frame.type === "migrating") {
       if (stream === this.active && !this.candidate) this.open(true);
       else if (stream === this.candidate) this.failed(stream);
@@ -335,7 +364,10 @@ export class AppGateway {
       subscription.retries = 0;
       if (stream === this.active) {
         subscription.callbacks.status?.(true);
-        if (!subscription.readySettled) { subscription.readySettled = true; subscription.resolve(); }
+        if (!subscription.readySettled) {
+          subscription.readySettled = true;
+          subscription.resolve();
+        }
       }
       this.maybePromote(stream);
       return;
@@ -344,11 +376,19 @@ export class AppGateway {
       this.receiveEvent(stream, frame.id, frame.event);
       return;
     }
-    if (frame.type === "error" && typeof frame.id === "string" && typeof frame.status === "number" && typeof frame.error === "string") {
+    if (
+      frame.type === "error" &&
+      typeof frame.id === "string" &&
+      typeof frame.status === "number" &&
+      typeof frame.error === "string"
+    ) {
       const error = new GatewayError(frame.status, frame.error);
       const subscription = this.subscriptions.get(frame.id);
       if (!subscription) return;
-      if (stream === this.candidate) { this.failed(stream); return; }
+      if (stream === this.candidate) {
+        this.failed(stream);
+        return;
+      }
       if (stream !== this.active) return;
       subscription.callbacks.status?.(false);
       if (frame.status === 503 && subscription.retries < MAX_SUBSCRIPTION_RETRIES) {
@@ -364,8 +404,11 @@ export class AppGateway {
       if (frame.status >= 200 && frame.status < 300) this.finishCommand(frame.id, frame.body);
       else {
         const detail = errorBody(frame.body, `Call service returned ${frame.status}.`);
-        if (pending.frame.method !== "typing" && ((frame.status === 409 && detail.code === "command_pending")
-          || (frame.status === 503 && detail.code === "gateway_draining"))) {
+        if (
+          pending.frame.method !== "typing" &&
+          ((frame.status === 409 && detail.code === "command_pending") ||
+            (frame.status === 503 && detail.code === "gateway_draining"))
+        ) {
           if (detail.code === "gateway_draining" && !this.candidate) this.open(true);
           this.retryCommand(frame.id, detail.code === "command_pending" ? 100 : 250);
         } else {
@@ -384,7 +427,12 @@ export class AppGateway {
     if (!event || typeof event !== "object") throw new Error("Invalid gateway event.");
     const value = event as Record<string, unknown>;
     if (subscription.request.kind === "chat") {
-      if (value.type === "message.created" || value.type === "message.reactions" || value.type === "message.pin" || value.type === "message.edited") {
+      if (
+        value.type === "message.created" ||
+        value.type === "message.reactions" ||
+        value.type === "message.pin" ||
+        value.type === "message.edited"
+      ) {
         if (typeof value.seq !== "string") throw new Error("Invalid chat event.");
         const next = sequence(value.seq);
         if (state.position !== undefined && next > state.position + 1n) throw new Error("Chat event gap.");
@@ -413,20 +461,23 @@ export class AppGateway {
   }
 
   private sendSubscription(stream: Stream, subscription: LogicalSubscription) {
-    const after = subscription.request.kind === "chat"
-      ? subscription.callbacks.cursor?.() ?? subscription.request.after
-      : subscription.request.after;
+    const after =
+      subscription.request.kind === "chat"
+        ? (subscription.callbacks.cursor?.() ?? subscription.request.after)
+        : subscription.request.after;
     const position = after === undefined ? undefined : sequence(after);
     stream.subscriptions.set(subscription.id, { subscribed: false, position });
     this.send(stream, {
-      type: "subscribe", id: subscription.id, ...subscription.request,
+      type: "subscribe",
+      id: subscription.id,
+      ...subscription.request,
       ...(after === undefined ? {} : { after }),
     });
   }
 
   private retrySubscription(subscription: LogicalSubscription) {
     if (subscription.retryTimer) return;
-    const delay = Math.round(Math.min(250 * 2 ** subscription.retries++, 4_000) * (.75 + this.random() * .5));
+    const delay = Math.round(Math.min(250 * 2 ** subscription.retries++, 4_000) * (0.75 + this.random() * 0.5));
     subscription.retryTimer = setTimeout(() => {
       subscription.retryTimer = undefined;
       if (!this.subscriptions.has(subscription.id)) return;
@@ -473,10 +524,17 @@ export class AppGateway {
       if (subscription.request.kind === "chat") {
         const activePosition = this.active?.subscriptions.get(subscription.id)?.position;
         const applied = sequence(subscription.callbacks.cursor?.() ?? subscription.request.after ?? "0");
-        if ((candidateState.position ?? -1n) < applied || (activePosition !== undefined && (candidateState.position ?? -1n) < activePosition)) return;
+        if (
+          (candidateState.position ?? -1n) < applied ||
+          (activePosition !== undefined && (candidateState.position ?? -1n) < activePosition)
+        )
+          return;
       } else if (subscription.request.kind === "media") {
-        if (candidateState.snapshotRevision === undefined
-          || (subscription.revision !== undefined && candidateState.snapshotRevision < subscription.revision)) return;
+        if (
+          candidateState.snapshotRevision === undefined ||
+          (subscription.revision !== undefined && candidateState.snapshotRevision < subscription.revision)
+        )
+          return;
       } else if (candidateState.pendingEvent === undefined) {
         return;
       }
@@ -524,7 +582,7 @@ export class AppGateway {
 
   private scheduleReconnect(replacement: boolean) {
     if (this.reconnectTimer || (!this.subscriptions.size && !this.commands.size)) return;
-    const delay = Math.round(Math.min(250 * 2 ** Math.min(this.reconnects++, 5), 5_000) * (.75 + this.random() * .5));
+    const delay = Math.round(Math.min(250 * 2 ** Math.min(this.reconnects++, 5), 5_000) * (0.75 + this.random() * 0.5));
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
       this.open(replacement && !!this.active);
@@ -550,7 +608,8 @@ export class AppGateway {
     if (Date.now() + delay >= pending.deadline) return;
     pending.retryTimer = setTimeout(() => {
       pending.retryTimer = undefined;
-      if (!this.candidate && this.active?.hello && Date.now() < pending.deadline) this.sendCommand(this.active, pending);
+      if (!this.candidate && this.active?.hello && Date.now() < pending.deadline)
+        this.sendCommand(this.active, pending);
     }, delay);
   }
 
@@ -594,7 +653,7 @@ export class AppGateway {
 
 export function appGateway() {
   if (typeof window === "undefined") throw new Error("The application gateway is only available in the browser.");
-  return singleton ??= new AppGateway();
+  return (singleton ??= new AppGateway());
 }
 
 export function reportActivity() {
@@ -609,21 +668,24 @@ export function watchPresence(
   onLive?: (online: boolean) => void,
 ) {
   if (userIds.length > 100) throw new Error("Presence subscriptions support at most 100 users.");
-  const subscription = appGateway().subscribe({ kind: "presence", spaceId, userIds: [...userIds] }, {
-    status: onLive,
-    event: (value) => {
-      if (!value || typeof value !== "object") throw new Error("Invalid presence snapshot.");
-      const event = value as { type?: unknown; members?: unknown };
-      if (event.type !== "snapshot" || !Array.isArray(event.members)) throw new Error("Invalid presence snapshot.");
-      const members = event.members.filter((member): member is PresenceMember => {
-        if (!member || typeof member !== "object") return false;
-        const item = member as Partial<PresenceMember>;
-        return typeof item.userId === "string" && ["online", "idle", "offline"].includes(item.status ?? "");
-      });
-      if (members.length !== event.members.length) throw new Error("Invalid presence snapshot.");
-      onMembers(members);
+  const subscription = appGateway().subscribe(
+    { kind: "presence", spaceId, userIds: [...userIds] },
+    {
+      status: onLive,
+      event: (value) => {
+        if (!value || typeof value !== "object") throw new Error("Invalid presence snapshot.");
+        const event = value as { type?: unknown; members?: unknown };
+        if (event.type !== "snapshot" || !Array.isArray(event.members)) throw new Error("Invalid presence snapshot.");
+        const members = event.members.filter((member): member is PresenceMember => {
+          if (!member || typeof member !== "object") return false;
+          const item = member as Partial<PresenceMember>;
+          return typeof item.userId === "string" && ["online", "idle", "offline"].includes(item.status ?? "");
+        });
+        if (members.length !== event.members.length) throw new Error("Invalid presence snapshot.");
+        onMembers(members);
+      },
     },
-  });
+  );
   void subscription.ready.catch(() => undefined);
   return () => subscription.unsubscribe();
 }

@@ -232,7 +232,7 @@ private struct BrowseSwipe: ViewModifier {
 }
 
 private enum WorkspaceSheet: Identifiable {
-    case login, profile, createSpace, createChannel, newDirectMessage, manageSpace, manageChannel(Channel), invitation(Space), channelInvitation(ChannelInvitation), leaveSpace, audio, connection, diagnostics
+    case login, profile, createSpace, createChannel, newDirectMessage, manageSpace, manageChannel(Channel), invitation(Space), channelInvitation(ChannelInvitation), leaveSpace, audio, connection, diagnostics, privacy
     var id: String {
         switch self {
         case .login: "login"
@@ -248,6 +248,7 @@ private enum WorkspaceSheet: Identifiable {
         case .audio: "audio"
         case .connection: "connection"
         case .diagnostics: "diagnostics"
+        case .privacy: "privacy"
         }
     }
 }
@@ -593,6 +594,10 @@ private struct ChannelSidebar: View {
                     .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
 
             ScrollView {
+                if narrow && model.showingMessageRequests && model.account != nil {
+                    // Phones push the requests list in place of the channel list.
+                    MessageRequestsList(model: model, pushed: true)
+                } else {
                 VStack(spacing: 0) {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack {
@@ -678,6 +683,12 @@ private struct ChannelSidebar: View {
                         .onHover { directHeadingHovered = $0 }
                         #endif
                         VStack(spacing: 2) {
+                            if !model.messageRequests.isEmpty {
+                                MessageRequestsRow(model: model, narrow: narrow, rowHeight: directRowHeight)
+                                if !narrow && model.showingMessageRequests {
+                                    MessageRequestsList(model: model, pushed: false)
+                                }
+                            }
                             if let account = model.account {
                                 let selfConversation = model.directMessages.first { $0.peer.id == account.id }
                                 Button { Task { await model.openSelfDirectMessage() } } label: {
@@ -697,7 +708,7 @@ private struct ChannelSidebar: View {
                                 }.buttonStyle(.plain).modifier(ControlHover()).disabled(model.busy)
                                     .accessibilityIdentifier("dm-self")
                             }
-                            ForEach(model.directMessages.filter { $0.peer.id != model.account?.id }) { conversation in
+                            ForEach(model.visibleDirectMessages.filter { $0.peer.id != model.account?.id }) { conversation in
                                 Button { Task { await model.select(directMessage: conversation) } } label: {
                                     HStack(spacing: 9) {
                                         CaperIcon(name: "speech", size: 17).frame(width: 24)
@@ -738,6 +749,7 @@ private struct ChannelSidebar: View {
                 }.padding(.bottom, 8)
                     .overlay(alignment: .top) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
             }
+                }
                 }
             }
             .modifier(BrowseSwipe(open: true, enabled: narrow && !browsing && sheet == nil && (model.selectedChannel != nil || model.selectedDirectMessageID != nil), navigate: close))
@@ -1332,7 +1344,11 @@ private struct AccountBar: View {
                     Button("Audio diagnostics") { sheet = .diagnostics }
                 }
                 #endif
-                if model.account != nil { Button("Log out", role: .destructive) { Task { await model.logout() } } }
+                if model.account != nil {
+                    Button("Privacy and blocked accounts") { sheet = .privacy }
+                        .accessibilityIdentifier("open-privacy")
+                    Button("Log out", role: .destructive) { Task { await model.logout() } }
+                }
                 else { Button("Sign in") { sheet = .login } }
             } label: { CaperIcon(name: "settings", size: 20) }.menuStyle(.borderlessButton).menuIndicator(.hidden)
                 #if os(iOS)
@@ -1521,6 +1537,42 @@ private struct ChatView: View {
     }
     @StateObject private var composerAutocomplete = ComposerAutocompleteController()
     @State private var showingPins = false
+    /// Block confirmation, from the DM header, the request bar or message actions.
+    @State private var blockTarget: BlockTarget?
+    /// Blocked runs shown in place (in memory only).
+    @State private var revealedBlocked: Set<String> = []
+
+    /// The open 1:1 DM, not personal notes.
+    private var peerConversation: DirectMessageConversation? {
+        model.selectedDirectMessage.flatMap { $0.peer.id == model.account?.id ? nil : $0 }
+    }
+    private var timelineEntries: [TimelineEntry] {
+        BlockedMessages.entries(chat.channelMessages, blocked: chat.blockedAuthorIDs, viewerID: viewerID, revealed: revealedBlocked)
+    }
+    private func channelRow(_ message: ChatMessage) -> some View {
+        MessageRow(message: message, chat: chat, currentUserID: viewerID, reactors: reactorContext, mentionCards: mentionCards,
+                   requestBlock: { blockTarget = BlockTarget(author: $0) }) {
+            // Holding a chip opens who reacted, not message actions.
+            guard reactorsTarget == nil else { return }
+            showingEmojiPicker = false
+            reactionMessage = message
+        }
+    }
+    @ViewBuilder private func blockMenuItem(_ conversation: DirectMessageConversation) -> some View {
+        if conversation.blocked || model.blockedIDs.contains(conversation.peer.id) {
+            Button("Unblock @\(conversation.peer.username)") { unblock(conversation.peer.id) }
+                .accessibilityIdentifier("dm-unblock")
+        } else {
+            Button("Block @\(conversation.peer.username)…", role: .destructive) { blockTarget = BlockTarget(peer: conversation.peer) }
+                .accessibilityIdentifier("dm-block")
+        }
+    }
+    private func unblock(_ accountID: String) {
+        Task {
+            do { try await model.unblock(accountID: accountID) }
+            catch { chat.error = error.localizedDescription }
+        }
+    }
 
     private var mentionCards: MentionCardContext {
         MentionCardContext(pointer: mentionPointer, name: { model.mentionPerson($0, viewerID: viewerID).title }, open: { pill in
@@ -1577,6 +1629,7 @@ private struct ChatView: View {
                         if model.selectedDirectMessageID == nil && !model.previewingChannel {
                             Button(membersVisible ? "Hide member list" : "Members", action: toggleMembers)
                         }
+                        if let conversation = peerConversation { blockMenuItem(conversation) }
                     } label: {
                         HStack(spacing: 6) {
                             Text(model.selectedDirectMessageID == nil ? "# \(chat.channelName.lowercased())" : chat.channelName).font(CaperTheme.font(14, weight: .medium)).lineLimit(1)
@@ -1607,6 +1660,12 @@ private struct ChatView: View {
                     Button(action: toggleMembers) { CaperIcon(name: "users", size: 20) }
                         .buttonStyle(SidebarIconButton()).help(membersVisible ? "Hide member list" : "Show member list")
                         .accessibilityLabel(membersVisible ? "Hide member list" : "Show member list")
+                }
+                if !narrow, let conversation = peerConversation {
+                    Menu { blockMenuItem(conversation) } label: { CaperIcon(name: "ellipsis", size: 20) }
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 28, height: 28)
+                        .help("Conversation options").accessibilityLabel("Conversation options")
+                        .accessibilityIdentifier("dm-options")
                 }
             }.padding(.leading, narrow ? 13 : 18).padding(.trailing, 18).frame(height: 50)
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
@@ -1641,19 +1700,19 @@ private struct ChatView: View {
                             if chat.loading && chat.messages.isEmpty {
                                 Text("Loading messages…").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).padding(.top, 80)
                             }
-                            ForEach(Array(chat.channelMessages.enumerated()), id: \.element.id) { index, message in
+                            let entries = timelineEntries
+                            ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
                                 VStack(spacing: 0) {
-                                    if index == 0 || !ChatDateDivider.sameLocalDay(chat.channelMessages[index - 1].createdAt, message.createdAt) {
-                                        ChatDateDivider(createdAt: message.createdAt)
+                                    if index == 0 || !ChatDateDivider.sameLocalDay(entries[index - 1].lastCreatedAt, entry.firstCreatedAt) {
+                                        ChatDateDivider(createdAt: entry.firstCreatedAt)
                                     }
-                                    MessageRow(message: message, chat: chat, currentUserID: viewerID, reactors: reactorContext,
-                                               mentionCards: mentionCards) {
-                                        // Holding a chip opens who reacted, not message actions.
-                                        guard reactorsTarget == nil else { return }
-                                        showingEmojiPicker = false
-                                        reactionMessage = message
+                                    switch entry {
+                                    case let .message(message): channelRow(message)
+                                    case let .blocked(run):
+                                        BlockedRunRow(run: run) { revealedBlocked = BlockedMessages.toggling(run, in: revealedBlocked) }
+                                        if run.revealed { ForEach(run.messages) { channelRow($0) } }
                                     }
-                                }.id(message.id)
+                                }.id(entry.scrollID)
                             }
                         }
                         // Keep the scroll target eager even when lazy history
@@ -1750,8 +1809,19 @@ private struct ChatView: View {
                 }
                 if let joinError { Text(joinError).font(CaperTheme.font(11)).foregroundStyle(.red) }
                 }.padding(12)
+            } else if let request = model.selectedDirectMessage, request.status == .incoming {
+                // Requests are read-only: Accept, Decline or Block replace the composer.
+                MessageRequestBar(model: model, conversation: request) { blockTarget = BlockTarget(peer: request.peer) }
+            } else if let conversation = peerConversation, conversation.blocked {
+                BlockedConversationBar(conversation: conversation) { unblock(conversation.peer.id) }
             } else { HStack(alignment: .bottom, spacing: 8) {
                 VStack(spacing: 6) {
+                    if let conversation = peerConversation, conversation.status == .outgoing {
+                        Text(MessageRequests.waitingNotice(for: conversation.peer))
+                            .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityIdentifier("message-request-waiting")
+                    }
                     if let root = chat.pendingMessage?.threadRootId {
                         Button("Pending reply · Open thread") { Task { await chat.openThread(root) } }.font(CaperTheme.font(11))
                     }
@@ -1766,6 +1836,9 @@ private struct ChatView: View {
                                               submit: { Task { await chat.send() } })
                     }
                     .frame(minHeight: 42, maxHeight: 174)
+                    // The flexible frame otherwise fills its proposal up to 174,
+                    // centering a one-line text view inside an oversized background.
+                    .fixedSize(horizontal: false, vertical: true)
                     .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 6))
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(CaperTheme.border))
                     .onChange(of: chat.draft) { _, value in chat.setTyping(!value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
@@ -1839,12 +1912,17 @@ private struct ChatView: View {
                                         guard !chat.isPreview, chat.currentAuthor != nil else { return }
                                         reactionMessage = nil
                                         Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) }
-                                    })
+                                    },
+                                    block: BlockedMessages.canBlock(message.author, viewerID: viewerID, blocked: chat.blockedAuthorIDs)
+                                        ? { blockTarget = BlockTarget(author: message.author) } : nil)
             }
             #endif
             .sheet(isPresented: $showingPins) {
                 PinnedMessagesView(chat: chat, close: { showingPins = false })
             }
+            .modifier(BlockConfirmation(target: $blockTarget) { target in
+                do { try await model.block(target) } catch { chat.error = error.localizedDescription }
+            })
             .onChange(of: chat.isPreview) { _, preview in
                 if preview { reactionMessage = nil; showingEmojiPicker = false }
             }
@@ -1908,6 +1986,28 @@ private struct NativeThreadView: View {
             mentionCard = MentionCardTarget(pill: pill, pointer: mentionPointer.location)
         })
     }
+    @State private var blockTarget: BlockTarget?
+    @State private var revealedBlocked: Set<String> = []
+    private func entries(_ messages: [ChatMessage]) -> [TimelineEntry] {
+        BlockedMessages.entries(messages, blocked: chat.blockedAuthorIDs, viewerID: chat.viewerID, revealed: revealedBlocked)
+    }
+    private func threadRow(_ message: ChatMessage) -> some View {
+        MessageRow(message: message, chat: chat, currentUserID: viewerID, reactors: reactors, mentionCards: mentionCards, inThread: true,
+                   requestBlock: { blockTarget = BlockTarget(author: $0) }) { reactionMessage = message }
+    }
+    /// The root and replies collapse like the channel: blocked runs show "Show".
+    @ViewBuilder private func threadEntries(_ messages: [ChatMessage]) -> some View {
+        ForEach(entries(messages)) { entry in
+            switch entry {
+            case let .message(message): threadRow(message).id(message.id)
+            case let .blocked(run):
+                VStack(spacing: 0) {
+                    BlockedRunRow(run: run) { revealedBlocked = BlockedMessages.toggling(run, in: revealedBlocked) }
+                    if run.revealed { ForEach(run.messages) { threadRow($0) } }
+                }.id(entry.scrollID)
+            }
+        }
+    }
     private var replies: [ChatMessage] { chat.messages.filter { $0.threadRootId == chat.threadRootID && $0.threadRootId != nil } }
     private var reactors: ReactorContext {
         ReactorContext(viewerID: chat.currentAuthor?.id, sheetOpen: reactorsTarget != nil) { messageID, emoji in
@@ -1926,15 +2026,13 @@ private struct NativeThreadView: View {
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         if let root = chat.messages.first(where: { $0.id == chat.threadRootID }) {
-                            MessageRow(message: root, chat: chat, currentUserID: viewerID, reactors: reactors, mentionCards: mentionCards, inThread: true) { reactionMessage = root }
+                            threadEntries([root])
                             Text("\(root.thread?.replyCount ?? 0) replies").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).padding(12)
                         }
                         if chat.threadLoading { Text("Loading thread…").padding(18) }
                         if let error = chat.threadError { Text(error).padding(12); Button("Retry") { Task { await chat.loadThread() } } }
                         if chat.threadHasMore { Button("Load older replies") { Task { await chat.loadThread(older: true) } }.disabled(chat.threadLoading).padding(12) }
-                        ForEach(replies) { message in
-                            MessageRow(message: message, chat: chat, currentUserID: viewerID, reactors: reactors, mentionCards: mentionCards, inThread: true) { reactionMessage = message }.id(message.id)
-                        }
+                        threadEntries(replies)
                         if replies.isEmpty && !chat.threadLoading && chat.threadError == nil { Text("No replies yet. Start the thread.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).padding(18) }
                         if let pending = chat.pendingMessage, pending.threadRootId == chat.threadRootID {
                             PendingMessageRow(pending: pending, author: chat.currentAuthor, error: chat.error, rejected: chat.sendRejected, canEdit: chat.threadDraft.isEmpty,
@@ -1954,7 +2052,9 @@ private struct NativeThreadView: View {
                 ComposerSuggestionsView(controller: composerAutocomplete)
                 NativeMessageComposer(text: $chat.threadDraft, placeholder: "Reply to thread…", controller: composerAutocomplete,
                                       mentions: mentions, submit: { Task { await chat.send(inThread: true) } })
-                    .frame(minHeight: 72, maxHeight: 174).background(CaperTheme.composer)
+                    .frame(minHeight: 72, maxHeight: 174)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .background(CaperTheme.composer)
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
                 HStack {
                     Toggle("Also send to #\(chat.channelName)", isOn: $chat.threadBroadcast).font(CaperTheme.font(11)).disabled(chat.pendingMessage != nil)
@@ -1977,7 +2077,9 @@ private struct NativeThreadView: View {
                     quickReaction: { emoji in
                         let own = message.reactions?.first { $0.emoji == emoji }?.authorIds.contains(chat.currentAuthor?.id ?? "") == true
                         reactionMessage = nil; Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: !own) }
-                    }, selectReaction: { emoji in reactionMessage = nil; Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) } })
+                    }, selectReaction: { emoji in reactionMessage = nil; Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) } },
+                    block: BlockedMessages.canBlock(message.author, viewerID: chat.viewerID, blocked: chat.blockedAuthorIDs)
+                        ? { blockTarget = BlockTarget(author: message.author) } : nil)
                 #else
                 ReactionPicker { emoji in reactionMessage = nil; Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) } }
                 #endif
@@ -1985,6 +2087,7 @@ private struct NativeThreadView: View {
             .sheet(item: $reactorsTarget) { target in ReactorsSheet(chat: chat, messageID: target.messageID, emoji: target.emoji, viewerID: chat.currentAuthor?.id) }
             .onChange(of: reactionMessage?.id) { _, _ in showingEmojiPicker = false }
             .onChange(of: chat.editingContext) { _, _ in reactionMessage = nil; reactorsTarget = nil }
+            .modifier(BlockConfirmation(target: $blockTarget) { await chat.block($0) })
             .accessibilityIdentifier("message-thread")
     }
 }
@@ -2073,7 +2176,12 @@ private struct MessageRow: View {
     let reactors: ReactorContext
     let mentionCards: MentionCardContext
     var inThread = false
+    /// Asks the containing view to confirm blocking this message's author.
+    var requestBlock: ((ChatAuthor) -> Void)? = nil
     let showReactionPicker: () -> Void
+    private var canBlockAuthor: Bool {
+        requestBlock != nil && BlockedMessages.canBlock(message.author, viewerID: chat.viewerID, blocked: chat.blockedAuthorIDs)
+    }
     @State private var editing = false
     @State private var history = false
     #if os(macOS)
@@ -2187,6 +2295,10 @@ private struct MessageRow: View {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(message.content.text, forType: .string)
                         }
+                        if canBlockAuthor {
+                            Divider()
+                            Button("Block \(message.author.name)…", role: .destructive) { requestBlock?(message.author) }
+                        }
                     } label: {
                         Image(systemName: "ellipsis").font(.system(size: 14, weight: .medium)).frame(width: 24, height: 24)
                     }.menuStyle(.borderlessButton).menuIndicator(.hidden)
@@ -2212,6 +2324,10 @@ private struct MessageRow: View {
                 Button("Copy message") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(message.content.text, forType: .string)
+                }
+                if canBlockAuthor {
+                    Divider()
+                    Button("Block \(message.author.name)…", role: .destructive) { requestBlock?(message.author) }
                 }
             }
         #endif
@@ -2778,6 +2894,10 @@ private struct MessageActionsSheet: View {
     let forward: () -> Void
     let quickReaction: (String) -> Void
     let selectReaction: (String) -> Void
+    /// Block the author, offered for other signed-in accounts. The parent
+    /// confirms once this sheet has gone, since one view presents at a time.
+    var block: (() -> Void)? = nil
+    @State private var blockRequested = false
 
     private let quickReactions = ["👍", "❤️", "😂", "🎉", "👀"]
 
@@ -2844,6 +2964,16 @@ private struct MessageActionsSheet: View {
                         } label: {
                             Label("Copy message ID", systemImage: "number").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                         }
+                        if block != nil {
+                            Divider()
+                            Button(role: .destructive) {
+                                blockRequested = true
+                                dismiss()
+                            } label: {
+                                Label("Block \(message.author.name)", systemImage: "nosign").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                                    .foregroundStyle(CaperTheme.terracottaBright)
+                            }.accessibilityIdentifier("message-action-block")
+                        }
                     }
                     .buttonStyle(.plain)
                     .padding(.horizontal, 12)
@@ -2858,7 +2988,8 @@ private struct MessageActionsSheet: View {
             }
         }
         .presentationBackground(CaperTheme.raised)
-        .presentationDetents(showingEmojiPicker ? [.medium, .large] : [.height(330 + (canForward ? 50 : 0) + (chat.canEdit(message) ? 44 : 0) + ((message.revision ?? 1) > 1 && message.forward == nil ? 44 : 0)), .large])
+        .presentationDetents(showingEmojiPicker ? [.medium, .large] : [.height(330 + (canForward ? 50 : 0) + (chat.canEdit(message) ? 44 : 0) + ((message.revision ?? 1) > 1 && message.forward == nil ? 44 : 0) + (block == nil ? 0 : 44)), .large])
+        .onDisappear { if blockRequested { block?() } }
         .presentationDragIndicator(.visible)
         .sheet(isPresented: $editing) { MessageEditorView(chat: chat, message: message) { editing = false; dismiss() } }
         .sheet(isPresented: $history) { MessageHistoryView(chat: chat, message: message) { history = false } }
@@ -3160,6 +3291,7 @@ private struct WorkspaceSheetView: View {
             case .leaveSpace: ConfirmationSheet(title: "Leave \(model.detail?.space.name ?? "space")?", detail: "You will lose access to its channels and conversations. An owner can add you again later.", action: "Leave space", close: close) { try await model.leaveCurrentSpace() }
             case .audio: AudioPreferencesView(voice: model.voice, debugEnabled: model.account?.debugEnabled == true, close: close)
             case .connection: ScrollView { ConnectionDetailsView(voice: model.voice, close: close) }
+            case .privacy: PrivacySheet(model: model, close: close)
             case .diagnostics:
                 VStack(alignment: .leading, spacing: 18) {
                     SheetHeader(title: "Audio diagnostics", detail: "Local processing counters", close: close)
@@ -3169,6 +3301,282 @@ private struct WorkspaceSheetView: View {
                 }
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+// MARK: Message requests and blocking
+
+/// "Message requests" with a count of conversations, at the top of the DM
+/// section. Requests never show unread dots or count toward unread.
+private struct MessageRequestsRow: View {
+    @Bindable var model: AppModel
+    let narrow: Bool
+    let rowHeight: CGFloat
+    var body: some View {
+        let count = model.messageRequests.count
+        Button { model.showingMessageRequests.toggle() } label: {
+            HStack(spacing: 9) {
+                CaperIcon(name: !narrow && model.showingMessageRequests ? "chevron-down" : "chevron-right", size: 14).frame(width: 24)
+                Text("Message requests").lineLimit(1)
+                Spacer()
+                Text("\(count)").font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.text)
+                    .padding(.horizontal, 6).frame(minWidth: 20, minHeight: 18)
+                    .background(CaperTheme.raised, in: Capsule())
+                    .overlay(Capsule().stroke(CaperTheme.border))
+            }.font(CaperTheme.font(13, weight: .medium)).foregroundStyle(CaperTheme.muted)
+                .padding(.horizontal, 9).frame(height: rowHeight)
+                .contentShape(Rectangle())
+        }.buttonStyle(.plain).modifier(ControlHover())
+            .accessibilityLabel("Message requests")
+            .accessibilityValue("\(count) \(count == 1 ? "request" : "requests")")
+            .accessibilityHint(narrow ? "Opens the list of requests" : model.showingMessageRequests ? "Collapses the list" : "Expands the list")
+            .accessibilityIdentifier("message-requests")
+    }
+}
+
+/// Incoming requests: nested under the row in a sidebar, or a pushed page on
+/// narrow layouts. Opening one reads it by id and never accepts it.
+private struct MessageRequestsList: View {
+    @Bindable var model: AppModel
+    let pushed: Bool
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if pushed {
+                HStack(spacing: 6) {
+                    Button { model.showingMessageRequests = false } label: {
+                        HStack(spacing: 4) {
+                            CaperIcon(name: "arrow-left", size: 16)
+                            Text("Direct messages")
+                        }.font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                            .frame(minHeight: 44).contentShape(Rectangle())
+                    }.buttonStyle(.plain).modifier(ControlHover()).accessibilityIdentifier("message-requests-back")
+                    Spacer()
+                }
+                Text("Message requests").font(CaperTheme.font(15, weight: .bold)).padding(.bottom, 4)
+                Text("From people you don't share a space with. Accept to reply.")
+                    .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).padding(.bottom, 8)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if model.messageRequests.isEmpty {
+                Text("No message requests.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).padding(.vertical, 8)
+            }
+            ForEach(model.messageRequests) { request in
+                let selected = model.selectedDirectMessageID == request.id
+                Button { Task { await model.select(directMessage: request) } } label: {
+                    HStack(spacing: 9) {
+                        Avatar(name: request.peer.displayName, size: pushed ? 32 : 22, avatarID: request.peer.avatarId)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(request.peer.displayName).font(CaperTheme.font(13, weight: .medium)).lineLimit(1)
+                            Text("@\(request.peer.username)").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
+                    }.foregroundStyle(selected ? CaperTheme.text : CaperTheme.muted)
+                        .padding(.horizontal, 9).padding(.vertical, 5)
+                        #if os(iOS)
+                        .frame(minHeight: 44)
+                        #endif
+                        .background(selected ? CaperTheme.terracotta.opacity(0.16) : Color.clear)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .contentShape(Rectangle())
+                }.buttonStyle(.plain).modifier(ControlHover())
+                    .accessibilityLabel("\(request.peer.displayName), @\(request.peer.username)")
+                    .accessibilityValue(selected ? "Selected" : "")
+                    .accessibilityIdentifier("message-request-\(request.id)")
+            }
+        }
+        .padding(.horizontal, pushed ? 16 : 0).padding(.leading, pushed ? 0 : 16)
+        .padding(.vertical, pushed ? 8 : 0)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("message-requests-list")
+    }
+}
+
+/// Replaces the composer in an incoming request.
+private struct MessageRequestBar: View {
+    @Bindable var model: AppModel
+    let conversation: DirectMessageConversation
+    let block: () -> Void
+    @State private var pending: String?
+    @State private var error: String?
+    var body: some View {
+        let prompt = MessageRequests.prompt(for: conversation.peer)
+        VStack(alignment: .leading, spacing: 10) {
+            (Text(prompt.name).font(CaperTheme.font(13, weight: .bold)) + Text(prompt.detail).font(CaperTheme.font(13)))
+                .foregroundStyle(CaperTheme.text).fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("message-request-prompt")
+            HStack(spacing: 8) {
+                Button(pending == "accept" ? "Accepting…" : "Accept") { run("accept") { try await model.acceptRequest(conversation) } }
+                    .buttonStyle(CaperPrimaryButton()).frame(maxWidth: 160)
+                    .accessibilityIdentifier("message-request-accept")
+                Button(pending == "decline" ? "Declining…" : "Decline") { run("decline") { try await model.declineRequest(conversation) } }
+                    .buttonStyle(CaperSecondaryButton())
+                    .accessibilityIdentifier("message-request-decline")
+                Button("Block", role: .destructive, action: block).buttonStyle(CaperSecondaryButton())
+                    .accessibilityIdentifier("message-request-block")
+                Spacer(minLength: 0)
+            }.disabled(pending != nil)
+            if let error {
+                Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
+                    .accessibilityIdentifier("message-request-error")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("message-request-bar")
+    }
+
+    private func run(_ action: String, _ operation: @escaping @MainActor () async throws -> Void) {
+        pending = action; error = nil
+        Task { @MainActor in
+            do { try await operation() } catch { self.error = error.localizedDescription }
+            pending = nil
+        }
+    }
+}
+
+/// Replaces the composer in a DM whose peer you blocked.
+private struct BlockedConversationBar: View {
+    let conversation: DirectMessageConversation
+    let unblock: () -> Void
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(MessageRequests.blockedNotice(for: conversation.peer)).font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
+            Spacer(minLength: 0)
+            Button("Unblock", action: unblock).buttonStyle(CaperSecondaryButton())
+                .accessibilityIdentifier("dm-blocked-unblock")
+        }
+        .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("dm-blocked-bar")
+    }
+}
+
+/// "⊘ 2 blocked messages — Show": a run of blocked authors' messages.
+private struct BlockedRunRow: View {
+    let run: BlockedRun
+    let toggle: () -> Void
+    var body: some View {
+        HStack(spacing: 6) {
+            Text("⊘ \(run.label) —").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                .accessibilityHidden(true)
+            Button(run.revealed ? "Hide" : "Show", action: toggle).buttonStyle(.plain)
+                .font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.terracottaBright)
+                .frame(minHeight: 32).contentShape(Rectangle())
+                .accessibilityLabel("\(run.revealed ? "Hide" : "Show") \(run.label)")
+                .accessibilityIdentifier("blocked-run-toggle")
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 18).padding(.vertical, 4)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("blocked-run-\(run.messages.first?.id ?? "")")
+    }
+}
+
+/// "Block Alex?" before any block. Unblocking needs no confirmation.
+private struct BlockConfirmation: ViewModifier {
+    @Binding var target: BlockTarget?
+    let block: (BlockTarget) async -> Void
+    func body(content: Content) -> some View {
+        content.alert(target?.confirmationTitle ?? "Block?",
+                      isPresented: Binding(get: { target != nil }, set: { if !$0 { target = nil } }),
+                      presenting: target) { target in
+            Button("Block", role: .destructive) { Task { await block(target) } }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text(BlockTarget.confirmationMessage)
+        }
+    }
+}
+
+/// Account privacy: who can start a DM with you, and blocked accounts.
+private struct PrivacySheet: View {
+    @Bindable var model: AppModel
+    let close: () -> Void
+    @State private var unblocking: Set<String> = []
+    @State private var unblockError: String?
+    var body: some View {
+        VStack(spacing: 0) {
+            SheetHeader(title: "Privacy", detail: "Message requests and blocked accounts.", closeLabel: "Close privacy settings", close: close)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Who can start a DM with you").font(CaperTheme.font(13, weight: .bold))
+                    VStack(spacing: 0) {
+                        ForEach(DirectMessagePrivacy.allCases) { option in
+                            let selected = model.directMessagePrivacy == option
+                            Button { Task { await model.setDirectMessagePrivacy(option) } } label: {
+                                HStack(alignment: .top, spacing: 10) {
+                                    Image(systemName: selected ? "largecircle.fill.circle" : "circle")
+                                        .foregroundStyle(selected ? CaperTheme.terracottaBright : CaperTheme.muted)
+                                        .font(.system(size: 15)).padding(.top, 1)
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(option.title).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.text)
+                                        if let detail = option.detail {
+                                            Text(detail).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                                                .fixedSize(horizontal: false, vertical: true)
+                                        }
+                                    }
+                                    Spacer(minLength: 0)
+                                }.padding(.vertical, 8).frame(minHeight: 44).contentShape(Rectangle())
+                            }.buttonStyle(.plain).disabled(model.directMessagePrivacy == nil)
+                                .accessibilityAddTraits(selected ? .isSelected : [])
+                                .accessibilityIdentifier("dm-privacy-\(option.rawValue)")
+                        }
+                    }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("Who can start a DM with you")
+                    if model.directMessagePrivacy == nil && model.privacyError == nil {
+                        Text("Loading…").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    }
+                    if let error = model.privacyError {
+                        Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
+                            .accessibilityIdentifier("dm-privacy-error")
+                    }
+                    Rectangle().fill(CaperTheme.border).frame(height: 1).padding(.vertical, 6)
+                    Text("Blocked accounts").font(CaperTheme.font(13, weight: .bold))
+                    if model.blockedAccounts.isEmpty {
+                        Text(model.blocksLoaded ? "You haven't blocked anyone." : model.blocksError ?? "Loading…")
+                            .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                            .accessibilityIdentifier("blocked-accounts-empty")
+                    }
+                    ForEach(model.blockedAccounts) { account in
+                        HStack(spacing: 10) {
+                            Avatar(name: account.displayName, size: 30, avatarID: account.avatarId)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(account.displayName).font(CaperTheme.font(13, weight: .medium)).lineLimit(1)
+                                if !account.username.isEmpty {
+                                    Text("@\(account.username)").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1)
+                                }
+                            }
+                            Spacer(minLength: 0)
+                            Button(unblocking.contains(account.id) ? "Unblocking…" : "Unblock") { unblock(account.id) }
+                                .buttonStyle(CaperSecondaryButton()).disabled(unblocking.contains(account.id))
+                                .accessibilityLabel("Unblock \(account.displayName)")
+                                .accessibilityIdentifier("unblock-\(account.id)")
+                        }.frame(minHeight: 44)
+                            .accessibilityElement(children: .contain)
+                            .accessibilityIdentifier("blocked-account-\(account.id)")
+                    }
+                    if let unblockError {
+                        Text(unblockError).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
+                    }
+                }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .background(CaperTheme.surface)
+        .accessibilityIdentifier("privacy-settings")
+        .task {
+            await model.loadPrivacy()
+            await model.refreshBlocks()
+        }
+    }
+
+    private func unblock(_ id: String) {
+        unblocking.insert(id); unblockError = nil
+        Task { @MainActor in
+            do { try await model.unblock(accountID: id) } catch { unblockError = error.localizedDescription }
+            unblocking.remove(id)
+        }
     }
 }
 

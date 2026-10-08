@@ -14,7 +14,15 @@ import { mixWithOtherAudio } from "./session.ts";
 const MAX_VOICES = 4;
 const MAX_DEFERRED_PLAY_MS = 120;
 const effects: readonly SoundEffect[] = [
-  "toggle-off", "toggle-on", "slider-tick", "channel-leave", "disconnect", "warning", "channel-join", "new-message", "delete",
+  "toggle-off",
+  "toggle-on",
+  "slider-tick",
+  "channel-leave",
+  "disconnect",
+  "warning",
+  "channel-join",
+  "new-message",
+  "delete",
 ];
 const buffers = new Map<SoundEffect, Promise<AudioBuffer>>();
 const active: AudioBufferSourceNode[] = [];
@@ -24,14 +32,22 @@ let soundsEnabled = true;
 let soundGeneration = 0;
 
 export function getSystemSoundsEnabled() {
-  try { return localStorage.getItem(SOUND_SETTING) !== "off"; } catch { return soundsEnabled; }
+  try {
+    return localStorage.getItem(SOUND_SETTING) !== "off";
+  } catch {
+    return soundsEnabled;
+  }
 }
 
 export function setSystemSoundsEnabled(enabled: boolean) {
   soundsEnabled = enabled;
   soundGeneration++;
-  try { localStorage.setItem(SOUND_SETTING, enabled ? "on" : "off"); } catch { /* In-memory preference still works. */ }
-  if (!enabled) active.splice(0).forEach(source => source.stop());
+  try {
+    localStorage.setItem(SOUND_SETTING, enabled ? "on" : "off");
+  } catch {
+    /* In-memory preference still works. */
+  }
+  if (!enabled) active.splice(0).forEach((source) => source.stop());
   if (typeof window !== "undefined") window.dispatchEvent(new Event(SOUND_SETTING));
 }
 
@@ -83,12 +99,16 @@ function start(audioContext: AudioContext, buffer: AudioBuffer, volume: number, 
   gain.gain.value = Math.max(0, Math.min(1, volume)) * 0.6;
   source.connect(gain).connect(audioContext.destination);
   active.push(source);
-  source.addEventListener("ended", () => {
-    const index = active.indexOf(source);
-    if (index !== -1) active.splice(index, 1);
-    source.disconnect();
-    gain.disconnect();
-  }, { once: true });
+  source.addEventListener(
+    "ended",
+    () => {
+      const index = active.indexOf(source);
+      if (index !== -1) active.splice(index, 1);
+      source.disconnect();
+      gain.disconnect();
+    },
+    { once: true },
+  );
   source.start();
 }
 
@@ -114,7 +134,9 @@ export function playSound(effect: SoundEffect, options: { volume?: number; playb
       fallback.playbackRate = Math.max(0.5, Math.min(2, options.playbackRate ?? 1));
       fallback.preservesPitch = false;
       void fallback.play().catch(() => undefined);
-    } catch { /* Decorative fallback. */ }
+    } catch {
+      /* Decorative fallback. */
+    }
     return;
   }
   try {
@@ -122,11 +144,19 @@ export function playSound(effect: SoundEffect, options: { volume?: number; playb
     const resumed = audioContext.state === "running" ? Promise.resolve() : audioContext.resume();
     const requestedAt = now();
     const generation = soundGeneration;
-    void Promise.all([load(effect, audioContext), resumed]).then(([buffer]) => {
-      // A slow network/decode must not turn old interactions into a burst of late sounds.
-      if (!getSystemSoundsEnabled() || generation !== soundGeneration || audioContext.state !== "running" || now() - requestedAt > MAX_DEFERRED_PLAY_MS) return;
-      start(audioContext, buffer, options.volume ?? 0.45, options.playbackRate ?? 1);
-    }).catch(() => undefined);
+    void Promise.all([load(effect, audioContext), resumed])
+      .then(([buffer]) => {
+        // A slow network/decode must not turn old interactions into a burst of late sounds.
+        if (
+          !getSystemSoundsEnabled() ||
+          generation !== soundGeneration ||
+          audioContext.state !== "running" ||
+          now() - requestedAt > MAX_DEFERRED_PLAY_MS
+        )
+          return;
+        start(audioContext, buffer, options.volume ?? 0.45, options.playbackRate ?? 1);
+      })
+      .catch(() => undefined);
   } catch {
     // Sound effects are decorative and must never interrupt the interaction.
   }

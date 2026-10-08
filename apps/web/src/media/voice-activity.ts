@@ -11,7 +11,11 @@ export function hasVoiceActivity(samples: Float32Array) {
 }
 
 /** Observe only the speaking indicator; capture and playback keep running in hidden tabs. */
-export function watchVoiceActivity(stream: MediaStream | undefined, muted: boolean, onActivityChange: (active: boolean) => void): () => void {
+export function watchVoiceActivity(
+  stream: MediaStream | undefined,
+  muted: boolean,
+  onActivityChange: (active: boolean) => void,
+): () => void {
   if (!stream || muted || typeof AudioContext === "undefined") return () => {};
 
   let context: AudioContext | undefined;
@@ -49,7 +53,10 @@ export function watchVoiceActivity(stream: MediaStream | undefined, muted: boole
     window.clearInterval(timer);
     timer = undefined;
     lastLoudAt = -Infinity;
-    if (active) { active = false; onActivityChange(false); }
+    if (active) {
+      active = false;
+      onActivityChange(false);
+    }
   };
   const visibilityChanged = () => {
     if (document.visibilityState === "hidden") pause();

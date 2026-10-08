@@ -8,11 +8,13 @@ export interface MentionCandidate {
   avatarId?: number | null;
 }
 
-export type MentionSuggestion =
-  | { kind: "member"; member: MentionCandidate }
-  | { kind: "everyone" | "here" };
+export type MentionSuggestion = { kind: "member"; member: MentionCandidate } | { kind: "everyone" | "here" };
 
-export interface MentionToken { start: number; end: number; query: string }
+export interface MentionToken {
+  start: number;
+  end: number;
+  query: string;
+}
 
 const nameCharacter = /^[A-Za-z0-9_]$/;
 const startBoundary = /[\s([{]/u;
@@ -40,14 +42,23 @@ export function mentionSuggestions(members: MentionCandidate[], query: string, s
   const special = specials
     ? (["everyone", "here"] as const).filter((name) => name.startsWith(needle)).map((kind) => ({ kind }))
     : [];
-  const ranked = members.flatMap((member) => {
-    const username = member.username.toLowerCase();
-    const displayName = member.displayName.toLowerCase();
-    const rank = username === needle ? 0 : username.startsWith(needle) ? 1
-      : displayName.startsWith(needle) || displayName.split(" ").some((word) => word.startsWith(needle)) ? 2
-      : username.includes(needle) ? 3 : 4;
-    return rank < 4 ? [{ member, rank, username }] : [];
-  }).sort((a, b) => a.rank - b.rank || (a.username < b.username ? -1 : a.username > b.username ? 1 : 0));
+  const ranked = members
+    .flatMap((member) => {
+      const username = member.username.toLowerCase();
+      const displayName = member.displayName.toLowerCase();
+      const rank =
+        username === needle
+          ? 0
+          : username.startsWith(needle)
+            ? 1
+            : displayName.startsWith(needle) || displayName.split(" ").some((word) => word.startsWith(needle))
+              ? 2
+              : username.includes(needle)
+                ? 3
+                : 4;
+      return rank < 4 ? [{ member, rank, username }] : [];
+    })
+    .sort((a, b) => a.rank - b.rank || (a.username < b.username ? -1 : a.username > b.username ? 1 : 0));
   return [
     ...ranked.slice(0, 6 - special.length).map(({ member }) => ({ kind: "member" as const, member })),
     ...special,
@@ -68,12 +79,18 @@ export function insertMention(text: string, token: MentionToken, name: string) {
 /** Well-formed entries only; a malformed list must never hide the message itself. */
 function mentionList(mentions: unknown): ChatMention[] {
   return Array.isArray(mentions)
-    ? mentions.filter((mention): mention is ChatMention => !!mention && typeof mention === "object" && typeof mention.type === "string")
+    ? mentions.filter(
+        (mention): mention is ChatMention =>
+          !!mention && typeof mention === "object" && typeof mention.type === "string",
+      )
     : [];
 }
 
 /** A person a user-mention pill points at; `everyone`/`here` pills have none. */
-export interface MentionedUser { id: string; username: string }
+export interface MentionedUser {
+  id: string;
+  username: string;
+}
 
 export interface MentionSegment {
   text: string;
@@ -94,14 +111,19 @@ export function mentionSegments(text: string, mentions: ChatMention[] | undefine
   let plainStart = 0;
   let index = 0;
   while (index < text.length) {
-    if (text[index] !== "@" || (index > 0 && !startBoundary.test(text[index - 1]))) { index++; continue; }
+    if (text[index] !== "@" || (index > 0 && !startBoundary.test(text[index - 1]))) {
+      index++;
+      continue;
+    }
     let end = index + 1;
     while (end < text.length && nameCharacter.test(text[end])) end++;
     const name = text.slice(index + 1, end).toLowerCase();
     if (name.length <= MAX_NAME && resolved.has(name)) {
       if (index > plainStart) segments.push({ text: text.slice(plainStart, index), mention: false });
       const user = resolved.get(name);
-      segments.push(user ? { text: text.slice(index, end), mention: true, user } : { text: text.slice(index, end), mention: true });
+      segments.push(
+        user ? { text: text.slice(index, end), mention: true, user } : { text: text.slice(index, end), mention: true },
+      );
       plainStart = end;
     }
     index = Math.max(end, index + 1);
@@ -113,9 +135,11 @@ export function mentionSegments(text: string, mentions: ChatMention[] | undefine
 /** Highlights a message that names the reader, or `@everyone`/`@here` from someone else. */
 export function mentionsAccount(message: ChatMessage, accountId: string | undefined) {
   if (!accountId) return false;
-  return mentionList(message.content.mentions).some((mention) => mention.type === "user"
-    ? mention.id === accountId
-    : (mention.type === "everyone" || mention.type === "here") && message.author.id !== accountId);
+  return mentionList(message.content.mentions).some((mention) =>
+    mention.type === "user"
+      ? mention.id === accountId
+      : (mention.type === "everyone" || mention.type === "here") && message.author.id !== accountId,
+  );
 }
 
 /** What the profile card shows: the best local match by id, never a network call. */
@@ -126,7 +150,11 @@ export interface MentionCardPerson extends MentionedUser {
 }
 
 /** `directory` is ordered by preference: space members, then people, then DM peers. */
-export function mentionCardPerson(user: MentionedUser, directory: MentionCandidate[], accountId: string | undefined): MentionCardPerson {
+export function mentionCardPerson(
+  user: MentionedUser,
+  directory: MentionCandidate[],
+  accountId: string | undefined,
+): MentionCardPerson {
   const known = directory.find((candidate) => candidate.id === user.id);
   return {
     id: user.id,

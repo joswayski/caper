@@ -1758,6 +1758,117 @@ final class APIClientTests: XCTestCase {
         XCTAssertNil(model.people)
     }
 
+    func testMessageRequestBlockAndPrivacyEndpoints() async throws {
+        let api = client()
+        var requests: [(String, String, Data?)] = []
+        MockURLProtocol.handler = { request in
+            requests.append((request.httpMethod ?? "", request.url!.path, try requestBodyData(request)))
+            XCTAssertEqual(request.value(forHTTPHeaderField: "authorization"), "Bearer account-secret")
+            switch (request.httpMethod, request.url!.path) {
+            case ("POST", "/api/dms/dm0000000003/accept"):
+                return (200, Data(#"{"id":"dm0000000003","peer":{"id":"stranger0001","username":"jordan","displayName":"Jordan","avatarId":412},"lastSeq":"1","readSeq":"0","status":"accepted","blocked":false}"#.utf8))
+            case ("POST", "/api/dms/dm0000000003/decline"), ("PUT", "/api/blocks/member000001"), ("DELETE", "/api/blocks/member000001"):
+                return (204, Data())
+            case ("GET", "/api/blocks"):
+                return (200, Data(#"{"blocks":[{"id":"member000001","username":"maya","displayName":"Maya","avatarId":31}]}"#.utf8))
+            case ("GET", "/api/account/privacy"), ("PUT", "/api/account/privacy"):
+                return (200, Data(#"{"directMessages":"spaces"}"#.utf8))
+            default: throw URLError(.badURL)
+            }
+        }
+        let accepted = try await api.acceptDirectMessage(id: "dm0000000003")
+        XCTAssertEqual(accepted.status, .accepted)
+        XCTAssertEqual(accepted.peer.avatarId, 412)
+        try await api.declineDirectMessage(id: "dm0000000003")
+        try await api.block(accountID: "member000001")
+        let blocked = try await api.blocks()
+        XCTAssertEqual(blocked.map(\.username), ["maya"])
+        try await api.unblock(accountID: "member000001")
+        let privacy = try await api.privacy()
+        XCTAssertEqual(privacy.directMessages, .spaces)
+        let saved = try await api.updatePrivacy(.spaces)
+        XCTAssertEqual(saved.directMessages, .spaces)
+        XCTAssertEqual(requests.map { "\($0.0) \($0.1)" }, [
+            "POST /api/dms/dm0000000003/accept", "POST /api/dms/dm0000000003/decline", "PUT /api/blocks/member000001",
+            "GET /api/blocks", "DELETE /api/blocks/member000001", "GET /api/account/privacy", "PUT /api/account/privacy",
+        ])
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: XCTUnwrap(requests[6].2)) as? [String: String], ["directMessages": "spaces"])
+        do {
+            try await api.block(accountID: "not-an-id")
+            XCTFail("Expected local account ID rejection")
+        } catch let error as APIError { XCTAssertEqual(error.status, 400) }
+    }
+
+    func testDirectMessageRefusalsUseClientWording() async throws {
+        let api = client()
+        var code = "dm_not_accepted"
+        MockURLProtocol.handler = { _ in (403, Data(#"{"error":"server wording","code":"\#(code)"}"#.utf8)) }
+        do {
+            _ = try await api.createDirectMessage(username: "jordan")
+            XCTFail("Expected a refusal")
+        } catch let error as APIError {
+            XCTAssertEqual(error.code, "dm_not_accepted")
+            XCTAssertEqual(error.localizedDescription, "This person isn't accepting direct messages.")
+        }
+        code = "dm_blocked"
+        do {
+            _ = try await api.createDirectMessage(username: "jordan")
+            XCTFail("Expected a refusal")
+        } catch let error as APIError {
+            XCTAssertEqual(error.localizedDescription, "You blocked this person. Unblock them to message them.")
+        }
+        MockURLProtocol.handler = { _ in (403, Data(#"{"error":"Forbidden."}"#.utf8)) }
+        do {
+            _ = try await api.createDirectMessage(username: "jordan")
+            XCTFail("Expected a refusal")
+        } catch let error as APIError { XCTAssertEqual(error.localizedDescription, "Forbidden.", "other errors keep the server's text") }
+    }
+
+    @MainActor
+    func testRequestsDeclineAndBlocksUpdateListsAndTimelines() async throws {
+        let model = AppModel(api: client())
+        model.account = Account(id: "owner0000001", username: "owner", displayName: "Owner")
+        let alex = DirectMessagePeer(id: "member000002", username: "alex", displayName: "Alex")
+        let jordan = DirectMessagePeer(id: "stranger0001", username: "jordan", displayName: "Jordan", avatarId: 412)
+        model.directMessages = [
+            DirectMessageConversation(id: "dm0000000001", peer: alex, lastSeq: "2", readSeq: "1"),
+            DirectMessageConversation(id: "dm0000000003", peer: jordan, lastSeq: "1", readSeq: "0", status: .incoming),
+        ]
+        var blocks: [String] = []
+        MockURLProtocol.handler = { request in
+            switch (request.httpMethod, request.url!.path) {
+            case ("POST", "/api/dms/dm0000000003/decline"): return (204, Data())
+            case ("PUT", "/api/blocks/member000002"): blocks = ["member000002"]; return (204, Data())
+            case ("DELETE", "/api/blocks/member000002"): blocks = []; return (204, Data())
+            case ("GET", "/api/blocks"):
+                let rows = blocks.map { #"{"id":"\#($0)","username":"alex","displayName":"Alex"}"# }.joined(separator: ",")
+                return (200, Data(#"{"blocks":[\#(rows)]}"#.utf8))
+            case ("POST", "/api/auth/logout"): return (204, Data())
+            default: throw URLError(.badURL)
+            }
+        }
+        XCTAssertEqual(model.visibleDirectMessages.map(\.id), ["dm0000000001"])
+        XCTAssertEqual(model.messageRequests.map(\.id), ["dm0000000003"])
+        try await model.declineRequest(model.messageRequests[0])
+        XCTAssertTrue(model.messageRequests.isEmpty)
+
+        try await model.block(BlockTarget(peer: alex))
+        XCTAssertEqual(model.blockedIDs, ["member000002"])
+        XCTAssertEqual(model.chat.blockedAuthorIDs, ["member000002"], "timelines collapse their messages at once")
+        XCTAssertEqual(model.directMessages.first?.blocked, true)
+        try await model.unblock(accountID: "member000002")
+        XCTAssertTrue(model.blockedIDs.isEmpty)
+        XCTAssertTrue(model.chat.blockedAuthorIDs.isEmpty)
+        XCTAssertEqual(model.directMessages.first?.blocked, false)
+        do {
+            try await model.block(BlockTarget(id: "owner0000001", username: "owner", displayName: "Owner"))
+            XCTFail("You can't block yourself")
+        } catch {}
+        await model.logout()
+        XCTAssertTrue(model.blockedAccounts.isEmpty)
+        XCTAssertNil(model.directMessagePrivacy)
+    }
+
     @MainActor
     func testSelfNotesCreateWithOwnUsernameAndReuseWithoutSpace() async throws {
         let model = AppModel(api: client())

@@ -1,9 +1,4 @@
-import {
-  HeadContent,
-  Outlet,
-  Scripts,
-  createRootRoute,
-} from "@tanstack/react-router";
+import { HeadContent, Outlet, Scripts, createRootRoute } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import RotatingFavicon from "../components/RotatingFavicon";
 import { sidebarWidthScript } from "../pages/ChannelSidebar";
@@ -81,7 +76,11 @@ export const Route = createRootRoute({
 });
 
 function RootComponent() {
-  return <RootDocument><Outlet /></RootDocument>;
+  return (
+    <RootDocument>
+      <Outlet />
+    </RootDocument>
+  );
 }
 
 function NotFound() {

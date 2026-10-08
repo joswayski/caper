@@ -125,6 +125,10 @@ struct CheckResult<'a> {
     version: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     notes: Option<&'a str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    changelog: Vec<&'a manifest::ChangelogEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    history_complete: Option<bool>,
     /// False when the install cannot be replaced without admin rights, for
     /// example a Linux .deb under /usr; the app offers a download link instead.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -139,6 +143,8 @@ fn check(options: &Options) -> Result<()> {
             build: None,
             version: None,
             notes: None,
+            changelog: Vec::new(),
+            history_complete: None,
             can_apply: None,
         });
     };
@@ -152,6 +158,8 @@ fn check(options: &Options) -> Result<()> {
             build: Some(manifest.build),
             version: Some(&manifest.version),
             notes: Some(&manifest.notes),
+            changelog: manifest.changes_since(current),
+            history_complete: Some(manifest.history_complete(current)),
             can_apply,
         }),
         None => print_json(&CheckResult {
@@ -159,6 +167,8 @@ fn check(options: &Options) -> Result<()> {
             build: None,
             version: None,
             notes: None,
+            changelog: Vec::new(),
+            history_complete: None,
             can_apply: None,
         }),
     }

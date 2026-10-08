@@ -521,9 +521,12 @@ mod tests {
                 id: id.into(),
                 username: username.into(),
                 display_name: display_name.into(),
+                avatar_id: None,
             },
             last_seq: "0".into(),
             read_seq: "0".into(),
+            status: crate::model::DirectStatus::Accepted,
+            blocked: false,
         };
         let members = [member("u1", "alex", "Alex (space)")];
         let people = [

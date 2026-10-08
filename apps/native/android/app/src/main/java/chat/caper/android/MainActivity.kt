@@ -89,6 +89,11 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
+import chat.caper.android.data.TimelineEntry
+import chat.caper.android.data.directUnread
+import chat.caper.android.data.groupBlocked
+import chat.caper.android.data.mainDirects
+import chat.caper.android.data.messageRequests
 import chat.caper.android.model.*
 import chat.caper.android.ui.*
 import chat.caper.android.voice.VoiceCallService
@@ -151,6 +156,7 @@ private sealed interface Overlay {
     data object LeaveSpace : Overlay
     data object Profile : Overlay
     data object Audio : Overlay
+    data object Privacy : Overlay
     data class AudioPanelOverlay(val panel: AudioPanel) : Overlay
 }
 
@@ -231,7 +237,8 @@ internal data class VoiceJoinIntent(
         }
         Overlay.LeaveSpace -> ConfirmDialog("Leave ${state.selectedSpace?.space?.name}?", "You will lose access to its channels and conversations. An owner can add you again later.", "Leave space", state.busy, { overlay = null }) { viewModel.leaveCurrentSpace { overlay = null } }
         Overlay.Profile -> state.account?.let { account -> ProfileScreen(account, state.busy, state.error, { overlay = null }) { username, display -> viewModel.updateProfile(username, display) { overlay = null } } }
-        Overlay.Audio -> AudioSettingsMenu(state, voice, { overlay = null }, { overlay = Overlay.AudioPanelOverlay(it) }, viewModel::logout, viewModel::showLogin)
+        Overlay.Audio -> AudioSettingsMenu(state, voice, { overlay = null }, { overlay = Overlay.AudioPanelOverlay(it) }, viewModel::logout, viewModel::showLogin) { overlay = Overlay.Privacy }
+        Overlay.Privacy -> PrivacySettingsDialog(state, viewModel) { overlay = null }
         is Overlay.AudioPanelOverlay -> when (shown.panel) {
             AudioPanel.Test -> AudioTestDialog(voice) { overlay = null }
             AudioPanel.Connection -> ConnectionDetailsDialog(voice) { overlay = null }
@@ -660,6 +667,9 @@ private fun Modifier.browseSwipe(open: Boolean, enabled: Boolean, onOpenChange: 
                     Text("Direct messages", Modifier.weight(1f), color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     IconButton({ show(Overlay.StartDirect) }) { Icon(painterResource(R.drawable.lucide_plus), "Start direct message", tint = TextMuted) }
                 }
+                // Requests sit at the top of the section and never add to unread dots.
+                MessageRequestsSection(messageRequests(state.directConversations), state.selectedDirectId, state.requestsOpen,
+                    { viewModel.setRequestsOpen(!state.requestsOpen) }) { request -> viewModel.selectDirect(request); closeNavigation?.invoke() }
                 val selfDirect = state.directConversations.firstOrNull { it.peer.id == state.account.id }
                 val selfSelected = selfDirect != null && selfDirect.id == state.selectedDirectId
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
@@ -672,17 +682,17 @@ private fun Modifier.browseSwipe(open: Boolean, enabled: Boolean, onOpenChange: 
                         Text(state.account.displayName ?: state.account.username ?: "You", Modifier.weight(1f, fill = false), color = if (selfSelected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Spacer(Modifier.width(6.dp)); Text("you", color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     }
-                    if (selfDirect?.let { runCatching { java.math.BigInteger(it.lastSeq) > java.math.BigInteger(it.readSeq) }.getOrDefault(false) } == true)
+                    if (selfDirect?.let(::directUnread) == true)
                         Box(Modifier.size(8.dp).background(TerracottaBright, CircleShape).semantics { contentDescription = "Unread" })
                 }
-                state.directConversations.filter { it.peer.id != state.account.id }.forEach { direct ->
+                mainDirects(state.directConversations).filter { it.peer.id != state.account.id }.forEach { direct ->
                     val selected = state.selectedDirectId == direct.id
-                    val unread = runCatching { java.math.BigInteger(direct.lastSeq) > java.math.BigInteger(direct.readSeq) }.getOrDefault(false)
+                    val unread = directUnread(direct)
                     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
                         .background(if (selected) TerracottaWash else Color.Transparent)
                         .clickable { viewModel.selectDirect(direct); closeNavigation?.invoke() }.padding(horizontal = 9.dp),
                         verticalAlignment = Alignment.CenterVertically) {
-                        Avatar(direct.peer.displayName, 20.dp, modifier = Modifier.padding(horizontal = 3.dp))
+                        Avatar(direct.peer.displayName, 20.dp, modifier = Modifier.padding(horizontal = 3.dp), avatarId = direct.peer.avatarId)
                         Spacer(Modifier.width(9.dp))
                         Column(Modifier.weight(1f)) {
                             Text(direct.peer.displayName, color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -996,7 +1006,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             }
         }
         if (!thread.loading && rows.none { it.threadRootId == thread.rootId }) Text("No replies yet. Start the thread.", Modifier.padding(18.dp), color = TextMuted)
-        if (state.selectedChannel?.joined == true) Column(Modifier.padding(12.dp)) {
+        if (state.canParticipate) Column(Modifier.padding(12.dp)) {
             OutlinedTextField(draft, { draft = it.codePointTake(4000) }, Modifier.fillMaxWidth(), placeholder = { Text("Reply to thread…") }, maxLines = 5,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = KeyboardActions(onSend = { send() }), enabled = !thread.loading)
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1005,7 +1015,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 TextButton(::send, enabled = !thread.loading && state.chatAuthorId != null && state.pendingMessage == null && draft.isNotBlank()) { Text("Send reply") }
             }
             if (state.pendingMessage != null && pending == null) Text("Confirm or dismiss the pending channel message first.", color = TextMuted)
-        } else Text("Join the channel to reply.", Modifier.padding(18.dp), color = TextMuted)
+        } else Text(if (state.selectedDirect?.incoming == true) "Accept the request to reply." else "Join the channel to reply.", Modifier.padding(18.dp), color = TextMuted)
     }
 }
 
@@ -1020,6 +1030,11 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     var channelMenuOpen by remember(channel.id) { mutableStateOf(false) }
     var showingPins by remember(channel.id) { mutableStateOf(false) }
     val joined = channel.joined
+    // A 1:1 DM (not your notes) offers Block / Unblock; a request does so in its own bar.
+    val direct = state.selectedDirect?.takeIf { channel.direct && it.peer.id != state.account?.id && !it.incoming }
+    var confirmBlock by remember(channel.id) { mutableStateOf(false) }
+    if (confirmBlock && direct != null) BlockConfirmDialog(BlockedAccount(direct.peer.id, direct.peer.username, direct.peer.displayName, direct.peer.avatarId), viewModel, { confirmBlock = false })
+    fun toggleBlock() { if (direct == null) return; if (direct.blocked) viewModel.unblock(direct.peer.id) else confirmBlock = true }
     Column(modifier.fillMaxHeight().background(SurfaceConversation)) {
         // Web waits a second before announcing a lost connection.
         val live = state.gateway == GatewayStatus.LIVE
@@ -1042,10 +1057,15 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     if (!channel.direct && joined) DropdownMenuItem(text = { Text(if (membersVisible) "Hide member list" else "Members") },
                         leadingIcon = { Icon(painterResource(R.drawable.lucide_users), null) },
                         onClick = { channelMenuOpen = false; toggleMembers() })
+                    if (direct != null) DropdownMenuItem(text = { Text(if (direct.blocked) "Unblock" else "Block", color = if (direct.blocked) Text else ErrorText) },
+                        onClick = { channelMenuOpen = false; toggleBlock() })
                 }
             } else Text(if (channel.direct) channel.name else "# ${channel.name}", Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (!narrow) TextButton({ showingPins = !showingPins }, Modifier.heightIn(min = 48.dp)) {
                 Text(if (showingPins) "Messages" else "Pins (${state.pinnedMessages.size})", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
+            if (!narrow && direct != null) TextButton(::toggleBlock, Modifier.heightIn(min = 48.dp)) {
+                Text(if (direct.blocked) "Unblock" else "Block", color = if (direct.blocked) TextMuted else ErrorText, fontSize = 11.sp, fontWeight = FontWeight.Bold)
             }
             if (!channel.direct && !joined) Button({ viewModel.joinChannel(channel) }, enabled = !state.busy, shape = MaterialTheme.shapes.small) { Text("Join channel") }
             if (!live && showConnection) Text(if (state.gateway == GatewayStatus.ERROR || state.messagesError != null) "Offline" else "Connecting…", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
@@ -1096,7 +1116,12 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         }
         if (joined) TypingLine(state.typingAuthors)
         if (joined) HorizontalDivider(color = Border)
-        if (joined) Column(Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
+        val request = state.selectedDirect?.takeIf { channel.direct && it.incoming }
+        // An incoming request is read-only until you answer it; a blocked DM offers Unblock instead.
+        if (joined && request != null) RequestBar(request, viewModel) { if (narrow) openNavigation() }
+        else if (joined && direct?.blocked == true) BlockedDirectNotice(direct, viewModel)
+        else if (joined) Column(Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
+            if (direct?.outgoing == true) OutgoingRequestNotice(direct)
             state.pendingMessage?.threadRootId?.let { root -> TextButton({ viewModel.openThread(root) }) { Text("Pending reply · Open thread") } }
             state.sessionError?.let { error ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1266,6 +1291,12 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     // The tapped person's `user` mention entry; another pill replaces it.
     var mentionTarget by remember { mutableStateOf<MessageMention?>(null) }
     val messages = if (inThread) state.messages else state.messages.filter { (it.threadRootId == null || it.broadcast) && it.id !in state.threadOnlyRows }
+    // Runs of blocked authors' messages collapse; Show reveals one run, in memory only.
+    var revealedRuns by remember { mutableStateOf(emptySet<String>()) }
+    var blockTarget by remember { mutableStateOf<BlockedAccount?>(null) }
+    val selfId = state.chatAuthorId ?: state.account?.id
+    val blocked = state.blockedIds
+    val rows = remember(messages, blocked, selfId, revealedRuns) { timelineRows(groupBlocked(messages, blocked, selfId, revealedRuns)) }
     LaunchedEffect(state.account?.id, state.selectedSpace?.space?.id, state.selectedChannel?.id, state.selectedDirectId) {
         actionTarget = null
         pickerTarget = null
@@ -1275,6 +1306,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         conversationTarget = null
         editTarget = null
         historyTarget = null
+        blockTarget = null
+        revealedRuns = emptySet()
     }
     // Web's chat phases: loading, failed first load, then the conversation.
     if (state.messagesLoading) return Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -1304,11 +1337,15 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             }
         }
         // Keep the message keys stable while inserting purely presentational day boundaries.
-        itemsIndexed(messages, key = { _, message -> message.id }) { index, message ->
-            if (index == 0 || !sameLocalDay(messages[index - 1].createdAt, message.createdAt)) {
+        items(rows, key = { it.key }) { row ->
+            val message = row.first
+            val previous = row.previous
+            if (previous == null || !sameLocalDay(previous.createdAt, message.createdAt)) {
                 DateDivider(message.createdAt)
             }
-            Column(Modifier.background(if (!inThread && state.thread?.rootId == message.id) Color(0xFFE4C76A).copy(alpha = 0.1f) else Color.Transparent)) {
+            if (row is TimelineRow.Blocked) BlockedRunRow(row.run.messages.size, row.run.revealed) {
+                revealedRuns = if (row.run.revealed) revealedRuns - row.run.key else revealedRuns + row.run.key
+            } else Column(Modifier.background(if (!inThread && state.thread?.rootId == message.id) Color(0xFFE4C76A).copy(alpha = 0.1f) else Color.Transparent)) {
               ReactionMessageRow(
                 message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
                 openReactors = { target, emoji -> reactorsTarget = target.id to emoji },
@@ -1353,8 +1390,18 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             forward = { actionTarget = null; forwardTarget = presented },
             onEdit = if (viewModel.canEdit(presented)) ({ actionTarget = null; editTarget = presented }) else null,
             onHistory = { actionTarget = null; historyTarget = presented },
+            blockLabel = presented.author.takeIf { state.account != null && !it.isGuest && it.id != selfId }?.let { author ->
+                val target = viewModel.blockTarget(author)
+                val name = if (target.username.isNotBlank()) "@${target.username}" else target.displayName
+                if (author.id in blocked) "Unblock $name" else "Block $name"
+            },
+            onBlock = {
+                actionTarget = null
+                if (presented.author.id in blocked) viewModel.unblock(presented.author.id) else blockTarget = viewModel.blockTarget(presented.author)
+            },
         )
     }
+    blockTarget?.let { target -> BlockConfirmDialog(target, viewModel, { blockTarget = null }) }
     editTarget?.let { target ->
         if (viewModel.canEdit(target)) MessageEditorDialog(target, viewModel) { editTarget = null }
         else LaunchedEffect(target.id) { editTarget = null }
@@ -1381,11 +1428,41 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         }
     }
     pickerTarget?.let { target ->
-        val canReact = state.selectedChannel?.joined == true && (state.chatAuthorId ?: state.account?.id) != null
+        val canReact = state.canParticipate && (state.chatAuthorId ?: state.account?.id) != null
         if (canReact) EmojiPicker(onDismiss = { pickerTarget = null }) { emoji ->
             pickerTarget = null
             viewModel.setReaction(target.id, emoji, true)
         } else LaunchedEffect(Unit) { pickerTarget = null }
+    }
+}
+
+/** A flattened timeline row; [previous] decides the day divider. */
+private sealed interface TimelineRow {
+    val key: String
+    val first: ChatMessage
+    val previous: ChatMessage?
+    data class Message(val message: ChatMessage, override val previous: ChatMessage?) : TimelineRow {
+        override val key get() = message.id
+        override val first get() = message
+    }
+    data class Blocked(val run: TimelineEntry.BlockedRun, override val previous: ChatMessage?) : TimelineRow {
+        override val key get() = "blocked:${run.key}"
+        override val first get() = run.first
+    }
+}
+
+/** A revealed run lists its messages under its Hide row, without repeating the day divider. */
+private fun timelineRows(entries: List<TimelineEntry>): List<TimelineRow> = buildList {
+    var previous: ChatMessage? = null
+    entries.forEach { entry ->
+        when (entry) {
+            is TimelineEntry.Shown -> add(TimelineRow.Message(entry.message, previous))
+            is TimelineEntry.BlockedRun -> {
+                add(TimelineRow.Blocked(entry, previous))
+                if (entry.revealed) entry.messages.forEachIndexed { index, message -> add(TimelineRow.Message(message, if (index == 0) message else entry.messages[index - 1])) }
+            }
+        }
+        previous = entry.last
     }
 }
 
@@ -1418,7 +1495,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     openActions: (ChatMessage) -> Unit,
 ) {
     val own = state.chatAuthorId ?: state.account?.id
-    val canReact = state.selectedChannel?.joined == true && own != null
+    val canReact = state.canParticipate && own != null
     val saves = state.reactionSaves.filterKeys { it.startsWith("${message.id}:") }.values
     // A message that mentions you: terracotta wash with a 2dp leading edge (over a pinned message's gold wash).
     val mentioned = mentionsMe(message.content.mentions, message.author.id, state.account?.id ?: state.chatAuthorId)
@@ -1478,11 +1555,13 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     forward: () -> Unit = {},
     onEdit: (() -> Unit)? = null,
     onHistory: (() -> Unit)? = null,
+    blockLabel: String? = null,
+    onBlock: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val clipboard = context.getSystemService(ClipboardManager::class.java)
     val own = state.chatAuthorId ?: state.account?.id
-    val canReact = state.selectedChannel?.joined == true && own != null
+    val canReact = state.canParticipate && own != null
     fun copy(label: String, value: String) {
         clipboard.setPrimaryClip(ClipData.newPlainText(label, value))
         onDismiss()
@@ -1527,6 +1606,10 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                     TextButton({ copy("Message text", message.content.text) }, Modifier.fillMaxWidth().heightIn(min = 48.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) { Text("Copy text", Modifier.fillMaxWidth()) }
                     HorizontalDivider(color = Border)
                     TextButton({ copy("Message ID", message.id) }, Modifier.fillMaxWidth().heightIn(min = 48.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) { Text("Copy message ID", Modifier.fillMaxWidth()) }
+                    blockLabel?.let { label ->
+                        HorizontalDivider(color = Border)
+                        TextButton(onBlock, Modifier.fillMaxWidth().heightIn(min = 48.dp), colors = ButtonDefaults.textButtonColors(contentColor = if (label.startsWith("Block")) ErrorText else Text)) { Text(label, Modifier.fillMaxWidth()) }
+                    }
                 }
             }
         }
@@ -1552,7 +1635,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                 MessageRow(message) { if (message.forward == null) historyTarget = message }
                 ForwardCard(message) { conversationTarget = message }
                 if (viewModel.canEdit(message)) TextButton({ editTarget = message }, Modifier.padding(start = 62.dp)) { Text("Edit message") }
-                if (state.selectedChannel?.joined == true && (state.chatAuthorId ?: state.account?.id) != null) {
+                if (state.canParticipate && (state.chatAuthorId ?: state.account?.id) != null) {
                     val saving = state.pinSaves[message.id]?.saving == true
                     TextButton({ viewModel.setPin(message.id, false) }, enabled = !saving, modifier = Modifier.padding(start = 62.dp).heightIn(min = 48.dp)) {
                         Text(if (saving) "Unpinning…" else "Unpin")

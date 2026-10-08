@@ -26,8 +26,16 @@ const CHECK_EVERY: Duration = Duration::from_secs(60);
 pub struct Available {
     pub version: String,
     pub notes: String,
+    pub changelog: Vec<ChangelogEntry>,
+    pub history_complete: bool,
     /// False when the updater cannot replace this install, e.g. the .deb.
     pub can_apply: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct ChangelogEntry {
+    pub version: String,
+    pub notes: String,
 }
 
 #[derive(Deserialize)]
@@ -37,6 +45,10 @@ struct CheckOutput {
     version: String,
     #[serde(default)]
     notes: String,
+    #[serde(default)]
+    changelog: Vec<ChangelogEntry>,
+    #[serde(default)]
+    history_complete: bool,
     #[serde(default)]
     can_apply: bool,
 }
@@ -130,7 +142,7 @@ impl Updates {
         }
     }
 
-    /// The banner as a release would show it, for the `parity-update` fixture.
+    /// The notice as a release would show it, for the `parity-update` fixture.
     pub fn preview(available: Available) -> Self {
         Self {
             install: None,
@@ -275,6 +287,8 @@ fn parse(stdout: &[u8]) -> Result<Option<Available>, String> {
     Ok(output.update.then_some(Available {
         version: output.version,
         notes: output.notes,
+        changelog: output.changelog,
+        history_complete: output.history_complete,
         can_apply: output.can_apply,
     }))
 }
@@ -297,6 +311,8 @@ mod tests {
         Available {
             version: version.into(),
             notes: "Release notes".into(),
+            changelog: Vec::new(),
+            history_complete: false,
             can_apply: true,
         }
     }
@@ -504,6 +520,8 @@ mod tests {
             Some(Available {
                 version: "0.1.7".into(),
                 notes: "Screen sharing".into(),
+                changelog: Vec::new(),
+                history_complete: false,
                 can_apply: true,
             })
         );
@@ -515,5 +533,15 @@ mod tests {
                 .can_apply
         );
         assert!(parse(b"not json").is_err());
+    }
+
+    #[test]
+    fn parses_stacked_notes_and_the_explicit_history_gap() {
+        let output = br#"{"update":true,"version":"0.1.42","notes":"Latest only","changelog":[{"build":42,"version":"0.1.42","notes":"Newest"},{"build":39,"version":"0.1.39","notes":"Skipped"}],"history_complete":true,"can_apply":true}"#;
+        let available = parse(output).unwrap().unwrap();
+        assert!(available.history_complete);
+        assert_eq!(available.changelog.len(), 2);
+        assert_eq!(available.changelog[1].notes, "Skipped");
+        assert_eq!(available.changelog[1].version, "0.1.39");
     }
 }

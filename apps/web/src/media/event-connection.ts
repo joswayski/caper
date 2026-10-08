@@ -35,30 +35,41 @@ export class EventConnection {
     this.live = live;
   }
 
-  open(token: string, signal: AbortSignal) { return this.start(token, signal); }
-  openPresence(signal: AbortSignal) { return this.start(undefined, signal); }
+  open(token: string, signal: AbortSignal) {
+    return this.start(token, signal);
+  }
+  openPresence(signal: AbortSignal) {
+    return this.start(undefined, signal);
+  }
 
   private start(token: string | undefined, signal: AbortSignal) {
     if (signal.aborted) return Promise.reject(signal.reason);
     this.owner = signal;
     signal.addEventListener("abort", this.stop, { once: true });
-    this.subscription = appGateway().subscribe({
-      kind: "media", channelId: channelFromRoot(this.apiRoot), token,
-    }, {
-      status: (online) => {
-        if (this.stopped) return;
-        const changed = this.connected !== online;
-        this.connected = online;
-        if (changed) this.live?.(online);
-        if (online) this.wasConnected = true;
-        if (changed && this.wasConnected) this.changed();
+    this.subscription = appGateway().subscribe(
+      {
+        kind: "media",
+        channelId: channelFromRoot(this.apiRoot),
+        token,
       },
-      error: (error) => { if (!this.stopped) this.lost(error, false); },
-      event: (value) => {
-        if (this.stopped) return;
-        this.snapshot(callSnapshot(value, token === undefined));
+      {
+        status: (online) => {
+          if (this.stopped) return;
+          const changed = this.connected !== online;
+          this.connected = online;
+          if (changed) this.live?.(online);
+          if (online) this.wasConnected = true;
+          if (changed && this.wasConnected) this.changed();
+        },
+        error: (error) => {
+          if (!this.stopped) this.lost(error, false);
+        },
+        event: (value) => {
+          if (this.stopped) return;
+          this.snapshot(callSnapshot(value, token === undefined));
+        },
       },
-    });
+    );
     return this.subscription.ready.then(() => {
       if (signal.aborted) throw signal.reason;
     });

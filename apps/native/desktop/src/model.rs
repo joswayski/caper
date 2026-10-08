@@ -62,6 +62,31 @@ pub struct DirectPeer {
     pub id: String,
     pub username: String,
     pub display_name: String,
+    #[serde(default)]
+    pub avatar_id: Option<i32>,
+}
+
+/// Whether a DM is a message request. Old servers omit it: `Accepted`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DirectStatus {
+    #[default]
+    Accepted,
+    /// You started it; they have not accepted yet.
+    Outgoing,
+    /// A request to you from someone you share no space with.
+    Incoming,
+}
+
+fn direct_status<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<DirectStatus, D::Error> {
+    Ok(
+        match Option::<String>::deserialize(deserializer)?.as_deref() {
+            Some("outgoing") => DirectStatus::Outgoing,
+            Some("incoming") => DirectStatus::Incoming,
+            _ => DirectStatus::Accepted,
+        },
+    )
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -71,6 +96,35 @@ pub struct DirectConversation {
     pub peer: DirectPeer,
     pub last_seq: String,
     pub read_seq: String,
+    #[serde(default, deserialize_with = "direct_status")]
+    pub status: DirectStatus,
+    /// You blocked the peer (they are never told). Old servers omit it.
+    #[serde(default)]
+    pub blocked: bool,
+}
+
+/// `GET /api/blocks` entry: an account you blocked.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockedAccount {
+    pub id: String,
+    pub username: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub avatar_id: Option<i32>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct Blocks {
+    pub blocks: Vec<BlockedAccount>,
+}
+
+/// `GET/PUT /api/account/privacy`: who can start a DM with you, as
+/// `anyone`, `spaces` or `nobody`.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Privacy {
+    pub direct_messages: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2009,5 +2063,56 @@ mod tests {
         assert_eq!(direct.peer.display_name, "TEST FIXTURE Alex");
         assert_eq!(sequence(&direct.last_seq), Ok(12));
         assert_eq!(sequence(&direct.read_seq), Ok(9));
+        assert_eq!(
+            direct.status,
+            DirectStatus::Accepted,
+            "old servers omit status"
+        );
+        assert!(!direct.blocked, "old servers omit blocked");
+        assert_eq!(direct.peer.avatar_id, None);
+    }
+
+    #[test]
+    fn request_status_blocks_and_privacy_decode() {
+        let parsed: DirectConversations = serde_json::from_value(serde_json::json!({
+            "conversations": [
+                {"id": "a", "peer": {"id": "p1", "username": "jordan", "displayName": "Jordan", "avatarId": 412},
+                 "lastSeq": "1", "readSeq": "0", "status": "incoming", "blocked": false},
+                {"id": "b", "peer": {"id": "p2", "username": "sam", "displayName": "Sam", "avatarId": null},
+                 "lastSeq": "0", "readSeq": "0", "status": "outgoing", "blocked": true},
+                {"id": "c", "peer": {"id": "p3", "username": "alex", "displayName": "Alex"},
+                 "lastSeq": "0", "readSeq": "0", "status": null},
+                {"id": "d", "peer": {"id": "p4", "username": "kim", "displayName": "Kim"},
+                 "lastSeq": "0", "readSeq": "0", "status": "archived"}
+            ]
+        }))
+        .unwrap();
+        let statuses: Vec<_> = parsed
+            .conversations
+            .iter()
+            .map(|direct| (direct.status, direct.blocked))
+            .collect();
+        assert_eq!(
+            statuses,
+            [
+                (DirectStatus::Incoming, false),
+                (DirectStatus::Outgoing, true),
+                (DirectStatus::Accepted, false),
+                (DirectStatus::Accepted, false),
+            ]
+        );
+        assert_eq!(parsed.conversations[0].peer.avatar_id, Some(412));
+        let blocks: Blocks = serde_json::from_value(serde_json::json!({"blocks": [
+            {"id": "member000001", "username": "maya", "displayName": "Maya", "avatarId": null}
+        ]}))
+        .unwrap();
+        assert_eq!(blocks.blocks[0].username, "maya");
+        let privacy: Privacy =
+            serde_json::from_value(serde_json::json!({"directMessages": "spaces"})).unwrap();
+        assert_eq!(privacy.direct_messages, "spaces");
+        assert_eq!(
+            serde_json::to_value(&privacy).unwrap(),
+            serde_json::json!({"directMessages": "spaces"})
+        );
     }
 }

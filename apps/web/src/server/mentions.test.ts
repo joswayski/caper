@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { insertMention, mentionCardPerson, mentionName, mentionSegments, mentionSuggestions, mentionToken, mentionsAccount, type MentionCandidate } from "../chat/mentions.ts";
+import { test } from "vitest";
+import {
+  insertMention,
+  mentionCardPerson,
+  mentionName,
+  mentionSegments,
+  mentionSuggestions,
+  mentionToken,
+  mentionsAccount,
+  type MentionCandidate,
+} from "../chat/mentions.ts";
 import type { ChatMessage } from "../chat/types.ts";
 
 const members: MentionCandidate[] = [
@@ -60,12 +69,18 @@ test("only server-resolved names render as mentions", () => {
   ]);
   assert.deepEqual(mentionSegments("@maya", undefined), [{ text: "@maya", mention: false }]);
   assert.deepEqual(mentionSegments("@maya", "bad" as never), [{ text: "@maya", mention: false }]);
-  assert.deepEqual(mentionSegments(`@${"m".repeat(33)}`, [{ type: "user", id: "x", username: "m".repeat(33) }]), [{ text: `@${"m".repeat(33)}`, mention: false }]);
+  assert.deepEqual(mentionSegments(`@${"m".repeat(33)}`, [{ type: "user", id: "x", username: "m".repeat(33) }]), [
+    { text: `@${"m".repeat(33)}`, mention: false },
+  ]);
 });
 
 test("a message mentions the reader by id or by everyone/here from someone else", () => {
   const message = (author: string, mentions: unknown): ChatMessage => ({
-    id: "m", channelId: "c", seq: "1", createdAt: "", clientMessageId: "x",
+    id: "m",
+    channelId: "c",
+    seq: "1",
+    createdAt: "",
+    clientMessageId: "x",
     author: { id: author, name: author, isGuest: false },
     content: { version: 1, type: "text", text: "", mentions: mentions as never },
   });
@@ -83,10 +98,20 @@ test("profile cards prefer the most specific local match and flag yourself", () 
     { id: "u-maya", username: "maya", displayName: "Maya Lopez", avatarId: 31 },
     { id: "u-maya", username: "maya", displayName: "Stale Maya" },
   ];
-  assert.deepEqual(mentionCardPerson({ id: "u-maya", username: "maya" }, directory, "u-me"),
-    { id: "u-maya", username: "maya", displayName: "Maya Lopez", avatarId: 31, self: false });
-  assert.deepEqual(mentionCardPerson({ id: "u-stranger", username: "sam" }, directory, "u-me"),
-    { id: "u-stranger", username: "sam", displayName: undefined, avatarId: undefined, self: false });
+  assert.deepEqual(mentionCardPerson({ id: "u-maya", username: "maya" }, directory, "u-me"), {
+    id: "u-maya",
+    username: "maya",
+    displayName: "Maya Lopez",
+    avatarId: 31,
+    self: false,
+  });
+  assert.deepEqual(mentionCardPerson({ id: "u-stranger", username: "sam" }, directory, "u-me"), {
+    id: "u-stranger",
+    username: "sam",
+    displayName: undefined,
+    avatarId: undefined,
+    self: false,
+  });
   assert.equal(mentionCardPerson({ id: "u-me", username: "me" }, directory, "u-me").self, true);
   assert.equal(mentionCardPerson({ id: "u-me", username: "me" }, directory, undefined).self, false);
 });

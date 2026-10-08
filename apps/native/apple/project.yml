@@ -295,6 +295,7 @@ targets:
       - Tests/CaperCoreTests/EmojiAutocompleteTests.swift
       - Tests/CaperCoreTests/MentionAutocompleteTests.swift
       - Tests/CaperCoreTests/MentionCardTests.swift
+      - Tests/CaperCoreTests/MessageRequestsTests.swift
     dependencies:
       - target: CaperCoreIOS
       - target: CaperRTCBridgeIOS

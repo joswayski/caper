@@ -322,6 +322,74 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertFalse(app.buttons["mention-card-message"].exists, "Your own card has no Message button")
         capture("mention-card-self", app: app)
     }
+    #if os(iOS)
+    func testIPhoneComposerUsesContentHeightAndShrinksAfterEditing() throws {
+        let app = launch()
+        let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 30,
+                                   "Missing message composer")
+        let send = app.buttons["send-message-button"]
+        XCTAssertTrue(focus(composer))
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
+        XCTAssertEqual(composer.frame.height, 42, accuracy: 2)
+        // The text view already measured 42 points before the fix. Its bottom
+        // must align with Send too, or its background can still occupy 174.
+        XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
+        capture("composer-empty-keyboard", app: app)
+
+        let short = "Compact draft"
+        composer.typeText(short)
+        XCTAssertEqual(composer.frame.height, 42, accuracy: 2)
+        XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
+        XCTAssertLessThanOrEqual(send.frame.maxY, app.keyboards.firstMatch.frame.minY)
+        capture("composer-single-line-keyboard", app: app)
+
+        let multiline = "\nSecond line\nThird line"
+        composer.typeText(multiline)
+        XCTAssertEqual(composer.value as? String, short + multiline)
+        XCTAssertGreaterThan(composer.frame.height, 62, "The fix must not freeze the composer at one line")
+        XCTAssertLessThan(composer.frame.height, 174, "A three-line draft must not jump straight to the cap")
+        XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
+        capture("composer-multiline-keyboard", app: app)
+
+        let overflow = String(repeating: "\nmore", count: 16)
+        composer.typeText(overflow)
+        XCTAssertEqual(composer.value as? String, short + multiline + overflow,
+                       "Scrolling must retain lines beyond the visible height")
+        XCTAssertEqual(composer.frame.height, 174, accuracy: 2)
+        XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
+        XCTAssertTrue(send.isHittable, "Send must remain available above the keyboard at the height cap")
+        capture("composer-capped-keyboard", app: app)
+
+        composer.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: multiline.count + overflow.count))
+        XCTAssertEqual(composer.value as? String, short)
+        XCTAssertEqual(composer.frame.height, 42, accuracy: 2, "Removing extra lines must shrink the composer")
+        XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
+        composer.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: short.count))
+        XCTAssertEqual(composer.value as? String, "")
+        XCTAssertEqual(composer.frame.height, 42, accuracy: 2)
+        XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
+    }
+
+    func testIPhoneThreadComposerDoesNotFillItsMaximumHeight() throws {
+        let app = launch()
+        let row = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30,
+                              "Missing fixture message")
+        hold(row)
+        try require(app.buttons["Reply in thread"], timeout: 5, "Missing thread action").tap()
+        try require(app.buttons["Back to channel"], timeout: 5, "Thread did not open")
+        let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 5,
+                                   "Missing thread composer")
+        XCTAssertTrue(focus(composer))
+        composer.typeText("Short reply")
+        let send = app.buttons["Send reply"]
+        XCTAssertEqual(composer.frame.height, 42, accuracy: 2)
+        // Keep the existing 72-point thread minimum, without the 66-point gap
+        // below the text view that a 174-point background would introduce.
+        XCTAssertLessThan(send.frame.minY - composer.frame.maxY, 32)
+        XCTAssertTrue(send.isHittable)
+        capture("thread-composer-single-line-keyboard", app: app)
+    }
+    #endif
 
     func testReactionChipsPickerAndEmptySearchState() throws {
         let app = launch(fixture: "reaction-chips")
@@ -1077,6 +1145,11 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(delivered.count, 1, "HTTP confirmation and gateway delivery must merge into one message")
         let cleared = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == ''"), object: composer)
         XCTAssertEqual(XCTWaiter.wait(for: [cleared], timeout: 5), .completed)
+        #if os(iOS)
+        XCTAssertEqual(composer.frame.height, 42, accuracy: 2)
+        XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2,
+                       "Sending must leave a compact composer background")
+        #endif
 
         // An optimistic row and an empty composer are not proof of delivery.
         // Verify the exact content was accepted once by the local fixture API.
@@ -1229,7 +1302,9 @@ final class CaperParityUITests: XCTestCase {
             XCTFail("Output gain slider must expose its actual gain percentage")
             return
         }
-        XCTAssertTrue((140...160).contains(displayedGain), "A 75% slider gesture should select approximately 150% of the 0–200% range")
+        // XCUITest's slider drag lands only approximately on iOS simulators, so
+        // accept a band around 150% and report what it actually selected.
+        XCTAssertTrue((120...180).contains(displayedGain), "A 75% slider gesture should select approximately 150% of the 0–200% range (got \(displayedGain)%)")
         XCTAssertNotEqual(displayedGain, 100, "The gesture must change the gain")
         assertStaticText("\(displayedGain)%", in: app, timeout: 2)
         #if os(iOS)
@@ -1474,6 +1549,48 @@ final class CaperParityUITests: XCTestCase {
         assertStaticText("Sign-in is temporarily unavailable. Please try again later.", in: app, timeout: 5)
         capture("login-error", app: app)
     }
+
+    /// Blocks an account through the fixture as the signed-in owner.
+    private nonisolated static func fixtureBlock(_ accountID: String) async throws {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:3001/api/blocks/\(accountID)")!)
+        request.httpMethod = "PUT"
+        request.setValue("Bearer fixture-owner-token", forHTTPHeaderField: "authorization")
+        let (_, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 204)
+    }
+
+    func testBlockedAuthorsCollapseUntilShown() async throws {
+        try await Self.fixtureControl(["reset": true])
+        addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+        // Maya wrote the second and third seeded messages in #general.
+        try await Self.fixtureBlock("member000001")
+        let app = launch()
+        let toggle = try require(app.buttons["blocked-run-toggle"], timeout: 30, "Maya's messages must collapse into one run")
+        XCTAssertEqual(toggle.label, "Show 2 blocked messages")
+        XCTAssertFalse(app.descendants(matching: .any)["message-row-chan00000001m02"].exists)
+        capture("blocked-messages-collapsed", app: app)
+        toggle.tap()
+        _ = try require(app.descendants(matching: .any)["message-row-chan00000001m02"], timeout: 5, "Show must reveal the run in place")
+        XCTAssertTrue(app.descendants(matching: .any)["message-row-chan00000001m03"].exists)
+        XCTAssertEqual(app.buttons["blocked-run-toggle"].label, "Hide 2 blocked messages")
+    }
+
+    #if os(macOS)
+    func testMessageRequestOpensReadOnlyAndDeclines() async throws {
+        try await Self.fixtureControl(["reset": true])
+        addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+        try await Self.fixtureControl(["messageRequest": [String: String]()])
+        let app = launch()
+        try require(app.buttons["message-requests"], timeout: 30, "An incoming request adds the Message requests row").tap()
+        try require(app.buttons["message-request-dm0000000003"], timeout: 5, "The list shows Jordan's request").tap()
+        _ = try require(app.descendants(matching: .any)["message-request-bar"], timeout: 10, "A request replaces the composer")
+        XCTAssertFalse(app.descendants(matching: .any)["message-composer"].exists, "Requests are read-only")
+        capture("message-request-bar", app: app)
+        app.buttons["message-request-decline"].tap()
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.buttons["message-requests"])
+        XCTAssertEqual(XCTWaiter.wait(for: [gone], timeout: 10), .completed, "Declining removes the last request")
+    }
+    #endif
 
     func testManageSpace() {
         let app = launch(fixture: "manage-space")

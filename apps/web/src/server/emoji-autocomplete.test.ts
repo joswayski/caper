@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { test } from "node:test";
+import { test } from "vitest";
 import { emojiToken, emojiSuggestions, insertEmoji, type EmojiChoice } from "../chat/emoji-autocomplete.ts";
 
-const catalog: EmojiChoice[] = JSON.parse(readFileSync(new URL("../../../../shared/emoji/catalog.json", import.meta.url), "utf8"))
-  .filter((entry: { selectable: boolean }) => entry.selectable);
+const catalog: EmojiChoice[] = JSON.parse(
+  readFileSync(new URL("../../../../shared/emoji/catalog.json", import.meta.url), "utf8"),
+).filter((entry: { selectable: boolean }) => entry.selectable);
 
 test("colon autocomplete respects boundaries, selections and complete tokens", () => {
   for (const text of [":", ":tom", "hello (:tom", "line\n:+1", ":thumbs_up", ":thumbs-up"]) {
@@ -25,8 +26,15 @@ test("catalog search matches names, aliases and stable ranked results", () => {
   assert.equal(emojiSuggestions(catalog, "thumbs_up")[0].emoji, "👍");
   assert.equal(emojiSuggestions(catalog, "+1")[0].emoji, "👍");
   assert.equal(emojiSuggestions(catalog, "WOMAN-TECHNOLOGIST")[0].emoji, "👩‍💻");
-  assert.equal(emojiSuggestions(catalog, "red_heart")[0].emoji, "❤️", "Insertion must retain emoji presentation selectors");
-  assert.deepEqual(emojiSuggestions(catalog, "").map((entry) => entry.id), ["1f44d", "1f600", "2764", "1f389", "1f680", "1f440"]);
+  assert.equal(
+    emojiSuggestions(catalog, "red_heart")[0].emoji,
+    "❤️",
+    "Insertion must retain emoji presentation selectors",
+  );
+  assert.deepEqual(
+    emojiSuggestions(catalog, "").map((entry) => entry.id),
+    ["1f44d", "1f600", "2764", "1f389", "1f680", "1f440"],
+  );
   assert.equal(emojiSuggestions(catalog, "face").length, 6);
   assert.deepEqual(emojiSuggestions(catalog, "notanemojiname"), []);
   const entries = [
@@ -35,7 +43,10 @@ test("catalog search matches names, aliases and stable ranked results", () => {
     { id: "prefix", emoji: "c", name: "rock et fuel", keywords: "" },
     { id: "exact", emoji: "d", name: "rock et", keywords: "" },
   ];
-  assert.deepEqual(emojiSuggestions(entries, "rock_et").map((entry) => entry.id), ["exact", "prefix", "keyword", "substring"]);
+  assert.deepEqual(
+    emojiSuggestions(entries, "rock_et").map((entry) => entry.id),
+    ["exact", "prefix", "keyword", "substring"],
+  );
 });
 
 test("country flags use clean names in suggestions and insert the original Unicode", () => {
@@ -53,7 +64,8 @@ test("country flags use clean names in suggestions and insert the original Unico
     assert.equal(choice.name, name);
     const text = `flag :${query}`;
     assert.deepEqual(insertEmoji(text, emojiToken(text, text.length)!, choice.emoji), {
-      value: `flag ${emoji}`, caret: `flag ${emoji}`.length,
+      value: `flag ${emoji}`,
+      caret: `flag ${emoji}`.length,
     });
   }
 });
@@ -61,7 +73,10 @@ test("country flags use clean names in suggestions and insert the original Unico
 test("insertion preserves Unicode prefix/suffix and enforces scalar boundary", () => {
   const text = "👩‍💻 hi :roc suffix 🚀";
   const caret = "👩‍💻 hi :roc".length;
-  assert.deepEqual(insertEmoji(text, emojiToken(text, caret)!, "🚀"), { value: "👩‍💻 hi 🚀 suffix 🚀", caret: "👩‍💻 hi 🚀".length });
+  assert.deepEqual(insertEmoji(text, emojiToken(text, caret)!, "🚀"), {
+    value: "👩‍💻 hi 🚀 suffix 🚀",
+    caret: "👩‍💻 hi 🚀".length,
+  });
   const nearLimit = "😀".repeat(3998) + " :x";
   assert.ok(insertEmoji(nearLimit, emojiToken(nearLimit, nearLimit.length)!, "🚀"));
   assert.equal(insertEmoji(nearLimit, emojiToken(nearLimit, nearLimit.length)!, "👩‍💻"), undefined);

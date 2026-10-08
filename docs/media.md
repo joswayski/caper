@@ -88,6 +88,16 @@ the API back only stops resolving new mentions. Validation:
   SwiftUI/UIKit/AppKit code and the parity UI test need Apple CI. SwiftUI,
   Android and egui inline pills are square-cornered background spans.
 
+Apple composer frames use their measured content height rather than filling the
+174-point maximum: channel/DM drafts start at 42 points; thread replies retain
+their 72-point minimum. Longer drafts grow and then scroll. iPhone parity tests
+assert empty/single-line alignment with Send, multiline growth, the height cap,
+shrinking after deletion/send, and compact thread replies with the keyboard open.
+Run `./apps/native/apple/parity-screenshots.sh ios` and its `macos` counterpart
+with Xcode before release and inspect the composer attachments. These new iPhone
+checks and native rendering were not executed in the Linux orb; passing web and
+fixture tests do not validate SwiftUI/UIKit/AppKit sizing.
+
 Web channel names and `⋯` actions have a separate row above voice
 activity. Join, Joining and Switch here use one fixed-width action slot;
 connected channels reserve that space without an inline Leave action.
@@ -1267,7 +1277,7 @@ CHAT_TEST_DATABASE_URL=<disposable-loopback-postgres-admin-url> \
 CHAT_TEST_VALKEY_URL=redis://127.0.0.1:6379 \
 TEST_VALKEY_URL=redis://127.0.0.1:6379 \
 cargo test --workspace -- --ignored --test-threads=1
-node --test tests/native-parity-fixture.test.mjs
+npm run test:native -- tests/native-parity-fixture.test.mjs
 CHANNEL_TEST_WEB_URL=http://localhost:5174/spaces node scripts/test-channel-joining.mjs
 ```
 
@@ -1395,7 +1405,7 @@ are pruned. Pins do not send system messages, play message sounds, or create pus
 With the disposable fixture and Vite running, use:
 
 ```sh
-node --test tests/native-parity-fixture.test.mjs
+npm run test:native -- tests/native-parity-fixture.test.mjs
 MESSAGE_TEST_WEB_URL=http://127.0.0.1:5174 node scripts/test-message-pins.mjs
 CHAT_TEST_DATABASE_URL=postgres://user@127.0.0.1:55432/postgres \
 CHAT_TEST_VALKEY_URL=redis://127.0.0.1:6379 \
@@ -1506,7 +1516,7 @@ need platform validation before release.
 With the disposable fixture and Vite running:
 
 ```sh
-node --test tests/native-parity-fixture.test.mjs
+npm run test:native -- tests/native-parity-fixture.test.mjs
 MESSAGE_TEST_WEB_URL=http://127.0.0.1:5174 node scripts/test-message-threads.mjs
 DATABASE_URL=postgres://user@127.0.0.1:55432/postgres \
   cargo test --locked -p caper-api threads_isolate -- --ignored
@@ -1640,7 +1650,7 @@ With the disposable fixture/Vite and a disposable local Postgres/Valkey running:
 ```sh
 npm run check
 npm test --workspace @caper/web
-node --test tests/native-parity-fixture.test.mjs
+npm run test:native -- tests/native-parity-fixture.test.mjs
 MESSAGE_TEST_WEB_URL=http://127.0.0.1:5174 node scripts/test-message-forwarding.mjs
 MESSAGE_TEST_WEB_URL=http://127.0.0.1:5174 node scripts/test-message-edits.mjs
 DATABASE_URL=postgres://user@127.0.0.1:55432/postgres \
@@ -1759,7 +1769,7 @@ automatic version purge or restore-to-version action.
 With the disposable fixture and Vite running:
 
 ```sh
-node --test tests/native-parity-fixture.test.mjs
+npm run test:native -- tests/native-parity-fixture.test.mjs
 MESSAGE_TEST_WEB_URL=http://127.0.0.1:5174 node scripts/test-message-edits.mjs
 CHAT_TEST_DATABASE_URL=postgres://user@127.0.0.1:55432/postgres \
   CHAT_TEST_VALKEY_URL=redis://127.0.0.1:56379 \
@@ -3804,6 +3814,12 @@ integrations and external references, the API returns this value as `id`, alongs
 `username` and `displayName`. Usernames are globally unique, changeable handles;
 changing a username or email does not change either account ID.
 
+Messages store the author's display name as it was at send time, but history,
+gateway replay, live publication and idempotent retries serve the author's current
+display name and avatar (like Discord). Deleted accounts and guests keep the stored
+name. Messages already on screen update on the next history load or reconnect, not
+instantly; the member list and suggestions follow their own refresh.
+
 ### Desktop update metadata cache
 
 `GET https://caper.chat/api/updates/native` returns an envelope with `manifest`
@@ -4586,8 +4602,8 @@ The list appears below channels in every space, including accounts with no space
 Web pins it above the account controls; narrow web and mobile clients expose it in
 Browse navigation. Leaving or deleting a space does not delete DMs. Space owners
 have no special DM access. This is server-authorized privacy, not end-to-end
-encryption. Group DMs, attachments, message deletion, blocking, and DM voice are
-not implemented. Existing text length, send limits, typing, history pagination,
+encryption. Group DMs, attachments, message deletion, and DM voice are not
+implemented; message requests and blocking are described below. Existing text length, send limits, typing, history pagination,
 idempotent sends, outbox and gateway replay rules apply unchanged.
 
 The sidebar pins your real account name with a `you` label. Opening it lazily
@@ -4603,7 +4619,8 @@ deferred for all conversations.
 
 API contracts (account authentication required):
 
-- `GET /api/dms` → `{conversations:[{id,peer:{id,username,displayName},lastSeq,readSeq}]}`.
+- `GET /api/dms` → `{conversations:[{id,peer:{id,username,displayName,avatarId},lastSeq,readSeq,status,blocked}]}`.
+  `status` and `blocked` are explained under message requests below.
 - `POST /api/dms` with `{username}` returns that pair's conversation. Your own
   username returns personal notes with `peer.id` equal to your account ID.
 - `POST /api/dms/{id}/read` with `{seq}` monotonically advances the caller's read
@@ -4616,7 +4633,72 @@ Lists refresh every 15 seconds; the open conversation receives live gateway
 messages. Unread means the durable head is beyond the account's read cursor.
 Read state is account-wide, not device-wide. New conversations are limited to
 20/minute and 1,000 per initiating account. Exact usernames are discoverable by
-starting a conversation; membership in a shared space is not required.
+starting a conversation; membership in a shared space is not required, but a
+stranger's first DM is a message request.
+
+### Message requests, blocking and DM privacy
+
+Anyone can start a DM by exact username. People who share an active space get a
+normal conversation. Anyone else's first DM is a **message request**: the sender
+sees "Waiting for @name to accept" above an enabled composer and can keep
+writing; the recipient sees one **Message requests** row with a count of
+requests at the top of their DM list. A request never adds to unread dots,
+badges or message sounds. Opening one shows its history read-only with
+**Accept**, **Decline** and **Block** in place of the composer. Opening it does
+not accept it. Choosing to message the sender (for example with **New message**)
+accepts it, and so does replying from a client that predates requests. Declining
+hides the request from the recipient only; the sender is not told, and later
+messages do not bring it back.
+
+Blocking is available from a DM's header, from message actions on another signed-in
+account's message, and from a request. Clients confirm first. A block:
+
+- stops DMs both ways. The blocked person can't start a DM or a request, and
+  their sends in an existing DM fail with the same refusal a privacy setting gives,
+  so they can't tell which it was. You see "You blocked @name" with **Unblock**
+  instead of the composer.
+- declines any pending request from them.
+- hides their messages wherever you share a conversation. Each run of consecutive
+  messages becomes one row, "⊘ N blocked messages — Show", in channels, threads and
+  DMs. **Show** reveals that run until you hide it or leave. Their messages don't
+  play sounds, and their typing isn't shown. Pins, who-reacted lists and thread
+  participant avatars still list them.
+- isn't visible to the blocked person, whose DM list doesn't change.
+
+Unblocking keeps the record (`deleted_at`). The web Edit profile dialog and
+`/profile`, and the native clients' user settings ("Privacy and blocked accounts"
+on Android and Apple, Settings on Rust desktop), list **Blocked accounts** with
+**Unblock** and hold the setting **Who can start a DM with you**:
+
+- **Anyone** (default): people outside your spaces send a request.
+- **People in my spaces**: only people who share an active space with you.
+- **No one new**: nobody can start a new conversation. Existing ones stay open.
+
+API contracts (account authentication required):
+
+- `GET /api/dms` adds `status`: `accepted`, `outgoing` (you asked) or `incoming`
+  (a request for you), and `blocked` (you blocked the peer). Declined incoming
+  requests are omitted. Clients treat a missing `status` as `accepted`.
+- `POST /api/dms` may now return 403 with `code` `dm_not_accepted` (their setting,
+  or they blocked you) or `dm_blocked` (you blocked them), or 429 after ten new
+  requests in an hour.
+- `POST /api/dms/{id}/accept` returns the accepted conversation. It is idempotent
+  for a participant.
+- `POST /api/dms/{id}/decline` → 204. It returns 404 unless the conversation is
+  a request for you.
+- `GET /api/blocks` → `{blocks:[{id,username,displayName,avatarId}]}`, newest first.
+- `PUT /api/blocks/{accountId}` and `DELETE /api/blocks/{accountId}` → 204,
+  idempotent. You can't block yourself, and at most 1,000 accounts at once.
+  `accountId` is the account ID clients already see as `author.id`, `peer.id`
+  and member `id`.
+- `GET`/`PUT /api/account/privacy` with `{directMessages:"anyone"|"spaces"|"nobody"}`.
+- Sending in a DM returns 403 `dm_blocked` or `dm_not_accepted` while either
+  person blocks the other.
+
+The parity fixture models the same contract. `POST /__fixture/control
+{"messageRequest":{}}` adds a request from Jordan (`jordan`, who shares no
+space), and `PUT /api/blocks/member000001` blocks Maya, whose two seeded
+`#general` messages then collapse.
 
 ### Deployment order for self notes and sidebar dividers
 

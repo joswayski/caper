@@ -90,6 +90,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     directConversations = directs.getOrNull()?.conversations.orEmpty(),
                     error = directs.exceptionOrNull()?.let(::message),
                 )
+                refreshBlocks()
                 createChatSession(requestAccountGeneration)
                 if (requestAccountGeneration != accountGeneration) return@launch
                 startDirectRefresh()
@@ -320,6 +321,93 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+    }
+
+    fun setRequestsOpen(open: Boolean) { mutable.value = mutable.value.copy(requestsOpen = open) }
+
+    /** Accept: the request joins the main list and the composer replaces the request bar. */
+    fun acceptRequest(conversation: DirectConversation, failed: (String) -> Unit) = accountRequest(failed) { token, request ->
+        val accepted = api.acceptDirectRequest(token, conversation.id)
+        if (request != accountGeneration) return@accountRequest
+        val directs = mutable.value.directConversations.map { if (it.id == conversation.id) accepted.copy(lastSeq = maxSeq(it.lastSeq, accepted.lastSeq)) else it }
+        mutable.value = mutable.value.copy(directConversations = directs, requestsOpen = messageRequests(directs).isNotEmpty() && mutable.value.requestsOpen)
+    }
+
+    /** Decline hides the request from you only; the sender is not told. */
+    fun declineRequest(conversation: DirectConversation, done: () -> Unit, failed: (String) -> Unit) = accountRequest(failed) { token, request ->
+        api.declineDirectRequest(token, conversation.id)
+        if (request != accountGeneration) return@accountRequest
+        removeRequest(conversation.id)
+        done()
+    }
+
+    /** Drops a declined (or blocked) request and leaves it if it is open, back toward the requests list. */
+    private fun removeRequest(id: String) {
+        val directs = mutable.value.directConversations.filter { it.id != id }
+        mutable.value = mutable.value.copy(directConversations = directs, requestsOpen = messageRequests(directs).isNotEmpty())
+        if (mutable.value.selectedDirectId != id) return
+        val channel = mutable.value.selectedSpace?.channels?.firstOrNull { it.joined }
+        if (channel != null) selectChannel(channel) else invalidate()
+    }
+
+    fun refreshBlocks() {
+        val token = accountToken ?: return
+        val request = accountGeneration
+        viewModelScope.launch {
+            try {
+                val blocks = api.blocks(token).blocks
+                if (request == accountGeneration) mutable.value = mutable.value.copy(blocks = blocks, blocksError = null)
+            } catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { if (request == accountGeneration) mutable.value = mutable.value.copy(blocksError = message(error)) }
+        }
+    }
+
+    /** Who a message's author is, for blocking: the best name this client already has. */
+    fun blockTarget(author: ChatAuthor): BlockedAccount {
+        val state = mutable.value
+        state.selectedSpace?.members?.firstOrNull { it.id == author.id }?.let { return BlockedAccount(it.id, it.username, it.displayName, it.avatarId) }
+        state.directConversations.firstOrNull { it.peer.id == author.id }?.peer?.let { return BlockedAccount(it.id, it.username, it.displayName, it.avatarId) }
+        return BlockedAccount(author.id, "", author.name, author.avatarId)
+    }
+
+    /** Blocks [account] everywhere you share; a pending request from them is declined too. */
+    fun block(account: BlockedAccount, done: () -> Unit, failed: (String) -> Unit) = accountRequest(failed) { token, request ->
+        api.block(token, account.id)
+        if (request != accountGeneration) return@accountRequest
+        val current = mutable.value
+        val declined = current.directConversations.filter { it.peer.id == account.id && it.incoming }.map { it.id }
+        mutable.value = current.copy(
+            blocks = listOf(account) + current.blocks.filter { it.id != account.id },
+            directConversations = current.directConversations.map { if (it.peer.id == account.id) it.copy(blocked = true) else it },
+            typingAuthors = current.typingAuthors.filter { it.id != account.id },
+        )
+        declined.forEach(::removeRequest)
+        done()
+        refreshBlocks()
+    }
+
+    fun unblock(accountId: String, failed: (String) -> Unit = { mutable.value = mutable.value.copy(error = it) }) = accountRequest(failed) { token, request ->
+        api.unblock(token, accountId)
+        if (request != accountGeneration) return@accountRequest
+        mutable.value = mutable.value.copy(
+            blocks = mutable.value.blocks.filter { it.id != accountId },
+            directConversations = mutable.value.directConversations.map { if (it.peer.id == accountId) it.copy(blocked = false) else it },
+        )
+        refreshBlocks()
+    }
+
+    suspend fun directPrivacy(): String = api.directPrivacy(requireAccountToken()).directMessages
+
+    suspend fun setDirectPrivacy(value: String): String {
+        require(directPrivacyOptions.any { it.first == value }) { "Unknown privacy setting." }
+        return api.setDirectPrivacy(requireAccountToken(), value).directMessages
+    }
+
+    private fun accountRequest(failed: (String) -> Unit, block: suspend (String, Long) -> Unit) = viewModelScope.launch {
+        val request = accountGeneration
+        try { block(requireAccountToken(), request) }
+        catch (error: CancellationException) { throw error }
+        catch (error: Throwable) { if (request == accountGeneration) failed(message(error)) }
     }
 
     private fun startDirectRefresh() {
@@ -718,6 +806,13 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } catch (error: Throwable) {
                 if (request != generation || mutable.value.pendingMessage?.clientMessageId != operation.id.toString()) return@launch
+                // A DM privacy or block refusal keeps the conversation; it is not a lost channel.
+                if (error is ApiException && directMessageError(error.code) != null) {
+                    pendingSends.definitiveFailure(operation.id)
+                    mutable.value = mutable.value.copy(pendingMessage = mutable.value.pendingMessage?.copy(error = message(error), rejected = true))
+                    if (error.code == DM_BLOCKED) { refreshBlocks(); refreshDirectConversations() }
+                    return@launch
+                }
                 if (error is ApiException) when (classifySendFailure(error.status)) {
                     SendFailure.REVOKED -> { pendingSends.definitiveFailure(operation.id); revokeChannel() }
                     SendFailure.DEFINITIVE -> {
@@ -840,7 +935,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun refreshTypers() {
         val now = System.currentTimeMillis()
         typers.entries.removeAll { it.value.expiresAt <= now }
-        mutable.value = mutable.value.copy(typingAuthors = typers.values.filter { it.typing && it.author.id != chatAuthor?.id }.map { it.author })
+        val blocked = mutable.value.blockedIds
+        mutable.value = mutable.value.copy(typingAuthors = typers.values.filter { it.typing && it.author.id != chatAuthor?.id && it.author.id !in blocked }.map { it.author })
         typingExpiry?.cancel()
         val next = typers.values.minOfOrNull { it.expiresAt } ?: return
         typingExpiry = viewModelScope.launch { delay((next - now).coerceAtLeast(1)); refreshTypers() }
@@ -853,7 +949,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value = mutable.value.copy(messages = projectMessages(mergeTimelinePins(mergeMessages(messages, listOf(message), unloadedReactions))))
         if (isNew) {
             // Web chimes for someone else's new message in the open conversation.
-            if (message.author.id != chatAuthor?.id) chat.caper.android.ui.CaperEffects.play(chat.caper.android.ui.CaperEffects.Effect.Message)
+            // Never for a blocked author or an incoming request.
+            val current = mutable.value
+            if (message.author.id != chatAuthor?.id && !collapsesFor(message, current.blockedIds, chatAuthor?.id) && current.selectedDirect?.incoming != true)
+                chat.caper.android.ui.CaperEffects.play(chat.caper.android.ui.CaperEffects.Effect.Message)
         }
         confirmPending(message)
         if (mutable.value.selectedDirectId == message.channelId) markDirectRead(message.channelId, message.seq)
@@ -1272,7 +1371,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun invalidate() { ++generation; closeChannel(clearPending = true) }
     private fun requireAccountToken() = checkNotNull(accountToken) { "Sign in required." }
     private fun fail(error: Throwable) { mutable.value = mutable.value.copy(busy = false, error = message(error)) }
-    private fun message(error: Throwable) = error.message ?: "That request did not work."
+    private fun message(error: Throwable) = (error as? ApiException)?.code?.let(::directMessageError) ?: error.message ?: "That request did not work."
     fun clearError() { mutable.value = mutable.value.copy(error = null) }
 
     private fun launchAccountAction(block: suspend (Long) -> Unit) = viewModelScope.launch {
@@ -1316,6 +1415,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
 internal fun mergeDirects(current: List<DirectConversation>, incoming: List<DirectConversation>): List<DirectConversation> =
     (incoming + current).distinctBy { it.id }
+
+private fun maxSeq(first: String, second: String): String =
+    runCatching { maxOf(first.toBigInteger(), second.toBigInteger()).toString() }.getOrDefault(second)
 
 internal class ProfileSaveException(override val message: String) : Exception(message)
 

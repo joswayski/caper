@@ -47,7 +47,10 @@ and every minute, using signed metadata cached on Caper's server for 60 seconds.
 Check manually with **Caper → Check for Updates…** on Mac or
 **User Settings → Settings… → Updates → Check for updates** on Windows/Linux.
 Installing requires confirmation and a restart; protected installs offer a download
-instead. Existing apps keep their previous schedule until updated once.
+instead. Update prompts keep installation controls visible while version-grouped
+release notes scroll separately. Signed releases retain the changes since earlier
+builds; the prompt says when older notes were never recorded or are no longer retained.
+Existing apps keep their previous update UI and schedule until updated once.
 Android APK updates remain manual; iPhone builds use TestFlight.
 
 ## Development
@@ -65,6 +68,28 @@ Open `http://localhost:3000/login`. Docker Compose runs the web app, API, gatewa
 and local Valkey. Configuration comes from AWS Secrets Manager (`staging/apps/caper`),
 with `.env` and Compose defaults as fallbacks. See [.env.example](.env.example)
 for available settings. Stop the stack with Ctrl-C.
+
+JavaScript/TypeScript tooling uses Vite 8 (Rolldown/Oxc), Vitest 5, the native
+TypeScript 7 compiler (`tsc`), Oxlint, and Oxfmt. Node/npm remain the runtime and
+package manager; Rust keeps rustfmt/Clippy, and native clients keep their platform
+build/test tools. Run these commands from the repository root:
+
+```bash
+npm test                 # Web unit tests and shared native fixture/icon tests
+npm run test:watch       # Vitest watch mode; add -- --project web to filter
+npm run test:native      # Shared JavaScript tests, not native device acceptance
+npm run typecheck        # Native TypeScript compiler; no production bundle
+npm run lint            # Oxlint correctness checks, warnings fail the command
+npm run fmt             # Oxfmt for first-party JS/TS/CSS and tooling JSON
+npm run check           # Lint, formatting check, production build + typecheck
+```
+
+Unit tests use separate Vitest configs so they do not start app build plugins or
+fetch GitHub history. Test files remain isolated; cleanup restores mocks, globals,
+and timers. Generated routes and vendored audio runtimes are excluded from lint;
+formatting also leaves versioned public assets untouched to preserve immutable
+cache URLs. Lint permits side-effect ternaries and object-rest omission;
+test mocks may retain their constructed instances via `this` aliases.
 
 ## Repository
 
