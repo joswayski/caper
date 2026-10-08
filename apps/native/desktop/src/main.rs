@@ -15785,11 +15785,12 @@ mod tests {
             })
             .collect();
         for row in [self_row, peer, second_peer] {
+            // Pixel snapping can move a half-pixel center by exactly half a pixel.
             assert!(
                 images.iter().any(|rect| (rect.width() - 20.0).abs() < 0.01
                     && (rect.height() - 20.0).abs() < 0.01
-                    && (rect.center().x as f64 - (row.x0 + 17.5)).abs() < 0.5
-                    && (rect.center().y as f64 - (row.y0 + row.y1) / 2.0).abs() < 0.5),
+                    && (rect.center().x as f64 - (row.x0 + 17.5)).abs() <= 0.5
+                    && (rect.center().y as f64 - (row.y0 + row.y1) / 2.0).abs() <= 0.5),
                 "Each DM uses saved avatar artwork, aligned with self-notes in {row:?}: {images:?}"
             );
         }
