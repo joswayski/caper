@@ -323,6 +323,18 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
             }
         } else pendingVoiceJoin = null
     }
+    // Push is on by default: on Android 13+ opening the app asks once per account.
+    var pushPromptEpoch by remember { mutableLongStateOf(-1L) }
+    val pushPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        viewModel.pushPromptAnswered(granted, pushPromptEpoch)
+    }
+    LaunchedEffect(state.pushPrompt) {
+        if (state.pushPrompt && Build.VERSION.SDK_INT >= 33) {
+            pushPromptEpoch = viewModel.accountEpoch
+            viewModel.pushPromptShown()
+            pushPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
     LaunchedEffect(voice, pendingVoiceJoin, state) {
         val requested = pendingVoiceJoin ?: return@LaunchedEffect
         if (!requested.isCurrent(state, viewModel.accountEpoch) || !VoiceCallService.joinAuthorizationCurrent(requested.controlEpoch)) pendingVoiceJoin = null

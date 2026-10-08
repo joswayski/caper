@@ -191,8 +191,9 @@ internal enum class NotificationMenuPage { Main, Level, Mute }
 
 /**
  * User settings → Notifications: the account level and, when this build has Firebase and
- * the server offers FCM, "Send to this phone" and this phone's on/off switch. The Android 13+
- * permission prompt only follows that switch.
+ * the server offers FCM, "Send to this phone" and this phone's on/off switch. Push is on by
+ * default (opening the app turns it on, asking once on Android 13+); turning the switch off
+ * here is remembered for the account.
  */
 @Composable internal fun NotificationSettingsSection(state: AppUiState, viewModel: CaperViewModel) {
     val context = LocalContext.current

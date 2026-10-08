@@ -72,6 +72,23 @@ pauses are checked again when claiming a delivery, including provider retries.
 The message must be less than 24 h old and, for DMs, the recipient must not have
 read up to it. Changes after the claim cannot recall an in-flight provider send.
 
+### Turning push on for a phone
+
+Push is on by default on iPhone and Android. Each time the app opens with an
+account, including a session restored from an earlier launch, and the server
+offers the phone's platform, the app turns push on, unless the account turned
+"Notifications on this phone" off on that phone:
+
+- **iPhone:** asks iOS for permission. iOS shows its prompt once; on later launches
+  it answers with the saved decision, so allowing Caper later in iOS Settings
+  turns push on at the next launch.
+- **Android:** turns push on when notifications are already allowed (below
+  Android 13, or the permission was granted). On Android 13+ it otherwise shows
+  the `POST_NOTIFICATIONS` prompt once per account; after a denial, app open
+  doesn't ask again, and allowing it later in Android settings turns push on.
+- Turning the switch off in settings is remembered per account on that phone.
+  Turning it on again clears that. Logging out doesn't count as turning it off.
+
 ### Content and payloads
 
 - Title: DM → sender display name; channels and mentions → `Sender · #channel (Space)`.
@@ -667,8 +684,8 @@ Phase 1 built the subset in [HTTP contract](#http-contract): no `webpush`,
     disable it without that file.
   - Add notification channels per category: Direct messages, Channel messages,
     Mentions, Invitations, Calls.
-  - Keep the Android 13+ `POST_NOTIFICATIONS` prompt behind an explicit
-    "Enable notifications" action, as today.
+  - Ask for the Android 13+ `POST_NOTIFICATIONS` permission once on app open (see
+    [Turning push on for a phone](#turning-push-on-for-a-phone)).
 
 ### Web (Web Push + in-tab)
 
