@@ -814,10 +814,24 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(mute.waitForExistence(timeout: 5), "The channel menu offers Mute channel")
         let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: mute)
         XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 5), .completed, "Mute is available once settings load")
-        mute.tap()
         let forever = app.descendants(matching: .any)["Until I turn it back on"].firstMatch
+        #if os(macOS)
+        // The pointer glides in a straight line, and a diagonal path to the
+        // last preset crosses the parent menu's other items, which closes the
+        // submenu before the click. Enter level with the first preset, then
+        // move down inside the submenu.
+        mute.hover()
+        let first = app.descendants(matching: .any)["For 15 minutes"].firstMatch
+        XCTAssertTrue(first.waitForExistence(timeout: 3))
+        first.hover()
+        XCTAssertTrue(forever.waitForExistence(timeout: 3))
+        forever.hover()
+        forever.click()
+        #else
+        mute.tap()
         XCTAssertTrue(forever.waitForExistence(timeout: 3))
         forever.tap()
+        #endif
         waitForMuted(design, true, "A muted channel is marked in the sidebar")
         var overrides = try await Self.fixtureNotificationOverrides()
         XCTAssertEqual(overrides, ["chan00000002:forever"], "The fixture stored the channel mute")
