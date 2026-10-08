@@ -13,7 +13,11 @@ public final class AppModel {
     public var selectedSpaceID: String?
     public var selectedChannelID: String?
     public var directMessages: [DirectMessageConversation] = []
+    public private(set) var directMessagesError: String?
     public var selectedDirectMessageID: String?
+    /// `GET /api/people` for `@` suggestions in DMs; nil until the first load
+    /// succeeds. A refresh keeps the previous list until it completes.
+    public private(set) var people: [Person]?
     /// The main "Direct messages" list: accepted and outgoing conversations.
     public var visibleDirectMessages: [DirectMessageConversation] { MessageRequests.visible(directMessages) }
     /// Incoming message requests. They never count as unread or chime.
@@ -36,6 +40,23 @@ public final class AppModel {
     public var pushEnabled = false
     @ObservationIgnored public var setPushEnabled: ((Bool) async -> Void)?
     @ObservationIgnored public var disablePushLocally: (() -> Void)?
+    /// `GET /api/notifications/settings`; nil until the first load, so menus
+    /// never show a guessed level.
+    public private(set) var notificationSettings: NotificationSettings?
+    /// A failed notification change, shown inline until dismissed or the next change.
+    public var notificationError: String?
+    /// The settings could not load; shown in Notifications settings.
+    public private(set) var notificationsLoadError: String?
+    /// Bumped when a timed mute ends, so muted rows redraw.
+    public private(set) var muteExpiryTick = 0
+    @ObservationIgnored private var notificationsLoadedAt: Date?
+    @ObservationIgnored private var notificationRequest = 0
+    @ObservationIgnored private var notificationChangesInFlight = 0
+    @ObservationIgnored private var accountNotificationRevisions: [String: Int] = [:]
+    @ObservationIgnored private var overrideRevisions: [NotificationScope: Int] = [:]
+    @ObservationIgnored private var muteExpiryTask: Task<Void, Never>?
+    /// A tapped push that arrived before spaces loaded; opened in their place.
+    @ObservationIgnored private var pendingNotificationRoute: NotificationRoute?
     public var previewingChannel: Bool { selectedChannel?.joined == false }
     public var selectedChannel: Channel? { detail?.channels.first { $0.id == selectedChannelID } }
     public var error: String?
@@ -65,6 +86,7 @@ public final class AppModel {
     private var generation = 0
     private var navigationGeneration = 0
     private var voiceJoinGeneration = 0
+    private var peopleRequest = 0
     private var navigationCacheEpoch = 0
     private var navigationTarget: (space: Space, channelID: String?)?
     private struct PreparedNavigation {
@@ -123,6 +145,8 @@ public final class AppModel {
             guard generation == attempt else { return }
             self.account = account
             phase = account == nil ? .signedOut : needsProfile ? .onboarding : .ready
+            // A push tapped while signed out never opens for whoever signs in next.
+            if account == nil { pendingNotificationRoute = nil }
             if phase == .ready { await loadSpaces(); startDirectMessageRefresh() }
         } catch {
             guard generation == attempt else { return }
@@ -209,9 +233,10 @@ public final class AppModel {
         voice.leaveImmediately()
         directMessageRefreshTask?.cancel(); directMessageRefreshTask = nil
         account = nil; spaces = []; invitations = []; pendingMembers = []; detail = nil
-        directMessages = []; selectedDirectMessageID = nil; showingMessageRequests = false
+        directMessages = []; directMessagesError = nil; selectedDirectMessageID = nil; people = nil; showingMessageRequests = false
         blockedAccounts = []; blockedIDs = []; blocksLoaded = false; blocksError = nil
         directMessagePrivacy = nil; privacyError = nil; chat.setBlockedAuthors([])
+        clearNotificationState()
         spacesLoaded = false; spacesError = nil
         selectedSpaceID = nil; selectedChannelID = nil; challengeID = nil
         navigationGeneration += 1
@@ -242,10 +267,21 @@ public final class AppModel {
             self.spaces = response.spaces
             self.invitations = response.invitations
             self.spacesLoaded = true
+            // A tapped push opens its channel instead of the usual space.
+            let route = self.pendingNotificationRoute
+            self.pendingNotificationRoute = nil
+            if case let .channel(spaceID, channelID)? = route,
+               let space = self.spaces.first(where: { $0.id == spaceID }) {
+                await self.navigate(space: space, channelID: channelID)
+                return
+            }
             if let selected = self.spaces.first(where: { $0.id == self.selectedSpaceID })
                 ?? self.spaces.first(where: { $0.id == self.preferredInitialSpaceID })
                 ?? self.spaces.first {
                 await self.select(space: selected)
+            }
+            if case let .direct(conversationID)? = route, self.generation == attempt {
+                await self.openDirectMessage(id: conversationID)
             }
         }
     }
@@ -282,6 +318,7 @@ public final class AppModel {
             guard generation == attempt, account != nil else { return }
             let wasRequest = selectedDirectMessage?.status == .incoming
             directMessages = conversations
+            directMessagesError = nil
             // Accepted elsewhere (or by sending from an older client): reopen it
             // with a chat session so the composer works.
             if wasRequest, let selected = selectedDirectMessage, selected.status != .incoming {
@@ -289,8 +326,22 @@ public final class AppModel {
             }
         } catch is CancellationError {} catch {
             guard generation == attempt else { return }
-            self.error = error.localizedDescription
+            directMessagesError = error.localizedDescription
         }
+    }
+
+    /// Refreshes DM `@` candidates. Failure is silent: suggestions keep the
+    /// last list, or fall back to the DM peer when none has loaded.
+    public func refreshPeople() async {
+        guard account != nil else { return }
+        let attempt = generation
+        peopleRequest += 1
+        let request = peopleRequest
+        do {
+            let loaded = try await api.people()
+            guard generation == attempt, peopleRequest == request, account != nil else { return }
+            people = loaded
+        } catch {}
     }
 
     public func createDirectMessage(username: String) async -> Bool {
@@ -337,6 +388,7 @@ public final class AppModel {
             }
             selectedDirectMessageID = conversation.id; selectedChannelID = nil
             navigationOpen = false
+            Task { [weak self] in await self?.refreshPeople() }
             await presence.stop(); await voicePresence.stop()
             // An incoming request opens read-only: no chat session, no composer,
             // no read cursor and no chimes. Opening it never accepts it.
@@ -352,6 +404,18 @@ public final class AppModel {
         await refreshDirectMessages()
         guard let conversation = directMessages.first(where: { $0.id == id }) else { return }
         await select(directMessage: conversation)
+    }
+
+    /// Opens a channel by id, as a tapped push does. A space this client has
+    /// not loaded yet refreshes the space list first.
+    public func openChannel(spaceID: String, channelID: String) async {
+        guard account != nil else { return }
+        if let space = spaces.first(where: { $0.id == spaceID }) {
+            await navigate(space: space, channelID: channelID)
+        } else {
+            pendingNotificationRoute = .channel(spaceID: spaceID, channelID: channelID)
+            await loadSpaces()
+        }
     }
 
     // MARK: Message requests, blocking and DM privacy
@@ -469,6 +533,7 @@ public final class AppModel {
         if active, account != nil {
             markSelectedDirectRead()
             Task { await refreshDirectMessages() }
+            refreshNotificationSettingsIfStale()
         }
     }
 
@@ -502,6 +567,8 @@ public final class AppModel {
         directMessageRefreshTask?.cancel()
         let attempt = generation
         Task { [weak self] in await self?.refreshBlocks() }
+        // After sign-in (every path starts here), like the block list.
+        Task { [weak self] in await self?.loadNotificationSettings() }
         directMessageRefreshTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refreshDirectMessages()
@@ -1098,6 +1165,176 @@ public final class AppModel {
     }
 }
 
+// MARK: Notifications
+
+extension AppModel {
+    /// Loads after sign-in, on returning to the app, and when settings or a
+    /// menu opens. A change made meanwhile wins over the older snapshot.
+    public func loadNotificationSettings() async {
+        guard account != nil else { return }
+        let attempt = generation
+        notificationRequest += 1
+        let request = notificationRequest
+        notificationsLoadedAt = Date()
+        do {
+            let settings = try await api.notificationSettings()
+            guard generation == attempt, notificationRequest == request, notificationChangesInFlight == 0, account != nil else { return }
+            notificationSettings = settings
+            notificationsLoadError = nil
+            scheduleMuteExpiry()
+        } catch is CancellationError {} catch {
+            guard generation == attempt, notificationRequest == request else { return }
+            notificationsLoadError = NotificationLabels.loadFailed
+        }
+    }
+
+    /// For menus: reloads unless the settings loaded in the last 30 seconds.
+    public func refreshNotificationSettingsIfStale() {
+        guard account != nil else { return }
+        if let loadedAt = notificationsLoadedAt, Date().timeIntervalSince(loadedAt) < 30 { return }
+        Task { [weak self] in await self?.loadNotificationSettings() }
+    }
+
+    /// Muted itself or, for a channel, through its space.
+    public func notificationsMuted(_ scope: NotificationScope) -> Bool {
+        _ = muteExpiryTick
+        return notificationSettings?.isMuted(scope, now: Date()) ?? false
+    }
+
+    /// The scope's own active mute, for "Unmute …" and "Muted until …".
+    public func notificationMute(_ scope: NotificationScope) -> MuteUntil? {
+        _ = muteExpiryTick
+        return notificationSettings?.ownMute(for: scope, now: Date())
+    }
+
+    public func notificationsMutedWithSpace(_ scope: NotificationScope) -> Bool {
+        _ = muteExpiryTick
+        return notificationSettings?.isMutedWithSpace(scope, now: Date()) ?? false
+    }
+
+    /// "Notify me about". Optimistic; a failure reverts and shows why.
+    public func setAccountNotificationLevel(_ level: NotificationLevel) async {
+        guard let current = notificationSettings, current.level != level else { return }
+        await saveAccountNotifications(NotificationAccountChange(level: level), field: "level")
+    }
+
+    /// "Send to this phone". Optimistic; a failure reverts and shows why.
+    public func setMobilePushPolicy(_ mobile: MobilePushPolicy) async {
+        guard let current = notificationSettings, current.mobile != mobile else { return }
+        await saveAccountNotifications(NotificationAccountChange(mobile: mobile), field: "mobile")
+    }
+
+    /// A space or channel level (nil is Default), or a DM's on/off (`nothing` or nil).
+    public func setNotificationLevel(_ level: NotificationLevel?, for scope: NotificationScope) async {
+        guard let current = notificationSettings, current.overrideLevel(for: scope) != level else { return }
+        await saveOverride(.level(level), for: scope)
+    }
+
+    /// Mutes until a time or `forever`; nil unmutes.
+    public func setMute(_ until: MuteUntil?, for scope: NotificationScope) async {
+        guard notificationSettings != nil else { return }
+        await saveOverride(.mute(until), for: scope)
+    }
+
+    /// Whether a push's conversation is the one open now.
+    public func isShowing(_ route: NotificationRoute) -> Bool {
+        route.isOpen(spaceID: selectedSpaceID, channelID: selectedChannelID, directMessageID: selectedDirectMessageID)
+    }
+
+    /// Opens a tapped push's channel or DM. Before spaces load, it waits and
+    /// opens in place of the usual first space.
+    public func open(_ route: NotificationRoute) async {
+        guard phase != .signedOut else { return }
+        guard account != nil, spacesLoaded else {
+            pendingNotificationRoute = route
+            return
+        }
+        switch route {
+        case let .direct(conversationID): await openDirectMessage(id: conversationID)
+        case let .channel(spaceID, channelID): await openChannel(spaceID: spaceID, channelID: channelID)
+        }
+    }
+
+    private func saveAccountNotifications(_ change: NotificationAccountChange, field: String) async {
+        guard account != nil, let current = notificationSettings else { return }
+        let attempt = generation
+        let revision = (accountNotificationRevisions[field] ?? 0) + 1
+        accountNotificationRevisions[field] = revision
+        notificationRequest += 1
+        notificationChangesInFlight += 1
+        notificationSettings = current.applying(change)
+        notificationError = nil
+        let restore = NotificationAccountChange(level: change.level == nil ? nil : current.level,
+                                                mobile: change.mobile == nil ? nil : current.mobile)
+        do {
+            let saved = try await api.updateNotificationSettings(change)
+            guard generation == attempt else { return }
+            notificationChangesInFlight -= 1
+            guard accountNotificationRevisions[field] == revision else { return }
+            // Only this change's field: other fields may have changes in flight.
+            let confirmed = NotificationAccountChange(level: change.level == nil ? nil : saved.level,
+                                                      mobile: change.mobile == nil ? nil : saved.mobile)
+            notificationSettings = notificationSettings?.applying(confirmed)
+        } catch {
+            guard generation == attempt else { return }
+            notificationChangesInFlight -= 1
+            guard accountNotificationRevisions[field] == revision else { return }
+            notificationSettings = notificationSettings?.applying(restore)
+            notificationError = NotificationLabels.saveFailed
+        }
+    }
+
+    private func saveOverride(_ change: NotificationOverrideChange, for scope: NotificationScope) async {
+        guard account != nil, let current = notificationSettings else { return }
+        let attempt = generation
+        let revision = (overrideRevisions[scope] ?? 0) + 1
+        overrideRevisions[scope] = revision
+        notificationRequest += 1
+        notificationChangesInFlight += 1
+        let previous = current.override(for: scope)
+        notificationSettings = current.applying(change, to: scope)
+        notificationError = nil
+        scheduleMuteExpiry()
+        do {
+            let saved = try await api.updateNotificationOverride(scope, change: change)
+            guard generation == attempt else { return }
+            notificationChangesInFlight -= 1
+            guard overrideRevisions[scope] == revision else { return }
+            notificationSettings = notificationSettings?.replacing(saved, for: scope)
+        } catch {
+            guard generation == attempt else { return }
+            notificationChangesInFlight -= 1
+            guard overrideRevisions[scope] == revision else { return }
+            notificationSettings = notificationSettings?.replacing(previous, for: scope)
+            notificationError = NotificationLabels.saveFailed
+        }
+        scheduleMuteExpiry()
+    }
+
+    /// Redraws muted rows when the next timed mute ends.
+    private func scheduleMuteExpiry() {
+        muteExpiryTask?.cancel()
+        muteExpiryTask = nil
+        guard let next = notificationSettings?.nextMuteExpiry(after: Date()) else { return }
+        let delay: TimeInterval = max(0, next.timeIntervalSinceNow) + 1
+        let attempt = generation
+        muteExpiryTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, let self, self.generation == attempt else { return }
+            self.muteExpiryTick += 1
+            self.scheduleMuteExpiry()
+        }
+    }
+
+    private func clearNotificationState() {
+        muteExpiryTask?.cancel(); muteExpiryTask = nil
+        notificationSettings = nil; notificationError = nil; notificationsLoadError = nil
+        notificationsLoadedAt = nil; notificationChangesInFlight = 0
+        accountNotificationRevisions = [:]; overrideRevisions = [:]
+        pendingNotificationRoute = nil
+    }
+}
+
 struct UserFacingError: LocalizedError, Equatable {
     let message: String
     var errorDescription: String? { message }
@@ -1115,6 +1352,9 @@ public enum ReactorsState: Equatable, Sendable {
 public final class ChatModel {
     public var messages: [ChatMessage] = []
     public var pinnedMessages: [ChatMessage] = []
+    private var mutations = MessageMutations()
+    public var displayedMessages: [ChatMessage] { messages.map(mutations.project) }
+    public var displayedPins: [ChatMessage] { mutations.pinned(messages: messages, confirmed: pinnedMessages) }
     public var channelName = "general"
     public var spaceName = "Caper"
     public var draft = ""
@@ -1135,10 +1375,12 @@ public final class ChatModel {
     public var threadError: String?
     private var threadBefore: String?
     private var threadRequest = 0
+    private var threadPages: [String: (hasMore: Bool, before: String?)] = [:]
     private var threadOnlyRows: Set<String> = []
     private var threadDrafts: [String: String] = [:]
     private var threadBroadcasts: [String: Bool] = [:]
     public var channelMessages: [ChatMessage] { messages.filter { $0.isChannelMessage && !threadOnlyRows.contains($0.id) } }
+    public var displayedChannelMessages: [ChatMessage] { channelMessages.map(mutations.project) }
     public var threadDraft: String {
         get { threadRootID.flatMap { threadDrafts[$0] } ?? "" }
         set { if let threadRootID { threadDrafts[threadRootID] = newValue } }
@@ -1228,7 +1470,10 @@ public final class ChatModel {
 
     func editMessage(_ message: ChatMessage, text: String) async throws {
         guard canEdit(message), let session else { throw UserFacingError(message: "Only the author can edit while participating.") }
+        guard mutations.edits[message.id] == nil else { throw UserFacingError(message: "This message is already being saved.") }
         let request = generation
+        mutations.edits[message.id] = (text, message.revision ?? 1)
+        defer { if request == generation { mutations.edits[message.id] = nil } }
         let result = try await api.editMessage(channelID: message.channelId, messageID: message.id, sessionToken: session.token, text: text, expectedRevision: message.revision ?? 1)
         guard request == generation, canEdit(message) else { throw CancellationError() }
         guard result.author.id == session.author.id else { throw UserFacingError(message: "Message author mismatch.") }
@@ -1286,7 +1531,7 @@ public final class ChatModel {
             space: HistoryIdentity(id: spaceID, name: spaceName),
             channel: HistoryIdentity(id: channelID, name: channelName),
             messages: messages.map { forwardSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0))) },
-            pinnedMessages: pinnedMessages.map { forwardSnapshots.overlay(pinSnapshots.overlay($0)) },
+            pinnedMessages: pinnedMessages.map { forwardSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0))) },
             cursor: delivery.cursor,
             hasMore: hasMore
         )
@@ -1313,12 +1558,12 @@ public final class ChatModel {
         guard generation == requestGeneration else { return }
         canForward = signedIn
         channelID = history.channel?.id; spaceID = history.space?.id
-        reactionSnapshots.seed(history.messages)
+        reactionSnapshots.seed(history.messages + history.pinnedMessages)
         pinSnapshots.replace(history.messages + history.pinnedMessages, cursor: history.cursor)
         forwardSnapshots.seed(history.messages + history.pinnedMessages)
         editSnapshots.seed(history.messages + history.pinnedMessages)
         messages = history.messages.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) }
-        pinnedMessages = history.pinnedMessages.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay($0))) }
+        pinnedMessages = history.pinnedMessages.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) }
         delivery.reset(cursor: history.cursor); hasMore = history.hasMore
         channelName = history.channel?.name ?? "general"; spaceName = history.space?.name ?? "Caper"
         session = nil; loading = false; loadFailed = false; sessionError = nil
@@ -1346,6 +1591,8 @@ public final class ChatModel {
         isPreview = false
         let preservingTimeline = preservingPending && self.channelID == channelID
         generation += 1
+        threadPages = [:]
+        mutations = MessageMutations(); pendingPins = []
         let requestGeneration = generation
         let oldSubscription = subscriptionID
         subscriptionID = nil
@@ -1369,12 +1616,12 @@ public final class ChatModel {
         // history load (and must not flash the previous channel's title).
         if let prepared {
             self.channelID = prepared.channel?.id; spaceID = prepared.space?.id
-            reactionSnapshots.seed(prepared.messages)
+            reactionSnapshots.seed(prepared.messages + prepared.pinnedMessages)
             pinSnapshots.replace(prepared.messages + prepared.pinnedMessages, cursor: prepared.cursor)
             forwardSnapshots.seed(prepared.messages + prepared.pinnedMessages)
             editSnapshots.seed(messages + pinnedMessages + prepared.messages + prepared.pinnedMessages)
             messages = prepared.messages.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) }
-            pinnedMessages = prepared.pinnedMessages.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay($0))) }
+            pinnedMessages = prepared.pinnedMessages.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) }
             delivery.reset(cursor: prepared.cursor); hasMore = prepared.hasMore
             channelName = prepared.channel?.name ?? "general"
             spaceName = prepared.space?.name ?? "Caper"
@@ -1411,13 +1658,14 @@ public final class ChatModel {
             if prepared == nil {
                 // The latest history response is authoritative for the channel-wide
                 // pin list. Older pagination responses are deliberately ignored.
+                reactionSnapshots.seed(history.messages + history.pinnedMessages)
                 pinSnapshots.replace(history.messages + history.pinnedMessages, cursor: history.cursor)
                 forwardSnapshots.seed(history.messages + history.pinnedMessages)
                 // Overflow requires fresh pages; never keep the resync flag latched.
                 if editSnapshots.unseenOverflowed { editSnapshots.reset() }
                 editSnapshots.seed(messages + pinnedMessages + history.messages + history.pinnedMessages)
                 let candidates = Dictionary((pinnedMessages + history.pinnedMessages).map { ($0.id, $0) }, uniquingKeysWith: { _, next in next })
-                pinnedMessages = candidates.values.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay($0))) }.filter { $0.pin != nil }
+                pinnedMessages = candidates.values.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) }.filter { $0.pin != nil }
                     .sorted { (try? Sequence.compare($0.pinSeq ?? "0", $1.pinSeq ?? "0")) == .orderedDescending }
                 messages = channelMessages
                 threadOnlyRows = []
@@ -1430,7 +1678,7 @@ public final class ChatModel {
                     reactionSnapshots.seed(history.messages)
                     messages = history.messages.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) }
                     reactionSnapshots.reset()
-                    reactionSnapshots.seed(messages)
+                    reactionSnapshots.seed(messages + pinnedMessages)
                 }
                 delivery.reset(cursor: history.cursor, preservingPending: preservingPending)
                 let retainedOlderPrefix = canRetain && firstRefreshed.map { first in
@@ -1542,8 +1790,13 @@ public final class ChatModel {
     public func closeThread() { threadRequest += 1; threadRootID = nil; threadLoading = false }
 
     public func openThread(_ rootID: String) async {
-        threadRootID = rootID; threadBefore = nil; threadHasMore = false
-        await loadThread()
+        guard threadRootID != rootID else { return }
+        threadRequest += 1
+        threadRootID = rootID; threadError = nil
+        let cached = threadPages[rootID]
+        threadBefore = cached?.before; threadHasMore = cached?.hasMore ?? false
+        threadLoading = false
+        if cached == nil { await loadThread() }
     }
 
     public func loadThread(older: Bool = false) async {
@@ -1559,6 +1812,7 @@ public final class ChatModel {
             threadOnlyRows.formUnion(rows.filter { $0.isChannelMessage && !loaded.contains($0.id) }.map(\.id))
             merge(rows)
             threadHasMore = page.hasMore; threadBefore = page.messages.first?.seq ?? threadBefore
+            threadPages[rootID] = (threadHasMore, threadBefore)
         } catch {
             guard request == threadRequest, generation == channelGeneration else { return }
             if let denied = error as? APIError, [401, 403, 404].contains(denied.status) {
@@ -1723,10 +1977,13 @@ public final class ChatModel {
 
     public func setPin(messageID: String, active: Bool) async {
         guard !isPreview, let channelID, let session, !pendingPins.contains(messageID) else { return }
+        guard let message = (messages + pinnedMessages).first(where: { $0.id == messageID }) else { return }
         pendingPins.insert(messageID); pinErrors[messageID] = nil
         failedPinActions[messageID] = nil
         let requestGeneration = generation
-        defer { if generation == requestGeneration { pendingPins.remove(messageID) } }
+        mutations.pins[messageID] = MessageMutations.PinIntent(message: message,
+            pin: active ? MessagePin(author: session.author, createdAt: ISO8601DateFormatter().string(from: Date())) : nil)
+        defer { if generation == requestGeneration { pendingPins.remove(messageID); mutations.pins[messageID] = nil } }
         do {
             let event = try await api.setPin(channelID: channelID, messageID: messageID, sessionToken: session.token, active: active)
             guard generation == requestGeneration, self.channelID == channelID else { return }
@@ -1938,10 +2195,11 @@ public final class ChatModel {
         reactorCache = [:]; reactorRequests = [:]; reactorFailures = []
         pinSnapshots.reset(); pinnedMessages = []; pendingPins = []; pinErrors = [:]
         forwardSnapshots.reset()
+        mutations = MessageMutations()
         canForward = false; forwardTarget = nil; forwardConversationTarget = nil
         editSnapshots.reset()
         failedPinActions = [:]
-        closeThread(); threadOnlyRows = []; threadDrafts = [:]; threadBroadcasts = [:]
+        closeThread(); threadPages = [:]; threadOnlyRows = []; threadDrafts = [:]; threadBroadcasts = [:]
         isPreview = false
         session = nil; channelID = nil; spaceID = nil; messages = []; draft = ""; hasMore = false
         channelName = "general"; spaceName = "Caper"; error = nil
@@ -1973,14 +2231,16 @@ public final class ChatModel {
 
     private func applyPin(_ message: ChatMessage) {
         editSnapshots.seed(messages + pinnedMessages + [message])
-        guard pinSnapshots.apply(message) else { return }
+        reactionSnapshots.seed([message])
+        guard pinSnapshots.apply(message) else { renderReactions(); return }
         messages = messages.map { editSnapshots.overlay(pinSnapshots.overlay($0)) }
         pinnedMessages.removeAll { $0.id == message.id }
-        let updated = forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(message)))
+        let updated = forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay(message))))
         if updated.pin != nil {
             pinnedMessages.append(updated)
             pinnedMessages.sort { (try? Sequence.compare($0.pinSeq ?? "0", $1.pinSeq ?? "0")) == .orderedDescending }
         }
+        renderReactions()
     }
 
     private func applyReactions(_ event: MessageReactionsEvent) {
@@ -1990,7 +2250,7 @@ public final class ChatModel {
 
     private func renderReactions() {
         let authorID = session?.author.id
-        messages = messages.map { message in
+        let project: (ChatMessage) -> ChatMessage = { [self] message in
             var result = reactionSnapshots.overlay(message)
             guard let authorID, let pending = pendingReactions[message.id], !pending.isEmpty else { return result }
             var reactions = result.reactions ?? []
@@ -2007,6 +2267,8 @@ public final class ChatModel {
             result.reactions = reactions
             return result
         }
+        messages = messages.map(project)
+        pinnedMessages = pinnedMessages.map(project)
     }
 
     private func savePendingReactions(messageID: String, channelID: String, generation requestGeneration: Int) async {

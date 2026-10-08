@@ -66,6 +66,18 @@ class CaperApiTest {
         assertNull(request.requestUrl?.query)
     }
 
+    @Test fun `people list is an authenticated GET`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"people":[{"id":"account00002","username":"mira","displayName":"Mira","avatarId":null}]}"""))
+        val people = CaperApi(baseUrl = server.url("/").toString()).people("account-secret").people
+
+        assertEquals("mira", people.single().username)
+        assertNull(people.single().avatarId)
+        val request = server.takeRequest()
+        assertEquals("GET", request.method)
+        assertEquals("/api/people", request.path)
+        assertEquals("Bearer account-secret", request.headers["Authorization"])
+    }
+
     @Test fun `direct message contract uses global routes and string read cursor`() = runTest {
         server.enqueue(MockResponse().setBody("""{"conversations":[{"id":"direct000001","peer":{"id":"account00002","username":"mira","displayName":"Mira"},"lastSeq":"9007199254740993","readSeq":"7"}]}"""))
         server.enqueue(MockResponse().setBody("""{"id":"direct000001","peer":{"id":"account00002","username":"mira","displayName":"Mira"},"lastSeq":"9007199254740993","readSeq":"7"}"""))
@@ -305,5 +317,64 @@ class CaperApiTest {
         assertNull(demo.headers["Authorization"])
         assertEquals("/api/channels/chan00000002/media/status", channel.path)
         assertEquals("Bearer account-secret", channel.headers["Authorization"])
+    }
+
+    @Test fun `push devices send the platform, token and application ID`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(204))
+        server.enqueue(MockResponse().setResponseCode(204))
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        api.registerPush("account-secret", "fcm-token:1", "chat.caper.android.debug")
+        api.unregisterPush("account-secret", "fcm-token:1", "chat.caper.android.debug")
+
+        val register = server.takeRequest(); val unregister = server.takeRequest()
+        assertEquals("POST", register.method)
+        assertEquals("/api/push/devices", register.path)
+        assertEquals("Bearer account-secret", register.headers["Authorization"])
+        assertEquals("""{"platform":"fcm","token":"fcm-token:1","appId":"chat.caper.android.debug"}""", register.body.readUtf8())
+        assertEquals("DELETE", unregister.method)
+        assertEquals("""{"platform":"fcm","token":"fcm-token:1","appId":"chat.caper.android.debug"}""", unregister.body.readUtf8())
+    }
+
+    @Test fun `notification settings routes send only the changed keys`() = runTest {
+        val settings = """{"level":"mentions","mobile":"always","overrides":[{"spaceId":"space0000001","level":"future","mutedUntil":null}]}"""
+        server.enqueue(MockResponse().setBody(settings))
+        server.enqueue(MockResponse().setBody(settings))
+        server.enqueue(MockResponse().setBody("""{"spaceId":"space0000001","level":null,"mutedUntil":"forever"}"""))
+        server.enqueue(MockResponse().setBody("""{"spaceId":"space0000001","channelId":"channel00001","level":"nothing","mutedUntil":null}"""))
+        server.enqueue(MockResponse().setBody("""{"conversationId":"direct000001","level":null,"mutedUntil":"2026-10-08T05:00:00Z"}"""))
+        val api = CaperApi(baseUrl = server.url("/").toString())
+
+        val loaded = api.notificationSettings("account-secret")
+        assertEquals(LEVEL_MENTIONS, loaded.level)
+        assertEquals(MOBILE_ALWAYS, loaded.mobile)
+        assertEquals(LEVEL_MENTIONS, loaded.overrides.single().level)
+        assertEquals(LEVEL_MENTIONS, api.updateNotificationSettings("account-secret", level = LEVEL_MENTIONS).level)
+        assertEquals("forever", api.setSpaceNotifications("account-secret", "space0000001", OverrideChange.Mute("forever")).mutedUntil)
+        assertEquals(LEVEL_NOTHING, api.setChannelNotifications("account-secret", "space0000001", "channel00001", OverrideChange.Level(LEVEL_NOTHING)).level)
+        assertEquals("2026-10-08T05:00:00Z", api.setDirectNotifications("account-secret", "direct000001", OverrideChange.Mute("2026-10-08T05:00:00Z")).mutedUntil)
+
+        val requests = List(5) { server.takeRequest() }
+        assertEquals(
+            listOf(
+                "GET /api/notifications/settings", "PUT /api/notifications/settings", "PUT /api/spaces/space0000001/notifications",
+                "PUT /api/spaces/space0000001/channels/channel00001/notifications", "PUT /api/dms/direct000001/notifications",
+            ),
+            requests.map { "${it.method} ${it.path}" },
+        )
+        assertTrue(requests.all { it.headers["Authorization"] == "Bearer account-secret" })
+        assertEquals(
+            listOf("", """{"level":"mentions"}""", """{"mutedUntil":"forever"}""", """{"level":"nothing"}""", """{"mutedUntil":"2026-10-08T05:00:00Z"}"""),
+            requests.map { it.body.readUtf8() },
+        )
+    }
+
+    @Test fun `an override answer for another scope is rejected`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"spaceId":"space0000002","level":"all","mutedUntil":null}"""))
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        val mismatch = runCatching { api.setSpaceNotifications("account-secret", "space0000001", OverrideChange.Level(LEVEL_ALL)) }.exceptionOrNull()
+        assertTrue(mismatch is IllegalArgumentException)
+        val invalid = runCatching { api.setDirectNotifications("account-secret", "../direct", OverrideChange.Mute(null)) }.exceptionOrNull()
+        assertTrue(invalid is IllegalArgumentException)
+        assertEquals(1, server.requestCount)
     }
 }

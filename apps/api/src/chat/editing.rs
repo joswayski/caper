@@ -131,7 +131,7 @@ async fn persist_edit(
     // appending another version/event; never silently overwrite a newer edit.
     if revision != expected_revision {
         return if i64::from(revision) == i64::from(expected_revision) + 1
-            && payload["content"] == content
+            && payload["content"]["text"] == content["text"]
         {
             Ok(enrich_author(payload, avatar, current_name))
         } else {
@@ -141,7 +141,7 @@ async fn persist_edit(
             ))
         };
     }
-    if payload["content"] == content {
+    if payload["content"]["text"] == content["text"] {
         return Ok(enrich_author(payload, avatar, current_name));
     }
     let recent: i64 = sqlx::query_scalar(
@@ -163,6 +163,15 @@ async fn persist_edit(
     sqlx::query("INSERT INTO public.message_versions(message_id,revision,content,created_at) VALUES($1,1,$2,$3::text::timestamptz) ON CONFLICT DO NOTHING")
         .bind(message_id).bind(&payload["content"]).bind(payload["createdAt"].as_str())
         .execute(&mut *tx).await.map_err(database_error)?;
+    // Edited text is re-resolved like a new message, so added or removed
+    // `@mentions` follow the latest revision.
+    let in_space: bool =
+        sqlx::query_scalar("SELECT space_id IS NOT NULL FROM public.channels WHERE id=$1")
+            .bind(channel_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(database_error)?;
+    let content = with_mentions(&mut tx, content, &mentions::parse(text, in_space)).await?;
     let now = Utc::now();
     payload["content"] = content;
     payload["revision"] = json!(revision + 1);

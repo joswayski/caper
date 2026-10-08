@@ -70,6 +70,67 @@ final class APIClientTests: XCTestCase {
         return APIClient(baseURL: URL(string: "https://caper.invalid")!, session: URLSession(configuration: configuration), tokenStore: MemoryTokenStore(token))
     }
 
+    @MainActor
+    func testRepeatThreadOpenKeepsPendingLoadAndReusesPaginationUntilHistoryReset() async throws {
+        let channel = "chan00000001"
+        let author = ChatAuthor(id: "other", name: "Other", isGuest: false)
+        let root = ChatMessage(id: "Message00000001", channelId: channel, seq: "1", author: author,
+                               content: ChatContent(version: 1, type: "text", text: "Parent"), createdAt: "now", clientMessageId: "root")
+        let latest = ChatMessage(id: "Message00000003", channelId: channel, seq: "3", author: author,
+                                 content: ChatContent(version: 1, type: "text", text: "Latest reply"), createdAt: "now", clientMessageId: "latest", threadRootId: root.id)
+        let older = ChatMessage(id: "Message00000002", channelId: channel, seq: "2", author: author,
+                                content: ChatContent(version: 1, type: "text", text: "Older reply"), createdAt: "now", clientMessageId: "older", threadRootId: root.id)
+        let history = ChatHistory(space: HistoryIdentity(id: "space0000001", name: "Space"),
+                                  channel: HistoryIdentity(id: channel, name: "general"), messages: [root], cursor: "3", hasMore: false)
+        let started = expectation(description: "initial thread request started")
+        var held: MockURLProtocol?
+        var threadRequests = 0
+        MockURLProtocol.deferred = { request, urlRequest in
+            guard urlRequest.url?.path.hasSuffix("/thread") == true, held == nil else { return false }
+            threadRequests += 1; held = request; started.fulfill(); return true
+        }
+        MockURLProtocol.handler = { request in
+            if request.url?.path == "/api/chat/session" {
+                return (200, Data(#"{"token":"chat-secret","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+            }
+            guard request.url?.path.hasSuffix("/thread") == true else { throw URLError(.badURL) }
+            threadRequests += 1
+            XCTAssertEqual(request.url?.query, "before=3")
+            return (200, try JSONEncoder().encode(ThreadHistory(root: root, messages: [older], cursor: "3", hasMore: false)))
+        }
+        let chat = ChatModel(api: client())
+        await chat.open(history: history, displayName: "Me")
+        let opening = Task { await chat.openThread(root.id) }
+        await fulfillment(of: [started], timeout: 2)
+        await chat.openThread(root.id)
+        XCTAssertEqual(threadRequests, 1)
+        XCTAssertTrue(chat.threadLoading)
+        held?.respond(status: 200, data: try JSONEncoder().encode(ThreadHistory(root: root, messages: [latest], cursor: "3", hasMore: true)))
+        await opening.value
+        chat.threadDraft = "Keep this draft"
+        await chat.openThread(root.id)
+        XCTAssertEqual(threadRequests, 1)
+        await chat.loadThread(older: true)
+        XCTAssertEqual(threadRequests, 2)
+        chat.closeThread()
+        await chat.openThread(root.id)
+        XCTAssertEqual(threadRequests, 2)
+        XCTAssertFalse(chat.threadLoading)
+        XCTAssertFalse(chat.threadHasMore)
+        XCTAssertEqual(chat.threadDraft, "Keep this draft")
+        XCTAssertEqual(chat.messages.filter { $0.threadRootId == root.id }.map(\.id), [older.id, latest.id])
+        // A new authorized history replaces reply rows and must discard their cache.
+        await chat.preview(history: history)
+        MockURLProtocol.handler = { _ in
+            threadRequests += 1
+            return (200, try JSONEncoder().encode(ThreadHistory(root: root, messages: [], cursor: "3", hasMore: false)))
+        }
+        await chat.openThread(root.id)
+        XCTAssertEqual(threadRequests, 3)
+        XCTAssertTrue(chat.messages.allSatisfy { $0.threadRootId == nil })
+        await chat.stop()
+    }
+
     func testReactionPUTUsesChatTokenBodyAndFifteenCharacterMessageID() async throws {
         let channel = "Channel12345"
         let message = "Message00000001"
@@ -1543,6 +1604,50 @@ final class APIClientTests: XCTestCase {
     }
 
     @MainActor
+    func testPinnedReactionsStayCurrentOutsideHistoryAndAcrossDelayedPinSnapshots() async throws {
+        let channel = "Channel12345"
+        let messageID = "Message00000001"
+        MockURLProtocol.handler = { request in
+            guard request.url?.path == "/api/chat/session" else { throw URLError(.badURL) }
+            return (200, Data(#"{"token":"chat-secret","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+        }
+        for loaded in [false, true] {
+            let author = ChatAuthor(id: "other", name: "Other", isGuest: false)
+            var original = ChatMessage(id: messageID, channelId: channel, seq: "1", author: author,
+                                       content: ChatContent(version: 1, type: "text", text: "Pinned"), createdAt: "now",
+                                       clientMessageId: "client", reactions: [], reactionSeq: "1",
+                                       pin: MessagePin(author: author, createdAt: "now"), pinSeq: "2")
+            let chat = ChatModel(api: client())
+            await chat.open(history: ChatHistory(space: HistoryIdentity(id: "Space1234567", name: "Space"),
+                                                channel: HistoryIdentity(id: channel, name: "general"),
+                                                messages: loaded ? [original] : [], pinnedMessages: [original],
+                                                cursor: "10", hasMore: false), displayName: "Me")
+            chat.receive(["type": "message.reactions", "schemaVersion": 1, "channelId": channel, "seq": "11",
+                          "messageId": messageID, "reactions": [["emoji": "👍", "authorIds": ["alice", "bob"]]]],
+                         generation: 1, channelID: channel)
+            XCTAssertEqual(chat.pinnedMessages.first?.reactions, [MessageReaction(emoji: "👍", authorIds: ["alice", "bob"])])
+            original.pinSeq = "12"
+            chat.receive(["type": "message.pin", "schemaVersion": 1, "channelId": channel, "seq": "12",
+                          "message": try JSONSerialization.jsonObject(with: JSONEncoder().encode(original))],
+                         generation: 1, channelID: channel)
+            XCTAssertEqual(chat.pinnedMessages.first?.reactionSeq, "11")
+            chat.receive(["type": "message.reactions", "schemaVersion": 1, "channelId": channel, "seq": "13",
+                          "messageId": messageID, "reactions": []], generation: 1, channelID: channel)
+            original.pinSeq = "14"
+            original.reactionSeq = "11"
+            original.reactions = [MessageReaction(emoji: "👍", authorIds: ["alice", "bob"])]
+            chat.receive(["type": "message.pin", "schemaVersion": 1, "channelId": channel, "seq": "14",
+                          "message": try JSONSerialization.jsonObject(with: JSONEncoder().encode(original))],
+                         generation: 1, channelID: channel)
+            XCTAssertEqual(chat.pinnedMessages.first?.reactions, [])
+            XCTAssertEqual(chat.currentSnapshot()?.pinnedMessages.first?.reactionSeq, "13")
+            XCTAssertEqual(chat.messages.count, loaded ? 1 : 0, "pins must not create timeline rows")
+            XCTAssertEqual(chat.currentSnapshot()?.cursor, "14")
+            await chat.stop()
+        }
+    }
+
+    @MainActor
     func testReactionIsOptimisticAndGatewaySnapshotsPreservePendingOwnIntent() async throws {
         let channel = "chan00000001"
         let messageID = "Message00000001"
@@ -1581,6 +1686,49 @@ final class APIClientTests: XCTestCase {
         await saving.value
         XCTAssertNil(chat.reactionErrors[messageID])
         await chat.stop()
+    }
+
+    @MainActor
+    func testPinnedReactionsProjectAndRollbackWithoutInsertingUnloadedHistory() async throws {
+        for loaded in [false, true] {
+            let channel = "chan00000001", messageID = "Message00000001"
+            let started = expectation(description: "pinned reaction started")
+            var held: MockURLProtocol?
+            MockURLProtocol.deferred = { request, urlRequest in
+                guard urlRequest.url?.path.hasSuffix("/reactions") == true else { return false }
+                held = request; started.fulfill(); return true
+            }
+            MockURLProtocol.handler = { request in
+                guard request.url?.path == "/api/chat/session" else { throw URLError(.badURL) }
+                return (200, Data(#"{"token":"chat-secret","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+            }
+            let author = ChatAuthor(id: "other", name: "Other", isGuest: false)
+            var pinned = ChatMessage(id: messageID, channelId: channel, seq: "1", author: author,
+                content: ChatContent(version: 1, type: "text", text: "Pinned"), createdAt: "now",
+                clientMessageId: "client", reactions: [], reactionSeq: "1")
+            pinned.pin = MessagePin(author: author, createdAt: "now"); pinned.pinSeq = "2"
+            let history = ChatHistory(space: HistoryIdentity(id: "space0000001", name: "Space"),
+                channel: HistoryIdentity(id: channel, name: "general"), messages: loaded ? [pinned] : [],
+                pinnedMessages: [pinned], cursor: "2", hasMore: true)
+            let chat = ChatModel(api: client())
+            await chat.open(history: history, displayName: "Me")
+            let saving = Task { await chat.setReaction(messageID: messageID, emoji: "👍", active: true) }
+            await fulfillment(of: [started], timeout: 2)
+            XCTAssertEqual(chat.pinnedMessages[0].reactions, [MessageReaction(emoji: "👍", authorIds: ["self"])])
+            XCTAssertEqual(chat.currentSnapshot()?.pinnedMessages[0].reactions, [], "cached pins exclude pending intents")
+            chat.receive(["type": "message.reactions", "schemaVersion": 1, "channelId": channel, "seq": "3",
+                "messageId": messageID, "reactions": [["emoji": "🎉", "authorIds": ["other"]]]],
+                generation: 1, channelID: channel)
+            XCTAssertEqual(chat.pinnedMessages[0].reactions, [MessageReaction(emoji: "🎉", authorIds: ["other"]),
+                MessageReaction(emoji: "👍", authorIds: ["self"])])
+            held?.respond(status: 503)
+            await saving.value
+            XCTAssertEqual(chat.pinnedMessages[0].reactions, [MessageReaction(emoji: "🎉", authorIds: ["other"])])
+            XCTAssertEqual(chat.messages.count, loaded ? 1 : 0)
+            XCTAssertEqual(chat.currentSnapshot()?.cursor, "3")
+            XCTAssertEqual(chat.pinnedMessages[0].pinSeq, "2")
+            await chat.stop()
+        }
     }
 
     @MainActor
@@ -1718,6 +1866,122 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(requests.map { "\($0.0) \($0.1)" }, ["GET /api/dms", "POST /api/dms", "POST /api/dms/dm0000000001/read"])
         XCTAssertEqual(try JSONSerialization.jsonObject(with: XCTUnwrap(requests[1].2)) as? [String: String], ["username": "exact_name"])
         XCTAssertEqual(try JSONSerialization.jsonObject(with: XCTUnwrap(requests[2].2)) as? [String: String], ["seq": "12"])
+    }
+
+    @MainActor
+    func testDirectMessageRefreshClearsRecoveredDNSErrorWithoutClearingOtherErrors() async {
+        let model = AppModel(api: client())
+        model.account = Account(id: "me", username: "me", displayName: "Me")
+        let previous = DirectMessageConversation(id: "dm0000000001", peer: DirectMessagePeer(id: "peer", username: "peer", displayName: "Peer"), lastSeq: "1", readSeq: "0")
+        model.directMessages = [previous]
+        model.error = "Your profile could not be saved."
+        var failure = true
+        var empty = false
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path, "/api/dms")
+            if failure { throw URLError(.cannotFindHost) }
+            if empty { return (200, Data(#"{"conversations":[]}"#.utf8)) }
+            return (200, Data(#"{"conversations":[{"id":"dm0000000001","peer":{"id":"peer","username":"peer","displayName":"Peer"},"lastSeq":"12","readSeq":"9"}]}"#.utf8))
+        }
+
+        await model.refreshDirectMessages()
+        XCTAssertEqual(model.directMessages, [previous], "a failed refresh keeps the last list")
+        XCTAssertEqual(model.directMessagesError, URLError(.cannotFindHost).localizedDescription)
+        XCTAssertEqual(model.error, "Your profile could not be saved.", "DM failures must not replace operation errors")
+
+        failure = false
+        await model.refreshDirectMessages()
+        XCTAssertNil(model.directMessagesError, "network recovery clears the stale DM error")
+        XCTAssertEqual(model.directMessages.map(\.id), ["dm0000000001"])
+        XCTAssertEqual(model.directMessages.first?.lastSeq, "12")
+        XCTAssertEqual(model.directMessages.first?.readSeq, "9")
+        XCTAssertEqual(model.error, "Your profile could not be saved.", "background success must not hide another failure")
+
+        failure = true
+        await model.refreshDirectMessages()
+        XCTAssertNotNil(model.directMessagesError)
+        failure = false; empty = true
+        await model.refreshDirectMessages()
+        XCTAssertTrue(model.directMessages.isEmpty)
+        XCTAssertNil(model.directMessagesError, "an empty successful list also clears the error")
+        XCTAssertEqual(model.error, "Your profile could not be saved.")
+    }
+
+    @MainActor
+    func testLogoutClearsDMRefreshErrorAndFencesLateRefreshResults() async {
+        for status in [200, 503] {
+            let model = AppModel(api: client())
+            model.account = Account(id: "me", username: "me", displayName: "Me")
+            MockURLProtocol.handler = { request in
+                if request.url?.path == "/api/auth/logout" { return (204, Data()) }
+                XCTAssertEqual(request.url?.path, "/api/dms")
+                throw URLError(.cannotFindHost)
+            }
+            await model.refreshDirectMessages()
+            XCTAssertNotNil(model.directMessagesError)
+            XCTAssertNil(model.error, "a background refresh uses its own error state")
+
+            let refreshStarted = expectation(description: "DM refresh started before logout (\(status))")
+            var delayedRefresh: MockURLProtocol?
+            MockURLProtocol.deferred = { request, urlRequest in
+                guard urlRequest.url?.path == "/api/dms" else { return false }
+                delayedRefresh = request
+                refreshStarted.fulfill()
+                return true
+            }
+            let refresh = Task { await model.refreshDirectMessages() }
+            await fulfillment(of: [refreshStarted], timeout: 1)
+            await model.logout()
+            XCTAssertNil(model.directMessagesError, "logout clears the previous account's error immediately")
+            let data = status == 200
+                ? Data(#"{"conversations":[{"id":"dm0000000001","peer":{"id":"peer","username":"peer","displayName":"Peer"},"lastSeq":"12","readSeq":"9"}]}"#.utf8)
+                : Data(#"{"error":"Late DM refresh failure."}"#.utf8)
+            delayedRefresh?.respond(status: status, data: data)
+            await refresh.value
+            MockURLProtocol.deferred = nil
+            XCTAssertNil(model.account)
+            XCTAssertTrue(model.directMessages.isEmpty, "an old request cannot restore signed-out data")
+            XCTAssertNil(model.directMessagesError, "an old failure cannot restore the banner")
+            XCTAssertNil(model.error)
+        }
+    }
+
+    func testPeopleGETUsesAccountAuthorizationAndDecodesNullAvatar() async throws {
+        var routes: [String] = []
+        MockURLProtocol.handler = { request in
+            routes.append("\(request.httpMethod ?? "") \(request.url?.path ?? "")")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "authorization"), "Bearer account-secret")
+            return (200, Data(#"{"people":[{"id":"alex00000001","username":"alex","displayName":"Alex","avatarId":799},{"id":"sam000000001","username":"sam","displayName":"Sam","avatarId":null}]}"#.utf8))
+        }
+        let people = try await client().people()
+        XCTAssertEqual(routes, ["GET /api/people"])
+        XCTAssertEqual(people.map(\.username), ["alex", "sam"])
+        XCTAssertEqual(people.map(\.avatarId), [799, nil])
+    }
+
+    @MainActor
+    func testPeopleRefreshKeepsLastListOnFailureAndClearsOnLogout() async throws {
+        let model = AppModel(api: client())
+        model.account = Account(id: "me0000000001", username: "me", displayName: "Me")
+        var fail = false
+        MockURLProtocol.handler = { request in
+            switch request.url!.path {
+            case "/api/people":
+                if fail { return (500, Data(#"{"error":"unavailable"}"#.utf8)) }
+                return (200, Data(#"{"people":[{"id":"alex00000001","username":"alex","displayName":"Alex","avatarId":null}]}"#.utf8))
+            case "/api/auth/logout": return (204, Data())
+            default: throw URLError(.badURL)
+            }
+        }
+        XCTAssertNil(model.people, "DM suggestions fall back to the peer until people load")
+        await model.refreshPeople()
+        XCTAssertEqual(model.people?.map(\.username), ["alex"])
+        fail = true
+        await model.refreshPeople()
+        XCTAssertEqual(model.people?.map(\.username), ["alex"], "a failed refresh keeps the previous list")
+        XCTAssertNil(model.error, "people failures are silent")
+        await model.logout()
+        XCTAssertNil(model.people)
     }
 
     func testMessageRequestBlockAndPrivacyEndpoints() async throws {

@@ -127,6 +127,62 @@ pub struct Privacy {
     pub direct_messages: String,
 }
 
+/// An account, space or channel notification level. DMs use only `Nothing`
+/// (notifications off). Unknown future values read as `Mentions`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotificationLevel {
+    All,
+    Mentions,
+    Nothing,
+}
+
+impl NotificationLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Mentions => "mentions",
+            Self::Nothing => "nothing",
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for NotificationLevel {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(deserializer)?.as_str() {
+            "all" => Self::All,
+            "nothing" => Self::Nothing,
+            _ => Self::Mentions,
+        })
+    }
+}
+
+/// `GET/PUT /api/notifications/settings`. Desktop never changes `mobile`.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationSettings {
+    pub level: NotificationLevel,
+    pub mobile: String,
+    #[serde(default)]
+    pub overrides: Vec<NotificationOverride>,
+}
+
+/// A space (`spaceId`), channel (`spaceId` + `channelId`) or DM
+/// (`conversationId`) override. `mutedUntil` is an RFC 3339 time or `forever`.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationOverride {
+    #[serde(default)]
+    pub space_id: Option<String>,
+    #[serde(default)]
+    pub channel_id: Option<String>,
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+    #[serde(default)]
+    pub level: Option<NotificationLevel>,
+    #[serde(default)]
+    pub muted_until: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct DirectConversations {
     pub conversations: Vec<DirectConversation>,
@@ -153,6 +209,23 @@ pub struct Member {
     pub username: String,
     pub display_name: String,
     pub owner: bool,
+}
+
+/// A `GET /api/people` entry: someone who shares an active space or a DM with
+/// you (never yourself), for DM `@` suggestions.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Person {
+    pub id: String,
+    pub username: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub avatar_id: Option<i32>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct People {
+    pub people: Vec<Person>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -197,6 +270,40 @@ pub struct Content {
     #[serde(rename = "type")]
     pub kind: String,
     pub text: String,
+    /// Server-resolved `@` mentions in first-appearance order. Older messages
+    /// and older servers omit it.
+    #[serde(
+        default,
+        deserialize_with = "mention_entries",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub mentions: Vec<Mention>,
+}
+
+/// A `content.mentions` entry: `user` (with `id`/`username`), `everyone` or
+/// `here`. Other types are future additions; readers ignore them.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct Mention {
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+}
+
+/// Mentions only decorate text, so a missing, `null` or unexpected list, or an
+/// entry shaped differently by a newer server, never rejects the message.
+fn mention_entries<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<Mention>, D::Error> {
+    Ok(match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::Array(entries) => entries
+            .into_iter()
+            .filter_map(|entry| serde_json::from_value(entry).ok())
+            .collect(),
+        _ => Vec::new(),
+    })
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -598,7 +705,7 @@ pub struct Timeline {
     cursor: u64,
     pin_snapshot_cursor: u64,
     messages: BTreeMap<u64, Message>,
-    ids: BTreeSet<String>,
+    ids: BTreeMap<String, u64>,
     buffered: BTreeMap<u64, Message>,
     unseen_reactions: BTreeMap<String, ReactionUpdate>,
     unseen_pins: BTreeMap<String, Message>,
@@ -606,6 +713,69 @@ pub struct Timeline {
     pinned: BTreeMap<u64, Message>,
     thread_summaries: BTreeMap<String, ThreadSummary>,
     edits: BTreeMap<String, Message>,
+}
+
+/// Presentation-only intents: snapshots and replay cursors remain authoritative.
+#[derive(Default)]
+pub struct MessageMutations {
+    pub pins: BTreeMap<String, (Message, Option<Pin>)>,
+    pub edits: BTreeMap<String, (String, u32)>,
+}
+
+impl MessageMutations {
+    pub fn project<'a>(&self, message: &'a Message) -> std::borrow::Cow<'a, Message> {
+        let pin = self.pins.get(&message.id);
+        let edit = self
+            .edits
+            .get(&message.id)
+            .filter(|(_, revision)| message.revision <= *revision);
+        if pin.is_none() && edit.is_none() {
+            return std::borrow::Cow::Borrowed(message);
+        }
+        let mut result = message.clone();
+        if let Some((_, pin)) = pin {
+            result.pin.clone_from(pin);
+        }
+        if let Some((text, _)) = edit {
+            result.content.text.clone_from(text);
+            result.content.mentions.clear();
+        }
+        std::borrow::Cow::Owned(result)
+    }
+
+    pub fn pinned(&self, timeline: &Timeline) -> Vec<Message> {
+        let mut rows: BTreeMap<_, _> = timeline
+            .pinned_messages()
+            .map(|message| (message.id.clone(), message.clone()))
+            .collect();
+        for (id, (original, pin)) in &self.pins {
+            if pin.is_none() {
+                rows.remove(id);
+            } else {
+                let message = timeline
+                    .messages()
+                    .find(|message| &message.id == id)
+                    .or_else(|| rows.get(id))
+                    .unwrap_or(original)
+                    .clone();
+                rows.insert(id.clone(), message);
+            }
+        }
+        let mut rows: Vec<_> = rows
+            .values()
+            .map(|message| self.project(message).into_owned())
+            .collect();
+        rows.sort_by_key(|message| {
+            std::cmp::Reverse(
+                message
+                    .pin_seq
+                    .as_deref()
+                    .and_then(|seq| seq.parse::<u64>().ok())
+                    .unwrap_or(0),
+            )
+        });
+        rows
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -747,12 +917,12 @@ impl Timeline {
 
     fn merge_edit_snapshot(&mut self, message: Message) -> Result<bool, String> {
         message.validate()?;
-        if !self.ids.contains(&message.id)
+        if !self.ids.contains_key(&message.id)
             && !self.edits.contains_key(&message.id)
             && self
                 .edits
                 .keys()
-                .filter(|id| !self.ids.contains(*id))
+                .filter(|id| !self.ids.contains_key(*id))
                 .count()
                 >= 256
         {
@@ -799,6 +969,16 @@ impl Timeline {
             return Err("invalid pin update".into());
         }
         update.message.validate()?;
+        if let Some(seq) = &update.message.reaction_seq {
+            self.merge_reaction_ack(ReactionUpdate {
+                kind: "message.reactions".into(),
+                schema_version: 1,
+                channel_id: update.channel_id.clone(),
+                message_id: update.message.id.clone(),
+                seq: seq.clone(),
+                reactions: update.message.reactions.clone(),
+            })?;
+        }
         let revision = sequence(&update.seq)?;
         if revision <= self.pin_snapshot_cursor {
             return Ok(());
@@ -842,7 +1022,24 @@ impl Timeline {
 
     fn merge_pin_message(&mut self, message: Message) -> Result<(), String> {
         message.validate()?;
-        let message = self.remember_edit(message);
+        let mut message = self.remember_edit(message);
+        for snapshot in self
+            .messages
+            .get(&sequence(&message.seq)?)
+            .into_iter()
+            .chain(self.pinned.values())
+        {
+            overlay_reactions(&mut message, snapshot);
+        }
+        if let Some(update) = self.unseen_reactions.get(&message.id)
+            && sequence(&update.seq)? > sequence(message.reaction_seq.as_deref().unwrap_or("0"))?
+        {
+            message.reactions.clone_from(&update.reactions);
+            message.reaction_seq = Some(update.seq.clone());
+        }
+        if let Some(loaded) = self.messages.get_mut(&sequence(&message.seq)?) {
+            overlay_reactions(loaded, &message);
+        }
         self.pinned.retain(|_, item| item.id != message.id);
         if message.pin.is_some() {
             let revision = message
@@ -867,10 +1064,15 @@ impl Timeline {
         {
             return Err("invalid reaction update".into());
         }
-        if let Some(message) = self
-            .messages
-            .values_mut()
-            .find(|item| item.id == update.message_id)
+        let loaded = self
+            .ids
+            .get(&update.message_id)
+            .and_then(|seq| self.messages.get_mut(seq));
+        for message in loaded
+            .into_iter()
+            .chain(self.pinned.values_mut())
+            .chain(self.unseen_pins.get_mut(&update.message_id))
+            .filter(|item| item.id == update.message_id)
         {
             if message.channel_id != update.channel_id {
                 return Err("reaction update is for another channel".into());
@@ -885,7 +1087,8 @@ impl Timeline {
                 message.reactions.clone_from(&update.reactions);
                 message.reaction_seq = Some(update.seq.clone());
             }
-        } else {
+        }
+        if !self.ids.contains_key(&update.message_id) {
             if self
                 .messages
                 .values()
@@ -972,6 +1175,9 @@ impl Timeline {
 
     fn merge(&mut self, mut message: Message) -> Result<(), String> {
         message.validate()?;
+        if let Some(pinned) = self.pinned.values().find(|item| item.id == message.id) {
+            overlay_reactions(&mut message, pinned);
+        }
         self.merge_forward(&message);
         if let Some(snapshot) = self.forward_updates.get(&message.id) {
             overlay_forward(&mut message, snapshot);
@@ -1094,10 +1300,31 @@ impl Timeline {
             }
             overlay_forward(&mut message, existing);
             *existing = message;
-        } else if !self.messages.contains_key(&seq) && self.ids.insert(message.id.clone()) {
+        } else if !self.messages.contains_key(&seq) && !self.ids.contains_key(&message.id) {
+            self.ids.insert(message.id.clone(), seq);
             self.messages.insert(seq, message);
         }
+        if let Some(message) = self.messages.get(&seq) {
+            for pinned in self
+                .pinned
+                .values_mut()
+                .chain(self.unseen_pins.values_mut())
+            {
+                overlay_reactions(pinned, message);
+            }
+        }
         Ok(())
+    }
+}
+
+fn overlay_reactions(current: &mut Message, incoming: &Message) {
+    if current.id == incoming.id
+        && current.channel_id == incoming.channel_id
+        && sequence(incoming.reaction_seq.as_deref().unwrap_or("0")).unwrap_or(0)
+            > sequence(current.reaction_seq.as_deref().unwrap_or("0")).unwrap_or(0)
+    {
+        current.reactions.clone_from(&incoming.reactions);
+        current.reaction_seq.clone_from(&incoming.reaction_seq);
     }
 }
 
@@ -1214,6 +1441,7 @@ mod tests {
                 version: 1,
                 kind: "text".into(),
                 text: id.into(),
+                mentions: Vec::new(),
             },
             reactions: Vec::new(),
             reaction_seq: None,
@@ -1242,6 +1470,86 @@ mod tests {
             seq: seq.to_string(),
             message,
         }
+    }
+
+    #[test]
+    fn optimistic_mutations_are_cursor_neutral_and_rollback_to_latest_shared_state() {
+        let mut original = message("target", 1);
+        original.content.text = "@peer target".into();
+        original.content.mentions = vec![Mention {
+            kind: "user".into(),
+            id: Some("peer".into()),
+            username: Some("peer".into()),
+        }];
+        let pin = Pin {
+            author: original.author.clone(),
+            created_at: "2026-10-08T00:00:00Z".into(),
+        };
+        let mut timeline = Timeline::default();
+        timeline.reset(vec![original.clone()], "1").unwrap();
+        let mut mutations = MessageMutations::default();
+        mutations
+            .pins
+            .insert(original.id.clone(), (original.clone(), Some(pin.clone())));
+        mutations
+            .edits
+            .insert(original.id.clone(), ("local draft".into(), 1));
+        let projected = mutations.project(timeline.messages().next().unwrap());
+        assert_eq!(projected.pin, Some(pin.clone()));
+        assert_eq!(projected.content.text, "local draft");
+        assert_eq!(projected.revision, 1);
+        assert_eq!(projected.edit_seq, None);
+        assert_eq!(projected.pin_seq, None);
+        assert!(projected.content.mentions.is_empty());
+        assert_eq!(
+            timeline.messages().next().unwrap().content.mentions,
+            original.content.mentions
+        );
+        assert_eq!(mutations.pinned(&timeline)[0].content.text, "local draft");
+        assert_eq!(timeline.cursor(), "1");
+        assert_eq!(
+            timeline.messages().next().unwrap().content.text,
+            "@peer target"
+        );
+        assert!(timeline.pinned_messages().next().is_none());
+        let edit = edit_update(original.clone(), 2, 2);
+        let remote_text = edit.message.content.text.clone();
+        timeline.apply_edit(edit).unwrap();
+        timeline
+            .apply_pin(pin_update(original.clone(), 3, true))
+            .unwrap();
+        assert_eq!(
+            mutations
+                .project(timeline.messages().next().unwrap())
+                .content
+                .text,
+            remote_text
+        );
+        mutations
+            .pins
+            .insert(original.id.clone(), (original.clone(), None));
+        assert!(mutations.pinned(&timeline).is_empty());
+        assert!(
+            mutations
+                .project(timeline.messages().next().unwrap())
+                .pin
+                .is_none()
+        );
+        mutations = MessageMutations::default();
+        let restored = mutations.pinned(&timeline);
+        assert_eq!(restored[0].content.text, remote_text);
+        assert_eq!(restored[0].pin_seq.as_deref(), Some("3"));
+        assert_eq!(timeline.cursor(), "3");
+        // An unloaded pin is a separate collection, never a page insertion.
+        timeline.reset(vec![], "3").unwrap();
+        timeline.reset_pins(restored.clone()).unwrap();
+        mutations
+            .pins
+            .insert(original.id, (restored[0].clone(), None));
+        assert!(mutations.pinned(&timeline).is_empty());
+        assert_eq!(timeline.messages().count(), 0);
+        mutations.pins.clear();
+        assert_eq!(mutations.pinned(&timeline), restored);
     }
 
     #[test]
@@ -1649,6 +1957,160 @@ mod tests {
     }
 
     #[test]
+    fn pinned_reactions_survive_delayed_pin_acknowledgements_and_history() {
+        for loaded in [false, true] {
+            let mut timeline = Timeline::default();
+            let original = pin_update(message("old", 1), 2, true).message;
+            let mut page = vec![message("new", 10)];
+            if loaded {
+                page.push(original.clone());
+            }
+            timeline.reset(page, "10").unwrap();
+            timeline.reset_pins(vec![original.clone()]).unwrap();
+            timeline
+                .merge_reaction_ack(reaction_update("old", 12, "alice"))
+                .unwrap();
+            assert_eq!(timeline.cursor(), "10");
+            assert_eq!(
+                timeline.pinned_messages().next().unwrap().reactions[0].author_ids,
+                ["alice"]
+            );
+            timeline
+                .apply_reactions(reaction_update("old", 11, "stale"))
+                .unwrap();
+            timeline
+                .merge_pin_ack(pin_update(original.clone(), 13, true))
+                .unwrap();
+            assert_eq!(
+                timeline
+                    .pinned_messages()
+                    .next()
+                    .unwrap()
+                    .reaction_seq
+                    .as_deref(),
+                Some("12")
+            );
+            timeline.prepend(vec![original.clone()]).unwrap();
+            assert_eq!(
+                timeline.messages().next().unwrap().reactions[0].author_ids,
+                ["alice"]
+            );
+            let mut removed = reaction_update("old", 14, "alice");
+            removed.reactions.clear();
+            timeline.merge_reaction_ack(removed).unwrap();
+            timeline
+                .merge_pin_ack(pin_update(original, 13, true))
+                .unwrap();
+            assert!(
+                timeline
+                    .pinned_messages()
+                    .next()
+                    .unwrap()
+                    .reactions
+                    .is_empty()
+            );
+            assert_eq!(
+                timeline
+                    .pinned_messages()
+                    .next()
+                    .unwrap()
+                    .reaction_seq
+                    .as_deref(),
+                Some("14")
+            );
+            assert_eq!(timeline.messages().count(), 2);
+            let mut noop = pin_update(message("old", 1), 2, true);
+            noop.message.reaction_seq = Some("15".into());
+            noop.message.reactions = reaction_update("old", 15, "carol").reactions;
+            timeline.merge_pin_ack(noop).unwrap();
+            let pinned = timeline.pinned_messages().next().unwrap();
+            assert_eq!(pinned.pin_seq.as_deref(), Some("13"));
+            assert_eq!(pinned.reactions[0].author_ids, ["carol"]);
+            assert_eq!(
+                timeline.messages().next().unwrap().reaction_seq.as_deref(),
+                Some("15")
+            );
+        }
+    }
+
+    #[test]
+    fn pins_share_reactions_without_entering_channel_pagination() {
+        for loaded in [false, true] {
+            let mut timeline = Timeline::default();
+            let pinned = pin_update(message("old", 1), 8, true).message;
+            let mut messages = vec![message("new", 10)];
+            if loaded {
+                messages.push(pinned.clone());
+            }
+            timeline.reset(messages, "10").unwrap();
+            timeline.reset_pins(vec![pinned.clone()]).unwrap();
+            timeline
+                .apply_reactions(reaction_update("old", 11, "peer"))
+                .unwrap();
+            assert_eq!(
+                timeline.pinned_messages().next().unwrap().reactions[0].author_ids,
+                ["peer"]
+            );
+            assert_eq!(timeline.messages().count(), if loaded { 2 } else { 1 });
+            let mut removed = reaction_update("old", 14, "peer");
+            removed.reactions.clear();
+            timeline.merge_reaction_ack(removed).unwrap();
+            timeline
+                .apply_pin(pin_update(pinned.clone(), 12, false))
+                .unwrap();
+            timeline
+                .apply_pin(pin_update(pinned.clone(), 13, true))
+                .unwrap();
+            let latest = timeline.pinned_messages().next().unwrap();
+            assert_eq!(latest.reaction_seq.as_deref(), Some("14"));
+            assert!(latest.reactions.is_empty());
+            assert_eq!(timeline.cursor(), "13");
+            timeline.prepend(vec![pinned]).unwrap();
+            let latest = timeline.messages().next().unwrap();
+            assert_eq!(latest.reaction_seq.as_deref(), Some("14"));
+            assert!(latest.reactions.is_empty());
+        }
+    }
+
+    #[test]
+    fn first_pin_overlays_unseen_reactions_and_stale_pin_revisions_can_carry_newer_reactions() {
+        let mut timeline = Timeline::default();
+        timeline.reset(vec![message("new", 10)], "10").unwrap();
+        timeline
+            .apply_reactions(reaction_update("old", 11, "peer"))
+            .unwrap();
+        timeline
+            .apply_pin(pin_update(message("old", 1), 12, true))
+            .unwrap();
+        assert_eq!(
+            timeline
+                .pinned_messages()
+                .next()
+                .unwrap()
+                .reaction_seq
+                .as_deref(),
+            Some("11")
+        );
+        let mut snapshot = pin_update(message("old", 1), 12, true);
+        snapshot.message.reaction_seq = Some("15".into());
+        timeline.merge_pin_ack(snapshot).unwrap();
+        assert!(
+            timeline
+                .pinned_messages()
+                .next()
+                .unwrap()
+                .reactions
+                .is_empty()
+        );
+        timeline.prepend(vec![message("old", 1)]).unwrap();
+        assert_eq!(
+            timeline.messages().next().unwrap().reaction_seq.as_deref(),
+            Some("15")
+        );
+        assert_eq!(timeline.cursor(), "12");
+    }
+
+    #[test]
     fn stale_history_cannot_resurrect_an_unpin() {
         let mut timeline = Timeline::default();
         timeline.reset(vec![message("new", 10)], "10").unwrap();
@@ -1924,6 +2386,82 @@ mod tests {
             self.avatar_id = Some(avatar_id);
             self
         }
+    }
+
+    #[test]
+    fn people_decode_with_optional_avatars() {
+        let people: People = serde_json::from_value(serde_json::json!({"people": [
+            {"id": "user00000001", "username": "alex", "displayName": "Alex", "avatarId": 16},
+            {"id": "user00000002", "username": "maya", "displayName": "Maya", "avatarId": null},
+            {"id": "user00000003", "username": "sam", "displayName": "Sam"}
+        ]}))
+        .unwrap();
+        assert_eq!(
+            people.people[0],
+            Person {
+                id: "user00000001".into(),
+                username: "alex".into(),
+                display_name: "Alex".into(),
+                avatar_id: Some(16),
+            }
+        );
+        assert_eq!(people.people[1].avatar_id, None);
+        assert_eq!(people.people[2].avatar_id, None);
+    }
+
+    #[test]
+    fn content_mentions_are_optional_and_tolerate_unknown_entries() {
+        let legacy: Content =
+            serde_json::from_str(r#"{"version":1,"type":"text","text":"hi"}"#).unwrap();
+        assert!(legacy.mentions.is_empty());
+        let null: Content =
+            serde_json::from_str(r#"{"version":1,"type":"text","text":"hi","mentions":null}"#)
+                .unwrap();
+        assert!(null.mentions.is_empty());
+        let content: Content = serde_json::from_value(serde_json::json!({
+            "version": 1, "type": "text", "text": "hey @alice and @everyone",
+            "mentions": [
+                {"type": "user", "id": "user00000001", "username": "alice"},
+                {"type": "everyone"},
+                {"type": "role", "id": 7, "color": "red"},
+                {"type": "channel", "id": "chan00000001"},
+                "malformed"
+            ]
+        }))
+        .unwrap();
+        assert_eq!(
+            content.mentions,
+            [
+                Mention {
+                    kind: "user".into(),
+                    id: Some("user00000001".into()),
+                    username: Some("alice".into()),
+                },
+                Mention {
+                    kind: "everyone".into(),
+                    id: None,
+                    username: None,
+                },
+                Mention {
+                    kind: "channel".into(),
+                    id: Some("chan00000001".into()),
+                    username: None,
+                },
+            ]
+        );
+        let message: Message = serde_json::from_value(serde_json::json!({
+            "id": "m", "channelId": "c", "seq": "1", "createdAt": "2026-01-01T00:00:00Z",
+            "clientMessageId": "client",
+            "author": {"id": "a", "name": "A", "isGuest": false},
+            "content": {"version": 1, "type": "text", "text": "@here", "mentions": {"type": "here"}}
+        }))
+        .unwrap();
+        assert!(message.validate().is_ok());
+        assert!(message.content.mentions.is_empty());
+        assert_eq!(
+            serde_json::to_value(&legacy).unwrap(),
+            serde_json::json!({"version": 1, "type": "text", "text": "hi"})
+        );
     }
 
     #[test]

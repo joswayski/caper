@@ -18,7 +18,12 @@ for (const [category, entries] of Object.entries(data.emojis)) {
   for (const entry of entries.filter((item) => Number(item.a) <= 15)) {
     const id = basename(emojiAsset(entry.u), ".svg");
     const names = emojiNames(entry.n);
-    offered.set(id, { emoji: String.fromCodePoint(...entry.u.split("-").map((point) => parseInt(point, 16))), name: names.at(-1), keywords: names.join(" "), category });
+    offered.set(id, {
+      emoji: String.fromCodePoint(...entry.u.split("-").map((point) => parseInt(point, 16))),
+      name: names.at(-1),
+      keywords: names.join(" "),
+      category,
+    });
   }
 }
 const files = (await readdir(source)).filter((name) => name.endsWith(".svg")).sort();
@@ -26,21 +31,53 @@ const entries = files.map((file, index) => {
   const id = basename(file, ".svg");
   return {
     // Artwork IDs omit some selectors; composer insertion must preserve them.
-    id, emoji: offered.get(id)?.emoji ?? String.fromCodePoint(...id.split("-").map((point) => parseInt(point, 16))),
-    name: offered.get(id)?.name ?? id, keywords: offered.get(id)?.keywords ?? "",
-    category: offered.get(id)?.category ?? "", selectable: offered.has(id),
-    sheet: Math.floor(index / 256), x: (index % 16) * 64, y: Math.floor((index % 256) / 16) * 64,
+    id,
+    emoji: offered.get(id)?.emoji ?? String.fromCodePoint(...id.split("-").map((point) => parseInt(point, 16))),
+    name: offered.get(id)?.name ?? id,
+    keywords: offered.get(id)?.keywords ?? "",
+    category: offered.get(id)?.category ?? "",
+    selectable: offered.has(id),
+    sheet: Math.floor(index / 256),
+    x: (index % 16) * 64,
+    y: Math.floor((index % 256) / 16) * 64,
   };
 });
 // Metadata-only updates need not rerasterize unchanged licensed artwork.
 for (let index = 0; !process.argv.includes("--catalog-only") && index < files.length; index += 256) {
   const output = join(target, `sheet-${index / 256}.png`);
-  execFileSync("magick", ["montage", "-background", "none", ...files.slice(index, index + 256).map((file) => join(source, file)),
-    "-geometry", "64x64+0+0", "-tile", "16x16", `PNG32:${output}`], { stdio: "inherit" });
-  execFileSync("magick", [output, "-background", "none", "-gravity", "NorthWest", "-extent", "1024x1024", "-strip", `PNG32:${output}`]);
+  execFileSync(
+    "magick",
+    [
+      "montage",
+      "-background",
+      "none",
+      ...files.slice(index, index + 256).map((file) => join(source, file)),
+      "-geometry",
+      "64x64+0+0",
+      "-tile",
+      "16x16",
+      `PNG32:${output}`,
+    ],
+    { stdio: "inherit" },
+  );
+  execFileSync("magick", [
+    output,
+    "-background",
+    "none",
+    "-gravity",
+    "NorthWest",
+    "-extent",
+    "1024x1024",
+    "-strip",
+    `PNG32:${output}`,
+  ]);
 }
 await writeFile(join(target, "catalog.json"), JSON.stringify(entries) + "\n");
 // SwiftPM bundles resources inside its target directory. Keep that generated
 // copy (including attribution/licenses) identical to Android/desktop's source.
-await cp(target, fileURLToPath(new URL("../apps/native/apple/Sources/CaperCore/EmojiAssets/", import.meta.url)), { recursive: true });
-console.log(`Generated ${entries.length} image entries, ${offered.size} picker choices, ${Math.ceil(files.length / 256)} sheets.`);
+await cp(target, fileURLToPath(new URL("../apps/native/apple/Sources/CaperCore/EmojiAssets/", import.meta.url)), {
+  recursive: true,
+});
+console.log(
+  `Generated ${entries.length} image entries, ${offered.size} picker choices, ${Math.ceil(files.length / 256)} sheets.`,
+);

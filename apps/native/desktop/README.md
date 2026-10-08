@@ -38,6 +38,19 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
 - Global two-person direct messages, including exact-username conversation
   creation, unread state, account-wide read cursors, paging, typing, retry, and gateway
   replay. Desktop does not provide OS push notifications in this stage.
+- The channel/DM composer suggests after `:` (emoji) and `@` (people) in one
+  popup; the thread reply box and message editor do not yet. Space channels
+  offer the open space's loaded members except you, then `@everyone`/`@here`.
+  DMs, self-notes included, offer the people you share a space or DM with
+  (`GET /api/people`, fetched when a DM opens); until that loads, only the
+  other participant. Names the API resolved in
+  `content.mentions` render as pills: egui background spans with square corners
+  rather than 4px rounded ones, including in thread replies and edited messages.
+  Messages that mention you get a terracotta tint with a 2px leading edge.
+  Clicking a person's pill, or Enter/Space on a focused pill, opens a card with
+  their avatar, name and `@username` from loaded data, and a **Message** button
+  that opens or creates the DM (your own card says "You"). Mentions do not
+  notify anyone.
 - Message requests: a DM from someone you share no space with waits under
   "Message requests" (with a count, never unread dots or sounds) and opens
   read-only with Accept, Decline or Block; your own pending requests say
@@ -48,6 +61,17 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   accounts and "Who can start a DM with you" (Anyone, People in my spaces, No
   one new), saved on change and reverted if saving fails. Pinned-message lists
   still show blocked authors' pins.
+- Notification controls, which govern phone push (desktop shows no OS
+  notifications yet). The space menu and each channel's options menu set
+  **Notifications** (Default, All messages, Only @mentions, Nothing) and
+  **Mute** (15 minutes, 1, 8 or 24 hours, or until turned back on); a channel
+  in a muted space says "Muted with the space". DM rows get a hover options
+  button to turn notifications off or mute the conversation; personal notes
+  get none. Muted spaces, channels and DMs are dimmed with a bell-slash, and a
+  muted DM shows no unread dot. **Settings… → Notifications → Notify me
+  about** sets the account level. Settings load after sign-in and when
+  Settings or a menu opens; changes apply at once and revert with an inline
+  error if saving fails.
 - Message reactions. Hovering or keyboard-focusing a reaction chip shows who
   reacted (large emoji plus the shared summary wording); names load on demand
   with history's read access and are cached per message reaction revision.
@@ -257,12 +281,18 @@ speaking rings for you and Maya.
 the voice dock and Audio test dialog without starting capture or a transport.
 `parity-direct` and `parity-direct-new` preview a two-person DM and its
 exact-username dialog without a live account or notification provider.
+`parity-mentions` previews mention pills, an unresolved `@name`, and rows that
+mention you; click `@alex` or `@fixture_owner` for the cards, or type `@` in its
+composer for space suggestions.
 `parity-direct-no-spaces` previews the first-space page's Direct messages entry
 and the global list without any space membership.
 `parity-requests` previews an open incoming request and the requests list;
 `parity-requests-outgoing` an unaccepted request you sent; `parity-blocked`
 Maya's #general messages collapsed after blocking her; `parity-blocked-dm` the
 blocked-DM composer.
+`parity-muted` previews a muted space in the rail, a muted channel, a muted
+DM with unread messages (no dot) and a DM with notifications off (still
+dotted); it sends no notification requests.
 `parity-reactions` adds reaction chips whose hover cards name the labelled
 fixture members locally instead of requesting who reacted.
 `parity-opening`, `parity-opening-narrow`, and `parity-opening-error` preview

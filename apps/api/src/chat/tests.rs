@@ -2594,6 +2594,137 @@ async fn account_channels_isolate_sequences_and_gateway_revokes_live_access() {
         .unwrap();
 }
 
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL"]
+async fn mentions_tag_existing_accounts_with_specials_only_in_spaces(pool: PgPool) {
+    let mut users = Vec::new();
+    for name in ["alice", "bob", "carol", "dave", "gone"] {
+        let user: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name) VALUES($1||'-id',$1,$1) RETURNING id")
+            .bind(name).fetch_one(&pool).await.unwrap();
+        let hash = Sha256::digest(name.as_bytes()).to_vec();
+        sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 day')")
+            .bind(&hash).bind(user).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO public.chat_sessions(external_id,token_hash,name,user_id,account_session_hash) VALUES($1,$2,$1,$3,$2)")
+            .bind(name).bind(hash).bind(user).execute(&pool).await.unwrap();
+        users.push(user);
+    }
+    let [alice, bob, carol, dave, gone] = users[..] else {
+        unreachable!()
+    };
+    let space: i64 = sqlx::query_scalar("INSERT INTO public.spaces(external_id,name,owner_id) VALUES('mention-space','Mentions',$1) RETURNING id")
+        .bind(alice).fetch_one(&pool).await.unwrap();
+    // Dave is not a member; Gone left the platform after joining.
+    for member in [alice, bob, carol, gone] {
+        sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+            .bind(space)
+            .bind(member)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    sqlx::query("UPDATE public.users SET deleted_at=now() WHERE id=$1")
+        .bind(gone)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut channels = Vec::new();
+    for (external_id, private) in [("mention-public", false), ("mention-private", true)] {
+        let channel: i64 = sqlx::query_scalar("INSERT INTO public.channels(external_id,space_id,name,private) VALUES($1,$2,$1,$3) RETURNING id")
+            .bind(external_id).bind(space).bind(private).fetch_one(&pool).await.unwrap();
+        sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) VALUES($1,$2)")
+            .bind(channel)
+            .bind(alice)
+            .execute(&pool)
+            .await
+            .unwrap();
+        channels.push(channel);
+    }
+    sqlx::query("INSERT INTO public.channel_members(channel_id,user_id) VALUES($1,$2)")
+        .bind(channels[1])
+        .bind(bob)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let text = "@Bob @carol @dave @gone @nobody @alice @everyone @here bob@carol.com @bob";
+    let public = persist(&pool, "mention-public", "alice", Uuid::new_v4(), text)
+        .await
+        .unwrap();
+    assert_eq!(public["content"]["text"], text);
+    assert_eq!(
+        public["content"]["mentions"],
+        json!([
+            {"type":"user","id":"bob-id","username":"bob"},
+            {"type":"user","id":"carol-id","username":"carol"},
+            {"type":"user","id":"dave-id","username":"dave"},
+            {"type":"user","id":"alice-id","username":"alice"},
+            {"type":"everyone"},
+            {"type":"here"},
+        ])
+    );
+    // Carol lacks the private grant and Dave is not in the space: both are still
+    // tagged, since notifications (not mentions) decide who may be told.
+    let private = persist(&pool, "mention-private", "alice", Uuid::new_v4(), text)
+        .await
+        .unwrap();
+    assert_eq!(
+        private["content"]["mentions"],
+        public["content"]["mentions"]
+    );
+    let plain = persist(&pool, "mention-public", "alice", Uuid::new_v4(), "no one")
+        .await
+        .unwrap();
+    assert!(plain["content"].get("mentions").is_none());
+
+    // DMs can point at anyone ("that's @bob") but have no @everyone/@here.
+    let dm: i64 = sqlx::query_scalar("INSERT INTO public.channels(external_id,name,private) VALUES('mention-dm','direct',true) RETURNING id")
+        .fetch_one(&pool).await.unwrap();
+    sqlx::query("INSERT INTO public.direct_conversations(channel_id,low_user_id,high_user_id) VALUES($1,$2,$3)")
+        .bind(dm).bind(alice.min(dave)).bind(alice.max(dave)).execute(&pool).await.unwrap();
+    let direct = persist(&pool, "mention-dm", "dave", Uuid::new_v4(), text)
+        .await
+        .unwrap();
+    assert_eq!(
+        direct["content"]["mentions"],
+        json!([
+            {"type":"user","id":"bob-id","username":"bob"},
+            {"type":"user","id":"carol-id","username":"carol"},
+            {"type":"user","id":"dave-id","username":"dave"},
+            {"type":"user","id":"alice-id","username":"alice"},
+        ])
+    );
+
+    // `@` suggestions in DMs: people sharing an active space or a DM, never
+    // yourself or deleted accounts.
+    let people = |user: i64| {
+        let pool = pool.clone();
+        async move {
+            crate::direct::people(&pool, user)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|person| person["username"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(people(alice).await, ["bob", "carol", "dave"]);
+    assert_eq!(people(bob).await, ["alice", "carol"]);
+    assert_eq!(people(dave).await, ["alice"]);
+
+    // History and the outbox event carry the same resolved content.
+    let history = history_page(&pool, "mention-public", None, Some(alice))
+        .await
+        .unwrap();
+    assert_eq!(history["messages"][0]["content"], public["content"]);
+    let event: Value = sqlx::query_scalar(
+        "SELECT payload FROM public.channel_events WHERE channel_id=$1 AND seq=1",
+    )
+    .bind(channels[0])
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(event["message"]["content"], public["content"]);
+}
+
 #[test]
 fn served_messages_use_current_author_profile_when_known() {
     let message = json!({"author":{"id":"a","name":"Old","isGuest":false}});

@@ -7,8 +7,9 @@ Accounts receive a saved, random Caper avatar from 100 designs and eight colorwa
 Custom photo/GIF uploads and an avatar gallery are not implemented yet.
 
 Signed-in accounts can start persistent, private one-to-one messages by username.
-The Direct messages list is shared across spaces. Mobile push is deferred;
-when needed, the server will integrate directly with APNs for iOS and FCM for Android.
+The Direct messages list is shared across spaces. Phone push is implemented behind
+server flags using APNs for iOS and FCM for Android; real-provider and physical-device
+validation is still pending. See [notification behavior and rollout](docs/notifications.md).
 
 Channel pins are shared with everyone who can read the channel. Joined members
 can pin or unpin in one action; the channel header opens the complete pins list.
@@ -48,8 +49,10 @@ Check manually with **Caper → Check for Updates…** on Mac or
 **User Settings → Settings… → Updates → Check for updates** on Windows/Linux.
 Installing requires confirmation and a restart; protected installs offer a download
 instead. Update prompts keep installation controls visible while version-grouped
-release notes scroll separately. Signed releases retain the changes since earlier
-builds; the prompt says when older notes were never recorded or are no longer retained.
+release notes scroll separately. Signed releases retain user-facing changes since
+earlier builds, excluding test-only, CI, infrastructure, tooling, documentation,
+and dependency-maintenance changes; the prompt says when older notes were never
+recorded or are no longer retained.
 Existing apps keep their previous update UI and schedule until updated once.
 Android APK updates remain manual; iPhone builds use TestFlight.
 
@@ -69,6 +72,47 @@ and local Valkey. Configuration comes from AWS Secrets Manager (`staging/apps/ca
 with `.env` and Compose defaults as fallbacks. See [.env.example](.env.example)
 for available settings. Stop the stack with Ctrl-C.
 
+JavaScript/TypeScript tooling uses Vite 8 (Rolldown/Oxc), Vitest 5, the native
+TypeScript 7 compiler (`tsc`), Oxlint, and Oxfmt. Node/npm remain the runtime and
+package manager; Rust keeps rustfmt/Clippy, and native clients keep their platform
+build/test tools. Run these commands from the repository root:
+
+```bash
+npm test                 # Web unit tests and shared native fixture/icon tests
+npm run test:watch       # Vitest watch mode; add -- --project web to filter
+npm run test:native      # Shared JavaScript tests, not native device acceptance
+npm run typecheck        # Native TypeScript compiler; no production bundle
+npm run lint            # Oxlint correctness checks, warnings fail the command
+npm run fmt             # Oxfmt for first-party JS/TS/CSS and tooling JSON
+npm run check           # Lint, formatting check, production build + typecheck
+```
+
+Unit tests use separate Vitest configs so they do not start app build plugins or
+fetch GitHub history. Test files remain isolated; cleanup restores mocks, globals,
+and timers. Generated routes and vendored audio runtimes are excluded from lint;
+formatting also leaves versioned public assets untouched to preserve immutable
+cache URLs. Lint permits side-effect ternaries and object-rest omission;
+test mocks may retain their constructed instances via `this` aliases.
+
+Python tooling uses [uv](https://docs.astral.sh/uv/getting-started/installation/)
+0.12.23 and Ruff. `uv sync --locked` creates an isolated environment using the
+existing Python 3.12 CI version; it installs only development checks by default.
+
+```bash
+uv sync --locked
+uv run --locked ruff check .
+uv run --locked ruff format --check .  # Omit --check to format Python
+uv run --locked python -m unittest discover -s tests -p 'test_*.py' -v
+uv run --locked python shared/fonts/test_native_fonts.py -v
+```
+
+The `publish`, `dmg`, and `audio` dependency groups separately lock store-upload,
+Mac disk-image, and offline ONNX-authoring tools. CI selects only the group each
+job needs; it no longer installs Python dependencies into the runner's global
+environment. Dependency-free scripts can still run directly with Python 3.11+.
+Native releases carry the workflow revision's Python tooling separately, so
+rebuilding historical app source does not require that source to contain a lockfile.
+
 ## Repository
 
 - [apps/web](apps/web) — TanStack Start web app
@@ -79,6 +123,7 @@ for available settings. Stop the stack with Ctrl-C.
 ## Documentation
 
 - [Configuration, deployment, and testing](docs/media.md)
+- [Notifications: phone push, settings and design](docs/notifications.md)
 - [Native builds and platform status](apps/native/README.md)
 - [Brand and style guide](docs/brand)
 - [Caper character catalog](assets/avatars/README.md)

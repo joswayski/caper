@@ -1,103 +1,415 @@
 // Disposable loopback fixture + Chromium. Narrow/touch checks are not native-device acceptance.
-import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 
-const web = process.env.MESSAGE_TEST_WEB_URL ?? 'http://127.0.0.1:5174';
-const api = process.env.MESSAGE_TEST_API_URL ?? 'http://127.0.0.1:3001';
-for (const url of [web, api]) assert.ok(['localhost', '127.0.0.1'].includes(new URL(url).hostname));
+const web = process.env.MESSAGE_TEST_WEB_URL ?? "http://127.0.0.1:5174";
+const api = process.env.MESSAGE_TEST_API_URL ?? "http://127.0.0.1:3001";
+for (const url of [web, api]) assert.ok(["localhost", "127.0.0.1"].includes(new URL(url).hostname));
 const artifacts = process.env.MESSAGE_TEST_ARTIFACTS && resolve(process.env.MESSAGE_TEST_ARTIFACTS);
 if (artifacts) mkdirSync(artifacts, { recursive: true });
 const browser = (...args) => {
-  const chrome = process.env.MESSAGE_TEST_CHROME ? ['--executable-path', process.env.MESSAGE_TEST_CHROME] : [];
-  const result = JSON.parse(execFileSync('agent-browser', ['--session', 'threads-check', ...chrome, ...args, '--json'], { encoding: 'utf8', timeout: 60_000 }));
+  const chrome = process.env.MESSAGE_TEST_CHROME ? ["--executable-path", process.env.MESSAGE_TEST_CHROME] : [];
+  const result = JSON.parse(
+    execFileSync("agent-browser", ["--session", "threads-check", ...chrome, ...args, "--json"], {
+      encoding: "utf8",
+      timeout: 60_000,
+    }),
+  );
   assert.ok(result.success, result.error);
   return result.data;
 };
-const evaluate = source => browser('eval', source).result;
-const wait = source => browser('wait', '--fn', source);
-const screenshot = name => {
+const evaluate = (source) => browser("eval", source).result;
+const wait = (source) => browser("wait", "--fn", source);
+const screenshot = (name) => {
   if (!artifacts) return;
-  evaluate('document.fonts.ready.then(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))');
-  assert.equal(evaluate('devicePixelRatio'), 2);
-  browser('screenshot', `${artifacts}/${name}.png`);
+  evaluate("document.fonts.ready.then(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))");
+  assert.equal(evaluate("devicePixelRatio"), 2);
+  browser("screenshot", `${artifacts}/${name}.png`);
 };
-const row = id => `[data-message-key="${id}"]`;
-const channel = id => `.chat-panel ${row(id)}`;
-const thread = id => `.chat-thread-panel ${row(id)}`;
-const headers = { authorization: 'Bearer fixture-owner-token', connection: 'close' };
+const row = (id) => `[data-message-key="${id}"]`;
+const channel = (id) => `.chat-panel ${row(id)}`;
+const thread = (id) => `.chat-thread-panel ${row(id)}`;
+const alignedHeaders = (width) => {
+  evaluate("document.fonts.ready.then(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))");
+  const geometry = evaluate(`(() => {
+    const main = document.querySelector('.chat-heading').getBoundingClientRect();
+    const heading = document.querySelector('.chat-thread-heading').getBoundingClientRect();
+    const panel = document.querySelector('.chat-thread-panel').getBoundingClientRect();
+    const name = document.querySelector('.chat-thread-heading span').getBoundingClientRect();
+    const control = document.querySelector(innerWidth > 760 ? '.chat-thread-close' : '.chat-thread-back').getBoundingClientRect();
+    return { main: [main.top, main.bottom, main.height], thread: [heading.top, heading.bottom, heading.height],
+      contentFits: (innerWidth > 760 ? name.right <= control.left : control.right <= name.left) && name.bottom <= heading.bottom && control.right <= heading.right && name.right <= heading.right,
+      panelFits: heading.left >= panel.left && heading.right <= panel.right && panel.right <= innerWidth,
+      control: [control.width, control.height] };
+  })()`);
+  assert.equal(geometry.thread[2], 54, `Thread header stays 54px at ${width}px`);
+  assert.equal(geometry.main[2], 54, `Channel header stays 54px at ${width}px`);
+  if (width > 760) assert.deepEqual(geometry.thread, geometry.main, `Header dividers align at ${width}px`);
+  assert.equal(geometry.contentFits, true, `Channel name and close/back control fit at ${width}px`);
+  assert.equal(geometry.panelFits, true, `Header stays inside the visible panel at ${width}px`);
+  if (width <= 760) assert.deepEqual(geometry.control, [44, 44], "Mobile Back keeps its touch target");
+};
+const assertReplyAction = (expected) => {
+  wait('!!document.querySelector(".chat-message-actions")');
+  const actions = evaluate(
+    '[...document.querySelectorAll(".chat-message-actions button")].map(button => button.textContent.trim())',
+  );
+  assert.equal(actions.includes("Reply in thread"), expected);
+  for (const action of ["Pin message", "Copy text", "Copy message ID"]) assert.ok(actions.includes(action));
+  assert.equal(evaluate('!!document.querySelector(".chat-quick-reactions")'), true);
+};
+const actions = (selector, expected) => {
+  browser("scrollintoview", selector);
+  browser("click", `${selector} .chat-message-actions-trigger`);
+  assertReplyAction(expected);
+};
+const dismissActions = () => {
+  browser("find", "role", "button", "click", "--name", "Close message actions", "--exact");
+  wait('!document.querySelector(".chat-message-actions")');
+};
+const headers = { authorization: "Bearer fixture-owner-token", connection: "close" };
 const history = async () => (await fetch(`${api}/api/chat/channels/chan00000001/messages`, { headers })).json();
-const close = () => { browser('press', 'Escape'); wait('!document.querySelector(".chat-thread-panel")'); };
-const open = id => {
-  browser('focus', `${channel(id)} .chat-reply-thread`);
-  browser('click', `${channel(id)} .chat-reply-thread`);
-  wait('!!document.querySelector(".chat-thread-panel") && !document.querySelector(".chat-thread-messages[aria-busy=true]")');
+const close = () => {
+  browser("press", "Escape");
+  wait('!document.querySelector(".chat-thread-panel") && !history.state?.caperThread');
 };
-const reply = text => {
-  browser('fill', '#chat-thread-reply', text);
-  browser('click', '.chat-thread-send-row button');
-  wait('!document.querySelector(".chat-thread-panel .chat-message-pending") && document.querySelector("#chat-thread-reply").value === ""');
+const open = (id) => {
+  const trigger = evaluate(
+    `${JSON.stringify([`${channel(id)} .chat-reply-thread`, `${channel(id)} .chat-thread-summary`])}.find(selector => document.querySelector(selector)?.checkVisibility({ visibilityProperty: true }))`,
+  );
+  if (trigger) {
+    browser("focus", trigger);
+    browser("click", trigger);
+  } else {
+    actions(channel(id), true);
+    browser("find", "role", "button", "click", "--name", "Reply in thread", "--exact");
+  }
+  wait(
+    '!!document.querySelector(".chat-thread-panel") && !document.querySelector(".chat-thread-messages[aria-busy=true]")',
+  );
+};
+const reply = (text) => {
+  browser("fill", "#chat-thread-reply", text);
+  browser("click", ".chat-thread-send-row button");
+  wait(
+    '!document.querySelector(".chat-thread-panel .chat-message-pending") && document.querySelector("#chat-thread-reply").value === ""',
+  );
+};
+
+const checkReplyDelivery = async (root, other, layout) => {
+  // Hold before fixture delivery so neither HTTP nor gateway can confirm the reply.
+  evaluate(`(() => {
+    const original = window.fetch.bind(window);
+    window.replyRequests = [];
+    window.restoreReplyFetch = () => { window.fetch = original; };
+    window.fetch = async (input, init) => {
+      if (init?.method !== 'POST' || !String(input).endsWith('/messages')) return original(input, init);
+      window.replyRequests.push(JSON.parse(init.body));
+      const status = await new Promise(resolve => { window.releaseReply = resolve; });
+      return status === 200 ? original(input, init) : Response.json({ error: 'TEST FIXTURE: reply delivery problem' }, { status });
+    };
+  })()`);
+  for (const status of [503, 422]) {
+    open(root.clientMessageId);
+    browser("fill", "#chat-thread-reply", `TEST FIXTURE — ${layout} reply ${status}`);
+    browser(layout === "desktop" ? "check" : "uncheck", ".chat-thread-send-row input");
+    browser("click", ".chat-thread-send-row button");
+    wait('!!document.querySelector(".chat-thread-panel .chat-message-pending")');
+    assert.equal(evaluate('document.querySelector(".chat-panel .chat-inline-error")'), null, "Normal sends are quiet");
+    if (status === 503) screenshot(`threads-${layout}-sending`);
+    close();
+    assert.equal(
+      evaluate('document.querySelector(".chat-panel .chat-inline-error")'),
+      null,
+      "Closing while sending is quiet",
+    );
+    evaluate(`window.releaseReply(${status})`);
+    const notice = status === 422 ? "A thread reply wasn’t sent." : "A thread reply couldn’t be confirmed.";
+    wait(`document.querySelector('.chat-panel .chat-inline-error')?.textContent.includes(${JSON.stringify(notice)})`);
+    if (status === 503) screenshot(`threads-${layout}-reply-problem`);
+    open(other.clientMessageId);
+    assert.ok(
+      evaluate('document.querySelector(".chat-panel .chat-inline-error")?.textContent.includes("Review reply")'),
+      "Another thread must not hide recovery",
+    );
+    close();
+    browser("find", "role", "button", "click", "--name", "Review reply", "--exact");
+    wait(
+      `!!document.querySelector('${thread(root.clientMessageId)}') && !document.querySelector('.chat-thread-messages[aria-busy=true]')`,
+    );
+    assert.equal(
+      evaluate('document.querySelector(".chat-panel .chat-inline-error")'),
+      null,
+      "An open reply owns its error",
+    );
+    assert.ok(
+      evaluate(
+        'document.querySelector(".chat-thread-panel [role=alert]")?.textContent.includes("TEST FIXTURE: reply delivery problem")',
+      ),
+    );
+    if (status === 422) {
+      browser("find", "role", "button", "click", "--name", "Edit", "--exact");
+      wait('!document.querySelector(".chat-thread-panel .chat-message-pending")');
+      assert.equal(
+        evaluate('document.querySelector("#chat-thread-reply").value'),
+        `TEST FIXTURE — ${layout} reply ${status}`,
+      );
+      browser("click", ".chat-thread-send-row button");
+      wait('!!document.querySelector(".chat-thread-panel .chat-message-pending")');
+      evaluate("window.releaseReply(422)");
+      wait('!!document.querySelector(".chat-thread-panel [role=alert]")');
+      browser("find", "role", "button", "click", "--name", "Dismiss", "--exact");
+      wait('!document.querySelector(".chat-thread-panel .chat-message-pending")');
+      close();
+    } else {
+      const command = evaluate("window.replyRequests.at(-1)");
+      assert.equal(command.threadRootId, root.id);
+      assert.equal(command.broadcast, layout === "desktop");
+      assert.equal(command.text, `TEST FIXTURE — ${layout} reply ${status}`);
+      browser("find", "role", "button", "click", "--name", "Retry send", "--exact");
+      wait('!document.querySelector(".chat-thread-panel [role=alert]")');
+      assert.deepEqual(evaluate("window.replyRequests.at(-1)"), command, "Retry freezes ID, text, root and broadcast");
+      close();
+      open(other.clientMessageId);
+      assert.equal(evaluate('document.querySelector(".chat-panel .chat-inline-error")'), null);
+      assert.equal(
+        evaluate('document.querySelector(".chat-thread-panel .chat-inline-error")'),
+        null,
+        "A send in another thread is not an error",
+      );
+      close();
+      evaluate("window.releaseReply(200)");
+      open(root.clientMessageId);
+      wait(
+        `!document.querySelector('.chat-thread-panel .chat-message-pending') && !!document.querySelector('${thread(command.clientMessageId)}')`,
+      );
+      const page = await (
+        await fetch(`${api}/api/chat/channels/chan00000001/messages/${root.id}/thread`, { headers })
+      ).json();
+      assert.equal(page.messages.filter((message) => message.clientMessageId === command.clientMessageId).length, 1);
+      assert.equal(
+        (await history()).messages.filter((message) => message.clientMessageId === command.clientMessageId).length,
+        layout === "desktop" ? 1 : 0,
+      );
+      close();
+    }
+    assert.equal(
+      evaluate('document.querySelector(".chat-panel .chat-inline-error")'),
+      null,
+      "Recovery clears the notice",
+    );
+  }
+  evaluate("window.restoreReplyFetch()");
 };
 
 let socket;
 try {
-  assert.equal((await (await fetch(`${api}/health`, { headers: { connection: 'close' } })).json()).fixture, true);
-  const reset = await fetch(`${api}/__fixture/control`, { method: 'POST', headers: { 'content-type': 'application/json', connection: 'close' }, body: JSON.stringify({ reset: true }) });
+  assert.equal((await (await fetch(`${api}/health`, { headers: { connection: "close" } })).json()).fixture, true);
+  const reset = await fetch(`${api}/__fixture/control`, {
+    method: "POST",
+    headers: { "content-type": "application/json", connection: "close" },
+    body: JSON.stringify({ reset: true }),
+  });
   assert.equal(reset.status, 200);
   const initial = await history();
   const root = initial.messages.at(-1);
   const other = initial.messages[1];
-  browser('open', 'about:blank');
-  browser('set', 'viewport', '1440', '900', '2');
-  browser('cookies', 'set', 'caper_fixture', 'owner', '--url', web, '--path', '/', '--sameSite', 'Lax');
-  browser('open', `${web}/spaces`);
-  wait(`!!document.querySelector('${channel(root.clientMessageId)}') && !document.querySelector('.chat-initial-messages')`);
+  browser("open", "about:blank");
+  browser("set", "viewport", "1440", "900", "2");
+  browser("cookies", "set", "caper_fixture", "owner", "--url", web, "--path", "/", "--sameSite", "Lax");
+  browser("open", `${web}/spaces`);
+  wait(
+    `!!document.querySelector('${channel(root.clientMessageId)}') && !document.querySelector('.chat-initial-messages')`,
+  );
+  evaluate(`(() => {
+    const original = window.fetch.bind(window);
+    window.threadRequests = [];
+    window.fetch = (input, init) => {
+      if (String(input).includes('/thread')) window.threadRequests.push(String(input));
+      return original(input, init);
+    };
+  })()`);
   if (process.env.MESSAGE_TEST_CHROME) {
     assert.equal(evaluate('matchMedia("(hover: hover) and (pointer: fine)").matches'), true);
-    browser('hover', '#chat-heading');
-    assert.equal(evaluate(`getComputedStyle(document.querySelector('${channel(root.clientMessageId)} .chat-reply-thread')).opacity`), '0');
-    browser('focus', `${channel(root.clientMessageId)} .chat-reply-thread`);
-    wait(`getComputedStyle(document.querySelector('${channel(root.clientMessageId)} .chat-reply-thread')).opacity === '1'`);
-    assert.equal(evaluate(`getComputedStyle(document.querySelector('${channel(root.clientMessageId)} .chat-reply-thread')).opacity`), '1');
-    assert.deepEqual(evaluate(`['.chat-reply-thread', '.chat-add-reaction', '.chat-message-actions-trigger'].map(selector => { const rect = document.querySelector('${channel(root.clientMessageId)} ' + selector).getBoundingClientRect(); return [rect.width, rect.height]; })`), [[24, 24], [24, 24], [24, 24]]);
+    browser("hover", "#chat-heading");
+    assert.equal(
+      evaluate(
+        `getComputedStyle(document.querySelector('${channel(root.clientMessageId)} .chat-reply-thread')).opacity`,
+      ),
+      "0",
+    );
+    browser("focus", `${channel(root.clientMessageId)} .chat-reply-thread`);
+    wait(
+      `getComputedStyle(document.querySelector('${channel(root.clientMessageId)} .chat-reply-thread')).opacity === '1'`,
+    );
+    assert.equal(
+      evaluate(
+        `getComputedStyle(document.querySelector('${channel(root.clientMessageId)} .chat-reply-thread')).opacity`,
+      ),
+      "1",
+    );
+    assert.deepEqual(
+      evaluate(
+        `['.chat-reply-thread', '.chat-add-reaction', '.chat-message-actions-trigger'].map(selector => { const rect = document.querySelector('${channel(root.clientMessageId)} ' + selector).getBoundingClientRect(); return [rect.width, rect.height]; })`,
+      ),
+      [
+        [24, 24],
+        [24, 24],
+        [24, 24],
+      ],
+    );
   }
+  actions(channel(root.clientMessageId), true);
+  dismissActions();
   open(root.clientMessageId);
-  assert.equal(evaluate('document.activeElement.id'), 'chat-thread-reply');
+  assert.equal(evaluate("document.activeElement.id"), "chat-thread-reply");
   assert.equal(evaluate('document.querySelector(".chat-thread-send-row input").checked'), false);
-  assert.equal(evaluate(`document.querySelector('${channel(root.clientMessageId)}').classList.contains('chat-message-thread-active')`), true);
+  assert.equal(
+    evaluate(
+      `document.querySelector('${channel(root.clientMessageId)}').classList.contains('chat-message-thread-active')`,
+    ),
+    true,
+  );
   assert.equal(evaluate('document.querySelector(".chat-thread-panel").hasAttribute("aria-modal")'), false);
-  assert.equal(evaluate('document.querySelector(".chat-thread-status").textContent'), 'No replies yet. Start the thread.');
-  screenshot('threads-desktop-empty');
-  reply('TEST FIXTURE — Keep the layout discussion here. 🙂');
-  wait(`document.querySelector('${channel(root.clientMessageId)} .chat-thread-summary strong')?.textContent === '1 reply'`);
-  assert.equal(evaluate('document.querySelectorAll(".chat-panel .chat-message").length'), initial.messages.length, 'Thread-only replies stay out of the channel');
-  assert.equal(evaluate(`document.querySelectorAll('${channel(root.clientMessageId)} .chat-thread-avatars > span').length`), 1);
-  browser('click', '.chat-thread-send-row input');
-  reply('TEST FIXTURE — This update is also visible in the channel.');
-  const page = await (await fetch(`${api}/api/chat/channels/chan00000001/messages/${root.id}/thread`, { headers })).json();
+  assert.equal(
+    evaluate('document.querySelector(".chat-thread-status").textContent'),
+    "No replies yet. Start the thread.",
+  );
+  alignedHeaders(1440);
+  screenshot("threads-desktop-empty");
+  // Explicit layout-only mock: the longest channel name must not grow the header.
+  const originalName = evaluate('document.querySelector(".chat-thread-heading span").textContent');
+  evaluate('document.querySelector(".chat-thread-heading span").textContent = "in #" + "long-channel-name-".repeat(3)');
+  for (const width of [1024, 761]) {
+    browser("set", "viewport", String(width), "900", "2");
+    alignedHeaders(width);
+    if (width === 1024) screenshot("threads-desktop-long-name");
+  }
+  browser("set", "viewport", "1440", "900", "2");
+  evaluate(`document.querySelector(".chat-thread-heading span").textContent = ${JSON.stringify(originalName)}`);
+  actions(thread(root.clientMessageId), false);
+  dismissActions();
+  reply("TEST FIXTURE — Keep the layout discussion here. 🙂");
+  wait(
+    `document.querySelector('${channel(root.clientMessageId)} .chat-thread-summary strong')?.textContent === '1 reply'`,
+  );
+  assert.equal(
+    evaluate('document.querySelectorAll(".chat-panel .chat-message").length'),
+    initial.messages.length,
+    "Thread-only replies stay out of the channel",
+  );
+  assert.equal(
+    evaluate(`document.querySelectorAll('${channel(root.clientMessageId)} .chat-thread-avatars > span').length`),
+    1,
+  );
+  browser("click", ".chat-thread-send-row input");
+  reply("TEST FIXTURE — This update is also visible in the channel.");
+  const page = await (
+    await fetch(`${api}/api/chat/channels/chan00000001/messages/${root.id}/thread`, { headers })
+  ).json();
   assert.equal(page.messages.length, 2);
   const broadcast = page.messages.at(-1);
   assert.equal(broadcast.broadcast, true);
-  wait(`!!document.querySelector('${channel(broadcast.clientMessageId)}') && !!document.querySelector('${thread(broadcast.clientMessageId)}')`);
-  assert.equal((await history()).messages.filter(message => message.id === broadcast.id).length, 1);
-  browser('click', `${thread(broadcast.clientMessageId)} .chat-message-actions-trigger`);
-  wait('!!document.querySelector(".chat-message-actions")');
-  browser('find', 'role', 'button', 'click', '--name', 'React with 🎉', '--exact');
-  wait(`document.querySelector('${thread(broadcast.clientMessageId)} .chat-reaction')?.getAttribute('aria-pressed') === 'true' && document.querySelector('${channel(broadcast.clientMessageId)} .chat-reaction')?.getAttribute('aria-pressed') === 'true'`);
-  screenshot('threads-desktop');
-  browser('fill', '#chat-thread-reply', 'Saved draft for Alex');
+  wait(
+    `!!document.querySelector('${channel(broadcast.clientMessageId)}') && !!document.querySelector('${thread(broadcast.clientMessageId)}')`,
+  );
+  assert.equal((await history()).messages.filter((message) => message.id === broadcast.id).length, 1);
+  // The same reply keeps its action in the channel, but loses it inside the thread.
+  actions(channel(broadcast.clientMessageId), true);
+  screenshot("thread-actions-desktop-channel");
+  dismissActions();
+  actions(thread(broadcast.clientMessageId), false);
+  screenshot("thread-actions-desktop-reply");
+  browser("find", "role", "button", "click", "--name", "React with 🎉", "--exact");
+  wait(
+    `document.querySelector('${thread(broadcast.clientMessageId)} .chat-reaction')?.getAttribute('aria-pressed') === 'true' && document.querySelector('${channel(broadcast.clientMessageId)} .chat-reaction')?.getAttribute('aria-pressed') === 'true'`,
+  );
+  screenshot("threads-desktop");
+  browser("fill", "#chat-thread-reply", "Saved draft for Alex");
+  const requestCount = evaluate("window.threadRequests.length");
+  const positions = () =>
+    evaluate(
+      `Array.from(document.querySelectorAll('.chat-thread-panel .chat-message')).map(row => row.getBoundingClientRect().top)`,
+    );
+  const before = positions();
+  browser("click", `${channel(root.clientMessageId)} .chat-thread-summary`);
+  browser("click", `${channel(root.clientMessageId)} .chat-thread-summary`);
+  assert.equal(evaluate("window.threadRequests.length"), requestCount, "repeated clicks cannot fetch again");
+  assert.deepEqual(positions(), before, "repeated clicks cannot shift the displayed replies");
+  assert.equal(
+    evaluate('!!document.querySelector(".chat-thread-skeleton, .chat-thread-messages[aria-busy=true]")'),
+    false,
+  );
+  assert.equal(evaluate('document.querySelector("#chat-thread-reply").value'), "Saved draft for Alex");
+  if (process.env.MESSAGE_TEST_CHROME) {
+    browser("hover", `${channel(other.clientMessageId)} .chat-reply-thread`);
+    wait(`window.threadRequests.some(url => url.includes('/${other.id}/thread'))`);
+    assert.equal(
+      evaluate(`!!document.querySelector('${thread(root.clientMessageId)}')`),
+      true,
+      "hover does not change the open thread",
+    );
+  }
+  evaluate(`(() => {
+    window.pinsChannel = document.querySelector('.chat-scroller');
+    window.pinsThread = document.querySelector('.chat-thread-panel');
+    window.pinsScrollTop = pinsChannel.scrollTop;
+  })()`);
+  browser("click", ".chat-pins-toggle");
+  wait('!!document.querySelector(".chat-pins")');
+  evaluate(`(() => {
+    window.threadPinFrames = [];
+    const sample = () => {
+      if (!document.querySelector('.chat-pins')) {
+        const scroller = document.querySelector('.chat-scroller');
+        const bounds = scroller.getBoundingClientRect();
+        threadPinFrames.push(scroller === pinsChannel && document.querySelector('.chat-thread-panel') === pinsThread
+          && Math.abs(scroller.scrollTop - pinsScrollTop) < 2
+          && [...scroller.querySelectorAll('.chat-message')].some(row => row.checkVisibility({ visibilityProperty: true, opacityProperty: true })
+            && row.getBoundingClientRect().bottom > bounds.top && row.getBoundingClientRect().top < bounds.bottom));
+      }
+      if (threadPinFrames.length < 30) requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  })()`);
+  browser("click", ".chat-pins-toggle");
+  wait("threadPinFrames.length === 30");
+  assert.equal(
+    evaluate("threadPinFrames.every(Boolean)"),
+    true,
+    "Pins return with an open thread must not flash or move",
+  );
+  assert.equal(evaluate('document.querySelector("#chat-thread-reply").value'), "Saved draft for Alex");
+  screenshot("threads-pins-return");
   open(other.clientMessageId);
-  assert.equal(evaluate('document.querySelector("#chat-thread-reply").value'), '');
-  browser('fill', '#chat-thread-reply', 'Saved draft for Maya');
+  assert.equal(evaluate('document.querySelector("#chat-thread-reply").value'), "");
+  browser("fill", "#chat-thread-reply", "Saved draft for Maya");
   open(root.clientMessageId);
-  assert.equal(evaluate('document.querySelector("#chat-thread-reply").value'), 'Saved draft for Alex');
+  assert.equal(evaluate('document.querySelector("#chat-thread-reply").value'), "Saved draft for Alex");
   close();
-  assert.equal(evaluate(`document.activeElement === document.querySelector('${channel(root.clientMessageId)} .chat-reply-thread')`), true, 'Closing restores trigger focus');
-  browser('click', `${channel(broadcast.clientMessageId)} .chat-thread-context`);
+  assert.equal(
+    evaluate(
+      `document.activeElement === document.querySelector('${channel(root.clientMessageId)} .chat-reply-thread')`,
+    ),
+    true,
+    "Closing restores trigger focus",
+  );
+  browser("click", `${channel(broadcast.clientMessageId)} .chat-thread-context`);
   wait(`!!document.querySelector('${thread(root.clientMessageId)}')`);
-  assert.equal(evaluate('document.querySelectorAll(".chat-thread-panel .chat-message").length'), 3, 'A broadcast opens its original root, never a nested thread');
+  assert.equal(
+    evaluate(`window.threadRequests.filter(url => url.includes('/${root.id}/thread')).length`),
+    1,
+    "closing and reopening uses the loaded thread",
+  );
+  assert.equal(
+    evaluate('document.querySelectorAll(".chat-thread-panel .chat-message").length'),
+    3,
+    "A broadcast opens its original root, never a nested thread",
+  );
   close();
+  await checkReplyDelivery(root, other, "desktop");
 
   // Explicitly labelled response mock exercises loading/error/retry without an external outage.
   evaluate(`(() => {
@@ -105,56 +417,119 @@ try {
     window.threadFetch = original;
     window.fetch = (input, init) => String(input).includes('/thread') ? new Promise(resolve => { window.releaseThread = () => resolve(Response.json({ error: 'TEST FIXTURE: thread unavailable' }, { status: 503 })); }) : original(input, init);
   })()`);
-  browser('click', `${channel(other.clientMessageId)} .chat-reply-thread`);
+  browser("click", `${channel(initial.messages[0].clientMessageId)} .chat-reply-thread`);
   wait('document.querySelector(".chat-thread-messages").getAttribute("aria-busy") === "true"');
-  screenshot('threads-desktop-loading');
-  evaluate('window.releaseThread()');
+  assert.equal(
+    evaluate('document.querySelector(".chat-thread-skeleton").getAttribute("aria-label")'),
+    "Loading thread replies",
+  );
+  assert.equal(evaluate('document.querySelector(".chat-thread-status")'), null, "no text loading row");
+  alignedHeaders(1440);
+  screenshot("threads-desktop-loading");
+  evaluate("window.releaseThread()");
   wait('document.querySelector(".chat-thread-status[role=alert]")?.textContent.includes("TEST FIXTURE")');
-  screenshot('threads-desktop-error');
-  evaluate('window.fetch = window.threadFetch');
-  browser('click', '.chat-thread-status[role=alert] button');
-  wait('!document.querySelector(".chat-thread-status[role=alert]") && !document.querySelector(".chat-thread-messages[aria-busy=true]")');
+  alignedHeaders(1440);
+  screenshot("threads-desktop-error");
+  evaluate("window.fetch = window.threadFetch");
+  browser("click", ".chat-thread-status[role=alert] button");
+  wait(
+    '!document.querySelector(".chat-thread-status[role=alert]") && !document.querySelector(".chat-thread-messages[aria-busy=true]")',
+  );
   close();
 
-  browser('set', 'viewport', '390', '844', '2');
-  // The already-open desktop member list becomes a mobile overlay on resize.
-  browser('click', '.member-list-close');
+  browser("find", "role", "button", "click", "--name", "Show member list", "--exact");
+  wait('!!document.querySelector("#space-member-list")');
+  browser("set", "viewport", "390", "844", "2");
+  // Explicitly open it above: members now start closed on desktop too.
+  // The open desktop member list becomes a mobile overlay on resize.
+  browser("click", ".member-list-close");
   wait('!document.querySelector("#space-member-list")');
-  socket = new WebSocket(browser('get', 'cdp-url').cdpUrl);
-  await new Promise(resolve => socket.addEventListener('open', resolve, { once: true }));
+  socket = new WebSocket(browser("get", "cdp-url").cdpUrl);
+  await new Promise((resolve) => socket.addEventListener("open", resolve, { once: true }));
   let nextID = 0;
   const pending = new Map();
-  socket.addEventListener('message', event => {
-    const message = JSON.parse(event.data), request = pending.get(message.id);
+  socket.addEventListener("message", (event) => {
+    const message = JSON.parse(event.data),
+      request = pending.get(message.id);
     if (!request) return;
     pending.delete(message.id);
-    if (message.error) request.reject(new Error(message.error.message)); else request.resolve(message.result);
+    if (message.error) request.reject(new Error(message.error.message));
+    else request.resolve(message.result);
   });
-  const cdp = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
-    const id = ++nextID; pending.set(id, { resolve, reject });
-    socket.send(JSON.stringify({ id, method, params, sessionId }));
-  });
-  const { targetInfos } = await cdp('Target.getTargets');
-  const target = targetInfos.find(target => target.type === 'page' && target.url.startsWith(web));
-  const { sessionId } = await cdp('Target.attachToTarget', { targetId: target.targetId, flatten: true });
-  await cdp('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 }, sessionId);
+  const cdp = (method, params = {}, sessionId) =>
+    new Promise((resolve, reject) => {
+      const id = ++nextID;
+      pending.set(id, { resolve, reject });
+      socket.send(JSON.stringify({ id, method, params, sessionId }));
+    });
+  const { targetInfos } = await cdp("Target.getTargets");
+  const target = targetInfos.find((target) => target.type === "page" && target.url.startsWith(web));
+  const { sessionId } = await cdp("Target.attachToTarget", { targetId: target.targetId, flatten: true });
+  await cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 }, sessionId);
   assert.equal(evaluate('matchMedia("(pointer: coarse)").matches'), true);
-  assert.equal(evaluate(`(() => { const reply = document.querySelector('${channel(root.clientMessageId)} .chat-reply-thread').getBoundingClientRect(); const more = document.querySelector('${channel(root.clientMessageId)} .chat-message-actions-trigger').getBoundingClientRect(); return reply.right <= more.left && reply.width >= 44 && more.width >= 44; })()`), true, 'Touch controls must not overlap');
-  screenshot('threads-mobile-channel');
+  assert.equal(
+    evaluate(
+      `(() => { const row = document.querySelector('${channel(root.clientMessageId)}'); const reply = row.querySelector('.chat-reply-thread'); const summary = row.querySelector('.chat-thread-summary').getBoundingClientRect(); const more = row.querySelector('.chat-message-actions-trigger').getBoundingClientRect(); return !reply.checkVisibility({ visibilityProperty: true }) && summary.width > 0 && summary.height > 0 && more.width >= 44 && more.height >= 44 && (summary.right <= more.left || summary.top >= more.bottom); })()`,
+    ),
+    true,
+    "Touch layout hides inline replies and keeps thread links separate from 44px message actions",
+  );
+  screenshot("threads-mobile-channel");
+  evaluate(`(() => {
+    const original = window.fetch.bind(window);
+    window.threadFetch = original;
+    window.fetch = (input, init) => String(input).includes('/thread') ? new Promise((resolve, reject) => { window.releaseThread = () => original(input, init).then(resolve, reject); }) : original(input, init);
+  })()`);
+  actions(channel(initial.messages[2].clientMessageId), true);
+  browser("find", "role", "button", "click", "--name", "Reply in thread", "--exact");
+  wait('!!document.querySelector(".chat-thread-skeleton")');
+  screenshot("threads-mobile-loading");
+  evaluate("window.fetch = window.threadFetch; window.releaseThread()");
+  wait('!document.querySelector(".chat-thread-messages[aria-busy=true]")');
+  close();
+  actions(channel(root.clientMessageId), true);
+  dismissActions();
   open(root.clientMessageId);
   wait('document.querySelector(".chat-thread-panel").getAttribute("aria-modal") === "true"');
   assert.equal(evaluate('document.querySelector(".chat-panel").inert'), true);
-  assert.deepEqual(evaluate('(() => { const rect = document.querySelector(".chat-thread-panel").getBoundingClientRect(); return [rect.x, rect.y, rect.width, rect.height]; })()'), [0, 0, 390, 844]);
-  screenshot('threads-mobile');
-  evaluate('history.back()');
+  assert.deepEqual(
+    evaluate(
+      '(() => { const rect = document.querySelector(".chat-thread-panel").getBoundingClientRect(); return [rect.x, rect.y, rect.width, rect.height]; })()',
+    ),
+    [0, 0, 390, 844],
+  );
+  alignedHeaders(390);
+  screenshot("threads-mobile");
+  evaluate('document.querySelector(".chat-thread-heading span").textContent = "in #" + "long-channel-name-".repeat(3)');
+  browser("set", "viewport", "320", "844", "2");
+  alignedHeaders(320);
+  screenshot("threads-mobile-long-name");
+  browser("set", "viewport", "390", "844", "2");
+  evaluate(`document.querySelector(".chat-thread-heading span").textContent = ${JSON.stringify(originalName)}`);
+  actions(thread(root.clientMessageId), false);
+  dismissActions();
+  // Exercise the held-finger path as well as the overflow button.
+  const point = evaluate(
+    `(() => { const rect = document.querySelector('${thread(broadcast.clientMessageId)} p').getBoundingClientRect(); return { x: rect.x + 10, y: rect.y + 10 }; })()`,
+  );
+  await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point] }, sessionId);
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] }, sessionId);
+  assertReplyAction(false);
+  screenshot("thread-actions-mobile-reply");
+  dismissActions();
+  evaluate("history.back()");
   wait('!document.querySelector(".chat-thread-panel")');
   assert.equal(evaluate('document.querySelector(".chat-panel").inert'), false);
   open(root.clientMessageId);
-  browser('click', '.chat-thread-back');
+  browser("click", ".chat-thread-back");
   wait('!document.querySelector(".chat-thread-panel")');
   assert.equal(evaluate('document.querySelector(".chat-panel").inert'), false);
-  console.log('PASS: isolated replies, root highlight/count/avatars, shared broadcast/reaction identity, per-root drafts, loading/error/retry, focus restoration, touch target separation, full-screen dialog, inert background and mobile Back.');
+  await checkReplyDelivery(root, other, "mobile");
+  console.log(
+    "PASS: repeated clicks make zero requests and zero reply-position changes; hover/focus prefetch, cached reopening, cold-load skeletons; aligned 54px headers at 1440/1024/761/390/320px, long-name containment, reply actions hidden on thread roots/replies and retained in the channel (desktop, narrow and touch long-press); isolated replies, root highlight/count/avatars, shared broadcast/reaction identity, per-root drafts, Pins-return stability, loading/error/retry, quiet in-flight replies, scoped failure recovery, idempotent retry, rejected edit/dismiss, focus restoration, touch target separation, full-screen dialog, inert background and mobile Back.",
+  );
 } finally {
   socket?.close();
-  browser('close');
+  browser("close");
 }

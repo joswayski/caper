@@ -7,6 +7,9 @@ rust-version.workspace = true
 
 [dependencies]
 async-trait = "0.1"
+# Signs the APNs (ES256) and FCM service-account (RS256) JWTs. Already compiled
+# in as the Rustls crypto provider, so push adds no new crypto stack.
+aws-lc-rs = { version = "1.18", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"] }
 aws-config = "=1.8.14"
 # Keep the modern HTTPS client without the SDKs' legacy rustls 0.21 feature.
 aws-sdk-secretsmanager = { version = "=1.108.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
@@ -24,7 +27,8 @@ opentelemetry-otlp = { version = "0.32", default-features = false, features = ["
 opentelemetry_sdk = { version = "0.32", default-features = false, features = ["logs"] }
 rand = "0.9"
 redis = { version = "0.32", features = ["tokio-rustls-comp", "tls-rustls-webpki-roots"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# APNs accepts only HTTP/2.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2"] }
 rustls = { version = "0.23", default-features = false, features = ["std", "aws_lc_rs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -48,6 +52,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
+# Mock APNs speaks HTTP/2 without TLS (prior knowledge), like the real service's framing.
+axum = { version = "0.8", features = ["ws", "http2"] }
 opentelemetry_sdk = { version = "0.32", default-features = false, features = ["logs", "testing"] }
 tokio = { version = "1", features = ["test-util"] }
 tokio-tungstenite = "0.29"

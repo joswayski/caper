@@ -1,19 +1,124 @@
-.privacy-settings { display: grid; gap: 14px; margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--border); color: var(--text); }
-.privacy-settings fieldset { display: grid; gap: 6px; min-width: 0; margin: 0; padding: 0; border: 0; }
-.privacy-settings legend, .privacy-settings h3 { margin: 0 0 6px; padding: 0; font-size: .86rem; font-weight: 750; }
-.privacy-settings label { display: flex; align-items: flex-start; gap: 10px; min-height: 44px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
-.privacy-settings label:has(input:checked) { border-color: var(--terracotta); }
-.privacy-settings fieldset:disabled label { cursor: wait; opacity: .7; }
-.privacy-settings input[type="radio"] { flex: 0 0 auto; margin: 3px 0 0; accent-color: var(--terracotta); }
-.privacy-settings label > span, .privacy-settings li > span:nth-child(2) { display: grid; gap: 2px; min-width: 0; }
-.privacy-settings strong { font-size: .82rem; }
-.privacy-settings small { color: var(--text-muted); font-size: .74rem; line-height: 1.4; overflow-wrap: anywhere; }
-.privacy-settings ul { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
-.privacy-settings li { display: flex; align-items: center; gap: 10px; min-height: 44px; }
-.privacy-settings li > span:nth-child(2) { flex: 1; }
-.privacy-avatar { flex: 0 0 28px; display: grid; width: 28px; height: 28px; overflow: hidden; border-radius: var(--radius-avatar); }
-.privacy-settings li button { min-height: 36px; padding: 0 12px; border: 1px solid var(--border); border-radius: 7px; color: var(--text); background: var(--surface-raised); font: inherit; font-size: .75rem; font-weight: 750; cursor: pointer; }
-.privacy-settings li button:disabled { cursor: wait; opacity: .6; }
-.privacy-settings :is(label, button):focus-visible, .privacy-settings input:focus-visible { outline: 2px solid var(--terracotta); outline-offset: 2px; }
-.privacy-settings section > p { margin: 0; color: var(--text-muted); font-size: .78rem; }
-.privacy-settings .privacy-error { margin: 0; color: #ff9b82; font-size: .76rem; }
+.privacy-settings {
+  display: grid;
+  gap: 14px;
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+  color: var(--text);
+}
+.privacy-settings fieldset {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.privacy-settings legend,
+.privacy-settings h3 {
+  margin: 0 0 6px;
+  padding: 0;
+  font-size: 0.86rem;
+  font-weight: 750;
+}
+.privacy-settings label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.privacy-settings label:has(input:checked) {
+  border-color: var(--terracotta);
+}
+.privacy-settings fieldset:disabled label {
+  cursor: wait;
+  opacity: 0.7;
+}
+.privacy-settings input[type="radio"] {
+  flex: 0 0 auto;
+  margin: 0;
+  accent-color: var(--terracotta);
+}
+.privacy-settings label > span,
+.privacy-settings li > span:nth-child(2) {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.privacy-settings strong {
+  font-size: 0.82rem;
+}
+.privacy-settings small {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.privacy-settings ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.privacy-settings li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+}
+.privacy-settings li > span:nth-child(2) {
+  flex: 1;
+}
+.privacy-avatar {
+  flex: 0 0 28px;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  overflow: hidden;
+  border-radius: var(--radius-avatar);
+}
+.privacy-settings li button {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  background: var(--surface-raised);
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 750;
+  cursor: pointer;
+}
+.privacy-settings li button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+.privacy-settings :is(label, button):focus-visible,
+.privacy-settings input:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
+}
+.privacy-settings section > p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+.privacy-settings .privacy-error {
+  margin: 0;
+  color: #ff9b82;
+  font-size: 0.76rem;
+}
+/* A section title, then a quieter label for its one question. */
+.notification-settings {
+  gap: 8px;
+}
+.notification-settings legend {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 650;
+}

@@ -11,7 +11,14 @@ import {
   type VoiceProcessingNodes,
 } from "./voice-processing.ts";
 
-export type NoiseSuppression = "deepfilter" | "deepfilter-gentle" | "deepfilter-strong" | "rnnoise" | "dpdfnet8" | "browser" | "off";
+export type NoiseSuppression =
+  | "deepfilter"
+  | "deepfilter-gentle"
+  | "deepfilter-strong"
+  | "rnnoise"
+  | "dpdfnet8"
+  | "browser"
+  | "off";
 export type AudioSetup = "speakers" | "headphones";
 export interface Microphone {
   track: MediaStreamTrack;
@@ -31,7 +38,9 @@ export interface Microphone {
  * iPhone and iPad, where every browser (Brave and Chrome included) is WebKit.
  * iPadOS reports itself as a Mac, so a touch-capable "Mac" counts too.
  */
-export function appleMobileWebKit(nav: Pick<Navigator, "userAgent" | "platform" | "maxTouchPoints"> | undefined = globalThis.navigator) {
+export function appleMobileWebKit(
+  nav: Pick<Navigator, "userAgent" | "platform" | "maxTouchPoints"> | undefined = globalThis.navigator,
+) {
   if (!nav) return false;
   return /\b(iPhone|iPad|iPod)\b/.test(nav.userAgent ?? "") || (nav.platform === "MacIntel" && nav.maxTouchPoints > 1);
 }
@@ -70,19 +79,24 @@ export async function captureMicrophone(
   const capture = beginCapture();
   let stream: MediaStream;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: {
-    deviceId: deviceId ? { exact: deviceId } : undefined,
-    channelCount: 1,
-    echoCancellation: audioSetup === "speakers",
-    noiseSuppression: mode === "browser" || interim,
-    autoGainControl: audioSetup === "speakers",
-    } });
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        deviceId: deviceId ? { exact: deviceId } : undefined,
+        channelCount: 1,
+        echoCancellation: audioSetup === "speakers",
+        noiseSuppression: mode === "browser" || interim,
+        autoGainControl: audioSetup === "speakers",
+      },
+    });
   } catch (error) {
     capture.end();
     throw error;
   }
   const deviceMs = performance.now() - started;
-  if (!stream) { capture.end(); throw new Error("Microphone access was not granted."); }
+  if (!stream) {
+    capture.end();
+    throw new Error("Microphone access was not granted.");
+  }
   const raw = stream.getAudioTracks()[0];
   capture.track(raw);
   let context: AudioContext | undefined;
@@ -110,7 +124,7 @@ export async function captureMicrophone(
     if (!context || !voiceInput || !destination || !voiceProcessing) return;
     const nextStrength = clampVoiceProcessingStrength(strength);
     setVoiceProcessingStrength(voiceProcessing, nextStrength, context.currentTime, true);
-    if (processingConnected === (nextStrength > 0)) return;
+    if (processingConnected === nextStrength > 0) return;
     voiceInput.disconnect();
     disconnectVoiceProcessing(voiceProcessing);
     processingConnected = nextStrength > 0;
@@ -148,12 +162,29 @@ export async function captureMicrophone(
     diagnostics() {
       const { sampleRate, channelCount, echoCancellation, noiseSuppression, autoGainControl } = raw.getSettings();
       return {
-        requested: mode, status: microphone.status, stopped,
+        requested: mode,
+        status: microphone.status,
+        stopped,
         rawTrack: { readyState: raw.readyState, muted: raw.muted, enabled: raw.enabled },
-        processedTrack: microphone.track === raw ? undefined : { readyState: microphone.track.readyState, muted: microphone.track.muted, enabled: microphone.track.enabled },
-        context: context?.state, contextSampleRate: context?.sampleRate, routeSampleRate,
+        processedTrack:
+          microphone.track === raw
+            ? undefined
+            : {
+                readyState: microphone.track.readyState,
+                muted: microphone.track.muted,
+                enabled: microphone.track.enabled,
+              },
+        context: context?.state,
+        contextSampleRate: context?.sampleRate,
+        routeSampleRate,
         capture: { sampleRate, channelCount, echoCancellation, noiseSuppression, autoGainControl },
-        dpdfnet: { profile: activeProfile, processedHops, meanProcessingMs: processedHops ? totalProcessingMs / processedHops : null, maxProcessingMs, hopBudgetMs: 10 },
+        dpdfnet: {
+          profile: activeProfile,
+          processedHops,
+          meanProcessingMs: processedHops ? totalProcessingMs / processedHops : null,
+          maxProcessingMs,
+          hopBudgetMs: 10,
+        },
       };
     },
     setInputVolume(volume) {
@@ -196,7 +227,9 @@ export async function captureMicrophone(
     signal.throwIfAborted();
     throw new Error("No microphone track was available.");
   }
-  const ready = () => { microphone.startup.processingMs = performance.now() - started - deviceMs; };
+  const ready = () => {
+    microphone.startup.processingMs = performance.now() - started - deviceMs;
+  };
   if (mode === "off") return microphone;
   if (mode === "browser") {
     microphone.status = raw.getSettings().noiseSuppression
@@ -217,7 +250,9 @@ export async function captureMicrophone(
 
   const addWorklet = async (engine: "dpdfnet8" | "noise") => {
     if (context!.sampleRate !== 48_000) await context!.audioWorklet.addModule("/audio/resampler-v1/resampler.js");
-    await context!.audioWorklet.addModule(engine === "dpdfnet8" ? "/audio/dpdfnet8-v2/worklet-v4.js" : "/audio/noise-v1/worklet-v2.js");
+    await context!.audioWorklet.addModule(
+      engine === "dpdfnet8" ? "/audio/dpdfnet8-v2/worklet-v4.js" : "/audio/noise-v1/worklet-v2.js",
+    );
   };
 
   const fail = () => {
@@ -236,7 +271,9 @@ export async function captureMicrophone(
         target.port.postMessage(data, [data.samples]);
       } else bypass(true);
     };
-    worker.onerror = () => { if (!stopped && node === target) bypass(true); };
+    worker.onerror = () => {
+      if (!stopped && node === target) bypass(true);
+    };
     target.port.addEventListener("message", ({ data }) => {
       if (!stopped && node === target && data?.type === "process") worker.postMessage(data, [data.samples]);
     });
@@ -257,8 +294,12 @@ export async function captureMicrophone(
       await addWorklet(profile !== "rnnoise" ? "dpdfnet8" : "noise");
       fallbackSignal.throwIfAborted();
       replacement = new AudioWorkletNode(context!, profile !== "rnnoise" ? "caper-dpdfnet8" : "caper-noise", {
-        numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
-        channelCount: 1, channelCountMode: "explicit", processorOptions: { engine: profile === "rnnoise" ? "rnnoise" : "dpdfnet8", module },
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+        channelCount: 1,
+        channelCountMode: "explicit",
+        processorOptions: { engine: profile === "rnnoise" ? "rnnoise" : "dpdfnet8", module },
       });
       if (profile !== "rnnoise") prepared = new DpdfnetPreparation(profile).take();
       await new Promise<void>((resolve, reject) => {
@@ -268,7 +309,10 @@ export async function captureMicrophone(
           error ? reject(error) : resolve();
         };
         const abort = () => finish(new Error("Fallback cancelled"));
-        const timer = setTimeout(() => finish(new Error("Fallback timed out")), profile !== "rnnoise" ? 60_000 : 15_000);
+        const timer = setTimeout(
+          () => finish(new Error("Fallback timed out")),
+          profile !== "rnnoise" ? 60_000 : 15_000,
+        );
         fallbackSignal.addEventListener("abort", abort, { once: true });
         if (profile !== "rnnoise") void prepared!.ready.then(() => finish(), finish);
         replacement!.onprocessorerror = () => finish(new Error("Fallback failed"));
@@ -302,7 +346,12 @@ export async function captureMicrophone(
         else if (data === "bypassed") bypass();
       };
       bypassing = false;
-      microphone.status = profile === 8 ? "DPDFNet-8 HR active · on-device" : profile === 2 ? "DPDFNet-8 HR unavailable · DPDFNet-2 HR active · on-device" : "DPDFNet unavailable · RNNoise active · on-device";
+      microphone.status =
+        profile === 8
+          ? "DPDFNet-8 HR active · on-device"
+          : profile === 2
+            ? "DPDFNet-8 HR unavailable · DPDFNet-2 HR active · on-device"
+            : "DPDFNet unavailable · RNNoise active · on-device";
       changed();
       return true;
     } catch {
@@ -349,22 +398,27 @@ export async function captureMicrophone(
     gain!.connect(voiceInput!);
     microphone.status = `${engineName} unavailable - switching to browser suppression`;
     changed();
-    void raw.applyConstraints({ noiseSuppression: true }).catch(() => undefined).then(() => {
-      if (stopped) return;
-      microphone.status = raw.getSettings().noiseSuppression
-        ? `${engineName} unavailable · browser suppression active`
-        : `${engineName} unavailable - noise suppression bypassed`;
-      changed();
-      if (next !== undefined) void useFallback(next);
-    });
+    void raw
+      .applyConstraints({ noiseSuppression: true })
+      .catch(() => undefined)
+      .then(() => {
+        if (stopped) return;
+        microphone.status = raw.getSettings().noiseSuppression
+          ? `${engineName} unavailable · browser suppression active`
+          : `${engineName} unavailable - noise suppression bypassed`;
+        changed();
+        if (next !== undefined) void useFallback(next);
+      });
   };
 
   try {
-    if (typeof AudioContext === "undefined" || typeof AudioWorkletNode === "undefined") throw new Error("Unsupported browser");
+    if (typeof AudioContext === "undefined" || typeof AudioWorkletNode === "undefined")
+      throw new Error("Unsupported browser");
     context = bridged
       ? new AudioContext({ latencyHint: "interactive" })
       : new AudioContext({ sampleRate: 48_000, latencyHint: "interactive" });
-    if ((!bridged && context.sampleRate !== 48_000) || !context.audioWorklet) throw new Error("Unsupported audio context");
+    if ((!bridged && context.sampleRate !== 48_000) || !context.audioWorklet)
+      throw new Error("Unsupported audio context");
     // Resume immediately, before downloads, to retain the Join button's user activation.
     void context.resume().catch(() => undefined);
     source = context.createMediaStreamSource(stream);
@@ -378,12 +432,16 @@ export async function captureMicrophone(
     microphone.naturalTrack = naturalDestination.stream.getAudioTracks()[0];
     microphone.setInputVolume(inputVolume);
     voiceProcessing = createVoiceProcessingNodes(context, voiceProcessingStrength);
-    const { module, model } = engine === "dpdfnet8" ? { module: undefined, model: undefined } : await assets.load(engine, signal);
+    const { module, model } =
+      engine === "dpdfnet8" ? { module: undefined, model: undefined } : await assets.load(engine, signal);
     await addWorklet(engine === "dpdfnet8" ? "dpdfnet8" : "noise");
     signal.throwIfAborted();
     node = new AudioWorkletNode(context, engine === "dpdfnet8" ? "caper-dpdfnet8" : "caper-noise", {
-      numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
-      channelCount: 1, channelCountMode: "explicit",
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [1],
+      channelCount: 1,
+      channelCountMode: "explicit",
       processorOptions: { engine, module, model, attenuationLimit },
     });
     if (engine === "dpdfnet8") {
@@ -403,33 +461,46 @@ export async function captureMicrophone(
       connectVoicePath(voiceProcessingStrength);
       microphone.status = `${engineName} loading · browser suppression active`;
       microphone.startup.interim = true;
-      loadingNode.onprocessorerror = () => { if (node === loadingNode) bypass(true); };
-      const timer = setTimeout(() => { if (!stopped && node === loadingNode && prepared === loading) bypass(true); }, 60_000);
-      void loading.ready.then(async () => {
-        clearTimeout(timer);
-        if (stopped || node !== loadingNode || prepared !== loading || bypassing) return;
-        // Complete the constraint change before connecting the model, as a fallback swap does.
-        await raw.applyConstraints({ noiseSuppression: false }).catch(() => undefined);
-        if (stopped || node !== loadingNode || prepared !== loading || bypassing) return;
-        gain!.disconnect();
-        bridgeWorker(loadingNode, loading.worker);
-        gain!.connect(loadingNode);
-        loadingNode.connect(naturalDestination!);
-        loadingNode.connect(voiceInput!);
-        microphone.status = `${engineName} active · on-device`;
-        loadingNode.onprocessorerror = () => bypass(true);
-        loadingNode.port.onmessage = ({ data }) => { if (data === "bypassed") bypass(); else if (data === "failed") bypass(true); };
-        changed();
-      }, () => {
-        clearTimeout(timer);
+      loadingNode.onprocessorerror = () => {
+        if (node === loadingNode) bypass(true);
+      };
+      const timer = setTimeout(() => {
         if (!stopped && node === loadingNode && prepared === loading) bypass(true);
-      });
+      }, 60_000);
+      void loading.ready.then(
+        async () => {
+          clearTimeout(timer);
+          if (stopped || node !== loadingNode || prepared !== loading || bypassing) return;
+          // Complete the constraint change before connecting the model, as a fallback swap does.
+          await raw.applyConstraints({ noiseSuppression: false }).catch(() => undefined);
+          if (stopped || node !== loadingNode || prepared !== loading || bypassing) return;
+          gain!.disconnect();
+          bridgeWorker(loadingNode, loading.worker);
+          gain!.connect(loadingNode);
+          loadingNode.connect(naturalDestination!);
+          loadingNode.connect(voiceInput!);
+          microphone.status = `${engineName} active · on-device`;
+          loadingNode.onprocessorerror = () => bypass(true);
+          loadingNode.port.onmessage = ({ data }) => {
+            if (data === "bypassed") bypass();
+            else if (data === "failed") bypass(true);
+          };
+          changed();
+        },
+        () => {
+          clearTimeout(timer);
+          if (!stopped && node === loadingNode && prepared === loading) bypass(true);
+        },
+      );
       ready();
       return microphone;
     }
     await new Promise<void>((resolve, reject) => {
       // ORT's first model compile is substantially slower than the small WASM engines.
-      const timer = setTimeout(() => finish(new Error("Noise suppression timed out")), engine === "dpdfnet8" ? 60_000 : 15_000);
+      const timer = setTimeout(
+        () => finish(new Error("Noise suppression timed out")),
+        engine === "dpdfnet8" ? 60_000 : 15_000,
+      );
       const abort = () => finish(new Error("Microphone setup cancelled"));
       const finish = (error?: Error) => {
         clearTimeout(timer);
@@ -454,9 +525,20 @@ export async function captureMicrophone(
     node.connect(naturalDestination);
     node.connect(voiceInput);
     connectVoicePath(voiceProcessingStrength);
-    microphone.status = engine === "rnnoise" ? "RNNoise active · on-device" : engine === "dpdfnet8" ? `${engineName} active · on-device` : `DeepFilterNet active · ${presetName} · on-device`;
+    microphone.status =
+      engine === "rnnoise"
+        ? "RNNoise active · on-device"
+        : engine === "dpdfnet8"
+          ? `${engineName} active · on-device`
+          : `DeepFilterNet active · ${presetName} · on-device`;
     node.onprocessorerror = engine === "dpdfnet8" ? () => bypass(true) : fail;
-    node.port.onmessage = ({ data }) => { if (data === "bypassed") bypass(); else if (data === "failed") { if (engine === "dpdfnet8") bypass(true); else fail(); } };
+    node.port.onmessage = ({ data }) => {
+      if (data === "bypassed") bypass();
+      else if (data === "failed") {
+        if (engine === "dpdfnet8") bypass(true);
+        else fail();
+      }
+    };
     ready();
     return microphone;
   } catch {
@@ -475,7 +557,8 @@ export async function captureMicrophone(
     // At a converted route rate, the browser's own processing is better than no audio.
     if (bridged && !stopped && !signal.aborted) {
       releaseGraph();
-      if (!raw.getSettings().noiseSuppression) await raw.applyConstraints({ noiseSuppression: true }).catch(() => undefined);
+      if (!raw.getSettings().noiseSuppression)
+        await raw.applyConstraints({ noiseSuppression: true }).catch(() => undefined);
       signal.throwIfAborted();
       const route = `${routeSampleRate! / 1000} kHz audio route`;
       microphone.status = raw.getSettings().noiseSuppression

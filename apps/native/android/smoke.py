@@ -86,16 +86,21 @@ def hierarchy() -> ET.Element:
     (OUTPUT / "hierarchy-failure.xml").write_bytes(raw)
     with (OUTPUT / "hierarchy-failure.png").open("wb") as image:
         subprocess.run(["adb", "exec-out", "screencap", "-p"], stdout=image, check=False, timeout=30)
-    raise AssertionError(
-        f"Unable to acquire Android UI hierarchy after 4 attempts; diagnostics written to {OUTPUT}"
-    )
+    raise AssertionError(f"Unable to acquire Android UI hierarchy after 4 attempts; diagnostics written to {OUTPUT}")
 
 
 def nodes(root: ET.Element):
     return root.iter("node")
 
 
-def find(root: ET.Element, *, text: str | None = None, description: str | None = None, contains: str | None = None, resource_id: str | None = None) -> ET.Element | None:
+def find(
+    root: ET.Element,
+    *,
+    text: str | None = None,
+    description: str | None = None,
+    contains: str | None = None,
+    resource_id: str | None = None,
+) -> ET.Element | None:
     for node in nodes(root):
         if text is not None and node.get("text") == text:
             return node
@@ -116,8 +121,11 @@ def dismiss_system_not_responding(root: ET.Element) -> bool:
     Only the framework's dialog (package "android") is touched.
     """
     title = next(
-        (node for node in nodes(root)
-         if node.get("package") == "android" and "isn't responding" in node.get("text", "")),
+        (
+            node
+            for node in nodes(root)
+            if node.get("package") == "android" and "isn't responding" in node.get("text", "")
+        ),
         None,
     )
     wait = next(
@@ -133,7 +141,14 @@ def dismiss_system_not_responding(root: ET.Element) -> bool:
     return True
 
 
-def wait_for(*, text: str | None = None, description: str | None = None, contains: str | None = None, resource_id: str | None = None, seconds: int = 20) -> ET.Element:
+def wait_for(
+    *,
+    text: str | None = None,
+    description: str | None = None,
+    contains: str | None = None,
+    resource_id: str | None = None,
+    seconds: int = 20,
+) -> ET.Element:
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         root = hierarchy()
@@ -144,7 +159,9 @@ def wait_for(*, text: str | None = None, description: str | None = None, contain
         if match is not None:
             return root
         time.sleep(0.5)
-    raise AssertionError(f"UI did not show text={text!r}, description={description!r}, contains={contains!r}, resource_id={resource_id!r}")
+    raise AssertionError(
+        f"UI did not show text={text!r}, description={description!r}, contains={contains!r}, resource_id={resource_id!r}"
+    )
 
 
 def center(node: ET.Element) -> tuple[int, int]:
@@ -172,7 +189,8 @@ def enter_first_field(value: str) -> None:
         current = hierarchy()
         focused = next(
             (
-                node for node in nodes(current)
+                node
+                for node in nodes(current)
                 if node.get("class") == "android.widget.EditText" and node.get("focused") == "true"
             ),
             None,
@@ -191,7 +209,14 @@ def enter_first_field(value: str) -> None:
     # The select-all chord can be dropped while the IME connects; delete
     # whatever text is left one character at a time.
     for _ in range(3):
-        editor = next((node for node in nodes(hierarchy()) if node.get("class") == "android.widget.EditText" and node.get("focused") == "true"), None)
+        editor = next(
+            (
+                node
+                for node in nodes(hierarchy())
+                if node.get("class") == "android.widget.EditText" and node.get("focused") == "true"
+            ),
+            None,
+        )
         remaining = len(editor.get("text", "")) if editor is not None else 0
         if remaining == 0:
             break
@@ -205,7 +230,14 @@ def enter_first_field(value: str) -> None:
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
         current = hierarchy()
-        editor = next((node for node in nodes(current) if node.get("class") == "android.widget.EditText" and node.get("focused") == "true"), None)
+        editor = next(
+            (
+                node
+                for node in nodes(current)
+                if node.get("class") == "android.widget.EditText" and node.get("focused") == "true"
+            ),
+            None,
+        )
         observed = editor.get("text", "") if editor is not None else ""
         if observed == value:
             break
@@ -273,7 +305,9 @@ def preserve_failure_artifacts(error: BaseException) -> None:
             logcat.stdout[-256_000:] + ("\nSTDERR:\n" + logcat.stderr[-16_000:] if logcat.stderr else ""),
         )
     else:
-        (OUTPUT / "final-failure-logcat.txt").write_text("App process was not running; no app-scoped logcat available.\n")
+        (OUTPUT / "final-failure-logcat.txt").write_text(
+            "App process was not running; no app-scoped logcat available.\n"
+        )
 
 
 def main() -> None:
@@ -317,8 +351,16 @@ def main() -> None:
     # the retired Guest/General workspace. A transient failure keeps the vault
     # credential, so the next successful launch still restores the account.
     adb("shell", "am", "force-stop", PACKAGE)
-    fixture({"failure": {"path": "/api/account/me", "method": "GET", "status": 503,
-                         "error": "Session restoration temporarily unavailable."}})
+    fixture(
+        {
+            "failure": {
+                "path": "/api/account/me",
+                "method": "GET",
+                "status": 503,
+                "error": "Session restoration temporarily unavailable.",
+            }
+        }
+    )
     launch()
     restore_error = capture("caper-android-restore-error", "Session restoration temporarily unavailable.")
     assert find(restore_error, text="Welcome to Caper") is not None
@@ -333,13 +375,22 @@ def main() -> None:
     wait_for(text="design")
     wait_for(contains="TEST FIXTURE")
     desktop = capture("caper-android-populated-desktop", "Fixture Studio")
-    for required in ("Channels", "general", "design", "planning", "Members", "Maya"):
+    for required in ("Channels", "general", "design", "planning", "Maya"):
         assert find(desktop, contains=required) is not None, f"Populated shell is missing {required!r}"
+    assert find(desktop, text="Members") is None, "Chat opens with the members list closed"
+    assert find(desktop, description="Show member list") is not None
+    tap(description="Show member list")
+    members_open = capture("caper-android-desktop-members", "Members")
+    assert find(members_open, contains="Message #general") is not None, "Opening members must keep the conversation"
+    tap(description="Hide member list")
+    assert find(hierarchy(), text="Members") is None
     assert find(desktop, text="caper") is None, "The workspace must not have a web-style branding header"
     general = find(desktop, text="general")
     menu = find(desktop, description="general channel menu")
     join = find(desktop, description="Join voice in #general")
-    assert general is not None and menu is not None and join is not None, "General must expose its channel menu and Join voice action"
+    assert general is not None and menu is not None and join is not None, (
+        "General must expose its channel menu and Join voice action"
+    )
     assert abs(center(general)[1] - center(menu)[1]) <= 4, "Channel name and menu must share the top row"
     general_bottom = int(re.findall(r"\d+", general.attrib["bounds"])[3])
     left, top, right, bottom = map(int, re.findall(r"\d+", join.attrib["bounds"]))
@@ -398,11 +449,30 @@ def main() -> None:
     audio = capture("caper-android-audio-prejoin", "Only you can hear these tests.")
     for label in ("Test microphone volume", "Voice processing", "Test speaker volume"):
         assert find(audio, description=label) is not None, f"Missing labeled slider: {label}"
-    for label in ("Microphone volume", "Speaker volume", "Voice enhancement", "Test speakers", "Test microphone", "Try your microphone", "Input level"):
+    for label in (
+        "Microphone volume",
+        "Speaker volume",
+        "Voice enhancement",
+        "Test speakers",
+        "Test microphone",
+        "Try your microphone",
+        "Input level",
+    ):
         assert find(audio, text=label) is not None, f"Missing audio test copy: {label}"
-    for removed in ("DPDFNet", "RNNoise", "voice EQ", "Android system settings", "communication routes", "Join voice", "Signed in as", "Mic Test"):
+    for removed in (
+        "DPDFNet",
+        "RNNoise",
+        "voice EQ",
+        "Android system settings",
+        "communication routes",
+        "Join voice",
+        "Signed in as",
+        "Mic Test",
+    ):
         assert find(audio, contains=removed) is None, f"Unexpected explanatory copy: {removed}"
-    assert find(audio, text="Choose speakers in system settings.") is not None, "Do not show a routing section without routes"
+    assert find(audio, text="Choose speakers in system settings.") is not None, (
+        "Do not show a routing section without routes"
+    )
     assert find(audio, text="Connection details") is None
     assert find(audio, text="25%") is not None
     output = find(audio, description="Test speaker volume")
@@ -410,8 +480,16 @@ def main() -> None:
     # Compose's accessibility bounds include padding outside the touch track.
     # Drag the current 100% thumb past the minimum instead of tapping padding;
     # sampled motion events may stop short of the final pointer-up coordinate.
-    adb("shell", "input", "swipe", str((left + right) // 2), str((top + bottom) // 2),
-        str(left - (right - left) // 4), str((top + bottom) // 2), "500")
+    adb(
+        "shell",
+        "input",
+        "swipe",
+        str((left + right) // 2),
+        str((top + bottom) // 2),
+        str(left - (right - left) // 4),
+        str((top + bottom) // 2),
+        "500",
+    )
     wait_for(text="0%")
     tap(description="Close")
     tap(description="User Settings")
@@ -430,8 +508,16 @@ def main() -> None:
         submit = parents.get(submit)
     assert submit is not None and submit.get("enabled") == "false"
     enter_first_field("fixture_owner")
-    fixture({"failure": {"path": "/api/account/profile", "method": "POST", "status": 503,
-                         "error": "TEST FIXTURE: profile save temporarily unavailable."}})
+    fixture(
+        {
+            "failure": {
+                "path": "/api/account/profile",
+                "method": "POST",
+                "status": 503,
+                "error": "TEST FIXTURE: profile save temporarily unavailable.",
+            }
+        }
+    )
     tap(text="Save profile")
     profile_error = capture("caper-android-profile-error", "Your profile could not be saved. Please try again.")
     assert find(profile_error, text="fixture_owner") is not None, "Rejected save must retain the edit"
@@ -446,7 +532,14 @@ def main() -> None:
     assert find(channel_menu, contains="invite") is None
     tap(text="Channel settings")
     overview = capture("caper-android-channel-settings", "Overview")
-    for required in ("Private channel", "Only you and the people you add can view or join.", "Members", "Exact username", "Pending invitations", "Delete channel"):
+    for required in (
+        "Private channel",
+        "Only you and the people you add can view or join.",
+        "Members",
+        "Exact username",
+        "Pending invitations",
+        "Delete channel",
+    ):
         assert find(overview, contains=required) is not None, f"Channel overview is missing {required!r}"
     assert find(overview, text="Invite") is not None
     for removed in ("Private channel access", "Existing username", "Grant"):
@@ -505,10 +598,17 @@ def main() -> None:
 
     # Spectator snapshots are fixture-only; the media join endpoint remains 503.
     # Read #general while #design has occupants, without granting microphone access.
-    fixture({"media": {"channelId": "chan00000002", "participants": [
-        {"id": f"spectator00{index}", "name": f"Fixture Voice {index}", "muted": False, "deafened": False}
-        for index in range(1, 5)
-    ]}})
+    fixture(
+        {
+            "media": {
+                "channelId": "chan00000002",
+                "participants": [
+                    {"id": f"spectator00{index}", "name": f"Fixture Voice {index}", "muted": False, "deafened": False}
+                    for index in range(1, 5)
+                ],
+            }
+        }
+    )
     wait_for(description="Close navigation")  # Audio preferences closed back into Browse.
     initial_roster = capture("caper-android-voice-roster-initial", "4 in voice in design. Show who is in voice")
     assert find(initial_roster, text="Fixture Voice 1") is None, "Occupied rosters must start collapsed"
@@ -519,7 +619,9 @@ def main() -> None:
     assert find(roster, text="Fixture Voice 4") is not None
     assert find(roster, text="4 in voice") is not None
     assert find(roster, text="4 in voice in design") is None, "Voice count belongs in accessibility, not visible copy"
-    assert find(roster, description="Audio controls for Fixture Voice 1") is None, "Spectators must not get local audio controls"
+    assert find(roster, description="Audio controls for Fixture Voice 1") is None, (
+        "Spectators must not get local audio controls"
+    )
     assert find(roster, text="User volume") is None
     assert find(roster, text="Mute") is None
     assert find(roster, contains="Message #general") is None  # conversation is behind narrow navigation
@@ -565,10 +667,11 @@ def main() -> None:
         timeline = next(node for node in nodes(after_send) if node.get("scrollable") == "true")
         left, top, right, bottom = map(int, re.findall(r"\d+", timeline.attrib["bounds"]))
         x = str((left + right) // 2)
-        adb("shell", "input", "swipe", x, str(top + (bottom - top) * 3 // 4),
-            x, str(top + (bottom - top) // 4), "400")
+        adb("shell", "input", "swipe", x, str(top + (bottom - top) * 3 // 4), x, str(top + (bottom - top) // 4), "400")
     delivered = wait_for(text=sent_text)
-    assert sum(1 for node in nodes(delivered) if node.get("text") == sent_text) == 1, "Sent message rendered more than once"
+    assert sum(1 for node in nodes(delivered) if node.get("text") == sent_text) == 1, (
+        "Sent message rendered more than once"
+    )
     composer = next((node for node in nodes(delivered) if node.get("class") == "android.widget.EditText"), None)
     assert composer is not None and composer.get("text", "") == "", "Composer did not clear after confirmed send"
 
@@ -630,8 +733,9 @@ def main() -> None:
     assert find(retried, description=join) is not None, "A failed same-channel call must remain retryable"
     tap(description="Close navigation")
     chat = wait_for(contains="Message #general")
-    assert find(chat, contains="TEST FIXTURE: no real media engine or SFU is connected.") is not None, \
+    assert find(chat, contains="TEST FIXTURE: no real media engine or SFU is connected.") is not None, (
         "Phones keep the voice error visible outside Browse"
+    )
     print(f"PASS: fixture parity captures and interactions written to {OUTPUT}")
 
 

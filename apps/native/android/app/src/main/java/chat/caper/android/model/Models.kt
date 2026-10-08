@@ -4,6 +4,8 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonTransformingSerializer
 
@@ -45,7 +47,30 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 /** `GET/PUT /api/account/privacy`: `anyone`, `spaces` or `nobody`. */
 @Serializable data class DirectPrivacy(val directMessages: String)
 @Serializable data class DirectConversationList(val conversations: List<DirectConversation>)
+/** `GET /api/people`: accounts sharing a space or a DM with you (never you), by username. */
+@Serializable data class Person(val id: String, val username: String, val displayName: String, val avatarId: Int? = null)
+@Serializable data class PeopleList(val people: List<Person>)
 @Serializable data class PushConfig(val platforms: List<String>)
+/**
+ * `GET /api/notifications/settings`: the account [level] (`all`, `mentions` or `nothing`),
+ * [mobile] (`whenInactive` or `always`) and the overrides that still set something.
+ */
+@Serializable data class NotificationSettings(
+    val level: String = "all",
+    val mobile: String = "whenInactive",
+    val overrides: List<NotificationOverride> = emptyList(),
+)
+/**
+ * One space, channel (with its space) or DM override. [level] is null to inherit; a DM only
+ * uses `nothing`. [mutedUntil] is an RFC 3339 UTC time, `forever`, or null.
+ */
+@Serializable data class NotificationOverride(
+    val spaceId: String? = null,
+    val channelId: String? = null,
+    val conversationId: String? = null,
+    val level: String? = null,
+    val mutedUntil: String? = null,
+)
 @Serializable data class ChannelInvitation(val channel: Channel, val inviter: Inviter)
 @Serializable data class Member(val id: String, val username: String, val displayName: String, val owner: Boolean, val avatarId: Int? = null)
 @Serializable data class SpaceDetail(
@@ -55,7 +80,34 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val channelInvitations: List<ChannelInvitation> = emptyList(),
 )
 @Serializable data class ChatAuthor(val id: String, val name: String, val isGuest: Boolean, val avatarId: Int? = null)
-@Serializable data class ChatContent(val version: Int, val type: String, val text: String)
+/**
+ * One `content.mentions` entry: `user` (with `id` and `username`), `everyone` or `here`.
+ * Other types decode too and are ignored where mentions are used.
+ */
+@Serializable data class MessageMention(val type: String, val id: String? = null, val username: String? = null)
+@Serializable data class ChatContent(
+    val version: Int,
+    val type: String,
+    val text: String,
+    /** Absent on older messages and servers. */
+    @Serializable(with = MentionListSerializer::class) val mentions: List<MessageMention> = emptyList(),
+)
+
+/** Keeps a malformed or future-shaped mention entry from failing the whole message. */
+object MentionListSerializer : JsonTransformingSerializer<List<MessageMention>>(ListSerializer(MessageMention.serializer())) {
+    override fun transformDeserialize(element: JsonElement): JsonElement =
+        JsonArray((element as? JsonArray).orEmpty().mapNotNull { entry ->
+            val fields = entry as? JsonObject ?: return@mapNotNull null
+            val type = fields.string("type") ?: return@mapNotNull null
+            JsonObject(buildMap {
+                put("type", JsonPrimitive(type))
+                fields.string("id")?.let { put("id", JsonPrimitive(it)) }
+                fields.string("username")?.let { put("username", JsonPrimitive(it)) }
+            })
+        })
+
+    private fun JsonObject.string(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+}
 @Serializable data class MessageVersion(val revision: Int, val content: ChatContent, val createdAt: String)
 @Serializable data class MessageVersions(val messageId: String, val versions: List<MessageVersion>, val hasMore: Boolean)
 @Serializable data class MessageReaction(val emoji: String, val authorIds: List<String>)
@@ -213,11 +265,19 @@ data class AppUiState(
     val selectedSpace: SpaceDetail? = null,
     val selectedChannel: Channel? = null,
     val directConversations: List<DirectConversation> = emptyList(),
+    /** DM mention candidates from `GET /api/people`; null until the first load succeeds. */
+    val people: List<Person>? = null,
     /** Accounts you blocked, newest first; their messages collapse everywhere. */
     val blocks: List<BlockedAccount> = emptyList(),
     val blocksError: String? = null,
     /** The sidebar's "Message requests" list is expanded. */
     val requestsOpen: Boolean = false,
+    /** Notification settings with unsaved changes applied; null until they load. */
+    val notificationSettings: NotificationSettings? = null,
+    /** Why notification settings could not load, while none are shown. */
+    val notificationSettingsError: String? = null,
+    /** Failed notification saves by setting key (see `data/Notifications.kt`), shown beside that control. */
+    val notificationErrors: Map<String, String> = emptyMap(),
     val selectedDirectId: String? = null,
     val messages: List<ChatMessage> = emptyList(),
     val thread: ThreadUi? = null,
@@ -250,10 +310,33 @@ data class AppUiState(
     val reactionSaves: Map<String, ReactionSaveUi> = emptyMap(),
     val pinnedMessages: List<ChatMessage> = emptyList(),
     val pinSaves: Map<String, PinSaveUi> = emptyMap(),
+    val pinIntents: Map<String, PinIntentUi> = emptyMap(),
+    val editIntents: Map<String, EditIntentUi> = emptyMap(),
     val chatAuthorId: String? = null,
+    /** Ask Android 13+ for notification permission now; set once per account by app open. */
+    val pushPrompt: Boolean = false,
     val busy: Boolean = false,
     val error: String? = null,
 ) {
+    /** Local presentation never enters history, replay cursors or revision caches. */
+    private fun project(message: ChatMessage): ChatMessage {
+        var result = message
+        pinIntents[message.id]?.let { result = result.copy(pin = it.pin) }
+        editIntents[message.id]?.takeIf { message.revision <= it.expectedRevision }?.let {
+            result = result.copy(content = message.content.copy(text = it.text, mentions = emptyList()))
+        }
+        return result
+    }
+    val displayedMessages: List<ChatMessage> get() = messages.map(::project)
+    val displayedPins: List<ChatMessage> get() {
+        val rows = pinnedMessages.associateBy { it.id }.toMutableMap()
+        pinIntents.forEach { (id, intent) ->
+            if (intent.pin == null) rows.remove(id)
+            else rows[id] = messages.firstOrNull { it.id == id } ?: rows[id] ?: intent.message
+        }
+        return rows.values.map(::project).sortedByDescending { it.pinSeq?.toBigIntegerOrNull() }
+    }
+
     /** Each channel's media root decides its own stable sidebar Join action. */
     fun voiceAvailable(channel: Channel): Boolean? =
         voiceAvailability[voiceRootKey(selectedSpace?.space?.demo == true, channel.id)]
@@ -282,3 +365,5 @@ data class PendingMessageUi(
 
 data class ReactionSaveUi(val emoji: String, val active: Boolean, val saving: Boolean = true, val error: String? = null)
 data class PinSaveUi(val active: Boolean, val saving: Boolean = true, val error: String? = null)
+data class PinIntentUi(val message: ChatMessage, val pin: MessagePin?)
+data class EditIntentUi(val text: String, val expectedRevision: Int)

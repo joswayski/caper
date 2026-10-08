@@ -42,7 +42,8 @@ private struct ChannelInput: Encodable {
 }
 private struct UsernameInput: Encodable { let username: String }
 private struct ReadInput: Encodable { let seq: String }
-private struct PushDeviceInput: Encodable { let platform: String; let token: String }
+/// `appId` is the bundle ID the server sends to (APNs topic); nil is left out.
+private struct PushDeviceInput: Encodable { let platform: String; let token: String; let appId: String? }
 public struct MembersResponse: Decodable, Sendable {
     public let members: [Member]
     public let invitations: [Member]
@@ -124,6 +125,11 @@ public actor APIClient {
         }) else { throw APIError(status: 502, message: "Caper returned invalid direct messages.") }
         return response.conversations
     }
+    /// Everyone you can `@` in a DM: accounts sharing an active space or a DM with you.
+    public func people() async throws -> [Person] {
+        let response: PeopleResponse = try await request("api/people")
+        return response.people
+    }
     public func createDirectMessage(username: String) async throws -> DirectMessageConversation {
         try await request("api/dms", method: "POST", body: UsernameInput(username: username))
     }
@@ -156,11 +162,30 @@ public actor APIClient {
         let _: Empty = try await request("api/dms/\(try pathID(id))/read", method: "POST", body: ReadInput(seq: seq))
     }
     public func pushConfiguration() async throws -> PushConfiguration { try await request("api/push/config") }
-    public func registerPushDevice(platform: String, token: String) async throws {
-        let _: Empty = try await request("api/push/devices", method: "POST", body: PushDeviceInput(platform: platform, token: token))
+    public func registerPushDevice(platform: String, token: String, appID: String? = nil) async throws {
+        let _: Empty = try await request("api/push/devices", method: "POST", body: PushDeviceInput(platform: platform, token: token, appId: appID))
     }
-    public func unregisterPushDevice(platform: String, token: String) async throws {
-        let _: Empty = try await request("api/push/devices", method: "DELETE", body: PushDeviceInput(platform: platform, token: token))
+    public func unregisterPushDevice(platform: String, token: String, appID: String? = nil) async throws {
+        let _: Empty = try await request("api/push/devices", method: "DELETE", body: PushDeviceInput(platform: platform, token: token, appId: appID))
+    }
+    public func notificationSettings() async throws -> NotificationSettings { try await request("api/notifications/settings") }
+    public func updateNotificationSettings(_ change: NotificationAccountChange) async throws -> NotificationSettings {
+        try await request("api/notifications/settings", method: "PUT", body: change)
+    }
+    /// A space, channel or DM override. Returns the scope's saved override.
+    public func updateNotificationOverride(_ scope: NotificationScope, change: NotificationOverrideChange) async throws -> NotificationOverride {
+        let path: String
+        switch scope {
+        case let .space(spaceID):
+            path = "api/spaces/\(try pathID(spaceID))/notifications"
+        case let .channel(spaceID, channelID):
+            path = "api/spaces/\(try pathID(spaceID))/channels/\(try pathID(channelID))/notifications"
+        case let .direct(conversationID):
+            path = "api/dms/\(try pathID(conversationID))/notifications"
+        }
+        let saved: NotificationOverride = try await request(path, method: "PUT", body: change)
+        guard saved.scope == scope else { throw APIError(status: 502, message: "Caper returned another conversation's settings.") }
+        return saved
     }
     public func space(_ id: String) async throws -> SpaceDetail { try await request("api/spaces/\(try pathID(id))") }
 

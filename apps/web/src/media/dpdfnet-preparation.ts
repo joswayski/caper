@@ -11,7 +11,9 @@ export class DpdfnetPreparation {
   private prepared?: PreparedWorker;
   private readonly profile: 8 | 2;
 
-  constructor(profile: 8 | 2 = 8) { this.profile = profile; }
+  constructor(profile: 8 | 2 = 8) {
+    this.profile = profile;
+  }
 
   async prepare() {
     await this.get().ready;
@@ -38,13 +40,21 @@ export class DpdfnetPreparation {
 
   private get(): PreparedWorker {
     if (this.prepared) return this.prepared;
-    const worker = new Worker(this.profile === 8 ? "/audio/dpdfnet8-v2/worker.js" : "/audio/dpdfnet2-v1/worker.js", { type: "module", name: `caper-dpdfnet${this.profile}` });
+    const worker = new Worker(this.profile === 8 ? "/audio/dpdfnet8-v2/worker.js" : "/audio/dpdfnet2-v1/worker.js", {
+      type: "module",
+      name: `caper-dpdfnet${this.profile}`,
+    });
     let resolve!: () => void;
     let reject!: (error: Error) => void;
-    const ready = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+    const ready = new Promise<void>((yes, no) => {
+      resolve = yes;
+      reject = no;
+    });
     let stopped = false;
     const prepared: PreparedWorker = {
-      worker, ready, settled: false,
+      worker,
+      ready,
+      settled: false,
       stop() {
         if (stopped) return;
         stopped = true;
@@ -62,8 +72,11 @@ export class DpdfnetPreparation {
     };
     const timer = setTimeout(() => fail(new Error("Noise suppression timed out")), 60_000);
     worker.onmessage = ({ data }) => {
-      if (data?.type === "ready") { clearTimeout(timer); prepared.settled = true; resolve(); }
-      else fail(new Error("Noise suppression failed"));
+      if (data?.type === "ready") {
+        clearTimeout(timer);
+        prepared.settled = true;
+        resolve();
+      } else fail(new Error("Noise suppression failed"));
     };
     worker.onerror = () => fail(new Error("Noise suppression failed"));
     // Background preparation may be discarded before anyone awaits it.

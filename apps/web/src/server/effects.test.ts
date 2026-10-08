@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { getSystemSoundsEnabled, playSliderTick, playSound, preloadSoundEffects, setSystemSoundsEnabled } from "../audio/effects.ts";
+import { test, vi } from "vitest";
+import {
+  getSystemSoundsEnabled,
+  playSliderTick,
+  playSound,
+  preloadSoundEffects,
+  setSystemSoundsEnabled,
+} from "../audio/effects.ts";
 
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -10,14 +16,22 @@ test("effects preload decoded buffers and bound immediate Web Audio playback", a
     playbackRate = { value: 1 };
     started = false;
     stopped = false;
-    connect() { return this; }
+    connect() {
+      return this;
+    }
     disconnect() {}
-    start() { this.started = true; }
-    stop() { this.stopped = true; }
+    start() {
+      this.started = true;
+    }
+    stop() {
+      this.stopped = true;
+    }
   }
   class Gain {
     gain = { value: 1 };
-    connect() { return this; }
+    connect() {
+      return this;
+    }
     disconnect() {}
   }
   const sources: Source[] = [];
@@ -28,28 +42,47 @@ test("effects preload decoded buffers and bound immediate Web Audio playback", a
     state: AudioContextState = "suspended";
     destination = {};
     resumeCalls = 0;
-    constructor(_options: AudioContextOptions) { currentContext = this; }
-    resume() { this.resumeCalls++; this.state = "running"; return Promise.resolve(); }
-    decodeAudioData(data: ArrayBuffer) { decoded.push(data); return Promise.resolve({} as AudioBuffer); }
-    createBufferSource() { const source = new Source(); sources.push(source); return source; }
-    createGain() { const gain = new Gain(); gains.push(gain); return gain; }
+    constructor(_options: AudioContextOptions) {
+      currentContext = this;
+    }
+    resume() {
+      this.resumeCalls++;
+      this.state = "running";
+      return Promise.resolve();
+    }
+    decodeAudioData(data: ArrayBuffer) {
+      decoded.push(data);
+      return Promise.resolve({} as AudioBuffer);
+    }
+    createBufferSource() {
+      const source = new Source();
+      sources.push(source);
+      return source;
+    }
+    createGain() {
+      const gain = new Gain();
+      gains.push(gain);
+      return gain;
+    }
   }
   const requests: string[] = [];
   let warningAttempts = 0;
   let resolveWarning!: (response: Response) => void;
   const originalContext = Object.getOwnPropertyDescriptor(globalThis, "AudioContext");
   Object.defineProperty(globalThis, "AudioContext", { configurable: true, value: Context });
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
     const url = String(input);
     requests.push(url);
     if (url.endsWith("/warning.wav")) {
       warningAttempts++;
       if (warningAttempts === 1) return new Response(null, { status: 500 });
-      return new Promise<Response>((resolve) => { resolveWarning = resolve; });
+      return new Promise<Response>((resolve) => {
+        resolveWarning = resolve;
+      });
     }
     return new Response(new Uint8Array([requests.length]));
   });
-  t.after(() => {
+  t.onTestFinished(() => {
     if (originalContext) Object.defineProperty(globalThis, "AudioContext", originalContext);
     else Reflect.deleteProperty(globalThis, "AudioContext");
   });
@@ -61,7 +94,7 @@ test("effects preload decoded buffers and bound immediate Web Audio playback", a
   assert.ok(requests.includes("/audio/effects/channel-leave.wav"));
 
   let now = 1_000;
-  t.mock.method(performance, "now", () => now);
+  vi.spyOn(performance, "now").mockImplementation(() => now);
   playSound("channel-join", { volume: 2, playbackRate: 3 });
   await flush();
   assert.equal(requests.filter((url) => url.endsWith("/channel-join.wav")).length, 1, "decoded buffers are reused");
@@ -87,7 +120,11 @@ test("effects preload decoded buffers and bound immediate Web Audio playback", a
 
   for (let i = 0; i < 4; i++) playSound("toggle-on");
   await flush();
-  assert.equal(sources.filter((source) => source.started && !source.stopped).length, 4, "oldest voices are stopped at the overlap cap");
+  assert.equal(
+    sources.filter((source) => source.started && !source.stopped).length,
+    4,
+    "oldest voices are stopped at the overlap cap",
+  );
 
   playSound("warning");
   const beforeStale = sources.length;
@@ -100,7 +137,15 @@ test("effects preload decoded buffers and bound immediate Web Audio playback", a
   assert.equal(sources.length, beforeStale + 1, "a failed preload is retryable and its decoded retry is cached");
   let resume!: () => void;
   currentContext.state = "suspended";
-  t.mock.method(currentContext, "resume", () => new Promise<void>((resolve) => { resume = () => { currentContext.state = "running"; resolve(); }; }));
+  vi.spyOn(currentContext, "resume").mockImplementation(
+    () =>
+      new Promise<void>((resolve) => {
+        resume = () => {
+          currentContext.state = "running";
+          resolve();
+        };
+      }),
+  );
   const beforeResume = sources.length;
   playSound("toggle-on");
   await flush();
@@ -116,7 +161,11 @@ test("effects preload decoded buffers and bound immediate Web Audio playback", a
   playSound("toggle-on");
   setSystemSoundsEnabled(false);
   assert.equal(getSystemSoundsEnabled(), false);
-  assert.equal(sources.filter(source => source.started && !source.stopped).length, 0, "disabling stops currently playing effects");
+  assert.equal(
+    sources.filter((source) => source.started && !source.stopped).length,
+    0,
+    "disabling stops currently playing effects",
+  );
   playSound("delete");
   await preloadSoundEffects();
   setSystemSoundsEnabled(true);
@@ -129,12 +178,15 @@ test("effects preload decoded buffers and bound immediate Web Audio playback", a
 
   // Phones play the same effects; the Caper sound effects switch still turns them off.
   const originalMatchMedia = Object.getOwnPropertyDescriptor(globalThis, "matchMedia");
-  Object.defineProperty(globalThis, "matchMedia", { configurable: true, value: (query: string) => ({ matches: query === "(pointer: coarse)" }) });
+  Object.defineProperty(globalThis, "matchMedia", {
+    configurable: true,
+    value: (query: string) => ({ matches: query === "(pointer: coarse)" }),
+  });
   try {
     const beforeTouch = sources.length;
     now += 1_000;
     playSound("channel-leave");
-    playSliderTick(.5);
+    playSliderTick(0.5);
     await flush();
     assert.equal(sources.length, beforeTouch + 2, "touch devices play join/leave, toggle and slider feedback");
     // On iOS a sound outside a call mixes with other apps' audio rather than pausing it.

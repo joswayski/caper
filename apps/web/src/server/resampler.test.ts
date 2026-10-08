@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { runInNewContext } from "node:vm";
-import { test } from "node:test";
+import { test } from "vitest";
 
 const assets = new URL("../../public/audio/", import.meta.url);
 
 type Resampler = { process(input: Float32Array): Float32Array; latency: number };
-type Bridge = { process(source: Float32Array, target: Float32Array, core: (input: Float32Array, output: Float32Array) => void): void };
+type Bridge = {
+  process(source: Float32Array, target: Float32Array, core: (input: Float32Array, output: Float32Array) => void): void;
+};
 interface Scope {
   CaperResampler: new (from: number, to: number) => Resampler;
   CaperRateBridge: new (rate: number) => Bridge;
@@ -21,7 +23,7 @@ async function loadResampler(): Promise<Scope> {
 }
 
 const tone = (hz: number, rate: number, length: number, amplitude = 0.5) =>
-  Float32Array.from({ length }, (_, i) => amplitude * Math.sin(2 * Math.PI * hz * i / rate));
+  Float32Array.from({ length }, (_, i) => amplitude * Math.sin((2 * Math.PI * hz * i) / rate));
 /** Speech-band tones whose sum does not repeat within the delay search. */
 const voice = (rate: number, length: number) => {
   const mix = new Float32Array(length);
@@ -33,7 +35,11 @@ const voice = (rate: number, length: number) => {
 };
 
 /** Runs `input` through a bridge in 128-sample render quanta. */
-function render(bridge: Bridge, input: Float32Array, core = (source: Float32Array, target: Float32Array) => target.set(source)) {
+function render(
+  bridge: Bridge,
+  input: Float32Array,
+  core = (source: Float32Array, target: Float32Array) => target.set(source),
+) {
   const output = new Float32Array(input.length);
   for (let at = 0; at + 128 <= input.length; at += 128) {
     bridge.process(input.subarray(at, at + 128), output.subarray(at, at + 128), core);
@@ -52,21 +58,25 @@ function alignment(input: Float32Array, output: Float32Array, from: number, maxD
   return best;
 }
 
-for (const rate of [24_000, 44_100, 16_000]) test(`a ${rate / 1000} kHz context round-trips speech-band audio through 48 kHz with a fixed delay and no holes`, async () => {
-  const { CaperRateBridge } = await loadResampler();
-  const input = new Float32Array(Math.floor(rate / 128) * 128); // About one second of whole render quanta.
-  for (const hz of [220, 1_000, 3_300, rate * 0.35]) {
-    const part = tone(hz, rate, input.length, 0.2);
-    for (let i = 0; i < input.length; i++) input[i] += part[i];
-  }
-  let coreSamples = 0;
-  const output = render(new CaperRateBridge(rate), input, (source, target) => { coreSamples += source.length; target.set(source); });
-  const { delay, error } = alignment(input, output, 2_000);
-  assert.ok(delay > 0 && delay < 60, `delay ${delay} samples`);
-  assert.ok(error < 0.01, `max error ${error.toFixed(5)} at ${delay} samples`);
-  // The model sees 48 kHz: 48,000 samples for each second of context audio.
-  assert.ok(Math.abs(coreSamples - 48_000 * input.length / rate) < 60, `core received ${coreSamples}`);
-});
+for (const rate of [24_000, 44_100, 16_000])
+  test(`a ${rate / 1000} kHz context round-trips speech-band audio through 48 kHz with a fixed delay and no holes`, async () => {
+    const { CaperRateBridge } = await loadResampler();
+    const input = new Float32Array(Math.floor(rate / 128) * 128); // About one second of whole render quanta.
+    for (const hz of [220, 1_000, 3_300, rate * 0.35]) {
+      const part = tone(hz, rate, input.length, 0.2);
+      for (let i = 0; i < input.length; i++) input[i] += part[i];
+    }
+    let coreSamples = 0;
+    const output = render(new CaperRateBridge(rate), input, (source, target) => {
+      coreSamples += source.length;
+      target.set(source);
+    });
+    const { delay, error } = alignment(input, output, 2_000);
+    assert.ok(delay > 0 && delay < 60, `delay ${delay} samples`);
+    assert.ok(error < 0.01, `max error ${error.toFixed(5)} at ${delay} samples`);
+    // The model sees 48 kHz: 48,000 samples for each second of context audio.
+    assert.ok(Math.abs(coreSamples - (48_000 * input.length) / rate) < 60, `core received ${coreSamples}`);
+  });
 
 test("converting 48 kHz down removes content above the lower rate's band instead of aliasing it", async () => {
   const { CaperResampler } = await loadResampler();
@@ -78,7 +88,10 @@ test("converting 48 kHz down removes content above the lower rate's band instead
   const kept = new CaperResampler(48_000, 24_000).process(tone(1_000, 48_000, 8_192));
   let keptEnergy = 0;
   for (let i = 200; i < kept.length; i++) keptEnergy += kept[i] ** 2;
-  assert.ok(Math.abs(Math.sqrt(keptEnergy / (kept.length - 200)) - 0.5 / Math.SQRT2) < 0.01, "in-band level is preserved");
+  assert.ok(
+    Math.abs(Math.sqrt(keptEnergy / (kept.length - 200)) - 0.5 / Math.SQRT2) < 0.01,
+    "in-band level is preserved",
+  );
 });
 
 test("RNNoise/DeepFilter worklet v2 runs its 48 kHz engine through the bridge at 24 kHz", async () => {
@@ -88,10 +101,21 @@ test("RNNoise/DeepFilter worklet v2 runs its 48 kHz engine through the bridge at
   let Processor: any;
   const frames: number[] = [];
   const sandbox: Record<string, unknown> = {
-    AudioWorkletProcessor: class { port = { postMessage: (x: string) => messages.push(x), close() {} }; },
-    sampleRate: 24_000, CaperRateBridge: scope.CaperRateBridge,
-    RNNoise: class { process(frame: Float32Array) { frames.push(frame.length); return frame; } destroy() {} },
-    registerProcessor: (_name: string, value: unknown) => { Processor = value; },
+    AudioWorkletProcessor: class {
+      port = { postMessage: (x: string) => messages.push(x), close() {} };
+    },
+    sampleRate: 24_000,
+    CaperRateBridge: scope.CaperRateBridge,
+    RNNoise: class {
+      process(frame: Float32Array) {
+        frames.push(frame.length);
+        return frame;
+      }
+      destroy() {}
+    },
+    registerProcessor: (_name: string, value: unknown) => {
+      Processor = value;
+    },
   };
   sandbox.globalThis = sandbox;
   runInNewContext(code, sandbox);
@@ -102,7 +126,10 @@ test("RNNoise/DeepFilter worklet v2 runs its 48 kHz engine through the bridge at
   for (let at = 0; at + 128 <= input.length; at += 128) {
     assert.equal(processor.process([[input.subarray(at, at + 128)]], [[output.subarray(at, at + 128)]]), true);
   }
-  assert.ok(frames.length >= 95 && frames.every((length) => length === 480), "the engine gets 480-sample 48 kHz frames");
+  assert.ok(
+    frames.length >= 95 && frames.every((length) => length === 480),
+    "the engine gets 480-sample 48 kHz frames",
+  );
   // The engine's one-frame (10 ms) buffer is 240 samples at 24 kHz, plus the bridge.
   const { delay, error } = alignment(input, output, 2_000);
   assert.ok(delay >= 240 && delay < 300, `delay ${delay}`);
@@ -115,9 +142,14 @@ test("DPDFNet worklet v4 feeds its worker 48 kHz hops at 24 kHz and plays the re
   const messages: any[] = [];
   let Processor: any;
   const sandbox: Record<string, unknown> = {
-    AudioWorkletProcessor: class { port = { onmessage: null, postMessage: (message: unknown) => messages.push(message), close() {} }; },
-    sampleRate: 24_000, CaperRateBridge: scope.CaperRateBridge,
-    registerProcessor: (_name: string, value: unknown) => { Processor = value; },
+    AudioWorkletProcessor: class {
+      port = { onmessage: null, postMessage: (message: unknown) => messages.push(message), close() {} };
+    },
+    sampleRate: 24_000,
+    CaperRateBridge: scope.CaperRateBridge,
+    registerProcessor: (_name: string, value: unknown) => {
+      Processor = value;
+    },
   };
   sandbox.globalThis = sandbox;
   runInNewContext(code, sandbox);

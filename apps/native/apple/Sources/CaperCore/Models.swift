@@ -101,6 +101,19 @@ public struct DirectMessagesResponse: Codable, Sendable {
     public let conversations: [DirectMessageConversation]
 }
 
+/// An account that shares an active space or a DM with you, from
+/// `GET /api/people` (you excluded, ordered by username, at most 500).
+public struct Person: Codable, Equatable, Identifiable, Sendable {
+    public let id: String
+    public let username: String
+    public let displayName: String
+    public var avatarId: Int? = nil
+}
+
+public struct PeopleResponse: Codable, Sendable {
+    public let people: [Person]
+}
+
 public struct PushConfiguration: Codable, Equatable, Sendable {
     public let platforms: [String]
 }
@@ -209,10 +222,73 @@ public struct ChatAuthor: Codable, Equatable, Sendable {
     public var avatarId: Int? = nil
 }
 
+/// One `content.mentions` entry, as resolved by the server on send.
+public enum MessageMention: Codable, Equatable, Hashable, Sendable {
+    case user(id: String, username: String)
+    case everyone
+    case here
+
+    private enum Keys: String, CodingKey { case type, id, username }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: Keys.self)
+        let type = try values.decode(String.self, forKey: .type)
+        switch type {
+        case "user": self = .user(id: try values.decode(String.self, forKey: .id), username: try values.decode(String.self, forKey: .username))
+        case "everyone": self = .everyone
+        case "here": self = .here
+        default: throw DecodingError.dataCorruptedError(forKey: .type, in: values, debugDescription: "Unknown mention type \(type)")
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: Keys.self)
+        switch self {
+        case let .user(id, username):
+            try values.encode("user", forKey: .type)
+            try values.encode(id, forKey: .id)
+            try values.encode(username, forKey: .username)
+        case .everyone: try values.encode("everyone", forKey: .type)
+        case .here: try values.encode("here", forKey: .type)
+        }
+    }
+}
+
+/// Decodes one `mentions` element without failing the message: entries of an
+/// unknown type (from a newer server) or a malformed shape become nil.
+private struct LenientMessageMention: Decodable {
+    let value: MessageMention?
+    init(from decoder: Decoder) throws { value = try? MessageMention(from: decoder) }
+}
+
 public struct ChatContent: Codable, Equatable, Sendable {
     public let version: Int
     public let type: String
     public let text: String
+    /// `content.mentions`, in first-appearance order. Optional on the wire:
+    /// older messages and servers omit it, so it decodes as empty.
+    public let mentions: [MessageMention]
+
+    private enum CodingKeys: String, CodingKey { case version, type, text, mentions }
+    public init(version: Int, type: String, text: String, mentions: [MessageMention] = []) {
+        self.version = version; self.type = type; self.text = text; self.mentions = mentions
+    }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        version = try values.decode(Int.self, forKey: .version)
+        type = try values.decode(String.self, forKey: .type)
+        text = try values.decode(String.self, forKey: .text)
+        // Mentions are decoration: a malformed list must not drop the message.
+        let entries = try? values.decodeIfPresent([LenientMessageMention].self, forKey: .mentions)
+        mentions = entries?.compactMap { $0.value } ?? []
+    }
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(version, forKey: .version)
+        try values.encode(type, forKey: .type)
+        try values.encode(text, forKey: .text)
+        if !mentions.isEmpty { try values.encode(mentions, forKey: .mentions) }
+    }
 }
 
 public struct MessageVersion: Codable, Equatable, Identifiable, Sendable {
@@ -266,6 +342,33 @@ func messageDiff(before: String, after: String) -> ([MessageDiffToken], [Message
 public struct MessagePin: Codable, Equatable, Sendable {
     public let author: ChatAuthor
     public let createdAt: String
+}
+
+/// Local presentation only. Never seed revision caches or history with these values.
+struct MessageMutations {
+    struct PinIntent { let message: ChatMessage; let pin: MessagePin? }
+    var pins: [String: PinIntent] = [:]
+    var edits: [String: (text: String, revision: Int)] = [:]
+
+    func project(_ message: ChatMessage) -> ChatMessage {
+        var result = message
+        if let intent = pins[message.id] { result.pin = intent.pin }
+        if let edit = edits[message.id], (message.revision ?? 1) <= edit.revision {
+            result.content = ChatContent(version: 1, type: "text", text: edit.text)
+        }
+        return result
+    }
+
+    func pinned(messages: [ChatMessage], confirmed: [ChatMessage]) -> [ChatMessage] {
+        var rows = Dictionary(uniqueKeysWithValues: confirmed.map { ($0.id, $0) })
+        for (id, intent) in pins {
+            if intent.pin == nil { rows[id] = nil }
+            else { rows[id] = messages.first { $0.id == id } ?? rows[id] ?? intent.message }
+        }
+        return rows.values.map(project).sorted {
+            (try? Sequence.compare($0.pinSeq ?? "0", $1.pinSeq ?? "0")) == .orderedDescending
+        }
+    }
 }
 
 public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {

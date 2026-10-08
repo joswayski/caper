@@ -232,7 +232,7 @@ private struct BrowseSwipe: ViewModifier {
 }
 
 private enum WorkspaceSheet: Identifiable {
-    case login, profile, createSpace, createChannel, newDirectMessage, manageSpace, manageChannel(Channel), invitation(Space), channelInvitation(ChannelInvitation), leaveSpace, audio, connection, diagnostics, privacy
+    case login, profile, createSpace, createChannel, newDirectMessage, manageSpace, manageChannel(Channel), invitation(Space), channelInvitation(ChannelInvitation), leaveSpace, audio, connection, diagnostics, privacy, notifications
     var id: String {
         switch self {
         case .login: "login"
@@ -249,6 +249,7 @@ private enum WorkspaceSheet: Identifiable {
         case .connection: "connection"
         case .diagnostics: "diagnostics"
         case .privacy: "privacy"
+        case .notifications: "notifications"
         }
     }
 }
@@ -259,7 +260,7 @@ private struct WorkspaceView: View {
     @AppStorage("caper.channelSidebarWidth") private var sidebarWidth = 280.0
     @State private var sidebarDragStart: Double?
     @FocusState private var sidebarFocused: Bool
-    @State private var membersPreference: Bool?
+    @State private var membersPreference = false
     @State private var modalDismissDisabled = false
     private let parityFixture: String?
     private let parityMode: Bool
@@ -279,7 +280,7 @@ private struct WorkspaceView: View {
     private var workspaceContent: some View {
         GeometryReader { geometry in
             let narrow = geometry.size.width <= 760
-            let membersVisible = membersPreference ?? !narrow
+            let membersVisible = membersPreference
             VStack(spacing: 0) {
                 if let error = model.navigationError {
                     HStack {
@@ -534,16 +535,23 @@ private struct SpaceRailButton: View {
     private var corner: CGFloat { selected ? 8 : 12 }
     private var fill: Color { selected ? Color(red: 57/255, green: 35/255, blue: 30/255) : CaperTheme.surface }
     private var edge: Color { selected ? Color(red: 128/255, green: 81/255, blue: 67/255) : CaperTheme.border }
-    private var state: String { model.openingSpaceID == space.id ? "Opening" : selected ? "Selected" : "" }
+    private var muted: Bool { space.demo != true && model.notificationsMuted(.space(space.id)) }
+    private var state: String {
+        let base: String = model.openingSpaceID == space.id ? "Opening" : selected ? "Selected" : ""
+        guard muted else { return base }
+        return base.isEmpty ? "Muted" : base + ", Muted"
+    }
 
     var body: some View {
         Button { Task { await model.select(space: space) } } label: {
             Text(space.demo == true ? "C" : String(space.name.prefix(1)).uppercased())
                 .font(CaperTheme.font(13, weight: .black))
+                .opacity(muted ? 0.5 : 1)
                 .frame(width: narrow ? 44 : 40, height: narrow ? 44 : 40)
                 .background(fill)
                 .clipShape(RoundedRectangle(cornerRadius: corner))
                 .overlay(RoundedRectangle(cornerRadius: corner).stroke(edge))
+                .overlay(alignment: .bottomTrailing) { mutedBadge }
         }
         .buttonStyle(.plain).help(name)
         .modifier(NavigationPrefetchModifier { model.prefetch(space: space) })
@@ -553,6 +561,16 @@ private struct SpaceRailButton: View {
             if selected {
                 RoundedRectangle(cornerRadius: 2).fill(CaperTheme.terracottaBright).frame(width: 3, height: 24).offset(x: -10)
             }
+        }
+    }
+
+    /// A muted space: a small bell-slash on the rail tile.
+    @ViewBuilder private var mutedBadge: some View {
+        if muted {
+            MutedBell(size: 9)
+                .frame(width: 16, height: 16)
+                .background(Circle().fill(CaperTheme.blackout))
+                .offset(x: 4, y: 4)
         }
     }
 }
@@ -569,16 +587,25 @@ private struct ChannelSidebar: View {
     @State private var directHeadingHovered = false
     @FocusState private var directActionFocused: Bool
     #endif
+    /// The space menu: Browse, notifications and mute, then settings or leave.
+    @ViewBuilder private var spaceMenuItems: some View {
+        Button(browsing ? "Exit Browse channels" : "Browse channels") {
+            browsing.toggle()
+            channelSearch = ""
+        }
+        if let space = model.detail?.space, space.demo != true, model.account != nil {
+            Divider()
+            SpaceNotificationItems(model: model, spaceID: space.id)
+            Divider()
+        }
+        if model.isOwner { Button("Space settings") { sheet = .manageSpace } }
+        else if model.account != nil && model.detail?.space.demo != true { Button("Leave space…", role: .destructive) { sheet = .leaveSpace } }
+    }
     var body: some View {
         VStack(spacing: 0) {
                     HStack(spacing: 6) {
                         Menu {
-                            Button(browsing ? "Exit Browse channels" : "Browse channels") {
-                                browsing.toggle()
-                                channelSearch = ""
-                            }
-                            if model.isOwner { Button("Space settings") { sheet = .manageSpace } }
-                            else if model.account != nil && model.detail?.space.demo != true { Button("Leave space…", role: .destructive) { sheet = .leaveSpace } }
+                            spaceMenuItems
                         } label: {
                             HStack {
                                 Text(model.detail?.space.demo == true ? "Caper" : model.detail?.space.name ?? "Caper").font(CaperTheme.font(15, weight: .bold)).lineLimit(1)
@@ -586,12 +613,14 @@ private struct ChannelSidebar: View {
                             }.contentShape(Rectangle())
                         }.menuStyle(.borderlessButton).menuIndicator(.hidden).disabled(model.detail?.space.demo == true)
                             .foregroundStyle(CaperTheme.text)
+                            .modifier(ControlPointer())
                             .accessibilityLabel(model.detail?.space.demo == true ? "Caper" : model.detail?.space.name ?? "Caper")
                             .accessibilityIdentifier("selected-space-name")
                         if narrow { Button(action: close) { CaperIcon(name: "x") }.buttonStyle(SidebarIconButton()).accessibilityLabel("Close navigation") }
                     }
                     .padding(.horizontal, 16).frame(height: 50)
                     .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+            NotificationErrorRow(model: model)
 
             ScrollView {
                 if narrow && model.showingMessageRequests && model.account != nil {
@@ -647,7 +676,7 @@ private struct ChannelSidebar: View {
                         }
                     }
 
-                    if let error = model.error {
+                    if let error = model.error ?? model.directMessagesError {
                         Text(error).font(CaperTheme.font(11)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)).padding(8)
                     }
                     if (model.voice.phase == .connected || model.voice.phase == .reconnecting || !model.voice.participants.isEmpty),
@@ -709,20 +738,7 @@ private struct ChannelSidebar: View {
                                     .accessibilityIdentifier("dm-self")
                             }
                             ForEach(model.visibleDirectMessages.filter { $0.peer.id != model.account?.id }) { conversation in
-                                Button { Task { await model.select(directMessage: conversation) } } label: {
-                                    HStack(spacing: 9) {
-                                        CaperIcon(name: "speech", size: 17).frame(width: 24)
-                                        Text(conversation.peer.displayName).lineLimit(1)
-                                        Spacer()
-                                        if conversation.unread { Circle().fill(CaperTheme.terracottaBright).frame(width: 8, height: 8).accessibilityLabel("Unread") }
-                                    }.font(CaperTheme.font(13, weight: .medium))
-                                        .foregroundStyle(model.selectedDirectMessageID == conversation.id ? CaperTheme.text : CaperTheme.muted)
-                                        .padding(.horizontal, 9).frame(height: directRowHeight)
-                                        .background(model.selectedDirectMessageID == conversation.id ? CaperTheme.terracotta.opacity(0.16) : Color.clear)
-                                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                                }.buttonStyle(.plain).accessibilityIdentifier("dm-\(conversation.id)")
-                                    .modifier(ControlHover())
-                                    .accessibilityValue(model.selectedDirectMessageID == conversation.id ? "Selected" : conversation.unread ? "Unread" : "")
+                                DirectMessageSidebarRow(model: model, conversation: conversation, rowHeight: directRowHeight)
                             }
                         }.padding(.horizontal, 16).padding(.top, 2)
                     Button {
@@ -739,13 +755,6 @@ private struct ChannelSidebar: View {
                         .contentShape(Rectangle())
                     }.buttonStyle(.plain).modifier(ControlHover()).padding(.horizontal, 16)
                         .accessibilityIdentifier(model.isOwner && model.detail?.space.demo == false ? "invite-people" : "new-message")
-                    if model.pushAvailable {
-                        Toggle("Direct message notifications", isOn: Binding(
-                            get: { model.pushEnabled },
-                            set: { value in Task { await model.changePushEnabled(value) } }
-                        )).font(CaperTheme.font(11)).padding(.horizontal, 16).padding(.vertical, 10)
-                            .accessibilityIdentifier("dm-push-opt-in")
-                    }
                 }.padding(.bottom, 8)
                     .overlay(alignment: .top) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
             }
@@ -764,6 +773,80 @@ private struct ChannelSidebar: View {
     }
 }
 
+/// One DM in the sidebar, with its options menu: a context menu (press and
+/// hold on iPhone), plus a "…" on hover on macOS. Personal notes have none.
+private struct DirectMessageSidebarRow: View {
+    @Bindable var model: AppModel
+    let conversation: DirectMessageConversation
+    let rowHeight: CGFloat
+    #if os(macOS)
+    @State private var hovered = false
+    @FocusState private var optionsFocused: Bool
+    #endif
+
+    private var selected: Bool { model.selectedDirectMessageID == conversation.id }
+    private var muted: Bool { model.notificationsMuted(.direct(conversation.id)) }
+    /// A muted DM shows no unread dot.
+    private var showsUnread: Bool { conversation.unread && !muted }
+    private var rowState: String {
+        let base: String = selected ? "Selected" : showsUnread ? "Unread" : ""
+        guard muted else { return base }
+        return base.isEmpty ? "Muted" : base + ", Muted"
+    }
+
+    var body: some View {
+        HStack(spacing: 2) {
+            rowButton
+            #if os(macOS)
+            optionsMenu
+            #endif
+        }
+        #if os(macOS)
+        .onHover { hovered = $0 }
+        #endif
+        .contextMenu { DirectMessageNotificationItems(model: model, conversationID: conversation.id) }
+    }
+
+    private var rowButton: some View {
+        Button { Task { await model.select(directMessage: conversation) } } label: { rowLabel }
+            .buttonStyle(.plain).accessibilityIdentifier("dm-\(conversation.id)")
+            .modifier(ControlHover())
+            .accessibilityValue(rowState)
+    }
+
+    private var rowLabel: some View {
+        HStack(spacing: 9) {
+            Avatar(name: conversation.peer.displayName, size: 20, avatarID: conversation.peer.avatarId).frame(width: 24, height: 20)
+            Text(conversation.peer.displayName).lineLimit(1)
+            if muted { MutedBell() }
+            Spacer()
+            if showsUnread { Circle().fill(CaperTheme.terracottaBright).frame(width: 8, height: 8).accessibilityLabel("Unread") }
+        }
+        .font(CaperTheme.font(13, weight: .medium))
+        .foregroundStyle(selected ? CaperTheme.text : CaperTheme.muted)
+        .opacity(muted ? 0.55 : 1)
+        .padding(.horizontal, 9).frame(height: rowHeight)
+        .background(selected ? CaperTheme.terracotta.opacity(0.16) : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .contentShape(Rectangle())
+    }
+
+    #if os(macOS)
+    private var optionsMenu: some View {
+        Menu { DirectMessageNotificationItems(model: model, conversationID: conversation.id) } label: { CaperIcon(name: "ellipsis") }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden)
+            .foregroundStyle(CaperTheme.muted)
+            .frame(width: 28, height: 28)
+            .focused($optionsFocused)
+            .opacity(hovered || optionsFocused ? 1 : 0)
+            .allowsHitTesting(hovered || optionsFocused)
+            .help("Conversation options for \(conversation.peer.displayName)")
+            .accessibilityLabel("Conversation options for \(conversation.peer.displayName)")
+            .accessibilityIdentifier("dm-options-\(conversation.id)")
+    }
+    #endif
+}
+
 private struct ChannelSidebarItem: View {
     @Bindable var model: AppModel
     @Binding var sheet: WorkspaceSheet?
@@ -779,6 +862,27 @@ private struct ChannelSidebarItem: View {
             ?? (model.pendingVoiceChannelID == channel.id ? Double(model.pendingVoiceStartedAt) : nil)
     }
 
+    private var muted: Bool { model.notificationsMuted(.channel(spaceID: channel.spaceId, channelID: channel.id)) }
+    /// Muted channels are dimmed, with a bell-slash.
+    private var nameOpacity: Double { muted ? 0.55 : 1 }
+    private var rowState: String {
+        let base: String = model.openingChannelID == channel.id ? "Opening" : model.selectedChannelID == channel.id ? "Selected" : ""
+        guard muted else { return base }
+        return base.isEmpty ? "Muted" : base + ", Muted"
+    }
+
+    @ViewBuilder private var optionsMenuItems: some View {
+        if model.isOwner {
+            Button("Channel settings") { sheet = .manageChannel(channel) }
+            Divider()
+        }
+        if model.account != nil { ChannelNotificationItems(model: model, channel: channel) }
+        if channel.joined {
+            Divider()
+            Button("Leave channel") { confirmLeave = true }
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 2) {
@@ -786,7 +890,9 @@ private struct ChannelSidebarItem: View {
                     HStack(spacing: 9) {
                         CaperIcon(name: channel.private ? "lock" : "hash", size: 18)
                             .foregroundStyle(model.selectedChannelID == channel.id ? CaperTheme.terracottaBright : CaperTheme.muted)
-                        Text(channel.name).lineLimit(1)
+                            .opacity(nameOpacity)
+                        Text(channel.name).lineLimit(1).opacity(nameOpacity)
+                        if muted { MutedBell() }
                         Spacer(minLength: 0)
                         if let sessionStartedAt {
                             TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -815,11 +921,10 @@ private struct ChannelSidebarItem: View {
                         if let space = model.detail?.space { model.prefetch(space: space, channelID: channel.id) }
                     })
                     .accessibilityIdentifier("channel-\(channel.id)")
-                    .accessibilityValue(model.openingChannelID == channel.id ? "Opening" : model.selectedChannelID == channel.id ? "Selected" : "")
+                    .accessibilityValue(rowState)
                 if model.detail?.space.demo != true {
                     Menu {
-                        if model.isOwner { Button("Channel settings") { sheet = .manageChannel(channel) } }
-                        if channel.joined { Button("Leave channel") { confirmLeave = true } }
+                        optionsMenuItems
                     } label: { CaperIcon(name: "ellipsis") }
                         .menuStyle(.borderlessButton).menuIndicator(.hidden)
                         .foregroundStyle(CaperTheme.muted)
@@ -1345,6 +1450,8 @@ private struct AccountBar: View {
                 }
                 #endif
                 if model.account != nil {
+                    Button("Notifications") { sheet = .notifications }
+                        .accessibilityIdentifier("open-notifications")
                     Button("Privacy and blocked accounts") { sheet = .privacy }
                         .accessibilityIdentifier("open-privacy")
                     Button("Log out", role: .destructive) { Task { await model.logout() } }
@@ -1357,6 +1464,7 @@ private struct AccountBar: View {
                 .frame(width: 28, height: 28)
                 #endif
                 .fixedSize()
+                .modifier(ControlPointer())
                 .accessibilityLabel("Account settings").accessibilityIdentifier("account-settings-menu")
             }.padding(4)
                 #if os(iOS)
@@ -1521,6 +1629,10 @@ private struct ChatView: View {
     @State private var showingEmojiPicker = false
     /// Who reacted: opened by holding a chip (iOS) or its VoiceOver action.
     @State private var reactorsTarget: ReactorsTarget?
+    /// The person card for a clicked `@mention` pill: a popover on macOS, a
+    /// sheet on iPhone. Opening another pill replaces it.
+    @State private var mentionCard: MentionCardTarget?
+    @State private var mentionPointer = MentionPointer()
 
     /// The signed-in person, also while previewing without a chat session.
     private var viewerID: String? { chat.currentAuthor?.id ?? model.account?.id }
@@ -1531,7 +1643,7 @@ private struct ChatView: View {
             reactorsTarget = ReactorsTarget(messageID: messageID, emoji: emoji)
         }
     }
-    @StateObject private var emojiComposer = EmojiComposerController()
+    @StateObject private var composerAutocomplete = ComposerAutocompleteController()
     @State private var showingPins = false
     /// Block confirmation, from the DM header, the request bar or message actions.
     @State private var blockTarget: BlockTarget?
@@ -1543,10 +1655,11 @@ private struct ChatView: View {
         model.selectedDirectMessage.flatMap { $0.peer.id == model.account?.id ? nil : $0 }
     }
     private var timelineEntries: [TimelineEntry] {
-        BlockedMessages.entries(chat.channelMessages, blocked: chat.blockedAuthorIDs, viewerID: viewerID, revealed: revealedBlocked)
+        BlockedMessages.entries(chat.displayedChannelMessages, blocked: chat.blockedAuthorIDs, viewerID: viewerID, revealed: revealedBlocked)
     }
     private func channelRow(_ message: ChatMessage) -> some View {
-        MessageRow(message: message, chat: chat, reactors: reactorContext, requestBlock: { blockTarget = BlockTarget(author: $0) }) {
+        MessageRow(message: message, chat: chat, currentUserID: viewerID, reactors: reactorContext, mentionCards: mentionCards,
+                   requestBlock: { blockTarget = BlockTarget(author: $0) }) {
             // Holding a chip opens who reacted, not message actions.
             guard reactorsTarget == nil else { return }
             showingEmojiPicker = false
@@ -1569,16 +1682,18 @@ private struct ChatView: View {
         }
     }
 
-    /// Defer the scroll request; content geometry repeats it when the timeline
-    /// finishes measuring, including history above the unsent message.
+    private var mentionCards: MentionCardContext {
+        MentionCardContext(pointer: mentionPointer, name: { model.mentionPerson($0, viewerID: viewerID).title }, open: { pill in
+            reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil
+            mentionCard = MentionCardTarget(pill: pill, pointer: mentionPointer.location)
+        })
+    }
+
+    /// Reveal in the same update that clears the composer. Content geometry
+    /// repeats this after lazy history resolves, without an extra task/frame.
     private func revealPending(_ proxy: ScrollViewProxy) {
         guard let pending = chat.pendingMessage, pending.threadRootId == nil else { return }
-        let pendingID = pending.id
-        Task { @MainActor in
-            await Task.yield()
-            guard chat.pendingMessage?.id == pendingID else { return }
-            proxy.scrollTo("pending-\(pendingID)", anchor: .bottom)
-        }
+        proxy.scrollTo("pending-\(pending.id)", anchor: .bottom)
     }
     init(model: AppModel, narrow: Bool, browse: @escaping () -> Void, membersVisible: Bool, toggleMembers: @escaping () -> Void) {
         self.model = model; chat = model.chat; voice = model.voice; self.narrow = narrow; self.browse = browse
@@ -1589,14 +1704,14 @@ private struct ChatView: View {
         #if os(iOS)
         HStack(spacing: 0) {
             channelBody
-            if !narrow, chat.threadRootID != nil { NativeThreadView(chat: chat).frame(width: 340) }
+            if !narrow, chat.threadRootID != nil { NativeThreadView(chat: chat, model: model, viewerID: viewerID, mentions: mentionSource).frame(width: 340) }
         }.fullScreenCover(isPresented: Binding(get: { narrow && chat.threadRootID != nil }, set: { if !$0 { chat.closeThread() } })) {
-            NativeThreadView(chat: chat)
+            NativeThreadView(chat: chat, model: model, viewerID: viewerID, mentions: mentionSource)
         }
         #else
         HStack(spacing: 0) {
             if !narrow || chat.threadRootID == nil { channelBody }
-            if chat.threadRootID != nil { NativeThreadView(chat: chat).frame(maxWidth: narrow ? .infinity : 380) }
+            if chat.threadRootID != nil { NativeThreadView(chat: chat, model: model, viewerID: viewerID, mentions: mentionSource).frame(maxWidth: narrow ? .infinity : 380) }
         }
         #endif
         }
@@ -1612,7 +1727,7 @@ private struct ChatView: View {
                 }
                 if narrow {
                     Menu {
-                        Button(chat.pinnedMessages.isEmpty ? "Pins" : "Pins \(chat.pinnedMessages.count)") { showingPins = true }
+                        Button(chat.displayedPins.isEmpty ? "Pins" : "Pins \(chat.displayedPins.count)") { showingPins = true }
                             .accessibilityIdentifier("channel-pins")
                         if model.selectedDirectMessageID == nil && !model.previewingChannel {
                             Button(membersVisible ? "Hide member list" : "Members", action: toggleMembers)
@@ -1635,9 +1750,9 @@ private struct ChatView: View {
                 Spacer()
                 if !narrow {
                     Button { showingPins = true } label: {
-                        Label(chat.pinnedMessages.isEmpty ? "Pins" : "Pins \(chat.pinnedMessages.count)", systemImage: "pin").font(CaperTheme.font(11, weight: .bold))
+                        Label(chat.displayedPins.isEmpty ? "Pins" : "Pins \(chat.displayedPins.count)", systemImage: "pin").font(CaperTheme.font(11, weight: .bold))
                     }
-                    .buttonStyle(.plain).foregroundStyle(CaperTheme.muted).frame(minHeight: 44)
+                    .buttonStyle(.plain).foregroundStyle(CaperTheme.muted).frame(minHeight: 44).modifier(ControlHover())
                     .accessibilityIdentifier("channel-pins")
                 }
                 if chat.liveState != .connected && showConnectionStatus {
@@ -1716,6 +1831,7 @@ private struct ChatView: View {
                                                   edit: { _ = chat.discardRejected(edit: true) },
                                                   dismiss: { _ = chat.discardRejected() })
                             }.id("pending-\(pending.id)")
+                                .onAppear { revealPending(proxy) }
                         }
                         if chat.loadFailed, let error = chat.error {
                             // Web's failed first load: the error with Try again, in place of the conversation.
@@ -1726,8 +1842,13 @@ private struct ChatView: View {
                             }.padding(.top, 80).padding(.horizontal, 24)
                         } else if chat.messages.isEmpty && !chat.loading && chat.pendingMessage == nil {
                             VStack(spacing: 7) {
-                                Text("No messages yet.").font(CaperTheme.font(14, weight: .medium))
-                                Text(model.selectedDirectMessageID == nil ? "Start the conversation in #\(chat.channelName.lowercased())." : "Only you and \(chat.channelName) can read this conversation.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                                if let conversation = model.selectedDirectMessage, conversation.peer.id == model.account?.id {
+                                    Text("You can message yourself here to keep notes, reminders, and ideas.")
+                                        .font(CaperTheme.font(14, weight: .medium)).foregroundStyle(CaperTheme.muted).multilineTextAlignment(.center)
+                                } else {
+                                    Text("No messages yet.").font(CaperTheme.font(14, weight: .medium))
+                                    Text(model.selectedDirectMessageID == nil ? "Start the conversation in #\(chat.channelName.lowercased())." : "Only you and \(chat.channelName) can read this conversation.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                                }
                             }.padding(.top, 80)
                         }
                     }
@@ -1736,7 +1857,10 @@ private struct ChatView: View {
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { _ in revealPending(proxy) }
                 }
                 .accessibilityIdentifier("chat-timeline")
-                .modifier(BrowseSwipe(open: false, enabled: narrow && !membersVisible && reactionMessage == nil && reactorsTarget == nil && !showingEmojiPicker, navigate: browse))
+                // Pills report the pointer in this space; the popover anchors in it too.
+                .coordinateSpace(.named(MentionCard.timelineSpace))
+                .modifier(MentionCardHost(target: $mentionCard, model: model, viewerID: viewerID))
+                .modifier(BrowseSwipe(open: false, enabled: narrow && !membersVisible && reactionMessage == nil && reactorsTarget == nil && !showingEmojiPicker && mentionCard == nil, navigate: browse))
                 #if os(macOS)
                 // Web: End in the message list jumps to the latest message.
                 .focusable().focusEffectDisabled()
@@ -1807,17 +1931,23 @@ private struct ChatView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .accessibilityIdentifier("message-request-waiting")
                     }
-                    if let root = chat.pendingMessage?.threadRootId {
-                        Button("Pending reply · Open thread") { Task { await chat.openThread(root) } }.font(CaperTheme.font(11))
+                    if let root = chat.pendingMessage?.threadRootId, !chat.sending,
+                       chat.error != nil || chat.sendRejected, chat.threadRootID != root {
+                        HStack(spacing: 8) {
+                            Text(chat.sendRejected ? "A thread reply wasn’t sent." : "A thread reply couldn’t be confirmed.")
+                                .foregroundStyle(CaperTheme.terracottaBright)
+                            Button("Review reply") { Task { await chat.openThread(root) } }
+                        }.font(CaperTheme.font(11))
                     }
-                    EmojiSuggestionsView(controller: emojiComposer)
+                    ComposerSuggestionsView(controller: composerAutocomplete)
                     ZStack(alignment: .topLeading) {
                         if chat.draft.isEmpty {
                             Text("Message #\(chat.channelName.lowercased())").font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
                                 .padding(.leading, 11).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
                         }
                         NativeMessageComposer(text: $chat.draft, placeholder: "Message #\(chat.channelName.lowercased())",
-                                              controller: emojiComposer, submit: { Task { await chat.send() } })
+                                              controller: composerAutocomplete, mentions: mentionSource,
+                                              submit: { Task { await chat.send() } })
                     }
                     .frame(minHeight: 42, maxHeight: 174)
                     // The flexible frame otherwise fills its proposal up to 174,
@@ -1912,10 +2042,10 @@ private struct ChatView: View {
             }
             .onChange(of: chat.currentAuthor?.id) { _, _ in reactionMessage = nil; showingEmojiPicker = false }
             .onChange(of: model.selectedChannelID) { _, _ in
-                reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil; showingPins = false
+                reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil; showingPins = false; mentionCard = nil
             }
             .onChange(of: model.selectedDirectMessageID) { _, _ in
-                reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil; showingPins = false
+                reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil; showingPins = false; mentionCard = nil
             }
             .task(id: chat.liveState) {
                 showConnectionStatus = false
@@ -1923,6 +2053,16 @@ private struct ChatView: View {
                 do { try await Task.sleep(for: .seconds(1)) } catch { return }
                 showConnectionStatus = true
             }
+    }
+    /// `@` suggestions: the open space's members as `GET /api/spaces/{space}`
+    /// returned them (only the specials until loaded), or in a DM everyone from
+    /// `GET /api/people` (the DM's other participant until that loads). The
+    /// signed-in account is never suggested.
+    private var mentionSource: MentionSource {
+        if let id = model.selectedDirectMessageID {
+            return .direct(peer: model.directMessages.first { $0.id == id }?.peer, people: model.people, accountID: viewerID)
+        }
+        return .space(members: model.detail?.members ?? [], excluding: viewerID)
     }
     /// Web's counter tones at 3500 / 3750 / 3900 characters.
     private var counterTone: Color {
@@ -1941,17 +2081,32 @@ private struct ChatView: View {
 
 private struct NativeThreadView: View {
     @Bindable var chat: ChatModel
-    @StateObject private var emojiComposer = EmojiComposerController()
+    /// For the mention card: names from loaded members/people/DMs, and Message.
+    let model: AppModel
+    /// The signed-in person, for the mentions-me tint on replies.
+    let viewerID: String?
+    /// The conversation's `@` candidates, shared with the main composer.
+    let mentions: MentionSource
+    @StateObject private var composerAutocomplete = ComposerAutocompleteController()
     @State private var reactionMessage: ChatMessage?
     @State private var showingEmojiPicker = false
     @State private var reactorsTarget: ReactorsTarget?
+    /// Pills in the thread open their own card, anchored in this panel.
+    @State private var mentionCard: MentionCardTarget?
+    @State private var mentionPointer = MentionPointer()
+    private var mentionCards: MentionCardContext {
+        MentionCardContext(pointer: mentionPointer, name: { model.mentionPerson($0, viewerID: viewerID).title }, open: { pill in
+            reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil
+            mentionCard = MentionCardTarget(pill: pill, pointer: mentionPointer.location)
+        })
+    }
     @State private var blockTarget: BlockTarget?
     @State private var revealedBlocked: Set<String> = []
     private func entries(_ messages: [ChatMessage]) -> [TimelineEntry] {
         BlockedMessages.entries(messages, blocked: chat.blockedAuthorIDs, viewerID: chat.viewerID, revealed: revealedBlocked)
     }
     private func threadRow(_ message: ChatMessage) -> some View {
-        MessageRow(message: message, chat: chat, reactors: reactors, inThread: true,
+        MessageRow(message: message, chat: chat, currentUserID: viewerID, reactors: reactors, mentionCards: mentionCards, inThread: true,
                    requestBlock: { blockTarget = BlockTarget(author: $0) }) { reactionMessage = message }
     }
     /// The root and replies collapse like the channel: blocked runs show "Show".
@@ -1967,7 +2122,7 @@ private struct NativeThreadView: View {
             }
         }
     }
-    private var replies: [ChatMessage] { chat.messages.filter { $0.threadRootId == chat.threadRootID && $0.threadRootId != nil } }
+    private var replies: [ChatMessage] { chat.displayedMessages.filter { $0.threadRootId == chat.threadRootID && $0.threadRootId != nil } }
     private var reactors: ReactorContext {
         ReactorContext(viewerID: chat.currentAuthor?.id, sheetOpen: reactorsTarget != nil) { messageID, emoji in
             reactorsTarget = ReactorsTarget(messageID: messageID, emoji: emoji)
@@ -1976,19 +2131,34 @@ private struct NativeThreadView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                VStack(alignment: .leading, spacing: 3) { Text("Thread").font(CaperTheme.font(15, weight: .bold)); Text("in #\(chat.channelName)").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted) }
+                VStack(alignment: .leading, spacing: 3) { Text("Thread").font(CaperTheme.font(15, weight: .bold)); Text("in #\(chat.channelName)").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1) }
                 Spacer()
-                Button("Back to channel") { chat.closeThread() }.buttonStyle(.plain).font(CaperTheme.font(12))
-            }.padding(18)
-            Divider()
+                Button("Back to channel") { chat.closeThread() }.buttonStyle(.plain).font(CaperTheme.font(12)).modifier(ControlHover())
+            }.padding(.horizontal, 18).frame(height: 50)
+                .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        if let root = chat.messages.first(where: { $0.id == chat.threadRootID }) {
+                        if let root = chat.displayedMessages.first(where: { $0.id == chat.threadRootID }) {
                             threadEntries([root])
-                            Text("\(root.thread?.replyCount ?? 0) replies").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).padding(12)
+                            if let summary = root.thread, summary.replyCount > 0 {
+                                Text("\(summary.replyCount) \(summary.replyCount == 1 ? "reply" : "replies")").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).padding(12)
+                            }
                         }
-                        if chat.threadLoading { Text("Loading thread…").padding(18) }
+                        if chat.threadLoading && replies.isEmpty {
+                            VStack(spacing: 0) {
+                                ForEach(0..<2) { index in
+                                    HStack(alignment: .top, spacing: 10) {
+                                        Circle().fill(CaperTheme.border).frame(width: 34, height: 34)
+                                        VStack(alignment: .leading, spacing: 12) {
+                                            RoundedRectangle(cornerRadius: 4).fill(CaperTheme.border).frame(width: 96, height: 12)
+                                            RoundedRectangle(cornerRadius: 4).fill(CaperTheme.border).frame(width: index == 0 ? 180 : 128, height: 10)
+                                        }
+                                        Spacer(minLength: 0)
+                                    }.frame(height: 50, alignment: .top).padding(.horizontal, 18).padding(.vertical, 10)
+                                }
+                            }.accessibilityElement(children: .ignore).accessibilityLabel("Loading thread replies")
+                        }
                         if let error = chat.threadError { Text(error).padding(12); Button("Retry") { Task { await chat.loadThread() } } }
                         if chat.threadHasMore { Button("Load older replies") { Task { await chat.loadThread(older: true) } }.disabled(chat.threadLoading).padding(12) }
                         threadEntries(replies)
@@ -1999,14 +2169,18 @@ private struct NativeThreadView: View {
                                 edit: { if chat.discardRejected() { chat.threadDraft = pending.text } }, dismiss: { _ = chat.discardRejected() })
                         }
                     }
-                }.onChange(of: replies.last?.id) { _, id in if let id { proxy.scrollTo(id, anchor: .bottom) } }
+                }
+                .coordinateSpace(.named(MentionCard.timelineSpace))
+                .modifier(MentionCardHost(target: $mentionCard, model: model, viewerID: viewerID))
+                .onChange(of: replies.last?.id) { _, id in if let id { proxy.scrollTo(id, anchor: .bottom) } }
             }
             if chat.isPreview { Text("Join the channel to reply.").font(CaperTheme.font(12)).padding(18) }
             else { VStack(alignment: .leading, spacing: 8) {
                 if let error = chat.error, chat.pendingMessage == nil { Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.terracottaBright) }
                 if let error = chat.sessionError { Text(error); Button("Retry session") { Task { await chat.retrySession() } } }
-                EmojiSuggestionsView(controller: emojiComposer)
-                NativeMessageComposer(text: $chat.threadDraft, placeholder: "Reply to thread…", controller: emojiComposer, submit: { Task { await chat.send(inThread: true) } })
+                ComposerSuggestionsView(controller: composerAutocomplete)
+                NativeMessageComposer(text: $chat.threadDraft, placeholder: "Reply to thread…", controller: composerAutocomplete,
+                                      mentions: mentions, submit: { Task { await chat.send(inThread: true) } })
                     .frame(minHeight: 72, maxHeight: 174)
                     .fixedSize(horizontal: false, vertical: true)
                     .background(CaperTheme.composer)
@@ -2016,7 +2190,10 @@ private struct NativeThreadView: View {
                     Button("Send reply") { Task { await chat.send(inThread: true) } }.buttonStyle(CaperPrimaryButton())
                         .disabled(chat.sending || chat.sendRejected || chat.threadLoading || chat.pendingMessage != nil || MessageValidation.error(for: chat.threadDraft) != nil)
                 }
-                if let pending = chat.pendingMessage, pending.threadRootId != chat.threadRootID { Text("Confirm or dismiss the pending message first.").font(CaperTheme.font(11)) }
+                if let pending = chat.pendingMessage, pending.threadRootId != chat.threadRootID,
+                   !chat.sending, chat.error != nil || chat.sendRejected {
+                    Text("Confirm or dismiss the pending message first.").font(CaperTheme.font(11))
+                }
             }.padding(12) }
         }.background(CaperTheme.conversation)
             .overlay(alignment: .leading) { Rectangle().fill(CaperTheme.border).frame(width: 1) }
@@ -2026,7 +2203,7 @@ private struct NativeThreadView: View {
                     canReact: !chat.isPreview && chat.currentAuthor != nil,
                     canPin: !chat.isPreview && chat.currentAuthor != nil && !chat.pendingPins.contains(message.id),
                     togglePin: { reactionMessage = nil; Task { await chat.setPin(messageID: message.id, active: message.pin == nil) } },
-                    reply: { reactionMessage = nil; Task { await chat.openThread(message.threadRootId ?? message.id) } },
+                    reply: nil,
                     // Thread actions don't forward: the forward sheets belong to the conversation under this cover.
                     canForward: false, forward: {},
                     quickReaction: { emoji in
@@ -2127,7 +2304,9 @@ struct ChatDateDivider: View {
 private struct MessageRow: View {
     let message: ChatMessage
     @Bindable var chat: ChatModel
+    let currentUserID: String?
     let reactors: ReactorContext
+    let mentionCards: MentionCardContext
     var inThread = false
     /// Asks the containing view to confirm blocking this message's author.
     var requestBlock: ((ChatAuthor) -> Void)? = nil
@@ -2142,8 +2321,11 @@ private struct MessageRow: View {
     @FocusState private var replyFocused: Bool
     @FocusState private var reactionFocused: Bool
     @FocusState private var actionsFocused: Bool
+    @FocusState private var threadLinkFocused: Bool
     #endif
     var body: some View {
+        let mentionsMe = MentionAutocomplete.mentionsCurrentUser(message, currentUserID: currentUserID)
+        let pills = MentionAutocomplete.pills(in: message.content.text, mentions: message.content.mentions)
         let row = VStack(alignment: .leading, spacing: 5) {
             if let pin = message.pin {
                 Label("Pinned by \(pin.author.name)", systemImage: "pin.fill")
@@ -2161,16 +2343,16 @@ private struct MessageRow: View {
                     Text(message.author.name).font(CaperTheme.font(13, weight: .bold))
                     if message.author.isGuest { Text("GUEST").font(CaperTheme.font(9, weight: .bold)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 5).overlay(RoundedRectangle(cornerRadius: 4).stroke(CaperTheme.border)) }
                     Text(timeLabel(message.createdAt)).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
-                    if message.forward == nil && (message.revision ?? 1) > 1 { Button("(edited)") { history = true }.buttonStyle(.plain).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).accessibilityLabel("View edit history") }
+                    if message.forward == nil && (message.revision ?? 1) > 1 { Button("(edited)") { history = true }.buttonStyle(.plain).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).modifier(ControlHover()).accessibilityLabel("View edit history") }
                 }
                 #if os(macOS)
                 .padding(.trailing, 56)
                 #endif
-                Text(message.content.text).font(CaperTheme.font(14)).foregroundStyle(Color(red: 222/255, green: 223/255, blue: 224/255))
+                messageText.font(CaperTheme.font(14)).foregroundStyle(Color(red: 222/255, green: 223/255, blue: 224/255))
+                    // Person pills are links: keep them in the pill text colour, not the accent.
+                    .tint(CaperTheme.text)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    #if os(macOS)
-                    .textSelection(.enabled)
-                    #endif
+                    .modifier(MentionPillInteraction(pills: pills, cards: mentionCards))
                 ForwardCardView(message: message) { chat.forwardConversationTarget = message }
                 ReactionRow(message: message, chat: chat, reactors: reactors)
                 if let error = chat.pinErrors[message.id] {
@@ -2180,15 +2362,21 @@ private struct MessageRow: View {
                             .disabled(chat.isPreview || chat.currentAuthor == nil || chat.pendingPins.contains(message.id))
                     }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.terracottaBright)
                 }
-                if !inThread {
+                if !inThread && (message.threadRootId != nil || (message.thread?.replyCount ?? 0) > 0) {
                     Button { Task { await chat.openThread(message.threadRootId ?? message.id) } } label: {
                         HStack(spacing: 5) {
                             if message.threadRootId == nil, let summary = message.thread {
                                 ForEach(summary.participants, id: \.id) { Avatar(name: $0.name, size: 24, avatarID: $0.avatarId) }
                                 Text("\(summary.replyCount) \(summary.replyCount == 1 ? "reply" : "replies") · View thread")
-                            } else { Image(systemName: "bubble.right"); Text(message.threadRootId == nil ? "Reply in thread" : "Replied to a thread · View thread") }
+                            } else { Image(systemName: "bubble.right"); Text("Replied to a thread · View thread") }
                         }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.terracottaBright)
-                    }.buttonStyle(.plain).frame(minHeight: 32).accessibilityLabel("Reply in thread")
+                    }.buttonStyle(.plain).frame(minHeight: 32)
+                        #if os(macOS)
+                        .focused($threadLinkFocused).modifier(ControlHover(isFocused: threadLinkFocused))
+                        #else
+                        .modifier(ControlHover())
+                        #endif
+                        .accessibilityLabel("View thread")
                 }
                 if let error = chat.reactionErrors[message.id] {
                     HStack(spacing: 8) {
@@ -2200,7 +2388,12 @@ private struct MessageRow: View {
             }
             }
         }.padding(.horizontal, 18).padding(.vertical, 10)
-            .background(!inThread && chat.threadRootID == message.id ? CaperTheme.pinGold.opacity(0.1) : message.pin == nil ? .clear : CaperTheme.pinGold.opacity(0.06))
+            // The open thread's root, then a message that mentions the signed-in
+            // account (8% terracotta with a 2pt terracotta leading edge), then a pin.
+            .background(rowBackground(mentionsMe: mentionsMe))
+            .overlay(alignment: .leading) {
+                if mentionsMe { Rectangle().fill(CaperTheme.terracotta).frame(width: 2).accessibilityHidden(true) }
+            }
             // An identifier on a plain container is copied onto every child,
             // replacing their own (add-reaction-…, reaction chips). Make the
             // row a containing element so children keep their identifiers.
@@ -2251,6 +2444,7 @@ private struct MessageRow: View {
                         // Native Menu otherwise expands the overlay to the row's
                         // width, moving Add reaction away from the trailing edge.
                         .frame(width: 24, height: 24).focused($actionsFocused)
+                        .modifier(ControlHover(isFocused: actionsFocused))
                         .accessibilityLabel("Message options")
                 }.opacity(controlsHovered || replyFocused || reactionFocused || actionsFocused ? 1 : 0)
                     .allowsHitTesting(controlsHovered || replyFocused || reactionFocused || actionsFocused)
@@ -2278,11 +2472,206 @@ private struct MessageRow: View {
             }
         #endif
     }
+    private func rowBackground(mentionsMe: Bool) -> Color {
+        if !inThread && chat.threadRootID == message.id { return CaperTheme.pinGold.opacity(0.1) }
+        if mentionsMe { return CaperTheme.terracotta.opacity(0.08) }
+        return message.pin == nil ? .clear : CaperTheme.pinGold.opacity(0.06)
+    }
+    /// Resolved `@mention` tokens render as pills: #F3F4F5 medium text on 24%
+    /// terracotta. SwiftUI `Text` styles an inline run's background but cannot
+    /// pad or round it, so the pill is a square-cornered span tight to its
+    /// glyphs (spec: 2pt padding, 4pt corners). Unresolved names stay plain.
+    private var messageText: Text {
+        let content = message.content
+        let segments = MentionAutocomplete.segments(in: content.text, mentions: content.mentions)
+        guard segments.contains(where: { $0.highlighted }) else { return Text(content.text) }
+        var attributed = AttributedString()
+        for segment in segments {
+            var part = AttributedString(segment.text)
+            if segment.highlighted {
+                part.font = CaperTheme.font(14, weight: .medium)
+                part.foregroundColor = CaperTheme.text
+                part.backgroundColor = CaperTheme.terracotta.opacity(0.24)
+                // A person's pill opens the mention card; @everyone/@here stay inert.
+                if let user = segment.user { part.link = MentionCard.url(for: user) }
+            }
+            attributed.append(part)
+        }
+        return Text(attributed)
+    }
     private func timeLabel(_ value: String) -> String {
         let fractional = ISO8601DateFormatter()
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         guard let date = fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value) else { return "" }
         return date.formatted(date: .omitted, time: .shortened)
+    }
+}
+
+/// How a message's person pills reach the mention card.
+private struct MentionCardContext {
+    let pointer: MentionPointer
+    /// "Open profile for <display name or @username>".
+    let name: (MentionPill) -> String
+    let open: (MentionPill) -> Void
+}
+
+/// The pointer over message text, in the timeline's space, read only when a
+/// pill opens. A plain reference box, so hover tracking never re-renders rows.
+private final class MentionPointer {
+    var location: CGPoint?
+}
+
+private struct MentionCardTarget: Identifiable {
+    let id = UUID()
+    let pill: MentionPill
+    /// macOS: the click point; nil (keyboard or VoiceOver) centres the popover.
+    let anchor: CGRect?
+
+    /// The click point becomes a pill-high rect, so the popover sits below the pill.
+    init(pill: MentionPill, pointer: CGPoint?) {
+        self.pill = pill
+        anchor = pointer.map { CGRect(x: $0.x - 1, y: $0.y - 9, width: 2, height: 18) }
+    }
+}
+
+private extension AppModel {
+    /// The mention card's data, from what this client has already loaded.
+    func mentionPerson(_ pill: MentionPill, viewerID: String?) -> MentionCardPerson {
+        MentionCard.resolve(pill, members: detail?.members ?? [], people: people,
+                            peers: directMessages.map(\.peer), account: account, viewerID: viewerID)
+    }
+}
+
+/// Presents the mention card: a popover at the clicked pill on macOS, a sheet
+/// on iPhone. Attach it to the scroll view that names `MentionCard.timelineSpace`,
+/// so the pointer and the anchor share coordinates (the channel and the thread
+/// panel each host their own).
+private struct MentionCardHost: ViewModifier {
+    @Binding var target: MentionCardTarget?
+    let model: AppModel
+    let viewerID: String?
+
+    @ViewBuilder func body(content: Content) -> some View {
+        #if os(macOS)
+        content.popover(item: $target, attachmentAnchor: anchor, arrowEdge: .bottom) { target in
+            MentionCardView(model: model, person: model.mentionPerson(target.pill, viewerID: viewerID)) { self.target = nil }
+        }
+        #else
+        content.sheet(item: $target) { target in
+            MentionCardView(model: model, person: model.mentionPerson(target.pill, viewerID: viewerID)) { self.target = nil }
+        }
+        #endif
+    }
+
+    #if os(macOS)
+    private var anchor: PopoverAttachmentAnchor {
+        guard let rect = target?.anchor else { return .point(.center) }
+        return .rect(.rect(rect))
+    }
+    #endif
+}
+
+/// Routes pill links (`caper-mention:`) to the mention card instead of the
+/// system. A tap on a link is handled by the Text itself; the row's message
+/// actions still need a long press. macOS keeps text selection only for
+/// messages without person pills, so a click on a pill is never taken as a
+/// selection. VoiceOver gets one "Open profile for …" action per person.
+private struct MentionPillInteraction: ViewModifier {
+    let pills: [MentionPill]
+    let cards: MentionCardContext
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if pills.isEmpty {
+            #if os(macOS)
+            content.textSelection(.enabled)
+            #else
+            content
+            #endif
+        } else {
+            content
+                .environment(\.openURL, OpenURLAction { url in
+                    guard url.scheme == MentionCard.scheme else { return .systemAction }
+                    if let id = MentionCard.userID(from: url), let pill = pills.first(where: { $0.id == id }) { cards.open(pill) }
+                    return .handled
+                })
+                #if os(macOS)
+                .onContinuousHover(coordinateSpace: CoordinateSpace.named(MentionCard.timelineSpace)) { phase in
+                    switch phase {
+                    case .active(let location): cards.pointer.location = location
+                    case .ended: cards.pointer.location = nil
+                    }
+                }
+                #endif
+                .accessibilityActions {
+                    ForEach(pills) { pill in
+                        Button("Open profile for " + cards.name(pill)) { cards.open(pill) }
+                    }
+                }
+        }
+    }
+}
+
+/// A person's mention card: avatar, name, @username, then **Message** (or
+/// "You"). Data is resolved locally; **Message** reuses the DM-by-username flow.
+private struct MentionCardView: View {
+    @Bindable var model: AppModel
+    let person: MentionCardPerson
+    let close: () -> Void
+    @State private var opening = false
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Avatar(name: person.avatarName, size: 48, avatarID: person.avatarId).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(person.title).font(CaperTheme.font(15, weight: .semibold)).foregroundStyle(CaperTheme.text).lineLimit(1)
+                    .accessibilityIdentifier("mention-card-title")
+                if let subtitle = person.subtitle {
+                    Text(subtitle).font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).lineLimit(1)
+                        .accessibilityIdentifier("mention-card-username")
+                }
+            }
+            if person.isSelf {
+                Text("You").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
+                    .accessibilityIdentifier("mention-card-you")
+            } else {
+                Button(opening ? "Opening…" : "Message") { Task { await message() } }
+                    .buttonStyle(CaperPrimaryButton())
+                    .disabled(opening)
+                    .accessibilityIdentifier("mention-card-message")
+                if let error {
+                    Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("mention-card-error")
+                }
+            }
+        }
+        .padding(16)
+        #if os(macOS)
+        // A fixed width keeps the popover's size independent of its content.
+        .frame(width: 280, alignment: .leading)
+        .background(CaperTheme.surface)
+        #else
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .presentationDetents([.height(person.isSelf ? 196 : 268)])
+        .presentationDragIndicator(.visible)
+        .presentationBackground(CaperTheme.surface)
+        #endif
+        // Contain, so this identifier does not replace each child's own.
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("mention-card")
+    }
+
+    private func message() async {
+        guard !opening else { return }
+        opening = true; error = nil
+        model.error = nil
+        let opened = await model.createDirectMessage(username: person.username)
+        opening = false
+        if opened { close(); return }
+        // Shown in the card, which stays open, rather than in the sidebar.
+        error = model.error ?? "Couldn’t open that conversation."
+        model.error = nil
     }
 }
 
@@ -2316,7 +2705,7 @@ private struct ReactionChip: View {
     @State private var tooltipVisible = false
     @FocusState private var focused: Bool
     #endif
-    private var own: Bool { chat.currentAuthor.map { reaction.authorIds.contains($0.id) } ?? false }
+    private var own: Bool { reactors.viewerID.map { reaction.authorIds.contains($0) } ?? false }
 
     /// Names once loaded; until then, or after a failure, the snapshot count.
     private var summary: String {
@@ -2640,7 +3029,7 @@ private struct MessageActionsSheet: View {
     let canReact: Bool
     let canPin: Bool
     let togglePin: () -> Void
-    let reply: () -> Void
+    let reply: (() -> Void)?
     let canForward: Bool
     let forward: () -> Void
     let quickReaction: (String) -> Void
@@ -2652,83 +3041,105 @@ private struct MessageActionsSheet: View {
 
     private let quickReactions = ["👍", "❤️", "😂", "🎉", "👀"]
 
+    /// Fits every offered action without scrolling.
+    private var actionsHeight: CGFloat {
+        var height: CGFloat = 286
+        if reply != nil { height += 44 }
+        if canForward { height += 50 }
+        if chat.canEdit(message) { height += 44 }
+        if message.forward == nil && (message.revision ?? 1) > 1 { height += 44 }
+        if block != nil { height += 44 }
+        return height
+    }
+
+    private var quickReactionRow: some View {
+        HStack(spacing: 4) {
+            ForEach(quickReactions, id: \.self) { emoji in
+                Button { quickReaction(emoji) } label: {
+                    EmojiArtworkView(emoji: emoji, size: 28).frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .buttonStyle(.plain)
+                .disabled(!canReact)
+                .accessibilityLabel("React with \(emoji)")
+                .accessibilityIdentifier("quick-reaction-\(emoji)")
+            }
+            Button { showingEmojiPicker = true } label: {
+                Image(systemName: "face.smiling").font(.system(size: 24))
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .buttonStyle(.plain)
+            .disabled(!canReact)
+            .accessibilityLabel("Add reaction")
+            .accessibilityIdentifier("message-action-add-reaction")
+        }
+    }
+
+    private var actionList: some View {
+        VStack(spacing: 0) {
+            if chat.canEdit(message) {
+                Button("Edit message", systemImage: "pencil") { editing = true }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                Divider()
+            }
+            if message.forward == nil && (message.revision ?? 1) > 1 {
+                Button("View edit history", systemImage: "clock") { history = true }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                Divider()
+            }
+            Button(action: togglePin) {
+                Label(message.pin == nil ? "Pin message" : "Unpin message", systemImage: message.pin == nil ? "pin" : "pin.slash")
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            }.disabled(!canPin)
+            if let reply {
+                Divider()
+                Button(action: reply) {
+                    Label("Reply in thread", systemImage: "bubble.right").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                }
+            }
+            if canForward {
+                Divider()
+                Button(action: forward) {
+                    Label("Forward message", systemImage: "arrowshape.turn.up.right").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                }
+            }
+            Divider()
+            Button {
+                UIPasteboard.general.string = message.content.text
+                dismiss()
+            } label: {
+                Label("Copy text", systemImage: "doc.on.doc").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            }
+            Divider()
+            Button {
+                UIPasteboard.general.string = message.id
+                dismiss()
+            } label: {
+                Label("Copy message ID", systemImage: "number").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            }
+            if block != nil {
+                Divider()
+                Button(role: .destructive) {
+                    blockRequested = true
+                    dismiss()
+                } label: {
+                    Label("Block \(message.author.name)", systemImage: "nosign").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .foregroundStyle(CaperTheme.terracottaBright)
+                }.accessibilityIdentifier("message-action-block")
+            }
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 12)
+        .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    // The sheet is split into properties and its height is built in typed
+    // steps: as one expression, Xcode 16's type checker gave up on the body.
     var body: some View {
         Group {
             if showingEmojiPicker {
                 ReactionPicker(select: selectReaction)
             } else {
                 VStack(spacing: 16) {
-                    HStack(spacing: 4) {
-                        ForEach(quickReactions, id: \.self) { emoji in
-                            Button { quickReaction(emoji) } label: {
-                                EmojiArtworkView(emoji: emoji, size: 28).frame(maxWidth: .infinity, minHeight: 44)
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(!canReact)
-                            .accessibilityLabel("React with \(emoji)")
-                            .accessibilityIdentifier("quick-reaction-\(emoji)")
-                        }
-                        Button { showingEmojiPicker = true } label: {
-                            Image(systemName: "face.smiling").font(.system(size: 24))
-                                .frame(maxWidth: .infinity, minHeight: 44)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(!canReact)
-                        .accessibilityLabel("Add reaction")
-                        .accessibilityIdentifier("message-action-add-reaction")
-                    }
-
-                    VStack(spacing: 0) {
-                        if chat.canEdit(message) {
-                            Button("Edit message", systemImage: "pencil") { editing = true }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                            Divider()
-                        }
-                        if message.forward == nil && (message.revision ?? 1) > 1 {
-                            Button("View edit history", systemImage: "clock") { history = true }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                            Divider()
-                        }
-                        Button(action: togglePin) {
-                            Label(message.pin == nil ? "Pin message" : "Unpin message", systemImage: message.pin == nil ? "pin" : "pin.slash")
-                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                        }.disabled(!canPin)
-                        Divider()
-                        Button(action: reply) {
-                            Label("Reply in thread", systemImage: "bubble.right").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                        }
-                        if canForward {
-                            Divider()
-                            Button(action: forward) {
-                                Label("Forward message", systemImage: "arrowshape.turn.up.right").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                            }
-                        }
-                        Divider()
-                        Button {
-                            UIPasteboard.general.string = message.content.text
-                            dismiss()
-                        } label: {
-                            Label("Copy text", systemImage: "doc.on.doc").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                        }
-                        Divider()
-                        Button {
-                            UIPasteboard.general.string = message.id
-                            dismiss()
-                        } label: {
-                            Label("Copy message ID", systemImage: "number").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                        }
-                        if block != nil {
-                            Divider()
-                            Button(role: .destructive) {
-                                blockRequested = true
-                                dismiss()
-                            } label: {
-                                Label("Block \(message.author.name)", systemImage: "nosign").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                                    .foregroundStyle(CaperTheme.terracottaBright)
-                            }.accessibilityIdentifier("message-action-block")
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, 12)
-                    .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
+                    quickReactionRow
+                    actionList
                 }
                 .padding(16)
                 .font(CaperTheme.font(15))
@@ -2739,7 +3150,7 @@ private struct MessageActionsSheet: View {
             }
         }
         .presentationBackground(CaperTheme.raised)
-        .presentationDetents(showingEmojiPicker ? [.medium, .large] : [.height(330 + (canForward ? 50 : 0) + (chat.canEdit(message) ? 44 : 0) + ((message.revision ?? 1) > 1 && message.forward == nil ? 44 : 0) + (block == nil ? 0 : 44)), .large])
+        .presentationDetents(showingEmojiPicker ? [.medium, .large] : [.height(actionsHeight), .large])
         .onDisappear { if blockRequested { block?() } }
         .presentationDragIndicator(.visible)
         .sheet(isPresented: $editing) { MessageEditorView(chat: chat, message: message) { editing = false; dismiss() } }
@@ -2757,19 +3168,19 @@ private struct PinnedMessagesView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Button("Messages", systemImage: "chevron.left", action: close).buttonStyle(.plain)
+                Button("Messages", systemImage: "chevron.left", action: close).buttonStyle(.plain).modifier(ControlHover())
                 Spacer()
                 Text("Pins").font(CaperTheme.font(15, weight: .bold))
                 Spacer()
                 Button("Close", action: close).buttonStyle(.plain).opacity(0)
             }.padding(.horizontal, 18).frame(height: 50)
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
-            if chat.pinnedMessages.isEmpty {
+            if chat.displayedPins.isEmpty {
                 ContentUnavailableView("No pinned messages", systemImage: "pin", description: Text("Pinned messages in this channel will appear here."))
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(chat.pinnedMessages) { message in
+                        ForEach(chat.displayedPins) { message in
                             VStack(alignment: .leading, spacing: 5) {
                                 if let pin = message.pin {
                                     Label("Pinned by \(pin.author.name)", systemImage: "pin.fill")
@@ -2785,10 +3196,10 @@ private struct PinnedMessagesView: View {
                                             Text(date.formatted(date: .abbreviated, time: .shortened))
                                                 .font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
                                         }
-                                        if message.forward == nil && (message.revision ?? 1) > 1 { Button("(edited)") { historyTarget = message }.buttonStyle(.plain).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).accessibilityLabel("View edit history") }
+                                        if message.forward == nil && (message.revision ?? 1) > 1 { Button("(edited)") { historyTarget = message }.buttonStyle(.plain).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).modifier(ControlHover()).accessibilityLabel("View edit history") }
                                         Text(message.content.text).font(CaperTheme.font(14))
                                         ForwardCardView(message: message) { chat.forwardConversationTarget = message }
-                                        if chat.canEdit(message) { Button("Edit message") { editTarget = message }.buttonStyle(.plain).font(CaperTheme.font(11)) }
+                                        if chat.canEdit(message) { Button("Edit message") { editTarget = message }.buttonStyle(.plain).font(CaperTheme.font(11)).modifier(ControlHover()) }
                                         if let error = chat.pinErrors[message.id] {
                                             HStack {
                                                 Text(error)
@@ -2801,6 +3212,7 @@ private struct PinnedMessagesView: View {
                                         Button(chat.pendingPins.contains(message.id) ? "Unpinning…" : "Unpin") {
                                             Task { await chat.setPin(messageID: message.id, active: false) }
                                         }.buttonStyle(.plain).font(CaperTheme.font(11, weight: .medium))
+                                            .modifier(ControlHover())
                                             .disabled(chat.pendingPins.contains(message.id))
                                             .frame(minHeight: 44)
                                     }
@@ -2908,6 +3320,7 @@ private struct PendingMessageRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(author?.name ?? "Guest").font(CaperTheme.font(13, weight: .bold))
                 Text(pending.text).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 if let error {
                     VStack(alignment: .leading, spacing: 5) {
                         Text("\(rejected ? "Not sent." : "Not confirmed yet.") \(error)")
@@ -2922,7 +3335,10 @@ private struct PendingMessageRow: View {
                     .font(CaperTheme.font(11, weight: .medium)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51))
                 }
             }
-        }.padding(.horizontal, 18).padding(.vertical, 10)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 18).padding(.vertical, 10)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("pending-message-\(pending.id)")
     }
 }
 
@@ -3043,6 +3459,7 @@ private struct WorkspaceSheetView: View {
             case .audio: AudioPreferencesView(voice: model.voice, debugEnabled: model.account?.debugEnabled == true, close: close)
             case .connection: ScrollView { ConnectionDetailsView(voice: model.voice, close: close) }
             case .privacy: PrivacySheet(model: model, close: close)
+            case .notifications: NotificationsSheet(model: model, close: close)
             case .diagnostics:
                 VStack(alignment: .leading, spacing: 18) {
                     SheetHeader(title: "Audio diagnostics", detail: "Local processing counters", close: close)
@@ -3214,6 +3631,7 @@ private struct BlockedRunRow: View {
             Button(run.revealed ? "Hide" : "Show", action: toggle).buttonStyle(.plain)
                 .font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.terracottaBright)
                 .frame(minHeight: 32).contentShape(Rectangle())
+                .modifier(ControlPointer())
                 .accessibilityLabel("\(run.revealed ? "Hide" : "Show") \(run.label)")
                 .accessibilityIdentifier("blocked-run-toggle")
             Spacer(minLength: 0)
@@ -3270,6 +3688,7 @@ private struct PrivacySheet: View {
                                     Spacer(minLength: 0)
                                 }.padding(.vertical, 8).frame(minHeight: 44).contentShape(Rectangle())
                             }.buttonStyle(.plain).disabled(model.directMessagePrivacy == nil)
+                                .modifier(ControlPointer())
                                 .accessibilityAddTraits(selected ? .isSelected : [])
                                 .accessibilityIdentifier("dm-privacy-\(option.rawValue)")
                         }
@@ -3327,6 +3746,96 @@ private struct PrivacySheet: View {
         Task { @MainActor in
             do { try await model.unblock(accountID: id) } catch { unblockError = error.localizedDescription }
             unblocking.remove(id)
+        }
+    }
+}
+
+/// One radio choice in a settings sheet, like the DM privacy options.
+private struct SettingsChoiceRow: View {
+    let title: String
+    let selected: Bool
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: selected ? "largecircle.fill.circle" : "circle")
+                    .foregroundStyle(selected ? CaperTheme.terracottaBright : CaperTheme.muted)
+                    .font(.system(size: 15)).padding(.top, 1)
+                Text(title).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.text)
+                Spacer(minLength: 0)
+            }.padding(.vertical, 8).frame(minHeight: 44).contentShape(Rectangle())
+        }.buttonStyle(.plain)
+            .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+/// Account notifications: what notifies you, and on an iPhone with push
+/// available, this phone's delivery and its on/off switch.
+private struct NotificationsSheet: View {
+    @Bindable var model: AppModel
+    let close: () -> Void
+    var body: some View {
+        VStack(spacing: 0) {
+            SheetHeader(title: NotificationLabels.notifications, detail: "What Caper notifies you about.",
+                        closeLabel: "Close notification settings", close: close)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    levelSection
+                    if model.pushAvailable { phoneSection }
+                    status
+                }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .background(CaperTheme.surface)
+        .accessibilityIdentifier("notification-settings")
+        .task { await model.loadNotificationSettings() }
+    }
+
+    private var levelSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(NotificationLabels.notifyMeAbout).font(CaperTheme.font(13, weight: .bold)).padding(.bottom, 6)
+            ForEach(NotificationLevel.allCases) { level in
+                SettingsChoiceRow(title: level.accountTitle, selected: model.notificationSettings?.level == level) {
+                    Task { await model.setAccountNotificationLevel(level) }
+                }
+                .disabled(model.notificationSettings == nil)
+                .accessibilityIdentifier("notify-level-\(level.rawValue)")
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(NotificationLabels.notifyMeAbout)
+    }
+
+    private var phoneSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Rectangle().fill(CaperTheme.border).frame(height: 1).padding(.bottom, 14)
+            Text(NotificationLabels.sendToThisPhone).font(CaperTheme.font(13, weight: .bold)).padding(.bottom, 6)
+            ForEach(MobilePushPolicy.allCases) { policy in
+                SettingsChoiceRow(title: policy.title, selected: model.notificationSettings?.mobile == policy) {
+                    Task { await model.setMobilePushPolicy(policy) }
+                }
+                .disabled(model.notificationSettings == nil)
+                .accessibilityIdentifier("notify-mobile-\(policy.rawValue)")
+            }
+            Toggle("Notifications on this phone", isOn: pushBinding)
+                .font(CaperTheme.font(14)).padding(.top, 8)
+                .accessibilityIdentifier("push-opt-in")
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    /// The existing per-device opt-in (permission prompt and APNs registration).
+    private var pushBinding: Binding<Bool> {
+        Binding(get: { model.pushEnabled }, set: { value in Task { await model.changePushEnabled(value) } })
+    }
+
+    @ViewBuilder private var status: some View {
+        if let error = model.notificationError ?? model.notificationsLoadError {
+            Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("notification-settings-error")
+        } else if model.notificationSettings == nil {
+            Text("Loading…").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
         }
     }
 }
@@ -3406,6 +3915,7 @@ private struct LoginPage: View {
                     .font(CaperTheme.font(16)).foregroundStyle(CaperTheme.muted).lineSpacing(7).padding(.bottom, 20)
                 if model.challengeID == nil {
                     CaperField(title: "Email address", text: $email, placeholder: "you@example.com")
+                        .disabled(model.busy)
                     if let error = model.error { LoginError(message: error).padding(.top, 18) }
                     Button { Task { await model.requestCode(email: email) } } label: {
                         HStack(spacing: 12) { Text(model.busy ? "Sending…" : "Email me a code"); Image(systemName: "arrow.right") }
@@ -3413,7 +3923,7 @@ private struct LoginPage: View {
                         .frame(maxWidth: .infinity, alignment: .trailing).padding(.top, 12)
                 } else {
                     CaperField(title: "Sign-in code", text: $code)
-                        .disabled(model.loginAttemptsRemaining == 0)
+                        .disabled(model.busy || model.loginAttemptsRemaining == 0)
                         .onChange(of: code) { _, value in
                             // Web accepts the unambiguous code alphabet only, uppercased, six characters.
                             let allowed = Set("ABCDEFGHJKMNPQRSTWXYZ23456789")
@@ -3439,7 +3949,7 @@ private struct LoginPage: View {
                             HStack { Text(model.busy ? "Checking…" : "Continue"); Spacer(); Image(systemName: "arrow.right") }
                         }.buttonStyle(LoginActionButton()).disabled(model.busy || code.count != 6).padding(.top, 12)
                     }
-                    Button("Use a different email") { model.challengeID = nil; model.error = nil }.buttonStyle(.plain).foregroundStyle(CaperTheme.muted).padding(.top, 18).modifier(ControlHover())
+                    Button("Use a different email") { model.challengeID = nil; model.error = nil }.buttonStyle(.plain).foregroundStyle(CaperTheme.muted).padding(.top, 18).modifier(ControlHover()).disabled(model.busy)
                 }
             }
             .frame(maxWidth: 440)
@@ -3472,7 +3982,7 @@ private struct LoginActionButton: ButtonStyle {
             .padding(.horizontal, 20).frame(maxWidth: fullWidth ? .infinity : nil).frame(height: 58)
             .background(configuration.isPressed ? CaperTheme.terracottaBright : CaperTheme.terracotta)
             .clipShape(RoundedRectangle(cornerRadius: 6))
-            .opacity(isEnabled ? 1 : 0.45)
+            .opacity(isEnabled ? 1 : 0.45).modifier(ControlHover())
     }
 }
 
@@ -3821,14 +4331,45 @@ private struct ControlHover: ViewModifier {
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.terracottaBright.opacity((isFocused ?? focused) && enabled ? 0.9 : 0), lineWidth: 2))
                 .allowsHitTesting(false)
         }
-        .onHover { inside in
-            hovered = inside
-            #if os(macOS)
-            if inside && enabled { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
-            #endif
+        .onHover { hovered = $0 }
+        .modifier(ControlPointer())
+    }
+}
+
+/// AppKit owns the cursor throughout the control's rect, including after SwiftUI redraws.
+struct ControlPointer: ViewModifier {
+    @Environment(\.isEnabled) private var enabled
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        content.background(PointerRegion(enabled: enabled).allowsHitTesting(false))
+        #else
+        content
+        #endif
+    }
+}
+
+#if os(macOS)
+private struct PointerRegion: NSViewRepresentable {
+    let enabled: Bool
+    func makeNSView(context: Context) -> PointerView { PointerView() }
+    func updateNSView(_ view: PointerView, context: Context) {
+        view.enabled = enabled
+        view.window?.invalidateCursorRects(for: view)
+    }
+    final class PointerView: NSView {
+        var enabled = true
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func resetCursorRects() {
+            super.resetCursorRects()
+            if enabled { addCursorRect(visibleRect, cursor: .pointingHand) }
+        }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            window?.invalidateCursorRects(for: self)
         }
     }
 }
+#endif
 
 struct CaperSecondaryButton: ButtonStyle {
     @Environment(\.isEnabled) private var enabled

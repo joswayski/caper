@@ -2,8 +2,9 @@ use crate::api::Api;
 use crate::gateway::{self, GatewayEvent};
 use crate::model::{
     Account, BlockedAccount, Channel, ChatSession, DirectConversation, History, Member, Message,
-    Space, SpaceDetail, Spaces,
+    NotificationSettings, Person, Space, SpaceDetail, Spaces,
 };
+use crate::notifications::{Change, Saved, Scope};
 use eframe::egui;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
@@ -18,8 +19,13 @@ pub enum Command {
         generation: u64,
         token: String,
     },
-    /// Message requests, blocks and DM privacy, fenced by the account epoch
-    /// rather than the conversation generation.
+    /// `GET /api/people`, for `@` suggestions in DMs.
+    LoadPeople {
+        generation: u64,
+        token: String,
+    },
+    /// Message requests, blocks, DM privacy and notification settings, fenced
+    /// by the account epoch rather than the conversation generation.
     Account {
         epoch: u64,
         token: String,
@@ -223,6 +229,14 @@ pub enum AccountOperation {
         value: String,
         previous: Option<String>,
     },
+    /// `revision` comes back so an answer older than a change is dropped.
+    LoadNotifications {
+        revision: u64,
+    },
+    SaveNotifications {
+        scope: Scope,
+        change: Change,
+    },
 }
 
 #[derive(Debug)]
@@ -246,6 +260,14 @@ pub enum AccountResult {
     PrivacySaved {
         previous: Option<String>,
         result: Result<String, String>,
+    },
+    Notifications {
+        revision: u64,
+        result: Result<NotificationSettings, String>,
+    },
+    NotificationsSaved {
+        scope: Scope,
+        result: Result<Saved, String>,
     },
 }
 
@@ -369,6 +391,10 @@ pub enum Event {
     DirectsLoaded {
         generation: u64,
         result: Result<Vec<DirectConversation>, String>,
+    },
+    PeopleLoaded {
+        generation: u64,
+        result: Result<Vec<Person>, String>,
     },
     Account {
         epoch: u64,
@@ -822,6 +848,13 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                 .map(|value| value.conversations)
                 .map_err(|error| error.to_string()),
         },
+        Command::LoadPeople { generation, token } => Event::PeopleLoaded {
+            generation,
+            result: api
+                .people(&token)
+                .map(|value| value.people)
+                .map_err(|error| error.to_string()),
+        },
         Command::Account {
             epoch,
             token,
@@ -1269,6 +1302,24 @@ fn execute_account(api: &Api, token: &str, operation: AccountOperation) -> Accou
                 .map(|value| value.direct_messages)
                 .map_err(text),
         },
+        AccountOperation::LoadNotifications { revision } => AccountResult::Notifications {
+            revision,
+            result: api.notification_settings(token).map_err(text),
+        },
+        AccountOperation::SaveNotifications { scope, change } => {
+            let result = match (&scope, &change) {
+                (Scope::Account, Change::Level(Some(level))) => api
+                    .save_notification_level(token, *level)
+                    .map(Saved::Settings),
+                _ => api
+                    .save_notification_override(token, &scope, &change)
+                    .map(Saved::Override),
+            };
+            AccountResult::NotificationsSaved {
+                scope,
+                result: result.map_err(text),
+            }
+        }
     }
 }
 
@@ -1399,6 +1450,52 @@ pub fn current(
 #[cfg(test)]
 mod tests {
     use super::{advance_generation, current};
+
+    #[test]
+    fn people_load_with_the_account_bearer() {
+        use std::io::{BufRead, BufReader, Write};
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api =
+            crate::api::Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
+        let worker = std::thread::spawn(move || {
+            let (stream, _) = server.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap();
+            assert_eq!(request, "GET /api/people HTTP/1.1\r\n");
+            let mut authorized = false;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                authorized |= line.eq_ignore_ascii_case("authorization: Bearer account\r\n");
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            assert!(authorized);
+            let body = r#"{"people":[{"id":"user00000001","username":"alex","displayName":"Alex","avatarId":null}]}"#;
+            write!(reader.get_mut(), "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        });
+        let (events, receiver) = std::sync::mpsc::channel();
+        super::execute(
+            &api,
+            super::Command::LoadPeople {
+                generation: 7,
+                token: "account".into(),
+            },
+            &events,
+            &eframe::egui::Context::default(),
+        );
+        let super::Event::PeopleLoaded { generation, result } = receiver.recv().unwrap() else {
+            panic!("expected people");
+        };
+        assert_eq!(generation, 7);
+        assert_eq!(result.unwrap()[0].username, "alex");
+        worker.join().unwrap();
+    }
 
     #[test]
     fn navigation_rechecks_access_and_prepares_requested_channel_not_first() {

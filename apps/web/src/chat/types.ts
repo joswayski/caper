@@ -25,6 +25,13 @@ export interface ChatReactionEvent {
   reactions: ChatReaction[];
 }
 
+/** Server-resolved `@mentions`; clients ignore unknown types. */
+export type ChatMention =
+  | { type: "user"; id: string; username: string }
+  | { type: "everyone" }
+  | { type: "here" }
+  | { type: string; id?: string; username?: string };
+
 export interface ChatPinEvent {
   type: "message.pin";
   schemaVersion: 1;
@@ -60,7 +67,7 @@ export interface ChatMessage {
   channelId: string;
   seq: string;
   author: ChatAuthor;
-  content: { version: 1; type: "text"; text: string };
+  content: { version: 1; type: "text"; text: string; mentions?: ChatMention[] };
   createdAt: string;
   clientMessageId: string;
   reactions?: ChatReaction[];
@@ -131,51 +138,93 @@ export function isChatAuthor(value: unknown): value is ChatAuthor {
 export function isChatMessage(value: unknown): value is ChatMessage {
   if (!value || typeof value !== "object") return false;
   const message = value as Partial<ChatMessage>;
-  return typeof message.id === "string" && typeof message.channelId === "string"
-    && typeof message.seq === "string" && /^(0|[1-9]\d*)$/.test(message.seq)
-    && typeof message.createdAt === "string" && typeof message.clientMessageId === "string"
-    && (message.revision === undefined || (Number.isSafeInteger(message.revision) && message.revision >= 1))
-    && (message.editedAt === undefined || typeof message.editedAt === "string")
-    && (message.editSeq === undefined || (typeof message.editSeq === "string" && /^(0|[1-9]\d*)$/.test(message.editSeq)))
-    && ((message.revision ?? 1) === 1 || (message.editedAt !== undefined && message.editSeq !== undefined))
-    && (message.threadRootId === undefined || (typeof message.threadRootId === "string" && !!message.threadRootId))
-    && (message.broadcast === undefined || (typeof message.broadcast === "boolean" && (!message.broadcast || !!message.threadRootId)))
-    && (message.thread === undefined || isChatThreadSummary(message.thread))
-    && (message.reactions === undefined || isChatReactions(message.reactions))
-    && (message.reactionSeq === undefined || (typeof message.reactionSeq === "string" && /^(0|[1-9]\d*)$/.test(message.reactionSeq)))
-    && (message.pinSeq === undefined || (typeof message.pinSeq === "string" && /^(0|[1-9]\d*)$/.test(message.pinSeq)))
-    && (message.pin === undefined || message.pin === null || (typeof message.pin === "object" && isChatAuthor(message.pin.author) && typeof message.pin.createdAt === "string"))
-    && (message.forwardSeq === undefined || (typeof message.forwardSeq === "string" && /^(0|[1-9]\d*)$/.test(message.forwardSeq)))
-    && (message.forward === undefined || (!!message.forward && typeof message.forward.seq === "string" && /^(0|[1-9]\d*)$/.test(message.forward.seq)
-      && (message.forward.message === null || (!!message.forward.message && message.forward.message.forward === undefined && isChatMessage(message.forward.message)))))
-    && isChatAuthor(message.author) && !!message.content
-    && message.content.version === 1 && message.content.type === "text" && typeof message.content.text === "string";
+  return (
+    typeof message.id === "string" &&
+    typeof message.channelId === "string" &&
+    typeof message.seq === "string" &&
+    /^(0|[1-9]\d*)$/.test(message.seq) &&
+    typeof message.createdAt === "string" &&
+    typeof message.clientMessageId === "string" &&
+    (message.revision === undefined || (Number.isSafeInteger(message.revision) && message.revision >= 1)) &&
+    (message.editedAt === undefined || typeof message.editedAt === "string") &&
+    (message.editSeq === undefined ||
+      (typeof message.editSeq === "string" && /^(0|[1-9]\d*)$/.test(message.editSeq))) &&
+    ((message.revision ?? 1) === 1 || (message.editedAt !== undefined && message.editSeq !== undefined)) &&
+    (message.threadRootId === undefined || (typeof message.threadRootId === "string" && !!message.threadRootId)) &&
+    (message.broadcast === undefined ||
+      (typeof message.broadcast === "boolean" && (!message.broadcast || !!message.threadRootId))) &&
+    (message.thread === undefined || isChatThreadSummary(message.thread)) &&
+    (message.reactions === undefined || isChatReactions(message.reactions)) &&
+    (message.reactionSeq === undefined ||
+      (typeof message.reactionSeq === "string" && /^(0|[1-9]\d*)$/.test(message.reactionSeq))) &&
+    (message.pinSeq === undefined || (typeof message.pinSeq === "string" && /^(0|[1-9]\d*)$/.test(message.pinSeq))) &&
+    (message.pin === undefined ||
+      message.pin === null ||
+      (typeof message.pin === "object" &&
+        isChatAuthor(message.pin.author) &&
+        typeof message.pin.createdAt === "string")) &&
+    (message.forwardSeq === undefined ||
+      (typeof message.forwardSeq === "string" && /^(0|[1-9]\d*)$/.test(message.forwardSeq))) &&
+    (message.forward === undefined ||
+      (!!message.forward &&
+        typeof message.forward.seq === "string" &&
+        /^(0|[1-9]\d*)$/.test(message.forward.seq) &&
+        (message.forward.message === null ||
+          (!!message.forward.message &&
+            message.forward.message.forward === undefined &&
+            isChatMessage(message.forward.message))))) &&
+    isChatAuthor(message.author) &&
+    !!message.content &&
+    message.content.version === 1 &&
+    message.content.type === "text" &&
+    typeof message.content.text === "string"
+  );
 }
 
 export function isChatEditEvent(value: unknown): value is ChatEditEvent {
   if (!value || typeof value !== "object") return false;
   const event = value as Partial<ChatEditEvent>;
-  return event.type === "message.edited" && event.schemaVersion === 1 && typeof event.channelId === "string"
-    && typeof event.seq === "string" && /^(0|[1-9]\d*)$/.test(event.seq) && isChatMessage(event.message)
-    && event.message.channelId === event.channelId && event.message.editSeq === event.seq && (event.message.revision ?? 1) > 1;
+  return (
+    event.type === "message.edited" &&
+    event.schemaVersion === 1 &&
+    typeof event.channelId === "string" &&
+    typeof event.seq === "string" &&
+    /^(0|[1-9]\d*)$/.test(event.seq) &&
+    isChatMessage(event.message) &&
+    event.message.channelId === event.channelId &&
+    event.message.editSeq === event.seq &&
+    (event.message.revision ?? 1) > 1
+  );
 }
 
 export function isChatPinEvent(value: unknown): value is ChatPinEvent {
   if (!value || typeof value !== "object") return false;
   const event = value as Partial<ChatPinEvent>;
-  return event.type === "message.pin" && event.schemaVersion === 1 && typeof event.channelId === "string"
-    && typeof event.seq === "string" && /^(0|[1-9]\d*)$/.test(event.seq) && isChatMessage(event.message)
-    && event.message.channelId === event.channelId && event.message.pinSeq === event.seq;
+  return (
+    event.type === "message.pin" &&
+    event.schemaVersion === 1 &&
+    typeof event.channelId === "string" &&
+    typeof event.seq === "string" &&
+    /^(0|[1-9]\d*)$/.test(event.seq) &&
+    isChatMessage(event.message) &&
+    event.message.channelId === event.channelId &&
+    event.message.pinSeq === event.seq
+  );
 }
 
 export function isChatThreadSummary(value: unknown): value is ChatThreadSummary {
   if (!value || typeof value !== "object") return false;
   const summary = value as Partial<ChatThreadSummary>;
-  return Number.isSafeInteger(summary.replyCount) && summary.replyCount! > 0
-    && typeof summary.seq === "string" && /^(0|[1-9]\d*)$/.test(summary.seq)
-    && Array.isArray(summary.participants) && summary.participants.length <= 5
-    && summary.participants.every(isChatAuthor)
-    && new Set(summary.participants.map((author) => author.id)).size === summary.participants.length;
+  return (
+    Number.isSafeInteger(summary.replyCount) &&
+    summary.replyCount! > 0 &&
+    typeof summary.seq === "string" &&
+    /^(0|[1-9]\d*)$/.test(summary.seq) &&
+    Array.isArray(summary.participants) &&
+    summary.participants.length <= 5 &&
+    summary.participants.every(isChatAuthor) &&
+    new Set(summary.participants.map((author) => author.id)).size === summary.participants.length
+  );
 }
 
 export function isChannelMessage(message: ChatMessage): boolean {
@@ -185,25 +234,47 @@ export function isChannelMessage(message: ChatMessage): boolean {
 export function isChatForwardEvent(value: unknown): value is ChatForwardEvent {
   if (!value || typeof value !== "object") return false;
   const event = value as Partial<ChatForwardEvent>;
-  return event.type === "message.forward" && event.schemaVersion === 1 && typeof event.channelId === "string"
-    && typeof event.seq === "string" && /^(0|[1-9]\d*)$/.test(event.seq) && isChatMessage(event.message)
-    && !!event.message.forward && event.message.channelId === event.channelId && event.message.forwardSeq === event.seq;
+  return (
+    event.type === "message.forward" &&
+    event.schemaVersion === 1 &&
+    typeof event.channelId === "string" &&
+    typeof event.seq === "string" &&
+    /^(0|[1-9]\d*)$/.test(event.seq) &&
+    isChatMessage(event.message) &&
+    !!event.message.forward &&
+    event.message.channelId === event.channelId &&
+    event.message.forwardSeq === event.seq
+  );
 }
 
 export function isChatReactions(value: unknown): value is ChatReaction[] {
-  return Array.isArray(value) && value.every((reaction: unknown) => {
-    if (!reaction || typeof reaction !== "object") return false;
-    const item = reaction as Partial<ChatReaction>;
-    return typeof item.emoji === "string" && item.emoji.length > 0 && Array.isArray(item.authorIds)
-      && item.authorIds.length > 0 && item.authorIds.every((id) => typeof id === "string")
-      && new Set(item.authorIds).size === item.authorIds.length;
-  });
+  return (
+    Array.isArray(value) &&
+    value.every((reaction: unknown) => {
+      if (!reaction || typeof reaction !== "object") return false;
+      const item = reaction as Partial<ChatReaction>;
+      return (
+        typeof item.emoji === "string" &&
+        item.emoji.length > 0 &&
+        Array.isArray(item.authorIds) &&
+        item.authorIds.length > 0 &&
+        item.authorIds.every((id) => typeof id === "string") &&
+        new Set(item.authorIds).size === item.authorIds.length
+      );
+    })
+  );
 }
 
 export function isChatReactionEvent(value: unknown): value is ChatReactionEvent {
   if (!value || typeof value !== "object") return false;
   const event = value as Partial<ChatReactionEvent>;
-  return event.type === "message.reactions" && event.schemaVersion === 1
-    && typeof event.channelId === "string" && typeof event.messageId === "string"
-    && typeof event.seq === "string" && /^(0|[1-9]\d*)$/.test(event.seq) && isChatReactions(event.reactions);
+  return (
+    event.type === "message.reactions" &&
+    event.schemaVersion === 1 &&
+    typeof event.channelId === "string" &&
+    typeof event.messageId === "string" &&
+    typeof event.seq === "string" &&
+    /^(0|[1-9]\d*)$/.test(event.seq) &&
+    isChatReactions(event.reactions)
+  );
 }

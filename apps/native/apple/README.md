@@ -9,6 +9,7 @@ Native SwiftUI clients backed by AppKit on macOS and UIKit on iPhone. They conta
 - Space/channel/member owner workflows: create/delete/rename spaces and channels, add/remove existing accounts by username, private-channel toggle and grants.
 - HTTP chat history and pagination, idempotent sends, ordered gateway delivery/replay, reconnect/error state, typing, and paginated member presence.
 - Account-global one-to-one direct messages, including exact-username creation, unread/read cursors, space-independent navigation, and the existing ordered chat/gateway pipeline.
+- `@mention` autocomplete in the shared `:` emoji popup (loaded space members except you, then `@everyone`/`@here`; in DMs, including notes, everyone from `GET /api/people`, falling back to the other participant until it loads), pills for names the server resolved in `content.mentions`, and an 8% terracotta row tint with a 2pt leading edge on messages that mention you. Tapping a person's pill opens a card (popover on macOS, sheet on iPhone) with **Message**, which opens or creates the DM; on macOS, messages containing person pills are not text-selectable. SwiftUI `Text` cannot pad or round an inline run, so pills are square-cornered background spans without the 2pt padding/4pt corners. Mentions notify only through iPhone push (see Notifications).
 - Message requests, blocking and DM privacy. DMs from people you share no space with arrive as requests under a "Message requests" row with a count. The row expands in the macOS sidebar, and on iPhone the list is pushed in Browse. Requests open read-only, with a request bar for Accept, Decline and Block in place of the composer. They never count as unread and never play sounds. Outgoing requests show a "Waiting for @x to accept" notice.
 - Blocking is available from the DM header and from message actions, after a confirmation. A blocked DM replaces the composer with Unblock. Blocked authors' messages collapse into "⊘ N blocked messages — Show" runs in channels, DMs and threads, including the thread root. Show and Hide are kept in memory only. Blocked authors never play sounds or show as typing.
 - Account settings ▸ "Privacy and blocked accounts" holds "Who can start a DM with you" (Anyone, People in my spaces, No one new) and the blocked-accounts list. The privacy choice saves at once and reverts if the save fails. The `dm_not_accepted` and `dm_blocked` errors use the client's own wording. Pins from blocked authors still show normally in the pins list.
@@ -16,26 +17,36 @@ Native SwiftUI clients backed by AppKit on macOS and UIKit on iPhone. They conta
 
 The native UI and platform projects still require exact-head Apple CI before they are considered build-verified. The Linux orb used for implementation has no Swift or Xcode installation.
 
-## Deferred direct APNs notifications (iOS)
+## Notifications
 
-Mobile push is not currently available. When needed, the server will integrate
-directly with APNs. Authenticated `GET /api/push/config` currently returns
-`{"platforms":[]}`, so the notification toggle stays hidden. Device registration
-and delivery are not implemented server-side; signing or provider configuration
-alone cannot enable notifications.
+- **Controls (iOS and macOS).** The space menu and each channel's options menu
+  have **Notifications** (`Default (…)`, naming what it inherits, then
+  `All messages`, `Only @mentions`, `Nothing`) and **Mute space/channel** (15
+  minutes, 1 hour, 8 hours, 24 hours, or until turned back on). A muted item
+  reads **Unmute …** with "Muted until 5:00 PM" or "Muted"; a channel in a muted
+  space also shows "Muted with the space". DM rows (not personal notes) have a
+  context menu, plus a "…" on hover on macOS, with **Turn off/on notifications**
+  and **Mute/Unmute conversation**. Muted spaces, channels and DMs are dimmed with
+  a bell-slash, and a muted DM shows no unread dot.
+- **Account settings ▸ Notifications** holds "Notify me about". On an iPhone whose
+  build's APNs environment the server advertises in `GET /api/push/config`, it
+  also shows "Send to this phone" and the per-device opt-in switch.
+- Settings load after sign-in, on returning to the app, and when Notifications
+  opens (menus refresh at most every 30 seconds). Every change applies at once
+  and reverts with a short inline error if the save fails.
+- **iOS push.** After opt-in the app registers its APNs token with `appId` (the
+  bundle ID) for the current sign-in session and shows the server's alert. A tap
+  opens the channel (`spaceId` + `channelId`) or DM (`conversationId`), waiting
+  for the space list on a cold launch. In the foreground no banner shows for the
+  conversation already open. `Configuration/iOS-Debug.entitlements` selects the
+  APNs sandbox (`apnsSandbox`) and `iOS-Release.entitlements` production (`apns`).
+  Unsigned simulator builds cannot receive APNs tokens, so the opt-in stays hidden
+  there.
+- macOS has the controls only; its local notifications are phase 2.
 
-The existing iOS permission, token and notification-tap code is dormant
-scaffolding for that future work. `Configuration/iOS-Debug.entitlements` selects
-the APNs sandbox and `iOS-Release.entitlements` selects production. A future direct
-integration will require the key ID, team ID, bundle topic and `.p8` key in the
-server's secret store; never commit provider credentials or put them in clients.
-Unsigned simulator builds cannot receive APNs device tokens.
-
-Validate explicit opt-in, permission denial/re-enable, token rotation, logout and
-account switching, sandbox/production delivery, foreground receipt, terminated-app
-taps, authenticated DM access and payload privacy on physical signed devices when
-implementing direct delivery. Client scaffolding is not end-to-end push support;
-macOS notification registration is not implemented.
+Physical signed devices must still validate opt-in, permission denial and
+re-enable, token rotation, logout and account switching, sandbox and production
+delivery, foreground suppression, and taps from a terminated app.
 
 ## Fonts and licenses
 
@@ -57,13 +68,16 @@ Each command first runs the macOS XCTest suite. Outputs are ignored and credenti
 
 The script verifies app/framework architectures, embedded WebRTC, runpaths/signature on macOS, and embedded font/WebRTC license resources. Bundle IDs default to `chat.caper.macos` and `chat.caper.ios` and may be overridden with `CAPER_MACOS_BUNDLE_ID` / `CAPER_IOS_BUNDLE_ID`.
 
-Signed Mac releases additionally use `dmgbuild==1.6.7` (installed by the release
-workflow) to create the standard app → Applications Finder window without GUI
+Signed Mac releases additionally use `dmgbuild==1.6.7` (locked in the `dmg`
+dependency group) to create the standard app → Applications Finder window without GUI
 automation. `sign-and-notarize.sh` notarizes/staples the app first, preserves the
 ZIP self-update payload, then signs, notarizes, staples and assesses the DMG.
+From the repository root, run it through
+`uv run --locked --only-group dmg bash apps/native/apple/sign-and-notarize.sh <label>`
+with the existing signing environment; this supplies dmgbuild without a global pip install.
 No additional signing identity or production configuration is required.
 Both Mac development jobs also build/mount a disposable fixture DMG using
-`python3 -m unittest discover -s tests -p test_apple_release_signing.py -v`;
+`uv run --locked --only-group dmg python -m unittest discover -s tests -p test_apple_release_signing.py -v`;
 the test skips the real disk-image check on non-Mac hosts. XCTest covers release
 installation eligibility and the existing parity suite covers development startup.
 Actual Finder layout, downloaded-app Gatekeeper behavior, the install prompt,

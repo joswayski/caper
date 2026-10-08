@@ -7,6 +7,10 @@ node_modules/
 dist/
 **/dist/
 target/
+.venv/
+.ruff_cache/
+__pycache__/
+*.py[cod]
 *.tsbuildinfo
 **/.dev.vars
 **/.dev.vars.*

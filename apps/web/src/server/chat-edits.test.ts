@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { parseDiffFromFile } from "@pierre/diffs";
 import { ChatTimeline } from "../chat/timeline.ts";
 import { isChatEditEvent, isChatMessage, type ChatEditEvent, type ChatMessage } from "../chat/types.ts";
@@ -12,22 +12,46 @@ test("code diffs retain full before/after Unicode text and separate changes arou
   assert.equal(diff.additionLines.join(""), after);
   const chunks = diff.hunks.flatMap((hunk) => hunk.hunkContent);
   assert.equal(chunks.filter((chunk) => chunk.type === "change").length, 2);
-  assert.ok(chunks.some((chunk) => chunk.type === "context" && diff.additionLines[chunk.additionLineIndex] === "Keep this unchanged\n"));
+  assert.ok(
+    chunks.some(
+      (chunk) => chunk.type === "context" && diff.additionLines[chunk.additionLineIndex] === "Keep this unchanged\n",
+    ),
+  );
 });
 
 const root: ChatMessage = {
-  id: "root", channelId: "room", seq: "1", clientMessageId: "send-root", createdAt: "2026-10-06T12:00:00Z",
-  author: { id: "author", name: "Author", isGuest: false }, content: { version: 1, type: "text", text: "Meet Friday" },
+  id: "root",
+  channelId: "room",
+  seq: "1",
+  clientMessageId: "send-root",
+  createdAt: "2026-10-06T12:00:00Z",
+  author: { id: "author", name: "Author", isGuest: false },
+  content: { version: 1, type: "text", text: "Meet Friday" },
 };
 const edit = (message: ChatMessage, revision: number, seq: string, text: string): ChatEditEvent => ({
-  type: "message.edited", schemaVersion: 1, channelId: "room", seq,
-  message: { ...message, revision, editSeq: seq, editedAt: "2026-10-06T13:00:00Z", content: { version: 1, type: "text", text } },
+  type: "message.edited",
+  schemaVersion: 1,
+  channelId: "room",
+  seq,
+  message: {
+    ...message,
+    revision,
+    editSeq: seq,
+    editedAt: "2026-10-06T13:00:00Z",
+    content: { version: 1, type: "text", text },
+  },
 });
 
 test("edit acknowledgements preserve message identity, independent metadata and replay cursor", () => {
   const timeline = new ChatTimeline();
-  const pinned = { ...root, reactionSeq: "8", reactions: [{ emoji: "🚀", authorIds: ["peer"] }],
-    pinSeq: "9", pin: { author: root.author, createdAt: root.createdAt }, thread: { replyCount: 3, participants: [root.author], seq: "7" } };
+  const pinned = {
+    ...root,
+    reactionSeq: "8",
+    reactions: [{ emoji: "🚀", authorIds: ["peer"] }],
+    pinSeq: "9",
+    pin: { author: root.author, createdAt: root.createdAt },
+    thread: { replyCount: 3, participants: [root.author], seq: "7" },
+  };
   timeline.reset([pinned], "9", [pinned]);
   const before = timeline.messages;
   const update = edit(root, 2, "10", "Meet Saturday");
@@ -35,12 +59,24 @@ test("edit acknowledgements preserve message identity, independent metadata and 
   assert.equal(timeline.cursor, "9");
   assert.equal(timeline.messages.length, 1);
   assert.equal(before[0].content.text, "Meet Friday", "old render snapshots are immutable");
-  assert.deepEqual(timeline.messages[0], { ...pinned, content: update.message.content, revision: 2, editSeq: "10", editedAt: update.message.editedAt });
+  assert.deepEqual(timeline.messages[0], {
+    ...pinned,
+    content: update.message.content,
+    revision: 2,
+    editSeq: "10",
+    editedAt: update.message.editedAt,
+  });
   assert.equal(timeline.pinnedMessages[0].content.text, "Meet Saturday");
   timeline.applyEvent(update);
   assert.equal(timeline.cursor, "10");
   timeline.prepend([root]);
-  timeline.mergePin({ type: "message.pin", schemaVersion: 1, channelId: "room", seq: "11", message: { ...pinned, pinSeq: "11" } });
+  timeline.mergePin({
+    type: "message.pin",
+    schemaVersion: 1,
+    channelId: "room",
+    seq: "11",
+    message: { ...pinned, pinSeq: "11" },
+  });
   assert.equal(timeline.messages[0].revision, 2, "late history/pin payloads never revert content");
   assert.equal(timeline.pinnedMessages[0].revision, 2);
   assert.equal(timeline.cursor, "10", "pin ack also remains cursor-neutral");
@@ -77,34 +113,99 @@ test("edit event ordering uses editSeq, not creation seq, and rejects stale vers
   assert.equal(timeline.cursor, "2");
 });
 
+test("unchanged and unloaded edits retain the sorted render snapshot", () => {
+  const timeline = new ChatTimeline();
+  timeline.reset([root], "1");
+  const version2 = edit(root, 2, "2", "Saturday");
+  timeline.mergeEdit(version2.message);
+  const rendered = timeline.messages;
+  assert.equal(timeline.applyEvent(version2), "applied");
+  assert.equal(timeline.messages, rendered, "confirming an HTTP edit must not re-sort history");
+  assert.equal(timeline.cursor, "2", "an unchanged snapshot still advances replay");
+  timeline.prepend([version2.message, root]);
+  assert.equal(timeline.messages, rendered, "overlapping history must not re-sort unchanged rows");
+  const hidden = { ...root, id: "hidden", seq: "3" };
+  timeline.mergeEdit(edit(hidden, 2, "4", "Hidden correction").message);
+  assert.equal(timeline.messages, rendered, "an unloaded edit must not invalidate visible history");
+  timeline.mergeEdit(edit(root, 3, "5", "Sunday").message);
+  assert.notEqual(timeline.messages, rendered);
+  assert.equal(timeline.messages[0].content.text, "Sunday");
+  assert.equal(rendered[0].content.text, "Saturday", "previous render snapshots stay immutable");
+  timeline.mergeEdit(version2.message);
+  const latest = timeline.messages;
+  timeline.mergeEdit(version2.message);
+  assert.equal(timeline.messages, latest, "stale edits must not re-sort history");
+  timeline.prepend([hidden]);
+  assert.equal(timeline.messages[1].content.text, "Hidden correction", "unloaded edits are still retained");
+});
+
+test("duplicate, stale and unloaded edits reuse the sorted visible snapshot", () => {
+  const timeline = new ChatTimeline();
+  const current = edit(root, 3, "4", "Current text");
+  timeline.reset([current.message], "4");
+  const snapshot = timeline.messages;
+  timeline.applyEvent(current);
+  assert.strictEqual(timeline.messages, snapshot, "duplicate delivery must not sort history again");
+  timeline.mergeEdit(edit(root, 2, "3", "Stale text").message);
+  assert.strictEqual(timeline.messages, snapshot, "stale HTTP acknowledgements change nothing visible");
+  timeline.applyEvent(edit({ ...root, id: "unloaded" }, 2, "5", "Hidden edit"));
+  assert.strictEqual(timeline.messages, snapshot, "unloaded edits only update their overlay");
+  assert.equal(timeline.cursor, "5");
+  timeline.mergeEdit(edit(root, 4, "6", "New visible text").message);
+  assert.notStrictEqual(timeline.messages, snapshot, "a real visible edit must invalidate the snapshot");
+  assert.equal(timeline.messages[0].content.text, "New visible text");
+  assert.equal(snapshot[0].content.text, "Current text", "past render snapshots stay immutable");
+});
+
 test("edit validators require matching channel/event revision and tolerate legacy messages", () => {
   assert.ok(isChatMessage(root));
   const event = edit(root, 2, "7", "Changed");
   assert.ok(isChatEditEvent(event));
   for (const invalid of [
-    { ...event, seq: root.seq }, { ...event, channelId: "elsewhere" }, { ...event, schemaVersion: 2 },
+    { ...event, seq: root.seq },
+    { ...event, channelId: "elsewhere" },
+    { ...event, schemaVersion: 2 },
     { ...event, message: { ...event.message, revision: 1 } },
     { ...event, message: { ...event.message, revision: 2.5 } },
     { ...event, message: { ...event.message, editSeq: undefined } },
-  ]) assert.equal(isChatEditEvent(invalid), false);
+  ])
+    assert.equal(isChatEditEvent(invalid), false);
 });
 
 test("unloaded edit overflow requests resync instead of silently discarding a stale-page overlay", () => {
   const timeline = new ChatTimeline();
   timeline.reset([], "1");
   for (let index = 0; index < 256; index++) {
-    assert.equal(timeline.applyEvent(edit({ ...root, id: `unloaded-${index}` }, 2, String(index + 2), "corrected")), "applied");
+    assert.equal(
+      timeline.applyEvent(edit({ ...root, id: `unloaded-${index}` }, 2, String(index + 2), "corrected")),
+      "applied",
+    );
   }
   assert.equal(timeline.applyEvent(edit({ ...root, id: "overflow" }, 2, "258", "corrected")), "overflow");
   assert.equal(timeline.messages.length, 0);
   timeline.prepend([{ ...root, id: "unloaded-0" }]);
-  assert.equal(timeline.messages[0].content.text, "corrected", "overflow must not silently revert the oldest cached edit");
+  assert.equal(
+    timeline.messages[0].content.text,
+    "corrected",
+    "overflow must not silently revert the oldest cached edit",
+  );
 
   const loaded = Array.from({ length: 257 }, (_, index) => ({ ...root, id: `loaded-${index}` }));
   const visible = new ChatTimeline();
   visible.reset(loaded, "1");
-  loaded.forEach((message, index) => assert.equal(visible.applyEvent(edit(message, 2, String(index + 2), "corrected")), "applied"));
-  visible.mergePin({ type: "message.pin", schemaVersion: 1, channelId: "room", seq: "259",
-    message: { ...loaded[0], pinSeq: "259", pin: { author: root.author, createdAt: root.createdAt } } });
-  assert.equal(visible.pinnedMessages[0].content.text, "corrected", "loaded edits survive old pin payloads beyond the unseen-cache limit");
+  loaded.forEach((message, index) =>
+    assert.equal(visible.applyEvent(edit(message, 2, String(index + 2), "corrected")), "applied"),
+  );
+  visible.mergePin({
+    type: "message.pin",
+    schemaVersion: 1,
+    channelId: "room",
+    seq: "259",
+    message: { ...loaded[0], pinSeq: "259", pin: { author: root.author, createdAt: root.createdAt } },
+  });
+  assert.equal(
+    visible.pinnedMessages[0].content.text,
+    "corrected",
+    "loaded edits survive old pin payloads beyond the unseen-cache limit",
+  );
 });

@@ -50,12 +50,27 @@ export function directUnread(conversation: DirectConversation) {
   return directStatus(conversation) !== "incoming" && BigInt(conversation.lastSeq) > BigInt(conversation.readSeq);
 }
 
+/** People sharing a space or DM with you, for `@` suggestions in DMs. */
+export interface Person {
+  id: string;
+  username: string;
+  displayName: string;
+  avatarId?: number | null;
+}
+
+export function listPeople() {
+  return request<{ people: Person[] }>("/api/people");
+}
+
 export function listDirectConversations() {
   return request<{ conversations: DirectConversation[] }>("/api/dms");
 }
 
 export function createDirectConversation(username: string) {
-  return request<DirectConversation>("/api/dms", { method: "POST", body: JSON.stringify({ username: username.trim() }) });
+  return request<DirectConversation>("/api/dms", {
+    method: "POST",
+    body: JSON.stringify({ username: username.trim() }),
+  });
 }
 
 export function readDirectConversation(id: string, seq: string) {
@@ -70,7 +85,12 @@ export function declineDirectRequest(id: string) {
   return request<void>(`/api/dms/${pathId(id)}/decline`, { method: "POST" });
 }
 
-export interface BlockedAccount { id: string; username: string; displayName: string; avatarId?: number }
+export interface BlockedAccount {
+  id: string;
+  username: string;
+  displayName: string;
+  avatarId?: number;
+}
 
 export function listBlocks() {
   return request<{ blocks: BlockedAccount[] }>("/api/blocks");
@@ -92,7 +112,100 @@ export function getDirectPrivacy() {
 }
 
 export function setDirectPrivacy(directMessages: DirectPrivacy) {
-  return request<{ directMessages: DirectPrivacy }>("/api/account/privacy", { method: "PUT", body: JSON.stringify({ directMessages }) });
+  return request<{ directMessages: DirectPrivacy }>("/api/account/privacy", {
+    method: "PUT",
+    body: JSON.stringify({ directMessages }),
+  });
+}
+
+/** `mentions` reads as "Only @mentions and DMs" at the account level. */
+export type NotificationLevel = "all" | "mentions" | "nothing";
+/** When phone push is sent; phones only, web leaves it alone. */
+export type MobileNotifications = "whenInactive" | "always";
+/** An RFC 3339 UTC timestamp, `forever`, or null (not muted). */
+export type MutedUntil = string | null;
+
+/** A space (`spaceId`), channel (`spaceId` + `channelId`) or DM (`conversationId`) override. */
+export interface NotificationOverride {
+  spaceId?: string;
+  channelId?: string;
+  conversationId?: string;
+  /** null inherits; a DM only uses `nothing` (notifications off). */
+  level: NotificationLevel | null;
+  mutedUntil: MutedUntil;
+}
+
+export interface NotificationSettings {
+  level: NotificationLevel;
+  mobile: MobileNotifications;
+  overrides: NotificationOverride[];
+}
+
+/** A missing key leaves that field unchanged; null resets it. */
+export interface NotificationChange {
+  level?: NotificationLevel | null;
+  mutedUntil?: MutedUntil;
+}
+
+// Clients read an unknown future level as `mentions`.
+function notificationLevel(value: unknown): NotificationLevel {
+  return value === "all" || value === "nothing" ? value : "mentions";
+}
+
+function notificationOverride(value: NotificationOverride): NotificationOverride {
+  return {
+    ...value,
+    level: value.level == null ? null : notificationLevel(value.level),
+    mutedUntil: value.mutedUntil ?? null,
+  };
+}
+
+function notificationSettings(value: NotificationSettings): NotificationSettings {
+  return {
+    level: notificationLevel(value.level),
+    mobile: value.mobile === "always" ? "always" : "whenInactive",
+    overrides: (value.overrides ?? []).map(notificationOverride),
+  };
+}
+
+export async function getNotificationSettings() {
+  return notificationSettings(await request<NotificationSettings>("/api/notifications/settings"));
+}
+
+export async function updateNotificationSettings(change: { level?: NotificationLevel; mobile?: MobileNotifications }) {
+  return notificationSettings(
+    await request<NotificationSettings>("/api/notifications/settings", { method: "PUT", body: JSON.stringify(change) }),
+  );
+}
+
+export async function setSpaceNotifications(spaceId: string, change: NotificationChange) {
+  return notificationOverride(
+    await request<NotificationOverride>(`/api/spaces/${pathId(spaceId)}/notifications`, {
+      method: "PUT",
+      body: JSON.stringify(change),
+    }),
+  );
+}
+
+export async function setChannelNotifications(spaceId: string, channelId: string, change: NotificationChange) {
+  return notificationOverride(
+    await request<NotificationOverride>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/notifications`, {
+      method: "PUT",
+      body: JSON.stringify(change),
+    }),
+  );
+}
+
+export async function setDirectNotifications(
+  conversationId: string,
+  change: { level?: "nothing" | null; mutedUntil?: MutedUntil },
+) {
+  return notificationOverride(
+    await request<NotificationOverride>(`/api/dms/${pathId(conversationId)}/notifications`, {
+      method: "PUT",
+      body: JSON.stringify(change),
+    }),
+  );
 }
 
 export interface SpaceLimits {
@@ -119,6 +232,7 @@ export class SpacesApiError extends Error {
 
 const SPACE_ID = /^[A-Za-z0-9]{12}$/;
 const CHANNEL_NAME = /^[a-z]+(?:-[a-z]+)*$/;
+// oxlint-disable-next-line no-control-regex -- Reject control characters in user-provided names.
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/u;
 
 export function spaceNameError(name: string) {
@@ -136,8 +250,13 @@ export function channelNameError(name: string) {
 
 export function normalizeChannelName(value: string) {
   // Keep a trailing dash while typing so multi-word names remain editable.
-  return value.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z-]/g, "")
-    .replace(/-+/g, "-").replace(/^-/, "").slice(0, 80);
+  return value
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z-]/g, "")
+    .replace(/-+/g, "-")
+    .replace(/^-/, "")
+    .slice(0, 80);
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -148,11 +267,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers: init?.body ? { "content-type": "application/json", ...init.headers } : init?.headers,
   });
   if (!response.ok) {
-    const body = await response.json().catch(() => null) as { error?: unknown; code?: unknown } | null;
+    const body = (await response.json().catch(() => null)) as { error?: unknown; code?: unknown } | null;
     const known = typeof body?.code === "string" ? directMessageErrors[body.code] : undefined;
-    throw new SpacesApiError(response.status, known ?? (typeof body?.error === "string" ? body.error : "That request did not work."));
+    throw new SpacesApiError(
+      response.status,
+      known ?? (typeof body?.error === "string" ? body.error : "That request did not work."),
+    );
   }
-  return response.status === 204 ? undefined as T : response.json() as Promise<T>;
+  return response.status === 204 ? (undefined as T) : (response.json() as Promise<T>);
 }
 
 function pathId(id: string) {
@@ -173,7 +295,10 @@ export function createSpace(name: string) {
 }
 
 export function updateSpace(spaceId: string, name: string) {
-  return request<Space>(`/api/spaces/${pathId(spaceId)}`, { method: "PATCH", body: JSON.stringify({ name: name.trim() }) });
+  return request<Space>(`/api/spaces/${pathId(spaceId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ name: name.trim() }),
+  });
 }
 
 export function deleteSpace(spaceId: string) {
@@ -182,13 +307,15 @@ export function deleteSpace(spaceId: string) {
 
 export function createChannel(spaceId: string, name: string, privateChannel: boolean) {
   return request<Channel>(`/api/spaces/${pathId(spaceId)}/channels`, {
-    method: "POST", body: JSON.stringify({ name, private: privateChannel }),
+    method: "POST",
+    body: JSON.stringify({ name, private: privateChannel }),
   });
 }
 
 export function updateChannel(spaceId: string, channelId: string, name: string, privateChannel: boolean) {
   return request<Channel>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}`, {
-    method: "PATCH", body: JSON.stringify({ name, private: privateChannel }),
+    method: "PATCH",
+    body: JSON.stringify({ name, private: privateChannel }),
   });
 }
 
@@ -202,7 +329,8 @@ export function listSpaceMembers(spaceId: string) {
 
 export function addSpaceMember(spaceId: string, username: string) {
   return request<Member>(`/api/spaces/${pathId(spaceId)}/members`, {
-    method: "POST", body: JSON.stringify({ username }),
+    method: "POST",
+    body: JSON.stringify({ username }),
   });
 }
 
@@ -227,21 +355,28 @@ export function declineSpaceInvitation(spaceId: string) {
 }
 
 export function listChannelMembers(spaceId: string, channelId: string) {
-  return request<{ members: Member[]; invitations?: Member[] }>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/members`);
+  return request<{ members: Member[]; invitations?: Member[] }>(
+    `/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/members`,
+  );
 }
 
 export function addChannelMember(spaceId: string, channelId: string, username: string) {
   return request<Member>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/members`, {
-    method: "POST", body: JSON.stringify({ username }),
+    method: "POST",
+    body: JSON.stringify({ username }),
   });
 }
 
 export function removeChannelMember(spaceId: string, channelId: string, memberId: string) {
-  return request<void>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/members/${pathId(memberId)}`, { method: "DELETE" });
+  return request<void>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/members/${pathId(memberId)}`, {
+    method: "DELETE",
+  });
 }
 
 export function joinChannel(spaceId: string, channelId: string) {
-  return request<Channel>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/membership`, { method: "POST" });
+  return request<Channel>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/membership`, {
+    method: "POST",
+  });
 }
 
 export function leaveChannel(spaceId: string, channelId: string) {
@@ -249,7 +384,9 @@ export function leaveChannel(spaceId: string, channelId: string) {
 }
 
 export function acceptChannelInvitation(spaceId: string, channelId: string) {
-  return request<Channel>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/invitation`, { method: "POST" });
+  return request<Channel>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/invitation`, {
+    method: "POST",
+  });
 }
 
 export function declineChannelInvitation(spaceId: string, channelId: string) {

@@ -9,7 +9,9 @@ const session = `mic-playback-${process.pid}`;
 function browser(...args) {
   return execFileSync("agent-browser", ["--session", session, ...args], { encoding: "utf8", timeout: 35_000 });
 }
-function evaluate(code) { return browser("eval", `(async()=>{${code}})()`); }
+function evaluate(code) {
+  return browser("eval", `(async()=>{${code}})()`);
+}
 
 try {
   browser("open", new URL("/spaces", origin).href);
@@ -51,7 +53,8 @@ try {
     return 'ready';
   `);
   browser("find", "role", "button", "click", "--name", "Enable synthetic audio");
-  console.log(evaluate(`
+  console.log(
+    evaluate(`
     await until(() => button('Record microphone'));
     assert(recorders.length === 0, 'must not record on mount');
     button('Record microphone').click();
@@ -72,8 +75,10 @@ try {
     audio().pause(); await wait(50);
     assert(document.body.textContent.includes('Recording ready.'), 'pause status must not remain playing');
     return 'PASS explicit recording, decoded signal, stop, rerender, replay, pause';
-  `));
-  console.log(evaluate(`
+  `),
+  );
+  console.log(
+    evaluate(`
     const old = audio().src;
     button('Test again').click(); await wait(300);
     assert(recorders.length === 2, 'Test again must explicitly start another recording');
@@ -89,8 +94,10 @@ try {
     await until(() => audio() && document.body.textContent.includes('No audible signal'));
     assert(recorders.length === 3, 'silent recording must not restart');
     return 'PASS test again, stream replacement, cancellation, URL cleanup, silent recording warning';
-  `));
-  console.log(evaluate(`
+  `),
+  );
+  console.log(
+    evaluate(`
     gain.gain.value = 0.2;
     button('Test again').click();
     await wait(11000);
@@ -115,7 +122,8 @@ try {
     button('Test again').click(); await wait(100); await cleanup();
     assert(recorders.every(r => r.state === 'inactive'), 'unmount must stop every recorder');
     return 'PASS automatic limit, output denial/recovery, autoplay blocking, unmount cleanup';
-  `));
+  `),
+  );
 } catch (error) {
   console.error(browser("get", "text", "body"));
   throw error;

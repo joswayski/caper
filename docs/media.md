@@ -29,6 +29,65 @@ data. This is not native keyboard/device coverage. Android and Apple tests requi
 their platform toolchains; physical touch/IME, software keyboard viewport changes
 and Windows rendering remain separate acceptance checks.
 
+Composers also suggest people after `@` on web, Android, Apple and Rust desktop.
+An `@` at the start of a draft, after whitespace or after an opening bracket
+starts a name of up to 32 ASCII letters, digits or underscores; emails such as
+`bob@maya.com` and `x/@maya` do not. Space channels suggest the open space's
+loaded members except you, then `@everyone` ("Everyone in this channel") and
+`@here` ("Everyone online in this channel"). DMs suggest everyone you share a
+space or DM with, from authenticated `GET /api/people` (`{"people":[{"id",
+"username","displayName","avatarId"}]}`, excluding you, at most 500), fetched when
+a DM opens; until it loads the DM peer is offered. Selecting inserts `@username `
+without sending; keys and limits match emoji. Anyone who can post may use `@everyone`/`@here`; permissions are deferred.
+
+On send, `chat::persist` resolves names inside the message transaction (shared
+grammar in `apps/api/src/mentions.rs`) to any non-deleted account with that
+username, in channels and DMs alike, so people can point each other at someone
+("that's @alex"). The message's `content.mentions` lists resolved
+users (`{"type":"user","id","username"}`) and, in space channels only,
+`{"type":"everyone"}` / `{"type":"here"}`, in first-appearance order with at most
+20 distinct names. Unresolved names stay plain text and the field is omitted when
+empty. `content.version` stays `1`; history, live gateway events and replay carry
+the same payload. Clients ignore unknown entry types, render resolved tokens as
+terracotta pills, and tint messages that mention the reader (their id, or
+`@everyone`/`@here` from someone else). `everyone` and `here` are reserved
+usernames. Tagging is not access: someone tagged in a conversation they cannot
+open still cannot read it, and notifications go only to people who can read
+the conversation. Mention ids are the 12-character random account `external_id`,
+never the internal sequence key.
+
+Clicking or tapping a person's pill opens a small profile card (`@everyone`/`@here`
+pills stay inert): 48px avatar, display name, `@username`, and a **Message** button
+that opens the existing DM or starts one through `POST /api/dms`, then navigates
+there. Your own card says "You" and has no button. Card data comes only from what
+the client already loaded: space members, then `GET /api/people`, then DM peers;
+someone you share nothing with shows `@username` and the generic avatar, and
+Message still works. Wide layouts (web desktop, macOS, Rust desktop) show a popover
+by the pill; web narrow/touch, Android and iPhone show a bottom sheet. DM errors
+stay inline in the card. No API change. Mentions drive phone push kinds
+(`mention.user`, `mention.everyone`); see [notifications.md](notifications.md).
+
+No migration, gateway, infrastructure or secret change is required. The API and
+clients deploy independently in either order: older clients ignore
+`content.mentions`, and newer clients render plain text from an older API. Rolling
+the API back only stops resolving new mentions. Validation:
+- API: unit grammar tests and a Postgres test of resolution (public and private
+  channels, a member without the private grant, a non-member, DMs naming third
+  parties, deleted and unknown accounts, history and outbox payloads) and of
+  `/api/people`, plus the full ignored Postgres/Valkey suite.
+- Web: unit tests, and a real Chromium check against the fixture at 1280px and
+  390px (suggestion order, Enter inserts without sending, Escape, no overlap with
+  emoji, pills, mentioned-row tint).
+- Fixture: `native-parity-fixture.mjs` resolves mentions on send like the API and
+  seeds one message mentioning `fixture_owner`.
+- Android: JVM unit tests and lint; no device, emulator or IME check.
+- Rust desktop: unit and headless egui tests, fmt, clippy and the full desktop
+  suite with the pinned toolchain, plus Linux Xvfb rendering of the
+  `parity-mentions` and `parity-direct` fixtures; no Windows or IME check.
+- Apple: the pure mention logic and its 13 tests ran with a Linux Swift toolchain;
+  SwiftUI/UIKit/AppKit code and the parity UI test need Apple CI. SwiftUI,
+  Android and egui inline pills are square-cornered background spans.
+
 Apple composer frames use their measured content height rather than filling the
 174-point maximum: channel/DM drafts start at 42 points; thread replies retain
 their 72-point minimum. Longer drafts grow and then scroll. iPhone parity tests
@@ -38,6 +97,18 @@ Run `./apps/native/apple/parity-screenshots.sh ios` and its `macos` counterpart
 with Xcode before release and inspect the composer attachments. These new iPhone
 checks and native rendering were not executed in the Linux orb; passing web and
 fixture tests do not validate SwiftUI/UIKit/AppKit sizing.
+
+Apple pending sends use the confirmed row's full-width, leading-aligned layout.
+The channel requests scrolling on the pending-state update and on content-size
+changes without yielding another task first. The parity send regression holds
+the fixture before persistence/gateway fanout, checks short and wrapping pending
+text in the viewport with an empty composer, then checks unchanged horizontal
+alignment and one row after confirmation. `npm test -- --maxWorkers=2` passes
+450 web/shared tests and `npm run check` passes; the Apple regression and rendered
+frame timing were not run in this Linux orb (no Xcode or connected Apple runner).
+Run both Apple parity scripts above and inspect the pending-send captures and
+iPhone send transition before release. No API/configuration/migration change is
+needed; only updated Apple binaries receive this fix.
 
 Web channel names and `⋯` actions have a separate row above voice
 activity. Join, Joining and Switch here use one fixed-width action slot;
@@ -853,8 +924,10 @@ pre-spaces image after migration; complete the forward rollout instead.
 
 ## Message reactions
 
-Desktop web exposes **Add reaction** on message hover or keyboard focus. Mobile
-web, Android and iPhone hide the per-message add button. Press and hold a
+Desktop web exposes **Add reaction** on message hover or keyboard focus; clicking
+a message or reaction does not keep the toolbar visible after the pointer leaves.
+Reaction chips have no outer focus ring; keyboard navigation uses an inset cue.
+Mobile web, Android and iPhone hide the per-message add button. Press and hold a
 committed message to open a bottom drawer with five fixed quick reactions
 (👍 ❤️ 😂 🎉 👀), the searchable emoji picker, **Copy text**, and
 **Copy message ID**. Copy uses the exact text or globally unique public message
@@ -1030,6 +1103,25 @@ Android, web on touch) open a Reactions sheet on press-and-hold: one tab per
 emoji with its count, then each person's avatar, name and @username. On web,
 right-click opens the same panel as a popover, and message actions include
 **View reactions**. A tap or click still toggles your own reaction.
+
+Web and Rust desktop retain known names during revision refreshes (including
+failed refreshes), project them onto the currently displayed reactor IDs, and
+name your optimistic contribution as "You" immediately. They do not temporarily
+replace a named tooltip with a count when you toggle an existing reaction.
+Removed IDs are excluded immediately; a genuinely unknown person still uses the
+snapshot-count fallback until their name loads. Apple already reconciles names
+this way; Android uses a separate hold-to-open sheet rather than hover tooltips.
+`scripts/test-chat-reactors.mjs` checks every tooltip DOM update while fixture
+writes/name refreshes are held, rapid toggles, refresh failure, pointer-only
+toolbar visibility, and keyboard focus. Run its desktop checks with a fine-pointer
+Chromium configuration (`AGENT_BROWSER_EXECUTABLE_PATH` in headless orbs).
+
+Interaction-fix validation: `npm run check` and all 450 web/native-support tests
+pass; both browser interaction scripts pass, including verified coarse-pointer
+touch input. Rust desktop passes 275 tests (9 existing ignored), package Clippy,
+fmt and a Linux build; its fixture tooltip was rendered under 2× Xvfb and inspected.
+These are local fixture checks, not physical-phone, Windows/macOS or live-service
+acceptance. No Docker daemon was available; web build stages ran directly.
 
 The parity fixture serves this endpoint, and its `incomingReaction` control
 accepts an optional `userId` so tests can react as any fixture account. Desktop
@@ -1218,7 +1310,7 @@ CHAT_TEST_DATABASE_URL=<disposable-loopback-postgres-admin-url> \
 CHAT_TEST_VALKEY_URL=redis://127.0.0.1:6379 \
 TEST_VALKEY_URL=redis://127.0.0.1:6379 \
 cargo test --workspace -- --ignored --test-threads=1
-node --test tests/native-parity-fixture.test.mjs
+npm run test:native -- tests/native-parity-fixture.test.mjs
 CHANNEL_TEST_WEB_URL=http://localhost:5174/spaces node scripts/test-channel-joining.mjs
 ```
 
@@ -1322,6 +1414,14 @@ HTTP acknowledgements do not advance replay/read cursors. Reconnect replays
 mutations, and authoritative history clears pins removed while offline; stale
 acknowledgements/pages must not restore an unpin.
 
+The clients also merge reaction revisions into their separate pinned-message
+snapshots, including pins outside loaded history. A newer pin revision must not
+restore older reactions, and a no-op pin response can still carry newer reactions.
+October 8 regression checks cover these orderings in web and the Rust desktop
+model. Android helper and Apple model tests are included but were not run in the
+Linux orb (no Android SDK or Swift/Xcode); full native builds/device checks remain
+release validation. This client-only correction needs no server or schema change.
+
 Every history page includes complete `pinnedMessages`, newest pin first, captured
 under the same channel lock as its cursor. The pins collection is separate from
 the 50-message timeline page: an old pin must not enter that page or skip the
@@ -1346,7 +1446,7 @@ are pruned. Pins do not send system messages, play message sounds, or create pus
 With the disposable fixture and Vite running, use:
 
 ```sh
-node --test tests/native-parity-fixture.test.mjs
+npm run test:native -- tests/native-parity-fixture.test.mjs
 MESSAGE_TEST_WEB_URL=http://127.0.0.1:5174 node scripts/test-message-pins.mjs
 CHAT_TEST_DATABASE_URL=postgres://user@127.0.0.1:55432/postgres \
 CHAT_TEST_VALKEY_URL=redis://127.0.0.1:6379 \
@@ -1421,6 +1521,12 @@ freeze the root and broadcast choice. Ordinary sends cannot retry a pending repl
 into the channel. Replies use the existing participation and read permissions;
 thread reads do not expose another channel's messages.
 
+Normal in-flight sends show no cross-composer warning. A delivery problem stays
+with its reply in the thread; the channel offers **Review reply** only when that
+thread is closed or another thread is open. Sending still allows one outstanding
+command per channel, and retries keep the original ID, text, root and broadcast
+choice so an uncertain outcome cannot become a duplicate or a channel message.
+
 `POST /api/chat/channels/{channel}/messages` adds optional `threadRootId` and
 default-false `broadcast`. The root must be a same-channel, top-level message.
 `GET /api/chat/channels/{channel}/messages/{root}/thread?before={seq}` returns
@@ -1457,7 +1563,7 @@ need platform validation before release.
 With the disposable fixture and Vite running:
 
 ```sh
-node --test tests/native-parity-fixture.test.mjs
+npm run test:native -- tests/native-parity-fixture.test.mjs
 MESSAGE_TEST_WEB_URL=http://127.0.0.1:5174 node scripts/test-message-threads.mjs
 DATABASE_URL=postgres://user@127.0.0.1:55432/postgres \
   cargo test --locked -p caper-api threads_isolate -- --ignored
@@ -1591,7 +1697,7 @@ With the disposable fixture/Vite and a disposable local Postgres/Valkey running:
 ```sh
 npm run check
 npm test --workspace @caper/web
-node --test tests/native-parity-fixture.test.mjs
+npm run test:native -- tests/native-parity-fixture.test.mjs
 MESSAGE_TEST_WEB_URL=http://127.0.0.1:5174 node scripts/test-message-forwarding.mjs
 MESSAGE_TEST_WEB_URL=http://127.0.0.1:5174 node scripts/test-message-edits.mjs
 DATABASE_URL=postgres://user@127.0.0.1:55432/postgres \
@@ -1710,7 +1816,7 @@ automatic version purge or restore-to-version action.
 With the disposable fixture and Vite running:
 
 ```sh
-node --test tests/native-parity-fixture.test.mjs
+npm run test:native -- tests/native-parity-fixture.test.mjs
 MESSAGE_TEST_WEB_URL=http://127.0.0.1:5174 node scripts/test-message-edits.mjs
 CHAT_TEST_DATABASE_URL=postgres://user@127.0.0.1:55432/postgres \
   CHAT_TEST_VALKEY_URL=redis://127.0.0.1:56379 \
@@ -2181,6 +2287,12 @@ Keep this temporary test separate from any future production app/key.
 | `AUTH_IP_HOURLY_LIMIT` | Code requests accepted per source-IP hash in one hour; default `10` |
 | `AUTH_GLOBAL_HOURLY_LIMIT` | Code requests accepted across the service in one hour; default `500` |
 | `NOTIFICATIONS_WEBHOOK_URL` | Optional server-only HTTPS URL for best-effort application notifications. The current event is `user.created`; URLs with credentials, query strings, or fragments are rejected and leave notifications disabled. |
+| `NOTIFICATIONS_ENABLED` | `true` starts the phone-push workers in the API role (requires `CHAT_ENABLED`). Default off: `GET /api/push/config` lists no platform and nothing is sent. Notification settings and mutes work either way. |
+| `PUSH_PLATFORMS` | Comma-separated `apns`, `apnsSandbox`, `fcm`. A platform is advertised only when listed here and its credentials load; add one only after physical-device validation. |
+| `APNS_TEAM_ID`, `APNS_TOPIC` | Apple team ID; topic defaults to `chat.caper.ios`. |
+| `APNS_KEY_ID`, `APNS_PRIVATE_KEY` | Production APNs auth key (`.p8` PEM; real newlines or `\n` escapes) for `apns`. |
+| `APNS_SANDBOX_KEY_ID`, `APNS_SANDBOX_PRIVATE_KEY` | Separate sandbox key for `apnsSandbox` (Xcode builds, staging). |
+| `FCM_SERVICE_ACCOUNT_JSON` | Firebase service-account JSON key (as one string) for `fcm`. |
 | `AWS_REGION` | SES region; production and staging use `us-east-1` |
 | `SES_FROM_ADDRESS` | Verified Caper sender, including the friendly name |
 | `SES_CONFIGURATION_SET` | Required SES transactional configuration set |
@@ -3369,6 +3481,8 @@ and disables recording during initialization. A fallback preserves the existing
 tracks and clips; record a fresh sample to hear the newly active filter. Its 14.9 MB model and
 runtime load lazily from the same versioned asset directory.
 Use `node scripts/vendor-dpdfnet.mjs 8` to reproduce its model/metadata/licenses.
+Offline authoring requires uv 0.12.23; the script runs ONNX metadata export in the
+locked `audio` dependency group, without a global Python package installation.
 The active status appears only after the processor acknowledges initialization.
 The recovery order is DPDFNet-8 HR → DPDFNet-2 HR → RNNoise, for initialization
 failure, sustained backlog or processor failure. Healthy 8 HR is never downgraded
@@ -4555,8 +4669,8 @@ invitation form for exact usernames; members and accounts with no space get
 **New message** instead. The heading's plus still starts a DM; desktop web, Rust
 desktop and macOS reveal it on heading hover or keyboard focus. Non-hover web,
 iOS and Android keep it visible. Neither action adds invite links or grants DM
-access to owners. Self notes do not send push notifications; mobile push remains
-deferred for all conversations.
+access to owners. Self notes never send push notifications; see
+[mobile push](#mobile-push-phase-1-direct-apns-and-fcm).
 
 API contracts (account authentication required):
 
@@ -4690,34 +4804,38 @@ space), and `PUT /api/blocks/member000001` blocks Maya, whose two seeded
    validation or reject self creation. Prefer a forward fix after notes exist.
    No production migration, deploy, or release is performed by this PR.
 
-### Push is deferred; future delivery uses direct APNs/FCM integrations
+### Mobile push (phase 1): direct APNs and FCM
 
-There is currently no server-side push registration, enqueue or delivery.
-Authenticated `GET /api/push/config` remains as a compatibility endpoint and
-returns `{"platforms":[]}`. Existing Android/iOS clients use it to hide notification
-controls. `POST`/`DELETE /api/push/devices` are not exposed. DM persistence, unread
-cursors and live gateway events do not depend on push and continue unchanged.
+Phone push for DMs and channel messages is built on the server and sends
+directly to APNs (iPhone) and FCM HTTP v1 (Android); there is no SNS or push
+vendor. It stays off until `NOTIFICATIONS_ENABLED=true`, and each platform is
+advertised by `GET /api/push/config` only when it is listed in `PUSH_PLATFORMS`
+and its credentials load. With it off the endpoint returns `{"platforms":[]}`,
+which keeps the native permission prompts hidden; notification levels and mutes
+still save. [notifications.md](notifications.md#phase-1-as-built) holds the
+contract: who is notified, the phone hold while you are active elsewhere,
+payloads, routes, retries and configuration.
 
-When mobile push is needed, implement direct APNs delivery for iOS and FCM HTTP v1
-delivery for Android. Provider credentials belong only in the server's secret
-store, never in client builds or source control. The native permission, token and
-tap handlers are dormant scaffolding, not working end-to-end notifications;
-Firebase build configuration and Apple push entitlements alone cannot enable them.
-Browser Web Push, macOS push and Rust desktop OS notifications are not implemented.
+- Each committed account-authored message (sends and forwards, never edits)
+  writes one `notification_jobs` row in its send transaction. Workers in the API
+  role expand it into per-recipient notifications and per-device deliveries and
+  send them without holding a database connection.
+- Registrations belong to the account session: logout revokes them, delivery
+  rechecks the session, and dead tokens reported by Apple or Google are revoked.
+- Provider keys live only in `production/apps/caper` (and `staging/apps/caper`),
+  written by `scripts/store-push-credentials.sh`; never in client builds or source
+  control. Logs never contain tokens, keys or message text.
+- Provider acceptance does not prove device receipt, and sent notifications
+  cannot be recalled. Server tests use mock APNs/FCM servers; validate on physical
+  Android and signed iOS devices before adding a platform to `PUSH_PLATFORMS`.
+- Browser Web Push, macOS push and Rust desktop OS notifications are not
+  implemented (phases 2 and 3).
 
-Future work must include explicit opt-in, session-bound device ownership, token
-rotation/invalidation, logout/account switching, durable enqueue/retry/deduplication,
-and authenticated notification-tap navigation. Keep payloads limited to opaque
-conversation/message IDs and generic copy; do not send sender names or message
-text to providers. Provider acceptance does not prove device receipt, and already
-submitted notifications cannot be recalled. Validate direct delivery on physical
-Android and signed iOS devices before advertising supported platforms.
-
-`202610030002_push.sql` and its tables remain only for published migration-history
-compatibility. The API no longer uses them to register devices or queue/deliver
-notifications, including previously queued rows. Do not edit applied migrations,
-drop existing data or reuse the legacy `endpoint_arn` column as a direct-provider
-token contract. Future direct delivery needs its own reviewed schema migration.
+`202610080002_notifications.sql` drops the unused SNS-era `push_devices`,
+`push_notifications` and `push_deliveries` tables; `202610030002_push.sql` stays
+as applied. API images from before that migration grant access to those tables at
+startup and therefore fail against the migrated database: roll the API forward,
+not back.
 
 ### Deployment order
 
@@ -4873,3 +4991,77 @@ CSS pixels/native points of mostly horizontal travel and reject vertical drags.
    command with the previous known-good web image SHA; stop native distribution
    and release a corrected higher-build-number client if needed. No data rollback
    or migration reversal is required.
+
+### Optimistic message feedback (October 8, 2026)
+
+Pin/unpin actions update the initiating client's attribution, count and Pins
+collection before HTTP confirmation. Edits preview their text immediately while
+the editor retains the draft until confirmation or conflict/error recovery.
+Sends and reactions retain their existing optimistic behavior. Other readers
+receive server-confirmed events; no speculative revision, pin sequence or replay
+cursor enters history. Failed or abandoned pin/edit intents reveal the latest
+confirmed state, including updates that arrived while the request was pending.
+Pending edit previews leave mentions as plain text until the server resolves
+their metadata for the new text; confirmed mention metadata remains in history.
+
+macOS custom buttons and menu triggers register AppKit pointing-hand cursor
+rectangles instead of setting the cursor only when the pointer enters. Disabled
+controls do not register a pointing-hand region.
+
+| Platform | Validation boundary for this change |
+| --- | --- |
+| Web desktop/narrow | `npm test`: 420 tests across 37 web/shared-native-support files; `npm run check` passes. Disposable Chromium pin/edit regressions hold requests before the server receives them, then cover acknowledgement, two-tab pin fanout, rollback/retry, revision conflicts, thread/pin projections and touch actions. Desktop and 390px touch-emulated captures inspected; not physical-device or Safari acceptance. |
+| Rust desktop | 256 tests pass, 9 existing tests ignored; fmt, full native Clippy and executable build pass. Linux 2x Xvfb renders with a labelled static fixture and delayed rejection stub show local pin attribution/count/list, retry and rollback. Not macOS/Windows or live-server/SFU acceptance. |
+| Android | Projection/rollback coverage added. Gradle unit-test invocation blocked by missing Android SDK; no Android build or device test in this orb. |
+| iOS/macOS | Projection/rollback coverage added. No Swift/Xcode build, device run or AppKit cursor runtime check in this Linux orb; native build and enabled/disabled hover acceptance remain required. |
+| Containers/services | Web build stage passes directly; Docker daemon unavailable. No API/gateway change, infrastructure/configuration change, migration, deployment or live SFU validation. Clients can release independently. |
+
+### Thread loading stability (October 8, 2026)
+
+Selecting the already open thread does not reset its state or start another
+request, including during pagination. Successful thread pages retain only their
+pagination metadata; message content stays in the live channel timeline. Closing
+and reopening a loaded thread, or switching back to it, reuses those rows and
+preserves older-page boundaries. Channel/history resets and access loss discard
+the metadata cache. This is not persistent/offline storage.
+
+Web thread controls prefetch on hover and keyboard focus. Clicks share an
+in-flight prefetch; a background response cannot open a closed panel or replace
+the selected thread. Speculative failures stay silent and do not prevent a later
+load. Cold loads show neutral message-shaped skeletons. No loading paragraph or
+skeleton is inserted above existing replies on any client. Retry remains an
+explicit action.
+
+| Platform | Validation boundary for this change |
+| --- | --- |
+| Web desktop/narrow | `npm run check` and `npm test` pass: 461 tests across 40 web/shared-native-support files. `scripts/test-message-threads.mjs` checks zero additional requests and unchanged reply coordinates on repeat clicks, hover/focus prefetch, cached reopening, cold-load skeletons, error/retry, drafts and mobile Back/inert background. Inspected 2x Chromium desktop and 390px touch-emulated captures; `(pointer:coarse)` verified. Not Safari or physical-device acceptance. |
+| Rust desktop | 279 tests pass, 9 existing tests ignored, including loopback request/pagination/cache-reset and wide/narrow egui skeleton/unchanged-reply-position regressions. Fmt, application-package Clippy (`--no-deps`) and executable build pass. Inspected 2x Linux Xvfb wide/narrow loaded/cold-thread fixtures. Dependency-inclusive Clippy is blocked by 34 existing vendored `webrtc-sys` missing-safety-doc errors. Not macOS/Windows or live-account acceptance. |
+| Android | Equivalent repeat-open/cache and cold-load skeleton behavior implemented. `./gradlew testDebugUnitTest --no-daemon` reaches configuration but is blocked by the missing Android SDK. No Android compilation, rendering or physical-device run in this orb. |
+| iOS/macOS | Equivalent behavior and a deferred-request/cache/pagination/reset regression implemented. Swift/Xcode unavailable in this Linux orb; test execution, compilation and native rendering remain required. |
+| Containers/services | Web build stage passes directly; Docker daemon unavailable. No API/gateway, infrastructure, secrets/configuration, database migration, deployment or live SFU change. |
+
+Web and native clients can release independently; merging does not deploy.
+Before distribution, check repeated thread selection with a scrolled history and
+an unsent draft, reopening after live replies/edits/reactions, loading older
+replies, retry after failure, and reconnect/access-loss recovery on real native
+clients. Roll back web using the previous known-good web image; stop native
+distribution and ship a corrected higher-build-number client if needed. No data
+rollback is required.
+
+### Returning from Pins (October 8, 2026)
+
+Web keeps the virtualized conversation mounted and measurable behind Pins, but
+invisible and inert to pointer, keyboard and accessibility navigation. Returning
+reveals the existing viewport without repeating initial measurement or showing
+an empty history. Live arrivals follow the bottom only for readers already there;
+readers in older history retain their position. Android retains its channel's
+lazy-list state across the Pins branch. Rust desktop uses a separate Pins scroll
+area without changing conversation offsets or pagination anchors. Apple already
+presents Pins as a sheet over the mounted conversation and is unchanged.
+
+| Platform | Validation boundary |
+| --- | --- |
+| Web | Build/typecheck/lint/format and 449 web/shared-native-support tests pass. Disposable Chromium regressions sample every return frame for desktop/narrow, latest/older history, live arrivals, short/empty conversations and an open thread with a draft. The timeline is invisible and unfocusable behind Pins; screenshots inspected. Narrow viewport checks are not physical-device or Safari acceptance. |
+| Rust desktop | 276 tests pass, 9 existing tests ignored, including rendered scroll-anchor/paging preservation across empty Pins. No macOS/Windows or physical-device acceptance. |
+| Android | Scroll state is hoisted above Pins navigation. Gradle compile attempt is blocked by the missing Android SDK; no native build or device verification. |
+| Deployment | Web, Android and Rust desktop can release independently. No API/gateway, infrastructure, secret/configuration, database or Apple release is required. Docker daemon unavailable; web build stages validated directly. No deployment performed. |
