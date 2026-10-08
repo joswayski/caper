@@ -1019,19 +1019,21 @@ export class ChatClient {
   }
 
   private update(change: Partial<ChatViewState>) {
-    if (change.messages) {
+    if (change.messages) change = { ...change, pinnedMessages: this.timeline.pinnedMessages };
+    if (change.messages && (this.pinIntents.size || this.editIntents.size)) {
       const project = (message: ChatMessage): ChatMessage => {
         const pin = this.pinIntents.get(message.id);
         const edit = this.editIntents.get(message.id);
-        const previewEdit = edit && (message.revision ?? 1) <= edit.expectedRevision;
-        if (!pin && !previewEdit) return message;
+        if (!pin && (!edit || (message.revision ?? 1) > edit.expectedRevision)) return message;
         return {
           ...message,
           ...(pin ? { pin: pin.pin } : {}),
-          ...(previewEdit ? { content: { ...message.content, text: edit.text, mentions: [] } } : {}),
+          ...(edit && (message.revision ?? 1) <= edit.expectedRevision
+            ? { content: { ...message.content, text: edit.text, mentions: [] } }
+            : {}),
         };
       };
-      const pinned = new Map(this.timeline.pinnedMessages.map((message) => [message.id, message]));
+      const pinned = new Map(change.pinnedMessages!.map((message) => [message.id, message]));
       for (const [id, intent] of this.pinIntents) {
         if (!intent.pin) pinned.delete(id);
         else {
@@ -1039,11 +1041,7 @@ export class ChatClient {
           if (message) pinned.set(id, message);
         }
       }
-      change = {
-        ...change,
-        messages: this.pinIntents.size || this.editIntents.size ? change.messages.map(project) : change.messages,
-        pinnedMessages: [...pinned.values()].map(project),
-      };
+      change = { ...change, messages: change.messages.map(project), pinnedMessages: [...pinned.values()].map(project) };
     }
     if (change.messages && this.reactionIntents.size) {
       change = {

@@ -126,7 +126,8 @@ if [[ -z "$changed" ]]; then
   echo "$secret_id already holds these values; nothing to change."
   exit 0
 fi
-fields="$(paste -sd ' ' <<<"$changed")"
+# The trailing - reads stdin; macOS paste requires it.
+fields="$(paste -sd ' ' - <<<"$changed")"
 if [[ "$dry_run" == true ]]; then
   echo "Dry run: would update $secret_id fields: $fields"
   exit 0
