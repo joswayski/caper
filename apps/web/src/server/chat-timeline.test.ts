@@ -299,6 +299,10 @@ test("emoji names prefer dashes while retaining spaced and underscore search ali
   assert.deepEqual(original, ["happy_face", "grinning face"], "the package catalog must stay unchanged");
   assert.deepEqual(emojiNames(["thumbs-up", "+1", "thumbs up"]), ["thumbs up", "thumbs_up", "+1", "thumbs-up"]);
   assert.equal(emojiNames(["face_with  big_eyes"]).at(-1), "face-with-big-eyes");
+  const fire = emojiNames(["af", "hot", "lit", "fire", "burn", "tool", "flame", "litaf"], "fire");
+  assert.equal(fire.at(-1), "fire", "a CLDR label replaces the package's longest alias");
+  assert.ok(fire.includes("litaf"), "the package's aliases stay searchable");
+  assert.equal(emojiNames(["dinosaur", "tyrannosaurus"], "T-Rex").at(-1), "T-Rex");
 });
 
 test("country flags prefer typeable country names and retain their original aliases", () => {

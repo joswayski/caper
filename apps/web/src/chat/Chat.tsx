@@ -90,6 +90,7 @@ export default function Chat({
   channelId,
   channelName: expectedChannelName,
   direct = false,
+  selfDirect = false,
   onReadCursor,
   initialHistory,
   initialHistoryError,
@@ -118,6 +119,7 @@ export default function Chat({
   channelId?: string;
   channelName?: string;
   direct?: boolean;
+  selfDirect?: boolean;
   onReadCursor?: (seq: string) => void;
   initialHistory?: GeneralChatHistory;
   initialHistoryError?: string;
@@ -233,7 +235,14 @@ export default function Chat({
   }, [state.phase]);
   const isTouchLayout = () => window.matchMedia("(max-width: 760px), (pointer: coarse)").matches;
   const openActions = (messageId: string, anchor: HTMLElement, inThread: boolean) =>
-    setActionTarget({ messageId, anchor, mode: "actions", drawer: isTouchLayout(), inThread });
+    setActionTarget({
+      messageId,
+      anchor,
+      anchorRect: anchor.getBoundingClientRect(),
+      mode: "actions",
+      drawer: isTouchLayout(),
+      inThread,
+    });
   const openThread = (rootId: string) => {
     setActionTarget(undefined);
     setReactorsTarget(undefined);
@@ -710,7 +719,7 @@ export default function Chat({
           <div>
             <header>
               <strong>{author?.name ?? name}</strong>
-              {author?.isGuest && <span>Guest</span>}
+              {author?.isGuest && <span className="chat-guest-badge">Guest</span>}
               <time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt, timeFormatter) : ""}</time>
               {"content" in message && !message.forward && (message.revision ?? 1) > 1 && (
                 <button
@@ -784,7 +793,12 @@ export default function Chat({
                   aria-label={`Message actions for ${message.author.name}`}
                   aria-haspopup="dialog"
                   aria-expanded={actionTarget?.messageId === message.id && actionTarget.mode === "actions"}
-                  onClick={(event) => openActions(message.id, event.currentTarget, inThread)}
+                  onClick={(event) =>
+                    // A second click on the open menu's own trigger closes it, like a toggle.
+                    actionTarget?.messageId === message.id && actionTarget.mode === "actions"
+                      ? setActionTarget(undefined)
+                      : openActions(message.id, event.currentTarget, inThread)
+                  }
                 >
                   <MoreHorizontal size={14} aria-hidden="true" />
                 </button>
@@ -811,14 +825,16 @@ export default function Chat({
                   onShowReactors={(emoji, anchor) => showReactors(message.id, emoji, anchor)}
                   pickerOpen={actionTarget?.messageId === message.id && actionTarget.mode === "emoji"}
                   onOpenPicker={(anchor) =>
-                    setActionTarget({
-                      messageId: message.id,
-                      anchor,
-                      anchorRect: anchor.getBoundingClientRect(),
-                      mode: "emoji",
-                      drawer: isTouchLayout(),
-                      inThread,
-                    })
+                    actionTarget?.messageId === message.id && actionTarget.mode === "emoji"
+                      ? setActionTarget(undefined)
+                      : setActionTarget({
+                          messageId: message.id,
+                          anchor,
+                          anchorRect: anchor.getBoundingClientRect(),
+                          mode: "emoji",
+                          drawer: isTouchLayout(),
+                          inThread,
+                        })
                   }
                   onDismissError={() => setReactionSaves((current) => ({ ...current, [message.id]: undefined }))}
                 />
@@ -980,7 +996,16 @@ export default function Chat({
         <div className="chat-messages" aria-busy={state.phase === "loading"}>
           {showPins && state.phase === "ready" && (
             <div className="chat-pins" role="region" aria-label={`Pinned messages in ${channelName}`}>
-              <h3>Pinned messages</h3>
+              <div className="chat-pins-heading">
+                <h3>Pinned messages</h3>
+                {/* Narrow layouts keep the header toggle inside the channel menu; offer the way back here. */}
+                {channelMenu && (
+                  <button type="button" className="chat-pins-toggle" onClick={() => setShowPins(false)}>
+                    <ArrowLeft size={16} aria-hidden="true" />
+                    Messages
+                  </button>
+                )}
+              </div>
               {!state.pinnedMessages.length ? (
                 <p className="chat-state">No pinned messages.</p>
               ) : (
@@ -1053,9 +1078,11 @@ export default function Chat({
               <div className="chat-state">
                 <p>No messages yet.</p>
                 <small>
-                  {direct
-                    ? `Only you and ${channelName} can read this conversation.`
-                    : `Start the conversation in #${channelName}.`}
+                  {selfDirect
+                    ? "Only you can read this conversation."
+                    : direct
+                      ? `Only you and ${channelName} can read this conversation.`
+                      : `Start the conversation in #${channelName}.`}
                 </small>
               </div>
             )}
@@ -1271,6 +1298,8 @@ export default function Chat({
                           tabIndex={-1}
                           aria-selected={index === activeOption}
                           aria-label={`Insert ${entry.name} emoji`}
+                          // The pointer moves the highlight, so Enter inserts the row under it.
+                          onMouseMove={() => index !== activeOption && setSelectedSuggestion(index)}
                           onPointerDown={(event) => event.preventDefault()}
                           onClick={() => chooseEmoji(entry)}
                         >
@@ -1308,6 +1337,7 @@ export default function Chat({
                               ? `Mention ${option.member.displayName}, @${name}`
                               : `Mention @${name}, ${specialMentionLabels[option.kind].toLowerCase()}`
                           }
+                          onMouseMove={() => index !== activeOption && setSelectedSuggestion(index)}
                           onPointerDown={(event) => event.preventDefault()}
                           onClick={() => chooseMention(option)}
                         >
@@ -1416,6 +1446,7 @@ export default function Chat({
         state={state}
         client={clientRef.current}
         channelName={channelName}
+        direct={direct}
         readOnly={readOnly}
         renderMessage={renderMessage}
         onClose={closeThread}

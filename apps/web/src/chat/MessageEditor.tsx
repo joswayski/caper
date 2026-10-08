@@ -20,7 +20,12 @@ export default function MessageEditor({
   const [error, setError] = useState<string>();
   const count = Array.from(draft).length;
   useEffect(() => {
+    // Unmounting an open modal does not restore focus; return it to the opener.
+    const opener = document.activeElement as HTMLElement | null;
     dialog.current?.showModal();
+    return () => {
+      if (opener?.isConnected) opener.focus();
+    };
   }, []);
   const save = async () => {
     if (saving || !draft.trim() || count > 4_000) return;

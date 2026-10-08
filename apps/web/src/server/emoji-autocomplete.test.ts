@@ -25,6 +25,9 @@ test("catalog search matches names, aliases and stable ranked results", () => {
   assert.equal(emojiSuggestions(catalog, "tomato")[0].emoji, "🍅");
   assert.equal(emojiSuggestions(catalog, "thumbs_up")[0].emoji, "👍");
   assert.equal(emojiSuggestions(catalog, "+1")[0].emoji, "👍");
+  assert.equal(emojiSuggestions(catalog, "fire")[0].emoji, "🔥");
+  assert.equal(emojiSuggestions(catalog, "dog")[0].emoji, "🐕");
+  assert.ok(emojiSuggestions(catalog, "fi").some((entry) => entry.emoji === "🔥"));
   assert.equal(emojiSuggestions(catalog, "WOMAN-TECHNOLOGIST")[0].emoji, "👩‍💻");
   assert.equal(
     emojiSuggestions(catalog, "red_heart")[0].emoji,

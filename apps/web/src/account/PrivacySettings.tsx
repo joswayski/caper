@@ -17,6 +17,7 @@ export default function PrivacySettings() {
   const [privacyError, setPrivacyError] = useState<string>();
   const [blocksError, setBlocksError] = useState<string>();
   const [unblocking, setUnblocking] = useState<string>();
+  const [blocksLoaded, setBlocksLoaded] = useState(false);
   const blocks = useBlocks();
   const name = useId();
 
@@ -27,11 +28,15 @@ export default function PrivacySettings() {
         if (current) setPrivacy(result.directMessages);
       })
       .catch(() => {
-        if (current) setPrivacyError("Your DM setting couldn’t load. Reopen this to try again.");
+        if (current) setPrivacyError("Your DM setting couldn’t load. Reload to try again.");
       });
-    void refreshBlocks().catch(() => {
-      if (current) setBlocksError("Blocked accounts couldn’t load. Reopen this to try again.");
-    });
+    void refreshBlocks()
+      .then(() => {
+        if (current) setBlocksLoaded(true);
+      })
+      .catch(() => {
+        if (current) setBlocksError("Blocked accounts couldn’t load. Reload to try again.");
+      });
     return () => {
       current = false;
     };
@@ -54,7 +59,8 @@ export default function PrivacySettings() {
 
   return (
     <div className="privacy-settings">
-      <fieldset disabled={!privacy || saving} aria-busy={saving}>
+      {/* Not disabled while saving: that would drop keyboard focus mid-choice; choose() ignores it. */}
+      <fieldset disabled={!privacy} aria-busy={saving}>
         <legend>Who can start a DM with you</legend>
         {choices.map((choice) => (
           <label key={choice.value}>
@@ -107,9 +113,9 @@ export default function PrivacySettings() {
               </li>
             ))}
           </ul>
-        ) : (
+        ) : blocksLoaded ? (
           <p>You haven’t blocked anyone.</p>
-        )}
+        ) : null}
         {blocksError && (
           <p className="privacy-error" role="alert">
             {blocksError}

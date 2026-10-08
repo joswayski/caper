@@ -41,7 +41,8 @@ internal fun emojiSuggestions(entries: List<EmojiEntry>, query: String, limit: I
             else -> return@mapNotNull null
         }
         rank to entry
-    }.sortedBy { it.first }.map { it.second }.take(limit).toList()
+    // Within a rank the shorter name is the closer match: ":fi" offers fire before film-frames.
+    }.sortedWith(compareBy({ it.first }, { it.second.name.length })).map { it.second }.take(limit).toList()
 }
 
 internal fun insertEmoji(value: TextFieldValue, token: EmojiToken, emoji: String, limit: Int = 4000): TextFieldValue? {

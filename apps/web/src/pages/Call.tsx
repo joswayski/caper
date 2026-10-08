@@ -409,6 +409,8 @@ interface CallProps {
     spaceId?: string;
     demo?: boolean;
     direct?: boolean;
+    /** Your own DM (notes to self). */
+    selfDirect?: boolean;
     joined?: boolean;
   };
   onReadCursor?: (seq: string) => void;
@@ -708,7 +710,9 @@ export default function Call({
 
   useEffect(() => {
     if (voiceChannel?.id && voiceChannels && !voiceChannels.some((item) => item.id === voiceChannel.id)) {
-      clientRef.current?.leaveImmediately();
+      // leave() also publishes the idle state; leaveImmediately() alone left the
+      // dock showing "Voice connected" with a hang-up button that did nothing.
+      void clientRef.current?.leave();
     }
   }, [voiceChannel?.id, voiceChannels]);
 
@@ -1561,6 +1565,7 @@ export default function Call({
             accountId={account?.id}
             identityReady={identityReady && engaged}
             direct={channel?.direct}
+            selfDirect={channel?.selfDirect}
             onReadCursor={onReadCursor}
             readOnly={!channelJoined}
             composerNotice={channelActions}
@@ -1710,7 +1715,7 @@ export default function Call({
           <button
             type="button"
             className="voice-icon-button"
-            aria-label="Close audio settings"
+            aria-label={`Close ${audioPanel === "mic" ? "audio test" : audioPanel === "debug" ? "audio diagnostics" : "connection details"}`}
             onClick={closeAudioPanel}
           >
             <X aria-hidden="true" />

@@ -28,26 +28,29 @@ export function emojiSuggestions(catalog: EmojiChoice[], query: string): EmojiCh
       (id) => catalog.find((entry) => entry.id === id) ?? [],
     );
   const needle = normalize(query);
-  return catalog
-    .map((entry) => {
-      const name = normalize(entry.name),
-        keywords = normalize(entry.keywords);
-      const rank =
-        name === needle
-          ? 0
-          : name.startsWith(needle)
-            ? 1
-            : keywords.startsWith(needle) || keywords.includes(` ${needle}`)
-              ? 2
-              : name.includes(needle) || keywords.includes(needle)
-                ? 3
-                : 4;
-      return { entry, rank };
-    })
-    .filter(({ rank }) => rank < 4)
-    .sort((a, b) => a.rank - b.rank)
-    .slice(0, 6)
-    .map(({ entry }) => entry);
+  return (
+    catalog
+      .map((entry) => {
+        const name = normalize(entry.name),
+          keywords = normalize(entry.keywords);
+        const rank =
+          name === needle
+            ? 0
+            : name.startsWith(needle)
+              ? 1
+              : keywords.startsWith(needle) || keywords.includes(` ${needle}`)
+                ? 2
+                : name.includes(needle) || keywords.includes(needle)
+                  ? 3
+                  : 4;
+        return { entry, rank };
+      })
+      .filter(({ rank }) => rank < 4)
+      // Within a rank the shorter name is the closer match: ":fi" offers 🔥 fire before 🎞️ film-frames.
+      .sort((a, b) => a.rank - b.rank || a.entry.name.length - b.entry.name.length)
+      .slice(0, 6)
+      .map(({ entry }) => entry)
+  );
 }
 
 export function insertEmoji(text: string, token: EmojiToken, emoji: string) {
@@ -58,7 +61,7 @@ export function insertEmoji(text: string, token: EmojiToken, emoji: string) {
 
 let catalog: Promise<EmojiChoice[]> | undefined;
 export function loadEmojiChoices() {
-  return (catalog ??= fetch("/emoji/twemoji-15/autocomplete-v2.json")
+  return (catalog ??= fetch("/emoji/twemoji-15/autocomplete-v3.json")
     .then(async (response) => {
       if (!response.ok) throw new Error("Emoji suggestions unavailable.");
       return (await response.json()) as EmojiChoice[];

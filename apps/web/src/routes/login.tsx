@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { AccountApiError, getAccount, requestEmailCode, verifyEmailCode } from "../account/client";
 import Wordmark from "../components/Wordmark";
 
@@ -24,6 +24,15 @@ function Login() {
   const [attemptsRemaining, setAttemptsRemaining] = useState<number>();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
+  const emailInput = useRef<HTMLInputElement>(null);
+  const codeInput = useRef<HTMLInputElement>(null);
+  /** After a failed attempt, put the caret back so the next try is one paste or retype away. */
+  const refocus = (input: HTMLInputElement | null) =>
+    requestAnimationFrame(() => {
+      if (!input || input.disabled) return;
+      input.focus();
+      input.select();
+    });
 
   useEffect(() => {
     void getAccount()
@@ -42,8 +51,10 @@ function Login() {
       setChallengeId(result.challengeId);
       setCode("");
       setAttemptsRemaining(undefined);
+      refocus(codeInput.current);
     } catch (requestError) {
       setError(loginError(requestError));
+      refocus(challengeId ? codeInput.current : emailInput.current);
     } finally {
       setPending(false);
     }
@@ -68,6 +79,7 @@ function Login() {
         if (verifyError.attemptsRemaining === 0) setCode("");
       }
       setError(loginError(verifyError));
+      refocus(codeInput.current);
     } finally {
       setPending(false);
     }
@@ -91,24 +103,29 @@ function Login() {
                 Sign-in code
               </label>
               <input
+                ref={codeInput}
                 className="w-full rounded-control border border-border bg-surface px-3.5 py-[13px] text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4 disabled:cursor-not-allowed disabled:opacity-55"
                 id="code"
                 name="code"
                 value={code}
-                onChange={(event) =>
+                onChange={(event) => {
+                  // No maxLength: it would cut a pasted " A7K29Z" before this filter runs.
                   setCode(
                     event.target.value
                       .toUpperCase()
                       .replace(/[^A-HJKMNPQRSTWXYZ2-9]/g, "")
                       .slice(0, 6),
-                  )
-                }
+                  );
+                  if (attemptsRemaining !== 0) setError(undefined);
+                }}
                 autoComplete="one-time-code"
                 autoCapitalize="characters"
+                autoCorrect="off"
                 spellCheck={false}
                 pattern="[A-HJKMNPQRSTWXYZ2-9]{6}"
-                maxLength={6}
-                disabled={pending || attemptsRemaining === 0}
+                // Read-only while checking: disabling the focused field would close the keyboard.
+                readOnly={pending}
+                disabled={attemptsRemaining === 0}
                 required
                 autoFocus
               />
@@ -124,7 +141,7 @@ function Login() {
               )}
               {attemptsRemaining === 0 ? (
                 <button
-                  className="mt-3 flex w-full cursor-pointer items-center justify-between gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
+                  className="mt-3 flex w-full cursor-pointer items-center justify-between gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content transition-colors enabled:hover:border-terracotta-bright enabled:hover:bg-terracotta-bright disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
                   type="button"
                   disabled={pending}
                   onClick={() => void sendCode()}
@@ -139,7 +156,7 @@ function Login() {
                 </button>
               ) : (
                 <button
-                  className={`mt-3 flex w-full cursor-pointer items-center gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4 ${pending ? "justify-center" : "justify-between"}`}
+                  className={`mt-3 flex w-full cursor-pointer items-center gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content transition-colors enabled:hover:border-terracotta-bright enabled:hover:bg-terracotta-bright disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4 ${pending ? "justify-center" : "justify-between"}`}
                   type="submit"
                   disabled={pending || code.length !== 6}
                 >
@@ -159,7 +176,7 @@ function Login() {
                 </button>
               )}
               <button
-                className="cursor-pointer border-0 bg-transparent py-4 text-[.85rem] text-content-muted focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
+                className="cursor-pointer border-0 bg-transparent py-4 text-[.85rem] text-content-muted transition-colors enabled:hover:text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
                 type="button"
                 disabled={pending}
                 onClick={() => {
@@ -182,15 +199,22 @@ function Login() {
                 Email address
               </label>
               <input
+                ref={emailInput}
                 className="w-full rounded-control border border-border bg-surface px-3.5 py-[13px] text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4 disabled:cursor-not-allowed disabled:opacity-55"
                 id="email"
                 name="email"
                 type="email"
                 value={email}
-                onChange={(event) => setEmail(event.target.value)}
+                onChange={(event) => {
+                  setEmail(event.target.value);
+                  setError(undefined);
+                }}
                 autoComplete="email"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
                 placeholder="you@example.com"
-                disabled={pending}
+                readOnly={pending}
                 required
                 autoFocus
               />
@@ -200,7 +224,7 @@ function Login() {
                 </p>
               )}
               <button
-                className="mt-3 ml-auto flex w-fit cursor-pointer items-center justify-between gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
+                className="mt-3 ml-auto flex w-fit cursor-pointer items-center justify-between gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content transition-colors enabled:hover:border-terracotta-bright enabled:hover:bg-terracotta-bright disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
                 type="submit"
                 disabled={pending}
               >

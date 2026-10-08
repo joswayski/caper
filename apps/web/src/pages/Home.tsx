@@ -193,7 +193,8 @@ function formatRelativeTime(committedAt: string, now: number) {
 
   let duration = (new Date(committedAt).getTime() - now) / 1_000;
   for (const division of divisions) {
-    if (Math.abs(duration) < division.amount) {
+    // Compare the rounded value, or 59.6 minutes reads "60 minutes ago" instead of "1 hour ago".
+    if (Math.abs(Math.round(duration)) < division.amount) {
       return relativeTimeFormatter.format(Math.round(duration), division.unit);
     }
     duration /= division.amount;

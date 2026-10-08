@@ -1030,7 +1030,13 @@ ImageMagick 7). Android and Rust read `shared/emoji`; SwiftPM requires a generat
 copy inside its target, checked byte-for-byte by CI, including licenses.
 Picker names use dashes (for example, `grinning-face`). Web and all native
 catalogs also include underscore and spaced search aliases (`grinning_face` and
-`grinning face`). Names are labels/search terms, not stored reaction identifiers:
+`grinning face`). The picker package orders its names by length, so its last name
+can be slang or a category (`litaf` for 🔥, `looking` for 👀, `animals` for 🐕).
+`apps/web/src/chat/emoji-labels.json` supplies the Unicode CLDR short name for those
+entries; the package's names stay searchable. Regenerate it with
+`node scripts/emoji-labels.mjs` (fetches the Emoji 15.0 `emoji-test.txt`), then
+`node scripts/native-emoji.mjs --catalog-only`. Composer suggestions rank exact,
+prefix, keyword and substring matches, preferring shorter names within a rank. Names are labels/search terms, not stored reaction identifiers:
 selecting any spelling still sends the same Unicode emoji. Existing reactions
 need no migration. The browser fixture checks all three search spellings,
 dash-separated accessible names/image alt text, and Unicode persistence.

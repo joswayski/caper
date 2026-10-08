@@ -12,6 +12,7 @@
   color: var(--text);
 }
 .voice-panel {
+  --presence-ring: var(--surface-raised);
   flex: 0 0 auto;
   margin: auto 12px 12px;
   border: 1px solid var(--border);
@@ -162,6 +163,7 @@
   cursor: pointer;
 }
 .account-profile:hover {
+  --presence-ring: var(--surface-composer);
   background: var(--surface-composer);
 }
 .account-avatar {
@@ -933,12 +935,13 @@
   font-size: 0.75rem;
 }
 .call-diagnostics dd {
+  min-width: 0;
   margin: 0;
   color: var(--text);
   font-size: 0.78rem;
   font-variant-numeric: tabular-nums;
   text-align: right;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 .call-diagnostics > p {
   margin: 12px 0 0;
@@ -954,8 +957,9 @@
 .call-account .voice-icon-button.active {
   color: var(--terracotta-bright);
 }
+/* Same hover as the mic/headphone half, so the split button reads as one control. */
 .voice-action-group .call-settings-trigger:is(:hover, :focus-visible, [aria-expanded="true"]) {
-  background: var(--border);
+  background: var(--surface-composer);
   color: #fff;
 }
 .call-account .voice-icon-button[aria-disabled="true"] {
@@ -1064,6 +1068,9 @@
   border-radius: 11px;
   background: var(--border);
   cursor: pointer;
+  transition:
+    background-color 150ms ease,
+    border-color 150ms ease;
 }
 .device-options input[role="switch"]::after {
   position: absolute;
@@ -1074,6 +1081,7 @@
   border-radius: 50%;
   background: var(--text);
   content: "";
+  transition: transform 150ms ease;
 }
 .device-options input[role="switch"]:checked {
   background: var(--terracotta);
@@ -1224,7 +1232,7 @@
   color: var(--text);
 }
 .audio-debug p {
-  color: var(--muted);
+  color: var(--text-muted);
   line-height: 1.5;
 }
 .audio-debug pre {
@@ -1249,6 +1257,7 @@
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   border-radius: 8px;
+  transition: background-color 140ms ease;
 }
 .channel-row:has(.channel-link[aria-current]) {
   background: rgb(182 77 50 / 0.14);

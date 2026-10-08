@@ -7,6 +7,7 @@ export default function ThreadPanel({
   state,
   client,
   channelName,
+  direct = false,
   readOnly,
   renderMessage,
   onClose,
@@ -14,6 +15,8 @@ export default function ThreadPanel({
   state: ChatViewState;
   client?: ChatClient;
   channelName: string;
+  /** A DM thread: its conversation is a person, not a #channel. */
+  direct?: boolean;
   readOnly: boolean;
   renderMessage: (index: number, message: ChatMessage, inThread: boolean) => ReactNode;
   onClose: () => void;
@@ -87,6 +90,8 @@ export default function ThreadPanel({
       if (
         event.key === "Escape" &&
         !event.defaultPrevented &&
+        // Escape that cancels an input-method composition must not also close the thread.
+        !event.isComposing &&
         !document.querySelector(".chat-reaction-picker, .chat-message-actions, .chat-reactors, .chat-edit-dialog[open]")
       )
         onClose();
@@ -108,7 +113,8 @@ export default function ThreadPanel({
       return old.text === pending.text ? { ...current, [pending.threadRootId!]: { ...old, text: "" } } : current;
     });
   }, [pending?.clientMessageId]);
-  useEffect(() => {
+  // Layout effect: pin to the newest reply before paint, not one frame later.
+  useLayoutEffect(() => {
     if (scroll.current && follow.current) scroll.current.scrollTop = scroll.current.scrollHeight;
   }, [rootId, replies.at(-1)?.id, pending?.clientMessageId, state.thread?.loading]);
   useLayoutEffect(() => {
@@ -138,12 +144,17 @@ export default function ThreadPanel({
       aria-modal={mobile || undefined}
     >
       <header className="chat-thread-heading">
-        <button type="button" className="chat-thread-back" onClick={onClose} aria-label="Back to channel">
+        <button
+          type="button"
+          className="chat-thread-back"
+          onClick={onClose}
+          aria-label={direct ? "Back to conversation" : "Back to channel"}
+        >
           <ArrowLeft size={20} />
         </button>
         <div>
           <h2 id="chat-thread-heading">Thread</h2>
-          <span>in #{channelName}</span>
+          <span>in {direct ? channelName : `#${channelName}`}</span>
         </div>
         <button type="button" className="chat-thread-close" onClick={onClose} aria-label="Close thread">
           <X size={20} />
@@ -301,7 +312,7 @@ export default function ThreadPanel({
                     disabled={!!pending}
                     onChange={(event) => update({ broadcast: event.target.checked })}
                   />
-                  Also send to #{channelName}
+                  {direct ? "Also send to the conversation" : `Also send to #${channelName}`}
                 </label>
                 <button
                   type="submit"

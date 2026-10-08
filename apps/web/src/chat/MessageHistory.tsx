@@ -121,9 +121,14 @@ export default function MessageHistory({ message, onClose }: { message: ChatMess
   useEffect(() => {
     // The dialog's key follows the content revision, so live edits refresh history.
     controller.current = new AbortController();
+    // Unmounting an open modal does not restore focus; return it to the opener.
+    const opener = document.activeElement as HTMLElement | null;
     dialog.current?.showModal();
     void load();
-    return () => controller.current.abort();
+    return () => {
+      controller.current.abort();
+      if (opener?.isConnected) opener.focus();
+    };
   }, []);
   const current = versions[0],
     latestPrevious = versions[1];

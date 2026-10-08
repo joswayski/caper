@@ -19,7 +19,7 @@ export default function NotificationSettings() {
   useEffect(() => {
     let current = true;
     void refreshNotificationSettings().catch(() => {
-      if (current) setError("Your notification setting couldn’t load. Reopen this to try again.");
+      if (current) setError("Your notification setting couldn’t load. Reload to try again.");
     });
     return () => {
       current = false;
@@ -38,7 +38,8 @@ export default function NotificationSettings() {
   return (
     <section className="privacy-settings notification-settings" aria-labelledby={`${name}-title`}>
       <h3 id={`${name}-title`}>Notifications</h3>
-      <fieldset disabled={!settings.loaded || saving} aria-busy={saving}>
+      {/* Not disabled while saving: that would drop keyboard focus mid-choice; choose() ignores it. */}
+      <fieldset disabled={!settings.loaded} aria-busy={saving}>
         <legend>Notify me about</legend>
         {choices.map((choice) => (
           <label key={choice.value}>

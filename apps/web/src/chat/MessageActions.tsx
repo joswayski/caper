@@ -97,7 +97,7 @@ export default function MessageActions({
     },
     placement: "bottom-end",
     strategy: "fixed",
-    middleware: [offset(6), flip(), shift({ padding: 12 })],
+    middleware: [offset(6), flip(), shift({ padding: 12, crossAxis: true })],
     whileElementsMounted: autoUpdate,
   });
   const { getFloatingProps } = useInteractions([useDismiss(context), useRole(context)]);
@@ -207,7 +207,7 @@ export default function MessageActions({
             <div className="chat-copy-actions">
               {onReply && (
                 <button type="button" onClick={onReply}>
-                  <MessageSquare size={20} aria-hidden="true" />
+                  <MessageSquare size={16} aria-hidden="true" />
                   Reply in thread
                 </button>
               )}

@@ -531,7 +531,7 @@ def main() -> None:
     assert find(channel_menu, text="Channel settings") is not None
     assert find(channel_menu, contains="invite") is None
     tap(text="Channel settings")
-    overview = capture("caper-android-channel-settings", "Overview")
+    overview = capture("caper-android-channel-settings", "Private channel")
     for required in (
         "Private channel",
         "Only you and the people you add can view or join.",

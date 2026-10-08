@@ -836,7 +836,7 @@ final class CaperParityUITests: XCTestCase {
         let settings = app.descendants(matching: .any)["Channel settings"].firstMatch
         XCTAssertTrue(settings.waitForExistence(timeout: 3))
         settings.tap()
-        assertStaticText("Overview", in: app, timeout: 3)
+        assertStaticText("Channel settings", in: app, timeout: 3)
         XCTAssertEqual(app.textFields["project-updates"].value as? String, "general", "The menu opens its own channel's editor")
         capture("channel-settings-from-menu", app: app)
     }
@@ -1894,7 +1894,7 @@ final class CaperParityUITests: XCTestCase {
 
     func testPrivateChannelOverview() {
         let app = launch(fixture: "manage-channel")
-        assertStaticText("Overview", in: app)
+        assertStaticText("Channel settings", in: app)
         assertStaticText("Private channel", in: app, timeout: 2)
         capture("private-channel-overview", app: app)
     }

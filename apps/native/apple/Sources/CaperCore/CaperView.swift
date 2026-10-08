@@ -1843,7 +1843,9 @@ private struct ChatView: View {
                         } else if chat.messages.isEmpty && !chat.loading && chat.pendingMessage == nil {
                             VStack(spacing: 7) {
                                 Text("No messages yet.").font(CaperTheme.font(14, weight: .medium))
-                                Text(model.selectedDirectMessageID == nil ? "Start the conversation in #\(chat.channelName.lowercased())." : "Only you and \(chat.channelName) can read this conversation.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                                Text(model.selectedDirectMessageID == nil ? "Start the conversation in #\(chat.channelName.lowercased())."
+                                     : model.selectedDirectMessage?.peer.id == model.account?.id ? "Only you can read this conversation."
+                                     : "Only you and \(chat.channelName) can read this conversation.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                             }.padding(.top, 80)
                         }
                     }
@@ -2126,9 +2128,9 @@ private struct NativeThreadView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                VStack(alignment: .leading, spacing: 3) { Text("Thread").font(CaperTheme.font(15, weight: .bold)); Text("in #\(chat.channelName)").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1) }
+                VStack(alignment: .leading, spacing: 3) { Text("Thread").font(CaperTheme.font(15, weight: .bold)); Text(model.selectedDirectMessageID == nil ? "in #\(chat.channelName)" : "in \(chat.channelName)").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1) }
                 Spacer()
-                Button("Back to channel") { chat.closeThread() }.buttonStyle(.plain).font(CaperTheme.font(12)).modifier(ControlHover())
+                Button(model.selectedDirectMessageID == nil ? "Back to channel" : "Back to conversation") { chat.closeThread() }.buttonStyle(.plain).font(CaperTheme.font(12)).modifier(ControlHover())
             }.padding(.horizontal, 18).frame(height: 50)
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
             ScrollViewReader { proxy in
@@ -2181,7 +2183,7 @@ private struct NativeThreadView: View {
                     .background(CaperTheme.composer)
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
                 HStack {
-                    Toggle("Also send to #\(chat.channelName)", isOn: $chat.threadBroadcast).font(CaperTheme.font(11)).disabled(chat.pendingMessage != nil)
+                    Toggle(model.selectedDirectMessageID == nil ? "Also send to #\(chat.channelName)" : "Also send to the conversation", isOn: $chat.threadBroadcast).font(CaperTheme.font(11)).disabled(chat.pendingMessage != nil)
                     Button("Send reply") { Task { await chat.send(inThread: true) } }.buttonStyle(CaperPrimaryButton())
                         .disabled(chat.sending || chat.sendRejected || chat.threadLoading || chat.pendingMessage != nil || MessageValidation.error(for: chat.threadDraft) != nil)
                 }
@@ -4140,7 +4142,7 @@ private struct ChannelEditor: View {
     private var dirty: Bool { channel.map { name != $0.name || privateChannel != $0.private } ?? false }
     var body: some View {
         VStack(spacing: 0) {
-            SheetHeader(title: channel == nil ? "Create a channel" : "Overview", close: close)
+            SheetHeader(title: channel == nil ? "Create a channel" : "Channel settings", close: close)
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     VStack(alignment: .leading, spacing: 7) {

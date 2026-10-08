@@ -4,12 +4,13 @@
   bottom: 0;
   width: 11px;
   height: 11px;
-  border: 2px solid var(--surface);
+  /* The ring cuts the dot out of the avatar, so it matches the surface behind it. */
+  border: 2px solid var(--presence-ring, var(--surface));
   border-radius: 50%;
   background: var(--border);
 }
 .presence-dot[data-status="online"] {
-  background: var(--caper-green, #637a43);
+  background: var(--caper);
 }
 .presence-dot[data-status="idle"] {
   background: #c58b3c;

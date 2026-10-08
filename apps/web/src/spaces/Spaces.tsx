@@ -18,12 +18,12 @@ import { getAccount, normalizeUsername, usernameError, type Account } from "../a
 import { playSound, preloadSoundEffects } from "../audio/effects";
 import { ChatHistoryError } from "../chat/client";
 import Wordmark from "../components/Wordmark";
-import Avatar from "../components/Avatar";
+import Avatar, { initial } from "../components/Avatar";
 import Call, { type VoiceSlot } from "../pages/Call";
 import ChannelSidebar from "../pages/ChannelSidebar";
 import MemberPresence from "./MemberPresence";
 import { block, refreshBlocks, unblock, useBlockedIds } from "./blocks";
-import { DirectNotificationItems, LevelNotificationItems } from "./NotificationMenu";
+import { closeMenu, DirectNotificationItems, LevelNotificationItems } from "./NotificationMenu";
 import {
   changeChannelNotifications,
   changeDirectNotifications,
@@ -81,6 +81,8 @@ import {
   type SpaceLimits,
 } from "./client";
 import "./spaces.css";
+
+const directNotAccessible = "This conversation is not accessible.";
 
 function errorMessage(error: unknown) {
   if (error instanceof SpacesApiError) {
@@ -269,6 +271,7 @@ function NameField({
   channel = false,
   privateChannel = false,
   showIcon = false,
+  initialFocus = false,
 }: {
   label: string;
   value: string;
@@ -276,6 +279,8 @@ function NameField({
   channel?: boolean;
   privateChannel?: boolean;
   showIcon?: boolean;
+  /** Focus on open. Inside Dialog, autoFocus runs before showModal() and is lost. */
+  initialFocus?: boolean;
 }) {
   return (
     <label className="space-field">
@@ -283,7 +288,8 @@ function NameField({
       <span className={showIcon ? "channel-name-input" : undefined}>
         {showIcon && (privateChannel ? <LockKeyhole aria-hidden="true" /> : <Hash aria-hidden="true" />)}
         <input
-          autoFocus
+          autoFocus={initialFocus}
+          data-initial-focus={initialFocus || undefined}
           value={value}
           maxLength={80}
           autoComplete="off"
@@ -346,21 +352,23 @@ function ChannelPrivacy({
 function SubmitRow({
   pending,
   label,
+  pendingLabel,
   onCancel,
   destructive = false,
 }: {
   pending: boolean;
   label: string;
+  pendingLabel: string;
   onCancel: () => void;
   destructive?: boolean;
 }) {
   return (
     <div className="space-dialog-actions">
-      <button type="button" className="secondary" onClick={onCancel}>
+      <button type="button" className="secondary" disabled={pending} onClick={onCancel}>
         Cancel
       </button>
       <button type="submit" className={destructive ? "danger" : "primary"} disabled={pending}>
-        {pending ? "Saving…" : label}
+        {pending ? pendingLabel : label}
       </button>
     </div>
   );
@@ -394,7 +402,7 @@ function CreateSpaceForm({
   };
   const form = (
     <form onSubmit={(event) => void submit(event)}>
-      <NameField label="Space name" value={name} onChange={setName} />
+      <NameField label="Space name" value={name} onChange={setName} initialFocus />
       {error && (
         <p className="space-form-error" role="alert">
           {error}
@@ -413,7 +421,13 @@ function CreateSpaceForm({
     </form>
   );
   return onCancel ? (
-    <Dialog title="Create a space" dismissOnBackdrop={!pending} onClose={onCancel}>
+    <Dialog
+      title="Create a space"
+      dismissOnBackdrop={!pending}
+      onClose={() => {
+        if (!pending) onCancel();
+      }}
+    >
       {form}
     </Dialog>
   ) : (
@@ -453,11 +467,18 @@ function CreateChannelDialog({
     }
   };
   return (
-    <Dialog title="Create a channel" dismissOnBackdrop={!pending} onClose={onClose}>
+    <Dialog
+      title="Create a channel"
+      dismissOnBackdrop={!pending}
+      onClose={() => {
+        if (!pending) onClose();
+      }}
+    >
       <form onSubmit={(event) => void submit(event)}>
         <NameField
           channel
           showIcon
+          initialFocus
           privateChannel={privateChannel}
           label="Channel name"
           value={name}
@@ -472,7 +493,7 @@ function CreateChannelDialog({
             {error}
           </p>
         )}
-        <SubmitRow pending={pending} label="Create channel" onCancel={onClose} />
+        <SubmitRow pending={pending} label="Create channel" pendingLabel="Creating…" onCancel={onClose} />
       </form>
     </Dialog>
   );
@@ -495,7 +516,9 @@ function LeaveSpaceDialog({
     <Dialog
       title={`Leave ${space.name}?`}
       description="You will lose access to its channels and conversations. An owner can add you again later."
-      onClose={onClose}
+      onClose={() => {
+        if (!pending) onClose();
+      }}
     >
       <form
         onSubmit={(event) => {
@@ -515,13 +538,14 @@ function LeaveSpaceDialog({
             {error}
           </p>
         )}
-        <SubmitRow pending={pending} label="Leave space" destructive onCancel={onClose} />
+        <SubmitRow pending={pending} label="Leave space" pendingLabel="Leaving…" destructive onCancel={onClose} />
       </form>
     </Dialog>
   );
 }
 
 function MemberManager({
+  scope,
   members,
   invitations,
   onCancel,
@@ -529,6 +553,7 @@ function MemberManager({
   onRemove,
   pending,
 }: {
+  scope: "space" | "channel";
   members: Member[];
   invitations?: Member[];
   onCancel?: (member: Member) => Promise<void>;
@@ -554,7 +579,7 @@ function MemberManager({
           const invalid = usernameError(username);
           if (invalid) return setError(invalid);
           if (invitations && members.some((member) => member.username === username))
-            return setError("This person is already in the space.");
+            return setError(`This person is already in the ${scope}.`);
           if (invitations?.some((member) => member.username === username))
             return setError("This person already has a pending invitation.");
           submitting.current = true;
@@ -585,7 +610,8 @@ function MemberManager({
           maxLength={32}
           pattern="[a-z0-9_]{3,32}"
           required
-          disabled={pending}
+          // Read-only, not disabled: disabling the focused field drops focus to the page.
+          readOnly={pending}
           placeholder="Exact username"
           onChange={(event) => {
             setUsername(normalizeUsername(event.target.value));
@@ -646,7 +672,7 @@ function MemberManager({
             {invitations.map((member) => (
               <li key={member.id}>
                 <span className="member-avatar" aria-hidden="true">
-                  {member.displayName.slice(0, 1).toUpperCase()}
+                  <Avatar avatarId={member.avatarId} name={member.displayName} />
                 </span>
                 <span>
                   <strong>{member.displayName}</strong>
@@ -742,6 +768,7 @@ function ManageSpaceDialog({
         </p>
       )}
       <MemberManager
+        scope="space"
         members={members}
         invitations={invitations}
         pending={pending}
@@ -828,7 +855,7 @@ function ManageChannelDialog({
         .catch((reason) => setError(errorMessage(reason)));
   }, [channel.id, channel.private, detail.space.id]);
   return (
-    <Dialog title="Overview" onClose={onClose} width="wide" dismissOnBackdrop>
+    <Dialog title="Channel settings" onClose={onClose} width="wide" dismissOnBackdrop>
       <form
         id="channel-overview"
         onSubmit={(event) => {
@@ -856,6 +883,7 @@ function ManageChannelDialog({
       )}
       {channel.private && (
         <MemberManager
+          scope="channel"
           members={members}
           invitations={invitations}
           pending={pending}
@@ -935,8 +963,10 @@ function StartDirectDialog({
     <Dialog
       title="New direct message"
       description="Enter an exact username. Conversations stay private across all your spaces."
-      dismissOnBackdrop
-      onClose={onClose}
+      dismissOnBackdrop={!pending}
+      onClose={() => {
+        if (!pending) onClose();
+      }}
     >
       <form
         onSubmit={(event) => {
@@ -955,8 +985,11 @@ function StartDirectDialog({
         <label className="space-field">
           Username
           <input
-            autoFocus
+            data-initial-focus
             autoComplete="off"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
             value={username}
             maxLength={33}
             placeholder="@username"
@@ -968,7 +1001,7 @@ function StartDirectDialog({
             {error}
           </p>
         )}
-        <SubmitRow pending={pending} label="Open conversation" onCancel={onClose} />
+        <SubmitRow pending={pending} label="Open conversation" pendingLabel="Opening…" onCancel={onClose} />
       </form>
     </Dialog>
   );
@@ -1134,13 +1167,15 @@ function InvitationDialog({
   onAccepted: (space: Space) => void;
   onDeclined: () => void;
 }) {
-  const [pending, setPending] = useState(false);
+  // Which answer is in flight, so only that button reports progress.
+  const [responding, setResponding] = useState<"accept" | "decline">();
+  const pending = !!responding;
   const [error, setError] = useState<string>();
   const submitting = useRef(false);
   const respond = async (accept: boolean) => {
     if (submitting.current) return;
     submitting.current = true;
-    setPending(true);
+    setResponding(accept ? "accept" : "decline");
     setError(undefined);
     try {
       if (accept) onAccepted(await acceptSpaceInvitation(space.id));
@@ -1154,7 +1189,7 @@ function InvitationDialog({
       } else setError(errorMessage(reason));
     } finally {
       submitting.current = false;
-      setPending(false);
+      setResponding(undefined);
     }
   };
   return (
@@ -1185,10 +1220,10 @@ function InvitationDialog({
             disabled={pending}
             onClick={() => void respond(false)}
           >
-            Decline
+            {responding === "decline" ? "Declining…" : "Decline"}
           </button>
           <button className="primary" type="button" disabled={pending} onClick={() => void respond(true)}>
-            {pending ? "Saving…" : "Accept invitation"}
+            {responding === "accept" ? "Joining…" : "Accept invitation"}
           </button>
         </div>
       </div>
@@ -1266,13 +1301,15 @@ function ChannelInvitationDialog({
   onClose: () => void;
   onRespond: (accept: boolean) => Promise<void>;
 }) {
-  const [pending, setPending] = useState(false);
+  // Which answer is in flight, so only that button reports progress.
+  const [responding, setResponding] = useState<"accept" | "decline">();
+  const pending = !!responding;
   const [error, setError] = useState<string>();
   const submitting = useRef(false);
   const respond = async (accept: boolean) => {
     if (submitting.current) return;
     submitting.current = true;
-    setPending(true);
+    setResponding(accept ? "accept" : "decline");
     setError(undefined);
     try {
       await onRespond(accept);
@@ -1280,7 +1317,7 @@ function ChannelInvitationDialog({
       setError(errorMessage(reason));
     } finally {
       submitting.current = false;
-      setPending(false);
+      setResponding(undefined);
     }
   };
   return (
@@ -1314,10 +1351,10 @@ function ChannelInvitationDialog({
             disabled={pending}
             onClick={() => void respond(false)}
           >
-            Decline
+            {responding === "decline" ? "Declining…" : "Decline"}
           </button>
           <button type="button" className="primary" disabled={pending} onClick={() => void respond(true)}>
-            {pending ? "Saving…" : "Accept invitation"}
+            {responding === "accept" ? "Joining…" : "Accept invitation"}
           </button>
         </div>
       </div>
@@ -1410,6 +1447,8 @@ export default function Spaces({
   const [view, setView] = useState<PreparedSpace>();
   const [directs, setDirects] = useState<DirectConversation[]>([]);
   const [directError, setDirectError] = useState<string>();
+  // A DM link is judged only against a loaded list, never the initial empty one.
+  const [directsLoaded, setDirectsLoaded] = useState(false);
   const [selfDirectPending, setSelfDirectPending] = useState(false);
   const [requestsOpen, setRequestsOpen] = useState(false);
   const [blockTarget, setBlockTarget] = useState<BlockedAccount>();
@@ -1481,10 +1520,13 @@ export default function Spaces({
 
   useEffect(() => {
     const dismiss = (event: PointerEvent) => {
+      // Every menu, including DM rows outside the channel list and the narrow-layout
+      // channel title menu: Safari does not focus a tapped <summary>, so onBlur alone
+      // never closes them on an outside tap.
       for (const menu of [
         spaceMenu.current,
         channelMenu.current,
-        ...(channelNavigationRef.current?.querySelectorAll<HTMLDetailsElement>(".channel-menu[open]") ?? []),
+        ...document.querySelectorAll<HTMLDetailsElement>(".channel-menu[open], .chat-channel-menu[open]"),
       ]) {
         if (menu && !menu.contains(event.target as Node)) menu.open = false;
       }
@@ -1550,6 +1592,7 @@ export default function Spaces({
   const refreshDirects = async () => {
     try {
       setDirects((await listDirectConversations()).conversations);
+      setDirectsLoaded(true);
       setDirectError(undefined);
     } catch (reason) {
       setDirectError(errorMessage(reason));
@@ -1589,21 +1632,22 @@ export default function Spaces({
 
   const directAccessible = directs.some((item) => item.id === selected.dmId);
   useEffect(() => {
-    if (loading || !selected.dmId) {
+    if (loading || !directsLoaded || !selected.dmId) {
       setDirectView(undefined);
       return;
     }
     const conversation = directs.find((item) => item.id === selected.dmId);
     if (!conversation) {
       setDirectView(undefined);
-      setDirectError("This conversation is not accessible.");
+      setDirectError(directNotAccessible);
       return;
     }
+    setDirectError((error) => (error === directNotAccessible ? undefined : error));
     // ChatClient owns the history read, its cancellation, and explicit retries.
     // Mounting it while also fetching here issued two reads for every DM open.
     setDirectView({ conversation });
     setNavigationOpen(false);
-  }, [selected.dmId, loading, directAccessible]);
+  }, [selected.dmId, loading, directsLoaded, directAccessible]);
 
   const readDirect = (seq: string) => {
     const conversation = directView?.conversation;
@@ -1663,6 +1707,7 @@ export default function Spaces({
           if (current) setDirectError(errorMessage(reason));
         }
         if (!current) return;
+        setDirectsLoaded(true);
         setLoading(false);
         if (![...result.spaces, ...(result.invitations ?? [])].some((space) => space.id === selected.spaceId))
           choose(result.spaces[0]?.id, undefined, true, selected.dmId);
@@ -2283,7 +2328,7 @@ export default function Spaces({
               onFocus={() => prefetch(space.id)}
               onClick={() => choose(space.id)}
             >
-              <span>{space.name.slice(0, 1).toUpperCase()}</span>
+              <span>{initial(space.name)}</span>
               {muted && <BellOff className="space-rail-muted" aria-hidden="true" />}
             </button>
           </div>
@@ -2298,7 +2343,8 @@ export default function Spaces({
           aria-label={`Invitation to ${space.name}`}
           onClick={() => choose(space.id)}
         >
-          <LockKeyhole aria-hidden="true" />
+          {/* The space's initial in a dashed tile, as on Apple, Android and desktop. */}
+          <span aria-hidden="true">{initial(space.name)}</span>
         </button>
       ))}
       <button
@@ -2368,8 +2414,8 @@ export default function Spaces({
               <div className="space-actions">
                 <button
                   type="button"
-                  onClick={() => {
-                    spaceMenu.current!.open = false;
+                  onClick={(event) => {
+                    closeMenu(event);
                     setBrowseOpen(true);
                   }}
                 >
@@ -2391,8 +2437,8 @@ export default function Spaces({
                   <>
                     <button
                       type="button"
-                      onClick={() => {
-                        spaceMenu.current!.open = false;
+                      onClick={(event) => {
+                        closeMenu(event);
                         setDialog("manage-space");
                       }}
                     >
@@ -2404,8 +2450,8 @@ export default function Spaces({
                   <button
                     type="button"
                     className="leave-space"
-                    onClick={() => {
-                      spaceMenu.current!.open = false;
+                    onClick={(event) => {
+                      closeMenu(event);
                       setDialog("leave-space");
                     }}
                   >
@@ -2469,8 +2515,8 @@ export default function Spaces({
                   <button
                     type="button"
                     disabled={!canCreateChannel}
-                    onClick={() => {
-                      channelMenu.current!.open = false;
+                    onClick={(event) => {
+                      closeMenu(event);
                       setDialog("channel");
                     }}
                   >
@@ -2479,8 +2525,8 @@ export default function Spaces({
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
-                      channelMenu.current!.open = false;
+                    onClick={(event) => {
+                      closeMenu(event);
                       setChannelsExpanded((value) => !value);
                     }}
                   >
@@ -2632,12 +2678,17 @@ export default function Spaces({
             {rail}
             <ChannelSidebar>
               <div className="sidebar-channels">{channelNavigation(() => null)}</div>
-              <div className="empty-channel-account">
+              {/* Without a channel there is no voice dock; keep profile, settings and log out reachable. */}
+              <a
+                className="empty-channel-account"
+                href="/profile"
+                aria-label={`Edit profile for ${account?.displayName ?? "your account"}`}
+              >
                 <span className="account-avatar" aria-hidden="true">
                   <Avatar avatarId={account?.avatarId} name={account?.displayName ?? ""} />
                 </span>
                 <strong>{account?.displayName}</strong>
-              </div>
+              </a>
             </ChannelSidebar>
             <div className="stage empty-channel">
               <button
@@ -2658,22 +2709,26 @@ export default function Spaces({
                     ? "Browse channels or create one to start a conversation."
                     : "Browse channels to find a conversation, or accept a private channel invitation."}
               </p>
-              <button type="button" onClick={() => setBrowseOpen(true)}>
-                Browse channels
-              </button>
-              {owner && (
-                <button type="button" onClick={() => setDialog("channel")}>
-                  Create channel
+              {/* One primary action; the alternatives are secondary. */}
+              <div className="empty-channel-actions">
+                {spaces.length ? (
+                  <button type="button" onClick={() => setBrowseOpen(true)}>
+                    Browse channels
+                  </button>
+                ) : (
+                  <button type="button" onClick={() => setDialog("space")}>
+                    Create your first space
+                  </button>
+                )}
+                {owner && (
+                  <button type="button" onClick={() => setDialog("channel")}>
+                    Create channel
+                  </button>
+                )}
+                <button type="button" onClick={() => setDialog("direct")}>
+                  New direct message
                 </button>
-              )}
-              {!spaces.length && (
-                <button type="button" onClick={() => setDialog("space")}>
-                  Create your first space
-                </button>
-              )}
-              <button type="button" onClick={() => setDialog("direct")}>
-                New direct message
-              </button>
+              </div>
             </div>
           </section>
         </main>
@@ -2749,6 +2804,7 @@ export default function Spaces({
           spaceId: detail.space.id,
           demo: detail.space.demo,
           direct: !!directView,
+          selfDirect: !!currentDirect && currentDirect.peer.id === account?.id,
           // An open request or a blocked DM replaces the composer.
           joined: currentDirect ? !directLocked : channel.joined,
         }}

@@ -40,7 +40,10 @@ export default function ProfileForm({
         name="username"
         value={username}
         onChange={(event) => setUsername(normalizeUsername(event.target.value))}
-        autoComplete="username"
+        autoComplete="off"
+        autoCapitalize="none"
+        autoCorrect="off"
+        spellCheck={false}
         minLength={3}
         maxLength={32}
         pattern="[a-z0-9_]{3,32}"
@@ -73,7 +76,7 @@ export default function ProfileForm({
         {error}
       </p>
       <button
-        className="mt-7 flex w-full cursor-pointer items-center justify-between gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
+        className="mt-7 flex w-full cursor-pointer items-center justify-between gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content transition-colors enabled:hover:border-terracotta-bright enabled:hover:bg-terracotta-bright disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
         type="submit"
         disabled={pending}
       >

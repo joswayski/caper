@@ -122,6 +122,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
+/** First character of a name, whole even when it is an emoji (a surrogate pair). */
+internal fun initialOf(name: String): String {
+    val trimmed = name.trim()
+    return if (trimmed.isEmpty()) "" else trimmed.substring(0, trimmed.offsetByCodePoints(0, 1)).uppercase()
+}
+
 class MainActivity : ComponentActivity() {
     private val viewModel: CaperViewModel by viewModels()
     private val dailyBranding by lazy { DailyBrandingAvatar(applicationContext) }
@@ -245,7 +251,7 @@ internal data class VoiceJoinIntent(
             { viewModel.declineInvitation(shown.space) { overlay = null } })
         Overlay.ManageSpace -> state.selectedSpace?.let { detail -> ManageSpaceDialog(state, detail, viewModel, { overlay = null }) }
         Overlay.CreateChannel -> state.selectedSpace?.let { detail -> CreateChannelDialog(detail, state.busy, { overlay = null }) { name, private ->
-            // Web opens a new private channel's Overview so people can be added.
+            // Web opens a new private channel's settings so people can be added.
             viewModel.createChannel(name, private) { created -> overlay = if (created.private) Overlay.ManageChannel(created) else null }
         } }
         Overlay.StartDirect -> StartDirectDialog(state.busy, { overlay = null }) { username -> viewModel.startDirect(username) { overlay = null } }
@@ -450,7 +456,7 @@ private fun Modifier.browseSwipe(open: Boolean, enabled: Boolean, onOpenChange: 
                             .semantics { contentDescription = space.name; if (muted) stateDescription = "Muted" },
                         color = if (selected) TerracottaDark else Surface, shape = MaterialTheme.shapes.medium,
                         border = BorderStroke(1.dp, if (selected) TerracottaBorder else Border),
-                    ) { Box(contentAlignment = Alignment.Center) { Text(space.name.take(1).uppercase(), fontWeight = FontWeight.Black, color = if (selected) Color.White else TextMuted) } }
+                    ) { Box(contentAlignment = Alignment.Center) { Text(initialOf(space.name), fontWeight = FontWeight.Black, color = if (selected) Color.White else TextMuted) } }
                     if (muted) Box(Modifier.align(Alignment.BottomEnd).offset(x = 3.dp, y = 3.dp).background(Blackout, CircleShape).padding(2.dp).clearAndSetSemantics {}) { MutedBell() }
                 }
             }
@@ -461,7 +467,7 @@ private fun Modifier.browseSwipe(open: Boolean, enabled: Boolean, onOpenChange: 
                     contentDescription = "Invitation to ${invitation.name}"
                 },
                 color = Surface, shape = MaterialTheme.shapes.medium, border = BorderStroke(1.dp, TerracottaBorder),
-            ) { Box(contentAlignment = Alignment.Center) { Text("!", color = TerracottaBright, fontWeight = FontWeight.Black) } }
+            ) { Box(contentAlignment = Alignment.Center) { Text(initialOf(invitation.name), color = TerracottaBright, fontWeight = FontWeight.Black) } }
         }
         val limits = state.limits
         val canCreateSpace = limits != null && state.spaces.count { it.ownerId == state.account?.id } < limits.ownedSpaces &&
@@ -1053,8 +1059,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     }
     Column(modifier.background(SurfaceConversation).border(BorderStroke(1.dp, Border))) {
         Row(Modifier.fillMaxWidth().height(53.dp).padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("Thread · #${state.selectedChannel?.name}", Modifier.weight(1f), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            TextButton(viewModel::closeThread) { Text("Back to channel") }
+            val direct = state.selectedDirectId != null
+            Text(if (direct) "Thread · ${state.selectedChannel?.name}" else "Thread · #${state.selectedChannel?.name}", Modifier.weight(1f), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            TextButton(viewModel::closeThread) { Text(if (direct) "Back to conversation" else "Back to channel") }
         }
         HorizontalDivider(color = Border)
         thread.error?.let { Text(it, Modifier.padding(12.dp), color = ErrorText); TextButton({ viewModel.loadThread() }) { Text("Retry") } }
@@ -1075,7 +1082,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = KeyboardActions(onSend = { send() }), enabled = !thread.loading)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(pending?.broadcast ?: broadcast, { broadcast = it }, enabled = pending == null)
-                Text("Also send to #${state.selectedChannel?.name}", Modifier.weight(1f), fontSize = 12.sp)
+                Text(if (state.selectedDirectId != null) "Also send to the conversation" else "Also send to #${state.selectedChannel?.name}", Modifier.weight(1f), fontSize = 12.sp)
                 TextButton(::send, enabled = !thread.loading && state.chatAuthorId != null && state.pendingMessage == null && draft.isNotBlank()) { Text("Send reply") }
             }
             if (state.pendingMessage?.error != null && pending == null) Text("Confirm or dismiss the pending message first.", color = TextMuted)
@@ -1460,7 +1467,14 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         if (messages.isEmpty() && state.pendingMessage == null && !(inThread && state.thread?.loading == true)) item { Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(7.dp)) {
                 Text("No messages yet.", color = TextMuted)
-                Text("Start the conversation in #${state.selectedChannel?.name.orEmpty()}.", color = TextMuted, fontSize = 12.sp)
+                Text(
+                    when {
+                        state.selectedDirectId == null -> "Start the conversation in #${state.selectedChannel?.name.orEmpty()}."
+                        state.account != null && state.selectedDirect?.peer?.id == state.account.id -> "Only you can read this conversation."
+                        else -> "Only you and ${state.selectedChannel?.name.orEmpty()} can read this conversation."
+                    },
+                    color = TextMuted, fontSize = 12.sp,
+                )
             }
         } }
     }
@@ -1889,7 +1903,7 @@ internal fun counterTone(count: Int): Color = when {
             .then(if (speaking) Modifier.border(2.dp, CaperGreen, CircleShape) else Modifier),
         contentAlignment = Alignment.Center,
     ) {
-        if (index == null) Text(name.take(1).uppercase(), fontWeight = FontWeight.Black, fontSize = (size.value * .38f).sp)
+        if (index == null) Text(initialOf(name), fontWeight = FontWeight.Black, fontSize = (size.value * .38f).sp)
         else {
             Image(
                 painter = painterResource(caperAvatarResources[index]),
@@ -2096,7 +2110,7 @@ internal fun counterTone(count: Int): Color = when {
     LaunchedEffect(channel.id, channel.private) { viewModel.loadChannelGrants(channel) }
     val dirty = name.removeSuffix("-") != channel.name || private != channel.private
     // Keep the sticky save bar's footprint stable while hiding clean controls.
-    CaperDialog("Overview", close, wide = true, footer = {
+    CaperDialog("Channel settings", close, wide = true, footer = {
         val hiddenSemantics = if (dirty) Modifier else Modifier.clearAndSetSemantics { }
         Row(Modifier.fillMaxWidth().then(hiddenSemantics).graphicsLayer { alpha = if (dirty) 1f else 0f }.background(Blackout).padding(horizontal = 22.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("You have unsaved changes.", Modifier.weight(1f), fontSize = 12.sp)

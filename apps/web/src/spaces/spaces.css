@@ -111,6 +111,10 @@
   display: flex;
   flex-direction: column;
   overflow-y: auto;
+  /* Span the whole panel: full-bleed dividers and row focus rings then stay inside
+     this scroller instead of adding a sideways scroll and clipping the rings. */
+  margin-inline: calc(-4px - var(--channel-sidebar-inset));
+  padding-inline: var(--channel-sidebar-inset);
 }
 .spaces-room .channel-navigation > :is(header, .channel-section-heading) {
   flex-shrink: 0;
@@ -186,8 +190,10 @@
   padding-right: 9px;
 }
 .direct-select > small {
+  flex: none;
   color: var(--text-muted);
   font-size: 0.72rem;
+  white-space: nowrap;
 }
 .direct-self:disabled {
   opacity: 0.5;
@@ -267,6 +273,7 @@
   height: 16px;
   flex: 0 0 auto;
   color: var(--text-muted);
+  transition: transform 120ms ease;
 }
 .space-menu[open] summary > svg {
   transform: rotate(180deg);
@@ -387,6 +394,7 @@
   width: 16px;
   height: 16px;
   flex: 0 0 auto;
+  transition: transform 120ms ease;
 }
 .channel-section-toggle[aria-expanded="false"] svg {
   transform: rotate(-90deg);
@@ -493,6 +501,14 @@
 }
 .channel-select[aria-current="page"] svg {
   color: var(--terracotta-bright);
+}
+.channel-select[aria-busy="true"],
+.space-rail button[aria-busy="true"] {
+  cursor: progress;
+}
+.channel-select[aria-busy="true"]:not([aria-current="page"]) {
+  color: var(--text);
+  background: var(--surface-raised);
 }
 .channel-menu {
   margin-right: 4px;
@@ -658,6 +674,7 @@
   display: flex;
   align-items: center;
   border-radius: 6px;
+  transition: background-color 140ms ease;
 }
 .direct-line .direct-select,
 .direct-line .direct-select:hover,
@@ -690,6 +707,7 @@
   line-height: 1.4;
 }
 .space-member-presence {
+  --presence-ring: var(--surface-sidebar);
   min-height: 0;
   min-width: 0;
   border-left: 1px solid var(--border);
@@ -777,6 +795,7 @@
 }
 .space-member-presence li {
   display: flex;
+  align-items: center;
   gap: 10px;
   min-height: 44px;
   padding: 4px 8px;
@@ -820,6 +839,10 @@
   background: transparent;
   font: inherit;
   cursor: pointer;
+}
+.member-presence-pages button:hover:not(:disabled) {
+  border-color: var(--text-muted);
+  background: var(--surface-raised);
 }
 .member-presence-pages button:disabled {
   opacity: 0.4;
@@ -881,6 +904,7 @@
   width: 16px;
   height: 16px;
   color: var(--text-muted);
+  transition: transform 120ms ease;
 }
 .chat-channel-menu[open] > summary > svg {
   transform: rotate(180deg);
@@ -974,9 +998,19 @@
   margin: auto 12px 12px;
   padding: 8px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
+  color: var(--text);
   background: var(--surface-raised);
   font-size: 0.8rem;
+  text-decoration: none;
+  transition: background-color 140ms ease;
+}
+.empty-channel-account:hover {
+  background: var(--surface-composer);
+}
+.empty-channel-account:focus-visible {
+  outline: 2px solid var(--terracotta-bright);
+  outline-offset: 2px;
 }
 .empty-channel {
   min-height: 360px;
@@ -1000,9 +1034,15 @@
   color: var(--text-muted);
   font-size: 0.82rem;
 }
-.empty-channel > button {
-  min-height: 38px;
+.empty-channel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
   margin-top: 18px;
+}
+.empty-channel-actions > button {
+  min-height: 38px;
   padding: 0 13px;
   border: 1px solid var(--terracotta);
   border-radius: 8px;
@@ -1010,6 +1050,11 @@
   background: var(--terracotta);
   font-weight: 750;
   cursor: pointer;
+}
+.empty-channel-actions > button:not(:first-child) {
+  border-color: var(--border);
+  color: var(--text);
+  background: var(--surface-raised);
 }
 
 .space-dialog {
@@ -1027,10 +1072,13 @@
 .space-dialog-wide {
   width: min(600px, calc(100vw - 32px));
 }
-/* Stable shells: async errors, member loading and save bars must not recenter a modal. */
+/* Stable shells: async errors, member loading and save bars must not recenter a modal.
+   Reserve the scrollbar gutter on both edges so the header divider and close button
+   stay symmetric instead of stopping short on the scrollbar side. */
 .space-dialog {
   height: min(520px, calc(100dvh - 32px));
-  scrollbar-gutter: stable;
+  scrollbar-gutter: stable both-edges;
+  scrollbar-width: thin;
 }
 .space-dialog:has(> .delete-confirmation) {
   height: min(320px, calc(100dvh - 32px));
@@ -1073,10 +1121,6 @@
   color: var(--terracotta-bright);
   border-color: var(--terracotta);
   border-style: dashed;
-}
-.space-rail .invited-space svg {
-  width: 17px;
-  height: 17px;
 }
 .pending-space-invites {
   display: grid;
@@ -1136,7 +1180,19 @@
 .space-access-notice button {
   width: 28px;
   height: 28px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  padding: 0;
   border: 0;
+  border-radius: 6px;
+  color: var(--text-muted);
+  background: transparent;
+  cursor: pointer;
+}
+.space-access-notice button:hover {
+  color: var(--text);
+  background: var(--border);
 }
 .space-access-notice svg {
   width: 16px;
@@ -1158,6 +1214,7 @@
   margin: 0;
   font-size: 1.2rem;
   letter-spacing: -0.025em;
+  overflow-wrap: anywhere;
 }
 .space-dialog > header h2:has(img) {
   display: flex;
@@ -1211,10 +1268,12 @@
   height: 42px;
   padding: 0 11px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 8px;
   color: var(--text);
   background: var(--surface-composer);
   font: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
 }
 .space-field input:focus,
 .member-add input:focus {
@@ -1415,6 +1474,9 @@
   padding: 0;
   overflow-y: auto;
   list-style: none;
+}
+.member-manager ul + .dialog-section-heading {
+  margin-top: 18px;
 }
 .member-manager li {
   display: grid;
@@ -1688,9 +1750,13 @@
 .space-dialog .primary:hover:not(:disabled),
 .spaces-state button:hover:not(:disabled),
 .spaces-empty .primary:hover:not(:disabled),
-.empty-channel > button:hover:not(:disabled) {
+.empty-channel-actions > button:first-child:hover:not(:disabled) {
   border-color: var(--terracotta-bright);
   background: var(--terracotta-bright);
+}
+.empty-channel-actions > button:not(:first-child):hover:not(:disabled) {
+  border-color: var(--text-muted);
+  background: var(--border);
 }
 .space-dialog .danger:hover:not(:disabled) {
   border-color: #d44355;
@@ -1722,7 +1788,8 @@
   :is(.space-dialog, .channel-navigation, .space-rail, .spaces-state, .spaces-empty, .empty-channel)
     :is(button, summary),
   .navigation-toggle,
-  .channel-section-actions {
+  .channel-section-actions,
+  :is(.space-menu, .channel-section-heading, .chat-channel-menu) svg {
     transition: none;
   }
 }
@@ -1779,6 +1846,10 @@
     color: var(--text-muted);
     background: transparent;
     cursor: pointer;
+  }
+  .member-list-close:hover {
+    color: var(--text);
+    background: var(--surface-raised);
   }
   .member-list-close svg {
     width: 20px;
@@ -1881,6 +1952,13 @@
   .spaces-room:not(.navigation-open) .channel-navigation > ul {
     margin: 0;
   }
+  /* The one-row channel strip must not clip its row's "…" menu. */
+  .spaces-room:not(.navigation-open) :is(.sidebar-channels, .channel-navigation) {
+    overflow: visible;
+  }
+  .spaces-room:not(.navigation-open) > .people-panel:has(.channel-menu[open]) {
+    z-index: 9;
+  }
   /* A collapsed channel section still shows the channel being viewed. */
   .spaces-room:not(.navigation-open) .channel-navigation > ul[data-collapsed] {
     display: grid;
@@ -1898,6 +1976,16 @@
   .navigation-toggle svg {
     width: 20px;
     height: 20px;
+  }
+  /* With no channel line above it, the toggle is a labelled button, not an icon. */
+  .empty-channel > .navigation-toggle {
+    width: auto;
+    height: 38px;
+    margin-bottom: 18px;
+    padding: 0 12px;
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 0.8rem;
   }
   .spaces-room .chat-heading {
     gap: 6px;
@@ -2030,7 +2118,12 @@
   background: var(--terracotta);
 }
 .direct-request-bar .primary:hover:not(:disabled) {
+  border-color: var(--terracotta-bright);
   background: var(--terracotta-bright);
+}
+.direct-request-bar .secondary:hover:not(:disabled) {
+  border-color: var(--text-muted);
+  background: var(--border);
 }
 .direct-request-bar .danger-outline {
   border-color: #a33b48;

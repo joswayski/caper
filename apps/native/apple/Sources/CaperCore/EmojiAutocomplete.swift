@@ -49,7 +49,8 @@ enum EmojiAutocomplete {
                 else if name.contains(query) || keywords.contains(query) { rank = 3 }
                 else { return nil }
                 return (rank, offset, entry)
-            }.sorted { ($0.0, $0.1) < ($1.0, $1.1) }.prefix(6).map(\.2)
+            // Within a rank the shorter name is the closer match: ":fi" offers fire before film-frames.
+            }.sorted { ($0.0, $0.2.name.count, $0.1) < ($1.0, $1.2.name.count, $1.1) }.prefix(6).map(\.2)
         }
         guard !choices.isEmpty else { return nil }
         return EmojiAutocompleteMatch(replacementRange: NSRange(colon..<caret, in: text), choices: Array(choices.prefix(6)))

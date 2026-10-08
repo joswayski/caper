@@ -289,21 +289,37 @@ export default function LiveWindow() {
     if (reducedMotion) return;
     // Sample elapsed time rather than snapping every effect to a shared beat.
     let previous = performance.now();
+    // Pause (without a jump on return) while the window is off-screen or the tab
+    // is hidden: re-rendering the whole room ~13 times a second costs frames
+    // in the page that is being read instead.
+    let onScreen = true;
+    const stage = stageRef.current;
+    const visibility = stage
+      ? new IntersectionObserver(([entry]) => {
+          onScreen = entry.isIntersecting;
+        })
+      : undefined;
+    if (stage) visibility?.observe(stage);
     const timer = window.setInterval(() => {
       const now = performance.now();
       const seconds = (now - previous) / 1000;
       previous = now;
+      if (!onScreen || document.hidden) return;
       setDemo((current) => {
         const elapsed = current.phase + seconds;
         const loops = Math.floor(elapsed / cycleLength);
         return {
           phase: elapsed % cycleLength,
           cycle: current.cycle + loops,
-          history: loops > 0 ? [...current.history, ...timedMessages] : current.history,
+          // Keep one previous loop to scroll back through, not every loop since load.
+          history: loops > 0 ? [...current.history, ...timedMessages].slice(-timedMessages.length) : current.history,
         };
       });
     }, 75);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearInterval(timer);
+      visibility?.disconnect();
+    };
   }, [reducedMotion, timedMessages]);
 
   const present = people.map((person, index) => {

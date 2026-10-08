@@ -2048,6 +2048,28 @@ impl CaperApp {
         self.directs.iter().find(|direct| &direct.id == id)
     }
 
+    /// Under "No messages yet.": who can read a DM (only you, in your own), or a channel prompt.
+    fn empty_conversation_note(&self) -> String {
+        match self.selected_direct_conversation() {
+            Some(direct)
+                if self
+                    .account
+                    .as_ref()
+                    .is_some_and(|account| account.id == direct.peer.id) =>
+            {
+                "Only you can read this conversation.".to_owned()
+            }
+            Some(direct) => format!(
+                "Only you and {} can read this conversation.",
+                direct.peer.display_name
+            ),
+            None if self.selected_direct.is_some() => {
+                "Only you and this person can read this conversation.".to_owned()
+            }
+            None => format!("Start the conversation in #{}.", self.channel_name()),
+        }
+    }
+
     /// The open conversation when it is an incoming message request.
     fn selected_request(&self) -> Option<&model::DirectConversation> {
         self.selected_direct_conversation()
@@ -3849,7 +3871,7 @@ impl CaperApp {
                 }
                 self.dialog = None;
                 self.select_channel(channel.id.clone(), false);
-                // Web opens a new private channel's Overview to add members.
+                // Web opens a new private channel's settings to add members.
                 if channel.private {
                     self.open_manage_channel(&channel.id, &channel.name, true);
                 }
@@ -4902,13 +4924,23 @@ impl CaperApp {
                     ui.add_space(10.0);
                 }
                 for invitation in self.invitations.clone() {
+                    // The space's initial, matching web, Apple and Android.
+                    let initial = invitation
+                        .name
+                        .trim()
+                        .chars()
+                        .next()
+                        .map(|letter| letter.to_uppercase().to_string())
+                        .unwrap_or_default();
                     let response = ui
                         .add(
-                            egui::Button::new(RichText::new("?").strong().color(TERRACOTTA_BRIGHT))
-                                .min_size(egui::vec2(40.0, 40.0))
-                                .fill(SURFACE)
-                                .stroke(Stroke::new(1.0, TERRACOTTA))
-                                .corner_radius(12),
+                            egui::Button::new(
+                                RichText::new(initial).strong().color(TERRACOTTA_BRIGHT),
+                            )
+                            .min_size(egui::vec2(40.0, 40.0))
+                            .fill(SURFACE)
+                            .stroke(Stroke::new(1.0, TERRACOTTA))
+                            .corner_radius(12),
                         )
                         .on_hover_text(format!("Invitation to {}", invitation.name));
                     if response.clicked() {
@@ -7226,7 +7258,18 @@ impl CaperApp {
         let loading = thread.loading;
         let has_more = thread.has_more;
         let error = thread.error.clone();
-        let broadcast_label = format!("Also send to #{}", self.channel_name());
+        // A DM thread belongs to a person's conversation, not a #channel.
+        let direct = self.selected_direct.is_some();
+        let broadcast_label = if direct {
+            "Also send to the conversation".to_owned()
+        } else {
+            format!("Also send to #{}", self.channel_name())
+        };
+        let thread_context = if direct {
+            format!("in {}", self.channel_name())
+        } else {
+            format!("in #{}", self.channel_name())
+        };
         ui.set_min_height(ui.available_height());
         ui.spacing_mut().item_spacing.y = 0.0;
         let heading = egui::TopBottomPanel::top("thread-heading")
@@ -7242,7 +7285,12 @@ impl CaperApp {
                     egui::vec2(ui.available_width(), 38.0),
                     egui::Layout::right_to_left(egui::Align::Center),
                     |ui| {
-                        if ui.button("Back to channel").clicked() {
+                        let back = if direct {
+                            "Back to conversation"
+                        } else {
+                            "Back to channel"
+                        };
+                        if ui.button(back).clicked() {
                             self.thread_view = None;
                             self.thread_request += 1;
                         }
@@ -7250,9 +7298,7 @@ impl CaperApp {
                             ui.label(bold("Thread").size(15.0));
                             ui.add(
                                 egui::Label::new(
-                                    RichText::new(format!("in #{}", self.channel_name()))
-                                        .size(11.0)
-                                        .color(MUTED),
+                                    RichText::new(thread_context).size(11.0).color(MUTED),
                                 )
                                 .truncate(),
                             );
@@ -7846,11 +7892,7 @@ impl CaperApp {
                             ui.vertical_centered(|ui| {
                                 ui.label("No messages yet.");
                                 ui.label(
-                                    RichText::new(if self.selected_direct.is_some() {
-                                        "Only you and this person can read this conversation.".to_owned()
-                                    } else {
-                                        format!("Start the conversation in #{}.", self.channel_name())
-                                    })
+                                    RichText::new(self.empty_conversation_note())
                                     .color(MUTED),
                                 );
                             });
@@ -9151,7 +9193,7 @@ impl CaperApp {
                 }
             }
             Dialog::CreateChannel => "Create a channel",
-            Dialog::ManageChannel(_) => "Overview",
+            Dialog::ManageChannel(_) => "Channel settings",
             Dialog::StartDirect => "Start a direct message",
             Dialog::Block { account, .. } => {
                 leave_title.get_or_insert(format!("Block {}?", account.display_name))
@@ -9832,7 +9874,7 @@ impl CaperApp {
         }
     }
 
-    /// Web's channel Overview: private channels load their member grants.
+    /// Web's channel settings: private channels load their member grants.
     fn open_manage_channel(&mut self, id: &str, name: &str, private: bool) {
         self.form_name = name.into();
         self.form_private = private;
@@ -14596,7 +14638,7 @@ mod tests {
             })
             .collect();
         assert!(texts.contains(&"Message TEST FIXTURE Maya"));
-        assert!(texts.contains(&"Only you and this person can read this conversation."));
+        assert!(texts.contains(&"Only you and TEST FIXTURE Maya can read this conversation."));
         assert!(!texts.contains(&"Message #general"));
         assert!(!texts.contains(&"Members"));
     }

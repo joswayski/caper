@@ -6,7 +6,7 @@ import { levelLabels, muteLabel, mutePresets, muteUntil, refreshNotificationSett
 type Submenu = "level" | "mute";
 
 // Like the menu's other actions: close it and return focus to its button.
-function closeMenu(event: MouseEvent<HTMLElement>) {
+export function closeMenu(event: MouseEvent<HTMLElement>) {
   const menu = event.currentTarget.closest("details");
   if (!menu) return;
   menu.open = false;
