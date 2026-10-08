@@ -2140,7 +2140,20 @@ private struct NativeThreadView: View {
                                 Text("\(summary.replyCount) \(summary.replyCount == 1 ? "reply" : "replies")").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).padding(12)
                             }
                         }
-                        if chat.threadLoading { Text("Loading thread…").padding(18) }
+                        if chat.threadLoading && replies.isEmpty {
+                            VStack(spacing: 0) {
+                                ForEach(0..<2) { index in
+                                    HStack(alignment: .top, spacing: 10) {
+                                        Circle().fill(CaperTheme.border).frame(width: 34, height: 34)
+                                        VStack(alignment: .leading, spacing: 12) {
+                                            RoundedRectangle(cornerRadius: 4).fill(CaperTheme.border).frame(width: 96, height: 12)
+                                            RoundedRectangle(cornerRadius: 4).fill(CaperTheme.border).frame(width: index == 0 ? 180 : 128, height: 10)
+                                        }
+                                        Spacer(minLength: 0)
+                                    }.frame(height: 50, alignment: .top).padding(.horizontal, 18).padding(.vertical, 10)
+                                }
+                            }.accessibilityElement(children: .ignore).accessibilityLabel("Loading thread replies")
+                        }
                         if let error = chat.threadError { Text(error).padding(12); Button("Retry") { Task { await chat.loadThread() } } }
                         if chat.threadHasMore { Button("Load older replies") { Task { await chat.loadThread(older: true) } }.disabled(chat.threadLoading).padding(12) }
                         threadEntries(replies)

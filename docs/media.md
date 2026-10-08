@@ -5016,6 +5016,38 @@ controls do not register a pointing-hand region.
 | iOS/macOS | Projection/rollback coverage added. No Swift/Xcode build, device run or AppKit cursor runtime check in this Linux orb; native build and enabled/disabled hover acceptance remain required. |
 | Containers/services | Web build stage passes directly; Docker daemon unavailable. No API/gateway change, infrastructure/configuration change, migration, deployment or live SFU validation. Clients can release independently. |
 
+### Thread loading stability (October 8, 2026)
+
+Selecting the already open thread does not reset its state or start another
+request, including during pagination. Successful thread pages retain only their
+pagination metadata; message content stays in the live channel timeline. Closing
+and reopening a loaded thread, or switching back to it, reuses those rows and
+preserves older-page boundaries. Channel/history resets and access loss discard
+the metadata cache. This is not persistent/offline storage.
+
+Web thread controls prefetch on hover and keyboard focus. Clicks share an
+in-flight prefetch; a background response cannot open a closed panel or replace
+the selected thread. Speculative failures stay silent and do not prevent a later
+load. Cold loads show neutral message-shaped skeletons. No loading paragraph or
+skeleton is inserted above existing replies on any client. Retry remains an
+explicit action.
+
+| Platform | Validation boundary for this change |
+| --- | --- |
+| Web desktop/narrow | `npm run check` and `npm test` pass: 461 tests across 40 web/shared-native-support files. `scripts/test-message-threads.mjs` checks zero additional requests and unchanged reply coordinates on repeat clicks, hover/focus prefetch, cached reopening, cold-load skeletons, error/retry, drafts and mobile Back/inert background. Inspected 2x Chromium desktop and 390px touch-emulated captures; `(pointer:coarse)` verified. Not Safari or physical-device acceptance. |
+| Rust desktop | 279 tests pass, 9 existing tests ignored, including loopback request/pagination/cache-reset and wide/narrow egui skeleton/unchanged-reply-position regressions. Fmt, application-package Clippy (`--no-deps`) and executable build pass. Inspected 2x Linux Xvfb wide/narrow loaded/cold-thread fixtures. Dependency-inclusive Clippy is blocked by 34 existing vendored `webrtc-sys` missing-safety-doc errors. Not macOS/Windows or live-account acceptance. |
+| Android | Equivalent repeat-open/cache and cold-load skeleton behavior implemented. `./gradlew testDebugUnitTest --no-daemon` reaches configuration but is blocked by the missing Android SDK. No Android compilation, rendering or physical-device run in this orb. |
+| iOS/macOS | Equivalent behavior and a deferred-request/cache/pagination/reset regression implemented. Swift/Xcode unavailable in this Linux orb; test execution, compilation and native rendering remain required. |
+| Containers/services | Web build stage passes directly; Docker daemon unavailable. No API/gateway, infrastructure, secrets/configuration, database migration, deployment or live SFU change. |
+
+Web and native clients can release independently; merging does not deploy.
+Before distribution, check repeated thread selection with a scrolled history and
+an unsent draft, reopening after live replies/edits/reactions, loading older
+replies, retry after failure, and reconnect/access-loss recovery on real native
+clients. Roll back web using the previous known-good web image; stop native
+distribution and ship a corrected higher-build-number client if needed. No data
+rollback is required.
+
 ### Returning from Pins (October 8, 2026)
 
 Web keeps the virtualized conversation mounted and measurable behind Pins, but

@@ -1375,6 +1375,7 @@ public final class ChatModel {
     public var threadError: String?
     private var threadBefore: String?
     private var threadRequest = 0
+    private var threadPages: [String: (hasMore: Bool, before: String?)] = [:]
     private var threadOnlyRows: Set<String> = []
     private var threadDrafts: [String: String] = [:]
     private var threadBroadcasts: [String: Bool] = [:]
@@ -1590,6 +1591,7 @@ public final class ChatModel {
         isPreview = false
         let preservingTimeline = preservingPending && self.channelID == channelID
         generation += 1
+        threadPages = [:]
         mutations = MessageMutations(); pendingPins = []
         let requestGeneration = generation
         let oldSubscription = subscriptionID
@@ -1788,8 +1790,13 @@ public final class ChatModel {
     public func closeThread() { threadRequest += 1; threadRootID = nil; threadLoading = false }
 
     public func openThread(_ rootID: String) async {
-        threadRootID = rootID; threadBefore = nil; threadHasMore = false
-        await loadThread()
+        guard threadRootID != rootID else { return }
+        threadRequest += 1
+        threadRootID = rootID; threadError = nil
+        let cached = threadPages[rootID]
+        threadBefore = cached?.before; threadHasMore = cached?.hasMore ?? false
+        threadLoading = false
+        if cached == nil { await loadThread() }
     }
 
     public func loadThread(older: Bool = false) async {
@@ -1805,6 +1812,7 @@ public final class ChatModel {
             threadOnlyRows.formUnion(rows.filter { $0.isChannelMessage && !loaded.contains($0.id) }.map(\.id))
             merge(rows)
             threadHasMore = page.hasMore; threadBefore = page.messages.first?.seq ?? threadBefore
+            threadPages[rootID] = (threadHasMore, threadBefore)
         } catch {
             guard request == threadRequest, generation == channelGeneration else { return }
             if let denied = error as? APIError, [401, 403, 404].contains(denied.status) {
@@ -2191,7 +2199,7 @@ public final class ChatModel {
         canForward = false; forwardTarget = nil; forwardConversationTarget = nil
         editSnapshots.reset()
         failedPinActions = [:]
-        closeThread(); threadOnlyRows = []; threadDrafts = [:]; threadBroadcasts = [:]
+        closeThread(); threadPages = [:]; threadOnlyRows = []; threadDrafts = [:]; threadBroadcasts = [:]
         isPreview = false
         session = nil; channelID = nil; spaceID = nil; messages = []; draft = ""; hasMore = false
         channelName = "general"; spaceName = "Caper"; error = nil

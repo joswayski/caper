@@ -66,7 +66,8 @@ test.each([{ loading: true }, { error: "Thread could not be loaded." }])(
   "unavailable thread history does not show a zero count or an empty state: %j",
   (thread) => {
     const markup = render([root], thread);
-    expect(markup).toContain(thread.loading ? "Loading thread…" : thread.error!);
+    expect(markup).toContain(thread.loading ? 'role="status" aria-label="Loading thread replies"' : thread.error!);
+    expect(markup).not.toContain("Loading thread…");
     expect(markup).not.toContain("chat-thread-divider");
     expect(markup).not.toContain("No replies yet.");
   },

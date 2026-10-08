@@ -1351,6 +1351,36 @@
   font-size: 0.8rem;
   line-height: 1.5;
 }
+.chat-thread-skeleton-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 10px;
+  min-height: 70px;
+  padding: 10px 18px;
+}
+.chat-thread-skeleton-row span {
+  display: block;
+  background: var(--border);
+}
+.chat-thread-skeleton-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+}
+.chat-thread-skeleton-name {
+  width: 96px;
+  height: 12px;
+  margin: 2px 0 12px;
+  border-radius: 4px;
+}
+.chat-thread-skeleton-text {
+  width: 76%;
+  height: 10px;
+  border-radius: 4px;
+}
+.chat-thread-skeleton-row:nth-child(even) .chat-thread-skeleton-text {
+  width: 54%;
+}
 .chat-thread-older {
   display: block;
   margin: 8px auto;
