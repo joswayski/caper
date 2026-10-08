@@ -1023,12 +1023,12 @@ export class ChatClient {
       const project = (message: ChatMessage): ChatMessage => {
         const pin = this.pinIntents.get(message.id);
         const edit = this.editIntents.get(message.id);
+        const previewEdit = edit && (message.revision ?? 1) <= edit.expectedRevision;
+        if (!pin && !previewEdit) return message;
         return {
           ...message,
           ...(pin ? { pin: pin.pin } : {}),
-          ...(edit && (message.revision ?? 1) <= edit.expectedRevision
-            ? { content: { ...message.content, text: edit.text, mentions: [] } }
-            : {}),
+          ...(previewEdit ? { content: { ...message.content, text: edit.text, mentions: [] } } : {}),
         };
       };
       const pinned = new Map(this.timeline.pinnedMessages.map((message) => [message.id, message]));
@@ -1039,7 +1039,11 @@ export class ChatClient {
           if (message) pinned.set(id, message);
         }
       }
-      change = { ...change, messages: change.messages.map(project), pinnedMessages: [...pinned.values()].map(project) };
+      change = {
+        ...change,
+        messages: this.pinIntents.size || this.editIntents.size ? change.messages.map(project) : change.messages,
+        pinnedMessages: [...pinned.values()].map(project),
+      };
     }
     if (change.messages && this.reactionIntents.size) {
       change = {

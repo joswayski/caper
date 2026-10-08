@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { Component, lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { loadMessageVersions } from "./client.ts";
 import type { ChatMessage, MessageVersion } from "./types.ts";
@@ -14,6 +14,20 @@ const MessageDiff = lazy<typeof import("./MessageDiff.tsx").default>(() =>
 );
 const at = (version: MessageVersion) => `Version ${version.revision} · ${new Date(version.createdAt).toLocaleString()}`;
 
+// The optional renderer can fail to download or initialize. Keep history and
+// the surrounding conversation usable even when highlighting is unavailable.
+class DiffBoundary extends Component<{ children: ReactNode; fallback: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  render() {
+    return this.state.failed ? this.props.fallback : this.props.children;
+  }
+}
+
 function Comparison({
   messageId,
   before,
@@ -25,6 +39,16 @@ function Comparison({
   after: MessageVersion;
   current?: boolean;
 }) {
+  const plainText = (
+    <div className="chat-version-columns">
+      <section className="chat-version-text" aria-label="Before">
+        {before.content.text}
+      </section>
+      <section className="chat-version-text" aria-label="After">
+        {after.content.text}
+      </section>
+    </div>
+  );
   return (
     <section
       className="chat-version-comparison"
@@ -40,16 +64,20 @@ function Comparison({
           <p>{at(after)}</p>
         </div>
       </div>
-      <Suspense
+      <DiffBoundary
         fallback={
-          <div className="chat-version-columns">
-            <p className="chat-version-text">{before.content.text}</p>
-            <p className="chat-version-text">{after.content.text}</p>
-          </div>
+          <>
+            <p className="chat-edit-notice" role="status">
+              Highlighted comparison is unavailable. Showing both versions as plain text.
+            </p>
+            {plainText}
+          </>
         }
       >
-        <MessageDiff messageId={messageId} before={before} after={after} />
-      </Suspense>
+        <Suspense fallback={plainText}>
+          <MessageDiff messageId={messageId} before={before} after={after} />
+        </Suspense>
+      </DiffBoundary>
     </section>
   );
 }

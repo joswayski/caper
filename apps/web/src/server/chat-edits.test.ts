@@ -113,6 +113,32 @@ test("edit event ordering uses editSeq, not creation seq, and rejects stale vers
   assert.equal(timeline.cursor, "2");
 });
 
+test("unchanged and unloaded edits retain the sorted render snapshot", () => {
+  const timeline = new ChatTimeline();
+  timeline.reset([root], "1");
+  const version2 = edit(root, 2, "2", "Saturday");
+  timeline.mergeEdit(version2.message);
+  const rendered = timeline.messages;
+  assert.equal(timeline.applyEvent(version2), "applied");
+  assert.equal(timeline.messages, rendered, "confirming an HTTP edit must not re-sort history");
+  assert.equal(timeline.cursor, "2", "an unchanged snapshot still advances replay");
+  timeline.prepend([version2.message, root]);
+  assert.equal(timeline.messages, rendered, "overlapping history must not re-sort unchanged rows");
+  const hidden = { ...root, id: "hidden", seq: "3" };
+  timeline.mergeEdit(edit(hidden, 2, "4", "Hidden correction").message);
+  assert.equal(timeline.messages, rendered, "an unloaded edit must not invalidate visible history");
+  timeline.mergeEdit(edit(root, 3, "5", "Sunday").message);
+  assert.notEqual(timeline.messages, rendered);
+  assert.equal(timeline.messages[0].content.text, "Sunday");
+  assert.equal(rendered[0].content.text, "Saturday", "previous render snapshots stay immutable");
+  timeline.mergeEdit(version2.message);
+  const latest = timeline.messages;
+  timeline.mergeEdit(version2.message);
+  assert.equal(timeline.messages, latest, "stale edits must not re-sort history");
+  timeline.prepend([hidden]);
+  assert.equal(timeline.messages[1].content.text, "Hidden correction", "unloaded edits are still retained");
+});
+
 test("edit validators require matching channel/event revision and tolerate legacy messages", () => {
   assert.ok(isChatMessage(root));
   const event = edit(root, 2, "7", "Changed");

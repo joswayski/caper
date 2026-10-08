@@ -9,9 +9,10 @@ const api = process.env.MESSAGE_TEST_API_URL ?? "http://127.0.0.1:3001";
 for (const url of [web, api]) assert.ok(["localhost", "127.0.0.1"].includes(new URL(url).hostname));
 const artifacts = process.env.MESSAGE_TEST_ARTIFACTS && resolve(process.env.MESSAGE_TEST_ARTIFACTS);
 if (artifacts) mkdirSync(artifacts, { recursive: true });
+let session = "edits-check";
 const browser = (...args) => {
   const result = JSON.parse(
-    execFileSync("agent-browser", ["--session", "edits-check", ...args, "--json"], {
+    execFileSync("agent-browser", ["--session", session, ...args, "--json"], {
       encoding: "utf8",
       timeout: 60_000,
     }),
@@ -80,6 +81,21 @@ try {
   );
   browser("press", "Escape");
   edit(root);
+  const atLimit = "x".repeat(3_999) + "🙂";
+  browser("fill", "#chat-edit-text", atLimit);
+  assert.equal(evaluate('document.querySelector(".chat-edit-save").disabled'), false);
+  const neutralCountColor = evaluate('getComputedStyle(document.querySelector(".chat-edit-dialog small")).color');
+  browser("fill", "#chat-edit-text", atLimit + "!");
+  assert.equal(evaluate('document.querySelector(".chat-edit-save").disabled'), true);
+  assert.equal(evaluate('document.querySelector(".chat-edit-dialog small").textContent'), "4,001 / 4,000");
+  assert.notEqual(
+    evaluate('getComputedStyle(document.querySelector(".chat-edit-dialog small")).color'),
+    neutralCountColor,
+    "The over-limit error color must not be overridden by the neutral counter style",
+  );
+  browser("set", "viewport", "390", "844", "2");
+  screenshot("message-edit-limit-narrow");
+  browser("set", "viewport", "1440", "900", "2");
   // Hold the request before it reaches the fixture: the preview must be local.
   evaluate(`(() => {
     const original = window.fetch.bind(window);
@@ -279,8 +295,59 @@ try {
     "TEST FIXTURE — Schedule revision 50.",
   );
   action("Cancel");
+
+  // Block the optional module in a fresh browser so its cached successful import
+  // cannot hide a download failure. The actual history API remains available.
+  const before = "TEST FIXTURE — Before 🙂\n" + "a".repeat(240);
+  const after = "TEST FIXTURE — After 🚀\n" + "b".repeat(240);
+  for (const text of [before, after])
+    await control({ incomingEdit: { channelId: root.channelId, messageId: root.id, text } });
+  browser("close");
+  session = "edits-fallback";
+  browser("open", "about:blank");
+  browser("set", "viewport", "1440", "900", "2");
+  browser("cookies", "set", "caper_fixture", "owner", "--url", web, "--path", "/", "--sameSite", "Lax");
+  browser("network", "route", "*MessageDiff*", "--abort");
+  browser("open", `${web}/spaces`);
+  wait(`!!document.querySelector('${row(root)} .chat-edited') && !document.querySelector('.chat-initial-messages')`);
+  browser("click", `${row(root)} .chat-edited`);
+  wait('document.querySelector(".chat-version-dialog [role=status]")?.textContent.includes("plain text")');
+  assert.equal(evaluate('document.querySelector(".chat-version-comparison [aria-label=Before]").textContent'), before);
+  assert.equal(evaluate('document.querySelector(".chat-version-comparison [aria-label=After]").textContent'), after);
+  assert.equal(evaluate('!!document.querySelector(".chat-panel")'), true, "The conversation survives renderer failure");
+  screenshot("message-history-fallback-desktop");
+  browser("set", "viewport", "390", "844", "2");
+  evaluate("new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))");
+  assert.equal(
+    evaluate(
+      'document.querySelector(".chat-version-dialog").scrollWidth <= document.querySelector(".chat-version-dialog").clientWidth',
+    ),
+    true,
+    "Long unbroken text wraps within the narrow fallback",
+  );
+  screenshot("message-history-fallback-narrow");
+  const audit = browser("a11y", "--selector", ".chat-version-dialog");
+  assert.deepEqual(audit.violations, [], "The fallback dialog must pass the accessibility audit");
+  assert.equal(
+    audit.incomplete.some((rule) => rule.id === "aria-prohibited-attr"),
+    false,
+  );
+  browser("select", "#chat-version-select", "55");
+  wait('!!document.querySelector(".chat-version-older [aria-label=After]")');
+  assert.equal(
+    evaluate('document.querySelector(".chat-version-older [aria-label=After]").textContent'),
+    "TEST FIXTURE — Schedule revision 50.",
+    "Older versions remain browsable after the optional renderer fails",
+  );
+  action("Load older versions");
+  wait('document.querySelectorAll("#chat-version-select option").length === 57');
+  browser("select", "#chat-version-select", "1");
+  assert.equal(evaluate('document.querySelector(".chat-version-original").textContent'), root.content.text);
+  action("Close message history");
+  wait('!document.querySelector(".chat-version-dialog")');
+  assert.equal(evaluate('!!document.querySelector(".chat-panel textarea")'), true);
   console.log(
-    "Message edits browser checks passed: ownership, optimistic preview, save, pins, diffs, narrow conflict, hidden/broadcast replies, independent summary, history retry/paging and rejected-save rollback.",
+    "Message edits browser checks passed: ownership, Unicode length/error styling, optimistic preview, save, pins, diffs, narrow conflict, hidden/broadcast replies, independent summary, history retry/paging, rejected-save rollback and unavailable-renderer fallback.",
   );
 } finally {
   try {
