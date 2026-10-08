@@ -143,7 +143,10 @@ export function mentionsAccount(message: ChatMessage, accountId: string | undefi
 }
 
 /** What the profile card shows: the best local match by id, never a network call. */
-export interface MentionCardPerson extends MentionedUser {
+export interface MentionCardPerson {
+  id: string;
+  /** Pin authors need not still be in the local directory. */
+  username?: string;
   displayName?: string;
   avatarId?: number | null;
   self: boolean;
@@ -151,7 +154,7 @@ export interface MentionCardPerson extends MentionedUser {
 
 /** `directory` is ordered by preference: space members, then people, then DM peers. */
 export function mentionCardPerson(
-  user: MentionedUser,
+  user: { id: string; username?: string; name?: string; avatarId?: number | null },
   directory: MentionCandidate[],
   accountId: string | undefined,
 ): MentionCardPerson {
@@ -159,8 +162,8 @@ export function mentionCardPerson(
   return {
     id: user.id,
     username: known?.username ?? user.username,
-    displayName: known?.displayName,
-    avatarId: known?.avatarId,
+    displayName: known?.displayName ?? user.name,
+    avatarId: known ? known.avatarId : user.avatarId,
     self: !!accountId && user.id === accountId,
   };
 }

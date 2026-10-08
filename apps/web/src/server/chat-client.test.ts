@@ -1216,6 +1216,89 @@ async function paginationFixture(t: TestContext) {
   };
 }
 
+test("pin context fences older pages, hides history gaps and never advances gateway replay", async (t) => {
+  const f = await paginationFixture(t);
+  const older = f.client.loadOlder();
+  const target = f.message(-99);
+  const jump = f.client.loadMessageContext(target);
+  assert.equal(f.requests[1].url, `/api/chat/channels/general/messages?around=${target.id}`);
+  const context = {
+    ...f.client.snapshotHistory(),
+    messages: [f.message(-100), target, f.message(-98)],
+    cursor: f.message(20).seq,
+    hasMore: true,
+    hasNewer: true,
+  };
+  f.requests[1].resolve(Response.json(context));
+  assert.equal(await jump, true);
+  f.requests[0].resolve(
+    Response.json({ messages: [f.message(2), f.message(3)], cursor: f.history.cursor, hasMore: false }),
+  );
+  await older;
+  assert.deepEqual(
+    f.state.channelMessages?.map((m) => m.seq),
+    [-100, -99, -98].map((i) => f.message(i).seq),
+  );
+  assert.equal(f.state.hasMore, true, "obsolete older request cannot change context flags");
+  assert.equal(f.state.loadingOlder, false);
+  assert.equal(
+    f.client.snapshotHistory()?.cursor,
+    f.history.cursor,
+    "HTTP context cursor is not an applied event cursor",
+  );
+  f.sockets[0].message(f.message(6));
+  assert.equal(f.client.snapshotHistory()?.cursor, f.message(6).seq);
+  assert.equal(
+    f.state.channelMessages?.some((m) => m.id === f.message(6).id),
+    false,
+    "live rows beyond the gap stay hidden",
+  );
+  const next = f.client.loadNewer();
+  assert.equal(f.requests[2].url, `/api/chat/channels/general/messages?after=${f.message(-98).seq}`);
+  f.requests[2].resolve(
+    Response.json({ messages: [f.message(-97)], cursor: f.message(20).seq, hasMore: false, hasNewer: true }),
+  );
+  await next;
+  assert.deepEqual(
+    f.state.channelMessages?.map((m) => m.seq),
+    [-100, -99, -98, -97].map((i) => f.message(i).seq),
+  );
+  const latest = f.client.loadNewer();
+  f.requests[3].resolve(
+    Response.json({
+      messages: [f.message(4), f.message(5), f.message(6)],
+      cursor: f.message(20).seq,
+      hasMore: false,
+      hasNewer: false,
+    }),
+  );
+  await latest;
+  assert.equal(f.state.hasNewer, false);
+  assert.equal(f.client.snapshotHistory()?.cursor, f.message(6).seq);
+  assert.equal(f.state.channelMessages?.at(-1)?.id, f.message(6).id);
+});
+
+test("the newest pin jump wins even when context responses arrive out of order", async (t) => {
+  const f = await paginationFixture(t);
+  const first = f.client.loadMessageContext(f.message(-20));
+  const second = f.client.loadMessageContext(f.message(-10));
+  const context = (offset: number) => ({
+    ...f.client.snapshotHistory(),
+    messages: [f.message(offset - 1), f.message(offset), f.message(offset + 1)],
+    hasMore: true,
+    hasNewer: true,
+  });
+  f.requests[1].resolve(Response.json(context(-10)));
+  assert.equal(await second, true);
+  f.requests[0].resolve(Response.json(context(-20)));
+  assert.equal(await first, false);
+  assert.deepEqual(
+    f.state.channelMessages?.map((m) => m.id),
+    [-11, -10, -9].map((i) => f.message(i).id),
+  );
+  assert.equal(f.client.snapshotHistory()?.cursor, f.history.cursor);
+});
+
 test("history gaps discard older rows without erasing concurrent HTTP reaction snapshots", async (t) => {
   const f = await sendingFixture(t);
   const message = (seq: string) => committed({ clientMessageId: `command-${seq}`, text: `Message ${seq}` }, seq);
@@ -1826,6 +1909,107 @@ test("cached thread reopening preserves older-page boundaries and receives live 
   assert.equal(f.requests[2].url, `/api/chat/channels/general/messages/${root.id}/thread?before=${reply(2).seq}`);
   f.requests[2].resolve(Response.json({ root, messages: [], cursor: f.history.cursor, hasMore: false }));
   await next;
+});
+
+test("pin jumps supersede a pending prefetch and cache both context paging boundaries", async (t) => {
+  const f = await paginationFixture(t);
+  const root = f.message(-200);
+  const reply = (offset: number) => ({ ...f.message(offset), threadRootId: root.id, broadcast: false });
+  const prefetch = f.client.prefetchThread(root.id);
+  const jump = f.client.loadMessageContext(reply(-99));
+  assert.equal(f.requests[1].url, `/api/chat/channels/general/messages/${root.id}/thread?around=${reply(-99).id}`);
+  f.requests[1].resolve(
+    Response.json({
+      root,
+      messages: [-100, -99, -98].map(reply),
+      cursor: f.history.cursor,
+      hasMore: true,
+      hasNewer: true,
+    }),
+  );
+  assert.equal(await jump, true);
+  f.requests[0].resolve(Response.json({ root, messages: [reply(3)], cursor: f.history.cursor, hasMore: true }));
+  await prefetch;
+  assert.equal(f.state.thread?.focusMessageId, reply(-99).id);
+  assert.equal(f.state.thread?.windowStart, reply(-100).seq);
+  assert.equal(f.state.thread?.windowEnd, reply(-98).seq);
+  assert.equal(
+    f.state.messages.some((message) => message.id === reply(3).id),
+    false,
+    "superseded prefetch cannot merge or overwrite the context",
+  );
+
+  const older = f.client.loadOlderThread();
+  assert.equal(f.requests[2].url, `/api/chat/channels/general/messages/${root.id}/thread?before=${reply(-100).seq}`);
+  f.requests[2].resolve(
+    Response.json({
+      root,
+      messages: [-102, -101].map(reply),
+      cursor: f.history.cursor,
+      hasMore: false,
+      hasNewer: false,
+    }),
+  );
+  await older;
+  assert.equal(f.state.thread?.hasNewer, true, "older paging must retain the newer boundary");
+  assert.equal(f.state.thread?.windowEnd, reply(-98).seq);
+
+  const newer = f.client.loadNewerThread();
+  assert.equal(f.requests[3].url, `/api/chat/channels/general/messages/${root.id}/thread?after=${reply(-98).seq}`);
+  f.requests[3].resolve(
+    Response.json({ root, messages: [reply(-97)], cursor: f.history.cursor, hasMore: true, hasNewer: true }),
+  );
+  await newer;
+  f.client.closeThread();
+  await f.client.openThread(root.id);
+  assert.equal(f.requests.length, 4, "reopening retains the cached contiguous context");
+  assert.equal(f.state.thread?.before, reply(-102).seq);
+  assert.equal(f.state.thread?.after, reply(-97).seq);
+  assert.equal(f.state.thread?.windowStart, reply(-102).seq);
+  assert.equal(f.state.thread?.windowEnd, reply(-97).seq);
+  assert.equal(f.state.thread?.hasMore, false, "newer paging must retain the older boundary");
+  assert.equal(f.state.thread?.hasNewer, true);
+  assert.equal(f.state.thread?.focusMessageId, reply(-99).id);
+  assert.equal(f.client.snapshotHistory()?.cursor, f.history.cursor);
+});
+
+test("cached and already open threads do not short-circuit newer pin jumps", async (t) => {
+  const f = await paginationFixture(t);
+  const root = f.message(-200);
+  const reply = (offset: number) => ({ ...f.message(offset), threadRootId: root.id, broadcast: false });
+  const open = f.client.openThread(root.id);
+  f.requests[0].resolve(Response.json({ root, messages: [reply(3)], cursor: f.history.cursor, hasMore: true }));
+  await open;
+  const first = f.client.loadMessageContext(reply(-50));
+  const second = f.client.loadMessageContext(reply(-20));
+  assert.equal(f.requests.length, 3, "explicit anchors bypass the same-root guard and cache");
+  f.requests[2].resolve(
+    Response.json({
+      root,
+      messages: [-21, -20, -19].map(reply),
+      cursor: f.history.cursor,
+      hasMore: true,
+      hasNewer: true,
+    }),
+  );
+  assert.equal(await second, true);
+  f.requests[1].resolve(
+    Response.json({
+      root,
+      messages: [-51, -50, -49].map(reply),
+      cursor: f.history.cursor,
+      hasMore: false,
+      hasNewer: false,
+    }),
+  );
+  assert.equal(await first, false);
+  assert.equal(f.state.thread?.focusMessageId, reply(-20).id);
+  f.client.closeThread();
+  await f.client.openThread(root.id);
+  assert.equal(f.requests.length, 3);
+  assert.equal(f.state.thread?.windowStart, reply(-21).seq);
+  assert.equal(f.state.thread?.windowEnd, reply(-19).seq);
+  assert.equal(f.state.thread?.hasNewer, true);
 });
 
 test("hover prefetch and click share a request without opening or replacing another thread", async (t) => {

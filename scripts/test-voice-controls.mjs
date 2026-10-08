@@ -1,6 +1,7 @@
 // Real Call/Chat components and voice client; synthetic audio and mocked HTTP,
 // WebSocket and WebRTC. This is UI regression coverage, not live SFU validation.
 // Run against Vite: node scripts/test-voice-controls.mjs [http://localhost:5174]
+// Focus on DM navigation, hover menus and ringless focus with VOICE_TEST_SIDEBAR=1.
 // Focus on stable channel rows with VOICE_TEST_CHANNEL_ROWS=1.
 // Focus only on avatar borders with VOICE_TEST_AVATARS=1.
 // Focus on the profile/voice dock with VOICE_TEST_DOCK=1.
@@ -71,6 +72,7 @@ async function fixture() {
     avatarId: 0,
     debugEnabled: true,
   };
+  const selfDirect = { id: "selfdm000000", peer: account, lastSeq: "0", readSeq: "0", status: "accepted" };
   const space = { id: "workspace123", name: "Test space", ownerId: account.id };
   const channels = ["alpha", "beta"].map((name) => ({
     id: name.padEnd(12, "0"),
@@ -93,16 +95,22 @@ async function fixture() {
   const respond = async (input, options = {}) => {
     const path = new URL(typeof input === "string" ? input : input.url, location.href).pathname;
     if (path === "/api/account/me") return Response.json(account);
-    if (path === "/api/dms") return Response.json({ conversations: [] });
+    if (path === "/api/dms") return Response.json({ conversations: [selfDirect] });
+    if (path === "/api/people") return Response.json({ people: [account] });
     if (path === "/api/spaces")
-      return Response.json({ spaces: [space], limits: { ownedSpaces: 20, totalSpaces: 100, channelsPerSpace: 100 } });
+      return Response.json({
+        spaces: f.noSpaces ? [] : [space],
+        limits: { ownedSpaces: 20, totalSpaces: 100, channelsPerSpace: 100 },
+      });
     if (path === "/api/spaces/workspace123")
       return Response.json({ space, channels, members: [{ ...account, owner: true }] });
     if (path === "/api/spaces/workspace123/channels/private00000/members") return Response.json({ members: [account] });
     if (path.startsWith("/api/chat/channels/") && path.endsWith("/messages"))
       return Response.json({
         space,
-        channel: channels.find((channel) => path.includes(`/${channel.id}/`)),
+        channel: path.includes(`/${selfDirect.id}/`)
+          ? { id: selfDirect.id, name: account.displayName, direct: true }
+          : channels.find((channel) => path.includes(`/${channel.id}/`)),
         messages: [],
         cursor: "0",
         hasMore: false,
@@ -384,10 +392,10 @@ async function fixture() {
   history.replaceState = History.prototype.replaceState.bind(history);
   const root = createRoot(mount);
   root.render(React.createElement(Call));
-  f.showSpaces = (owner = true) => {
+  f.showSpaces = (owner = true, dmId) => {
     space.ownerId = owner ? account.id : "other-owner";
-    history.replaceState({}, "", `/spaces?space=${space.id}&channel=${channels[0].id}`);
-    root.render(React.createElement(Spaces, { key: owner ? "owner" : "member" }));
+    history.replaceState({}, "", `/spaces?space=${space.id}&${dmId ? `dm=${dmId}` : `channel=${channels[0].id}`}`);
+    root.render(React.createElement(Spaces, { key: `${owner ? "owner" : "member"}:${dmId ?? "channel"}` }));
   };
   f.cleanup = async () => {
     root.unmount();
@@ -407,7 +415,134 @@ try {
   wait(
     `document.querySelector('#chat-message:not(:disabled)') && document.querySelector('.voice-button[aria-disabled="false"]')`,
   );
-  if (process.env.VOICE_TEST_DOCK === "1") {
+  if (process.env.VOICE_TEST_SIDEBAR === "1") {
+    const channelGeometry = () =>
+      evaluate(`return [...document.querySelectorAll('.channel-line')].map(line => {
+        const r = line.getBoundingClientRect(); return [r.x, r.y, r.width, r.height];
+      });`);
+    const desktopHover = () => evaluate(`return matchMedia('(hover: hover) and (pointer: fine)').matches;`);
+    const menuOpacity = () =>
+      evaluate(`return getComputedStyle(document.querySelector('[aria-label="Manage alpha"]')).opacity;`);
+    for (const width of [1280, 390]) {
+      browser("set", "viewport", String(width), "900", "2");
+      evaluate(`voiceFixture.publishPresence([]); voiceFixture.showSpaces(${width === 1280});`);
+      wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha'`);
+      if (width === 390) click("Back to Browse");
+      evaluate(
+        `await document.fonts.ready; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))); document.activeElement.blur();`,
+      );
+      browser("mouse", "move", "5", "5");
+      const before = channelGeometry();
+      assert.equal(before.length, 3);
+      assert.equal(
+        menuOpacity(),
+        width === 1280 && desktopHover() ? "0" : "1",
+        "Only mouse desktop hides resting channel menus",
+      );
+      assert.equal(
+        evaluate(`const button = document.querySelector('.channel-line .channel-select');
+        return button.querySelector('span').getBoundingClientRect().left - button.querySelector('svg').getBoundingClientRect().right;`),
+        6,
+        "The channel label sits 6px after its hash/lock",
+      );
+      screenshot(`sidebar-${width}-default`);
+      if (width === 1280 && desktopHover()) {
+        browser("hover", "#space-channel-list > li:first-child .channel-line");
+        wait(`getComputedStyle(document.querySelector('[aria-label="Manage alpha"]')).opacity === '1'`);
+        assert.equal(menuOpacity(), "1", "Hover reveals that channel's menu");
+        assert.equal(
+          evaluate(`return getComputedStyle(document.querySelector('[aria-label="Manage beta"]')).opacity;`),
+          "0",
+          "Other rows stay quiet",
+        );
+        assert.deepEqual(channelGeometry(), before, "Revealing the menu reserves its space");
+        screenshot("sidebar-1280-hover");
+        click("Manage alpha");
+        browser("mouse", "move", "5", "5");
+        assert.equal(menuOpacity(), "1", "An open menu stays visible off hover");
+        browser("press", "Escape");
+      }
+      browser("focus", '[aria-label="Manage alpha"]');
+      browser("press", "Tab");
+      assert.equal(evaluate(`return document.activeElement.getAttribute('aria-label');`), "Join voice");
+      wait(`getComputedStyle(document.activeElement).backgroundColor === 'rgb(52, 56, 59)'`);
+      assert.equal(
+        evaluate(`return getComputedStyle(document.activeElement).outlineStyle;`),
+        "none",
+        "Keyboard focus uses a background, not a ring",
+      );
+      assert.equal(menuOpacity(), "1", "Keyboard focus reveals channel options");
+      browser("press", "Escape"); // Dismiss the tooltip without removing focus.
+      screenshot(`sidebar-${width}-keyboard`);
+      browser("click", ".direct-self");
+      wait(
+        `document.querySelector('.direct-self[aria-current="page"]') && document.querySelector('#chat-message:not(:disabled)')`,
+      );
+      if (width === 390) click("Back to Browse");
+      assert.deepEqual(channelGeometry(), before, "Opening a DM must not shrink channel rows");
+      assert.equal(
+        evaluate(`return getComputedStyle(document.querySelector('.direct-self')).outlineStyle;`),
+        "none",
+        "Clicking a DM never draws a ring",
+      );
+      assert.equal(
+        evaluate(`return document.querySelectorAll('.channel-join').length;`),
+        3,
+        "DM navigation retains every channel's voice action",
+      );
+      browser("mouse", "move", "5", "5");
+      screenshot(`sidebar-${width}-dm`);
+      click("Join voice in #beta");
+      wait(`voiceFixture.client?.phase === 'connected' && document.querySelector('[aria-label="Leave voice"]')`);
+      assert.equal(
+        evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.join').at(-1).channelId;`),
+        "beta00000000",
+        "Join from a DM targets the chosen space channel",
+      );
+      if (width === 390) {
+        click("Close navigation");
+        click("Back to Browse");
+      }
+      browser("find", "role", "button", "click", "--name", "alpha", "--exact");
+      wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha'`);
+      if (width === 390) click("Back to Browse");
+      const leaves = evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.leave').length;`);
+      browser("click", ".direct-self");
+      wait(`document.querySelector('.direct-self[aria-current="page"]')`);
+      assert.equal(
+        evaluate(`return voiceFixture.client.phase;`),
+        "connected",
+        "Opening a DM must preserve an active voice connection",
+      );
+      assert.equal(evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.leave').length;`), leaves);
+      click("Leave voice");
+      wait(`voiceFixture.client.phase === 'idle'`);
+    }
+    // A cold DM URL must check a real channel, not the DM's media endpoint.
+    browser("set", "viewport", "1280", "900", "2");
+    evaluate(`voiceFixture.showSpaces(true, 'selfdm000000');`);
+    wait(
+      `document.querySelector('.direct-self[aria-current="page"]') && document.querySelector('.channel-join[aria-disabled="false"]')`,
+    );
+    assert.equal(
+      evaluate(
+        `return voiceFixture.commands.filter(c => c.method.startsWith('media.') && c.channelId === 'selfdm000000').length;`,
+      ),
+      0,
+      "A DM never provisions or subscribes to its own voice",
+    );
+    evaluate(`voiceFixture.noSpaces = true; voiceFixture.showSpaces(false, 'selfdm000000');`);
+    wait(`document.querySelector('.direct-self[aria-current="page"]') && !document.querySelector('.channel-line')`);
+    assert.equal(
+      evaluate(`return document.querySelectorAll('.channel-join').length;`),
+      0,
+      "An account without spaces exposes no DM voice action",
+    );
+    evaluate(`await voiceFixture.cleanup();`);
+    console.log(
+      "PASS DM row geometry, voice retention/join from DMs, cold DM/no-space routes, hover/open/keyboard menus, ringless click/keyboard focus and 6px channel gaps at 1280px/390px (mock signaling/WebRTC)",
+    );
+  } else if (process.env.VOICE_TEST_DOCK === "1") {
     evaluate(`voiceFixture.showSpaces();`);
     wait(
       `document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha' && document.querySelector('.voice-button[aria-disabled="false"]')`,
@@ -417,7 +552,7 @@ try {
     wait(`document.querySelector('[aria-label="Leave voice"]')`);
     for (const width of [1280, 390]) {
       browser("set", "viewport", String(width), "900", "2");
-      if (width === 390) browser("find", "role", "button", "click", "--name", "Browse", "--exact");
+      if (width === 390) click("Back to Browse");
       evaluate(
         `await document.fonts.ready; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));`,
       );
@@ -478,7 +613,7 @@ try {
     const timer = '.channel-line:has(.channel-select[aria-current="page"]) [role="timer"]';
     for (const width of [1280, 390]) {
       browser("set", "viewport", String(width), "900", "2");
-      if (width === 390) browser("find", "role", "button", "click", "--name", "Browse", "--exact");
+      if (width === 390) click("Back to Browse");
       evaluate(
         `voiceFixture.holdJoin = true; voiceFixture.releaseJoin = undefined; voiceFixture.clicked = Date.now();`,
       );
@@ -579,7 +714,7 @@ try {
     wait(`document.querySelectorAll('.voice-occupants .avatar.quiet').length === 2`);
     for (const width of [1280, 390]) {
       browser("set", "viewport", String(width), "900", "2");
-      if (width === 390) browser("find", "role", "button", "click", "--name", "Browse", "--exact");
+      if (width === 390) click("Back to Browse");
       evaluate(`await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));`);
       assert.deepEqual(
         evaluate(
@@ -680,7 +815,7 @@ try {
     for (const width of [1280, 390]) {
       browser("set", "viewport", String(width), "900", "2");
       evaluate(`await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));`);
-      if (width === 390) browser("find", "role", "button", "click", "--name", "Browse", "--exact");
+      if (width === 390) click("Back to Browse");
       browser("mouse", "move", "5", "5");
       evaluate(`document.activeElement.blur();`);
       const joinsBeforeSettings = evaluate(
@@ -690,9 +825,9 @@ try {
       assert.equal(before.length, 3, "Every channel, including empty/unselected/private channels, has voice actions");
       assert.ok(
         evaluate(
-          `return [...document.querySelectorAll('.channel-line')].every(line => { const name = line.querySelector('.channel-select').getBoundingClientRect(), action = line.querySelector('.channel-join').getBoundingClientRect(); return action.top >= name.bottom && getComputedStyle(line.querySelector('.channel-manage')).opacity === '1'; });`,
+          `return [...document.querySelectorAll('.channel-line')].every(line => { const name = line.querySelector('.channel-select').getBoundingClientRect(), action = line.querySelector('.channel-join').getBoundingClientRect(); return action.top >= name.bottom; });`,
         ),
-        "Voice actions must sit below the name; channel actions never depend on hover",
+        "Voice actions must sit below the name",
       );
       assert.ok(
         evaluate(
@@ -745,12 +880,14 @@ try {
         "Join voice",
         "Join remains reachable immediately after channel settings",
       );
-      wait(`getComputedStyle(document.activeElement).color === 'rgb(243, 244, 245)'`);
+      wait(
+        `getComputedStyle(document.activeElement).backgroundColor === 'rgb(52, 56, 59)' && getComputedStyle(document.activeElement).color === 'rgb(243, 244, 245)'`,
+      );
       assert.ok(
         evaluate(
-          `const button = document.activeElement, style = getComputedStyle(button); return button.matches(':focus-visible') && style.outlineStyle === 'solid' && style.outlineWidth === '2px' && style.color === 'rgb(243, 244, 245)';`,
+          `const button = document.activeElement, style = getComputedStyle(button); return button.matches(':focus-visible') && style.outlineStyle === 'none' && style.backgroundColor === 'rgb(52, 56, 59)' && style.color === 'rgb(243, 244, 245)';`,
         ),
-        "Keyboard focus retains a visible outline and readable action text",
+        "Keyboard focus has a neutral background and readable text without a ring",
       );
       assert.deepEqual(geometry(), before, "Keyboard feedback cannot move actions");
       screenshot(`channel-${width}-focus`);
@@ -847,8 +984,6 @@ try {
       screenshot(`channel-${width}-joined`);
       if (width === 390) {
         click("Close navigation");
-        // This fixture resized an existing desktop session with members open.
-        click("Hide member list");
         assert.ok(
           evaluate(
             `const composer = document.querySelector('#chat-message'), r = composer.getBoundingClientRect(); return document.querySelector('.voice-hangup').getBoundingClientRect().height >= 44 && document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === composer;`,
@@ -856,7 +991,7 @@ try {
           "Narrow conversation retains the dock disconnect target and unobscured text entry",
         );
         screenshot("channel-390-conversation");
-        browser("find", "role", "button", "click", "--name", "Browse", "--exact");
+        click("Back to Browse");
       }
       browser("click", '.channel-line:has(.channel-select[aria-current="page"]) .voice-stack');
       wait(`document.querySelector('#voice-occupants-alpha0000000').getBoundingClientRect().height > 20`);
@@ -882,7 +1017,7 @@ try {
         evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.leave').length;`),
         evaluate(`return voiceFixture.leaveCount;`),
       );
-      if (width === 390) browser("find", "role", "button", "click", "--name", "Browse", "--exact");
+      if (width === 390) click("Back to Browse");
       assert.equal(
         evaluate(`return document.querySelector('[aria-label="Switch voice to #beta"]').textContent;`),
         "Switch here",
@@ -909,7 +1044,7 @@ try {
       wait(`voiceFixture.client.phase === 'idle'`);
       browser("find", "role", "button", "click", "--name", "alpha", "--exact");
       wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha'`);
-      if (width === 390) browser("find", "role", "button", "click", "--name", "Browse", "--exact");
+      if (width === 390) click("Back to Browse");
       evaluate(
         `voiceFixture.publishPresence([]); voiceFixture.holdCapture = true; voiceFixture.releaseCapture = undefined;`,
       );
@@ -1052,7 +1187,7 @@ try {
     checkChannelTargets();
     screenshot("channel-1280-member");
     browser("set", "viewport", "390", "900", "2");
-    browser("find", "role", "button", "click", "--name", "Browse", "--exact");
+    click("Back to Browse");
     assert.deepEqual(countPosition(), ownerNarrowCount, "Narrow owned and shared spaces also align the count");
     screenshot("channel-390-member");
     evaluate(`await voiceFixture.cleanup();`);

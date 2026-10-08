@@ -277,9 +277,11 @@ public actor APIClient {
         let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/channels/\(try pathID(channelID))/invitation", method: "DELETE")
     }
 
-    public func history(channelID: String? = nil, before: String? = nil) async throws -> ChatHistory {
+    public func history(channelID: String? = nil, before: String? = nil, after: String? = nil, around: String? = nil) async throws -> ChatHistory {
         var path = channelID.map { "api/chat/channels/\($0)/messages" } ?? "api/chat/general"
         if let before { path += "?before=\(before.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? before)" }
+        else if let after { path += "?after=\(after.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? after)" }
+        else if let around { path += "?around=\(try messagePathID(around))" }
         let history: ChatHistory = try await request(path)
         guard history.cursor == "0" || (try? Sequence.compare(history.cursor, "0")) != nil,
               channelID == nil || history.channel?.id == channelID,
@@ -301,8 +303,11 @@ public actor APIClient {
         try await request("api/chat/session", method: "POST", body: SessionInput(name: name))
     }
 
-    public func thread(channelID: String, rootID: String, before: String? = nil) async throws -> ThreadHistory {
-        let path = "api/chat/channels/\(try pathID(channelID))/messages/\(try messagePathID(rootID))/thread" + (before.map { "?before=\($0)" } ?? "")
+    public func thread(channelID: String, rootID: String, before: String? = nil, after: String? = nil, around: String? = nil) async throws -> ThreadHistory {
+        var path = "api/chat/channels/\(try pathID(channelID))/messages/\(try messagePathID(rootID))/thread"
+        if let before { path += "?before=\(before)" }
+        else if let after { path += "?after=\(after)" }
+        else if let around { path += "?around=\(try messagePathID(around))" }
         let page: ThreadHistory = try await request(path)
         guard page.root.id == rootID, page.root.channelId == channelID, page.root.threadRootId == nil,
               page.messages.allSatisfy({ $0.channelId == channelID && $0.threadRootId == rootID && $0.content.version == 1 && $0.content.type == "text" && (try? Sequence.compare($0.seq, "0")) != nil }) else {

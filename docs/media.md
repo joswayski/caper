@@ -1391,17 +1391,33 @@ Pins are channel-wide, not personal bookmarks. Any joined channel member can pin
 or unpin another member's message; the two participants can do the same in a DM.
 Private-channel grants and active space membership still apply. Preview readers
 can see pins but cannot change them, including no-op writes. Actions do not ask
-for confirmation. Inline “Pinned by …” attribution updates for other readers.
-Attribution appears above the author/message in warm gold with a subtle gold wash.
+for confirmation. “Pinned by …” attribution appears only in the Pins view,
+not in the main timeline. The header says Pins without a count.
 Desktop message controls appear on hover or keyboard focus: two 14px glyphs in
 24px targets, separated by 2px. Touch clients retain long-press actions and large
 targets; narrow web reserves text space beside its 44px action target.
 Browse channels lives in the space-name menu, and the DM divider follows
 the channel list; the account/audio dock stays fixed.
-The central channel header has a Pins button with a count; web, Android and Rust
-desktop show pins in the central conversation area. Apple uses a platform sheet.
+Pins opens a dismissible overlay while the main conversation remains mounted.
+Clicking outside or pressing Escape dismisses desktop/web Pins; mobile clients
+also provide Close. Apple uses a macOS popover and an iOS sheet.
 Each list shows the original author, avatar, date/time, text, and shared attribution,
-and offers Unpin. These are independent native implementations, not web wrappers.
+with a visible Go to message action. Unpin belongs in the normal message-actions
+menu, revealed on hover/focus or through mobile actions, not directly in the row.
+These are independent native implementations, not web wrappers.
+
+Channel history and thread history accept exactly one of `before`, `after`, or
+`around`. `around=<message ID>` returns the target plus up to 30 messages before
+and 30 after, in ascending order, with `hasMore` and `hasNewer`. Limits count
+messages, not edit/reaction sequence events. Anchors resolve inside the authorized
+channel/thread; wrong-channel, wrong-thread and inaccessible targets return 404.
+`after=<sequence>` returns the next 50 rows in ascending order. Clients scroll to and
+highlight the target, expose older/newer paging and retain a bounded visible
+window so retained latest rows are never spliced across a history gap. Context
+snapshots merge independently of the committed gateway replay cursor. Pinned
+non-broadcast replies navigate into their thread. Back to latest and successful
+sends from historical context reload the latest page instead of leaving new
+messages hidden beyond a gap.
 
 `PUT /api/chat/channels/{channel}/messages/{message}/pin` accepts `{active:boolean}`
 and `X-Caper-Chat-Token`; clients cannot supply a pin author. The response and
@@ -1436,10 +1452,10 @@ are pruned. Pins do not send system messages, play message sounds, or create pus
 
 | Platform | Evidence and remaining gap |
 | --- | --- |
-| API/gateway | Disposable Postgres/Valkey tests cover two authenticated readers, live delivery/replay, persistence, concurrent no-ops, reactions, transaction rollback, old-message pins, limits and retained-but-revoked membership/grants. No production write or deployment |
-| Web | Build/unit tests plus `scripts/test-message-pins.mjs`: two tabs, gold top attribution, compact hover/focus controls, content-following/collapsed sidebar, space-menu Browse, one-action pin/unpin, original metadata, old pins, pending/error/retry, channel isolation and desktop/narrow/wrapping layouts. Chromium touch input with `(pointer:coarse)` verified; screenshots inspected. Not Safari or a physical phone |
-| Rust desktop | Linux build/tests/Clippy and disposable HTTP fixture rendering/interactions; regression tests cover gold attribution, compact hidden/hover controls, direct Unpin and owner/member Browse placement. Windows build/runtime and production cross-client checks remain release validation |
-| Android | Models, gateway, Compose actions/list and JVM regressions implemented. JDK/Android SDK unavailable in this orb; compilation, rendered states and physical-device checks require CI/a native runner |
+| API/gateway | Disposable Postgres tests additionally cover channel/thread context, exact 30-before/30-after limits despite edit-sequence gaps, forward paging, boundary flags, mutually exclusive anchors and access isolation. Existing pin coverage includes shared delivery/replay and persistence. No production write or deployment |
+| Web | 470 web/shared-native-support tests, build/typecheck/lint and `scripts/test-message-pins.mjs` pass: hover-menu optimistic unpin before server echo, outside/Escape dismissal, pinner profile by account ID, nested-menu layering, failed-jump retry, old context with 30 rows either side, centered highlight, Back to newest message, sends from channel/thread context, narrow layout and pinned thread navigation. Unit regressions cover pin jumps superseding same-root prefetches, out-of-order context responses and cached older/newer boundaries. `scripts/test-message-threads.mjs` passes cached reopening, stable repeated clicks, hover prefetch and 30-frame Pins return with an open thread/draft. Latest `scripts/test-chat-history.mjs` passes desktop/latest/live/history and narrow-history Pins round trips, checking 30 painted return frames and stable scrollbars, then fails its narrow live-arrival check with a 3px bottom gap (2px allowed); reproduced on a clean main checkout too. Desktop/narrow screenshots inspected. Browser fixture only, not Safari or a physical phone |
+| Rust desktop | Linux build, Clippy, 285 tests passed (9 ignored), including retained Pins viewport/paging anchors, pending-unpin projection, resize/clip bounds, fixture pin counts and cached bounded thread context after forward paging. Inspected labeled static `parity-pins`, `parity-pins-empty`, and `parity-pins-long` renders: populated/empty cards, hover actions, long/multiple-pin scrolling, and a 390px window. Actual Linux menu/outside/Escape dismissal exercised; not live account acceptance. Windows build/runtime and production cross-client checks remain release validation |
+| Android | Context/paging models, API, request fencing, Compose dialog/actions/navigation implemented. JDK present; `compileDebugKotlin` blocked by missing Android SDK. Compilation, rendered states and physical-device checks require CI/a native runner |
 | Apple | Models, gateway, SwiftUI actions/list and protocol regressions implemented. Swift/Xcode unavailable in this Linux orb; macOS/iOS builds, rendered states and devices require CI/a native runner |
 | Containers/live | Docker has no running daemon. Validate web/API build stages directly; no container-image, live account/SFU or physical-device acceptance is inferred from fixtures |
 
@@ -1448,6 +1464,8 @@ With the disposable fixture and Vite running, use:
 ```sh
 npm run test:native -- tests/native-parity-fixture.test.mjs
 MESSAGE_TEST_WEB_URL=http://127.0.0.1:5174 node scripts/test-message-pins.mjs
+DATABASE_URL=postgres://user@127.0.0.1:55432/postgres \
+  cargo test --locked -p caper-api threads_isolate_replies -- --ignored
 CHAT_TEST_DATABASE_URL=postgres://user@127.0.0.1:55432/postgres \
 CHAT_TEST_VALKEY_URL=redis://127.0.0.1:6379 \
   cargo test --locked -p caper-api pins_are_shared -- --ignored --nocapture
@@ -1457,7 +1475,8 @@ For desktop hover assertions, set `MESSAGE_TEST_CHROME` to a Chromium executable
 wrapper that adds
 `--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4`.
 Stock headless Chromium reports no hover device. The script verifies the fine
-pointer before checking hover and later switches to real Chromium touch input.
+pointer before checking hover and later checks a 390px narrow browser layout.
+That is not touch emulation or physical-device validation.
 
 ### Deployment order for pins
 
@@ -5051,7 +5070,7 @@ rollback is required.
 ### Returning from Pins (October 8, 2026)
 
 Web keeps the virtualized conversation mounted and measurable behind Pins, but
-invisible and inert to pointer, keyboard and accessibility navigation. Returning
+visibly dimmed and inert to pointer, keyboard and accessibility navigation. Returning
 reveals the existing viewport without repeating initial measurement or showing
 an empty history. Live arrivals follow the bottom only for readers already there;
 readers in older history retain their position. Android retains its channel's
@@ -5061,7 +5080,7 @@ presents Pins as a sheet over the mounted conversation and is unchanged.
 
 | Platform | Validation boundary |
 | --- | --- |
-| Web | Build/typecheck/lint/format and 449 web/shared-native-support tests pass. Disposable Chromium regressions sample every return frame for desktop/narrow, latest/older history, live arrivals, short/empty conversations and an open thread with a draft. The timeline is invisible and unfocusable behind Pins; screenshots inspected. Narrow viewport checks are not physical-device or Safari acceptance. |
+| Web | See the Pin validation boundary above for current combined results and the known narrow live-arrival failure. The timeline remains visibly dimmed and unfocusable behind the modal; screenshots inspected. Earlier return-frame coverage included short/empty conversations. Narrow viewport checks are not physical-device or Safari acceptance. |
 | Rust desktop | 276 tests pass, 9 existing tests ignored, including rendered scroll-anchor/paging preservation across empty Pins. No macOS/Windows or physical-device acceptance. |
 | Android | Scroll state is hoisted above Pins navigation. Gradle compile attempt is blocked by the missing Android SDK; no native build or device verification. |
 | Deployment | Web, Android and Rust desktop can release independently. No API/gateway, infrastructure, secret/configuration, database or Apple release is required. Docker daemon unavailable; web build stages validated directly. No deployment performed. |

@@ -358,11 +358,11 @@ try {
     window.pinsScrollTop = pinsChannel.scrollTop;
   })()`);
   browser("click", ".chat-pins-toggle");
-  wait('!!document.querySelector(".chat-pins")');
+  wait('!!document.querySelector(".chat-pins-dialog")');
   evaluate(`(() => {
     window.threadPinFrames = [];
     const sample = () => {
-      if (!document.querySelector('.chat-pins')) {
+      if (!document.querySelector('.chat-pins-dialog')) {
         const scroller = document.querySelector('.chat-scroller');
         const bounds = scroller.getBoundingClientRect();
         threadPinFrames.push(scroller === pinsChannel && document.querySelector('.chat-thread-panel') === pinsThread
@@ -374,7 +374,7 @@ try {
     };
     requestAnimationFrame(sample);
   })()`);
-  browser("click", ".chat-pins-toggle");
+  browser("find", "role", "button", "click", "--name", "Close pins", "--exact");
   wait("threadPinFrames.length === 30");
   assert.equal(
     evaluate("threadPinFrames.every(Boolean)"),

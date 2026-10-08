@@ -3,7 +3,7 @@ import { ArrowLeft, Send, X } from "lucide-react";
 import type { ChatClient, ChatViewState } from "./client.ts";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import type { MentionCandidate } from "./mentions.ts";
-import type { ChatMessage } from "./types.ts";
+import { sequence, type ChatMessage } from "./types.ts";
 
 export default function ThreadPanel({
   state,
@@ -36,7 +36,14 @@ export default function ThreadPanel({
   const [mobile, setMobile] = useState(false);
   const rootId = state.thread?.rootId;
   const pending = rootId && state.pendingSend?.threadRootId === rootId ? state.pendingSend : undefined;
-  const replies = rootId ? state.messages.filter((message) => message.threadRootId === rootId) : [];
+  const replies = rootId
+    ? state.messages.filter(
+        (message) =>
+          message.threadRootId === rootId &&
+          (!state.thread?.windowStart || sequence(message.seq) >= sequence(state.thread.windowStart)) &&
+          (!state.thread?.windowEnd || sequence(message.seq) <= sequence(state.thread.windowEnd)),
+      )
+    : [];
   const draft = rootId ? (drafts[rootId] ?? { text: "", broadcast: false }) : { text: "", broadcast: false };
   const update = (change: Partial<typeof draft>) => {
     if (rootId) setDrafts((current) => ({ ...current, [rootId]: { ...draft, ...change } }));
@@ -125,8 +132,20 @@ export default function ThreadPanel({
     });
   }, [pending?.clientMessageId]);
   useEffect(() => {
+    if (!state.thread?.focusMessageId) follow.current = true;
+  }, [state.thread?.focusMessageId]);
+  useEffect(() => {
     if (scroll.current && follow.current) scroll.current.scrollTop = scroll.current.scrollHeight;
   }, [rootId, replies.at(-1)?.id, pending?.clientMessageId, state.thread?.loading]);
+  useEffect(() => {
+    const id = state.thread?.focusMessageId;
+    if (!id || state.thread?.loading) return;
+    follow.current = false;
+    const frame = requestAnimationFrame(() =>
+      scroll.current?.querySelector(`[data-message-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: "center" }),
+    );
+    return () => cancelAnimationFrame(frame);
+  }, [state.thread?.focusMessageId, state.thread?.loading]);
   useLayoutEffect(() => {
     if (state.thread?.loadingOlder || !olderAnchor.current || !scroll.current) return;
     scroll.current.scrollTop = olderAnchor.current.top + scroll.current.scrollHeight - olderAnchor.current.height;
@@ -225,6 +244,16 @@ export default function ThreadPanel({
           <p className="chat-thread-status">No replies yet. Start the thread.</p>
         )}
         {replies.map((message, index) => renderMessage(index + 1, message, true))}
+        {state.thread.hasNewer && (
+          <button
+            type="button"
+            className="chat-thread-older"
+            disabled={state.thread.loadingNewer}
+            onClick={() => void client?.loadNewerThread()}
+          >
+            {state.thread.loadingNewer ? "Loading…" : "Load newer replies"}
+          </button>
+        )}
         {pending && (
           <article className="chat-message chat-message-pending">
             <div />

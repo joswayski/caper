@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, Ban, ChevronDown, MoreHorizontal, Pin } from "lucide-react";
+import { ArrowRight, Ban, ChevronDown, MoreHorizontal, Pin, X } from "lucide-react";
+import {
+  FloatingFocusManager,
+  FloatingOverlay,
+  FloatingPortal,
+  useDismiss,
+  useFloating,
+  useInteractions,
+  useRole,
+} from "@floating-ui/react";
 import { Virtuoso, type VirtuosoHandle, type ListProps, type ContextProp } from "react-virtuoso";
 import { ChatClient, initialChatView } from "./client.ts";
 import MessageReactions, { type ReactionSave } from "./MessageReactions.tsx";
@@ -69,6 +78,46 @@ function MessageList({ context, children, ...props }: ListProps & ContextProp<Hi
 
 const listComponents = { Header: HistoryHeader, List: MessageList };
 const measureItem = (element: HTMLElement, field: "offsetHeight" | "offsetWidth") => element[field];
+
+function PinsDialog({
+  children,
+  onClose,
+  actionsOpen,
+}: {
+  children: ReactNode;
+  onClose: () => void;
+  actionsOpen: boolean;
+}) {
+  const { refs, context } = useFloating({
+    open: true,
+    onOpenChange: (open) => {
+      if (!open) onClose();
+    },
+  });
+  const { getFloatingProps } = useInteractions([useDismiss(context, { enabled: !actionsOpen }), useRole(context)]);
+  return (
+    <FloatingPortal>
+      <FloatingOverlay lockScroll className="chat-forward-overlay chat-pins-overlay">
+        <FloatingFocusManager context={context} disabled={actionsOpen}>
+          <section
+            ref={refs.setFloating}
+            className="chat-forward-dialog chat-pins-dialog"
+            aria-label="Pinned messages"
+            {...getFloatingProps()}
+          >
+            <header className="chat-reaction-picker-heading">
+              <strong>Pins</strong>
+              <button type="button" aria-label="Close pins" onClick={onClose}>
+                <X size={18} />
+              </button>
+            </header>
+            {children}
+          </section>
+        </FloatingFocusManager>
+      </FloatingOverlay>
+    </FloatingPortal>
+  );
+}
 
 export default function Chat({
   name,
@@ -154,6 +203,15 @@ export default function Chat({
   const [reactionSaves, setReactionSaves] = useState<Record<string, ReactionSave | undefined>>({});
   const [mentionCard, setMentionCard] = useState<MentionCardTarget>();
   const [showPins, setShowPins] = useState(false);
+  const [jumping, setJumping] = useState<string>();
+  const [jumpError, setJumpError] = useState<string>();
+  const [jumpMessage, setJumpMessage] = useState<string>();
+  const [scrollTarget, setScrollTarget] = useState<string>();
+  const [listWindow, setListWindow] = useState(0);
+  const closePins = useCallback(() => {
+    setMentionCard(undefined);
+    setShowPins(false);
+  }, []);
   const [pinning, setPinning] = useState<Set<string>>(() => new Set());
   const [pinError, setPinError] = useState<{ messageId: string; active: boolean; text: string }>();
   // Runs of blocked messages the reader chose to show, by their first message.
@@ -176,6 +234,10 @@ export default function Chat({
     setActionStatus("");
     setReactionSaves({});
     setShowPins(false);
+    setJumping(undefined);
+    setJumpError(undefined);
+    setJumpMessage(undefined);
+    setScrollTarget(undefined);
     setPinning(new Set());
     setPinError(undefined);
     setRevealedRuns(new Set());
@@ -261,8 +323,8 @@ export default function Chat({
   const findMessage = (id?: string) =>
     state.messages.find((message) => message.id === id) ?? state.pinnedMessages.find((message) => message.id === id);
   const actionMessage = findMessage(actionTarget?.messageId);
-  const reactorsMessage = state.messages.find((message) => message.id === reactorsTarget?.messageId);
-  const forwardMessage = state.messages.find((message) => message.id === forwardTarget?.messageId);
+  const reactorsMessage = findMessage(reactorsTarget?.messageId);
+  const forwardMessage = findMessage(forwardTarget?.messageId);
   const conversationMessage = [...state.messages, ...state.pinnedMessages].find(
     (message) => message.id === conversationTarget?.messageId,
   );
@@ -306,6 +368,31 @@ export default function Chat({
     }
   };
   const listRef = useRef<VirtuosoHandle>(null);
+  const goToMessage = async (message: GeneralChatHistory["messages"][number]) => {
+    const client = clientRef.current;
+    if (!client || jumping) return;
+    setJumping(message.id);
+    setJumpError(undefined);
+    setActionTarget(undefined);
+    setMentionCard(undefined);
+    try {
+      if ((await client.loadMessageContext(message)) && clientRef.current === client) {
+        setShowPins(false);
+        setJumpMessage(message.id);
+        if (!message.threadRootId) {
+          followLatest.current = false;
+          // Cancel the previous window's queued follow/measurement corrections.
+          setListWindow((window) => window + 1);
+          setScrollTarget(message.id);
+        }
+      } else if (clientRef.current === client) setJumpError("Message could not be loaded. Try again.");
+    } catch (error) {
+      if (clientRef.current === client)
+        setJumpError(error instanceof Error ? error.message : "Message could not be loaded.");
+    } finally {
+      if (clientRef.current === client) setJumping(undefined);
+    }
+  };
   const initialListRef = useRef<HTMLDivElement>(null);
   const [listReady, setListReady] = useState(false);
   // Virtuoso needs browser APIs; the server and first client render use the plain list.
@@ -339,6 +426,8 @@ export default function Chat({
     onTooLong: () => setValidationError("Messages must be 4,000 characters or fewer."),
   });
   const followLatest = useRef(true);
+  const allowFollow = useRef(false);
+  allowFollow.current = !state.hasNewer && !scrollTarget && !jumping;
   const latestMessage = state.messages.at(-1);
   const [announcement, setAnnouncement] = useState("");
   useEffect(() => {
@@ -366,7 +455,7 @@ export default function Chat({
     const resize = () => {
       composer.style.height = "0px";
       composer.style.height = `${composer.scrollHeight + composer.offsetHeight - composer.clientHeight}px`;
-      if (followLatest.current) listRef.current?.autoscrollToBottom();
+      if (followLatest.current && allowFollow.current) listRef.current?.autoscrollToBottom();
     };
     resize();
     let width = composer.clientWidth;
@@ -473,6 +562,20 @@ export default function Chat({
   const channelMessages = state.channelMessages ?? state.messages.filter(isChannelMessage);
   const messages =
     state.pendingSend && !state.pendingSend.threadRootId ? [...channelMessages, state.pendingSend] : channelMessages;
+  const scrollIndex =
+    scrollTarget && scrollTarget !== "latest"
+      ? messages.findIndex((message) => "id" in message && message.id === scrollTarget)
+      : "LAST";
+  useEffect(() => {
+    if (!scrollTarget || !listReady) return;
+    if (scrollTarget === "latest" && state.hasNewer) return;
+    if (scrollIndex === -1) return;
+    const frame = requestAnimationFrame(() => {
+      listRef.current?.scrollToIndex({ index: scrollIndex, align: scrollTarget === "latest" ? "end" : "center" });
+      setScrollTarget(undefined);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [scrollTarget, scrollIndex, messages, firstItemIndex, listReady, state.hasNewer]);
   const previewStart = Math.max(
     0,
     messages.length - Math.max(20, Math.ceil((typeof window === "undefined" ? 800 : window.innerHeight) / 50)),
@@ -497,13 +600,20 @@ export default function Chat({
       ),
     ]);
   }, [state.messages, threadRootId, blockedIds, ownId]);
-  const toggleRun = (first: string, shown: boolean) =>
+  useLayoutEffect(() => {
+    const target = state.messages.find((message) => message.id === jumpMessage);
+    const run = target && (target.threadRootId ? threadRuns : channelRuns).get(target.clientMessageId);
+    if (run) setRevealedRuns((current) => (current.has(run.first) ? current : new Set([...current, run.first])));
+  }, [jumpMessage, state.messages, threadRuns, channelRuns]);
+  const toggleRun = (first: string, shown: boolean) => {
+    if (!shown) setJumpMessage(undefined);
     setRevealedRuns((current) => {
       const next = new Set(current);
       if (shown) next.add(first);
       else next.delete(first);
       return next;
     });
+  };
   const typingLabel =
     typingNames.length > 2
       ? "Several people are typing…"
@@ -525,7 +635,10 @@ export default function Chat({
     followLatest.current = true;
     const submitted = state.pendingSend?.text ?? draft;
     try {
-      await clientRef.current?.send(submitted);
+      if ((await clientRef.current?.send(submitted)) && state.hasNewer) {
+        setJumpMessage(undefined);
+        setScrollTarget("latest");
+      }
     } catch (error) {
       setValidationError(error instanceof Error ? error.message : "Message could not be sent.");
     }
@@ -588,8 +701,9 @@ export default function Chat({
           </div>
         )}
         <article
-          className={`chat-message${pending ? " chat-message-pending" : ""}${"content" in message && message.pin ? " chat-message-pinned" : ""}${!pending && mentionsAccount(message, state.author?.id) ? " chat-message-mentioned" : ""}${!inThread && "id" in message && state.thread?.rootId === message.id ? " chat-message-thread-active" : ""}`}
+          className={`chat-message${pending ? " chat-message-pending" : ""}${"id" in message && jumpMessage === message.id ? " chat-message-jump-target" : ""}${!pending && mentionsAccount(message, state.author?.id) ? " chat-message-mentioned" : ""}${!inThread && "id" in message && state.thread?.rootId === message.id ? " chat-message-thread-active" : ""}`}
           data-message-key={message.clientMessageId}
+          data-message-id={"id" in message ? message.id : undefined}
           onPointerDown={(event) => {
             cancelPress();
             if (
@@ -632,12 +746,6 @@ export default function Chat({
           }}
           tabIndex={pending ? undefined : -1}
         >
-          {"content" in message && message.pin && (
-            <div className="chat-pin-marker">
-              <Pin size={12} aria-hidden="true" />
-              Pinned by {message.pin.author.name}
-            </div>
-          )}
           <div className="chat-avatar">
             <Avatar avatarId={author?.avatarId} name={author?.name ?? name} />
           </div>
@@ -818,24 +926,26 @@ export default function Chat({
     );
   };
 
-  const pinsToggle =
-    state.phase === "ready" &&
-    (showPins ? (
-      <button type="button" className="chat-pins-toggle" onClick={() => setShowPins(false)}>
-        <ArrowLeft size={16} aria-hidden="true" />
-        Messages
-      </button>
-    ) : (
-      <button
-        type="button"
-        className="chat-pins-toggle"
-        onClick={() => setShowPins(true)}
-        aria-label={`Pins, ${state.pinnedMessages.length}`}
-      >
-        <Pin size={16} aria-hidden="true" />
-        Pins{state.pinnedMessages.length ? ` ${state.pinnedMessages.length}` : ""}
-      </button>
-    ));
+  const pinsToggle = state.phase === "ready" && (
+    <button
+      type="button"
+      className="chat-pins-toggle"
+      onClick={() => setShowPins(true)}
+      aria-label="Pins"
+      title="Pins"
+      aria-haspopup="dialog"
+    >
+      <Pin size={18} aria-hidden="true" />
+    </button>
+  );
+  const openPinner = (author: ChatAuthor, anchor: HTMLElement, focusOnOpen = true) => {
+    setMentionCard({
+      person: mentionCardPerson(author, mentionDirectory, state.author?.id),
+      anchor,
+      drawer: isTouchLayout(),
+      focusOnOpen,
+    });
+  };
 
   return (
     <div className="chat-layout" data-thread-open={!!state.thread}>
@@ -869,7 +979,6 @@ export default function Chat({
                   if ((event.target as HTMLElement).closest("button")) channelMenuRef.current!.open = false;
                 }}
               >
-                {pinsToggle}
                 {channelMenu}
               </div>
             </details>
@@ -879,7 +988,7 @@ export default function Chat({
               {channelName}
             </h2>
           )}
-          {!channelMenu && pinsToggle}
+          {pinsToggle}
           {headerActions}
           {!state.online && showConnectionStatus && (
             <span className="chat-offline" role="status">
@@ -913,61 +1022,112 @@ export default function Chat({
 
         <div className="chat-messages" aria-busy={state.phase === "loading"}>
           {showPins && state.phase === "ready" && (
-            <div className="chat-pins" role="region" aria-label={`Pinned messages in ${channelName}`}>
-              <h3>Pinned messages</h3>
-              {!state.pinnedMessages.length ? (
-                <p className="chat-state">No pinned messages.</p>
-              ) : (
-                state.pinnedMessages.map((message) => (
-                  <article className="chat-pinned-message" key={message.id}>
-                    {message.pin && (
-                      <small className="chat-pin-marker">
-                        <Pin size={12} aria-hidden="true" />
-                        Pinned by {message.pin.author.name}
-                      </small>
-                    )}
-                    <div className="chat-avatar chat-pinned-avatar">
-                      <Avatar avatarId={message.author.avatarId} name={message.author.name} />
-                    </div>
-                    <header>
-                      <strong>{message.author.name}</strong>
-                      <time dateTime={message.createdAt}>
-                        {hydrated ? timeLabel(message.createdAt, pinTimeFormatter) : ""}
-                      </time>
-                    </header>
-                    <p>{message.content.text}</p>
-                    <ForwardCard
-                      message={message}
-                      onOpen={(anchor) => setConversationTarget({ messageId: message.id, anchor })}
-                    />
-                    {!message.forward &&
-                      ((message.revision ?? 1) > 1 || (!readOnly && state.author?.id === message.author.id)) && (
-                        <div className="chat-pinned-edit-actions">
-                          {(message.revision ?? 1) > 1 && (
-                            <button type="button" className="chat-edited" onClick={() => openHistory(message.id)}>
-                              edited · Message history
-                            </button>
-                          )}
-                          {!readOnly && state.author?.id === message.author.id && (
-                            <button type="button" onClick={() => openEdit(message.id)}>
-                              Edit message
-                            </button>
-                          )}
-                        </div>
+            <PinsDialog
+              onClose={closePins}
+              actionsOpen={
+                !!(
+                  actionTarget ||
+                  reactorsTarget ||
+                  forwardTarget ||
+                  conversationTarget ||
+                  editTarget ||
+                  historyTarget ||
+                  mentionCard
+                )
+              }
+            >
+              <div className="chat-pins">
+                {jumpError && (
+                  <p className="chat-inline-error" role="alert">
+                    {jumpError}
+                  </p>
+                )}
+                {!state.pinnedMessages.length ? (
+                  <p className="chat-state">No pinned messages.</p>
+                ) : (
+                  state.pinnedMessages.map((message) => (
+                    <article className="chat-message chat-pinned-message" key={message.id}>
+                      {message.pin && (
+                        <small className="chat-pin-marker">
+                          <Pin size={12} aria-hidden="true" />
+                          <button
+                            type="button"
+                            className="chat-pin-author"
+                            aria-label={`Open profile for ${message.pin.author.name}`}
+                            aria-haspopup="dialog"
+                            onClick={(event) => openPinner(message.pin!.author, event.currentTarget)}
+                            onPointerEnter={(event) => {
+                              if (event.pointerType === "mouse")
+                                openPinner(message.pin!.author, event.currentTarget, false);
+                            }}
+                            onPointerDown={(event) => {
+                              cancelPress();
+                              if (event.pointerType === "mouse" || !event.isPrimary) return;
+                              const anchor = event.currentTarget;
+                              press.current = {
+                                x: event.clientX,
+                                y: event.clientY,
+                                pointerId: event.pointerId,
+                                timer: setTimeout(() => {
+                                  suppressClick.current = true;
+                                  openPinner(message.pin!.author, anchor);
+                                }, 500),
+                              };
+                            }}
+                            onPointerMove={(event) => {
+                              const current = press.current;
+                              if (
+                                current &&
+                                (event.pointerId !== current.pointerId ||
+                                  Math.hypot(event.clientX - current.x, event.clientY - current.y) > 10)
+                              )
+                                cancelPress();
+                            }}
+                            onPointerUp={cancelPress}
+                            onPointerCancel={cancelPress}
+                            onContextMenu={(event) => {
+                              if (isTouchLayout()) event.preventDefault();
+                            }}
+                          >
+                            Pinned by {message.pin.author.name}
+                          </button>
+                        </small>
                       )}
-                    {!readOnly && !!state.author && (
+                      <div className="chat-avatar chat-pinned-avatar">
+                        <Avatar avatarId={message.author.avatarId} name={message.author.name} />
+                      </div>
+                      <header>
+                        <strong>{message.author.name}</strong>
+                        <time dateTime={message.createdAt}>
+                          {hydrated ? timeLabel(message.createdAt, pinTimeFormatter) : ""}
+                        </time>
+                      </header>
+                      <p>{message.content.text}</p>
+                      <ForwardCard
+                        message={message}
+                        onOpen={(anchor) => setConversationTarget({ messageId: message.id, anchor })}
+                      />
+                      <div className="chat-pinned-navigation">
+                        <button type="button" disabled={!!jumping} onClick={() => void goToMessage(message)}>
+                          {jumping === message.id ? "Loading message…" : "Go to message"}
+                          <ArrowRight size={14} aria-hidden="true" />
+                        </button>
+                      </div>
                       <button
                         type="button"
-                        disabled={pinning.has(message.id)}
-                        onClick={() => void pin(message.id, false)}
+                        className="chat-message-actions-trigger"
+                        aria-label={`Message actions for ${message.author.name}`}
+                        aria-haspopup="dialog"
+                        aria-expanded={actionTarget?.messageId === message.id}
+                        onClick={(event) => openActions(message.id, event.currentTarget, false)}
                       >
-                        {pinning.has(message.id) ? "Unpinning…" : "Unpin"}
+                        <MoreHorizontal size={14} aria-hidden="true" />
                       </button>
-                    )}
-                  </article>
-                ))
-              )}
-            </div>
+                    </article>
+                  ))
+                )}
+              </div>
+            </PinsDialog>
           )}
           <div className="chat-timeline" inert={showPins} aria-hidden={showPins}>
             {state.phase === "loading" && (
@@ -1001,17 +1161,21 @@ export default function Chat({
             )}
             {state.phase === "ready" && messages.length > 0 && hydrated && (
               <Virtuoso
+                key={listWindow}
                 ref={listRef}
                 data={messages}
                 firstItemIndex={firstItemIndex}
-                initialTopMostItemIndex={{ index: "LAST", align: "end" }}
+                initialTopMostItemIndex={{
+                  index: scrollIndex === -1 ? "LAST" : scrollIndex,
+                  align: scrollTarget && scrollTarget !== "latest" ? "center" : "end",
+                }}
                 computeItemKey={(_, message) => `${message.author?.id ?? "pending"}:${message.clientMessageId}`}
                 defaultItemHeight={70}
                 // Layout sizes, not getBoundingClientRect: inside the homepage's tilted
                 // window the rect is scaled, which would hide the newest messages.
                 itemSize={measureItem}
                 increaseViewportBy={{ top: 250, bottom: 150 }}
-                followOutput="auto"
+                followOutput={allowFollow.current ? "auto" : false}
                 atBottomThreshold={80}
                 atBottomStateChange={(atBottom) => {
                   followLatest.current = atBottom;
@@ -1060,6 +1224,24 @@ export default function Chat({
             </p>
           </div>
         </div>
+        {state.hasNewer && (
+          <div className="chat-history" role="status">
+            {state.newerError && <span>{state.newerError}</span>}
+            <button type="button" disabled={state.loadingNewer} onClick={() => void clientRef.current?.loadNewer()}>
+              {state.loadingNewer ? "Loading…" : state.newerError ? "Retry newer messages" : "Load newer messages"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setJumpMessage(undefined);
+                setScrollTarget("latest");
+                clientRef.current?.retryLoad();
+              }}
+            >
+              Back to latest
+            </button>
+          </div>
+        )}
 
         {mentionCard && (
           <MentionCard

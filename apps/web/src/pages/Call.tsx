@@ -523,9 +523,13 @@ export default function Call({
   const [publicParticipants, setPublicParticipants] = useState<Record<string, PublicPresence>>({});
   const [voiceChannel, setVoiceChannel] = useState(channel);
   const clientRef = useRef<PublicCallClient | undefined>(undefined);
-  const mediaRoot = channel && !channel.demo ? `/api/channels/${encodeURIComponent(channel.id)}/media` : "/api/media";
+  // DMs have no voice of their own; the space's joined channels still do.
+  const mediaChannelId = channel?.direct ? voiceChannels?.[0]?.id : channel?.id;
+  const mediaRoot =
+    mediaChannelId && !channel?.demo ? `/api/channels/${encodeURIComponent(mediaChannelId)}/media` : "/api/media";
   const channelJoined = channel?.joined !== false;
-  const available = channelJoined ? availability[mediaRoot] : false;
+  const voiceJoined = channel?.direct ? !!voiceChannels?.length : channelJoined;
+  const available = voiceJoined ? availability[mediaRoot] : false;
   const clientRoot = useRef(mediaRoot);
   const rootFor = (channelId?: string) =>
     !channelId || channel?.demo ? "/api/media" : `/api/channels/${encodeURIComponent(channelId)}/media`;
@@ -690,7 +694,7 @@ export default function Call({
   }, [signedIn, settingsOpen]);
 
   useEffect(() => {
-    if (!channelJoined || channel?.direct) return;
+    if (!voiceJoined) return;
     const controller = new AbortController();
     fetch(`${mediaRoot}/status`, {
       credentials: "same-origin",
@@ -705,7 +709,7 @@ export default function Call({
         if (!controller.signal.aborted) setAvailability((previous) => ({ ...previous, [mediaRoot]: false }));
       });
     return () => controller.abort();
-  }, [mediaRoot, channelJoined, channel?.direct]);
+  }, [mediaRoot, voiceJoined]);
 
   useEffect(() => {
     if (voiceChannel?.id && voiceChannels && !voiceChannels.some((item) => item.id === voiceChannel.id)) {
@@ -844,6 +848,7 @@ export default function Call({
               ...channel,
               id: channelId,
               name: voiceChannels?.find((item) => item.id === channelId)?.name ?? "voice",
+              direct: false,
             }
           : channel;
     const root = channelId === channel?.id ? mediaRoot : rootFor(channelId);
@@ -1092,7 +1097,8 @@ export default function Call({
   // on request. Connected channels reserve the action slot; leave lives in the dock.
   let rosterPlaced = false;
   const voiceFor = (channelId?: string): VoiceSlot | null => {
-    if (channel?.direct || (channelId === channel?.id && !channelJoined)) return null;
+    if ((channel?.direct && (!channelId || channelId === channel.id)) || (channelId === channel?.id && !channelJoined))
+      return null;
     const { people, startedAt, own } = rosterFor(channelId);
     if (own) rosterPlaced = true;
     const key = voiceChannelKey(channelId);
