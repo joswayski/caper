@@ -27,6 +27,7 @@ import {
   X,
 } from "lucide-react";
 import ProfileForm from "../account/ProfileForm";
+import NotificationSettings from "../account/NotificationSettings";
 import PrivacySettings from "../account/PrivacySettings";
 import { getAccount, logout, type Account } from "../account/client";
 import { routeOutput } from "../audio/output";
@@ -1677,6 +1678,7 @@ export default function Call({
             }}
           />
         )}
+        {profileOpen && account?.username && <NotificationSettings />}
         {profileOpen && account?.username && <PrivacySettings />}
       </dialog>
       <dialog
