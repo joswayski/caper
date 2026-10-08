@@ -36,6 +36,7 @@ struct MessageEditorView: View {
                     Button("Cancel", action: close).disabled(busy).keyboardShortcut(.cancelAction)
                     Button(busy ? "Saving…" : "Save changes") { perform { try await chat.editMessage(baseline, text: draft); close() } }
                         .buttonStyle(.borderedProminent).tint(CaperTheme.terracotta)
+                        .modifier(ControlPointer())
                         .disabled(busy || MessageValidation.error(for: draft) != nil || !chat.canEdit(baseline))
                         .keyboardShortcut(.return, modifiers: .command)
                 }

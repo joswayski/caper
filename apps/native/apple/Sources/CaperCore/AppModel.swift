@@ -1136,6 +1136,9 @@ public enum ReactorsState: Equatable, Sendable {
 public final class ChatModel {
     public var messages: [ChatMessage] = []
     public var pinnedMessages: [ChatMessage] = []
+    private var mutations = MessageMutations()
+    public var displayedMessages: [ChatMessage] { messages.map(mutations.project) }
+    public var displayedPins: [ChatMessage] { mutations.pinned(messages: messages, confirmed: pinnedMessages) }
     public var channelName = "general"
     public var spaceName = "Caper"
     public var draft = ""
@@ -1177,6 +1180,7 @@ public final class ChatModel {
     private var threadDrafts: [String: String] = [:]
     private var threadBroadcasts: [String: Bool] = [:]
     public var channelMessages: [ChatMessage] { messages.filter { $0.isChannelMessage && !threadOnlyRows.contains($0.id) } }
+    public var displayedChannelMessages: [ChatMessage] { channelMessages.map(mutations.project) }
     public var threadDraft: String {
         get { threadRootID.flatMap { threadDrafts[$0] } ?? "" }
         set { if let threadRootID { threadDrafts[threadRootID] = newValue } }
@@ -1277,7 +1281,10 @@ public final class ChatModel {
 
     func editMessage(_ message: ChatMessage, text: String) async throws {
         guard canEdit(message), let session else { throw UserFacingError(message: "Only the author can edit while participating.") }
+        guard mutations.edits[message.id] == nil else { throw UserFacingError(message: "This message is already being saved.") }
         let request = generation
+        mutations.edits[message.id] = (text, message.revision ?? 1)
+        defer { if request == generation { mutations.edits[message.id] = nil } }
         let result = try await api.editMessage(channelID: message.channelId, messageID: message.id, sessionToken: session.token, text: text, expectedRevision: message.revision ?? 1)
         guard request == generation, canEdit(message) else { throw CancellationError() }
         guard result.author.id == session.author.id else { throw UserFacingError(message: "Message author mismatch.") }
@@ -1396,6 +1403,7 @@ public final class ChatModel {
         isPreview = false
         let preservingTimeline = preservingPending && self.channelID == channelID
         generation += 1
+        mutations = MessageMutations(); pendingPins = []
         let requestGeneration = generation
         let oldSubscription = subscriptionID
         subscriptionID = nil
@@ -1803,10 +1811,13 @@ public final class ChatModel {
 
     public func setPin(messageID: String, active: Bool) async {
         guard !isPreview, let channelID, let session, !pendingPins.contains(messageID) else { return }
+        guard let message = (messages + pinnedMessages).first(where: { $0.id == messageID }) else { return }
         pendingPins.insert(messageID); pinErrors[messageID] = nil
         failedPinActions[messageID] = nil
         let requestGeneration = generation
-        defer { if generation == requestGeneration { pendingPins.remove(messageID) } }
+        mutations.pins[messageID] = MessageMutations.PinIntent(message: message,
+            pin: active ? MessagePin(author: session.author, createdAt: ISO8601DateFormatter().string(from: Date())) : nil)
+        defer { if generation == requestGeneration { pendingPins.remove(messageID); mutations.pins[messageID] = nil } }
         do {
             let event = try await api.setPin(channelID: channelID, messageID: messageID, sessionToken: session.token, active: active)
             guard generation == requestGeneration, self.channelID == channelID else { return }
@@ -2053,6 +2064,7 @@ public final class ChatModel {
         reactorCache = [:]; reactorRequests = [:]; reactorFailures = []
         pinSnapshots.reset(); pinnedMessages = []; pendingPins = []; pinErrors = [:]
         forwardSnapshots.reset()
+        mutations = MessageMutations()
         canForward = false; forwardTarget = nil; forwardConversationTarget = nil
         editSnapshots.reset()
         failedPinActions = [:]

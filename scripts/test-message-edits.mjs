@@ -80,8 +80,23 @@ try {
   );
   browser("press", "Escape");
   edit(root);
-  save("TEST FIXTURE — Meet Friday at 9.");
+  // Hold the request before it reaches the fixture: the preview must be local.
+  evaluate(`(() => {
+    const original = window.fetch.bind(window);
+    window.fetch = (input, init) => String(input).endsWith('/messages/${root.id}') && init?.method === 'PUT'
+      ? new Promise((resolve, reject) => { window.releaseEdit = () => original(input, init).then(resolve, reject); })
+      : original(input, init);
+    window.restoreEditFetch = () => { window.fetch = original; };
+  })()`);
+  browser("fill", "#chat-edit-text", "TEST FIXTURE — Meet Friday at 9.");
+  browser("press", "Control+Enter");
   wait(`document.querySelector('${row(root)} p')?.textContent === 'TEST FIXTURE — Meet Friday at 9.'`);
+  assert.equal((await history()).messages.find((message) => message.id === root.id).content.text, root.content.text);
+  assert.equal(evaluate(`!!document.querySelector('${row(root)} .chat-edited')`), false, "No speculative revision");
+  assert.equal(evaluate('document.querySelector("#chat-edit-text").value'), "TEST FIXTURE — Meet Friday at 9.");
+  screenshot("message-edit-optimistic");
+  evaluate("(() => { window.restoreEditFetch(); window.releaseEdit(); })()");
+  wait('!document.querySelector("#chat-edit-text")');
   assert.equal(evaluate(`document.querySelector('${row(root)} .chat-edited').textContent`), "edited");
 
   // Pin projections support both editing and retained-history access.
@@ -259,9 +274,13 @@ try {
     (await history()).messages.find((message) => message.id === root.id).content.text,
     "TEST FIXTURE — Schedule revision 50.",
   );
+  assert.equal(
+    evaluate(`document.querySelector('${row(root)} p').textContent`),
+    "TEST FIXTURE — Schedule revision 50.",
+  );
   action("Cancel");
   console.log(
-    "Message edits browser checks passed: ownership, save, pins, diffs, narrow conflict, hidden/broadcast replies, independent summary, history retry/paging and rejected saves.",
+    "Message edits browser checks passed: ownership, optimistic preview, save, pins, diffs, narrow conflict, hidden/broadcast replies, independent summary, history retry/paging and rejected-save rollback.",
   );
 } finally {
   try {

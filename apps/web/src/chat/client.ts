@@ -264,6 +264,8 @@ export class ChatClient {
     Map<string, { active: boolean; authorId: string; generation: number }>
   >();
   private readonly reactionRequests = new Map<string, Promise<void>>();
+  private readonly pinIntents = new Map<string, { pin: ChatMessage["pin"]; message?: ChatMessage }>();
+  private readonly editIntents = new Map<string, { text: string; expectedRevision: number }>();
   private threadRequest?: AbortController;
   // Fetching a thread's older rows must not insert them into the channel page
   // or move the channel's exclusive pagination boundary past a history gap.
@@ -747,23 +749,37 @@ export class ChatClient {
     const session = this.session;
     if (this.controller.signal.aborted || !channelId || !session)
       throw new Error("Your chat session is unavailable. Retry the session, then try again.");
-    const response = await fetch(
-      `/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/pin`,
-      {
-        method: "PUT",
-        headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
-        body: JSON.stringify({ active }),
-        signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
-      },
-    );
-    if (!response.ok)
-      throw await apiError(response, active ? "Message could not be pinned." : "Message could not be unpinned.");
-    const event: unknown = await response.json();
-    if (!isChatPinEvent(event) || event.channelId !== channelId || event.message.id !== messageId)
-      throw new Error("The chat service returned an invalid pin.");
-    if (generation !== this.generation || this.controller.signal.aborted) return;
-    this.timeline.mergePin(event);
-    this.update({ messages: this.timeline.messages, pinnedMessages: this.timeline.pinnedMessages });
+    if (this.pinIntents.has(messageId)) return;
+    const intent = {
+      pin: active ? { author: session.author, createdAt: new Date().toISOString() } : null,
+      message:
+        this.timeline.messages.find((message) => message.id === messageId) ??
+        this.timeline.pinnedMessages.find((message) => message.id === messageId),
+    };
+    this.pinIntents.set(messageId, intent);
+    this.update({ messages: this.timeline.messages });
+    try {
+      const response = await fetch(
+        `/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/pin`,
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
+          body: JSON.stringify({ active }),
+          signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
+        },
+      );
+      if (!response.ok)
+        throw await apiError(response, active ? "Message could not be pinned." : "Message could not be unpinned.");
+      const event: unknown = await response.json();
+      if (!isChatPinEvent(event) || event.channelId !== channelId || event.message.id !== messageId)
+        throw new Error("The chat service returned an invalid pin.");
+      if (generation !== this.generation || this.controller.signal.aborted || session !== this.session) return;
+      this.timeline.mergePin(event);
+    } finally {
+      if (this.pinIntents.get(messageId) === intent) this.pinIntents.delete(messageId);
+      if (generation === this.generation && !this.controller.signal.aborted)
+        this.update({ messages: this.timeline.messages });
+    }
   }
 
   async forward(destination: string, messageId: string, clientMessageId: string, text: string): Promise<ChatMessage> {
@@ -804,28 +820,37 @@ export class ChatClient {
       session = this.session;
     if (this.controller.signal.aborted || !channelId || !session)
       throw new Error("Your chat session is unavailable. Retry the session, then edit again.");
-    const response = await fetch(
-      `/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}`,
-      {
-        method: "PUT",
-        headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
-        body: JSON.stringify({ text, expectedRevision }),
-        signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
-      },
-    );
-    if (!response.ok) throw await apiError(response, "Edit could not be saved. Your draft is kept.");
-    const message: unknown = await response.json();
-    if (
-      !isChatMessage(message) ||
-      message.channelId !== channelId ||
-      message.id !== messageId ||
-      message.author.id !== session.author.id
-    )
-      throw new Error("The chat service returned an invalid edit.");
-    if (generation !== this.generation || this.controller.signal.aborted || session !== this.session)
-      throw new Error("The conversation changed. Reopen the message to edit it.");
-    this.timeline.mergeEdit(message);
-    this.update({ messages: this.timeline.messages, pinnedMessages: this.timeline.pinnedMessages });
+    if (this.editIntents.has(messageId)) throw new Error("This message is already being saved.");
+    const intent = { text, expectedRevision };
+    this.editIntents.set(messageId, intent);
+    this.update({ messages: this.timeline.messages });
+    try {
+      const response = await fetch(
+        `/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}`,
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
+          body: JSON.stringify({ text, expectedRevision }),
+          signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
+        },
+      );
+      if (!response.ok) throw await apiError(response, "Edit could not be saved. Your draft is kept.");
+      const message: unknown = await response.json();
+      if (
+        !isChatMessage(message) ||
+        message.channelId !== channelId ||
+        message.id !== messageId ||
+        message.author.id !== session.author.id
+      )
+        throw new Error("The chat service returned an invalid edit.");
+      if (generation !== this.generation || this.controller.signal.aborted || session !== this.session)
+        throw new Error("The conversation changed. Reopen the message to edit it.");
+      this.timeline.mergeEdit(message);
+    } finally {
+      if (this.editIntents.get(messageId) === intent) this.editIntents.delete(messageId);
+      if (generation === this.generation && !this.controller.signal.aborted)
+        this.update({ messages: this.timeline.messages });
+    }
   }
 
   async reloadMessage(messageId: string): Promise<ChatMessage> {
@@ -880,6 +905,10 @@ export class ChatClient {
   private async loadInitial(prepared?: GeneralChatHistory) {
     if (this.controller.signal.aborted) return;
     const generation = ++this.generation;
+    const hadMutations = this.pinIntents.size || this.editIntents.size;
+    this.pinIntents.clear();
+    this.editIntents.clear();
+    if (hadMutations) this.update({ messages: this.timeline.messages });
     this.loadingHistory = true;
     const previous = this.state.phase === "ready" ? this.snapshotHistory() : undefined;
     this.connection?.stop();
@@ -1024,6 +1053,28 @@ export class ChatClient {
   }
 
   private update(change: Partial<ChatViewState>) {
+    if (change.messages) {
+      const project = (message: ChatMessage): ChatMessage => {
+        const pin = this.pinIntents.get(message.id);
+        const edit = this.editIntents.get(message.id);
+        return {
+          ...message,
+          ...(pin ? { pin: pin.pin } : {}),
+          ...(edit && (message.revision ?? 1) <= edit.expectedRevision
+            ? { content: { ...message.content, text: edit.text, mentions: [] } }
+            : {}),
+        };
+      };
+      const pinned = new Map(this.timeline.pinnedMessages.map((message) => [message.id, message]));
+      for (const [id, intent] of this.pinIntents) {
+        if (!intent.pin) pinned.delete(id);
+        else {
+          const message = this.timeline.messages.find((row) => row.id === id) ?? pinned.get(id) ?? intent.message;
+          if (message) pinned.set(id, message);
+        }
+      }
+      change = { ...change, messages: change.messages.map(project), pinnedMessages: [...pinned.values()].map(project) };
+    }
     if (change.messages && this.reactionIntents.size) {
       change = {
         ...change,

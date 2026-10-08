@@ -31,6 +31,17 @@ const screenshot = (session, name) => {
   assert.equal(evaluate(session, "devicePixelRatio"), 2);
   browser(session, "screenshot", `${artifacts}/${name}.png`);
 };
+const holdPinRequest = (session) =>
+  evaluate(
+    session,
+    `(() => {
+    const original = window.fetch.bind(window);
+    window.fetch = (input, init) => String(input).endsWith('/pin') && init?.method === 'PUT'
+      ? new Promise((resolve, reject) => { window.releasePin = () => original(input, init).then(resolve, reject); })
+      : original(input, init);
+    window.restorePinFetch = () => { window.fetch = original; };
+  })()`,
+  );
 async function control(body) {
   const response = await fetch(`${api}/__fixture/control`, {
     method: "POST",
@@ -164,8 +175,19 @@ try {
     browser("pins-check", "click", `${row} .chat-message-actions-trigger`);
     wait("pins-check", '!!document.querySelector(".chat-message-actions")');
   };
+  // Withhold the request entirely: local feedback cannot be a fast server echo.
+  holdPinRequest("pins-check");
   menu();
   action("pins-check", "Pin message");
+  wait("pins-check", `!!document.querySelector('${row} .chat-pin-marker') && typeof window.releasePin === 'function'`);
+  assert.equal(
+    evaluate("pins-check", 'document.querySelector(".chat-pins-toggle").getAttribute("aria-label")'),
+    "Pins, 1",
+  );
+  assert.equal(evaluate("pins-peer", `!!document.querySelector('${row} .chat-pin-marker')`), false);
+  assert.equal((await history()).pinnedMessages.length, 0, "the optimistic pin is not yet on the server");
+  screenshot("pins-check", "pins-web-optimistic");
+  evaluate("pins-check", "(() => { window.restorePinFetch(); window.releasePin(); })()");
   for (const session of ["pins-check", "pins-peer"]) {
     wait(session, `document.querySelector('${row} .chat-pin-marker')?.textContent === 'Pinned by Fixture Owner'`);
     assert.equal(
@@ -204,8 +226,21 @@ try {
     message.content.text,
   );
   screenshot("pins-check", "pins-web-list");
+  holdPinRequest("pins-check");
   action("pins-check", "Unpin");
   wait("pins-check", 'document.querySelector(".chat-pins").textContent.includes("No pinned messages.")');
+  action("pins-check", "Messages");
+  wait("pins-check", `!!document.querySelector('${row}')`);
+  assert.equal(evaluate("pins-check", `!!document.querySelector('${row} .chat-pin-marker')`), false);
+  assert.equal(
+    evaluate("pins-check", 'document.querySelector(".chat-pins-toggle").getAttribute("aria-label")'),
+    "Pins, 0",
+  );
+  assert.equal(evaluate("pins-peer", `!!document.querySelector('${row} .chat-pin-marker')`), true);
+  assert.equal((await history()).pinnedMessages.length, 1, "the optimistic unpin is not yet on the server");
+  action("pins-check", "Pins, 0");
+  wait("pins-check", 'document.querySelector(".chat-pins").textContent.includes("No pinned messages.")');
+  evaluate("pins-check", "(() => { window.restorePinFetch(); window.releasePin(); })()");
   wait("pins-peer", `!document.querySelector('${row} .chat-pin-marker')`);
   screenshot("pins-check", "pins-web-empty");
   assert.equal((await history()).pinnedMessages.length, 0);
@@ -251,6 +286,11 @@ try {
   menu();
   action("pins-check", "Pin message");
   wait("pins-check", 'typeof window.failPin === "function"');
+  assert.equal(evaluate("pins-check", `!!document.querySelector('${row} .chat-pin-marker')`), true);
+  assert.equal(
+    evaluate("pins-check", 'document.querySelector(".chat-pins-toggle").getAttribute("aria-label")'),
+    "Pins, 1",
+  );
   menu();
   assert.equal(
     evaluate(
@@ -263,6 +303,15 @@ try {
   browser("pins-check", "press", "Escape");
   evaluate("pins-check", "(() => { window.holdPin = false; window.failPin(); })()");
   wait("pins-check", 'document.querySelector(".chat-refresh-error")?.textContent.includes("pin failed")');
+  assert.equal(
+    evaluate("pins-check", `!!document.querySelector('${row} .chat-pin-marker')`),
+    false,
+    "failure rolls back the local pin",
+  );
+  assert.equal(
+    evaluate("pins-check", 'document.querySelector(".chat-pins-toggle").getAttribute("aria-label")'),
+    "Pins, 0",
+  );
   screenshot("pins-check", "pins-web-error");
   action("pins-check", "Retry");
   wait("pins-peer", `!!document.querySelector('${row} .chat-pin-marker')`);
@@ -313,8 +362,9 @@ try {
     "pins-check",
     `(() => { const r = document.querySelector('${row} p').getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`,
   );
+  assert.ok(point.y > 0 && point.y < 844, "The long-press target must be in the viewport");
   await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point] }, sessionId);
-  await delay(650);
+  wait("pins-check", '!!document.querySelector(".chat-message-actions-drawer")');
   await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] }, sessionId);
   wait("pins-check", '!!document.querySelector(".chat-message-actions-drawer")');
   assert.equal(evaluate("pins-check", "document.documentElement.scrollWidth > innerWidth"), false);

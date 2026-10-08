@@ -350,6 +350,34 @@ public struct MessagePin: Codable, Equatable, Sendable {
     public let createdAt: String
 }
 
+/// Local presentation only. Never seed revision caches or history with these values.
+struct MessageMutations {
+    struct PinIntent { let message: ChatMessage; let pin: MessagePin? }
+    var pins: [String: PinIntent] = [:]
+    var edits: [String: (text: String, revision: Int)] = [:]
+
+    func project(_ message: ChatMessage) -> ChatMessage {
+        var result = message
+        if let intent = pins[message.id] { result.pin = intent.pin }
+        if let edit = edits[message.id], (message.revision ?? 1) <= edit.revision {
+            // Edits change text only; the message keeps its files. Mentions are resolved by the server.
+            result.content = ChatContent(version: 1, type: "text", text: edit.text, attachments: message.content.attachments)
+        }
+        return result
+    }
+
+    func pinned(messages: [ChatMessage], confirmed: [ChatMessage]) -> [ChatMessage] {
+        var rows = Dictionary(uniqueKeysWithValues: confirmed.map { ($0.id, $0) })
+        for (id, intent) in pins {
+            if intent.pin == nil { rows[id] = nil }
+            else { rows[id] = messages.first { $0.id == id } ?? rows[id] ?? intent.message }
+        }
+        return rows.values.map(project).sorted {
+            (try? Sequence.compare($0.pinSeq ?? "0", $1.pinSeq ?? "0")) == .orderedDescending
+        }
+    }
+}
+
 public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
     public let id: String
     public let channelId: String
