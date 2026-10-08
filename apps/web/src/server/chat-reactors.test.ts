@@ -1,18 +1,60 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import {
+  cachedReactors,
   emojiLabel,
   emojiNameFrom,
   emojiNameIndex,
   fallbackSummary,
   isReactionList,
+  loadReactors,
   reactionSummary,
   reactorName,
+  type ReactionList,
 } from "../chat/reactors.ts";
 
 const people = (...names: string[]) => names.map((name) => ({ id: name.toLowerCase(), name }));
+
+test("slower old reactor requests cannot evict a newer cached revision and trigger another fetch", async () => {
+  const responses: Array<(response: Response) => void> = [];
+  const fetch = vi.fn(() => new Promise<Response>((resolve) => responses.push(resolve)));
+  vi.stubGlobal("fetch", fetch);
+  const newer: ReactionList = {
+    messageId: "cache-race",
+    reactionSeq: "9007199254740993",
+    reactions: [{ emoji: "👍", authors: [{ id: "bob", username: "bob", displayName: "Bob", avatarId: 101 }] }],
+  };
+  const older: ReactionList = { ...newer, reactionSeq: "9007199254740992", reactions: [] };
+  const oldRequest = loadReactors("channel", newer.messageId, older.reactionSeq);
+  const newRequest = loadReactors("channel", newer.messageId, newer.reactionSeq);
+  assert.equal(loadReactors("channel", newer.messageId, newer.reactionSeq), newRequest, "in-flight reads coalesce");
+  responses[1](Response.json(newer));
+  await newRequest;
+  responses[0](Response.json(older));
+  await oldRequest;
+  assert.deepEqual(cachedReactors("channel", newer.messageId, newer.reactionSeq), newer);
+  assert.equal(cachedReactors("channel", newer.messageId, older.reactionSeq), undefined);
+  assert.deepEqual(await loadReactors("channel", newer.messageId, newer.reactionSeq), newer);
+  assert.equal(fetch.mock.calls.length, 2, "the current revision stays reusable after out-of-order responses");
+});
+
+test("failed reactor requests are retryable and caches remain scoped to the channel", async () => {
+  const list: ReactionList = { messageId: "retry-cache", reactionSeq: "7", reactions: [] };
+  const fetch = vi
+    .fn()
+    .mockResolvedValueOnce(Response.json({ error: "Try again" }, { status: 503 }))
+    .mockResolvedValueOnce(Response.json(list))
+    .mockResolvedValueOnce(Response.json({ ...list, reactionSeq: "8" }));
+  vi.stubGlobal("fetch", fetch);
+  await assert.rejects(loadReactors("channel-a", list.messageId, "7"), /Try again/);
+  assert.deepEqual(await loadReactors("channel-a", list.messageId, "7"), list);
+  assert.equal(cachedReactors("channel-b", list.messageId, "7"), undefined);
+  await loadReactors("channel-b", list.messageId, "8");
+  assert.deepEqual(cachedReactors("channel-a", list.messageId, "7"), list);
+  assert.equal(fetch.mock.calls.length, 3);
+});
 
 test("who-reacted summaries match the wording shared with native clients", () => {
   const label = ":thumbs-up:";
