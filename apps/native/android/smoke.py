@@ -375,8 +375,15 @@ def main() -> None:
     wait_for(text="design")
     wait_for(contains="TEST FIXTURE")
     desktop = capture("caper-android-populated-desktop", "Fixture Studio")
-    for required in ("Channels", "general", "design", "planning", "Members", "Maya"):
+    for required in ("Channels", "general", "design", "planning", "Maya"):
         assert find(desktop, contains=required) is not None, f"Populated shell is missing {required!r}"
+    assert find(desktop, text="Members") is None, "Chat opens with the members list closed"
+    assert find(desktop, description="Show member list") is not None
+    tap(description="Show member list")
+    members_open = capture("caper-android-desktop-members", "Members")
+    assert find(members_open, contains="Message #general") is not None, "Opening members must keep the conversation"
+    tap(description="Hide member list")
+    assert find(hierarchy(), text="Members") is None
     assert find(desktop, text="caper") is None, "The workspace must not have a web-style branding header"
     general = find(desktop, text="general")
     menu = find(desktop, description="general channel menu")

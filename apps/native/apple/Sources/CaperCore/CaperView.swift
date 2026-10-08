@@ -259,7 +259,7 @@ private struct WorkspaceView: View {
     @AppStorage("caper.channelSidebarWidth") private var sidebarWidth = 280.0
     @State private var sidebarDragStart: Double?
     @FocusState private var sidebarFocused: Bool
-    @State private var membersPreference: Bool?
+    @State private var membersPreference = false
     @State private var modalDismissDisabled = false
     private let parityFixture: String?
     private let parityMode: Bool
@@ -279,7 +279,7 @@ private struct WorkspaceView: View {
     private var workspaceContent: some View {
         GeometryReader { geometry in
             let narrow = geometry.size.width <= 760
-            let membersVisible = membersPreference ?? !narrow
+            let membersVisible = membersPreference
             VStack(spacing: 0) {
                 if let error = model.navigationError {
                     HStack {
