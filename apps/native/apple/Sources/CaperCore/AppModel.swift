@@ -1530,7 +1530,7 @@ public final class ChatModel {
             space: HistoryIdentity(id: spaceID, name: spaceName),
             channel: HistoryIdentity(id: channelID, name: channelName),
             messages: messages.map { forwardSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0))) },
-            pinnedMessages: pinnedMessages.map { forwardSnapshots.overlay(pinSnapshots.overlay($0)) },
+            pinnedMessages: pinnedMessages.map { forwardSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0))) },
             cursor: delivery.cursor,
             hasMore: hasMore
         )
@@ -1557,12 +1557,12 @@ public final class ChatModel {
         guard generation == requestGeneration else { return }
         canForward = signedIn
         channelID = history.channel?.id; spaceID = history.space?.id
-        reactionSnapshots.seed(history.messages)
+        reactionSnapshots.seed(history.messages + history.pinnedMessages)
         pinSnapshots.replace(history.messages + history.pinnedMessages, cursor: history.cursor)
         forwardSnapshots.seed(history.messages + history.pinnedMessages)
         editSnapshots.seed(history.messages + history.pinnedMessages)
         messages = history.messages.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) }
-        pinnedMessages = history.pinnedMessages.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay($0))) }
+        pinnedMessages = history.pinnedMessages.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) }
         delivery.reset(cursor: history.cursor); hasMore = history.hasMore
         channelName = history.channel?.name ?? "general"; spaceName = history.space?.name ?? "Caper"
         session = nil; loading = false; loadFailed = false; sessionError = nil
@@ -1614,12 +1614,12 @@ public final class ChatModel {
         // history load (and must not flash the previous channel's title).
         if let prepared {
             self.channelID = prepared.channel?.id; spaceID = prepared.space?.id
-            reactionSnapshots.seed(prepared.messages)
+            reactionSnapshots.seed(prepared.messages + prepared.pinnedMessages)
             pinSnapshots.replace(prepared.messages + prepared.pinnedMessages, cursor: prepared.cursor)
             forwardSnapshots.seed(prepared.messages + prepared.pinnedMessages)
             editSnapshots.seed(messages + pinnedMessages + prepared.messages + prepared.pinnedMessages)
             messages = prepared.messages.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) }
-            pinnedMessages = prepared.pinnedMessages.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay($0))) }
+            pinnedMessages = prepared.pinnedMessages.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) }
             delivery.reset(cursor: prepared.cursor); hasMore = prepared.hasMore
             channelName = prepared.channel?.name ?? "general"
             spaceName = prepared.space?.name ?? "Caper"
@@ -1656,13 +1656,14 @@ public final class ChatModel {
             if prepared == nil {
                 // The latest history response is authoritative for the channel-wide
                 // pin list. Older pagination responses are deliberately ignored.
+                reactionSnapshots.seed(history.messages + history.pinnedMessages)
                 pinSnapshots.replace(history.messages + history.pinnedMessages, cursor: history.cursor)
                 forwardSnapshots.seed(history.messages + history.pinnedMessages)
                 // Overflow requires fresh pages; never keep the resync flag latched.
                 if editSnapshots.unseenOverflowed { editSnapshots.reset() }
                 editSnapshots.seed(messages + pinnedMessages + history.messages + history.pinnedMessages)
                 let candidates = Dictionary((pinnedMessages + history.pinnedMessages).map { ($0.id, $0) }, uniquingKeysWith: { _, next in next })
-                pinnedMessages = candidates.values.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay($0))) }.filter { $0.pin != nil }
+                pinnedMessages = candidates.values.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) }.filter { $0.pin != nil }
                     .sorted { (try? Sequence.compare($0.pinSeq ?? "0", $1.pinSeq ?? "0")) == .orderedDescending }
                 messages = channelMessages
                 threadOnlyRows = []
@@ -1675,7 +1676,7 @@ public final class ChatModel {
                     reactionSnapshots.seed(history.messages)
                     messages = history.messages.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) }
                     reactionSnapshots.reset()
-                    reactionSnapshots.seed(messages)
+                    reactionSnapshots.seed(messages + pinnedMessages)
                 }
                 delivery.reset(cursor: history.cursor, preservingPending: preservingPending)
                 let retainedOlderPrefix = canRetain && firstRefreshed.map { first in
@@ -2222,10 +2223,12 @@ public final class ChatModel {
 
     private func applyPin(_ message: ChatMessage) {
         editSnapshots.seed(messages + pinnedMessages + [message])
+        reactionSnapshots.seed([message])
+        renderReactions()
         guard pinSnapshots.apply(message) else { return }
         messages = messages.map { editSnapshots.overlay(pinSnapshots.overlay($0)) }
         pinnedMessages.removeAll { $0.id == message.id }
-        let updated = forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(message)))
+        let updated = forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay(message))))
         if updated.pin != nil {
             pinnedMessages.append(updated)
             pinnedMessages.sort { (try? Sequence.compare($0.pinSeq ?? "0", $1.pinSeq ?? "0")) == .orderedDescending }
@@ -2238,6 +2241,7 @@ public final class ChatModel {
     }
 
     private func renderReactions() {
+        pinnedMessages = pinnedMessages.map { reactionSnapshots.overlay($0) }
         let authorID = session?.author.id
         messages = messages.map { message in
             var result = reactionSnapshots.overlay(message)
