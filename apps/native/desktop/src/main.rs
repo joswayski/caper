@@ -7163,6 +7163,7 @@ impl CaperApp {
                     .default_width(340.0)
                     .min_width(300.0)
                     .max_width(480.0)
+                    .frame(egui::Frame::new().fill(CONVERSATION))
                     .show_inside(ui, |ui| self.thread_panel(ui));
             }
             self.channel_conversation(ui, narrow);
@@ -7181,15 +7182,43 @@ impl CaperApp {
         let error = thread.error.clone();
         let broadcast_label = format!("Also send to #{}", self.channel_name());
         ui.set_min_height(ui.available_height());
-        ui.horizontal(|ui| {
-            ui.heading("Thread");
-            if ui.button("Back to channel").clicked() {
-                self.thread_view = None;
-                self.thread_request += 1;
-            }
-        });
-        ui.label(format!("in #{}", self.channel_name()));
-        ui.separator();
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let heading = egui::TopBottomPanel::top("thread-heading")
+            .exact_height(54.0)
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(CONVERSATION)
+                    .inner_margin(egui::Margin::symmetric(18, 8)),
+            )
+            .show_inside(ui, |ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), 38.0),
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        if ui.button("Back to channel").clicked() {
+                            self.thread_view = None;
+                            self.thread_request += 1;
+                        }
+                        ui.vertical(|ui| {
+                            ui.label(bold("Thread").size(15.0));
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(format!("in #{}", self.channel_name()))
+                                        .size(11.0)
+                                        .color(MUTED),
+                                )
+                                .truncate(),
+                            );
+                        });
+                    },
+                );
+            });
+        ui.painter().hline(
+            heading.response.rect.x_range(),
+            heading.response.rect.bottom(),
+            Stroke::new(1.0, BORDER),
+        );
         if self.selected_is_joined() {
             egui::TopBottomPanel::bottom("thread-composer").show_inside(ui, |ui| {
                 let pending = self.pending.clone().filter(|pending| pending.thread_root_id.as_deref() == Some(&root));
@@ -11809,6 +11838,92 @@ mod tests {
             },
             |context| app.page(context),
         )
+    }
+
+    #[test]
+    fn thread_and_channel_header_dividers_align_without_clipping_controls() {
+        for width in [1200.0, 840.0, 390.0] {
+            for name in ["general".to_owned(), "long-channel-name-".repeat(3)] {
+                let context = egui::Context::default();
+                let mut app = CaperApp::new(
+                    &context,
+                    crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                    Some("parity-channel"),
+                );
+                app.detail.as_mut().unwrap().channels[0].name = name;
+                app.thread_view = Some(super::ThreadView {
+                    root: "fixture-message-0".into(),
+                    loading: false,
+                    has_more: false,
+                    before: None,
+                    error: None,
+                });
+                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 700.0));
+                let mut frame = || {
+                    context.run(
+                        egui::RawInput {
+                            screen_rect: Some(screen),
+                            ..Default::default()
+                        },
+                        |context| {
+                            egui::CentralPanel::default().frame(egui::Frame::NONE).show(
+                                context,
+                                |ui| {
+                                    app.conversation(ui, width <= 760.0);
+                                },
+                            );
+                        },
+                    )
+                };
+                for _ in 0..3 {
+                    frame();
+                }
+                let output = frame();
+                let dividers: Vec<_> = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| {
+                        if let egui::Shape::LineSegment { points, stroke } = &shape.shape
+                            && stroke.color == super::BORDER
+                            && points[0].y == 54.0
+                            && points[1].y == 54.0
+                            && points[1].x - points[0].x > 200.0
+                        {
+                            Some(points)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                assert_eq!(
+                    dividers.len(),
+                    if width > 760.0 { 2 } else { 1 },
+                    "{width}: header borders must be at y=54"
+                );
+                for label in ["Thread", "Back to channel"] {
+                    let shape = output
+                        .shapes
+                        .iter()
+                        .find(|shape| {
+                            matches!(&shape.shape,
+                        egui::Shape::Text(text) if text.galley.job.text == label)
+                        })
+                        .unwrap();
+                    let egui::Shape::Text(text) = &shape.shape else {
+                        unreachable!()
+                    };
+                    let rect = egui::Rect::from_min_size(text.pos, text.galley.size());
+                    assert!(
+                        screen.contains_rect(rect) && shape.clip_rect.contains_rect(rect),
+                        "{width}: {label} is clipped"
+                    );
+                    assert!(
+                        rect.bottom() < 54.0,
+                        "{width}: {label} extends below its header"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
