@@ -816,17 +816,16 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 5), .completed, "Mute is available once settings load")
         let forever = app.descendants(matching: .any)["Until I turn it back on"].firstMatch
         #if os(macOS)
-        // The pointer glides in a straight line, and a diagonal path to the
-        // last preset crosses the parent menu's other items, which closes the
-        // submenu before the click. Enter level with the first preset, then
-        // move down inside the submenu.
+        // XCUITest re-hovers the parent item before every submenu item, and
+        // its synthesized move into the submenu closes it, even level with the
+        // first preset (seen in CI's recordings). Open the submenu by hovering
+        // its parent, then choose with the keyboard: → enters the submenu at
+        // "For 15 minutes", and four ↓ reach the last preset.
         mute.hover()
-        let first = app.descendants(matching: .any)["For 15 minutes"].firstMatch
-        XCTAssertTrue(first.waitForExistence(timeout: 3))
-        first.hover()
         XCTAssertTrue(forever.waitForExistence(timeout: 3))
-        forever.hover()
-        forever.click()
+        app.typeKey(.rightArrow, modifierFlags: [])
+        for _ in 0..<4 { app.typeKey(.downArrow, modifierFlags: []) }
+        app.typeKey(.return, modifierFlags: [])
         #else
         mute.tap()
         XCTAssertTrue(forever.waitForExistence(timeout: 3))
