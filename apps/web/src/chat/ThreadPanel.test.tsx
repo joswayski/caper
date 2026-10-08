@@ -14,7 +14,11 @@ const root: ChatMessage = {
   createdAt: "2026-10-08T07:00:00Z",
 };
 
-function render(messages: ChatMessage[], thread: Partial<ThreadViewState> = {}) {
+function render(
+  messages: ChatMessage[],
+  thread: Partial<ThreadViewState> = {},
+  { direct = false, readOnly = false, channelName = "general" } = {},
+) {
   return renderToStaticMarkup(
     <ThreadPanel
       state={{
@@ -23,13 +27,37 @@ function render(messages: ChatMessage[], thread: Partial<ThreadViewState> = {}) 
         messages,
         thread: { rootId: root.id, loading: false, loadingOlder: false, hasMore: false, ...thread },
       }}
-      channelName="general"
-      readOnly={false}
+      channelName={channelName}
+      direct={direct}
+      readOnly={readOnly}
       renderMessage={(_index, message) => <p>{message.content.text}</p>}
       onClose={() => {}}
     />,
   );
 }
+
+test("channel threads name the channel with #", () => {
+  const markup = render([root]);
+  expect(markup).toContain("in #general");
+  expect(markup).toContain("Also send to #general");
+});
+
+test("DM threads name the conversation without a channel #", () => {
+  const markup = render([root], {}, { direct: true, channelName: "Maya" });
+  expect(markup).toContain("in Maya");
+  expect(markup).toContain("Also send to Maya");
+  expect(markup).not.toContain("#Maya");
+});
+
+test.each([
+  [false, "Join the channel to reply."],
+  [true, "You can’t reply in this conversation."],
+])("read-only threads don't invite a reply (direct: %s)", (direct, notice) => {
+  const markup = render([root], {}, { direct, readOnly: true });
+  expect(markup).toContain("No replies yet.");
+  expect(markup).not.toContain("Start the thread.");
+  expect(markup).toContain(notice);
+});
 
 test("empty threads show the parent and empty state without a zero-reply divider", () => {
   const markup = render([root]);

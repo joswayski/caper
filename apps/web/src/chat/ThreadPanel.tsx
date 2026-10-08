@@ -1,12 +1,27 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Send, X } from "lucide-react";
+import Avatar from "../components/Avatar";
 import type { ChatClient, ChatViewState } from "./client.ts";
+import { COUNTER_START, counterTone } from "./counter.ts";
 import type { ChatMessage } from "./types.ts";
+
+// Escape belongs to these layers first; it closes the thread only when none is open.
+const ESCAPE_LAYERS = [
+  ".chat-reaction-picker",
+  ".chat-message-actions",
+  ".chat-reactors",
+  ".chat-reaction-tooltip",
+  ".chat-mention-card",
+  ".chat-forward-dialog",
+  // Also the message history dialog, which shares this class.
+  ".chat-edit-dialog[open]",
+].join(", ");
 
 export default function ThreadPanel({
   state,
   client,
   channelName,
+  direct = false,
   readOnly,
   renderMessage,
   onClose,
@@ -14,6 +29,8 @@ export default function ThreadPanel({
   state: ChatViewState;
   client?: ChatClient;
   channelName: string;
+  /** DMs are named after the other person, without a channel `#`. */
+  direct?: boolean;
   readOnly: boolean;
   renderMessage: (index: number, message: ChatMessage, inThread: boolean) => ReactNode;
   onClose: () => void;
@@ -84,12 +101,7 @@ export default function ThreadPanel({
     follow.current = true;
     composer.current?.focus();
     const escape = (event: KeyboardEvent) => {
-      if (
-        event.key === "Escape" &&
-        !event.defaultPrevented &&
-        !document.querySelector(".chat-reaction-picker, .chat-message-actions, .chat-reactors, .chat-edit-dialog[open]")
-      )
-        onClose();
+      if (event.key === "Escape" && !event.defaultPrevented && !document.querySelector(ESCAPE_LAYERS)) onClose();
     };
     document.addEventListener("keydown", escape);
     return () => {
@@ -117,6 +129,8 @@ export default function ThreadPanel({
     olderAnchor.current = undefined;
   }, [state.thread?.loadingOlder, replies.length]);
   if (!state.thread) return null;
+  const conversation = `${direct ? "" : "#"}${channelName}`;
+  const count = Array.from(draft.text).length;
   const root = state.messages.find((message) => message.id === rootId);
   const sending = !!state.pendingSend && !state.sendError;
   const blocked = !!state.pendingSend && !pending;
@@ -143,7 +157,7 @@ export default function ThreadPanel({
         </button>
         <div>
           <h2 id="chat-thread-heading">Thread</h2>
-          <span>in #{channelName}</span>
+          <span>in {conversation}</span>
         </div>
         <button type="button" className="chat-thread-close" onClick={onClose} aria-label="Close thread">
           <X size={20} />
@@ -206,12 +220,14 @@ export default function ThreadPanel({
           </button>
         )}
         {!state.thread.loading && !state.thread.error && !replies.length && (
-          <p className="chat-thread-status">No replies yet. Start the thread.</p>
+          <p className="chat-thread-status">{readOnly ? "No replies yet." : "No replies yet. Start the thread."}</p>
         )}
         {replies.map((message, index) => renderMessage(index + 1, message, true))}
         {pending && (
           <article className="chat-message chat-message-pending">
-            <div />
+            <div className="chat-avatar">
+              <Avatar avatarId={pending.author?.avatarId} name={pending.author?.name ?? ""} />
+            </div>
             <div>
               <header>
                 <strong>{pending.author?.name}</strong>
@@ -223,7 +239,9 @@ export default function ThreadPanel({
       </div>
       <div className="chat-composer chat-thread-composer">
         {readOnly ? (
-          <p>Join the channel to reply.</p>
+          <p className="chat-thread-readonly">
+            {direct ? "You can’t reply in this conversation." : "Join the channel to reply."}
+          </p>
         ) : (
           <>
             {state.sessionError && (
@@ -301,7 +319,7 @@ export default function ThreadPanel({
                     disabled={!!pending}
                     onChange={(event) => update({ broadcast: event.target.checked })}
                   />
-                  Also send to #{channelName}
+                  Also send to {conversation}
                 </label>
                 <button
                   type="submit"
@@ -313,8 +331,10 @@ export default function ThreadPanel({
                   <Send size={18} />
                 </button>
               </div>
-              {Array.from(draft.text).length >= 3000 && (
-                <small>{Array.from(draft.text).length.toLocaleString()} / 4,000</small>
+              {count >= COUNTER_START && (
+                <small className="chat-counter" data-tone={counterTone(count)}>
+                  {count.toLocaleString()} / 4,000
+                </small>
               )}
             </form>
           </>

@@ -11,6 +11,7 @@ import MessageHistory from "./MessageHistory.tsx";
 import { MessageSquare } from "lucide-react";
 import { ForwardCard, ForwardConversation, ForwardPicker, type ForwardTarget } from "./Forwarding.tsx";
 import { dateDivider } from "./dates.ts";
+import { COUNTER_START, counterTone } from "./counter.ts";
 import { isChannelMessage, type ChatAuthor, type GeneralChatHistory } from "./types.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
 import Avatar from "../components/Avatar";
@@ -534,8 +535,6 @@ export default function Chat({
     ? (expectedChannelName ?? state.channelName)
     : (expectedChannelName ?? state.channelName).toLowerCase();
   const characterCount = Array.from(draft).length;
-  const counterTone =
-    characterCount >= 3900 ? "red" : characterCount >= 3750 ? "orange" : characterCount >= 3500 ? "yellow" : "gray";
   const channelMessages = state.channelMessages ?? state.messages.filter(isChannelMessage);
   const messages =
     state.pendingSend && !state.pendingSend.threadRootId ? [...channelMessages, state.pendingSend] : channelMessages;
@@ -782,6 +781,7 @@ export default function Chat({
                   type="button"
                   className="chat-message-actions-trigger"
                   aria-label={`Message actions for ${message.author.name}`}
+                  title="More actions"
                   aria-haspopup="dialog"
                   aria-expanded={actionTarget?.messageId === message.id && actionTarget.mode === "actions"}
                   onClick={(event) => openActions(message.id, event.currentTarget, inThread)}
@@ -952,27 +952,31 @@ export default function Chat({
               {state.phase === "error" ? "Offline" : "Connecting…"}
             </span>
           )}
-          {state.phase === "ready" && state.error && (
-            <div className="chat-refresh-error" role="alert">
-              {state.error}{" "}
-              <button type="button" onClick={() => clientRef.current?.retryLoad()}>
-                Retry
-              </button>
-            </div>
-          )}
-          {pinError && (
-            <div className="chat-refresh-error" role="alert">
-              {pinError.text}{" "}
-              <button
-                type="button"
-                disabled={pinning.has(pinError.messageId)}
-                onClick={() => void pin(pinError.messageId, pinError.active)}
-              >
-                Retry
-              </button>{" "}
-              <button type="button" onClick={() => setPinError(undefined)}>
-                Dismiss
-              </button>
+          {((state.phase === "ready" && state.error) || pinError) && (
+            <div className="chat-heading-alerts">
+              {state.phase === "ready" && state.error && (
+                <div className="chat-refresh-error" role="alert">
+                  {state.error}{" "}
+                  <button type="button" onClick={() => clientRef.current?.retryLoad()}>
+                    Retry
+                  </button>
+                </div>
+              )}
+              {pinError && (
+                <div className="chat-refresh-error" role="alert">
+                  {pinError.text}{" "}
+                  <button
+                    type="button"
+                    disabled={pinning.has(pinError.messageId)}
+                    onClick={() => void pin(pinError.messageId, pinError.active)}
+                  >
+                    Retry
+                  </button>{" "}
+                  <button type="button" onClick={() => setPinError(undefined)}>
+                    Dismiss
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </header>
@@ -980,7 +984,18 @@ export default function Chat({
         <div className="chat-messages" aria-busy={state.phase === "loading"}>
           {showPins && state.phase === "ready" && (
             <div className="chat-pins" role="region" aria-label={`Pinned messages in ${channelName}`}>
-              <h3>Pinned messages</h3>
+              {channelMenu ? (
+                // Narrow layouts keep the Pins toggle in the title menu; offer a visible way back.
+                <div className="chat-pins-heading">
+                  <h3>Pinned messages</h3>
+                  <button type="button" className="chat-pins-toggle" onClick={() => setShowPins(false)}>
+                    <ArrowLeft size={16} aria-hidden="true" />
+                    Messages
+                  </button>
+                </div>
+              ) : (
+                <h3>Pinned messages</h3>
+              )}
               {!state.pinnedMessages.length ? (
                 <p className="chat-state">No pinned messages.</p>
               ) : (
@@ -1157,8 +1172,15 @@ export default function Chat({
             onReply={
               actionTarget.inThread ? undefined : () => openThread(actionMessage.threadRootId ?? actionMessage.id)
             }
-            onEdit={() => openEdit(actionMessage.id)}
-            onHistory={() => openHistory(actionMessage.id)}
+            // The menu item is removed as the dialog opens; let the dialog return focus to the menu's trigger.
+            onEdit={() => {
+              actionTarget.anchor.focus({ preventScroll: true });
+              openEdit(actionMessage.id);
+            }}
+            onHistory={() => {
+              actionTarget.anchor.focus({ preventScroll: true });
+              openHistory(actionMessage.id);
+            }}
             onViewReactions={(emoji) => showReactors(actionMessage.id, emoji, actionTarget.anchor)}
             block={
               onBlockAuthor && !actionMessage.author.isGuest && actionMessage.author.id !== state.author?.id
@@ -1272,6 +1294,7 @@ export default function Chat({
                           aria-selected={index === activeOption}
                           aria-label={`Insert ${entry.name} emoji`}
                           onPointerDown={(event) => event.preventDefault()}
+                          onMouseMove={() => setSelectedSuggestion(index)}
                           onClick={() => chooseEmoji(entry)}
                         >
                           <img src={emojiAsset(entry.id)} alt="" width="24" height="24" />
@@ -1309,6 +1332,7 @@ export default function Chat({
                               : `Mention @${name}, ${specialMentionLabels[option.kind].toLowerCase()}`
                           }
                           onPointerDown={(event) => event.preventDefault()}
+                          onMouseMove={() => setSelectedSuggestion(index)}
                           onClick={() => chooseMention(option)}
                         >
                           {option.kind === "member" ? (
@@ -1403,8 +1427,8 @@ export default function Chat({
                 Type : to find emoji or @ to mention someone. Up and Down choose; Enter or Tab inserts; Escape closes
                 suggestions. Enter to send. Shift+Enter for a new line.
               </span>
-              {characterCount >= 3000 && (
-                <small className="chat-counter" data-tone={counterTone}>
+              {characterCount >= COUNTER_START && (
+                <small className="chat-counter" data-tone={counterTone(characterCount)}>
                   {characterCount.toLocaleString()} / 4,000
                 </small>
               )}
@@ -1416,6 +1440,7 @@ export default function Chat({
         state={state}
         client={clientRef.current}
         channelName={channelName}
+        direct={direct}
         readOnly={readOnly}
         renderMessage={renderMessage}
         onClose={closeThread}

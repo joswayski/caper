@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import type { ChatMessage } from "./types.ts";
 
 export default function MessageEditor({
@@ -19,8 +19,21 @@ export default function MessageEditor({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
   const count = Array.from(draft).length;
-  useEffect(() => {
-    dialog.current?.showModal();
+  useLayoutEffect(() => {
+    const modal = dialog.current!;
+    const opener = document.activeElement as HTMLElement | null;
+    modal.showModal();
+    // Continue editing where the message ends, not before its first character.
+    const input = textarea.current;
+    if (input) {
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+      input.scrollTop = input.scrollHeight;
+    }
+    return () => {
+      modal.close();
+      if (opener?.isConnected) opener.focus();
+    };
   }, []);
   const save = async () => {
     if (saving || !draft.trim() || count > 4_000) return;
@@ -72,7 +85,6 @@ export default function MessageEditor({
         <textarea
           ref={textarea}
           id="chat-edit-text"
-          autoFocus
           value={draft}
           disabled={saving}
           rows={5}

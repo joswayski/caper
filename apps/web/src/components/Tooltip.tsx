@@ -11,6 +11,14 @@ import {
 } from "react";
 import "./tooltip.css";
 
+// Pointers wait briefly before a tooltip appears, so sweeping across a row of
+// controls doesn't flash each label. Once one is showing (or just was), the
+// next opens at once. Only one tooltip is visible at a time.
+const SHOW_DELAY_MS = 300;
+const WARM_MS = 300;
+let closeOpenTooltip: (() => void) | undefined;
+let lastHiddenAt = -Infinity;
+
 type TriggerProps = {
   "aria-describedby"?: string;
   onClick?: (event: MouseEvent<HTMLElement>) => void;
@@ -42,12 +50,22 @@ export default function Tooltip({
   const hoveredRef = useRef(false);
   const touchPointerRef = useRef(false);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const showTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Stable identity for the module-level "currently open" slot.
+  const hideRef = useRef<() => void>(() => {});
+  const close = useRef(() => hideRef.current()).current;
 
   const hide = () => {
     clearTimeout(hideTimer.current);
+    clearTimeout(showTimer.current);
+    if (closeOpenTooltip === close) closeOpenTooltip = undefined;
     const tooltip = tooltipRef.current;
-    if (tooltip?.matches(":popover-open")) tooltip.hidePopover();
+    if (tooltip?.matches(":popover-open")) {
+      tooltip.hidePopover();
+      lastHiddenAt = performance.now();
+    }
   };
+  hideRef.current = hide;
   const position = () => {
     const tooltip = tooltipRef.current;
     const anchor = anchorRef.current;
@@ -80,12 +98,25 @@ export default function Tooltip({
   };
   const show = (anchor: HTMLElement) => {
     clearTimeout(hideTimer.current);
+    clearTimeout(showTimer.current);
     if (content == null) return;
     anchorRef.current = anchor;
     const tooltip = tooltipRef.current;
     if (!tooltip) return;
+    if (closeOpenTooltip !== close) closeOpenTooltip?.();
+    closeOpenTooltip = close;
     if (!tooltip.matches(":popover-open")) tooltip.showPopover();
     position();
+  };
+  const showAfterDelay = (anchor: HTMLElement) => {
+    clearTimeout(hideTimer.current);
+    clearTimeout(showTimer.current);
+    const warm = !!closeOpenTooltip || performance.now() - lastHiddenAt < WARM_MS;
+    if (warm || tooltipRef.current?.matches(":popover-open")) show(anchor);
+    else
+      showTimer.current = setTimeout(() => {
+        if (hoveredRef.current) show(anchor);
+      }, SHOW_DELAY_MS);
   };
 
   useEffect(() => {
@@ -112,6 +143,8 @@ export default function Tooltip({
     document.addEventListener("keydown", onKeyDown);
     return () => {
       clearTimeout(hideTimer.current);
+      clearTimeout(showTimer.current);
+      if (closeOpenTooltip === close) closeOpenTooltip = undefined;
       window.removeEventListener("resize", onResize);
       window.visualViewport?.removeEventListener("resize", onResize);
       window.visualViewport?.removeEventListener("scroll", onScroll);
@@ -137,11 +170,12 @@ export default function Tooltip({
       children.props.onMouseEnter?.(event);
       if (matchMedia("(hover: none)").matches) return;
       hoveredRef.current = true;
-      show(event.currentTarget);
+      showAfterDelay(event.currentTarget);
     },
     onMouseLeave: (event) => {
       children.props.onMouseLeave?.(event);
       hoveredRef.current = false;
+      clearTimeout(showTimer.current);
       if (!focusedRef.current)
         hideTimer.current = setTimeout(() => {
           if (!hoveredRef.current && !focusedRef.current) hide();
@@ -149,7 +183,8 @@ export default function Tooltip({
     },
     onFocus: (event) => {
       children.props.onFocus?.(event);
-      if (touchPointerRef.current) return;
+      // Visible (keyboard) focus only: not touch, clicks, or focus a script restores after pointer use.
+      if (touchPointerRef.current || !event.currentTarget.matches(":focus-visible")) return;
       focusedRef.current = true;
       show(event.currentTarget);
     },
