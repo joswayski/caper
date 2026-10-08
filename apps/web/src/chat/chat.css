@@ -92,6 +92,16 @@
   min-height: 0;
   overflow: hidden;
 }
+/* Keep the virtualizer mounted and measurable behind Pins, including live
+   arrivals. display:none would invalidate its viewport and scroll position. */
+.chat-timeline {
+  position: absolute;
+  inset: 0;
+}
+.chat-timeline[inert] {
+  opacity: 0;
+  pointer-events: none;
+}
 /* Before the scrolling list mounts: anchored to the bottom and at least full
    height, so a long history shows its newest messages (like the list will)
    and a short one starts at the top. .chat-messages clips the overflow. */

@@ -174,6 +174,37 @@ try {
   );
   screenshot("threads-desktop");
   browser("fill", "#chat-thread-reply", "Saved draft for Alex");
+  evaluate(`(() => {
+    window.pinsChannel = document.querySelector('.chat-scroller');
+    window.pinsThread = document.querySelector('.chat-thread-panel');
+    window.pinsScrollTop = pinsChannel.scrollTop;
+  })()`);
+  browser("click", ".chat-pins-toggle");
+  wait('!!document.querySelector(".chat-pins")');
+  evaluate(`(() => {
+    window.threadPinFrames = [];
+    const sample = () => {
+      if (!document.querySelector('.chat-pins')) {
+        const scroller = document.querySelector('.chat-scroller');
+        const bounds = scroller.getBoundingClientRect();
+        threadPinFrames.push(scroller === pinsChannel && document.querySelector('.chat-thread-panel') === pinsThread
+          && Math.abs(scroller.scrollTop - pinsScrollTop) < 2
+          && [...scroller.querySelectorAll('.chat-message')].some(row => row.checkVisibility({ visibilityProperty: true, opacityProperty: true })
+            && row.getBoundingClientRect().bottom > bounds.top && row.getBoundingClientRect().top < bounds.bottom));
+      }
+      if (threadPinFrames.length < 30) requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  })()`);
+  browser("click", ".chat-pins-toggle");
+  wait("threadPinFrames.length === 30");
+  assert.equal(
+    evaluate("threadPinFrames.every(Boolean)"),
+    true,
+    "Pins return with an open thread must not flash or move",
+  );
+  assert.equal(evaluate('document.querySelector("#chat-thread-reply").value'), "Saved draft for Alex");
+  screenshot("threads-pins-return");
   open(other.clientMessageId);
   assert.equal(evaluate('document.querySelector("#chat-thread-reply").value'), "");
   browser("fill", "#chat-thread-reply", "Saved draft for Maya");

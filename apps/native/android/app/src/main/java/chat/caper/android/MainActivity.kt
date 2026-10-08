@@ -26,6 +26,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -1093,6 +1094,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     var draft by rememberSaveable(channel.id, stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("")) }
     var channelMenuOpen by remember(channel.id) { mutableStateOf(false) }
     var showingPins by remember(channel.id) { mutableStateOf(false) }
+    // Switching to Pins must not discard the channel's measured scroll position.
+    val timelineState = key(channel.id) { rememberLazyListState() }
     val joined = channel.joined
     // A 1:1 DM (not your notes) offers Block / Unblock; a request does so in its own bar.
     val direct = state.selectedDirect?.takeIf { channel.direct && it.peer.id != state.account?.id && !it.incoming }
@@ -1159,7 +1162,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         // Web shows a pending message's status inline, under the message itself.
         val channelPending = state.pendingMessage?.takeIf { it.threadRootId == null }
         if (showingPins) PinnedMessages(state, viewModel, Modifier.weight(1f))
-        else MessageTimeline(state, viewModel, Modifier.weight(1f).browseSwipe(open = false, enabled = narrow && !membersVisible && !channelMenuOpen, onOpenChange = { openNavigation() })) {
+        else MessageTimeline(state, viewModel, Modifier.weight(1f).browseSwipe(open = false, enabled = narrow && !membersVisible && !channelMenuOpen, onOpenChange = { openNavigation() }), listState = timelineState) {
             channelPending?.error?.let { pending ->
                 val editable = canEditRejectedMessage(draft.text, channelPending.text)
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1343,7 +1346,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     }
 }
 
-@Composable private fun MessageTimeline(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, inThread: Boolean = false, pendingStatus: @Composable () -> Unit = {}) {
+@Composable private fun MessageTimeline(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, inThread: Boolean = false, listState: LazyListState = rememberLazyListState(), pendingStatus: @Composable () -> Unit = {}) {
     var actionTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var pickerTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var forwardTarget by remember { mutableStateOf<ChatMessage?>(null) }
@@ -1384,7 +1387,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 colors = ButtonDefaults.outlinedButtonColors(containerColor = SurfaceRaised, contentColor = Text)) { Text("Try again", fontSize = 12.sp) }
         }
     } }
-    LazyColumn(modifier.fillMaxWidth(), reverseLayout = false, contentPadding = PaddingValues(vertical = 8.dp)) {
+    LazyColumn(modifier.fillMaxWidth(), state = listState, reverseLayout = false, contentPadding = PaddingValues(vertical = 8.dp)) {
         if (!inThread) item {
             Row(Modifier.fillMaxWidth().height(44.dp).padding(horizontal = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalAlignment = Alignment.CenterVertically) {
                 val historyButton: @Composable (String, Boolean) -> Unit = { label, enabled ->
