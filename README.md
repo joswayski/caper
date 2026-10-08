@@ -47,7 +47,10 @@ and every minute, using signed metadata cached on Caper's server for 60 seconds.
 Check manually with **Caper → Check for Updates…** on Mac or
 **User Settings → Settings… → Updates → Check for updates** on Windows/Linux.
 Installing requires confirmation and a restart; protected installs offer a download
-instead. Existing apps keep their previous schedule until updated once.
+instead. Update prompts keep installation controls visible while version-grouped
+release notes scroll separately. Signed releases retain the changes since earlier
+builds; the prompt says when older notes were never recorded or are no longer retained.
+Existing apps keep their previous update UI and schedule until updated once.
 Android APK updates remain manual; iPhone builds use TestFlight.
 
 ## Development
