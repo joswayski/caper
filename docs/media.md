@@ -78,6 +78,16 @@ the API back only stops resolving new mentions. Validation:
   SwiftUI/UIKit/AppKit code and the parity UI test need Apple CI. SwiftUI,
   Android and egui inline pills are square-cornered background spans.
 
+Apple composer frames use their measured content height rather than filling the
+174-point maximum: channel/DM drafts start at 42 points; thread replies retain
+their 72-point minimum. Longer drafts grow and then scroll. iPhone parity tests
+assert empty/single-line alignment with Send, multiline growth, the height cap,
+shrinking after deletion/send, and compact thread replies with the keyboard open.
+Run `./apps/native/apple/parity-screenshots.sh ios` and its `macos` counterpart
+with Xcode before release and inspect the composer attachments. These new iPhone
+checks and native rendering were not executed in the Linux orb; passing web and
+fixture tests do not validate SwiftUI/UIKit/AppKit sizing.
+
 Web channel names and `⋯` actions have a separate row above voice
 activity. Join, Joining and Switch here use one fixed-width action slot;
 connected channels reserve that space without an inline Leave action.

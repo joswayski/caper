@@ -534,12 +534,23 @@ impl CaperApp {
             diagnostics_copied: false,
             updates: updates::Updates::start(context, fixture.is_none()),
         };
-        if let Some(name @ ("parity-update" | "parity-update-download")) = fixture {
+        if let Some(name) = fixture.filter(|name| name.starts_with("parity-update")) {
             app.updates = updates::Updates::preview(updates::Available {
                 version: "0.1.42".into(),
-                notes: "Screen sharing in voice channels".into(),
-                can_apply: name == "parity-update",
+                notes: "Clearer update check feedback".into(),
+                changelog: (36..=42)
+                    .rev()
+                    .map(|build| updates::ChangelogEntry {
+                        version: format!("0.1.{build}"),
+                        notes: "• Clearer update check feedback\n• Faster channel navigation with retained drafts\n• Improved native audio device selection".into(),
+                    })
+                    .collect(),
+                history_complete: name != "parity-update-incomplete",
+                can_apply: name != "parity-update-download",
             });
+            if name == "parity-update-error" {
+                app.updates.error = Some("Could not start the update. Please try again.".into());
+            }
         }
         match fixture {
             Some("error" | "login-error") => {
@@ -3359,8 +3370,8 @@ impl eframe::App for CaperApp {
         }
         self.refresh_media_status();
         self.periodic(context);
-        self.update_banner(context);
         self.page(context);
+        self.update_notice(context);
         let messages = self
             .timeline
             .messages()
@@ -3414,33 +3425,91 @@ impl CaperApp {
         }
     }
 
-    /// A full-width strip above everything when a newer release is ready.
-    fn update_banner(&mut self, context: &egui::Context) {
+    /// Only the release notes scroll; the install action always stays visible.
+    fn update_notice(&mut self, context: &egui::Context) {
         let Some(update) = self.updates.available() else {
             return;
         };
-        egui::TopBottomPanel::top("app-update")
+        let viewport = context.viewport_rect();
+        egui::Window::new("Update available")
+            .id(egui::Id::new("app-update"))
+            .default_width((viewport.width() - 72.0).min(520.0))
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 16.0))
             .frame(
                 egui::Frame::new()
-                    .fill(RAISED)
+                    .fill(SURFACE)
                     .stroke(Stroke::new(1.0, BORDER))
-                    .inner_margin(egui::Margin::symmetric(16, 8)),
+                    .corner_radius(8)
+                    .inner_margin(20),
             )
             .show(context, |ui| {
+                ui.set_width((viewport.width() - 72.0).min(520.0));
+                ui.label(bold("Update available").size(20.0));
+                ui.label(RichText::new(format!("Caper {}", update.version)).color(MUTED));
+                ui.add_space(12.0);
+                egui::Frame::new()
+                    .fill(BLACKOUT)
+                    .corner_radius(8)
+                    .inner_margin(14)
+                    .show(ui, |ui| {
+                        ui.label(bold("WHAT’S NEW").color(MUTED).size(12.0));
+                        ui.add_space(8.0);
+                        egui::ScrollArea::vertical()
+                            .id_salt("update-notes")
+                            .max_height((viewport.height() - 320.0).clamp(80.0, 340.0))
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
+                                ui.label(RichText::new(if update.history_complete {
+                                    "This update includes all of the following changes:"
+                                } else {
+                                    "Recorded changes are shown below. Earlier release notes aren’t available."
+                                }).color(MUTED));
+                                ui.add_space(8.0);
+                                let fallback = updates::ChangelogEntry {
+                                    version: update.version.clone(),
+                                    notes: update.notes.clone(),
+                                };
+                                let entries = if update.changelog.is_empty() {
+                                    std::slice::from_ref(&fallback)
+                                } else {
+                                    &update.changelog
+                                };
+                                for (index, entry) in entries.iter().enumerate() {
+                                    if index > 0 {
+                                        ui.add_space(6.0);
+                                        ui.separator();
+                                        ui.add_space(6.0);
+                                    }
+                                    ui.label(bold(&entry.version).size(14.0));
+                                    if entry.notes.trim().is_empty() {
+                                        ui.label(RichText::new("Release notes aren’t available for this version.").color(MUTED));
+                                    }
+                                    for line in entry.notes.lines().filter(|line| !line.trim().is_empty()) {
+                                        ui.label(RichText::new(line).color(MUTED).size(14.0));
+                                    }
+                                }
+                            });
+                    });
+                ui.add_space(12.0);
+                let in_call = !matches!(self.voice.state.phase, Phase::Idle);
+                ui.label(RichText::new(if !update.can_apply {
+                    "Download the installer to update this copy manually."
+                } else if in_call {
+                    "Caper will restart and leave your voice call."
+                } else {
+                    "Caper will restart to install the update."
+                }).color(MUTED).size(13.0));
+                if let Some(error) = &self.updates.error {
+                    ui.colored_label(ERROR, error);
+                }
+                ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    // Button height up front, so the text centers on the buttons.
-                    ui.set_min_height(36.0);
-                    let wide = ui.available_width() > 640.0;
-                    ui.label(bold(format!("Caper {} is available", update.version)).size(13.0));
-                    if wide && !update.notes.is_empty() {
-                        ui.label(RichText::new(&update.notes).color(MUTED).size(13.0));
-                    }
-                    if let Some(error) = &self.updates.error {
-                        ui.colored_label(ERROR, error);
-                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if update.can_apply {
-                            let label = if !matches!(self.voice.state.phase, Phase::Idle) {
+                            let label = if in_call {
                                 "Restart and leave call"
                             } else {
                                 "Restart to update"
@@ -6852,18 +6921,28 @@ impl CaperApp {
             .response
             .rect;
         if let Some(token) = self.token.clone() {
-            ui.interact(
+            // Hover only: sensing clicks here, above the row, would swallow
+            // clicks inside it (the edited marker). Right-clicks still open it.
+            let row = ui.interact(
                 message_rect,
                 ui.id().with((&message.id, "forward-context")),
-                egui::Sense::click(),
-            )
-            .context_menu(|ui| {
-                if ui.button("Forward message").clicked() {
-                    self.forwarding
-                        .picker(&self.worker, self.generation, token, message.clone());
-                    ui.close();
-                }
-            });
+                egui::Sense::hover(),
+            );
+            let opened = row.contains_pointer() && ui.input(|i| i.pointer.secondary_clicked());
+            egui::Popup::menu(&row)
+                .open_memory(opened.then_some(egui::SetOpenCommand::Bool(true)))
+                .at_pointer_fixed()
+                .show(|ui| {
+                    if ui.button("Forward message").clicked() {
+                        self.forwarding.picker(
+                            &self.worker,
+                            self.generation,
+                            token,
+                            message.clone(),
+                        );
+                        ui.close();
+                    }
+                });
         }
         if let Some(forward) = &message.forward {
             egui::Frame::new()
@@ -9837,6 +9916,7 @@ fn main() -> eframe::Result {
                 | "parity-channel-directory-narrow"
                 | "parity-voice-rosters-narrow"
                 | "parity-invitation-narrow"
+                | "parity-update-narrow"
                 | "parity-update-download"
         )
     }) {
@@ -10271,10 +10351,13 @@ mod tests {
                     events,
                     ..Default::default()
                 },
-                |context| app.update_banner(context),
+                |context| app.update_notice(context),
             )
         };
-        frame(vec![]);
+        // Let the window and its nested scroll area finish egui's sizing passes.
+        for _ in 0..3 {
+            frame(vec![]);
+        }
         let output = frame(vec![]);
         let pos = text_position(&output, "Download");
         for pressed in [true, false] {
@@ -10300,6 +10383,113 @@ mod tests {
                 "https://github.com/joswayski/caper/releases/download/native-latest/Caper-Linux-x64.deb"
             };
             assert_eq!(opened, (!pressed).then_some(expected));
+        }
+    }
+
+    #[test]
+    fn update_actions_stay_visible_before_and_after_scrolling_at_small_sizes() {
+        for size in [
+            egui::vec2(320.0, 560.0),
+            egui::vec2(390.0, 600.0),
+            egui::vec2(960.0, 540.0),
+            egui::vec2(1440.0, 900.0),
+        ] {
+            for fixture in [
+                "parity-update",
+                "parity-update-download",
+                "parity-update-error",
+                "parity-update-incomplete",
+            ] {
+                let context = egui::Context::default();
+                let mut app = CaperApp::new(
+                    &context,
+                    crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                    Some(fixture),
+                );
+                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+                let mut time = 0.0;
+                let mut frame = |events| {
+                    time += 1.0 / 60.0;
+                    context.run(
+                        egui::RawInput {
+                            screen_rect: Some(screen),
+                            time: Some(time),
+                            events,
+                            ..Default::default()
+                        },
+                        |context| app.update_notice(context),
+                    )
+                };
+                let visible = |output: &egui::FullOutput, label: &str| {
+                    output.shapes.iter().any(|shape| {
+                        if let egui::Shape::Text(text) = &shape.shape {
+                            let rect = egui::Rect::from_min_size(text.pos, text.galley.size());
+                            text.galley.job.text == label
+                                && screen.contains_rect(rect)
+                                && shape.clip_rect.contains_rect(rect)
+                        } else {
+                            false
+                        }
+                    })
+                };
+                for _ in 0..3 {
+                    frame(vec![]);
+                }
+                let initial = frame(vec![]);
+                let action = if fixture == "parity-update-download" {
+                    "Download"
+                } else {
+                    "Restart to update"
+                };
+                assert!(
+                    visible(&initial, action),
+                    "{fixture} {size:?}: action clipped before scrolling"
+                );
+                assert!(
+                    visible(&initial, "Later"),
+                    "{fixture} {size:?}: Later clipped"
+                );
+                let action_pos = text_position(&initial, action);
+                let notes_pos = text_position(&initial, "0.1.42");
+                frame(vec![
+                    egui::Event::PointerMoved(notes_pos),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(0.0, -4000.0),
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]);
+                for _ in 0..60 {
+                    frame(vec![]);
+                }
+                let scrolled = frame(vec![]);
+                assert!(
+                    visible(&scrolled, "0.1.36"),
+                    "{fixture} {size:?}: skipped version cannot be reached"
+                );
+                assert!(visible(&scrolled, action));
+                assert_eq!(
+                    text_position(&scrolled, action),
+                    action_pos,
+                    "scroll moved the action footer"
+                );
+                let later = text_position(&scrolled, "Later");
+                for pressed in [true, false] {
+                    frame(vec![
+                        egui::Event::PointerMoved(later),
+                        egui::Event::PointerButton {
+                            pos: later,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ]);
+                }
+                assert!(
+                    app.updates.available().is_none(),
+                    "Later must still work after scrolling"
+                );
+            }
         }
     }
 
@@ -15452,6 +15642,66 @@ mod tests {
         app.open_edit_history(&wrapper);
         assert!(app.message_editor.is_none());
         assert!(app.edit_history.is_none());
+    }
+
+    /// A signed-in `parity-edits` timeline, so rows carry the forward menu.
+    fn signed_in_edits(context: &egui::Context) -> (CaperApp, egui::FullOutput) {
+        let mut app = CaperApp::new(
+            context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-edits"),
+        );
+        app.token = Some("account-token".into());
+        render(&mut app, context, vec![]);
+        let output = render(&mut app, context, vec![]);
+        (app, output)
+    }
+
+    fn text_ending(output: &egui::FullOutput, suffix: &str) -> egui::Pos2 {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text.ends_with(suffix) => {
+                    Some(text.pos + text.galley.rect.center().to_vec2())
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("nothing ending in {suffix} is drawn"))
+    }
+
+    #[test]
+    fn signed_in_edited_marker_opens_history_beneath_the_forward_menu() {
+        let context = egui::Context::default();
+        let (mut app, output) = signed_in_edits(&context);
+        click(&mut app, &context, text_ending(&output, "(edited)"));
+        assert!(app.edit_history.is_some());
+    }
+
+    #[test]
+    fn right_clicking_signed_in_message_text_offers_forwarding() {
+        let context = egui::Context::default();
+        let (mut app, output) = signed_in_edits(&context);
+        let pos = text_ending(&output, "feel familiar on every platform.");
+        for pressed in [true, false] {
+            render(
+                &mut app,
+                &context,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Secondary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        // New egui areas spend their first pass measuring, invisibly.
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(texts(&output).contains(&"Forward message"));
     }
 
     #[test]

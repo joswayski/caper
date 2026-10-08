@@ -270,6 +270,11 @@ These previews do not start a navigation request or a media transport.
 `parity-settings`, `parity-settings-checking`, `parity-settings-current`, and
 `parity-settings-offline` preview the update control and check feedback. These
 are static states: their check buttons are disabled and no updater process runs.
+`parity-update` and `parity-update-narrow` preview long, version-grouped release
+notes with a fixed restart/Later footer. `parity-update-download` shows the
+manual installer fallback; `parity-update-error` and `parity-update-incomplete`
+show launch failure and unavailable older history. These fixtures never install
+updates or start update checks.
 
 After `npm ci`, run `node scripts/native-icons.mjs --check` to verify the bundled
 vectors match the web client's pinned Lucide package. Omit `--check` to regenerate.
