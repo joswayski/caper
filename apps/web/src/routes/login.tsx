@@ -95,14 +95,15 @@ function Login() {
                 id="code"
                 name="code"
                 value={code}
-                onChange={(event) =>
+                onChange={(event) => {
                   setCode(
                     event.target.value
                       .toUpperCase()
                       .replace(/[^A-HJKMNPQRSTWXYZ2-9]/g, "")
                       .slice(0, 6),
-                  )
-                }
+                  );
+                  if (attemptsRemaining !== 0) setError(undefined);
+                }}
                 autoComplete="one-time-code"
                 autoCapitalize="characters"
                 spellCheck={false}
@@ -124,7 +125,7 @@ function Login() {
               )}
               {attemptsRemaining === 0 ? (
                 <button
-                  className="mt-3 flex w-full cursor-pointer items-center justify-between gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
+                  className="mt-3 flex w-full cursor-pointer items-center justify-between gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content hover:enabled:border-terracotta-bright hover:enabled:bg-terracotta-bright disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
                   type="button"
                   disabled={pending}
                   onClick={() => void sendCode()}
@@ -139,7 +140,7 @@ function Login() {
                 </button>
               ) : (
                 <button
-                  className={`mt-3 flex w-full cursor-pointer items-center gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4 ${pending ? "justify-center" : "justify-between"}`}
+                  className={`mt-3 flex w-full cursor-pointer items-center gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content hover:enabled:border-terracotta-bright hover:enabled:bg-terracotta-bright disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4 ${pending ? "justify-center" : "justify-between"}`}
                   type="submit"
                   disabled={pending || code.length !== 6}
                 >
@@ -159,11 +160,12 @@ function Login() {
                 </button>
               )}
               <button
-                className="cursor-pointer border-0 bg-transparent py-4 text-[.85rem] text-content-muted focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
+                className="cursor-pointer border-0 bg-transparent py-4 text-[.85rem] text-content-muted hover:enabled:text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
                 type="button"
                 disabled={pending}
                 onClick={() => {
                   setChallengeId(undefined);
+                  setCode("");
                   setError(undefined);
                   setAttemptsRemaining(undefined);
                 }}
@@ -187,7 +189,10 @@ function Login() {
                 name="email"
                 type="email"
                 value={email}
-                onChange={(event) => setEmail(event.target.value)}
+                onChange={(event) => {
+                  setEmail(event.target.value);
+                  setError(undefined);
+                }}
                 autoComplete="email"
                 placeholder="you@example.com"
                 disabled={pending}
@@ -200,12 +205,18 @@ function Login() {
                 </p>
               )}
               <button
-                className="mt-3 ml-auto flex w-fit cursor-pointer items-center justify-between gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
+                className="mt-3 ml-auto flex w-fit min-w-[11.5rem] cursor-pointer items-center justify-between gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content hover:enabled:border-terracotta-bright hover:enabled:bg-terracotta-bright disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
                 type="submit"
                 disabled={pending}
               >
                 {pending ? (
-                  "Sending…"
+                  <>
+                    Sending…
+                    <span
+                      className="size-[1em] animate-spin rounded-full border-2 border-current border-r-transparent"
+                      aria-hidden="true"
+                    />
+                  </>
                 ) : (
                   <>
                     Email me a code <span aria-hidden="true">→</span>

@@ -1,6 +1,7 @@
 import { Component, lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { loadMessageVersions } from "./client.ts";
+import { focusReturn } from "./focus-return.ts";
 import type { ChatMessage, MessageVersion } from "./types.ts";
 
 // History opens after a browser interaction; don't bundle the DOM renderer into the server.
@@ -12,7 +13,8 @@ const MessageDiff = lazy<typeof import("./MessageDiff.tsx").default>(() =>
         return module;
       }),
 );
-const at = (version: MessageVersion) => `Version ${version.revision} · ${new Date(version.createdAt).toLocaleString()}`;
+const at = (version: MessageVersion) =>
+  `${version.revision === 1 ? "Original version" : `Version ${version.revision}`} · ${new Date(version.createdAt).toLocaleString()}`;
 
 // The optional renderer can fail to download or initialize. Keep history and
 // the surrounding conversation usable even when highlighting is unavailable.
@@ -121,9 +123,13 @@ export default function MessageHistory({ message, onClose }: { message: ChatMess
   useEffect(() => {
     // The dialog's key follows the content revision, so live edits refresh history.
     controller.current = new AbortController();
+    const restore = focusReturn(message.clientMessageId);
     dialog.current?.showModal();
     void load();
-    return () => controller.current.abort();
+    return () => {
+      controller.current.abort();
+      restore();
+    };
   }, []);
   const current = versions[0],
     latestPrevious = versions[1];

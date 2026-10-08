@@ -45,11 +45,15 @@ body {
   background: var(--blackout);
 }
 
-button,
-a {
-  font: inherit;
-}
+/* Element defaults sit in the base layer so utility classes (such as Tailwind's
+   font-weight and text-size utilities on buttons and links) can override them. */
+@layer base {
+  button,
+  a {
+    font: inherit;
+  }
 
-a {
-  color: inherit;
+  a {
+    color: inherit;
+  }
 }

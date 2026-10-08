@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { focusReturn } from "./focus-return.ts";
 import type { ChatMessage } from "./types.ts";
 
 export default function MessageEditor({
@@ -20,7 +21,9 @@ export default function MessageEditor({
   const [error, setError] = useState<string>();
   const count = Array.from(draft).length;
   useEffect(() => {
+    const restore = focusReturn(message.clientMessageId);
     dialog.current?.showModal();
+    return restore;
   }, []);
   const save = async () => {
     if (saving || !draft.trim() || count > 4_000) return;

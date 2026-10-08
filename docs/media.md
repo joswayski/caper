@@ -13,7 +13,9 @@ No camera, screen sharing, or server-side voice recording.
 Message composers offer `:` emoji autocomplete on web, Android, Apple and Rust
 desktop, using the same bundled Emoji 15 catalog. A colon at the start of a draft,
 after whitespace or after an opening bracket activates suggestions; URLs, times,
-selected text and active IME composition do not. Selection inserts Unicode at the
+selected text and active IME composition do not. A single character after the
+colon (`:D`, `:P`, `:3`) is an emoticon, not a search: it opens no suggestions,
+so Enter sends it as typed. The bare `:` still offers the default emoji. Selection inserts Unicode at the
 caret, preserves the rest of the draft and respects the 4,000-scalar limit. The
 emoji presentation selectors are preserved separately from normalized artwork IDs.
 Enter/Tab accepts a suggestion, arrows move the selection and Escape closes it;
@@ -1516,7 +1518,8 @@ broadcast opens its original root. The same contracts also apply to DMs.
 
 The unchecked **Also send to channel** option publishes one reply in both places,
 not a copied root message. IDs, content and reactions are shared. Drafts and the
-checkbox choice are per-root for the current channel session; retry commands
+checkbox choice are per-root for the current channel session, and the checkbox
+clears after each sent reply so later replies stay in the thread; retry commands
 freeze the root and broadcast choice. Ordinary sends cannot retry a pending reply
 into the channel. Replies use the existing participation and read permissions;
 thread reads do not expose another channel's messages.

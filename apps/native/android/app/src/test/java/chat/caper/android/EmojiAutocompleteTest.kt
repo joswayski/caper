@@ -16,6 +16,7 @@ class EmojiAutocompleteTest {
         assertNotNull(emojiToken(atEnd(":sm")))
         assertNotNull(emojiToken(atEnd("hello (:sm")))
         assertEquals("", emojiToken(atEnd("hello :"))?.query)
+        listOf(":D", "ok :P", "hi (:3").forEach { assertNull(it, emojiToken(atEnd(it))) }
         assertNull(emojiToken(TextFieldValue(":sm:", TextRange(3))))
         assertNull(emojiToken(TextFieldValue(":smile", TextRange(3))))
         assertNull(emojiToken(TextFieldValue(":sm", TextRange(1, 2))))
@@ -41,7 +42,7 @@ class EmojiAutocompleteTest {
     }
 
     @Test fun `insertion enforces scalar limit`() {
-        val value = atEnd("😀".repeat(3998) + " :x")
+        val value = atEnd("😀".repeat(3998) + " :xy")
         assertNotNull(insertEmoji(value, emojiToken(value)!!, "🚀"))
         assertNull(insertEmoji(value, emojiToken(value)!!, "👩‍💻"))
     }

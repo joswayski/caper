@@ -409,6 +409,8 @@ interface CallProps {
     spaceId?: string;
     demo?: boolean;
     direct?: boolean;
+    /** The DM with yourself (private notes). */
+    notes?: boolean;
     joined?: boolean;
   };
   onReadCursor?: (seq: string) => void;
@@ -1561,6 +1563,7 @@ export default function Call({
             accountId={account?.id}
             identityReady={identityReady && engaged}
             direct={channel?.direct}
+            notes={channel?.notes}
             onReadCursor={onReadCursor}
             readOnly={!channelJoined}
             composerNotice={channelActions}

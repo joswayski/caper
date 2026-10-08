@@ -45,7 +45,7 @@
 }
 .chat-pins-toggle:hover {
   color: var(--text);
-  border-color: var(--terracotta);
+  border-color: var(--text-muted);
 }
 .chat-channel-title {
   min-width: 0;
@@ -104,6 +104,41 @@
   opacity: 0;
   pointer-events: none;
 }
+/* Brief confirmations ("Text copied.") float above the newest messages. */
+.chat-action-status {
+  position: absolute;
+  z-index: 3;
+  bottom: 12px;
+  left: 50%;
+  max-width: calc(100% - 32px);
+  margin: 0;
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface-raised);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
+  font-size: 0.78rem;
+  font-weight: 700;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, 4px);
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+}
+.chat-action-status[data-visible] {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+.chat-action-status:empty {
+  display: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-action-status {
+    transition: none;
+  }
+}
 /* Before the scrolling list mounts: anchored to the bottom and at least full
    height, so a long history shows its newest messages (like the list will)
    and a short one starts at the top. .chat-messages clips the overflow. */
@@ -139,6 +174,21 @@
 .chat-history button:disabled {
   opacity: 0.55;
   cursor: wait;
+}
+/* Bordered secondary buttons: a neutral hover, like the space dialogs' Cancel. */
+.chat-history button:hover:not(:disabled),
+:is(.chat-state, .chat-inline-error) button:hover:not(:disabled),
+.chat-pinned-message > button:hover:not(:disabled),
+.chat-pinned-edit-actions > button:not(.chat-edited):hover:not(:disabled),
+.chat-send-status button:hover:not(:disabled),
+.chat-reactors-status button:hover:not(:disabled),
+.chat-thread-older:hover:not(:disabled),
+.chat-forward-card > button:hover:not(:disabled),
+.chat-forward-body button:not(.chat-forward-send):hover:not(:disabled),
+.chat-edit-dialog button:not(.chat-edit-save):hover:not(:disabled) {
+  border-color: var(--text-muted);
+  color: var(--text);
+  background: var(--border);
 }
 .chat-date-divider {
   display: flex;
@@ -236,7 +286,7 @@
 }
 .chat-reply-thread:hover {
   color: var(--text);
-  border-color: var(--terracotta);
+  border-color: var(--text-muted);
 }
 .chat-reply-thread:focus-visible {
   outline: 2px solid var(--terracotta);
@@ -266,8 +316,13 @@
   }
 }
 .chat-add-reaction:hover,
-.chat-add-reaction[aria-expanded="true"],
 .chat-message-actions-trigger:hover {
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+/* An open picker or menu is a selection, so its trigger keeps the accent. */
+.chat-add-reaction[aria-expanded="true"],
+.chat-message-actions-trigger[aria-expanded="true"] {
   color: var(--text);
   border-color: var(--terracotta);
 }
@@ -297,8 +352,11 @@
   background: rgb(182 77 50 / 16%);
   color: #f2ae9c;
 }
-.chat-reaction:hover {
+.chat-reaction:hover:not([aria-pressed="true"]) {
   border-color: var(--text-muted);
+}
+.chat-reaction[aria-pressed="true"]:hover {
+  border-color: var(--terracotta-bright);
 }
 .chat-reaction img {
   flex-shrink: 0;
@@ -336,6 +394,7 @@
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
+  box-shadow: 0 12px 40px rgb(0 0 0 / 35%);
   color: var(--text);
 }
 .chat-message-actions-drawer {
@@ -343,6 +402,7 @@
   padding: 8px 16px max(16px, env(safe-area-inset-bottom));
   border-bottom: 0;
   border-radius: 16px 16px 0 0;
+  box-shadow: none;
 }
 .chat-drawer-handle {
   flex: 0 0 auto;
@@ -386,6 +446,13 @@
   border-color: var(--terracotta);
   background: rgb(182 77 50 / 16%);
 }
+/* Touch sheets open under the finger; hover fills there would look selected. */
+@media (hover: hover) {
+  .chat-quick-reactions button:hover:not([aria-pressed="true"]) {
+    color: var(--text);
+    background: rgb(255 255 255 / 6%);
+  }
+}
 .chat-copy-actions {
   display: grid;
   border-radius: 8px;
@@ -407,6 +474,23 @@
 }
 .chat-copy-actions button + button {
   border-top: 1px solid var(--border);
+}
+/* Follow the list's rounded corners so the hover fill never pokes out. */
+.chat-copy-actions button:first-child {
+  border-radius: 8px 8px 0 0;
+}
+.chat-copy-actions button:last-child {
+  border-radius: 0 0 8px 8px;
+}
+@media (hover: hover) {
+  .chat-copy-actions button:hover:not(:disabled) {
+    background: rgb(255 255 255 / 6%);
+  }
+}
+.chat-copy-actions button svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
 }
 .chat-message-actions button:focus-visible {
   outline: 2px solid var(--terracotta);
@@ -454,6 +538,27 @@
   background: none;
   color: var(--text-muted);
   cursor: pointer;
+}
+.chat-reaction-picker-heading button:hover {
+  color: var(--text);
+  background: var(--border);
+}
+/* Popovers and the forward dialog are portaled outside .call-page, so they
+   need their own state transitions. */
+:is(.chat-message-actions, .chat-reactors, .chat-forward-dialog, .chat-mention-card) button,
+.chat-reaction-picker-heading button,
+.chat-forward-destinations label {
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  :is(.chat-message-actions, .chat-reactors, .chat-forward-dialog, .chat-mention-card) button,
+  .chat-reaction-picker-heading button,
+  .chat-forward-destinations label {
+    transition: none;
+  }
 }
 .chat-reaction-picker-body {
   flex: 1;
@@ -541,9 +646,15 @@
   .chat-add-reaction {
     display: none;
   }
+  /* Keep the 44px target on every message, but only draw it while open. */
   .chat-message-actions-trigger {
     width: 44px;
     height: 44px;
+    border-color: transparent;
+    background: transparent;
+  }
+  .chat-message-actions-trigger[aria-expanded="true"] {
+    background: var(--surface);
   }
   .chat-reply-thread {
     display: none;
@@ -626,7 +737,8 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  padding-right: 56px;
+  /* Clear the three hover actions, matching the message header. */
+  padding-right: 82px;
   color: var(--pin-gold);
   font-size: 0.68rem;
   font-weight: 750;
@@ -645,6 +757,7 @@
 .chat-pins h3 {
   margin: 0 0 14px;
   font-size: 0.9rem;
+  font-weight: 700;
 }
 .chat-pinned-message {
   position: relative;
@@ -823,6 +936,13 @@
   opacity: 0.6;
   cursor: wait;
 }
+.chat-mention-card-message:hover:not(:disabled),
+.chat-thread-send-row button:hover:not(:disabled),
+.chat-forward-body .chat-forward-send:hover:not(:disabled),
+.chat-edit-dialog .chat-edit-save:hover:not(:disabled) {
+  border-color: var(--terracotta-bright);
+  background: var(--terracotta-bright);
+}
 .chat-mention-card-message:focus-visible {
   outline: 2px solid var(--text);
   outline-offset: 2px;
@@ -901,6 +1021,9 @@
 }
 .chat-emoji-suggestions button:hover {
   color: var(--text);
+}
+.chat-emoji-suggestions button:hover:not([aria-selected="true"]) {
+  background: rgb(255 255 255 / 6%);
 }
 .chat-emoji-suggestions img {
   flex: 0 0 24px;
@@ -1032,15 +1155,24 @@
   max-height: min(320px, 40vh);
   padding: 10px 11px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--text);
   background: var(--surface-composer);
   font: inherit;
   font-size: 0.85rem;
   line-height: 1.4;
+  transition: border-color 140ms ease;
 }
 .chat-composer textarea:focus-visible {
   outline: none;
+}
+.chat-composer textarea:focus {
+  border-color: var(--terracotta);
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-composer textarea {
+    transition: none;
+  }
 }
 .chat-composer textarea:disabled {
   opacity: 0.55;
@@ -1068,6 +1200,10 @@
   .chat-message {
     padding-inline: 14px;
   }
+  /* Phones show only the 44px actions button. */
+  .chat-pin-marker {
+    padding-right: 56px;
+  }
   .chat-composer,
   .chat-typing {
     padding-inline: 14px;
@@ -1076,20 +1212,21 @@
 .chat-reaction[aria-disabled="true"] {
   cursor: wait;
 }
+/* Matches components/tooltip.css. */
 .chat-reaction-tooltip {
   z-index: 1001;
   display: flex;
   align-items: center;
   gap: 10px;
   max-width: 280px;
-  padding: 8px 12px;
+  padding: 7px 9px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--blackout, #0c0d0f);
   color: var(--text);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 40%);
-  font-size: 0.8rem;
-  font-weight: 650;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
+  font-size: 0.7rem;
+  font-weight: 700;
   line-height: 1.35;
   pointer-events: none;
 }
@@ -1143,6 +1280,10 @@
 .chat-reactors-tabs button[aria-selected="true"] {
   border-bottom-color: var(--terracotta, #b64d32);
   color: var(--text);
+}
+.chat-reactors-tabs button:hover {
+  color: var(--text);
+  background: rgb(255 255 255 / 4%);
 }
 .chat-reactors-label {
   padding: 12px 16px 4px;
@@ -1292,6 +1433,7 @@
 .chat-thread-heading h2 {
   margin: 0;
   font-size: 0.95rem;
+  font-weight: 700;
   line-height: 1.2;
 }
 .chat-thread-heading span {
@@ -1317,7 +1459,7 @@
   cursor: pointer;
 }
 .chat-thread-heading button:hover {
-  background: var(--surface-raised);
+  background: var(--surface-composer);
   color: var(--text);
 }
 .chat-thread-back {
@@ -1365,7 +1507,7 @@
 .chat-thread-skeleton-avatar {
   width: 34px;
   height: 34px;
-  border-radius: 50%;
+  border-radius: var(--radius-avatar);
 }
 .chat-thread-skeleton-name {
   width: 96px;
@@ -1554,6 +1696,10 @@
   color: var(--text);
   box-shadow: 0 12px 40px rgb(0 0 0 / 35%);
 }
+/* Line the title up with the body's 16px inset. */
+.chat-forward-dialog > .chat-reaction-picker-heading {
+  padding-inline: 16px;
+}
 .chat-forward-body {
   display: flex;
   flex-direction: column;
@@ -1565,6 +1711,7 @@
 .chat-forward-body h3 {
   margin: 8px 0 0;
   font-size: 0.9rem;
+  font-weight: 700;
 }
 .chat-forward-disclosure {
   margin: 0;
@@ -1608,6 +1755,9 @@
 }
 .chat-forward-destinations label:has(:checked) {
   background: rgb(182 77 50 / 15%);
+}
+.chat-forward-destinations label:hover:not(:has(:checked, :disabled)) {
+  background: rgb(255 255 255 / 4%);
 }
 .chat-forward-destinations input {
   accent-color: var(--terracotta);
@@ -1659,6 +1809,15 @@
     max-height: calc(100dvh - 16px);
     padding-bottom: env(safe-area-inset-bottom);
   }
+  /* A 44px close target; the X glyph stays near the 16px inset. */
+  .chat-forward-dialog > .chat-reaction-picker-heading {
+    flex-basis: 52px;
+    padding-right: 4px;
+  }
+  .chat-forward-dialog > .chat-reaction-picker-heading button {
+    width: 44px;
+    height: 44px;
+  }
 }
 .chat-edited {
   padding: 0;
@@ -1691,10 +1850,12 @@
 .chat-edit-dialog h2 {
   margin: 0;
   font-size: 1.15rem;
+  font-weight: 700;
 }
 .chat-edit-dialog h3 {
   margin: 22px 0 8px;
   font-size: 0.85rem;
+  font-weight: 700;
 }
 .chat-edit-notice {
   margin: 12px 0 20px;
@@ -1771,12 +1932,19 @@
   justify-content: space-between;
   gap: 16px;
 }
+/* Borderless and neutral, like the space dialogs' close. The shared dialog
+   button hover supplies the background. */
 .chat-version-dialog > header button {
   display: grid;
   place-items: center;
   width: 40px;
   padding: 0;
   border: 0;
+  border-radius: 8px;
+  color: var(--text-muted);
+}
+.chat-version-dialog > header button:hover {
+  color: var(--text);
 }
 .chat-version-text {
   margin: 0;
