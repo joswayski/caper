@@ -4285,6 +4285,29 @@ With local Vite running, repeat the long-history check using
 (substitute the configured port). Its account/history/gateway are explicit test
 mocks; no production data or SFU is used.
 
+### Quiet conversation timelines (October 8, 2026)
+
+Web desktop/narrow, Apple and Rust desktop channel/thread timelines hide scroll
+indicators while retaining scrolling. Android's existing `LazyColumn` timelines
+already omit indicators. Web keeps Virtuoso's reader-aware incoming-message follow
+and explicit own-send reveal; delivery does not focus the composer. Composer resize
+corrects the bottom position only when its height changes and the reader was within
+80 CSS pixels of the bottom before resizing, using the current DOM scroll extent
+rather than delayed virtualizer measurements. Historical context jumps retain their
+existing no-follow guard. Pins retain their existing indicators.
+
+| Platform/check | Coverage for this pass |
+| --- | --- |
+| Web | `npm run check` and all 470 tests passed. Chromium's 3,000-message history, thread and Pins regressions passed desktop/narrow scrolling, hidden-indicator style checks, composer growth, retained focus, reader/prepend anchors, PageUp/End, Pins return frames/context navigation and own sends. Inspected latest/history/thread captures at 1280×800, 1440×900 and 390×844; these use explicit test fixtures, not production data. Newest-content checks measure the visible text, not the virtualizer's estimated empty end padding. |
+| Rust desktop | Linux: 286 tests passed, nine opt-in tests ignored; format, application Clippy and build passed. Inspected a 2× static channel/thread fixture. No Windows execution or live gateway/voice validation. Root workspace tests, format and Clippy also passed. |
+| Apple/Android | Apple indicator changes are source-only here; no Apple toolchain or native device run in this Linux orb. Android is unchanged. Native follow policies are unchanged, including the reader-aware follow limitations noted above. Physical phones, software-keyboard transitions, touch scrolling and Safari acceptance remain required. |
+
+No infrastructure, secrets/configuration, database migration, API or gateway rollout
+is needed. Deploy the web image and release Apple/Rust desktop clients independently;
+no Android release is needed for this change. Before distribution, verify native
+scrolling and incoming messages on each changed platform. Roll back the web to its
+previous image; native rollback requires a corrected higher-build release.
+
 ### Fixed app icons and rotating site characters
 
 Clickable app identities (Dock, launcher, taskbar/window, installed shortcuts and

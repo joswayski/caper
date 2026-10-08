@@ -7596,6 +7596,7 @@ impl CaperApp {
         egui::ScrollArea::vertical()
             .id_salt(("thread-history", &root))
             .stick_to_bottom(true)
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 let rows: Vec<_> = self
@@ -8030,6 +8031,7 @@ impl CaperApp {
                 // The conversation stays mounted behind the separate Pins modal.
                 .id_salt("history")
                 .stick_to_bottom(!self.showing_pins)
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                 .auto_shrink([false, false]);
             if !self.showing_pins {
                 if let Some(offset) = self.history_offset.take() {

@@ -1788,7 +1788,7 @@ private struct ChatView: View {
                 #endif
 
             ScrollViewReader { proxy in
-                ScrollView {
+                ScrollView(showsIndicators: false) {
                     VStack(spacing: 0) {
                         LazyVStack(spacing: 0) {
                             if !chat.loadFailed { HStack(spacing: 6) {
@@ -2162,7 +2162,7 @@ private struct NativeThreadView: View {
             }.padding(.horizontal, 18).frame(height: 50)
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
             ScrollViewReader { proxy in
-                ScrollView {
+                ScrollView(showsIndicators: false) {
                     LazyVStack(spacing: 0) {
                         if let root = chat.displayedMessages.first(where: { $0.id == chat.threadRootID }) {
                             threadEntries([root])
