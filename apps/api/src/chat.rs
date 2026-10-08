@@ -288,11 +288,20 @@ async fn session(
     let token = account_token(&headers)
         .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "sign in required"))?;
     let account = state.auth.authenticate(token, Some(&chat.pool)).await?.user;
-    let name = account
+    // Messages always carry the account's own profile name; the requested name
+    // is kept in the contract for older clients but never shown to anyone.
+    let _ = input.name;
+    let Some(name) = account
         .display_name
         .as_deref()
-        .unwrap_or(&input.name)
-        .trim();
+        .map(str::trim)
+        .filter(|_| account.onboarded())
+    else {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "complete profile required",
+        ));
+    };
     if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid name"));
     }
@@ -303,13 +312,16 @@ async fn session(
         .execute(&mut *tx)
         .await
         .map_err(database_error)?;
-    let recent: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM public.chat_sessions WHERE created_at > now() - interval '1 minute'",
+    // A per-account budget keeps one account from exhausting the shared
+    // backstop and locking everyone else out of sending.
+    let (recent, mine): (i64, i64) = sqlx::query_as(
+        "SELECT count(*), count(*) FILTER (WHERE user_id = $1) FROM public.chat_sessions WHERE created_at > now() - interval '1 minute'",
     )
+    .bind(account.id)
     .fetch_one(&mut *tx)
     .await
     .map_err(database_error)?;
-    if recent >= 60 {
+    if mine >= 10 || recent >= 1200 {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
             "guest creation busy; try again shortly",
@@ -512,7 +524,7 @@ async fn authorize_sender(
     token: &str,
 ) -> Result<(i64, String, String, Option<i64>, Option<i16>), ApiError> {
     sqlx::query_as(
-        "SELECT s.id, COALESCE(u.external_id, s.external_id), COALESCE(u.display_name, s.name), s.user_id, u.avatar_id FROM public.chat_sessions s LEFT JOIN public.users u ON u.id = s.user_id WHERE s.token_hash = $1 AND s.expires_at > now() AND (s.user_id IS NULL OR (u.deleted_at IS NULL AND EXISTS (SELECT 1 FROM public.account_sessions a WHERE a.token_hash = s.account_session_hash AND a.user_id = s.user_id AND a.revoked_at IS NULL AND a.expires_at > now())))")
+        "SELECT s.id, COALESCE(u.external_id, s.external_id), COALESCE(u.display_name, s.name), s.user_id, u.avatar_id FROM public.chat_sessions s LEFT JOIN public.users u ON u.id = s.user_id WHERE s.token_hash = $1 AND s.expires_at > now() AND (s.user_id IS NULL OR (u.deleted_at IS NULL AND u.username IS NOT NULL AND u.display_name IS NOT NULL AND EXISTS (SELECT 1 FROM public.account_sessions a WHERE a.token_hash = s.account_session_hash AND a.user_id = s.user_id AND a.revoked_at IS NULL AND a.expires_at > now())))")
         .bind(Sha256::digest(token.as_bytes()).as_slice()).fetch_optional(connection).await.map_err(database_error)?
         .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "guest session expired"))
 }
@@ -549,7 +561,11 @@ async fn publish_typing(
         let mut connection = chat.pool.acquire().await.map_err(database_error)?;
         authorize_sender(&mut connection, token).await?
     };
-    channel_participation(&chat.pool, channel, user_id).await?;
+    let access = channel_participation(&chat.pool, channel, user_id).await?;
+    if let (None, Some(user_id)) = (access.space_id, user_id) {
+        let mut connection = chat.pool.acquire().await.map_err(database_error)?;
+        crate::direct::ensure_not_blocked(&mut connection, access.id, user_id).await?;
+    }
     let event = json!({"type":"typing.updated","channelId":channel,"author":{"id":author_id,"name":name,"isGuest":user_id.is_none(),"avatarId":avatar_id},"typing":typing});
     // Atomic shared limits and publication. No draft text, DB write, outbox, or
     // sequence allocation. Broker time orders duplicate/overlapping streams;
@@ -693,8 +709,10 @@ async fn persist_message(
     } else {
         None
     };
-    let (global, personal): (i64, i64) = sqlx::query_as("SELECT count(*), count(*) FILTER (WHERE session_id = $2) FROM public.messages WHERE channel_id = $1 AND created_at > now() - interval '1 minute'")
-        .bind(channel_id).bind(session_id).fetch_one(&mut *tx).await.map_err(database_error)?;
+    // The personal budget is per account, not per chat session, so extra
+    // sessions can't be used to take a whole channel's budget.
+    let (global, personal): (i64, i64) = sqlx::query_as("SELECT count(*), count(*) FILTER (WHERE m.session_id = $2 OR cs.user_id = $3) FROM public.messages m JOIN public.chat_sessions cs ON cs.id = m.session_id WHERE m.channel_id = $1 AND m.created_at > now() - interval '1 minute'")
+        .bind(channel_id).bind(session_id).bind(user_id).fetch_one(&mut *tx).await.map_err(database_error)?;
     if global >= 120 || personal >= 30 {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
@@ -848,6 +866,9 @@ async fn persist_reaction(
         .bind(channel).bind(user_id).fetch_optional(&mut *tx).await.map_err(database_error)?;
     let (channel_id, head) =
         access.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
+    if let (None, Some(user_id)) = (space_id, user_id) {
+        crate::direct::ensure_not_blocked(&mut tx, channel_id, user_id).await?;
+    }
     let row: Option<(i64, Value)> = sqlx::query_as(
         "SELECT id,payload FROM public.messages WHERE channel_id=$1 AND external_id=$2 FOR UPDATE",
     )
@@ -989,6 +1010,9 @@ async fn persist_pin(
         .bind(channel).bind(user_id).fetch_optional(&mut *tx).await.map_err(database_error)?;
     let (channel_id, head) =
         access.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
+    if let (None, Some(user_id)) = (space_id, user_id) {
+        crate::direct::ensure_not_blocked(&mut tx, channel_id, user_id).await?;
+    }
     let row: Option<(i64, Value, Option<i16>, Option<String>)> = sqlx::query_as(
         "SELECT m.id,m.payload,u.avatar_id,u.display_name FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.channel_id=$1 AND m.external_id=$2 FOR UPDATE OF m")
         .bind(channel_id).bind(message).fetch_optional(&mut *tx).await.map_err(database_error)?;

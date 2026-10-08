@@ -1,3 +1,4 @@
+import { CHAT_SESSION_KEY } from "../account/client.ts";
 import { ChatConnection } from "./connection.ts";
 import { ChatTimeline } from "./timeline.ts";
 import { playSound } from "../audio/effects.ts";
@@ -23,7 +24,7 @@ import {
   type MessageVersion,
 } from "./types.ts";
 
-const SESSION_KEY = "caper.chat.session";
+const SESSION_KEY = CHAT_SESSION_KEY;
 
 export interface PendingChatMessage {
   clientMessageId: string;

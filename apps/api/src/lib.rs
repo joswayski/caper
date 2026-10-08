@@ -1743,17 +1743,18 @@ async fn join(
     ensure_enabled(&s)?;
     let submitted_name = input.name.as_deref().unwrap_or_default().trim();
     let account = if let Some(token) = account_token(&headers) {
-        s.auth
-            .authenticate(token, s.database.as_ref())
-            .await
-            .ok()
-            .map(|principal| {
-                (
-                    principal.user.display_name,
-                    principal.user.avatar_id,
-                    Sha256::digest(token.as_bytes()).to_vec(),
-                )
-            })
+        match s.auth.authenticate(token, s.database.as_ref()).await {
+            Ok(principal) => Some((
+                principal.user.display_name,
+                principal.user.avatar_id,
+                Sha256::digest(token.as_bytes()).to_vec(),
+            )),
+            // Account channels already verified this session. If this lookup
+            // fails (e.g. a database outage), never fall back to a roster name
+            // the client chose.
+            Err(error) if s.media_channel.is_some() => return Err(error),
+            Err(_) => None,
+        }
     } else {
         None
     };
@@ -2322,7 +2323,12 @@ async fn warm(
     }
     s.update(|r| {
         r.warmed.retain(|w| w.issued.elapsed() < WARM_MIN_INTERVAL);
-        if r.warmed.len() >= 4 * MAX_PARTICIPANTS || r.warmed.iter().any(|w| w.account == account) {
+        // Each warm parks a revocation for half an hour. Keep those to half the
+        // backlog so removing a participant always has room for its cleanup.
+        if r.cleanup.len() >= MAX_CLEANUP_BACKLOG / 2
+            || r.warmed.len() >= 4 * MAX_PARTICIPANTS
+            || r.warmed.iter().any(|w| w.account == account)
+        {
             return Err(ApiError::new(
                 StatusCode::TOO_MANY_REQUESTS,
                 "rate limit exceeded",

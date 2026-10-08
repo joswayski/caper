@@ -548,12 +548,85 @@ async fn message_requests_blocks_and_privacy(pool: PgPool) {
         );
     }
 
+    // Recipients identify senders by @username, so a sender needs a profile.
+    let incomplete: i64 =
+        sqlx::query_scalar("INSERT INTO users (external_id) VALUES ($1) RETURNING id")
+            .bind(random_id(12))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query("INSERT INTO account_sessions (token_hash,user_id,expires_at) VALUES ($1,$2,now()+interval '1 day')")
+        .bind(Sha256::digest(b"incomplete").to_vec()).bind(incomplete).execute(&pool).await.unwrap();
+    assert_eq!(
+        open("incomplete", "bob").await,
+        (
+            StatusCode::FORBIDDEN,
+            json!({"error":"complete profile required"})
+        )
+    );
+    // Chat capabilities also need a profile and always carry its name, so
+    // nobody can write under a name of their choosing.
+    let chat_session = |account: &'static str| {
+        let app = app.clone();
+        async move {
+            request(
+                &app,
+                "POST",
+                "/api/chat/session",
+                Some(account),
+                None,
+                json!({"name":"Caper Support"}),
+            )
+            .await
+        }
+    };
+    assert_eq!(
+        chat_session("incomplete").await,
+        (
+            StatusCode::FORBIDDEN,
+            json!({"error":"complete profile required"})
+        )
+    );
+    sqlx::query("INSERT INTO chat_sessions (external_id,token_hash,user_id,account_session_hash,name) VALUES ($1,$2,$3,$4,'Caper Support')")
+        .bind(random_id(12)).bind(Sha256::digest(b"chat-incomplete").to_vec()).bind(incomplete).bind(Sha256::digest(b"incomplete").to_vec()).execute(&pool).await.unwrap();
+    // One account can't use up everyone's session-creation budget: ten a
+    // minute each, including the one the fixture created.
+    for _ in 1..10 {
+        let (status, body) = chat_session("eve").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["author"]["name"], "eve");
+    }
+    assert_eq!(chat_session("eve").await.0, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(chat_session("frank").await.0, StatusCode::OK);
+
+    // Requests from strangers don't use up the recipient's own DM quota.
+    for n in 0..20 {
+        let sender: i64 = sqlx::query_scalar(
+            "INSERT INTO users (external_id,username,display_name) VALUES ($1,$2,$2) RETURNING id",
+        )
+        .bind(random_id(12))
+        .bind(format!("stranger{n}"))
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let channel: i64 = sqlx::query_scalar("INSERT INTO channels (external_id,name,private) VALUES ($1,'direct',true) RETURNING id")
+            .bind(random_id(12)).fetch_one(&pool).await.unwrap();
+        let target = users["target0"];
+        sqlx::query("INSERT INTO direct_conversations (channel_id,low_user_id,high_user_id,requested_by,accepted_at) VALUES ($1,$2,$3,$4,NULL)")
+            .bind(channel).bind(sender.min(target)).bind(sender.max(target)).bind(sender).execute(&pool).await.unwrap();
+    }
+    assert_eq!(open("target0", "carol").await.0, StatusCode::OK);
+
     // People who share a space skip the request.
     let (code, shared) = open("alice", "carol").await;
     assert_eq!(code, StatusCode::OK);
     assert_eq!(shared["status"], "accepted");
     assert!(shared["peer"]["avatarId"].is_number());
     let shared = shared["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        send("incomplete", shared.clone()).await.0,
+        StatusCode::UNAUTHORIZED
+    );
     assert_eq!(
         status("carol", shared.clone()).await.as_deref(),
         Some("accepted")
@@ -763,6 +836,53 @@ async fn message_requests_blocks_and_privacy(pool: PgPool) {
         }
     };
     assert_eq!(forward("bob").await.0, StatusCode::OK);
+    let source_id = source["id"].as_str().unwrap().to_owned();
+    // Reactions, pins, edits and typing are DM writes too.
+    let write = |from: &'static str, kind: &'static str, active: bool| {
+        let app = app.clone();
+        let conversation = request_dm.clone();
+        let message = source_id.clone();
+        async move {
+            let base = format!("/api/chat/channels/{conversation}");
+            let (method, path, body) = match kind {
+                "reaction" => (
+                    "PUT",
+                    format!("{base}/messages/{message}/reactions"),
+                    json!({"emoji":"👍","active":active}),
+                ),
+                "pin" => (
+                    "PUT",
+                    format!("{base}/messages/{message}/pin"),
+                    json!({ "active": active }),
+                ),
+                "edit" => (
+                    "PUT",
+                    format!("{base}/messages/{message}"),
+                    json!({"text":format!("edited {active}"),"expectedRevision":1}),
+                ),
+                _ => (
+                    "POST",
+                    format!("{base}/typing"),
+                    json!({ "typing": active }),
+                ),
+            };
+            request(
+                &app,
+                method,
+                &path,
+                None,
+                Some(&format!("chat-{from}")),
+                body,
+            )
+            .await
+        }
+    };
+    assert_eq!(write("alice", "reaction", true).await.0, StatusCode::OK);
+    assert_eq!(write("bob", "pin", true).await.0, StatusCode::OK);
+    assert_eq!(
+        write("alice", "typing", true).await.0,
+        StatusCode::NO_CONTENT
+    );
     let alice = ids["alice"].clone();
     for _ in 0..2 {
         assert_eq!(
@@ -818,6 +938,23 @@ async fn message_requests_blocks_and_privacy(pool: PgPool) {
     // Forwards are sends too.
     assert_eq!(forward("alice").await.1["code"], "dm_not_accepted");
     assert_eq!(forward("bob").await.1["code"], "dm_blocked");
+    for kind in ["reaction", "pin", "edit", "typing"] {
+        for active in [true, false] {
+            assert_eq!(
+                write("alice", kind, active).await,
+                (
+                    StatusCode::FORBIDDEN,
+                    json!({"error":"this person isn't accepting direct messages","code":"dm_not_accepted"})
+                ),
+                "{kind} {active}"
+            );
+            assert_eq!(
+                write("bob", kind, active).await.1["code"],
+                "dm_blocked",
+                "{kind} {active}"
+            );
+        }
+    }
     assert_eq!(open("alice", "bob").await.1["id"], request_dm.as_str());
     assert_eq!(
         request(

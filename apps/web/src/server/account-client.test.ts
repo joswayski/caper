@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { test, type TestContext } from "vitest";
+import { test, vi, type TestContext } from "vitest";
 import {
   AccountApiError,
+  CHAT_SESSION_KEY,
   getAccount,
   getRememberedAccount,
   logout,
@@ -56,6 +57,17 @@ test("web account client uses cookie sessions across the complete onboarding flo
     code: "123456",
     tokenTransport: "cookie",
   });
+});
+
+test("logout forgets the chat capability minted from the account session", async (t) => {
+  mockFetch(t, () => new Response(null, { status: 204 }));
+  const stored = new Map([[CHAT_SESSION_KEY, '{"token":"chat"}']]);
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => stored.get(key) ?? null,
+    removeItem: (key: string) => void stored.delete(key),
+  });
+  await logout();
+  assert.equal(stored.has(CHAT_SESSION_KEY), false);
 });
 
 test("missing session is an ordinary signed-out state", async (t) => {

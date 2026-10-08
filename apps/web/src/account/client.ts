@@ -85,7 +85,16 @@ export async function updateProfile(username: string, displayName: string) {
   );
 }
 
+/** Browser storage key for the chat capability minted from the account session. */
+export const CHAT_SESSION_KEY = "caper.chat.session";
+
 export async function logout() {
   await request<void>("/api/auth/logout", { method: "POST" });
   rememberAccount(null);
+  // Logout revokes the capability too; don't leave it or the identity behind.
+  try {
+    localStorage.removeItem(CHAT_SESSION_KEY);
+  } catch {
+    /* Storage is optional. */
+  }
 }

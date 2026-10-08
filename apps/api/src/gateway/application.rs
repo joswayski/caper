@@ -283,26 +283,22 @@ pub(super) async fn upgrade(
             "cross-origin socket refused",
         ));
     }
-    let hash = account_token(&headers).map(|token| Sha256::digest(token.as_bytes()).to_vec());
-    let user = match &hash {
-        Some(hash) => Some(session_user(&state.chat.pool, hash).await?),
-        None => None,
-    };
-    let external_id = match user {
-        Some(user) => Some(
-            sqlx::query_scalar("SELECT external_id FROM public.users WHERE id=$1")
-                .bind(user)
-                .fetch_one(&state.chat.pool)
-                .await
-                .map_err(|_| chat::unavailable())?,
-        ),
-        None => None,
-    };
+    // Every subscription and command needs an account, so anonymous sockets
+    // would only hold connection slots. Refuse them before taking one.
+    let hash = account_token(&headers)
+        .map(|token| Sha256::digest(token.as_bytes()).to_vec())
+        .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "sign in required"))?;
+    let user = session_user(&state.chat.pool, &hash).await?;
+    let external_id = sqlx::query_scalar("SELECT external_id FROM public.users WHERE id=$1")
+        .bind(user)
+        .fetch_one(&state.chat.pool)
+        .await
+        .map_err(|_| chat::unavailable())?;
     let identity = Identity {
         headers,
-        hash,
-        user,
-        external_id,
+        hash: Some(hash),
+        user: Some(user),
+        external_id: Some(external_id),
     };
     let slot = state
         .slots

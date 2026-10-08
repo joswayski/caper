@@ -571,6 +571,75 @@ async fn live_forwards_are_destination_authorized_flattened_and_replayable(pool:
         request(&app, "GET", &dm_path, "dave", Value::Null).await.0,
         StatusCode::OK
     );
+    // One account's forwards of an original are bounded; retries still resolve.
+    let original_id: i64 =
+        sqlx::query_scalar("SELECT id FROM public.messages WHERE external_id=$1")
+            .bind(original["id"].as_str())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let alice_session: i64 =
+        sqlx::query_scalar("SELECT id FROM public.chat_sessions WHERE external_id='alice'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let existing: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM public.messages WHERE forward_source_id=$1 AND session_id=$2",
+    )
+    .bind(original_id)
+    .bind(alice_session)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    for n in existing..10 {
+        sqlx::query("INSERT INTO public.messages(external_id,channel_id,session_id,client_message_id,request_hash,channel_seq,payload,forward_source_id) VALUES($1,$2,$3,$4,$5,$6,'{}'::jsonb,$7)")
+            .bind(format!("capped-{n}")).bind(channels[1]).bind(alice_session).bind(Uuid::new_v4())
+            .bind(b"hash".as_slice()).bind(10_000 + n).bind(original_id).execute(&pool).await.unwrap();
+    }
+    let mut another = input.clone();
+    another["clientMessageId"] = json!(Uuid::new_v4());
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            "/api/chat/channels/destination/forwards",
+            "alice",
+            another
+        )
+        .await,
+        (
+            StatusCode::CONFLICT,
+            json!({"error":"this message can't be forwarded again"})
+        )
+    );
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            "/api/chat/channels/destination/forwards",
+            "alice",
+            input.clone()
+        )
+        .await
+        .1["id"],
+        forward["id"]
+    );
+    // Single-message reads hydrate like history, so a deleted source's stored
+    // snapshot is never served.
+    let single = format!(
+        "/api/chat/channels/destination/messages/{}",
+        forward["id"].as_str().unwrap()
+    );
+    let (status, wrapper) = request(&app, "GET", &single, "alice", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{wrapper}");
+    assert!(wrapper["forward"]["message"].is_object(), "{wrapper}");
+    sqlx::query("UPDATE public.channels SET deleted_at=now() WHERE external_id='source'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (status, wrapper) = request(&app, "GET", &single, "alice", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{wrapper}");
+    assert_eq!(wrapper["forward"], json!({"message":null,"seq":"0"}));
 }
 
 #[sqlx::test(migrations = "./migrations")]

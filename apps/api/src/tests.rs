@@ -754,6 +754,28 @@ async fn authenticated_join_uses_the_account_display_name_without_country() {
 }
 
 #[tokio::test]
+async fn account_channel_join_never_falls_back_to_a_submitted_name() {
+    let (mut s, _) = state();
+    // Dispatch verified the session, but this lookup fails (as in an outage).
+    s.media_channel = Some("channel00001".into());
+    s.media_session = Some(b"authenticated-channel-session".to_vec());
+    s.auth = auth::AuthVerifier::new();
+    let response = app(s)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/media/join")
+                .header("content-type", "application/json")
+                .header("authorization", "Bearer test-fixture")
+                .body(Body::from(json!({"name":"Caper Support"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
 async fn stored_participant_without_avatar_id_decodes_and_omits_avatar() {
     let (s, _) = state();
     joined(&s, "legacy").await;
@@ -1893,6 +1915,27 @@ async fn warm_sessions_are_signed_in_only_rate_limited_and_revoked_unless_adopte
         .0,
         StatusCode::TOO_MANY_REQUESTS,
         "one warm pair per account at a time"
+    );
+    // Parked revocations can't crowd out the immediate cleanup a removal needs.
+    {
+        let mut r = s.registry.lock().await;
+        for n in r.cleanup.len()..MAX_CLEANUP_BACKLOG / 2 {
+            enqueue_action_at_locked(
+                &mut r,
+                CleanupAction::Revoke {
+                    username: format!("parked-{n}"),
+                },
+                Timestamp::now() + WARM_REVOKE_AFTER,
+            );
+        }
+    }
+    let mut crowded = s.clone();
+    crowded.media_session = Some(b"crowded".to_vec());
+    assert_eq!(
+        call(app(crowded), "POST", "/api/media/warm", None, warm_offers())
+            .await
+            .0,
+        StatusCode::TOO_MANY_REQUESTS
     );
     for body in [
         json!({"main":{"type":"answer","sdp":"x"},"receive":{"type":"offer","sdp":"x"}}),

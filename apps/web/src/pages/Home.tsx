@@ -14,7 +14,7 @@ const contactEmail = "contact@josevalerio.com";
 const rotatingWords = ["people", "friends", "teammates", "coworkers", "family"];
 
 type HomeProps = {
-  account: Account | null;
+  account: Account | null | undefined;
   initialNow: number;
   latestChanges: readonly LatestChange[];
   downloadPlatform: DownloadPlatform | null;
