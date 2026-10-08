@@ -40,6 +40,15 @@ const definitions = [
   ["AXIOM_TOKEN", "optional"],
   ["AXIOM_DATASET", "default: caper"],
   ["AXIOM_ENDPOINT", "required when Axiom is enabled"],
+  ["NOTIFICATIONS_ENABLED", "default: false"],
+  ["PUSH_PLATFORMS", "default: none advertised"],
+  ["APNS_TEAM_ID", "required for apns or apnsSandbox"],
+  ["APNS_KEY_ID", "required for apns"],
+  ["APNS_PRIVATE_KEY", "required for apns"],
+  ["APNS_SANDBOX_KEY_ID", "required for apnsSandbox"],
+  ["APNS_SANDBOX_PRIVATE_KEY", "required for apnsSandbox"],
+  ["APNS_TOPIC", "default: chat.caper.ios"],
+  ["FCM_SERVICE_ACCOUNT_JSON", "required for fcm"],
 ];
 
 function option(name, fallback) {

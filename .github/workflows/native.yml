@@ -365,6 +365,17 @@ jobs:
         with:
           cmdline-tools-version: '13114758'
           packages: 'platform-tools platforms;android-36 build-tools;36.0.0 ndk;27.2.12479018 cmake;3.22.1'
+      # Firebase (and so phone push) stays off when the secret is unset; the
+      # build works either way. The secret is the base64 of google-services.json.
+      - name: Write google-services.json from GOOGLE_SERVICES_JSON
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$GOOGLE_SERVICES_JSON" ]]; then
+            printf '%s' "$GOOGLE_SERVICES_JSON" | base64 --decode >apps/native/android/app/google-services.json
+            python -m json.tool apps/native/android/app/google-services.json >/dev/null
+          fi
       - name: Test, lint, build and package Android
         run: bash apps/native/android/build.sh
       - name: Record exact checked-out revision and checksums
@@ -427,6 +438,10 @@ jobs:
           if [[ -f "$RUNNER_TEMP/caper-fixture.pid" ]]; then
             kill "$(cat "$RUNNER_TEMP/caper-fixture.pid")" 2>/dev/null || true
           fi
+      # Self-hosted runners keep the workspace between jobs.
+      - name: Remove google-services.json
+        if: always()
+        run: rm -f apps/native/android/app/google-services.json
       - name: Stop the rest of this run after a failure
         # One failed job already fails the run; cancel the other jobs instead of
         # letting them hold runners (and block newer pushes) until they finish.

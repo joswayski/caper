@@ -46,6 +46,7 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.zIndex
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.graphicsLayer
@@ -92,12 +93,22 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import chat.caper.android.data.AttachmentPolicy
 import chat.caper.android.data.TimelineEntry
+import chat.caper.android.data.channelKey
+import chat.caper.android.data.channelMuted
+import chat.caper.android.data.directKey
+import chat.caper.android.data.directMuted
+import chat.caper.android.data.inheritedLevel
+import chat.caper.android.data.muteActive
+import chat.caper.android.data.override
+import chat.caper.android.data.spaceKey
+import chat.caper.android.data.spaceMuted
 import chat.caper.android.data.directUnread
 import chat.caper.android.data.groupBlocked
 import chat.caper.android.data.mainDirects
 import chat.caper.android.data.messageRequests
 import chat.caper.android.data.withFreshUrls
 import chat.caper.android.model.*
+import chat.caper.android.push.CaperNotifications
 import chat.caper.android.ui.*
 import chat.caper.android.voice.VoiceCallService
 import chat.caper.android.voice.VoiceState
@@ -122,10 +133,20 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         CaperEffects.init(applicationContext)
-        viewModel.openDirectFromNotification(intent.getStringExtra("conversationId"))
+        // A recreated activity or a relaunch from Recents must not reopen an old tap.
+        if (savedInstanceState == null) openFromNotification(intent)
         setContent { CompositionLocalProvider(LocalBrandAvatar provides brandingAvatar) { CaperTheme { CaperApp(viewModel) } } }
     }
-    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); viewModel.openDirectFromNotification(intent.getStringExtra("conversationId")) }
+    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); openFromNotification(intent) }
+
+    private fun openFromNotification(intent: Intent) {
+        if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
+        viewModel.openFromNotification(
+            intent.getStringExtra(CaperNotifications.EXTRA_CONVERSATION_ID),
+            intent.getStringExtra(CaperNotifications.EXTRA_SPACE_ID),
+            intent.getStringExtra(CaperNotifications.EXTRA_CHANNEL_ID),
+        )
+    }
 
     override fun onResume() {
         super.onResume()
@@ -240,7 +261,8 @@ internal data class VoiceJoinIntent(
         }
         Overlay.LeaveSpace -> ConfirmDialog("Leave ${state.selectedSpace?.space?.name}?", "You will lose access to its channels and conversations. An owner can add you again later.", "Leave space", state.busy, { overlay = null }) { viewModel.leaveCurrentSpace { overlay = null } }
         Overlay.Profile -> state.account?.let { account -> ProfileScreen(account, state.busy, state.error, { overlay = null }) { username, display -> viewModel.updateProfile(username, display) { overlay = null } } }
-        Overlay.Audio -> AudioSettingsMenu(state, voice, { overlay = null }, { overlay = Overlay.AudioPanelOverlay(it) }, viewModel::logout, viewModel::showLogin) { overlay = Overlay.Privacy }
+        Overlay.Audio -> AudioSettingsMenu(state, voice, { overlay = null }, { overlay = Overlay.AudioPanelOverlay(it) }, viewModel::logout, viewModel::showLogin,
+            notifications = { NotificationSettingsSection(state, viewModel) }) { overlay = Overlay.Privacy }
         Overlay.Privacy -> PrivacySettingsDialog(state, viewModel) { overlay = null }
         is Overlay.AudioPanelOverlay -> when (shown.panel) {
             AudioPanel.Test -> AudioTestDialog(voice) { overlay = null }
@@ -304,6 +326,18 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
             }
         } else pendingVoiceJoin = null
     }
+    // Push is on by default: on Android 13+ opening the app asks once per account.
+    var pushPromptEpoch by remember { mutableLongStateOf(-1L) }
+    val pushPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        viewModel.pushPromptAnswered(granted, pushPromptEpoch)
+    }
+    LaunchedEffect(state.pushPrompt) {
+        if (state.pushPrompt && Build.VERSION.SDK_INT >= 33) {
+            pushPromptEpoch = viewModel.accountEpoch
+            viewModel.pushPromptShown()
+            pushPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
     LaunchedEffect(voice, pendingVoiceJoin, state) {
         val requested = pendingVoiceJoin ?: return@LaunchedEffect
         if (!requested.isCurrent(state, viewModel.accountEpoch) || !VoiceCallService.joinAuthorizationCurrent(requested.controlEpoch)) pendingVoiceJoin = null
@@ -328,7 +362,7 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
             val narrow = maxWidth <= 760.dp
             // 60 rail + 280 channels + 320 minimum chat + 220 members.
             val medium = maxWidth < 880.dp
-            var membersVisible by remember { mutableStateOf(!narrow) }
+            var membersVisible by remember { mutableStateOf(false) }
             LaunchedEffect(narrow) { if (narrow) membersVisible = false }
             BackHandler(enabled = narrow && (membersVisible || navigationOpen)) {
                 if (membersVisible && !navigationOpen) membersVisible = false else setNavigationOpen(false)
@@ -404,17 +438,23 @@ private fun Modifier.browseSwipe(open: Boolean, enabled: Boolean, onOpenChange: 
     }
 
 @Composable private fun SpaceRail(state: AppUiState, viewModel: CaperViewModel, show: (Overlay) -> Unit, modifier: Modifier = Modifier) {
+    val now = rememberMuteClock(state.notificationSettings)
     Column(modifier.fillMaxHeight().background(Blackout).verticalScroll(rememberScrollState()).padding(vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
         state.spaces.forEach { space ->
             val selected = state.selectedSpace?.space?.id == space.id
+            val muted = state.notificationSettings?.spaceMuted(space.id, now) == true
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.width(3.dp).height(if (selected) 24.dp else 0.dp).background(if (selected) TerracottaBright else Color.Transparent))
                 Spacer(Modifier.width(3.dp))
-                Surface(
-                    Modifier.size(48.dp).clickable { viewModel.selectSpace(space.id) }.semantics { contentDescription = space.name },
-                    color = if (selected) TerracottaDark else Surface, shape = MaterialTheme.shapes.medium,
-                    border = BorderStroke(1.dp, if (selected) TerracottaBorder else Border),
-                ) { Box(contentAlignment = Alignment.Center) { Text(space.name.take(1).uppercase(), fontWeight = FontWeight.Black, color = if (selected) Color.White else TextMuted) } }
+                Box {
+                    Surface(
+                        Modifier.size(48.dp).alpha(if (muted) MUTED_ALPHA else 1f).clickable { viewModel.selectSpace(space.id) }
+                            .semantics { contentDescription = space.name; if (muted) stateDescription = "Muted" },
+                        color = if (selected) TerracottaDark else Surface, shape = MaterialTheme.shapes.medium,
+                        border = BorderStroke(1.dp, if (selected) TerracottaBorder else Border),
+                    ) { Box(contentAlignment = Alignment.Center) { Text(space.name.take(1).uppercase(), fontWeight = FontWeight.Black, color = if (selected) Color.White else TextMuted) } }
+                    if (muted) Box(Modifier.align(Alignment.BottomEnd).offset(x = 3.dp, y = 3.dp).background(Blackout, CircleShape).padding(2.dp).clearAndSetSemantics {}) { MutedBell() }
+                }
             }
         }
         state.invitations.forEach { invitation ->
@@ -456,27 +496,8 @@ private fun Modifier.browseSwipe(open: Boolean, enabled: Boolean, onOpenChange: 
     closeNavigation: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
-    val pushScope = rememberCoroutineScope()
-    var pushAvailable by remember(state.account?.id) { mutableStateOf(false) }
-    var pushEnabled by remember(state.account?.id) { mutableStateOf(chat.caper.android.push.PushRegistration.enabled(context)) }
-    var pushError by remember(state.account?.id) { mutableStateOf<String?>(null) }
-    var pushRequestEpoch by remember { mutableStateOf(-1L) }
-    val enablePush = {
-        val epoch = viewModel.accountEpoch
-        pushScope.launch {
-            runCatching { chat.caper.android.push.PushRegistration.enable(context.applicationContext) }
-                .onSuccess { if (epoch == viewModel.accountEpoch) pushEnabled = chat.caper.android.push.PushRegistration.enabled(context) }
-                .onFailure { if (epoch == viewModel.accountEpoch) pushError = it.message ?: "Notifications could not be enabled." }
-        }
-    }
-    val pushPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (pushRequestEpoch == viewModel.accountEpoch) {
-            if (granted) enablePush() else pushError = "Notification permission was denied. You can allow it in Android settings."
-        }
-    }
-    LaunchedEffect(state.account?.id) {
-        if (BuildConfig.FIREBASE_ENABLED && state.account != null) pushAvailable = viewModel.canEnablePush()
-    }
+    val settings = state.notificationSettings
+    val now = rememberMuteClock(settings)
     val detail = state.selectedSpace
     val owner = state.account != null && state.account.id == detail?.space?.ownerId
     val channelCount = detail?.channels?.size ?: 0
@@ -490,34 +511,48 @@ private fun Modifier.browseSwipe(open: Boolean, enabled: Boolean, onOpenChange: 
             Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 8.dp)) {
             Row(Modifier.fillMaxWidth().heightIn(min = 42.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (detail != null && !detail.space.demo) Box(Modifier.weight(1f)) {
-                    // Web: the space name opens a menu with Space settings (owners) or Leave space….
+                    // Web: the space name opens a menu with Space settings (owners) or Leave space…,
+                    // plus Notifications and Mute.
                     var spaceMenuOpen by remember(detail.space.id) { mutableStateOf(false) }
+                    var spaceMenuPage by remember(detail.space.id) { mutableStateOf(NotificationMenuPage.Main) }
+                    val closeSpaceMenu = { spaceMenuOpen = false; spaceMenuPage = NotificationMenuPage.Main }
+                    val spaceMuted = settings?.spaceMuted(detail.space.id, now) == true
                     Row(Modifier.fillMaxWidth().heightIn(min = 42.dp).clip(MaterialTheme.shapes.small)
-                        .clickable(role = Role.Button) { spaceMenuOpen = true }
-                        .semantics(mergeDescendants = true) { contentDescription = "${detail.space.name} actions" },
+                        .clickable(role = Role.Button) { spaceMenuOpen = true; viewModel.refreshNotificationSettings() }
+                        .semantics(mergeDescendants = true) { contentDescription = "${detail.space.name} actions"; if (spaceMuted) stateDescription = "Muted" },
                         verticalAlignment = Alignment.CenterVertically) {
                         Text(detail.space.name, Modifier.weight(1f, fill = false), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (spaceMuted) MutedBell(Modifier.padding(start = 6.dp))
                         Spacer(Modifier.width(6.dp))
                         Icon(painterResource(R.drawable.lucide_chevron_down), null, Modifier.size(16.dp), tint = TextMuted)
                     }
-                    DropdownMenu(spaceMenuOpen, { spaceMenuOpen = false }, containerColor = SurfaceRaised) {
-                        DropdownMenuItem(
-                            text = { Text(if (browsing) "Joined channels" else "Browse channels") },
-                            onClick = {
-                                browsing = !browsing
-                                channelQuery = ""
-                                spaceMenuOpen = false
+                    DropdownMenu(spaceMenuOpen, closeSpaceMenu, containerColor = SurfaceRaised) {
+                        ScopeMenuContent(
+                            spaceMenuPage, { spaceMenuPage = it }, "space", settings?.override(spaceKey(detail.space.id)), settings?.inheritedLevel(),
+                            { viewModel.setSpaceNotifications(detail.space.id, it) }, closeSpaceMenu,
+                            before = {
+                                DropdownMenuItem(
+                                    text = { Text(if (browsing) "Joined channels" else "Browse channels") },
+                                    onClick = {
+                                        browsing = !browsing
+                                        channelQuery = ""
+                                        closeSpaceMenu()
+                                    },
+                                    leadingIcon = { Icon(painterResource(R.drawable.lucide_hash), null, Modifier.size(16.dp)) },
+                                )
                             },
-                            leadingIcon = { Icon(painterResource(R.drawable.lucide_hash), null, Modifier.size(16.dp)) },
+                            after = {
+                                if (owner) DropdownMenuItem({ Text("Space settings") }, { closeSpaceMenu(); show(Overlay.ManageSpace) },
+                                    leadingIcon = { Icon(painterResource(R.drawable.lucide_settings), null, Modifier.size(16.dp)) })
+                                else DropdownMenuItem({ Text("Leave space…", color = ErrorText) }, { closeSpaceMenu(); show(Overlay.LeaveSpace) },
+                                    leadingIcon = { Icon(painterResource(R.drawable.lucide_log_out), null, Modifier.size(16.dp), tint = ErrorText) })
+                            },
                         )
-                        if (owner) DropdownMenuItem({ Text("Space settings") }, { spaceMenuOpen = false; show(Overlay.ManageSpace) },
-                            leadingIcon = { Icon(painterResource(R.drawable.lucide_settings), null, Modifier.size(16.dp)) })
-                        else DropdownMenuItem({ Text("Leave space…", color = ErrorText) }, { spaceMenuOpen = false; show(Overlay.LeaveSpace) },
-                            leadingIcon = { Icon(painterResource(R.drawable.lucide_log_out), null, Modifier.size(16.dp), tint = ErrorText) })
                     }
                 } else Text("Caper", Modifier.weight(1f), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (closeNavigation != null) IconButton(closeNavigation) { Icon(painterResource(R.drawable.lucide_x), "Close navigation", tint = TextMuted) }
             }
+            if (detail != null) NotificationSaveError(state.notificationErrors[spaceKey(detail.space.id)]) { viewModel.dismissNotificationError(spaceKey(detail.space.id)) }
             HorizontalDivider(color = Border)
             if (browsing) OutlinedTextField(channelQuery, { channelQuery = it }, Modifier.fillMaxWidth().padding(top = 8.dp), singleLine = true, label = { Text("Search channels") })
             Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -569,6 +604,13 @@ private fun Modifier.browseSwipe(open: Boolean, enabled: Boolean, onOpenChange: 
                     ?: pendingVoiceJoin?.takeIf { it.channelId == channel.id }?.joinStartedAt
                 var rosterOpen by remember(channel.id) { mutableStateOf(false) }
                 var channelMenuOpen by remember(channel.id) { mutableStateOf(false) }
+                var channelMenuPage by remember(channel.id) { mutableStateOf(NotificationMenuPage.Main) }
+                val closeChannelMenu = { channelMenuOpen = false; channelMenuPage = NotificationMenuPage.Main }
+                // Notifications and Mute are for account spaces, never the demo.
+                val notifiable = state.account != null && !detail.space.demo
+                // A muted space dims its channels; the bell marks a channel's own mute.
+                val channelMuted = settings?.channelMuted(detail.space.id, channel.id, now) == true
+                val ownMute = settings?.override(channelKey(channel.id))?.mutedUntil?.let { muteActive(it, now) } == true
                 val available = state.voiceAvailable(channel)
                 LaunchedEffect(channel.id, channel.joined, detail.space.demo, state.account?.id, available) {
                     if (channel.joined && BuildConfig.ENABLE_NATIVE_VOICE && available == null) viewModel.checkVoiceAvailability(channel)
@@ -590,19 +632,32 @@ private fun Modifier.browseSwipe(open: Boolean, enabled: Boolean, onOpenChange: 
                             .padding(start = 9.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Row(Modifier.weight(1f).fillMaxHeight().clickable { viewModel.selectChannel(channel); closeNavigation?.invoke() }, verticalAlignment = Alignment.CenterVertically) {
+                        Row(Modifier.weight(1f).fillMaxHeight().alpha(if (channelMuted) MUTED_ALPHA else 1f)
+                            .clickable { viewModel.selectChannel(channel); closeNavigation?.invoke() }
+                            .semantics { if (channelMuted) stateDescription = "Muted" }, verticalAlignment = Alignment.CenterVertically) {
                             Icon(if (channel.private) painterResource(R.drawable.lucide_lock_keyhole) else painterResource(R.drawable.lucide_hash), null, Modifier.size(17.dp), tint = if (selected) TerracottaBright else TextMuted)
                             Spacer(Modifier.width(9.dp)); Text(channel.name, Modifier.weight(1f), color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (ownMute) MutedBell(Modifier.padding(horizontal = 6.dp))
                             sessionStartedAt?.let { VoiceSessionTimer(it) }
                         }
-                        if (owner || (channel.joined && !detail.space.demo)) Box {
-                            IconButton({ channelMenuOpen = true }, Modifier.size(48.dp)) { Icon(painterResource(R.drawable.lucide_ellipsis), "${channel.name} channel menu", Modifier.size(18.dp), tint = TextMuted) }
-                            DropdownMenu(channelMenuOpen, { channelMenuOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
-                                if (owner) DropdownMenuItem(text = { Text("Channel settings", fontSize = 13.sp) }, onClick = { channelMenuOpen = false; show(Overlay.ManageChannel(channel)) })
-                                if (channel.joined && !detail.space.demo) DropdownMenuItem(text = { Text("Leave channel", fontSize = 13.sp) }, onClick = { channelMenuOpen = false; show(Overlay.LeaveChannel(channel)) }, modifier = Modifier.semantics { contentDescription = "Leave ${channel.name}" })
+                        if (owner || notifiable || (channel.joined && !detail.space.demo)) Box {
+                            IconButton({ channelMenuOpen = true; if (notifiable) viewModel.refreshNotificationSettings() }, Modifier.size(48.dp)) { Icon(painterResource(R.drawable.lucide_ellipsis), "${channel.name} channel menu", Modifier.size(18.dp), tint = TextMuted) }
+                            DropdownMenu(channelMenuOpen, closeChannelMenu, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+                                val settingsItem: @Composable () -> Unit = {
+                                    if (owner) DropdownMenuItem(text = { Text("Channel settings", fontSize = 13.sp) }, onClick = { closeChannelMenu(); show(Overlay.ManageChannel(channel)) })
+                                }
+                                val leaveItem: @Composable () -> Unit = {
+                                    if (channel.joined && !detail.space.demo) DropdownMenuItem(text = { Text("Leave channel", fontSize = 13.sp) }, onClick = { closeChannelMenu(); show(Overlay.LeaveChannel(channel)) }, modifier = Modifier.semantics { contentDescription = "Leave ${channel.name}" })
+                                }
+                                if (notifiable) ScopeMenuContent(
+                                    channelMenuPage, { channelMenuPage = it }, "channel", settings?.override(channelKey(channel.id)), settings?.inheritedLevel(detail.space.id),
+                                    { viewModel.setChannelNotifications(detail.space.id, channel.id, it) }, closeChannelMenu,
+                                    spaceMuted = settings?.spaceMuted(detail.space.id, now) == true, fontSize = 13.sp, before = settingsItem, after = leaveItem,
+                                ) else { settingsItem(); leaveItem() }
                             }
                         }
                     }
+                    NotificationSaveError(state.notificationErrors[channelKey(channel.id)], Modifier.padding(start = 35.dp)) { viewModel.dismissNotificationError(channelKey(channel.id)) }
                     if (channel.joined && BuildConfig.ENABLE_NATIVE_VOICE) Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 35.dp), verticalAlignment = Alignment.CenterVertically) {
                         if (people.isNotEmpty()) TextButton({ rosterOpen = !rosterOpen }, contentPadding = PaddingValues(horizontal = 4.dp), modifier = Modifier.weight(1f)
                             .semantics { contentDescription = "${people.size} in voice in ${channel.name}. ${if (rosterOpen) "Hide" else "Show"} who is in voice" }) {
@@ -690,19 +745,36 @@ private fun Modifier.browseSwipe(open: Boolean, enabled: Boolean, onOpenChange: 
                 }
                 mainDirects(state.directConversations).filter { it.peer.id != state.account.id }.forEach { direct ->
                     val selected = state.selectedDirectId == direct.id
-                    val unread = directUnread(direct)
+                    val muted = settings?.directMuted(direct.id, now) == true
+                    // A muted DM shows no unread dot.
+                    val unread = directUnread(direct) && !muted
+                    var optionsOpen by remember(direct.id) { mutableStateOf(false) }
+                    val openOptions = { optionsOpen = true; viewModel.refreshNotificationSettings() }
+                    // Options: the ⋯ button, or a long press like message actions.
                     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
                         .background(if (selected) TerracottaWash else Color.Transparent)
-                        .clickable { viewModel.selectDirect(direct); closeNavigation?.invoke() }.padding(horizontal = 9.dp),
+                        .combinedClickable(onLongClick = openOptions, onLongClickLabel = "Options for ${direct.peer.displayName}") {
+                            viewModel.selectDirect(direct); closeNavigation?.invoke()
+                        }.padding(start = 9.dp),
                         verticalAlignment = Alignment.CenterVertically) {
-                        Avatar(direct.peer.displayName, 20.dp, modifier = Modifier.padding(horizontal = 3.dp), avatarId = direct.peer.avatarId)
-                        Spacer(Modifier.width(9.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(direct.peer.displayName, color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text("@${direct.peer.username}", color = TextMuted, fontSize = 10.sp, maxLines = 1)
+                        Row(Modifier.weight(1f).alpha(if (muted) MUTED_ALPHA else 1f).semantics { if (muted) stateDescription = "Muted" }, verticalAlignment = Alignment.CenterVertically) {
+                            Avatar(direct.peer.displayName, 20.dp, modifier = Modifier.padding(horizontal = 3.dp), avatarId = direct.peer.avatarId)
+                            Spacer(Modifier.width(9.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(direct.peer.displayName, color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text("@${direct.peer.username}", color = TextMuted, fontSize = 10.sp, maxLines = 1)
+                            }
+                            if (muted) MutedBell(Modifier.padding(start = 6.dp))
                         }
                         if (unread) Box(Modifier.size(8.dp).background(TerracottaBright, CircleShape).semantics { contentDescription = "Unread" })
+                        Box {
+                            IconButton(openOptions, Modifier.size(48.dp)) { Icon(painterResource(R.drawable.lucide_ellipsis), "${direct.peer.displayName} options", Modifier.size(18.dp), tint = TextMuted) }
+                            DirectOptionsMenu(optionsOpen, { optionsOpen = false }, settings?.override(directKey(direct.id)), settings != null) {
+                                viewModel.setDirectNotifications(direct.id, it)
+                            }
+                        }
                     }
+                    NotificationSaveError(state.notificationErrors[directKey(direct.id)], Modifier.padding(horizontal = 25.dp)) { viewModel.dismissNotificationError(directKey(direct.id)) }
                 }
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).heightIn(min = 48.dp).clip(MaterialTheme.shapes.small).clickable {
                     show(if (invitePeople) Overlay.ManageSpace else Overlay.StartDirect)
@@ -710,17 +782,6 @@ private fun Modifier.browseSwipe(open: Boolean, enabled: Boolean, onOpenChange: 
                     Icon(painterResource(R.drawable.lucide_plus), null, Modifier.size(17.dp), tint = TextMuted)
                     Spacer(Modifier.width(9.dp))
                     Text(if (invitePeople) "Invite people" else "New message", Modifier.weight(1f), color = TextMuted, fontSize = 13.sp)
-                }
-                if (pushAvailable) {
-                    TextButton({
-                        pushError = null
-                        if (pushEnabled) pushScope.launch { viewModel.disablePush(); pushEnabled = false }
-                        else if (Build.VERSION.SDK_INT >= 33) {
-                            pushRequestEpoch = viewModel.accountEpoch
-                            pushPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-                        } else enablePush()
-                    }, Modifier.padding(horizontal = 16.dp)) { Text(if (pushEnabled) "Disable DM notifications" else "Enable DM notifications", fontSize = 11.sp) }
-                    pushError?.let { Text(it, Modifier.padding(horizontal = 16.dp), color = ErrorText, fontSize = 11.sp) }
                 }
             }
         }
@@ -743,6 +804,9 @@ private fun Modifier.browseSwipe(open: Boolean, enabled: Boolean, onOpenChange: 
         if (showAccountBar) AccountBar(state, voice, viewModel, show)
     }
 }
+
+/** Muted spaces, channels and DMs are dimmed in the sidebar. */
+private const val MUTED_ALPHA = 0.5f
 
 internal fun formatVoiceSessionDuration(startedAt: Long, now: Long): String {
     val seconds = ((now - startedAt).coerceAtLeast(0L) / 1_000L)
@@ -1888,7 +1952,7 @@ internal fun counterTone(count: Int): Color = when {
             email, { email = it; if (error != null) clearError() }, placeholder = { Text("you@example.com") },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Send),
             keyboardActions = KeyboardActions(onSend = { if (email.contains('@') && !busy) submit(email) }),
-            singleLine = true, modifier = Modifier.fillMaxWidth(),
+            singleLine = true, enabled = !busy, modifier = Modifier.fillMaxWidth(),
         )
         if (error != null) Surface(Modifier.fillMaxWidth().padding(top = 20.dp), color = Color.Transparent, border = BorderStroke(1.dp, Terracotta), shape = MaterialTheme.shapes.small) {
             Text(error, Modifier.padding(horizontal = 14.dp, vertical = 12.dp), lineHeight = 24.sp)
@@ -1910,7 +1974,7 @@ internal fun counterTone(count: Int): Color = when {
         Text("Check your email.", Modifier.padding(bottom = 4.dp), fontSize = 49.sp, lineHeight = 53.sp, fontWeight = FontWeight.Bold, letterSpacing = (-2.5).sp)
         Text("Enter the six-character code sent to ${screen.email}. It expires in 10 minutes.", color = TextMuted, lineHeight = 26.sp)
         Text("Sign-in code", Modifier.padding(top = 20.dp, bottom = 8.dp), fontSize = 14.sp, fontWeight = FontWeight.Bold)
-        OutlinedTextField(code, { code = it.uppercase().filter { character -> character in "ABCDEFGHJKMNPQRSTWXYZ23456789" }.take(6); if (error != null) clearError() }, singleLine = true, enabled = !exhausted, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(code, { code = it.uppercase().filter { character -> character in "ABCDEFGHJKMNPQRSTWXYZ23456789" }.take(6); if (error != null) clearError() }, singleLine = true, enabled = !busy && !exhausted, modifier = Modifier.fillMaxWidth())
         if (error != null) Surface(Modifier.fillMaxWidth().padding(top = 20.dp), color = Color.Transparent, border = BorderStroke(1.dp, Terracotta), shape = MaterialTheme.shapes.small) { Text(error, Modifier.padding(14.dp)) }
         if (screen.attemptsRemaining == 1) Text("One attempt left. Check the code carefully.", Modifier.padding(top = 12.dp), fontSize = 14.sp, fontWeight = FontWeight.Bold)
         if (exhausted) Button(resend, enabled = !busy, modifier = Modifier.fillMaxWidth().padding(top = 12.dp), shape = MaterialTheme.shapes.small, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)) {
@@ -1920,7 +1984,7 @@ internal fun counterTone(count: Int): Color = when {
             Text(if (busy) "Checking…" else "Continue", Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Start)
             if (!busy) Icon(painterResource(R.drawable.lucide_arrow_right), null, Modifier.size(20.dp))
         }
-        TextButton(back, contentPadding = PaddingValues(vertical = 16.dp)) { Text("Use a different email", color = TextMuted) }
+        TextButton(back, enabled = !busy, contentPadding = PaddingValues(vertical = 16.dp)) { Text("Use a different email", color = TextMuted) }
     }
 }
 

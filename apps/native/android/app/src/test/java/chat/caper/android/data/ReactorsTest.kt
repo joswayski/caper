@@ -101,4 +101,21 @@ class ReactorsTest {
         cache.clear()
         assertNull(cache.get("message00000002", null))
     }
+
+    @Test fun `older responses cannot replace a newer cached revision`() {
+        val cache = ReactorCache()
+        val newer = ReactorList("message00000001", "9007199254740993", listOf(ReactorGroup("👍", listOf(alice))))
+        val older = newer.copy(reactionSeq = "9007199254740992", reactions = emptyList())
+        cache.put(newer)
+        cache.put(older)
+        assertSame(newer, cache.get(newer.messageId, newer.reactionSeq))
+        assertNull(cache.get(older.messageId, older.reactionSeq))
+
+        val renamed = newer.copy(reactions = listOf(ReactorGroup("👍", listOf(alice.copy(displayName = "New name")))))
+        cache.put(renamed)
+        assertSame("same revision may refresh profile metadata", renamed, cache.get(newer.messageId, newer.reactionSeq))
+        val removed = newer.copy(reactionSeq = "9007199254740994", reactions = emptyList())
+        cache.put(removed)
+        assertSame(removed, cache.get(newer.messageId, removed.reactionSeq))
+    }
 }

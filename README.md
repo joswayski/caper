@@ -15,8 +15,9 @@ to storage, within a per-person allowance (10 GB by default). Desktop opens
 video and audio in the system player. See [Uploads and attachments](docs/media.md#uploads-and-attachments).
 
 Signed-in accounts can start persistent, private one-to-one messages by username.
-The Direct messages list is shared across spaces. Mobile push is deferred;
-when needed, the server will integrate directly with APNs for iOS and FCM for Android.
+The Direct messages list is shared across spaces. Phone push is implemented behind
+server flags using APNs for iOS and FCM for Android; real-provider and physical-device
+validation is still pending. See [notification behavior and rollout](docs/notifications.md).
 
 Channel pins are shared with everyone who can read the channel. Joined members
 can pin or unpin in one action; the channel header opens the complete pins list.
@@ -128,7 +129,7 @@ rebuilding historical app source does not require that source to contain a lockf
 ## Documentation
 
 - [Configuration, deployment, and testing](docs/media.md)
-- [Notifications research and proposed design](docs/notifications.md) (not implemented)
+- [Notifications: phone push, settings and design](docs/notifications.md)
 - [Native builds and platform status](apps/native/README.md)
 - [Brand and style guide](docs/brand)
 - [Caper character catalog](assets/avatars/README.md)

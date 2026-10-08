@@ -21,6 +21,7 @@ mod mentions;
 mod metadata;
 mod model;
 mod navigation;
+mod notifications;
 mod startup;
 #[path = "../voice-spike/src/state.rs"]
 mod state;
@@ -34,8 +35,10 @@ use effects::{Effect, Effects};
 use eframe::egui::{self, Color32, CornerRadius, RichText, Stroke};
 use gateway::GatewayEvent;
 use model::{
-    Account, Author, ChatSession, Member, Presence, SpaceDetail, SpaceLimits, Spaces, Timeline,
+    Account, Author, ChatSession, Member, NotificationLevel, Presence, SpaceDetail, SpaceLimits,
+    Spaces, Timeline,
 };
+use notifications::{Change, Scope};
 use state::{CallContext, Phase};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
@@ -81,6 +84,7 @@ enum NavIcon {
     PhoneOff,
     HeadphoneOff,
     AudioLines,
+    BellOff,
     Paperclip,
     FileText,
     Play,
@@ -385,7 +389,8 @@ struct CaperApp {
     directs: Vec<model::DirectConversation>,
     /// `GET /api/people` for DM `@` suggestions; kept while it refreshes.
     people: Option<Vec<model::Person>>,
-    /// Bumps on sign-in and sign-out; fences request, block and privacy results.
+    /// Bumps on sign-in and sign-out; fences request, block, privacy and
+    /// notification results.
     account_epoch: u64,
     /// `GET /api/blocks`, newest first; `None` until loaded.
     blocks: Option<Vec<model::BlockedAccount>>,
@@ -402,6 +407,8 @@ struct CaperApp {
     privacy: Option<String>,
     privacy_saving: bool,
     privacy_error: Option<String>,
+    /// Notification levels and mutes; the controls only, for phone push.
+    notifications: notifications::Notifications,
     selected_direct: Option<String>,
     directs_refreshed: Instant,
     foreground: bool,
@@ -553,6 +560,7 @@ impl CaperApp {
             privacy: None,
             privacy_saving: false,
             privacy_error: None,
+            notifications: notifications::Notifications::default(),
             selected_direct: None,
             directs_refreshed: now - Duration::from_secs(15),
             foreground: false,
@@ -603,7 +611,7 @@ impl CaperApp {
             typing_pulse: now,
             presence: BTreeMap::new(),
             member_page: 0,
-            members_visible: true,
+            members_visible: false,
             narrow_members_visible: false,
             channels_expanded: true,
             browse_channels: false,
@@ -931,6 +939,49 @@ impl CaperApp {
                         app.selected_direct = None;
                         app.clear_channel_state();
                     }
+                } else if name == "parity-muted" {
+                    // Labelled mutes: a muted space in the rail, a muted
+                    // channel, a muted DM with unread messages (no dot) and
+                    // a DM with notifications off (still dotted).
+                    let quiet = model::Space {
+                        id: "space0000002".into(),
+                        name: "TEST FIXTURE · Quiet Room".into(),
+                        owner_id: "fixture-maya".into(),
+                        inviter: None,
+                        demo: false,
+                    };
+                    app.spaces.push(quiet);
+                    let direct = |id: &str, peer: &str, name: &str| model::DirectConversation {
+                        id: id.into(),
+                        peer: model::DirectPeer {
+                            id: peer.into(),
+                            username: name.to_lowercase(),
+                            display_name: format!("TEST FIXTURE {name}"),
+                            avatar_id: None,
+                        },
+                        last_seq: "4".into(),
+                        read_seq: "1".into(),
+                        status: model::DirectStatus::Accepted,
+                        blocked: false,
+                    };
+                    app.directs = vec![
+                        direct("dm0000000001", "fixture-maya", "Maya"),
+                        direct("dm0000000005", "fixture-alex", "Alex"),
+                    ];
+                    let until = notifications::mute_value(Some(2 * 60), chrono::Utc::now());
+                    app.notifications = notifications::Notifications::with_settings(
+                        serde_json::from_value(serde_json::json!({
+                            "level": "mentions",
+                            "mobile": "whenInactive",
+                            "overrides": [
+                                {"spaceId": "space0000002", "level": null, "mutedUntil": "forever"},
+                                {"spaceId": "space0000001", "channelId": "chan00000002", "level": null, "mutedUntil": until},
+                                {"conversationId": "dm0000000001", "level": null, "mutedUntil": "forever"},
+                                {"conversationId": "dm0000000005", "level": "nothing", "mutedUntil": null}
+                            ]
+                        }))
+                        .expect("valid notification fixture"),
+                    );
                 } else if matches!(name, "parity-invitation" | "parity-invitation-narrow") {
                     let invitation = model::Space {
                         id: "invite000001".into(),
@@ -1371,6 +1422,12 @@ impl CaperApp {
         // Static previews never load account state over the network.
         self.privacy = Some("anyone".into());
         self.blocks = Some(Vec::new());
+        self.notifications =
+            notifications::Notifications::with_settings(model::NotificationSettings {
+                level: model::NotificationLevel::All,
+                mobile: "whenInactive".into(),
+                overrides: Vec::new(),
+            });
         self.live = "Live".into();
         // Fixtures never contact a media service; voice reads as enabled.
         for root in ["general", "chan00000001", "chan00000002", "chan00000003"] {
@@ -2120,6 +2177,7 @@ impl CaperApp {
         self.set_spaces(spaces);
         self.refresh_directs();
         self.account_op(AccountOperation::LoadBlocks);
+        self.load_notifications();
         self.error = None;
         self.dialog = None;
         if needs_profile {
@@ -2164,7 +2222,8 @@ impl CaperApp {
         }
     }
 
-    /// Sends a request, block or privacy operation for the signed-in account.
+    /// Sends a request, block, privacy or notification operation for the
+    /// signed-in account.
     fn account_op(&mut self, operation: AccountOperation) {
         if let Some(token) = self.token.clone() {
             self.worker.send(Command::Account {
@@ -2187,6 +2246,7 @@ impl CaperApp {
         self.privacy = None;
         self.privacy_saving = false;
         self.privacy_error = None;
+        self.notifications = notifications::Notifications::default();
     }
 
     fn is_blocked(&self, account: &str) -> bool {
@@ -2386,6 +2446,174 @@ impl CaperApp {
                     }
                 }
             }
+            AccountResult::Notifications { revision, result } => {
+                self.notifications.finish_load(revision, result);
+            }
+            AccountResult::NotificationsSaved { scope, result } => {
+                self.notifications.finish_save(&scope, result);
+            }
+        }
+    }
+
+    /// `GET /api/notifications/settings`, after sign-in and when Settings or
+    /// a notification menu opens.
+    fn load_notifications(&mut self) {
+        if self.token.is_some()
+            && let Some(revision) = self.notifications.start_load()
+        {
+            self.account_op(AccountOperation::LoadNotifications { revision });
+        }
+    }
+
+    /// Applies a notification choice at once and saves it; a failed save
+    /// reverts with an inline error.
+    fn change_notifications(&mut self, scope: Scope, change: Change) {
+        if self.token.is_some() && self.notifications.begin(&scope, &change) {
+            self.account_op(AccountOperation::SaveNotifications { scope, change });
+        }
+    }
+
+    /// The bell-slash tooltip for a muted space, channel or DM: its own mute,
+    /// or "Muted with the space" for a channel in a muted space.
+    fn muted_label(&self, scope: &Scope) -> Option<String> {
+        let now = chrono::Utc::now();
+        match self.notifications.mute(scope, now) {
+            Some(mute) => Some(notifications::mute_label(mute, &now.with_timezone(&Local))),
+            None => self
+                .notifications
+                .muted(scope, now)
+                .then(|| "Muted with the space".into()),
+        }
+    }
+
+    /// A failed notification change, inline under its sidebar row.
+    fn notification_error(&self, ui: &mut egui::Ui, scope: &Scope) {
+        if let Some(error) = self.notifications.error(scope) {
+            ui.label(RichText::new(error).size(11.0).color(ERROR));
+        }
+    }
+
+    /// The Notifications and Mute items of the space, channel and DM menus.
+    /// `noun` names the scope: `space`, `channel` or `conversation`.
+    fn notification_items(&mut self, ui: &mut egui::Ui, scope: &Scope, noun: &str) {
+        let now = chrono::Utc::now();
+        let enabled = self.notifications.ready() && !self.notifications.saving(scope);
+        let mut change = None;
+        ui.add_enabled_ui(enabled, |ui| {
+            let level = self.notifications.level(scope);
+            if let Scope::Direct(_) = scope {
+                let off = level == Some(NotificationLevel::Nothing);
+                if ui
+                    .button(if off {
+                        "Turn on notifications"
+                    } else {
+                        "Turn off notifications"
+                    })
+                    .clicked()
+                {
+                    change = Some(Change::Level((!off).then_some(NotificationLevel::Nothing)));
+                    ui.close();
+                }
+            } else {
+                let choices = [
+                    None,
+                    Some(NotificationLevel::All),
+                    Some(NotificationLevel::Mentions),
+                    Some(NotificationLevel::Nothing),
+                ];
+                let inherited = self.notifications.inherited(scope);
+                ui.menu_button("Notifications", |ui| {
+                    for choice in choices {
+                        let label = choice.map_or_else(
+                            || notifications::default_label(inherited),
+                            |level| notifications::level_label(level).into(),
+                        );
+                        if ui.selectable_label(level == choice, label).clicked() {
+                            change = Some(Change::Level(choice));
+                            ui.close();
+                        }
+                    }
+                });
+            }
+            if let Some(mute) = self.notifications.mute(scope, now) {
+                if ui.button(format!("Unmute {noun}")).clicked() {
+                    change = Some(Change::Mute(None));
+                    ui.close();
+                }
+                ui.label(
+                    RichText::new(notifications::mute_label(mute, &now.with_timezone(&Local)))
+                        .size(12.0)
+                        .color(MUTED),
+                );
+            } else {
+                ui.menu_button(format!("Mute {noun}"), |ui| {
+                    for (label, minutes) in notifications::MUTE_PRESETS {
+                        if ui.button(label).clicked() {
+                            change = Some(Change::Mute(Some(notifications::mute_value(
+                                minutes,
+                                chrono::Utc::now(),
+                            ))));
+                            ui.close();
+                        }
+                    }
+                });
+            }
+            if let Scope::Channel { space, .. } = scope
+                && self
+                    .notifications
+                    .mute(&Scope::Space(space.clone()), now)
+                    .is_some()
+            {
+                ui.label(
+                    RichText::new("Muted with the space")
+                        .size(12.0)
+                        .color(MUTED),
+                );
+            }
+        });
+        if let Some(change) = change {
+            self.change_notifications(scope.clone(), change);
+        }
+        if !self.notifications.ready() {
+            match self.notifications.load_error() {
+                Some(error) => ui.colored_label(ERROR, error),
+                None => ui.label(RichText::new("Loading…").size(12.0).color(MUTED)),
+            };
+        }
+        if let Some(error) = self.notifications.error(scope) {
+            ui.colored_label(ERROR, error.to_owned());
+        }
+    }
+
+    /// The channel options menu: notifications, then settings and leave.
+    fn channel_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        space: &str,
+        channel: &str,
+        name: &str,
+        private: bool,
+    ) {
+        let scope = Scope::Channel {
+            space: space.into(),
+            channel: channel.into(),
+        };
+        self.notification_items(ui, &scope, "channel");
+        ui.separator();
+        if self.owner() && ui.button("Channel settings").clicked() {
+            self.open_manage_channel(channel, name, private);
+            ui.close();
+        }
+        if ui
+            .button(RichText::new("Leave channel").color(ERROR))
+            .clicked()
+        {
+            self.dialog = Some(Dialog::LeaveChannel {
+                space: space.into(),
+                channel: channel.into(),
+                name: name.into(),
+            });
+            ui.close();
         }
     }
 
@@ -4778,7 +5006,7 @@ impl CaperApp {
                             ui.add_space(8.0);
                             let exhausted = self.attempts_remaining == Some(0);
                             let response = ui.add_enabled(
-                                !exhausted,
+                                !self.loading && !exhausted,
                                 egui::TextEdit::singleline(&mut self.code)
                                     .vertical_align(egui::Align::Center)
                                     .char_limit(6)
@@ -4822,7 +5050,9 @@ impl CaperApp {
                                 self.loading || self.code.len() != 6,
                             )
                             .clicked()
-                                || (response.lost_focus()
+                                || (!self.loading
+                                    && self.code.len() == 6
+                                    && response.lost_focus()
                                     && ui.input(|input| input.key_pressed(egui::Key::Enter)))
                             {
                                 let challenge = self.challenge.clone().unwrap_or_default();
@@ -4836,7 +5066,8 @@ impl CaperApp {
                             }
                             ui.add_space(10.0);
                             if ui
-                                .add(
+                                .add_enabled(
+                                    !self.loading,
                                     egui::Button::new(
                                         RichText::new("Use a different email")
                                             .size(13.6)
@@ -4854,10 +5085,12 @@ impl CaperApp {
                         } else {
                             ui.label(bold("Email address").size(14.0));
                             ui.add_space(8.0);
-                            let response = ui.add_sized(
-                                [width, 52.0],
+                            let response = ui.add_enabled(
+                                !self.loading,
                                 egui::TextEdit::singleline(&mut self.email)
                                     .vertical_align(egui::Align::Center)
+                                    .min_size(egui::vec2(width, 52.0))
+                                    .desired_width(width)
                                     .hint_text("you@example.com"),
                             );
                             if let Some(error) = self.error.as_ref().or(self.warning.as_ref()) {
@@ -4882,7 +5115,9 @@ impl CaperApp {
                                 ).inner
                             }).inner;
                             if submit.clicked()
-                                || (response.lost_focus()
+                                || (!self.loading
+                                    && self.email.contains('@')
+                                    && response.lost_focus()
                                     && ui.input(|input| input.key_pressed(egui::Key::Enter)))
                             {
                                 self.loading = true;
@@ -5078,6 +5313,9 @@ impl CaperApp {
                     .collect();
                 for (id, name, demo) in spaces {
                     let active = self.selected_space.as_deref() == Some(&id);
+                    let muted = (!demo && self.account.is_some())
+                        .then(|| self.muted_label(&Scope::Space(id.clone())))
+                        .flatten();
                     let text = if demo {
                         "C".into()
                     } else {
@@ -5087,32 +5325,44 @@ impl CaperApp {
                             .to_uppercase()
                             .to_string()
                     };
-                    let button = egui::Button::new(RichText::new(text).strong().color(if active {
-                        TEXT
-                    } else {
-                        MUTED
-                    }))
-                    .min_size(egui::vec2(40.0, 40.0))
-                    .fill(if active {
-                        Color32::from_rgb(57, 35, 30)
-                    } else {
-                        SURFACE
-                    })
-                    .stroke(Stroke::new(
-                        1.0,
-                        if active {
-                            Color32::from_rgb(128, 81, 67)
+                    let mut letter = if active { TEXT } else { MUTED };
+                    if muted.is_some() {
+                        letter = muted_color(letter);
+                    }
+                    let button = egui::Button::new(RichText::new(text).strong().color(letter))
+                        .min_size(egui::vec2(40.0, 40.0))
+                        .fill(if active {
+                            Color32::from_rgb(57, 35, 30)
                         } else {
-                            BORDER
-                        },
-                    ))
-                    .corner_radius(if active { 8 } else { 12 });
+                            SURFACE
+                        })
+                        .stroke(Stroke::new(
+                            1.0,
+                            if active {
+                                Color32::from_rgb(128, 81, 67)
+                            } else {
+                                BORDER
+                            },
+                        ))
+                        .corner_radius(if active { 8 } else { 12 });
                     let response = ui
                         .with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
                             ui.add(button)
                         })
-                        .inner
-                        .on_hover_text(name);
+                        .inner;
+                    // A muted space gets a bell-slash badge and says so on hover.
+                    let response = match &muted {
+                        Some(label) => {
+                            let badge = egui::Rect::from_center_size(
+                                response.rect.right_bottom() - egui::vec2(3.0, 3.0),
+                                egui::vec2(18.0, 18.0),
+                            );
+                            ui.painter().circle_filled(badge.center(), 9.0, BLACKOUT);
+                            paint_icon(ui.painter(), badge.shrink(3.0), NavIcon::BellOff, MUTED);
+                            response.on_hover_text(format!("{name}\n{label}"))
+                        }
+                        None => response.on_hover_text(name),
+                    };
                     if active {
                         ui.painter().rect_filled(
                             egui::Rect::from_min_size(
@@ -5208,6 +5458,15 @@ impl CaperApp {
     }
 
     fn sidebar(&mut self, ui: &mut egui::Ui, width: f32) {
+        // Redraw when a timed mute ends.
+        if let Some(wait) = self.notifications.next_expiry(chrono::Utc::now()) {
+            ui.ctx().request_repaint_after(wait);
+        }
+        let space_scope = self
+            .detail
+            .as_ref()
+            .filter(|detail| !detail.space.demo && self.account.is_some())
+            .map(|detail| Scope::Space(detail.space.id.clone()));
         egui::Frame::new()
             .fill(SIDEBAR)
             .inner_margin(egui::Margin {
@@ -5251,10 +5510,25 @@ impl CaperApp {
                                     .as_ref()
                                     .map_or("Caper", |detail| if detail.space.demo { "Caper" } else { detail.space.name.as_str() });
                                 let title_rect = rect.shrink2(egui::vec2(8.0, 0.0));
+                                let muted = space_scope.as_ref().and_then(|scope| self.muted_label(scope));
+                                if let Some(label) = &muted {
+                                    muted_indicator(
+                                        ui,
+                                        egui::Rect::from_center_size(
+                                            egui::pos2(rect.right() - 38.0, rect.center().y),
+                                            egui::vec2(14.0, 14.0),
+                                        ),
+                                        actions.id.with("muted"),
+                                        label,
+                                    );
+                                }
                                 ui.painter()
                                     .with_clip_rect(egui::Rect::from_min_max(
                                         title_rect.min,
-                                        egui::pos2(title_rect.right() - 24.0, title_rect.bottom()),
+                                        egui::pos2(
+                                            title_rect.right() - if muted.is_some() { 46.0 } else { 24.0 },
+                                            title_rect.bottom(),
+                                        ),
                                     ))
                                     .text(
                                         egui::pos2(title_rect.left(), title_rect.center().y),
@@ -5283,11 +5557,18 @@ impl CaperApp {
                                         NavIcon::Chevron,
                                         MUTED,
                                     );
+                                    if actions.clicked() && !egui::Popup::menu(&actions).is_open() {
+                                        self.load_notifications();
+                                    }
                                     egui::Popup::menu(&actions).width(width).show(|ui| {
                                         if ui.button("Browse channels").clicked() {
                                             self.browse_channels = true;
                                             self.channel_search.clear();
                                             ui.close();
+                                        }
+                                        if let Some(scope) = &space_scope {
+                                            self.notification_items(ui, scope, "space");
+                                            ui.separator();
                                         }
                                         if self.can_leave_space() {
                                             if ui
@@ -5335,6 +5616,12 @@ impl CaperApp {
                             header.response.rect.bottom(),
                             Stroke::new(1.0, BORDER),
                         );
+                        if let Some(scope) = &space_scope
+                            && self.notifications.error(scope).is_some()
+                        {
+                            ui.add_space(6.0);
+                            self.notification_error(ui, scope);
+                        }
                         ui.add_space(12.0);
                         ui.allocate_ui_with_layout(
                             egui::vec2(ui.available_width(), 32.0),
@@ -5500,28 +5787,42 @@ impl CaperApp {
                                     ui.ctx().request_repaint_after(Duration::from_secs(1));
                                     voice_session_duration(started, chrono::Utc::now().timestamp_millis().max(0) as u64)
                                 });
-                                let (response, settings, leave) = channel_button(
+                                let space = self
+                                    .detail
+                                    .as_ref()
+                                    .filter(|detail| !detail.space.demo)
+                                    .map(|detail| detail.space.id.clone());
+                                let scope = space.clone().map(|space| Scope::Channel {
+                                    space,
+                                    channel: id.clone(),
+                                });
+                                let muted =
+                                    scope.as_ref().and_then(|scope| self.muted_label(scope));
+                                // Demo channels have no options.
+                                let mut menu = None;
+                                if let Some(space) = &space {
+                                    menu = Some(RowMenu {
+                                        label: format!("Channel options for {name}"),
+                                        on_hover: false,
+                                        content: Box::new(|ui: &mut egui::Ui| {
+                                            self.channel_menu(ui, space, &id, &name, private)
+                                        }),
+                                    });
+                                }
+                                let (response, opened) = channel_button(
                                     ui,
                                     egui::vec2(ui.available_width(), 32.0),
                                     &name,
                                     Some(if private { NavIcon::Lock } else { NavIcon::Hash }),
                                     active,
-                                    self.detail
-                                        .as_ref()
-                                        .filter(|detail| !detail.space.demo)
-                                        .map(|_| self.owner()),
-                                    duration.as_deref(),
+                                    RowExtras {
+                                        muted,
+                                        duration: duration.as_deref(),
+                                        menu,
+                                    },
                                 );
-                                if settings {
-                                    self.open_manage_channel(&id, &name, private);
-                                } else if leave
-                                    && let Some(space) = self.selected_space.clone()
-                                {
-                                    self.dialog = Some(Dialog::LeaveChannel {
-                                        space,
-                                        channel: id.clone(),
-                                        name: name.clone(),
-                                    });
+                                if opened {
+                                    self.load_notifications();
                                 } else if response.clicked() {
                                     self.select_channel(id.clone(), false);
                                 } else if response.hovered() || response.has_focus() {
@@ -5529,6 +5830,9 @@ impl CaperApp {
                                         space: self.selected_space.clone(),
                                         channel: Some(id.clone()),
                                     });
+                                }
+                                if let Some(scope) = &scope {
+                                    self.notification_error(ui, scope);
                                 }
                                 ui.push_id(&id, |ui| {
                                     self.channel_voice_summary(ui, &id, &name);
@@ -5707,17 +6011,33 @@ impl CaperApp {
                     continue;
                 }
                 let active = self.selected_direct.as_deref() == Some(&direct.id);
-                let unread = model::sequence(&direct.last_seq).unwrap_or(0)
-                    > model::sequence(&direct.read_seq).unwrap_or(0);
+                let scope = Scope::Direct(direct.id.clone());
+                let muted = self.muted_label(&scope);
+                // A muted DM shows no unread dot.
+                let unread = muted.is_none()
+                    && model::sequence(&direct.last_seq).unwrap_or(0)
+                        > model::sequence(&direct.read_seq).unwrap_or(0);
                 ui.horizontal(|ui| {
-                    let (response, _, _) = channel_button(
+                    let (response, opened) = channel_button(
                         ui,
                         egui::vec2(ui.available_width() - 18.0, 28.0),
                         &direct.peer.display_name,
                         None,
                         active,
-                        None,
-                        None,
+                        RowExtras {
+                            muted,
+                            duration: None,
+                            menu: Some(RowMenu {
+                                label: format!(
+                                    "Conversation options for {}",
+                                    direct.peer.display_name
+                                ),
+                                on_hover: true,
+                                content: Box::new(|ui: &mut egui::Ui| {
+                                    self.notification_items(ui, &scope, "conversation")
+                                }),
+                            }),
+                        },
                     );
                     paint_avatar(
                         ui,
@@ -5731,10 +6051,13 @@ impl CaperApp {
                     if unread {
                         ui.label(RichText::new("●").size(9.0).color(TERRACOTTA_BRIGHT));
                     }
-                    if response.clicked() {
+                    if opened {
+                        self.load_notifications();
+                    } else if response.clicked() {
                         self.select_direct(direct.clone());
                     }
                 });
+                self.notification_error(ui, &scope);
                 ui.add_space(2.0);
             }
             let action = if self.owner() {
@@ -5742,14 +6065,13 @@ impl CaperApp {
             } else {
                 "New message"
             };
-            let (response, _, _) = channel_button(
+            let (response, _) = channel_button(
                 ui,
                 egui::vec2(ui.available_width(), 28.0),
                 action,
                 Some(NavIcon::Plus),
                 false,
-                None,
-                None,
+                RowExtras::default(),
             );
             if response.clicked() {
                 self.open_direct_action();
@@ -5904,7 +6226,7 @@ impl CaperApp {
                 .selected_request()
                 .is_some_and(|request| requests.iter().any(|item| item.id == request.id));
         ui.horizontal(|ui| {
-            let (response, _, _) = channel_button(
+            let (response, _) = channel_button(
                 ui,
                 egui::vec2(ui.available_width() - 18.0, 28.0),
                 "Message requests",
@@ -5914,8 +6236,7 @@ impl CaperApp {
                     NavIcon::ChevronRight
                 }),
                 false,
-                None,
-                None,
+                RowExtras::default(),
             );
             ui.label(
                 RichText::new(requests.len().to_string())
@@ -6630,6 +6951,7 @@ impl CaperApp {
                                 self.account_op(AccountOperation::LoadPrivacy);
                             }
                             self.account_op(AccountOperation::LoadBlocks);
+                            self.load_notifications();
                             ui.close();
                         }
                         ui.separator();
@@ -10066,11 +10388,66 @@ impl CaperApp {
             ui.add_space(18.0);
             ui.separator();
             ui.add_space(18.0);
+            self.notification_settings(ui);
+            ui.add_space(18.0);
+            ui.separator();
+            ui.add_space(18.0);
             self.privacy_settings(ui);
             ui.add_space(18.0);
             ui.separator();
             ui.add_space(18.0);
             self.blocked_settings(ui);
+        }
+    }
+
+    /// "Notify me about", saved as soon as it changes and reverted with an
+    /// inline error if the save fails. Desktop has no phone setting.
+    fn notification_settings(&mut self, ui: &mut egui::Ui) {
+        ui.label(bold("Notifications").size(12.0).color(MUTED));
+        ui.add_space(6.0);
+        ui.label(RichText::new("Notify me about").size(13.0).color(TEXT));
+        let current = self.notifications.account_level();
+        let mut chosen = None;
+        ui.add_enabled_ui(
+            current.is_some() && !self.notifications.saving(&Scope::Account),
+            |ui| {
+                for level in [
+                    NotificationLevel::All,
+                    NotificationLevel::Mentions,
+                    NotificationLevel::Nothing,
+                ] {
+                    if ui
+                        .radio(
+                            current == Some(level),
+                            notifications::account_level_label(level),
+                        )
+                        .clicked()
+                    {
+                        chosen = Some(level);
+                    }
+                }
+            },
+        );
+        if let Some(level) = chosen {
+            self.change_notifications(Scope::Account, Change::Level(Some(level)));
+        }
+        if current.is_none() {
+            match self.notifications.load_error().map(str::to_owned) {
+                None => {
+                    ui.label(RichText::new("Loading…").size(12.0).color(MUTED));
+                }
+                Some(error) => {
+                    ui.horizontal(|ui| {
+                        ui.colored_label(ERROR, error);
+                        if ui.small_button("Retry").clicked() {
+                            self.load_notifications();
+                        }
+                    });
+                }
+            }
+        }
+        if let Some(error) = self.notifications.error(&Scope::Account) {
+            ui.colored_label(ERROR, error.to_owned());
         }
     }
 
@@ -10967,6 +11344,7 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::PhoneOff => egui::include_image!("../resources/icons/phone-off.svg"),
         NavIcon::HeadphoneOff => egui::include_image!("../resources/icons/headphone-off.svg"),
         NavIcon::AudioLines => egui::include_image!("../resources/icons/audio-lines.svg"),
+        NavIcon::BellOff => egui::include_image!("../resources/icons/bell-off.svg"),
         NavIcon::Paperclip => egui::include_image!("../resources/icons/paperclip.svg"),
         NavIcon::FileText => egui::include_image!("../resources/icons/file-text.svg"),
         NavIcon::Play => egui::include_image!("../resources/icons/play.svg"),
@@ -10994,15 +11372,50 @@ fn voice_session_duration(started_at: u64, now: u64) -> String {
     }
 }
 
+/// A sidebar row's options (⋯) menu.
+struct RowMenu<'a> {
+    /// Accessible name and tooltip, like "Channel options for general".
+    label: String,
+    /// Shown only while the row is hovered or the button focused or open, as
+    /// on web's DM rows. Its space stays reserved.
+    on_hover: bool,
+    content: Box<dyn FnOnce(&mut egui::Ui) + 'a>,
+}
+
+/// What a sidebar row shows besides its name and icon.
+#[derive(Default)]
+struct RowExtras<'a> {
+    /// Muted rows are dimmed with a bell-slash; this is its tooltip, like
+    /// "Muted until 5:00 PM".
+    muted: Option<String>,
+    duration: Option<&'a str>,
+    menu: Option<RowMenu<'a>>,
+}
+
+/// Dims a muted row's name and icon.
+fn muted_color(color: Color32) -> Color32 {
+    color.gamma_multiply(0.5)
+}
+
+/// Paints the bell-slash centered in `rect`, with `label` as its tooltip and
+/// accessible name.
+fn muted_indicator(ui: &mut egui::Ui, rect: egui::Rect, id: egui::Id, label: &str) {
+    let indicator = ui.interact(rect, id, egui::Sense::hover());
+    indicator.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, label));
+    paint_icon(ui.painter(), rect, NavIcon::BellOff, MUTED);
+    indicator.on_hover_text(label);
+}
+
+/// Draws a channel or DM row. Returns the row's response and whether its
+/// options menu opened this frame.
 fn channel_button(
     ui: &mut egui::Ui,
     size: egui::Vec2,
     name: &str,
     icon: Option<NavIcon>,
     active: bool,
-    manageable: Option<bool>,
-    duration: Option<&str>,
-) -> (egui::Response, bool, bool) {
+    extras: RowExtras<'_>,
+) -> (egui::Response, bool) {
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
     response.widget_info(|| {
         egui::WidgetInfo::selected(
@@ -11031,7 +11444,14 @@ fn channel_button(
             egui::StrokeKind::Inside,
         );
     }
-    let color = if active { TEXT } else { MUTED };
+    let dim = |color| {
+        if extras.muted.is_some() {
+            muted_color(color)
+        } else {
+            color
+        }
+    };
+    let color = dim(if active { TEXT } else { MUTED });
     if let Some(icon) = icon {
         paint_icon(
             ui.painter(),
@@ -11040,12 +11460,16 @@ fn channel_button(
                 egui::vec2(17.0, 17.0),
             ),
             icon,
-            if active { TERRACOTTA_BRIGHT } else { color },
+            if active {
+                dim(TERRACOTTA_BRIGHT)
+            } else {
+                color
+            },
         );
     }
     let timer_font = egui::FontId::monospace(11.0);
-    let timer_right = rect.right() - if manageable.is_some() { 34.0 } else { 6.0 };
-    let timer_width = duration.map_or(0.0, |text| {
+    let timer_right = rect.right() - if extras.menu.is_some() { 34.0 } else { 6.0 };
+    let timer_width = extras.duration.map_or(0.0, |text| {
         let galley =
             ui.painter()
                 .layout_no_wrap(text.into(), timer_font.clone(), VOICE_SESSION_GREEN);
@@ -11071,10 +11495,19 @@ fn channel_button(
             .galley(timer_rect.min, galley, VOICE_SESSION_GREEN);
         width + 9.0
     });
+    let mut name_right = timer_right - timer_width;
+    if let Some(label) = &extras.muted {
+        let bell = egui::Rect::from_center_size(
+            egui::pos2(name_right - 9.0, rect.center().y),
+            egui::vec2(14.0, 14.0),
+        );
+        muted_indicator(ui, bell, response.id.with("muted"), label);
+        name_right -= 20.0;
+    }
     ui.painter()
         .with_clip_rect(egui::Rect::from_min_max(
             egui::pos2(rect.left() + 34.0, rect.top()),
-            egui::pos2(timer_right - timer_width, rect.bottom()),
+            egui::pos2(name_right, rect.bottom()),
         ))
         .text(
             egui::pos2(rect.left() + 35.0, rect.center().y - 1.0),
@@ -11083,61 +11516,50 @@ fn channel_button(
             egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into())),
             color,
         );
-    let mut manage = false;
-    let mut leave = false;
-    if let Some(manageable) = manageable {
+    let mut opened = false;
+    if let Some(menu) = extras.menu {
+        let row_hovered = ui.rect_contains_pointer(rect);
         let rect = egui::Rect::from_center_size(
             egui::pos2(rect.right() - 18.0, rect.center().y),
-            egui::vec2(32.0, 32.0),
+            egui::vec2(32.0, 32.0).min(egui::vec2(32.0, rect.height())),
         );
         let settings = ui.interact(rect, response.id.with("settings"), egui::Sense::click());
-        if settings.hovered() || settings.has_focus() {
-            ui.painter().rect_filled(rect, 8.0, SURFACE);
-        }
-        if settings.has_focus() {
-            ui.painter().rect_stroke(
-                rect,
-                8.0,
-                Stroke::new(1.0, TERRACOTTA_BRIGHT),
-                egui::StrokeKind::Inside,
+        let popup = egui::Popup::menu(&settings);
+        let open = popup.is_open();
+        opened = settings.clicked() && !open;
+        if !menu.on_hover || row_hovered || open || settings.has_focus() {
+            if settings.hovered() || settings.has_focus() {
+                ui.painter().rect_filled(rect, 8.0, SURFACE);
+            }
+            if settings.has_focus() {
+                ui.painter().rect_stroke(
+                    rect,
+                    8.0,
+                    Stroke::new(1.0, TERRACOTTA_BRIGHT),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            paint_icon(
+                ui.painter(),
+                egui::Rect::from_center_size(rect.center(), egui::vec2(16.0, 16.0)),
+                NavIcon::More,
+                if settings.hovered() || settings.has_focus() {
+                    TEXT
+                } else {
+                    MUTED
+                },
             );
         }
-        paint_icon(
-            ui.painter(),
-            rect.shrink(8.0),
-            NavIcon::More,
-            if settings.hovered() || settings.has_focus() {
-                TEXT
-            } else {
-                MUTED
-            },
-        );
         settings.widget_info(|| {
-            egui::WidgetInfo::labeled(
-                egui::WidgetType::Button,
-                ui.is_enabled(),
-                format!("Channel options for {name}"),
-            )
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &menu.label)
         });
-        egui::Popup::menu(&settings)
+        popup
             .align(egui::RectAlign::BOTTOM_END)
-            .width(180.0)
-            .show(|ui| {
-                if manageable && ui.button("Channel settings").clicked() {
-                    manage = true;
-                    ui.close();
-                }
-                if ui
-                    .button(RichText::new("Leave channel").color(ERROR))
-                    .clicked()
-                {
-                    leave = true;
-                    ui.close();
-                }
-            });
-        settings.on_hover_text(format!("Channel options for {name}"));
+            .width(200.0)
+            .show(menu.content);
+        settings.on_hover_text(menu.label);
     }
-    (response, manage, leave)
+    (response, opened)
 }
 
 fn users_button(ui: &mut egui::Ui, active: bool) -> egui::Response {
@@ -13193,6 +13615,687 @@ mod tests {
         assert!(texts(&output).contains(&error.as_str()));
     }
 
+    const NOTIFICATION_SETTINGS: &str =
+        r#"{"level":"mentions","mobile":"whenInactive","overrides":[]}"#;
+
+    fn notification_settings(value: serde_json::Value) -> crate::notifications::Notifications {
+        crate::notifications::Notifications::with_settings(serde_json::from_value(value).unwrap())
+    }
+
+    /// A signed-in `parity-desktop` or `parity-direct` app with notification
+    /// settings loaded, talking to `base`.
+    fn notification_app(
+        context: &egui::Context,
+        base: &str,
+        fixture: &str,
+        overrides: serde_json::Value,
+    ) -> CaperApp {
+        context.enable_accesskit();
+        let mut app = CaperApp::new(context, crate::api::Api::new(base).unwrap(), Some(fixture));
+        app.token = Some("account-token".into());
+        app.notifications = notification_settings(serde_json::json!({
+            "level": "mentions", "mobile": "whenInactive", "overrides": overrides
+        }));
+        app
+    }
+
+    /// Renders until the bundled vectors have loaded.
+    fn settle(app: &mut CaperApp, context: &egui::Context) -> egui::FullOutput {
+        render(app, context, vec![]);
+        let started = Instant::now();
+        while context.has_pending_images() {
+            assert!(started.elapsed() < Duration::from_secs(30));
+            std::thread::sleep(Duration::from_millis(10));
+            render(app, context, vec![]);
+        }
+        render(app, context, vec![]);
+        render(app, context, vec![])
+    }
+
+    fn node_bounds(output: &egui::FullOutput, label: &str) -> Option<egui::Rect> {
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()?
+            .nodes
+            .iter()
+            .find_map(|(_, node)| {
+                (node.label() == Some(label))
+                    .then(|| node.bounds())
+                    .flatten()
+            })
+            .map(|bounds| {
+                egui::Rect::from_min_max(
+                    egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+                    egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+                )
+            })
+    }
+
+    fn node_center(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
+        node_bounds(output, label)
+            .unwrap_or_else(|| panic!("missing {label}"))
+            .center()
+    }
+
+    /// Hovers a submenu button so its submenu opens.
+    fn open_submenu(
+        app: &mut CaperApp,
+        context: &egui::Context,
+        output: &egui::FullOutput,
+        label: &str,
+    ) -> egui::FullOutput {
+        let position = text_position(output, label);
+        render(app, context, vec![egui::Event::PointerMoved(position)]);
+        render(app, context, vec![])
+    }
+
+    fn text_color(output: &egui::FullOutput, label: &str) -> egui::Color32 {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == label => {
+                    Some(text.galley.job.sections[0].format.color)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing {label}"))
+    }
+
+    fn menu_labels(output: &egui::FullOutput) -> Vec<String> {
+        texts(output).into_iter().map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn notification_settings_load_after_sign_in_and_not_for_a_previous_account() {
+        let (base, seen) = account_server(vec![
+            (
+                "GET /api/notifications/settings",
+                200,
+                NOTIFICATION_SETTINGS,
+            ),
+            ("GET /api/dms", 200, r#"{"conversations":[]}"#),
+            ("GET /api/blocks", 200, r#"{"blocks":[]}"#),
+        ]);
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new(&base).unwrap(),
+            Some("signed-out"),
+        );
+        app.establish("account-token".into(), account(true), spaces());
+        receive_until(&mut app, |app| app.notifications.ready());
+        assert_eq!(
+            app.notifications.account_level(),
+            Some(model::NotificationLevel::Mentions)
+        );
+
+        app.load_notifications();
+        app.reset_account_state();
+        let loads = || {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|line| *line == "GET /api/notifications/settings")
+                .count()
+        };
+        let started = Instant::now();
+        while loads() < 2 && started.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(loads(), 2);
+        for _ in 0..30 {
+            std::thread::sleep(Duration::from_millis(10));
+            app.receive();
+        }
+        assert!(
+            !app.notifications.ready(),
+            "an answer for the signed-out account is ignored"
+        );
+    }
+
+    #[test]
+    fn settings_notify_me_about_saves_at_once_and_reverts_on_failure() {
+        let (base, seen) = account_server(vec![
+            (
+                "GET /api/notifications/settings",
+                200,
+                NOTIFICATION_SETTINGS,
+            ),
+            (
+                "PUT /api/notifications/settings",
+                200,
+                r#"{"level":"nothing","mobile":"whenInactive","overrides":[]}"#,
+            ),
+        ]);
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new(&base).unwrap(),
+            Some("parity-settings"),
+        );
+        app.token = Some("account-token".into());
+        app.notifications = crate::notifications::Notifications::default();
+        render(&mut app, &context, vec![]);
+        let output = scroll_modal_to_bottom(&mut app, &context);
+        assert!(texts(&output).contains(&"Loading…"), "{:?}", texts(&output));
+        app.load_notifications();
+        receive_until(&mut app, |app| app.notifications.ready());
+        render(&mut app, &context, vec![]);
+        scroll_modal_to_bottom(&mut app, &context);
+        // Up a little, to the Notifications heading.
+        let bounds =
+            context.memory(|memory| memory.area_rect(egui::Id::new("caper-dialog")).unwrap());
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, 160.0),
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        for _ in 0..30 {
+            render(&mut app, &context, vec![]);
+        }
+        let output = render(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerMoved(bounds.center())],
+        );
+        let labels = texts(&output);
+        for label in [
+            "Notifications",
+            "Notify me about",
+            "All messages",
+            "Only @mentions and DMs",
+            "Nothing",
+        ] {
+            assert!(labels.contains(&label), "{label}: {labels:?}");
+        }
+        assert!(
+            !labels.iter().any(|label| label.contains("phone")),
+            "desktop has no phone setting: {labels:?}"
+        );
+        click(&mut app, &context, text_position(&output, "Nothing"));
+        assert_eq!(
+            app.notifications.account_level(),
+            Some(model::NotificationLevel::Nothing),
+            "applied immediately"
+        );
+        receive_until(&mut app, |app| {
+            !app.notifications
+                .saving(&crate::notifications::Scope::Account)
+        });
+        assert!(
+            seen.lock()
+                .unwrap()
+                .contains(&r#"PUT /api/notifications/settings {"level":"nothing"}"#.to_owned())
+        );
+
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-settings"),
+        );
+        app.token = Some("account-token".into());
+        app.notifications = notification_settings(serde_json::json!({
+            "level": "all", "mobile": "whenInactive", "overrides": []
+        }));
+        render(&mut app, &context, vec![]);
+        let output = scroll_modal_to_bottom(&mut app, &context);
+        click(
+            &mut app,
+            &context,
+            text_position(&output, "Only @mentions and DMs"),
+        );
+        assert_eq!(
+            app.notifications.account_level(),
+            Some(model::NotificationLevel::Mentions)
+        );
+        receive_until(&mut app, |app| {
+            !app.notifications
+                .saving(&crate::notifications::Scope::Account)
+        });
+        assert_eq!(
+            app.notifications.account_level(),
+            Some(model::NotificationLevel::All),
+            "reverted"
+        );
+        let error = app
+            .notifications
+            .error(&crate::notifications::Scope::Account)
+            .unwrap()
+            .to_owned();
+        assert!(error.starts_with("Could not save:"), "{error}");
+        let output = render(&mut app, &context, vec![]);
+        assert!(texts(&output).contains(&error.as_str()));
+    }
+
+    #[test]
+    fn space_menu_sets_the_level_and_names_the_account_default() {
+        let (base, seen) = account_server(vec![
+            (
+                "GET /api/notifications/settings",
+                200,
+                NOTIFICATION_SETTINGS,
+            ),
+            (
+                "PUT /api/spaces/space0000001/notifications",
+                200,
+                r#"{"spaceId":"space0000001","level":"nothing","mutedUntil":null}"#,
+            ),
+        ]);
+        let context = egui::Context::default();
+        let mut app = notification_app(&context, &base, "parity-desktop", serde_json::json!([]));
+        let output = settle(&mut app, &context);
+        click(
+            &mut app,
+            &context,
+            node_center(&output, "Fixture Studio actions"),
+        );
+        let opened = render(&mut app, &context, vec![]);
+        let labels = menu_labels(&opened);
+        for label in [
+            "Browse channels",
+            "Notifications",
+            "Mute space",
+            "Space settings",
+        ] {
+            assert!(
+                labels.iter().any(|item| item == label),
+                "{label}: {labels:?}"
+            );
+        }
+        let submenu = open_submenu(&mut app, &context, &opened, "Notifications");
+        let labels = menu_labels(&submenu);
+        for label in [
+            "Default (Only @mentions)",
+            "All messages",
+            "Only @mentions",
+            "Nothing",
+        ] {
+            assert!(
+                labels.iter().any(|item| item == label),
+                "{label}: {labels:?}"
+            );
+        }
+        click(&mut app, &context, last_text_position(&submenu, "Nothing"));
+        let space = crate::notifications::Scope::Space("space0000001".into());
+        assert_eq!(
+            app.notifications.level(&space),
+            Some(model::NotificationLevel::Nothing),
+            "applied immediately"
+        );
+        receive_until(&mut app, |app| !app.notifications.saving(&space));
+        assert_eq!(
+            app.notifications.level(&space),
+            Some(model::NotificationLevel::Nothing)
+        );
+        let seen = seen.lock().unwrap();
+        assert!(
+            seen.contains(
+                &r#"PUT /api/spaces/space0000001/notifications {"level":"nothing"}"#.to_owned()
+            ),
+            "{seen:?}"
+        );
+        assert!(
+            seen.contains(&"GET /api/notifications/settings".to_owned()),
+            "opening the menu refreshes the settings: {seen:?}"
+        );
+    }
+
+    #[test]
+    fn channel_menu_mutes_dims_the_row_and_unmutes() {
+        let (base, seen) = account_server(vec![
+            (
+                "GET /api/notifications/settings",
+                200,
+                NOTIFICATION_SETTINGS,
+            ),
+            (
+                "PUT /api/spaces/space0000001/channels/chan00000002/notifications",
+                200,
+                r#"{"spaceId":"space0000001","channelId":"chan00000002","level":null,"mutedUntil":"forever"}"#,
+            ),
+        ]);
+        let context = egui::Context::default();
+        let mut app = notification_app(&context, &base, "parity-desktop", serde_json::json!([]));
+        let output = settle(&mut app, &context);
+        let normal = text_color(&output, "design");
+        let active = text_color(&output, "general");
+        assert!(node_bounds(&output, "Muted").is_none());
+        click(
+            &mut app,
+            &context,
+            node_center(&output, "Channel options for design"),
+        );
+        let opened = render(&mut app, &context, vec![]);
+        let labels = menu_labels(&opened);
+        for label in [
+            "Notifications",
+            "Mute channel",
+            "Channel settings",
+            "Leave channel",
+        ] {
+            assert!(
+                labels.iter().any(|item| item == label),
+                "{label}: {labels:?}"
+            );
+        }
+        let submenu = open_submenu(&mut app, &context, &opened, "Mute channel");
+        let labels = menu_labels(&submenu);
+        for (label, _) in crate::notifications::MUTE_PRESETS {
+            assert!(
+                labels.iter().any(|item| item == label),
+                "{label}: {labels:?}"
+            );
+        }
+        click(
+            &mut app,
+            &context,
+            text_position(&submenu, "Until I turn it back on"),
+        );
+        let channel = crate::notifications::Scope::Channel {
+            space: "space0000001".into(),
+            channel: "chan00000002".into(),
+        };
+        assert!(
+            app.notifications.muted(&channel, chrono::Utc::now()),
+            "applied immediately"
+        );
+        receive_until(&mut app, |app| !app.notifications.saving(&channel));
+        assert!(seen.lock().unwrap().contains(
+            &r#"PUT /api/spaces/space0000001/channels/chan00000002/notifications {"mutedUntil":"forever"}"#
+                .to_owned()
+        ));
+        let output = settle(&mut app, &context);
+        assert_ne!(text_color(&output, "design"), normal, "dimmed");
+        assert_eq!(text_color(&output, "general"), active);
+        let bell = node_bounds(&output, "Muted").expect("bell-slash indicator");
+        let row = node_bounds(&output, "design").unwrap();
+        assert!(row.contains_rect(bell), "{bell:?} in {row:?}");
+
+        click(
+            &mut app,
+            &context,
+            node_center(&output, "Channel options for design"),
+        );
+        let opened = render(&mut app, &context, vec![]);
+        let labels = menu_labels(&opened);
+        assert!(
+            labels.iter().any(|item| item == "Unmute channel"),
+            "{labels:?}"
+        );
+        assert!(labels.iter().any(|item| item == "Muted"), "{labels:?}");
+        assert!(
+            !labels.iter().any(|item| item == "Mute channel"),
+            "{labels:?}"
+        );
+        click(&mut app, &context, text_position(&opened, "Unmute channel"));
+        assert!(!app.notifications.muted(&channel, chrono::Utc::now()));
+        receive_until(&mut app, |app| !app.notifications.saving(&channel));
+        assert!(seen.lock().unwrap().contains(
+            &r#"PUT /api/spaces/space0000001/channels/chan00000002/notifications {"mutedUntil":null}"#
+                .to_owned()
+        ));
+    }
+
+    #[test]
+    fn muted_space_dims_its_channels_and_keeps_their_mute_choices() {
+        let context = egui::Context::default();
+        let in_an_hour = crate::notifications::mute_value(Some(60), chrono::Utc::now());
+        let mut app = notification_app(
+            &context,
+            "http://127.0.0.1:9",
+            "parity-desktop",
+            serde_json::json!([
+                {"spaceId": "space0000001", "level": null, "mutedUntil": in_an_hour}
+            ]),
+        );
+        let output = settle(&mut app, &context);
+        let space_label = crate::notifications::mute_label(
+            crate::notifications::mute(Some(&in_an_hour), chrono::Utc::now()).unwrap(),
+            &chrono::Local::now(),
+        );
+        assert!(space_label.starts_with("Muted until "), "{space_label}");
+        assert!(
+            node_bounds(&output, &space_label).is_some(),
+            "the space header shows the bell-slash"
+        );
+        assert!(node_bounds(&output, "Muted with the space").is_some());
+        for channel in ["general", "design", "planning"] {
+            assert!(
+                text_color(&output, channel).a() < 255,
+                "{channel} is dimmed"
+            );
+        }
+        assert_ne!(text_color(&output, "F"), text_color(&output, "C"), "rail");
+        click(
+            &mut app,
+            &context,
+            node_center(&output, "Fixture Studio actions"),
+        );
+        let opened = render(&mut app, &context, vec![]);
+        let labels = menu_labels(&opened);
+        assert!(
+            labels.iter().any(|item| item == "Unmute space"),
+            "{labels:?}"
+        );
+        assert!(labels.contains(&space_label), "{labels:?}");
+        click(&mut app, &context, egui::pos2(1200.0, 450.0));
+        let output = render(&mut app, &context, vec![]);
+        click(
+            &mut app,
+            &context,
+            node_center(&output, "Channel options for design"),
+        );
+        let opened = render(&mut app, &context, vec![]);
+        let labels = menu_labels(&opened);
+        assert!(
+            labels.iter().any(|item| item == "Muted with the space"),
+            "{labels:?}"
+        );
+        assert!(
+            labels.iter().any(|item| item == "Mute channel"),
+            "{labels:?}"
+        );
+    }
+
+    #[test]
+    fn dm_rows_get_a_hover_menu_and_muted_dms_hide_unread() {
+        let (base, seen) = account_server(vec![
+            (
+                "GET /api/notifications/settings",
+                200,
+                NOTIFICATION_SETTINGS,
+            ),
+            (
+                "PUT /api/dms/dm0000000001/notifications",
+                200,
+                r#"{"conversationId":"dm0000000001","level":"nothing","mutedUntil":null}"#,
+            ),
+        ]);
+        let context = egui::Context::default();
+        let mut app = notification_app(&context, &base, "parity-direct", serde_json::json!([]));
+        app.directs[0].last_seq = "4".into();
+        let output = settle(&mut app, &context);
+        assert!(texts(&output).contains(&"●"), "unread before muting");
+        let options = node_bounds(&output, "Conversation options for TEST FIXTURE Maya")
+            .expect("DM options button");
+        let painted = |output: &egui::FullOutput| {
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Mesh(mesh) if options.contains_rect(mesh.calc_bounds()))
+            })
+        };
+        assert!(!painted(&output), "hidden until the row is hovered");
+        assert!(
+            node_bounds(&output, "Conversation options for Fixture Owner").is_none()
+                && !output
+                    .platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .any(|(_, node)| {
+                        node.label().is_some_and(|label| {
+                            label.starts_with("Conversation options for Fixture")
+                        })
+                    }),
+            "personal notes have no options"
+        );
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerMoved(node_center(
+                &output,
+                "TEST FIXTURE Maya",
+            ))],
+        );
+        let hovered = settle(&mut app, &context);
+        assert!(painted(&hovered), "shown on hover");
+
+        click(&mut app, &context, options.center());
+        let opened = render(&mut app, &context, vec![]);
+        let labels = menu_labels(&opened);
+        assert!(
+            labels.iter().any(|item| item == "Turn off notifications"),
+            "{labels:?}"
+        );
+        assert!(
+            labels.iter().any(|item| item == "Mute conversation"),
+            "{labels:?}"
+        );
+        click(
+            &mut app,
+            &context,
+            text_position(&opened, "Turn off notifications"),
+        );
+        let direct = crate::notifications::Scope::Direct("dm0000000001".into());
+        receive_until(&mut app, |app| !app.notifications.saving(&direct));
+        assert!(seen.lock().unwrap().contains(
+            &r#"PUT /api/dms/dm0000000001/notifications {"level":"nothing"}"#.to_owned()
+        ));
+        let output = settle(&mut app, &context);
+        assert!(
+            texts(&output).contains(&"●"),
+            "notifications off still shows unread"
+        );
+        click(&mut app, &context, options.center());
+        let opened = render(&mut app, &context, vec![]);
+        assert!(
+            menu_labels(&opened)
+                .iter()
+                .any(|item| item == "Turn on notifications")
+        );
+        let submenu = open_submenu(&mut app, &context, &opened, "Mute conversation");
+        click(&mut app, &context, text_position(&submenu, "For 1 hour"));
+        let mute = app.notifications.mute(&direct, chrono::Utc::now());
+        let Some(crate::notifications::Mute::Until(until)) = mute else {
+            panic!("expected a timed mute: {mute:?}");
+        };
+        let minutes = (until - chrono::Utc::now()).num_minutes();
+        assert!((58..=60).contains(&minutes), "{minutes}");
+        let output = settle(&mut app, &context);
+        assert!(
+            !texts(&output).contains(&"●"),
+            "a muted DM shows no unread dot"
+        );
+        assert_ne!(
+            text_color(&output, "TEST FIXTURE Maya"),
+            text_color(&output, "Invite people"),
+            "dimmed"
+        );
+        let label = crate::notifications::mute_label(
+            crate::notifications::Mute::Until(until),
+            &chrono::Local::now(),
+        );
+        let bell = node_bounds(&output, &label).expect("the bell names when the mute ends");
+        assert!(
+            node_bounds(&output, "TEST FIXTURE Maya")
+                .unwrap()
+                .contains_rect(bell)
+        );
+        receive_until(&mut app, |app| !app.notifications.saving(&direct));
+        let seen = seen.lock().unwrap();
+        let sent = seen
+            .iter()
+            .find(|line| {
+                line.starts_with("PUT /api/dms/dm0000000001/notifications {\"mutedUntil\"")
+            })
+            .expect("mute sent");
+        assert!(sent.ends_with(r#"Z"}"#), "UTC timestamp: {sent}");
+    }
+
+    #[test]
+    fn failed_mute_reverts_with_an_inline_error_under_the_row() {
+        let context = egui::Context::default();
+        let mut app = notification_app(
+            &context,
+            "http://127.0.0.1:9",
+            "parity-desktop",
+            serde_json::json!([]),
+        );
+        let output = settle(&mut app, &context);
+        click(
+            &mut app,
+            &context,
+            node_center(&output, "Channel options for design"),
+        );
+        let opened = render(&mut app, &context, vec![]);
+        let submenu = open_submenu(&mut app, &context, &opened, "Mute channel");
+        click(&mut app, &context, text_position(&submenu, "For 8 hours"));
+        let channel = crate::notifications::Scope::Channel {
+            space: "space0000001".into(),
+            channel: "chan00000002".into(),
+        };
+        assert!(app.notifications.muted(&channel, chrono::Utc::now()));
+        receive_until(&mut app, |app| !app.notifications.saving(&channel));
+        assert!(
+            !app.notifications.muted(&channel, chrono::Utc::now()),
+            "reverted"
+        );
+        let error = app.notifications.error(&channel).unwrap().to_owned();
+        assert!(error.starts_with("Could not save:"), "{error}");
+        let output = settle(&mut app, &context);
+        let row = node_bounds(&output, "design").unwrap();
+        let shown = text_position(&output, &error);
+        assert!(shown.y > row.bottom(), "under the row: {shown:?} {row:?}");
+        assert!(node_bounds(&output, "Muted").is_none());
+    }
+
+    #[test]
+    fn muted_fixture_previews_dimmed_rows_without_requests() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-muted"),
+        );
+        assert!(app.token.is_none(), "a static preview");
+        let output = settle(&mut app, &context);
+        assert!(node_bounds(&output, "Muted").is_some());
+        assert!(text_color(&output, "design") != text_color(&output, "general"));
+        let bells: Vec<_> = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .filter_map(|(_, node)| node.label().filter(|label| label.starts_with("Muted")))
+            .collect();
+        assert!(
+            bells.iter().any(|label| label.starts_with("Muted until ")),
+            "{bells:?}"
+        );
+        let dots = texts(&output).iter().filter(|text| **text == "●").count();
+        assert_eq!(dots, 1, "only Alex (notifications off) is dotted");
+    }
+
     fn scroll_modal_to_bottom(app: &mut CaperApp, context: &egui::Context) -> egui::FullOutput {
         let bounds =
             context.memory(|memory| memory.area_rect(egui::Id::new("caper-dialog")).unwrap());
@@ -14437,8 +15540,17 @@ mod tests {
             crate::api::Api::new("http://127.0.0.1:9").unwrap(),
             Some("parity-voice-connected"),
         );
+        let has_members = |output: &egui::FullOutput| {
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Members")
+            })
+        };
+        assert!(!app.members_visible);
+        assert!(!app.narrow_members_visible);
         render(&mut app, &context, vec![]);
-        assert!(app.members_visible);
+        assert!(!has_members(&render(&mut app, &context, vec![])));
+        app.members_visible = true;
+        assert!(has_members(&render(&mut app, &context, vec![])));
         let narrow = |app: &mut CaperApp| {
             context.run(
                 egui::RawInput {
@@ -14450,11 +15562,6 @@ mod tests {
                 },
                 |context| app.shell(context),
             )
-        };
-        let has_members = |output: &egui::FullOutput| {
-            output.shapes.iter().any(|shape| {
-                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Members")
-            })
         };
         narrow(&mut app);
         assert!(!has_members(&narrow(&mut app)));
@@ -15271,6 +16378,7 @@ mod tests {
                 crate::api::Api::new("http://127.0.0.1:9").unwrap(),
                 Some("parity-voice-rosters"),
             );
+            app.members_visible = true;
             app.sidebar_width = sidebar;
             let mut frame = || {
                 context.run(
@@ -15332,6 +16440,7 @@ mod tests {
             crate::api::Api::new("http://127.0.0.1:9").unwrap(),
             Some("parity-desktop"),
         );
+        app.members_visible = true;
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
         let texts: Vec<_> = output
@@ -16910,8 +18019,10 @@ mod tests {
             assert!(
                 images.iter().any(|rect| (rect.width() - 20.0).abs() < 0.01
                     && (rect.height() - 20.0).abs() < 0.01
-                    && (rect.center().x as f64 - (row.x0 + 17.5)).abs() < 0.5
-                    && (rect.center().y as f64 - (row.y0 + row.y1) / 2.0).abs() < 0.5),
+                    // Images snap to whole pixels, so a centre drawn at
+                    // +17.5 lands up to half a pixel away.
+                    && (rect.center().x as f64 - (row.x0 + 17.5)).abs() <= 0.5
+                    && (rect.center().y as f64 - (row.y0 + row.y1) / 2.0).abs() <= 0.5),
                 "Each DM uses saved avatar artwork, aligned with self-notes in {row:?}: {images:?}"
             );
         }
@@ -17800,6 +18911,83 @@ mod tests {
     }
 
     #[test]
+    fn login_keeps_pending_inputs_and_challenge_unchanged() {
+        for verifying in [false, true] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("signed-out"),
+            );
+            app.email = "fixture@example.test".into();
+            app.code = "ABC234".into();
+            app.challenge = verifying.then(|| "fixture-challenge".into());
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            let field = text_position(
+                &output,
+                if verifying {
+                    "ABC234"
+                } else {
+                    "fixture@example.test"
+                },
+            );
+            click(&mut app, &context, field);
+            app.loading = true;
+            render(&mut app, &context, vec![egui::Event::Text("ZZ".into())]);
+            assert_eq!(app.email, "fixture@example.test");
+            assert_eq!(app.code, "ABC234");
+            if verifying {
+                let output = render(&mut app, &context, vec![]);
+                click(
+                    &mut app,
+                    &context,
+                    text_position(&output, "Use a different email"),
+                );
+                assert_eq!(app.challenge.as_deref(), Some("fixture-challenge"));
+                app.loading = false;
+                render(&mut app, &context, vec![]);
+                click(
+                    &mut app,
+                    &context,
+                    text_position(&output, "Use a different email"),
+                );
+                assert!(
+                    app.challenge.is_none(),
+                    "the back action works after the request ends"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn login_enter_respects_the_same_validation_as_the_button() {
+        for verifying in [false, true] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("signed-out"),
+            );
+            app.email = "invalid-email".into();
+            app.code = "ABC".into();
+            app.challenge = verifying.then(|| "fixture-challenge".into());
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            click(
+                &mut app,
+                &context,
+                text_position(&output, if verifying { "ABC" } else { "invalid-email" }),
+            );
+            render(&mut app, &context, press(egui::Key::Enter));
+            assert!(
+                !app.loading,
+                "invalid input must not start an account request"
+            );
+        }
+    }
+
+    #[test]
     fn login_spacing_does_not_add_automatic_gaps_to_explicit_spacers() {
         for (width, verifying) in [
             (1440.0, false),
@@ -18302,6 +19490,7 @@ mod tests {
                 crate::api::Api::new("http://127.0.0.1:9").unwrap(),
                 Some("parity-desktop"),
             );
+            app.members_visible = true;
             app.draft = "Unsent draft".into();
             let frame = |app: &mut CaperApp, events| {
                 context.run(

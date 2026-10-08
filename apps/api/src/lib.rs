@@ -747,6 +747,7 @@ pub struct AppState {
     reserved_usernames: accounts::ReservedUsernames,
     notifications_webhook: notifications::NotificationsWebhook,
     updates: Arc<updates::Updates>,
+    push: push::Push,
 }
 impl AppState {
     pub fn new(config: Config, provider: Arc<dyn Provider>) -> Self {
@@ -792,6 +793,7 @@ impl AppState {
                 &RuntimeEnvironment::default(),
             ),
             updates: Arc::new(updates::Updates::new()),
+            push: push::Push::default(),
         }
     }
 
@@ -820,6 +822,12 @@ impl AppState {
             assets::spawn_purger(assets);
         }
         Ok(())
+    }
+
+    /// Phone push behind `NOTIFICATIONS_ENABLED`; call after `enable_chat`.
+    pub fn enable_notifications(&mut self, environment: &RuntimeEnvironment) -> Result<(), String> {
+        self.push = push::Push::from_env(environment);
+        push::start(&self.push, self.chat.as_ref(), environment)
     }
 
     pub async fn enable_accounts_from_env(

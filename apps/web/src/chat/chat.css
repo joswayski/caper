@@ -1399,6 +1399,12 @@ a.chat-file:hover {
   font-weight: 700;
   overflow-wrap: anywhere;
 }
+.chat-reactors-panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
 .chat-reactors-list {
   flex: 1;
   min-height: 0;
@@ -1456,7 +1462,8 @@ a.chat-file:hover {
   font-weight: 700;
   cursor: pointer;
 }
-.chat-reactors button:focus-visible {
+.chat-reactors button:focus-visible,
+.chat-reactors-panel:focus-visible {
   outline: 2px solid var(--terracotta, #b64d32);
   outline-offset: -2px;
 }
@@ -1921,9 +1928,11 @@ a.chat-file:hover {
 .chat-edit-dialog small {
   display: block;
   margin-top: 6px;
-  color: var(--text-muted);
   font-size: 0.72rem;
   text-align: right;
+}
+.chat-edit-dialog small:not(.chat-action-error) {
+  color: var(--text-muted);
 }
 .chat-edit-dialog button {
   padding: 8px 12px;

@@ -2,9 +2,10 @@ use crate::attachments::FreshUrl;
 use crate::compress::Compression;
 use crate::model::{
     Account, Blocks, Channel, ChatSession, DirectConversation, DirectConversations, History,
-    Member, Members, Message, People, Privacy, ReactionUpdate, Reactors, Space, SpaceDetail,
-    Spaces,
+    Member, Members, Message, NotificationLevel, NotificationOverride, NotificationSettings,
+    People, Privacy, ReactionUpdate, Reactors, Space, SpaceDetail, Spaces,
 };
+use crate::notifications::{Change, Scope};
 use crate::uploads::UploadError;
 use reqwest::blocking::{Client, Response};
 use reqwest::{Method, StatusCode, redirect::Policy};
@@ -205,6 +206,53 @@ impl Api {
             None,
             Some(json!({"directMessages": direct_messages})),
         )
+    }
+
+    pub fn notification_settings(&self, token: &str) -> Result<NotificationSettings, ApiError> {
+        self.request(
+            Method::GET,
+            "api/notifications/settings",
+            Some(token),
+            None,
+            None,
+        )
+    }
+
+    /// Sets the account level; the answer is the full settings.
+    pub fn save_notification_level(
+        &self,
+        token: &str,
+        level: NotificationLevel,
+    ) -> Result<NotificationSettings, ApiError> {
+        self.request(
+            Method::PUT,
+            "api/notifications/settings",
+            Some(token),
+            None,
+            Some(json!({"level": level.as_str()})),
+        )
+    }
+
+    /// `PUT` one field of a space, channel or DM override; `None` resets it.
+    pub fn save_notification_override(
+        &self,
+        token: &str,
+        scope: &Scope,
+        change: &Change,
+    ) -> Result<NotificationOverride, ApiError> {
+        let path = match scope {
+            Scope::Account => return Err(invalid("Invalid Caper endpoint.")),
+            Scope::Space(space) => format!("api/spaces/{space}/notifications"),
+            Scope::Channel { space, channel } => {
+                format!("api/spaces/{space}/channels/{channel}/notifications")
+            }
+            Scope::Direct(id) => format!("api/dms/{id}/notifications"),
+        };
+        let body = match change {
+            Change::Level(level) => json!({"level": level.map(NotificationLevel::as_str)}),
+            Change::Mute(until) => json!({"mutedUntil": until}),
+        };
+        self.request(Method::PUT, &path, Some(token), None, Some(body))
     }
 
     pub fn read_direct(&self, token: &str, id: &str, seq: &str) -> Result<(), ApiError> {

@@ -57,6 +57,26 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 @Serializable data class Person(val id: String, val username: String, val displayName: String, val avatarId: Int? = null)
 @Serializable data class PeopleList(val people: List<Person>)
 @Serializable data class PushConfig(val platforms: List<String>)
+/**
+ * `GET /api/notifications/settings`: the account [level] (`all`, `mentions` or `nothing`),
+ * [mobile] (`whenInactive` or `always`) and the overrides that still set something.
+ */
+@Serializable data class NotificationSettings(
+    val level: String = "all",
+    val mobile: String = "whenInactive",
+    val overrides: List<NotificationOverride> = emptyList(),
+)
+/**
+ * One space, channel (with its space) or DM override. [level] is null to inherit; a DM only
+ * uses `nothing`. [mutedUntil] is an RFC 3339 UTC time, `forever`, or null.
+ */
+@Serializable data class NotificationOverride(
+    val spaceId: String? = null,
+    val channelId: String? = null,
+    val conversationId: String? = null,
+    val level: String? = null,
+    val mutedUntil: String? = null,
+)
 @Serializable data class ChannelInvitation(val channel: Channel, val inviter: Inviter)
 @Serializable data class Member(val id: String, val username: String, val displayName: String, val owner: Boolean, val avatarId: Int? = null)
 @Serializable data class SpaceDetail(
@@ -352,6 +372,12 @@ data class AppUiState(
     val blocksError: String? = null,
     /** The sidebar's "Message requests" list is expanded. */
     val requestsOpen: Boolean = false,
+    /** Notification settings with unsaved changes applied; null until they load. */
+    val notificationSettings: NotificationSettings? = null,
+    /** Why notification settings could not load, while none are shown. */
+    val notificationSettingsError: String? = null,
+    /** Failed notification saves by setting key (see `data/Notifications.kt`), shown beside that control. */
+    val notificationErrors: Map<String, String> = emptyMap(),
     val selectedDirectId: String? = null,
     val messages: List<ChatMessage> = emptyList(),
     val thread: ThreadUi? = null,
@@ -397,6 +423,8 @@ data class AppUiState(
     val attachmentProgress: Map<String, Int> = emptyMap(),
     /** This device's picked content for files it sent, shown while the server processes them. */
     val localAttachmentPreviews: Map<String, String> = emptyMap(),
+    /** Ask Android 13+ for notification permission now; set once per account by app open. */
+    val pushPrompt: Boolean = false,
     val busy: Boolean = false,
     val error: String? = null,
 ) {

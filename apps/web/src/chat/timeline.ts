@@ -125,13 +125,14 @@ export class ChatTimeline {
 
   // HTTP acknowledgements update the snapshot, never the replay cursor.
   mergeReactions(event: ChatReactionEvent) {
-    const existing = this.byId.get(event.messageId);
-    if (existing) {
-      if (sequence(event.seq) > sequence(existing.reactionSeq ?? "0")) {
-        this.byId.set(existing.id, { ...existing, reactions: event.reactions, reactionSeq: event.seq });
-        this.sortedMessages = undefined;
+    for (const collection of [this.byId, this.pinnedById, this.pinUpdates]) {
+      const existing = collection.get(event.messageId);
+      if (existing && sequence(event.seq) > sequence(existing.reactionSeq ?? "0")) {
+        collection.set(existing.id, { ...existing, reactions: event.reactions, reactionSeq: event.seq });
+        if (collection === this.byId) this.sortedMessages = undefined;
       }
-    } else {
+    }
+    if (!this.byId.has(event.messageId)) {
       const previous = this.unseenReactions.get(event.messageId);
       if (!previous || sequence(event.seq) > sequence(previous.seq)) this.unseenReactions.set(event.messageId, event);
     }
@@ -201,9 +202,13 @@ export class ChatTimeline {
     if (!previous || (message.revision ?? 1) > (previous.revision ?? 1)) this.editUpdates.set(message.id, message);
     for (const collection of [this.byId, this.pinnedById, this.pinUpdates]) {
       const current = collection.get(message.id);
-      if (current) collection.set(message.id, mergeEditedContent(current, message));
+      if (!current) continue;
+      const updated = mergeEditedContent(current, message);
+      if (updated !== current) {
+        collection.set(message.id, updated);
+        if (collection === this.byId) this.sortedMessages = undefined;
+      }
     }
-    this.sortedMessages = undefined;
   }
 
   private withEdit(message: ChatMessage) {
@@ -213,6 +218,15 @@ export class ChatTimeline {
 
   private mergePinMessage(message: ChatMessage) {
     this.mergeEdit(message);
+    if (message.reactionSeq !== undefined)
+      this.mergeReactions({
+        type: "message.reactions",
+        schemaVersion: 1,
+        channelId: message.channelId,
+        messageId: message.id,
+        seq: message.reactionSeq,
+        reactions: message.reactions ?? [],
+      });
     message = this.withEdit(message);
     const previous = this.pinUpdates.get(message.id);
     if (this.pinSnapshotCursor > 0n && sequence(message.pinSeq ?? "0") <= this.pinSnapshotCursor) {
@@ -227,9 +241,16 @@ export class ChatTimeline {
       }
       return;
     }
-    const snapshot = this.withEdit(
+    let snapshot = this.withEdit(
       previous && sequence(previous.pinSeq ?? "0") > sequence(message.pinSeq ?? "0") ? previous : message,
     );
+    // Pin revisions and reaction revisions are independent. A delayed pin
+    // response must not replace newer reactions, including on unloaded pins.
+    const visibleReactions = this.byId.get(message.id);
+    const unseen = this.unseenReactions.get(message.id);
+    const reactionSeq = visibleReactions?.reactionSeq ?? unseen?.seq ?? "0";
+    if (sequence(reactionSeq) > sequence(snapshot.reactionSeq ?? "0"))
+      snapshot = { ...snapshot, reactions: visibleReactions?.reactions ?? unseen?.reactions, reactionSeq };
     if (snapshot.pinSeq !== undefined) this.pinUpdates.set(snapshot.id, snapshot);
     if (snapshot.pin) {
       const forward = this.forwardUpdates.get(snapshot.id);

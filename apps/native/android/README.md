@@ -44,25 +44,37 @@ in in-app wordmarks. Verify declarations with
 `node scripts/generate-android-launcher-aliases.mjs --check` from the repository root;
 OEM launcher caches and signed upgrades still require real-device validation.
 
-### Deferred direct FCM notifications
+### Push notifications (FCM)
 
-Mobile push is not currently available. When needed, the server will send directly
-through FCM's HTTP v1 API. Authenticated `GET /api/push/config` currently returns
-`{"platforms":[]}`, so the notification control stays hidden even in a
-Firebase-configured build. Device registration and delivery are not implemented
-server-side; adding Firebase configuration alone cannot enable notifications.
+The server sends data-only FCM messages for DMs and channel messages (phase 1 of
+`docs/notifications.md`). Firebase is compiled in but only enabled when
+`app/google-services.json` exists; without it `FIREBASE_ENABLED` is false and the
+build works as before. CI writes that file from the base64 repository secret
+`GOOGLE_SERVICES_JSON` in the native and release workflows. It must list both
+`chat.caper.android` and `chat.caper.android.debug`. Never commit it or any service
+credentials.
 
-The existing Firebase client code is dormant scaffolding for that future work.
-Without the ignored `app/google-services.json`, `FIREBASE_ENABLED` is false and
-ordinary builds work without Firebase configuration. Never commit that file or
-service credentials. A future direct integration must handle explicit opt-in,
-Android 13+ notification permission, token rotation, logout/account switching,
-private payloads containing only `conversationId`/`messageId`, and authenticated
-notification-tap navigation.
+- **Turning it on.** User settings → Notifications shows "Send to this phone" and the
+  "Notifications on this phone" switch only when this build has Firebase and
+  `GET /api/push/config` lists `fcm`. The switch asks for the Android 13+ notification
+  permission, then registers the FCM token with `POST /api/push/devices` (with the
+  application ID as `appId`) for the current sign-in session. Logout unregisters it.
+- **Showing a push.** `push/CaperMessagingService.kt` drops messages unless this sign-in
+  session turned push on, then builds a `MessagingStyle` notification from the data:
+  one per DM or channel (tagged with its ID), in the `direct_messages`,
+  `channel_messages` or `mentions` notification channel. Nothing shows for the
+  conversation already on screen. Tapping opens the DM or channel.
+- **Controls.** The space menu, each channel's menu and a new DM row menu (⋯ or long
+  press) set notification levels and mutes with `/api/notifications/settings` and the
+  override routes. Changes show at once and revert with an inline error when a save
+  fails. Muted spaces, channels and DMs are dimmed with a bell-slash; a muted DM has no
+  unread dot.
 
-Real-device FCM delivery, denied/revoked permission, token rotation, background and
-terminated-app taps, and cleanup during poor connectivity must be validated when
-implementing direct delivery. Client scaffolding is not end-to-end push support.
+Real-device FCM delivery, the permission prompt and denial, token rotation, taps from
+the background and from a stopped app, and notification grouping have not been
+validated on a device. JVM tests cover payload parsing, channel and style choice, mute
+labels, settings decoding and optimistic reverts; `NotificationMenuUiTest` needs an
+emulator.
 
 Release tasks fail when signing is absent instead of producing an unsigned or debug-signed release. To sign a release, set all four variables: `CAPER_ANDROID_KEYSTORE`, `CAPER_ANDROID_KEYSTORE_PASSWORD`, `CAPER_ANDROID_KEY_ALIAS`, and `CAPER_ANDROID_KEY_PASSWORD`. Never commit those values.
 
@@ -82,7 +94,7 @@ Release tasks fail when signing is absent instead of producing an unsigned or de
 
 The voice implementation targets the pinned native WebRTC SDK, but this orb has no KVM or attached physical Android device. Microphone capture, remote playback, Bluetooth/wired routing, interruptions, network handoff, lock-screen longevity, OEM battery policies, and a live Cloudflare multi-party call are **not device-verified**. The foreground service and notification implement the Android mechanism needed for an ongoing locked-screen call; manifest declarations alone are not treated as proof. Native WebRTC callbacks and teardown still need physical-device stress testing before voice can be considered production-accepted.
 
-There is no incoming-call push, ringing, or invitation UI because the server has no push/incoming-call contract. Camera and screen sharing are not working web features and are not exposed. Android exposes a communication route rather than independent browser-style input/output device IDs. Web deliberately suppresses interaction sounds on coarse-pointer/mobile devices, so Android does not add a separate sounds setting. Connection diagnostics are non-sensitive bitrate, loss, jitter, RTT, and direct-versus-relay statistics; detailed microphone processing timing/mode is visible only for accounts with `debugEnabled`. Physical capture, processing fallback, actual route changes, and local comparison playback still need device acceptance.
+There is no incoming-call push, ringing, or invitation UI because the server has no incoming-call contract. Camera and screen sharing are not working web features and are not exposed. Android exposes a communication route rather than independent browser-style input/output device IDs. Web deliberately suppresses interaction sounds on coarse-pointer/mobile devices, so Android does not add a separate sounds setting. Connection diagnostics are non-sensitive bitrate, loss, jitter, RTT, and direct-versus-relay statistics; detailed microphone processing timing/mode is visible only for accounts with `debugEnabled`. Physical capture, processing fallback, actual route changes, and local comparison playback still need device acceptance.
 
 ## Explicit fixture and emulator smoke
 
@@ -99,7 +111,7 @@ adb reverse tcp:3001 tcp:3001
 python3 apps/native/android/smoke.py
 ```
 
-Only port 3001 is needed by Android; it serves both API requests and `/api/chat/events` WebSockets. The smoke run resets the labeled local test fixture, installs `dist/Caper-android-fixture-debug.apk`, exercises fresh-install login, one-shot actionable 503, verification, failed/successful session restoration, signed-in space selection, private-channel management, desktop and narrow Browse states, and writes screenshots plus UI hierarchies under `dist/ui/`. The fixture credentials are `fixture@example.test` / `ABC234`. This emulator workflow is structural visual and interaction evidence, not physical-device or live-media validation. The default fixture has no message request; `POST /__fixture/control {"messageRequest":{}}` adds Jordan's incoming request, and `PUT /api/blocks/member000001` collapses Maya's two seeded #general messages. `smoke.py` does not yet exercise requests or blocking.
+Only port 3001 is needed by Android; it serves both API requests and `/api/chat/events` WebSockets. The smoke run resets the labeled local test fixture, installs `dist/Caper-android-fixture-debug.apk`, exercises fresh-install login, one-shot actionable 503, verification, failed/successful session restoration, signed-in space selection, private-channel management, desktop and narrow Browse states, and writes screenshots plus UI hierarchies under `dist/ui/`. The fixture credentials are `fixture@example.test` / `ABC234`. This emulator workflow is structural visual and interaction evidence, not physical-device or live-media validation. The default fixture has no message request; `POST /__fixture/control {"messageRequest":{}}` adds Jordan's incoming request, and `PUT /api/blocks/member000001` collapses Maya's two seeded #general messages. `smoke.py` does not yet exercise requests or blocking. `POST /__fixture/control {"pushPlatforms":["fcm"]}` advertises FCM and `GET /__fixture/push-devices` reads back registrations; the switch only appears in a fixture APK built with `app/google-services.json`. Notification settings and overrides are kept in the fixture's memory. `smoke.py` does not exercise them yet.
 
 ## Security notes
 

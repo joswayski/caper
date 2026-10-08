@@ -1,11 +1,13 @@
-# Notifications: research and proposed design
+# Notifications: design and phase 1
 
-**Status: proposal. Nothing in this document is implemented.** Today Caper has
-no push, OS notifications, or notification preferences. `GET /api/push/config`
-returns `{"platforms":[]}`, which keeps the dormant Android/iOS DM-push code
-hidden (see [media.md](media.md#push-is-deferred-future-delivery-uses-direct-apnsfcm-integrations)).
-This document records the research done on October 6, 2026 and proposes a
-phased design for review.
+**Status: phase 1 is built** (October 8, 2026): phone push for DMs and channel
+messages over APNs and FCM, plus notification and mute controls for spaces,
+channels and DMs. The server side runs behind `NOTIFICATIONS_ENABLED`, and each
+platform is advertised only after its credentials are stored and it has been
+validated on physical devices. [Phase 1 as built](#phase-1-as-built) is the
+contract; the rest of this document is the research (October 6, 2026) and the
+design for phases 2 and 3, which are not built. See also
+[media.md](media.md#mobile-push-phase-1-direct-apns-and-fcm).
 
 **Owner decisions (October 6, 2026)**
 
@@ -19,6 +21,195 @@ phased design for review.
   permissions come later.
 - **Cleanup.** Drop the unused SNS-era `push_*` tables in the first push
   migration.
+
+## Phase 1 as built
+
+Where this section and the proposal below differ, this section is what runs.
+
+### Who gets a notification
+
+Per committed message (edits never notify; demo spaces and guests never do):
+
+1. Never the author.
+2. **DMs** (`direct.message`): the other participant only. Personal notes, a DM
+   that is still a message request (not accepted), and a DM where either person
+   blocked the other notify nobody.
+3. **Space channels**: everyone who can read the channel (active members; for a
+   private channel, the owner and people with a grant), minus anyone who blocked
+   the author. Joining a channel is consent to hear from it, so readers who
+   haven't joined, and thread replies, notify only the people they @mention.
+   The kind is `mention.user` for people in `content.mentions`,
+   `mention.everyone` for `@everyone` (every joined reader) or `@here` (joined
+   readers whose presence is `online`), otherwise `channel.message`.
+4. For each candidate, in order: account level `nothing` or `paused_until` in the
+   future → none. Muted channel, DM or space → none, except `mention.user`.
+   Effective level = channel override → space override → account level → `all`;
+   a DM override of `nothing` silences the DM, otherwise DMs notify under `all`
+   and `mentions`. `channel.message` needs `all`; `mention.*` needs `all` or
+   `mentions`.
+5. One `notifications` row per recipient, and one delivery per active device on
+   an advertised platform whose session is still valid.
+
+Kinds are `direct.message`, `channel.message`, `mention.user` and
+`mention.everyone`. Clients treat unknown kinds as a generic message.
+
+### Phone hold (`mobile = whenInactive`)
+
+Gateway connection IDs are `{tag}:{uuid}`, where `tag` is the first 8 bytes of
+the connection's account-session token hash in lowercase hex (`guest` without an
+account). A connection is *active* while its presence lease is live and its
+activity is within `PRESENCE_IDLE_TIMEOUT_SECONDS` (default 600), the same rule
+that makes a person `online`. If the recipient has an active connection on a
+different session than the device (an untagged ID from an older gateway counts
+as different), that device's delivery is held for 60 s. When it comes due it is
+dropped if the recipient is still active elsewhere. `always` never holds.
+
+At send time every delivery also rechecks that the device and its session are
+still valid, that the conversation still exists, and that the recipient still
+has access and permits this notification. Membership, private-channel grants,
+channel joins (except direct @mentions), blocks, notification levels, mutes and
+pauses are checked again when claiming a delivery, including provider retries.
+The message must be less than 24 h old and, for DMs, the recipient must not have
+read up to it. Changes after the claim cannot recall an in-flight provider send.
+
+### Turning push on for a phone
+
+Push is on by default on iPhone and Android. Each time the app opens with an
+account, including a session restored from an earlier launch, and the server
+offers the phone's platform, the app turns push on, unless the account turned
+"Notifications on this phone" off on that phone:
+
+- **iPhone:** asks iOS for permission. iOS shows its prompt once; on later launches
+  it answers with the saved decision, so allowing Caper later in iOS Settings
+  turns push on at the next launch.
+- **Android:** turns push on when notifications are already allowed (below
+  Android 13, or the permission was granted). On Android 13+ it otherwise shows
+  the `POST_NOTIFICATIONS` prompt once per account; after a denial, app open
+  doesn't ask again, and allowing it later in Android settings turns push on.
+- Turning the switch off in settings is remembered per account on that phone.
+  Turning it on again clears that. Logging out doesn't count as turning it off.
+
+### Content and payloads
+
+- Title: DM → sender display name; channels and mentions → `Sender · #channel (Space)`.
+- Body: the message text, trimmed, cut to 180 characters including a final `…`;
+  empty text (a forward without text) → `Sent a message`.
+- APNs: `apns-push-type: alert`, `apns-priority: 10`, topic `APNS_TOPIC` (default
+  `chat.caper.ios`), `apns-expiration` now + 24 h. Body
+  `{"aps":{"alert":{"title","body"},"sound":"default","thread-id"},"kind","messageId","spaceId","channelId"}`;
+  DMs carry `conversationId` instead of `spaceId`/`channelId`. `thread-id` is the
+  conversation or channel ID.
+- FCM HTTP v1, data only: `android.priority: HIGH`, `ttl: "86400s"`,
+  `collapse_key` = conversation or channel ID. String data: `kind`, `messageId`,
+  `conversationId` (DMs) or `spaceId` + `channelId`, `title`, `body`, `sender`,
+  `senderId`, and `conversationTitle` (`#channel (Space)`, channels only).
+
+### HTTP contract
+
+All routes need account authentication (guests get 401), use camelCase JSON and
+external IDs, and return errors as `{"error": "..."}`.
+
+- `GET /api/push/config` → `{"platforms": [...]}`: `apns`, `apnsSandbox` and
+  `fcm`, each only when notifications are enabled, it is in `PUSH_PLATFORMS` and
+  its credentials load.
+- `POST /api/push/devices` `{"platform","token","appId"?}` → 204. An unadvertised
+  platform → 400 `push platform unavailable`; APNs tokens must be 64–200 hex
+  characters (stored lowercase) and FCM tokens 1–4096 visible characters, else
+  400 `invalid push token`; a non-string or invisible `appId` → 400
+  `invalid app id`. One registration per sign-in session: a new address replaces
+  the session's previous one, and an address held by another account or session
+  is revoked there.
+- `DELETE /api/push/devices` (same body; any known platform) → 204, idempotent;
+  revokes only the caller's matching device. Logout revokes the session's devices.
+- `GET /api/notifications/settings` →
+  `{"level","mobile","overrides":[{"spaceId","level","mutedUntil"}, {"spaceId","channelId",...}, {"conversationId",...}]}`.
+  Overrides whose level and mute are both unset (or the mute expired) are
+  omitted, as are scopes the caller can no longer read.
+- `PUT /api/notifications/settings` `{"level"?,"mobile"?}` → the full settings.
+  400s: `level must be all, mentions or nothing`, `mobile must be always or
+  whenInactive`, `invalid notification settings` (unknown keys).
+- `PUT /api/spaces/{spaceId}/notifications`,
+  `PUT /api/spaces/{spaceId}/channels/{channelId}/notifications` and
+  `PUT /api/dms/{conversationId}/notifications` take `{"level"?,"mutedUntil"?}`
+  and return the scope's IDs with `level` and `mutedUntil`. A missing key leaves
+  the field unchanged and `null` resets it. `mutedUntil` is `"forever"` or an
+  RFC 3339 time in the future and at most 365 days away, returned as whole-second
+  UTC (`2026-10-08T05:00:00Z`). 400s: `level must be all, mentions, nothing or
+  null`, `level must be nothing or null` (DMs), `mutedUntil must be forever or a
+  time within the next year`. No read access → 404 `space not found`,
+  `channel not found` or `conversation not found`.
+
+`scripts/native-parity-fixture.mjs` serves the same routes in memory for client
+tests: `POST /__fixture/control {"pushPlatforms":[...]}` sets the advertised
+platforms, `GET /__fixture/push-devices` reads back registrations, and
+`{"reset": true}` clears both and all settings.
+
+### Pipeline
+
+- `chat::persist` and the forward path insert one `notification_jobs` row in the
+  send transaction. The expansion worker claims jobs with `FOR UPDATE SKIP LOCKED`
+  under a 2-minute `locked_at` lease, resolves recipients, reads presence for
+  `@here` and the hold, and writes `notifications` and `notification_deliveries`
+  in one transaction. A job whose message is more than a day old notifies nobody.
+- The delivery worker claims due deliveries the same way in one statement, calls
+  the provider with no database connection held, then records the result:
+  delivered; retry with exponential backoff (15 s doubling to 30 min, or the
+  provider's `Retry-After` if longer) after 429, 5xx, an expired provider token or
+  a network error; abandoned once the next try would be more than 24 h after the
+  message, or after any other rejection; or the device revoked (APNs 410,
+  `BadDeviceToken`, `DeviceTokenNotForTopic`; FCM `UNREGISTERED`,
+  `SENDER_ID_MISMATCH`, or `INVALID_ARGUMENT` on the token field).
+- APNs uses HTTP/2 and an ES256 JWT reused for 40 minutes; production and
+  sandbox use separate keys. FCM uses an OAuth token from the service account's
+  RS256 assertion, cached until 5 minutes before it expires. Signing uses
+  `aws-lc-rs`, already the process's Rustls crypto provider.
+- Finished deliveries and expanded jobs are pruned after 7 days. Devices are
+  revoked, never deleted; settings and overrides are updated in place.
+- Workers run in every API replica behind `NOTIFICATIONS_ENABLED`; they need
+  `CHAT_ENABLED` (Postgres and Valkey). Bad credentials disable that platform with
+  a `push_platform_unavailable` log instead of stopping the API.
+
+### Configuration
+
+| Setting | Meaning |
+| --- | --- |
+| `NOTIFICATIONS_ENABLED` | `true` starts the workers and allows platforms to be advertised. Default off. |
+| `PUSH_PLATFORMS` | Comma-separated `apns`, `apnsSandbox`, `fcm`. |
+| `APNS_TEAM_ID` | Apple team ID (10 characters). |
+| `APNS_KEY_ID`, `APNS_PRIVATE_KEY` | Production key ID and `.p8` PEM (`apns`). |
+| `APNS_SANDBOX_KEY_ID`, `APNS_SANDBOX_PRIVATE_KEY` | Sandbox key ID and `.p8` PEM (`apnsSandbox`). |
+| `APNS_TOPIC` | Bundle ID; default `chat.caper.ios`. |
+| `FCM_SERVICE_ACCOUNT_JSON` | The Firebase service-account JSON key, stored as one string (`fcm`). |
+| `PRESENCE_IDLE_TIMEOUT_SECONDS` | Shared with the gateway; decides `online` and the hold. Default 600. |
+
+PEM values work with real newlines or with literal `\n` escapes. All of these
+are read from the API's Secrets Manager secret (`APP_SECRET_ID`) or the process
+environment. They are never logged, and neither are tokens or message text.
+
+### Validation
+
+Covered by automated tests: the routes and their validation, enqueue inside the
+send transaction (and its rollback), recipient resolution (DMs, requests, blocks,
+mutes, levels, `@mention` bypassing a mute, `@everyone`, `@here`, thread
+replies), the hold, delivery against mock APNs (HTTP/2) and FCM servers including
+token revocation, `Retry-After`, backoff and the 24-hour cutoff, logout
+revocation, and the parity fixture. Not yet validated: real APNs or FCM, and
+physical Android or signed iOS devices. Keep each platform out of
+`PUSH_PLATFORMS` until it has been.
+
+### Rollout
+
+1. Deploy the API (applies `202610080002_notifications.sql`). With
+   `NOTIFICATIONS_ENABLED` unset nothing is sent, and clients see no platform.
+   Older API images fail at startup against the migrated database because they
+   grant access to the dropped `push_*` tables: roll forward, not back.
+2. Deploy the gateway, so connection IDs carry session tags. Until then the hold
+   treats every connection as another session.
+3. Store the credentials (see [account setup](#account-setup-apple-and-firebase)),
+   with `--platforms` listing only platforms already validated and
+   `--enabled true`. No infrastructure change or deploy is needed.
+4. Turning a platform off is the same command with a shorter `--platforms`;
+   `--enabled false` turns all push off.
 
 ## Recommendation in one screen
 
@@ -119,8 +310,8 @@ Sources: [SNS endpoint management](https://docs.aws.amazon.com/sns/latest/dg/mob
 [SNS pricing](https://aws.amazon.com/sns/pricing/).
 
 Caper has tried this before. [joswayski/caper#267](https://github.com/joswayski/caper/pull/267) removed an SNS-based push backend, and
-[media.md](media.md#push-is-deferred-future-delivery-uses-direct-apnsfcm-integrations)
-already commits to direct APNs/FCM.
+Phase 1 uses direct APNs/FCM
+([media.md](media.md#mobile-push-phase-1-direct-apns-and-fcm)).
 
 ### Other options considered
 
@@ -321,6 +512,12 @@ flowchart LR
 
 ### Proposed schema (new migration that also drops the legacy `push_*` tables)
 
+Built as `202610080002_notifications.sql`. Differences from this sketch:
+`transport` allows only `apns`, `apnsSandbox` and `fcm` and there are no Web Push
+columns yet (phase 3 adds them); `app_id` defaults to `''`; `default_level` NULL
+means `all`; the jobs, notifications and deliveries tables are as described in
+[Pipeline](#pipeline).
+
 ```sql
 -- One row per signed-in device that opted in. Raw tokens are required for direct delivery.
 CREATE TABLE notification_devices (
@@ -382,6 +579,9 @@ New tables need runtime grants in `db::grant_runtime_access`.
   startup, so roll forward instead.
 
 ### Proposed API (camelCase, external IDs only)
+
+Phase 1 built the subset in [HTTP contract](#http-contract): no `webpush`,
+`webPushKey` or gateway `notifications` kind yet.
 
 **Existing routes**
 - `GET /api/push/config` (already exists) → `{"platforms":["apns","apnsSandbox","fcm","webpush"],"webPushKey":"<VAPID public key>"}`.
@@ -484,8 +684,8 @@ New tables need runtime grants in `db::grant_runtime_access`.
     disable it without that file.
   - Add notification channels per category: Direct messages, Channel messages,
     Mentions, Invitations, Calls.
-  - Keep the Android 13+ `POST_NOTIFICATIONS` prompt behind an explicit
-    "Enable notifications" action, as today.
+  - Ask for the Android 13+ `POST_NOTIFICATIONS` permission once on app open (see
+    [Turning push on for a phone](#turning-push-on-for-a-phone)).
 
 ### Web (Web Push + in-tab)
 
@@ -581,6 +781,7 @@ Either can be added later without changing the preference model.
      and notifies only tagged people who can read the conversation; it needs no
      separate mentions table.
 1. **Mobile push for DMs and channels, with per-space/channel/DM controls.**
+   Built; see [Phase 1 as built](#phase-1-as-built).
    - **Server:**
      - new migration;
      - device registration routes, and settings and override routes;
@@ -622,14 +823,37 @@ real devices.
 
 ## Account setup: Apple and Firebase
 
-Nothing here is needed until phase 1 is built; it can happen while mentions are
-built.
-
 - **Keep the downloaded files** (`.p8` files and Firebase JSON) in your password
   manager. Each can only be downloaded once or must be regenerated.
-- **Phase 1 adds a one-command script** that stores them in AWS Secrets Manager
-  (`production/apps/caper` and `staging/apps/caper`) without touching the
-  other values. Don't paste them anywhere else.
+- **Store them with one command.** The keys live in the AWS Secrets Manager
+  secret `production/apps/caper` (`staging/apps/caper` with `--staging`).
+  `scripts/store-push-credentials.sh` merges them in and keeps every other field;
+  it never prints values, and `--dry-run` lists only the field names that would
+  change. Don't paste the keys anywhere else.
+
+  ```bash
+  scripts/store-push-credentials.sh \
+    --team-id ABCDE12345 \
+    --apns-key-id KEY1234567 --apns-key ~/Downloads/AuthKey_KEY1234567.p8 \
+    --apns-sandbox-key-id KEY7654321 --apns-sandbox-key ~/Downloads/AuthKey_KEY7654321.p8 \
+    --fcm-service-account ~/Downloads/caper-push.json \
+    --platforms apns,fcm --enabled true \
+    --dry-run   # then run again without it
+  ```
+
+  Every option is optional, so a key can be added or rotated on its own. The
+  `.p8` keys are stored with their real newlines and the service account as one
+  compact JSON string; the API accepts PEM with real newlines or `\n` escapes.
+- **How the API picks them up.** The API already receives every property of
+  `production/apps/caper` as environment variables through the ExternalSecret
+  `caper-api-account` (`dataFrom: extract`, refreshed every 5 minutes, used with
+  `envFrom` and `optional: true` in joswayski/infrastructure
+  `clusters/production/apps/caper/api-deployment.yaml`). The deployment carries
+  `secret.reloader.stakater.com/auto: "true"`, so the API restarts when the secret
+  changes. New values therefore take effect within about 5 minutes with no
+  infrastructure PR or deploy, and turning a platform off is just editing
+  `PUSH_PLATFORMS` the same way. The gateway does not use this secret and doesn't
+  need to: the workers run in the API role.
 
 ### Apple (APNs)
 
@@ -647,8 +871,9 @@ You need the Account Holder or Admin role at
    5. Note the 10-character **Key ID** shown on the key page.
 3. **Create the sandbox key.** Repeat step 2 with the name `Caper APNs Sandbox`
    and **Environment** set to *Sandbox*. It is for Xcode builds and staging.
-4. The **Team ID** is already stored with the release-signing secrets; nothing
-   new is needed.
+4. The **Team ID** is the one already used for release signing (top right of the
+   developer site, or **Membership details**). Pass it to the script as
+   `--team-id`, with each key's ID and `.p8` file.
 
 These keys are separate from the App Store Connect API key that uploads
 TestFlight builds. No certificate, provisioning profile or app rebuild is needed
@@ -666,13 +891,15 @@ entitlement.
    debug builds: `chat.caper.android.debug`. Skip the SDK steps; the app
    already includes them.
 3. **Download `google-services.json`** after both apps are added, so it covers
-   both. Phase 1 makes CI write it into Android builds.
+   both. CI writes it into Android builds from the base64 GitHub secret
+   `GOOGLE_SERVICES_JSON`; it is client configuration, not a server secret.
 4. **Create the server credential.**
    1. In **Project settings → Service accounts → Manage service account
       permissions** (opens Google Cloud), create a service account named
       `caper-push`.
    2. Give it only the role **Firebase Cloud Messaging API Admin**.
-   3. Under **Keys → Add key → JSON**, download the key.
+   3. Under **Keys → Add key → JSON**, download the key, and store it with the
+      script's `--fcm-service-account`.
 
    The default `firebase-adminsdk` key also works, but it can administer the
    whole Firebase project.

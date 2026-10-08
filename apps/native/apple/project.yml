@@ -323,6 +323,7 @@ targets:
       - Tests/CaperCoreTests/MentionAutocompleteTests.swift
       - Tests/CaperCoreTests/MentionCardTests.swift
       - Tests/CaperCoreTests/MessageRequestsTests.swift
+      - Tests/CaperCoreTests/NotificationSettingsTests.swift
     dependencies:
       - target: CaperCoreIOS
       - target: CaperRTCBridgeIOS

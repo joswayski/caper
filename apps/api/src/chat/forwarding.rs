@@ -157,8 +157,14 @@ async fn persist_forward(
         .map_err(database_error)?;
     let seq = head + 1;
     let payload = json!({"id":random_id(15),"channelId":channel,"seq":seq.to_string(),"author":{"id":author_id,"name":name,"isGuest":false,"avatarId":avatar_id},"content":content,"createdAt":Utc::now().to_rfc3339(),"clientMessageId":input.client_message_id,"forward":forward,"forwardSeq":seq.to_string()});
-    sqlx::query("INSERT INTO public.messages(external_id,channel_id,session_id,client_message_id,request_hash,channel_seq,payload,forward_source_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
-        .bind(payload["id"].as_str()).bind(destination.id).bind(session).bind(input.client_message_id).bind(hash).bind(seq).bind(&payload).bind(source).execute(&mut *tx).await.map_err(database_error)?;
+    let message_id: i64 = sqlx::query_scalar("INSERT INTO public.messages(external_id,channel_id,session_id,client_message_id,request_hash,channel_seq,payload,forward_source_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id")
+        .bind(payload["id"].as_str()).bind(destination.id).bind(session).bind(input.client_message_id).bind(hash).bind(seq).bind(&payload).bind(source).fetch_one(&mut *tx).await.map_err(database_error)?;
+    // A forward is a new message in the destination, so it notifies like one.
+    if user.is_some() {
+        crate::push::enqueue(&mut tx, message_id)
+            .await
+            .map_err(database_error)?;
+    }
     sqlx::query("INSERT INTO public.channel_events(channel_id,seq,payload) VALUES($1,$2,$3)")
         .bind(destination.id).bind(seq).bind(json!({"type":"message.created","schemaVersion":1,"channelId":channel,"seq":seq.to_string(),"message":payload})).execute(&mut *tx).await.map_err(database_error)?;
     sqlx::query("UPDATE public.channels SET last_seq=$2 WHERE id=$1")
@@ -331,11 +337,34 @@ pub(super) async fn project_events(
         .fetch_all(&mut **tx)
         .await
         .map_err(database_error)?;
-    let forwards: Vec<(i64, i64, i64, String, Value)> = sqlx::query_as("SELECT f.id,f.channel_id,f.forward_source_id,c.external_id,f.payload FROM public.messages f JOIN public.messages source ON source.id=f.forward_source_id JOIN public.channels c ON c.id=f.channel_id LEFT JOIN public.spaces s ON s.id=c.space_id WHERE source.external_id=ANY($1) AND f.channel_id=ANY($2) AND c.deleted_at IS NULL AND (c.space_id IS NULL OR s.deleted_at IS NULL) ORDER BY f.channel_id,f.id")
+    // Read source snapshots with the wrappers, not once per forward while
+    // holding destination locks. Repeated sources share one statement snapshot.
+    type ProjectionRow = (
+        i64,
+        i64,
+        String,
+        Value,
+        Option<Value>,
+        i64,
+        Option<i16>,
+        Option<String>,
+    );
+    let forwards: Vec<ProjectionRow> = sqlx::query_as(
+        "SELECT f.id,f.channel_id,c.external_id,f.payload,
+                CASE WHEN sc.deleted_at IS NULL AND (sc.space_id IS NULL OR ss.deleted_at IS NULL) THEN source.payload END,
+                sc.last_seq,u.avatar_id,u.display_name
+         FROM public.messages f JOIN public.messages source ON source.id=f.forward_source_id
+         JOIN public.channels c ON c.id=f.channel_id LEFT JOIN public.spaces s ON s.id=c.space_id
+         JOIN public.channels sc ON sc.id=source.channel_id LEFT JOIN public.spaces ss ON ss.id=sc.space_id
+         JOIN public.chat_sessions cs ON cs.id=source.session_id
+         LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL
+         WHERE source.external_id=ANY($1) AND f.channel_id=ANY($2)
+           AND c.deleted_at IS NULL AND (c.space_id IS NULL OR s.deleted_at IS NULL)
+         ORDER BY f.channel_id,f.id")
         .bind(&targets).bind(&destinations).fetch_all(&mut **tx).await.map_err(database_error)?;
-    for (id, channel, source, external, mut payload) in forwards {
-        let snapshot = source_snapshot(tx, source)
-            .await?
+    for (id, channel, external, mut payload, source, head, avatar, name) in forwards {
+        let snapshot = source
+            .map(|source| json!({"message":shared_message(enrich_author(source,avatar,name.as_deref())),"seq":head.to_string()}))
             .unwrap_or_else(|| json!({"message":null,"seq":"0"}));
         if payload["forward"] == snapshot {
             continue;

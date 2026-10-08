@@ -361,6 +361,67 @@ async function sendingFixture(t: TestContext) {
   };
 }
 
+test("live updates reuse unaffected message objects without mutating previous snapshots", async (t) => {
+  const f = await sendingFixture(t);
+  f.sockets[0].message(committed({ clientMessageId: "first", text: "First" }, "1"));
+  const first = f.state.messages[0];
+  f.sockets[0].message(committed({ clientMessageId: "second", text: "Second" }, "2"));
+  assert.strictEqual(f.state.messages[0], first, "inserting a message must not clone every previous row");
+  const second = f.state.messages[1];
+  f.sockets[0].frame({
+    type: "message.reactions",
+    schemaVersion: 1,
+    channelId: "general",
+    seq: "3",
+    messageId: first.id,
+    reactions: [{ emoji: "👍", authorIds: ["other"] }],
+  });
+  assert.strictEqual(f.state.messages[1], second);
+  assert.notStrictEqual(f.state.messages[0], first);
+  assert.equal(first.reactions, undefined, "previous states stay immutable");
+  assert.deepEqual(f.state.messages[0].reactions, [{ emoji: "👍", authorIds: ["other"] }]);
+});
+
+test("pending edits and pins only copy affected rows, including when a newer edit supersedes the draft", async (t) => {
+  const f = await sendingFixture(t);
+  for (const seq of ["1", "2", "3"])
+    f.sockets[0].message(committed({ clientMessageId: seq, text: `Message ${seq}` }, seq));
+  const [original, untouched, pinTarget] = f.state.messages;
+  const responses: Array<(response: Response) => void> = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise<Response>((resolve) => responses.push(resolve)));
+  const editing = f.client.editMessage(original.id, "Draft", 1);
+  assert.strictEqual(f.state.messages[1], untouched);
+  assert.strictEqual(f.state.messages[2], pinTarget);
+  assert.equal(f.state.messages[0].content.text, "Draft");
+  assert.equal(original.content.text, "Message 1");
+  const pinning = f.client.setPin(pinTarget.id, true);
+  assert.strictEqual(f.state.messages[1], untouched);
+  assert.notStrictEqual(f.state.messages[2], pinTarget);
+  assert.equal(f.state.pinnedMessages[0].id, pinTarget.id);
+  assert.equal(pinTarget.pin, undefined);
+  const remote = {
+    ...original,
+    revision: 2,
+    editSeq: "4",
+    editedAt: original.createdAt,
+    content: { ...original.content, text: "Remote edit" },
+  };
+  f.sockets[0].frame({ type: "message.edited", schemaVersion: 1, channelId: "general", seq: "4", message: remote });
+  assert.equal(f.state.messages[0].content.text, "Remote edit");
+  assert.strictEqual(
+    f.state.messages[0],
+    f.client.snapshotHistory()?.messages[0],
+    "a superseded draft needs no projection copy",
+  );
+  responses[0](Response.json({ error: "message changed" }, { status: 409 }));
+  await assert.rejects(editing, /message changed/);
+  responses[1](Response.json({ error: "try again" }, { status: 503 }));
+  await assert.rejects(pinning, /try again/);
+  assert.strictEqual(f.state.messages[1], untouched);
+  assert.strictEqual(f.state.messages[2], pinTarget);
+  assert.equal(f.state.pinnedMessages.length, 0);
+});
+
 test("pin PUTs share live state without advancing HTTP replay or restoring a later unpin", async (t) => {
   const f = await sendingFixture(t);
   const original = committed({ clientMessageId: "pin-target", text: "Shared pin" }, "1");

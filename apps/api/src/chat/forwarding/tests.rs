@@ -576,7 +576,7 @@ async fn live_forwards_are_destination_authorized_flattened_and_replayable(pool:
 
 #[sqlx::test(migrations = "./migrations")]
 #[ignore = "requires disposable loopback DATABASE_URL"]
-async fn batched_hydration_preserves_sources_order_and_unavailability(pool: PgPool) {
+async fn batched_hydration_and_projection_preserve_sources_and_unavailability(pool: PgPool) {
     let user: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,display_name,avatar_id) VALUES('author','Current name',31) RETURNING id")
         .fetch_one(&pool).await.unwrap();
     let session: i64 = sqlx::query_scalar("INSERT INTO public.chat_sessions(external_id,token_hash,user_id,name) VALUES('session',$1,$2,'Old name') RETURNING id")
@@ -609,6 +609,8 @@ async fn batched_hydration_preserves_sources_order_and_unavailability(pool: PgPo
         sources.push(sqlx::query_scalar::<_, i64>("INSERT INTO public.messages(external_id,channel_id,session_id,client_message_id,request_hash,channel_seq,payload) VALUES($1,$2,$3,$4,$5,1,$6) RETURNING id")
             .bind(format!("source-{index}")).bind(channel).bind(session).bind(Uuid::new_v4()).bind(b"hash".as_slice()).bind(payload).fetch_one(&pool).await.unwrap());
     }
+    let destination: i64 = sqlx::query_scalar("INSERT INTO public.channels(external_id,space_id,name,last_seq) VALUES('destination',$1,'destination',149) RETURNING id")
+        .bind(spaces[0]).fetch_one(&pool).await.unwrap();
     let plain = json!({"id":"plain","content":{"text":"Ordinary message"}});
     let mut page = vec![plain.clone()];
     for index in 0..50 {
@@ -616,7 +618,7 @@ async fn batched_hydration_preserves_sources_order_and_unavailability(pool: PgPo
             "content":{"text":format!("Note {index}")},"forwardSeq":"7",
             "forward":{"message":{"content":{"text":"Stale source"}},"seq":"1"}});
         sqlx::query("INSERT INTO public.messages(external_id,channel_id,session_id,client_message_id,request_hash,channel_seq,payload,forward_source_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
-            .bind(message["id"].as_str()).bind(channels[0]).bind(session).bind(Uuid::new_v4()).bind(b"hash".as_slice())
+            .bind(message["id"].as_str()).bind(destination).bind(session).bind(Uuid::new_v4()).bind(b"hash".as_slice())
             .bind(100 + index as i64).bind(&message).bind(sources[index % sources.len()]).execute(&pool).await.unwrap();
         page.push(message);
     }
@@ -641,6 +643,55 @@ async fn batched_hydration_preserves_sources_order_and_unavailability(pool: PgPo
         assert_eq!(message["content"], before["content"]);
         assert_eq!(message["seq"], before["seq"]);
         assert_eq!(message["forwardSeq"], before["forwardSeq"]);
+    }
+    let events: Vec<_> = channels
+        .iter()
+        .enumerate()
+        .map(|(index, channel)| {
+            (
+                *channel,
+                40 + index as i64,
+                json!({"type":"message.edited","message":{"id":format!("source-{index}")}}),
+                None,
+                None,
+            )
+        })
+        .collect();
+    project_events(&mut tx, &events).await.unwrap();
+    tx.commit().await.unwrap();
+    // Retrying a committed projection must not produce more destination events.
+    let mut tx = pool.begin().await.unwrap();
+    project_events(&mut tx, &events).await.unwrap();
+    let projected: Vec<Value> = sqlx::query_scalar(
+        "SELECT payload FROM public.channel_events WHERE channel_id=$1 ORDER BY seq",
+    )
+    .bind(destination)
+    .fetch_all(&mut *tx)
+    .await
+    .unwrap();
+    assert_eq!(projected.len(), 50);
+    for (index, event) in projected.iter().enumerate() {
+        assert_eq!(event["type"], "message.forward");
+        assert_eq!(event["channelId"], "destination");
+        assert_eq!(event["seq"], (150 + index).to_string());
+        assert_eq!(event["message"]["forwardSeq"], event["seq"]);
+        assert_eq!(event["message"]["id"], format!("forward-{index}"));
+        assert_eq!(event["message"]["seq"], (100 + index).to_string());
+        assert_eq!(event["message"]["content"]["text"], format!("Note {index}"));
+        let stored: Value =
+            sqlx::query_scalar("SELECT payload FROM public.messages WHERE external_id=$1")
+                .bind(format!("forward-{index}"))
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        assert_eq!(stored, event["message"]);
+    }
+    // Verify both read hydration and durable projection against the seeded
+    // values, not against one another: both must clear unavailable originals.
+    for message in page
+        .iter()
+        .chain(projected.iter().map(|event| &event["message"]))
+    {
         if message["id"] == "plain" {
             assert_eq!(message, &plain);
             continue;

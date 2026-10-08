@@ -1,6 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
   Ban,
+  BellOff,
   ChevronDown,
   ChevronRight,
   Hash,
@@ -22,6 +23,17 @@ import Call, { type VoiceSlot } from "../pages/Call";
 import ChannelSidebar from "../pages/ChannelSidebar";
 import MemberPresence from "./MemberPresence";
 import { block, refreshBlocks, unblock, useBlockedIds } from "./blocks";
+import { DirectNotificationItems, LevelNotificationItems } from "./NotificationMenu";
+import {
+  changeChannelNotifications,
+  changeDirectNotifications,
+  changeSpaceNotifications,
+  inheritedLevel,
+  isMuted,
+  overrideFor,
+  refreshNotificationSettings,
+  useNotificationSettings,
+} from "./notifications";
 import Tooltip from "../components/Tooltip";
 import { createSpaceNavigation, type PreparedSpace } from "./navigation";
 import {
@@ -1402,6 +1414,22 @@ export default function Spaces({
   const [requestsOpen, setRequestsOpen] = useState(false);
   const [blockTarget, setBlockTarget] = useState<BlockedAccount>();
   const blockedIds = useBlockedIds();
+  const notifications = useNotificationSettings();
+  // Shown under the row whose notification change failed; the store has already reverted it.
+  const [notificationError, setNotificationError] = useState<string>();
+  const saveNotifications = (key: string, save: () => Promise<void>) => {
+    setNotificationError(undefined);
+    void save().catch(() => setNotificationError(key));
+  };
+  const notificationAlert = (key: string) =>
+    notificationError === key && (
+      <p className="space-sidebar-error notification-error" role="alert">
+        That change wasn’t saved. Try again.
+        <button type="button" onClick={() => setNotificationError(undefined)}>
+          Dismiss
+        </button>
+      </p>
+    );
   const [directView, setDirectView] = useState<{ conversation: DirectConversation }>();
   // DM `@` suggestions and mention profile cards; the previous list stays while
   // a refresh is in flight. Loaded once signed in and again whenever a DM opens.
@@ -1550,6 +1578,8 @@ export default function Spaces({
     document.addEventListener("visibilitychange", refresh);
     // Blocked accounts' messages collapse in every chat.
     void refreshBlocks().catch(() => undefined);
+    // Mutes dim sidebar rows; menus and settings read the same copy.
+    void refreshNotificationSettings().catch(() => undefined);
     return () => {
       current = false;
       clearInterval(timer);
@@ -1823,6 +1853,7 @@ export default function Spaces({
   const changeChannelMembership = async (action: () => Promise<unknown>, openChannel?: string, left?: Channel) => {
     if (!detail || membershipSubmitting.current) return;
     const spaceId = detail.space.id;
+    const navigationRequest = navigationRevision.current;
     membershipSubmitting.current = true;
     membershipRevision.current++;
     setMembershipPending(true);
@@ -1843,9 +1874,14 @@ export default function Spaces({
       const next = await getSpace(spaceId);
       if (activeSpace.current !== spaceId) return;
       replaceDetail(next);
-      setChannelInvitation(undefined);
-      setLeavingChannel(undefined);
+      if (navigationRequest !== navigationRevision.current) return;
+      setChannelInvitation((current) => (current === channelInvitation ? undefined : current));
+      setLeavingChannel((current) => (current === leavingChannel ? undefined : current));
       if (openChannel) choose(spaceId, openChannel, true);
+    } catch (reason) {
+      // The membership write still completes, but its error belongs only to
+      // the navigation that started it, including an away-and-back round trip.
+      if (navigationRequest === navigationRevision.current) throw reason;
     } finally {
       membershipRevision.current++;
       membershipSubmitting.current = false;
@@ -1959,28 +1995,75 @@ export default function Spaces({
         )}
         {directs
           .filter((conversation) => conversation.peer.id !== account?.id && directStatus(conversation) !== "incoming")
-          .map((conversation) => (
-            <li key={conversation.id}>
-              <button
-                type="button"
-                className="channel-select direct-select"
-                aria-current={conversation.id === directView?.conversation.id ? "page" : undefined}
-                title={`@${conversation.peer.username}`}
-                onClick={() => openDirect(conversation)}
-              >
-                <span className="direct-avatar" aria-hidden="true">
-                  <Avatar avatarId={conversation.peer.avatarId} name={conversation.peer.displayName} />
-                </span>
-                <span>{conversation.peer.displayName}</span>
-                {blockedIds.has(conversation.peer.id) ? (
-                  <small>Blocked</small>
-                ) : (
-                  directStatus(conversation) === "outgoing" && <small>Request sent</small>
-                )}
-                {directUnread(conversation) && <span className="direct-unread" aria-label="Unread messages" />}
-              </button>
-            </li>
-          ))}
+          .map((conversation) => {
+            const conversationNotifications = overrideFor(notifications, { conversationId: conversation.id });
+            const muted = isMuted(conversationNotifications?.mutedUntil);
+            return (
+              <li key={conversation.id} data-muted={muted ? "" : undefined}>
+                <div className="direct-line">
+                  <button
+                    type="button"
+                    className="channel-select direct-select"
+                    aria-current={conversation.id === directView?.conversation.id ? "page" : undefined}
+                    title={`@${conversation.peer.username}`}
+                    onClick={() => openDirect(conversation)}
+                  >
+                    <span className="direct-avatar" aria-hidden="true">
+                      <Avatar avatarId={conversation.peer.avatarId} name={conversation.peer.displayName} />
+                    </span>
+                    <span>{conversation.peer.displayName}</span>
+                    {blockedIds.has(conversation.peer.id) ? (
+                      <small>Blocked</small>
+                    ) : (
+                      directStatus(conversation) === "outgoing" && <small>Request sent</small>
+                    )}
+                    {/* A muted DM shows no unread dot. */}
+                    {muted ? (
+                      <>
+                        <BellOff className="muted-icon" aria-hidden="true" />
+                        <span className="sr-only">, muted</span>
+                      </>
+                    ) : (
+                      directUnread(conversation) && <span className="direct-unread" aria-label="Unread messages" />
+                    )}
+                  </button>
+                  <details
+                    className="channel-menu direct-menu"
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") {
+                        event.currentTarget.open = false;
+                        event.currentTarget.querySelector("summary")?.focus();
+                      }
+                    }}
+                    onBlur={(event) => {
+                      if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
+                    }}
+                  >
+                    <summary
+                      className="channel-manage"
+                      aria-label={`Options for ${conversation.peer.displayName}`}
+                      title={`Conversation options for ${conversation.peer.displayName}`}
+                    >
+                      <MoreHorizontal aria-hidden="true" />
+                    </summary>
+                    <div className="space-actions">
+                      <DirectNotificationItems
+                        loaded={notifications.loaded}
+                        off={conversationNotifications?.level === "nothing"}
+                        mutedUntil={conversationNotifications?.mutedUntil ?? null}
+                        onChange={(change) =>
+                          saveNotifications(`dm:${conversation.id}`, () =>
+                            changeDirectNotifications(conversation.id, change),
+                          )
+                        }
+                      />
+                    </div>
+                  </details>
+                </div>
+                {notificationAlert(`dm:${conversation.id}`)}
+              </li>
+            );
+          })}
       </ul>
       <button
         type="button"
@@ -2129,6 +2212,8 @@ export default function Spaces({
     );
 
   const joinedChannels = detail.channels.filter((item) => item.joined !== false);
+  const spaceNotifications = overrideFor(notifications, { spaceId: detail.space.id });
+  const spaceMuted = isMuted(spaceNotifications?.mutedUntil);
   const channelDialogs = (
     <>
       {browseOpen && (
@@ -2179,22 +2264,31 @@ export default function Spaces({
 
   const rail = (
     <nav className="space-rail" aria-label="Spaces">
-      {spaces.map((space) => (
-        <div className="space-rail-item" key={space.id} data-active={space.id === detail.space.id}>
-          <button
-            type="button"
-            title={space.name}
-            aria-label={space.name}
-            aria-current={space.id === detail.space.id ? "page" : undefined}
-            aria-busy={pending && space.id === selected.spaceId}
-            onMouseEnter={() => prefetch(space.id)}
-            onFocus={() => prefetch(space.id)}
-            onClick={() => choose(space.id)}
+      {spaces.map((space) => {
+        const muted = isMuted(overrideFor(notifications, { spaceId: space.id })?.mutedUntil);
+        return (
+          <div
+            className="space-rail-item"
+            key={space.id}
+            data-active={space.id === detail.space.id}
+            data-muted={muted ? "" : undefined}
           >
-            <span>{space.name.slice(0, 1).toUpperCase()}</span>
-          </button>
-        </div>
-      ))}
+            <button
+              type="button"
+              title={muted ? `${space.name} (muted)` : space.name}
+              aria-label={muted ? `${space.name}, muted` : space.name}
+              aria-current={space.id === detail.space.id ? "page" : undefined}
+              aria-busy={pending && space.id === selected.spaceId}
+              onMouseEnter={() => prefetch(space.id)}
+              onFocus={() => prefetch(space.id)}
+              onClick={() => choose(space.id)}
+            >
+              <span>{space.name.slice(0, 1).toUpperCase()}</span>
+              {muted && <BellOff className="space-rail-muted" aria-hidden="true" />}
+            </button>
+          </div>
+        );
+      })}
       {invitations.map((space) => (
         <button
           key={space.id}
@@ -2262,8 +2356,13 @@ export default function Spaces({
                 if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
               }}
             >
-              <summary aria-label={`${detail.space.name} actions`}>
+              <summary aria-label={`${detail.space.name} actions${spaceMuted ? ", muted" : ""}`}>
                 <h1 title={detail.space.name}>{detail.space.name}</h1>
+                {spaceMuted && (
+                  <span className="space-muted" title="Muted">
+                    <BellOff aria-hidden="true" />
+                  </span>
+                )}
                 <ChevronDown aria-hidden="true" />
               </summary>
               <div className="space-actions">
@@ -2277,6 +2376,17 @@ export default function Spaces({
                   <Search aria-hidden="true" />
                   Browse channels
                 </button>
+                <LevelNotificationItems
+                  noun="space"
+                  loaded={notifications.loaded}
+                  level={spaceNotifications?.level ?? null}
+                  inherited={inheritedLevel(notifications, { spaceId: detail.space.id })}
+                  mutedUntil={spaceNotifications?.mutedUntil ?? null}
+                  onChange={(change) => {
+                    const spaceId = detail.space.id;
+                    saveNotifications(`space:${spaceId}`, () => changeSpaceNotifications(spaceId, change));
+                  }}
+                />
                 {owner ? (
                   <>
                     <button
@@ -2313,6 +2423,7 @@ export default function Spaces({
           )}
         </header>
       )}
+      {notificationAlert(`space:${detail.space.id}`)}
       {!!detail.space.id && !detail.space.demo && (
         <div className="channel-section-heading">
           <button
@@ -2384,8 +2495,10 @@ export default function Spaces({
       <ul id="space-channel-list" data-collapsed={detail.space.demo || channelsExpanded ? undefined : ""}>
         {joinedChannels.map((item) => {
           const voice = voiceFor(item.id);
+          const itemNotifications = overrideFor(notifications, { spaceId: detail.space.id, channelId: item.id });
+          const itemMuted = isMuted(itemNotifications?.mutedUntil);
           return (
-            <li key={item.id} data-voice={voice ? "" : undefined}>
+            <li key={item.id} data-voice={voice ? "" : undefined} data-muted={itemMuted || spaceMuted ? "" : undefined}>
               <div className="channel-line">
                 <button
                   className="channel-select"
@@ -2398,6 +2511,12 @@ export default function Spaces({
                 >
                   {item.private ? <LockKeyhole aria-hidden="true" /> : <Hash aria-hidden="true" />}
                   <span>{item.name}</span>
+                  {itemMuted && (
+                    <>
+                      <BellOff className="muted-icon" aria-hidden="true" />
+                      <span className="sr-only">, muted</span>
+                    </>
+                  )}
                   {voice?.timer}
                 </button>
                 {!detail.space.demo && (
@@ -2421,6 +2540,20 @@ export default function Spaces({
                       <MoreHorizontal aria-hidden="true" />
                     </summary>
                     <div className="space-actions">
+                      <LevelNotificationItems
+                        noun="channel"
+                        loaded={notifications.loaded}
+                        level={itemNotifications?.level ?? null}
+                        inherited={inheritedLevel(notifications, { spaceId: detail.space.id, channelId: item.id })}
+                        mutedUntil={itemNotifications?.mutedUntil ?? null}
+                        mutedWithSpace={spaceMuted}
+                        onChange={(change) => {
+                          const spaceId = detail.space.id;
+                          saveNotifications(`channel:${item.id}`, () =>
+                            changeChannelNotifications(spaceId, item.id, change),
+                          );
+                        }}
+                      />
                       {owner && (
                         <button
                           type="button"
@@ -2454,6 +2587,7 @@ export default function Spaces({
                 {voice?.summary}
               </div>
               {voice?.list}
+              {notificationAlert(`channel:${item.id}`)}
             </li>
           );
         })}

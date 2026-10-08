@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { getAccount, getRememberedAccount, logout, type Account } from "../account/client";
 import ProfileForm from "../account/ProfileForm";
+import NotificationSettings from "../account/NotificationSettings";
 import PrivacySettings from "../account/PrivacySettings";
 import Wordmark from "../components/Wordmark";
 
@@ -37,6 +38,7 @@ function Profile() {
           Your username is unique. Your display name is what people see in conversations.
         </p>
         <ProfileForm account={account} onSaved={() => navigate({ to: "/spaces" })} />
+        {account.username && <NotificationSettings />}
         {account.username && <PrivacySettings />}
         <div className="mt-5 flex items-center justify-end text-[.85rem]">
           <button
