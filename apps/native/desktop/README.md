@@ -61,6 +61,17 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   accounts and "Who can start a DM with you" (Anyone, People in my spaces, No
   one new), saved on change and reverted if saving fails. Pinned-message lists
   still show blocked authors' pins.
+- Notification controls, which govern phone push (desktop shows no OS
+  notifications yet). The space menu and each channel's options menu set
+  **Notifications** (Default, All messages, Only @mentions, Nothing) and
+  **Mute** (15 minutes, 1, 8 or 24 hours, or until turned back on); a channel
+  in a muted space says "Muted with the space". DM rows get a hover options
+  button to turn notifications off or mute the conversation; personal notes
+  get none. Muted spaces, channels and DMs are dimmed with a bell-slash, and a
+  muted DM shows no unread dot. **Settings… → Notifications → Notify me
+  about** sets the account level. Settings load after sign-in and when
+  Settings or a menu opens; changes apply at once and revert with an inline
+  error if saving fails.
 - Message reactions. Hovering or keyboard-focusing a reaction chip shows who
   reacted (large emoji plus the shared summary wording); names load on demand
   with history's read access and are cached per message reaction revision.
@@ -279,6 +290,9 @@ and the global list without any space membership.
 `parity-requests-outgoing` an unaccepted request you sent; `parity-blocked`
 Maya's #general messages collapsed after blocking her; `parity-blocked-dm` the
 blocked-DM composer.
+`parity-muted` previews a muted space in the rail, a muted channel, a muted
+DM with unread messages (no dot) and a DM with notifications off (still
+dotted); it sends no notification requests.
 `parity-reactions` adds reaction chips whose hover cards name the labelled
 fixture members locally instead of requesting who reacted.
 `parity-opening`, `parity-opening-narrow`, and `parity-opening-error` preview
