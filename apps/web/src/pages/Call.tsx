@@ -1558,6 +1558,7 @@ export default function Call({
             key={`${channel?.id ?? "general"}:${channelJoined}`}
             name={name}
             signedIn={!!account}
+            accountId={account?.id}
             identityReady={identityReady && engaged}
             direct={channel?.direct}
             onReadCursor={onReadCursor}

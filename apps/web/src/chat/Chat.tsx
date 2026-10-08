@@ -85,6 +85,7 @@ const measureItem = (element: HTMLElement, field: "offsetHeight" | "offsetWidth"
 export default function Chat({
   name,
   signedIn,
+  accountId,
   identityReady,
   channelId,
   channelName: expectedChannelName,
@@ -111,6 +112,8 @@ export default function Chat({
 }: {
   name: string;
   signedIn: boolean;
+  /** Known viewer identity, independent of the chat sending capability. */
+  accountId?: string;
   identityReady: boolean;
   channelId?: string;
   channelName?: string;
@@ -136,6 +139,7 @@ export default function Chat({
   onMessagePerson?: (username: string) => Promise<void>;
 }) {
   const [state, setState] = useState(() => initialChatView(initialHistory, initialHistoryError));
+  const viewerId = accountId ?? state.author?.id;
   const [showConnectionStatus, setShowConnectionStatus] = useState(false);
   const [firstItemIndex, setFirstItemIndex] = useState(INITIAL_ITEM_INDEX);
   const [draft, setDraft] = useState("");
@@ -791,8 +795,8 @@ export default function Chat({
                 <MessageReactions
                   message={message}
                   channelId={state.channelId}
-                  authorId={state.author?.id}
-                  readOnly={readOnly}
+                  authorId={viewerId}
+                  readOnly={readOnly || !state.author}
                   save={reactionSaves[message.id]}
                   onReact={react}
                   onShowReactors={(emoji, anchor) => showReactors(message.id, emoji, anchor)}
@@ -1121,7 +1125,7 @@ export default function Chat({
             key={actionMessage.id}
             message={actionMessage}
             target={actionTarget}
-            authorId={state.author?.id}
+            authorId={viewerId}
             canReact={!readOnly && !!state.author}
             canPin={!readOnly && !!state.author}
             pinning={pinning.has(actionMessage.id)}

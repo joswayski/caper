@@ -2674,7 +2674,7 @@ private struct ReactionChip: View {
     @State private var tooltipVisible = false
     @FocusState private var focused: Bool
     #endif
-    private var own: Bool { chat.currentAuthor.map { reaction.authorIds.contains($0.id) } ?? false }
+    private var own: Bool { reactors.viewerID.map { reaction.authorIds.contains($0) } ?? false }
 
     /// Names once loaded; until then, or after a failure, the snapshot count.
     private var summary: String {
