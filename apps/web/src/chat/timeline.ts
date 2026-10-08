@@ -126,6 +126,19 @@ export class ChatTimeline {
     }
   }
 
+  private withReactions(message: ChatMessage) {
+    const unseen = this.unseenReactions.get(message.id);
+    for (const snapshot of [
+      this.byId.get(message.id),
+      this.pinnedById.get(message.id),
+      unseen && { reactions: unseen.reactions, reactionSeq: unseen.seq },
+    ]) {
+      if (snapshot && sequence(snapshot.reactionSeq ?? "0") > sequence(message.reactionSeq ?? "0"))
+        message = { ...message, reactions: snapshot.reactions, reactionSeq: snapshot.reactionSeq };
+    }
+    return message;
+  }
+
   mergePin(event: ChatPinEvent) {
     this.mergePinMessage(event.message);
   }
@@ -203,16 +216,13 @@ export class ChatTimeline {
       }
       return;
     }
-    let snapshot = this.withEdit(
-      previous && sequence(previous.pinSeq ?? "0") > sequence(message.pinSeq ?? "0") ? previous : message,
-    );
     // Pin revisions and reaction revisions are independent. A delayed pin
     // response must not replace newer reactions, including on unloaded pins.
-    const visibleReactions = this.byId.get(message.id);
-    const unseen = this.unseenReactions.get(message.id);
-    const reactionSeq = visibleReactions?.reactionSeq ?? unseen?.seq ?? "0";
-    if (sequence(reactionSeq) > sequence(snapshot.reactionSeq ?? "0"))
-      snapshot = { ...snapshot, reactions: visibleReactions?.reactions ?? unseen?.reactions, reactionSeq };
+    const snapshot = this.withReactions(
+      this.withEdit(
+        previous && sequence(previous.pinSeq ?? "0") > sequence(message.pinSeq ?? "0") ? previous : message,
+      ),
+    );
     if (snapshot.pinSeq !== undefined) this.pinUpdates.set(snapshot.id, snapshot);
     if (snapshot.pin) {
       const forward = this.forwardUpdates.get(snapshot.id);
@@ -237,7 +247,7 @@ export class ChatTimeline {
       return;
     }
     this.mergeEdit(message);
-    message = this.withEdit(message);
+    message = this.withReactions(this.withEdit(message));
     const rootId = message.threadRootId ?? message.id;
     const previous = this.threadSummaries.get(rootId);
     if (message.thread && (!previous || sequence(message.thread.seq) > sequence(previous.seq))) {
