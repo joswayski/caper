@@ -125,6 +125,7 @@ impl PendingSend {
     }
 }
 
+#[derive(Clone)]
 struct ThreadView {
     root: String,
     loading: bool,
@@ -406,6 +407,7 @@ struct CaperApp {
     mention_card: Option<MentionCard>,
     thread_view: Option<ThreadView>,
     thread_request: u64,
+    thread_pages: BTreeMap<String, ThreadView>,
     thread_drafts: BTreeMap<String, (String, bool)>,
     thread_only_rows: BTreeSet<String>,
     reaction_picker: Option<String>,
@@ -544,6 +546,7 @@ impl CaperApp {
             mention_card: None,
             thread_view: None,
             thread_request: 0,
+            thread_pages: BTreeMap::new(),
             thread_drafts: BTreeMap::new(),
             thread_only_rows: BTreeSet::new(),
             reaction_picker: None,
@@ -671,6 +674,29 @@ impl CaperApp {
                     app.timeline
                         .reset(messages, "4")
                         .expect("valid reaction fixture");
+                } else if name.starts_with("parity-thread") {
+                    let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+                    let root = messages[0].id.clone();
+                    let loading = name.contains("loading");
+                    if !loading {
+                        messages[1].thread_root_id = Some(root.clone());
+                        messages[1].content.text =
+                            "TEST FIXTURE — Replies stay put when you reopen this thread.".into();
+                    }
+                    app.timeline
+                        .reset(messages, "4")
+                        .expect("valid thread fixture");
+                    let thread = ThreadView {
+                        root: root.clone(),
+                        loading,
+                        has_more: false,
+                        before: None,
+                        error: None,
+                    };
+                    if !loading {
+                        app.thread_pages.insert(root, thread.clone());
+                    }
+                    app.thread_view = Some(thread);
                 } else if name == "parity-mentions" {
                     // Labelled sample entries as the server would resolve them:
                     // you (Fixture Owner) are named once and by Alex's @everyone.
@@ -1683,6 +1709,7 @@ impl CaperApp {
                                 thread.loading = false;
                                 thread.has_more = page.has_more;
                                 thread.before = before.or(thread.before.take());
+                                self.thread_pages.insert(root, thread.clone());
                             }
                         }
                         Err(error) if error.access_denied => {
@@ -2542,6 +2569,7 @@ impl CaperApp {
             })
             .cloned()
             .collect();
+        self.thread_pages.clear();
         self.thread_only_rows.clear();
         messages.extend(std::mem::take(&mut history.messages));
         if let Err(error) = self.timeline.reset(messages, &history.cursor) {
@@ -2956,6 +2984,7 @@ impl CaperApp {
         self.timeline = Timeline::default();
         self.thread_view = None;
         self.thread_request += 1;
+        self.thread_pages.clear();
         self.thread_drafts.clear();
         self.thread_only_rows.clear();
         self.older_armed = false;
@@ -3514,6 +3543,11 @@ impl CaperApp {
         self.older_error = None;
         self.has_more = false;
         self.timeline = Timeline::default();
+        self.thread_view = None;
+        self.thread_request += 1;
+        self.thread_pages.clear();
+        self.thread_drafts.clear();
+        self.thread_only_rows.clear();
         self.forwarding.close();
         self.older_armed = false;
         self.older_anchor = None;
@@ -3575,6 +3609,18 @@ impl CaperApp {
     }
 
     fn open_thread(&mut self, root: String) {
+        if self
+            .thread_view
+            .as_ref()
+            .is_some_and(|thread| thread.root == root)
+        {
+            return;
+        }
+        self.thread_request += 1;
+        if let Some(cached) = self.thread_pages.get(&root) {
+            self.thread_view = Some(cached.clone());
+            return;
+        }
         self.thread_view = Some(ThreadView {
             root,
             loading: true,
@@ -7232,9 +7278,6 @@ impl CaperApp {
                 if let Some(parent) = rows.iter().find(|message| message.id == root) {
                     self.messages_or_blocked(ui, &[parent]);
                 }
-                if loading {
-                    ui.label("Loading thread…");
-                }
                 if let Some(error) = error {
                     ui.colored_label(ERROR, error);
                     if ui.button("Retry").clicked() {
@@ -7252,6 +7295,9 @@ impl CaperApp {
                     .iter()
                     .filter(|message| message.thread_root_id.is_some())
                     .collect();
+                if loading && replies.is_empty() {
+                    ui.allocate_ui(egui::vec2(ui.available_width(), 196.0), message_skeleton);
+                }
                 if replies.is_empty() && !loading {
                     ui.label("No replies yet. Start the thread.");
                 }
@@ -16219,6 +16265,146 @@ mod tests {
         assert_eq!(app.selected_direct.as_deref(), Some("dm0000000002"));
         assert!(app.directs.iter().any(|direct| direct.id == "dm0000000002"));
         assert!(app.mention_card.is_none());
+    }
+
+    #[test]
+    fn thread_skeletons_never_displace_loaded_replies() {
+        for size in [egui::vec2(1440.0, 900.0), egui::vec2(390.0, 844.0)] {
+            let context = egui::Context::default();
+            context.enable_accesskit();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-thread-loading"),
+            );
+            let frame = |app: &mut CaperApp| {
+                context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                        ..Default::default()
+                    },
+                    |context| app.page(context),
+                )
+            };
+            frame(&mut app);
+            let cold = frame(&mut app);
+            assert!(
+                cold.platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .any(|(_, node)| node.label() == Some("Loading messages"))
+            );
+            let root = app.thread_view.as_ref().unwrap().root.clone();
+            let mut reply = app.timeline.messages().nth(1).unwrap().clone();
+            reply.thread_root_id = Some(root);
+            reply.content.text = "TEST FIXTURE — Visible reply".into();
+            app.timeline.prepend(vec![reply]).unwrap();
+            app.thread_view.as_mut().unwrap().loading = false;
+            frame(&mut app);
+            let loaded = frame(&mut app);
+            let position = text_position(&loaded, "TEST FIXTURE — Visible reply");
+            app.thread_view.as_mut().unwrap().loading = true;
+            let refreshing = frame(&mut app);
+            assert_eq!(
+                text_position(&refreshing, "TEST FIXTURE — Visible reply"),
+                position
+            );
+            assert!(!refreshing.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.job.text == "Loading thread…")));
+            assert!(
+                !refreshing
+                    .platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .any(|(_, node)| node.label() == Some("Loading messages"))
+            );
+        }
+    }
+
+    #[test]
+    fn repeated_thread_opens_preserve_pending_requests_and_cached_pagination() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-mentions"),
+        );
+        let messages: Vec<_> = app.timeline.messages().cloned().collect();
+        let root = &messages[0];
+        let mut latest = messages[2].clone();
+        latest.thread_root_id = Some(root.id.clone());
+        let mut older = messages[1].clone();
+        older.thread_root_id = Some(root.id.clone());
+        let path = format!(
+            "GET /api/chat/channels/{}/messages/{}/thread",
+            root.channel_id, root.id
+        );
+        let latest_page =
+            serde_json::json!({"root":root,"messages":[latest],"cursor":"4","hasMore":true})
+                .to_string();
+        let older_page =
+            serde_json::json!({"root":root,"messages":[older],"cursor":"4","hasMore":false})
+                .to_string();
+        let (base, seen) = account_server(vec![
+            (
+                Box::leak(path.clone().into_boxed_str()),
+                200,
+                Box::leak(latest_page.into_boxed_str()),
+            ),
+            (
+                Box::leak(format!("{path}?before=3").into_boxed_str()),
+                200,
+                Box::leak(older_page.into_boxed_str()),
+            ),
+        ]);
+        // Fixture mode isolates this loopback worker from account credentials.
+        app.worker =
+            crate::worker::Worker::new(crate::api::Api::new(&base).unwrap(), context.clone());
+        app.open_thread(root.id.clone());
+        let pending_request = app.thread_request;
+        app.open_thread(root.id.clone());
+        assert_eq!(app.thread_request, pending_request);
+        receive_until(&mut app, |app| {
+            app.thread_view
+                .as_ref()
+                .is_some_and(|thread| !thread.loading)
+        });
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        app.load_thread(true);
+        let paging_request = app.thread_request;
+        app.open_thread(root.id.clone());
+        assert_eq!(app.thread_request, paging_request);
+        receive_until(&mut app, |app| {
+            app.thread_view
+                .as_ref()
+                .is_some_and(|thread| !thread.loading)
+        });
+        assert_eq!(seen.lock().unwrap().len(), 2);
+        app.thread_drafts
+            .insert(root.id.clone(), ("Keep this draft".into(), true));
+        app.thread_view = None;
+        app.open_thread(root.id.clone());
+        let thread = app.thread_view.as_ref().unwrap();
+        assert!(!thread.loading && !thread.has_more);
+        assert_eq!(thread.before.as_deref(), Some("2"));
+        assert_eq!(
+            app.thread_drafts[&root.id],
+            ("Keep this draft".into(), true)
+        );
+        assert_eq!(seen.lock().unwrap().len(), 2, "cached open must not fetch");
+        app.reload_channel();
+        assert!(
+            app.thread_pages.is_empty(),
+            "resync invalidates pagination caches"
+        );
+        app.clear_channel_state();
+        assert!(app.thread_view.is_none() && app.thread_pages.is_empty());
     }
 
     #[test]

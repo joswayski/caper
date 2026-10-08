@@ -1056,7 +1056,6 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             TextButton(viewModel::closeThread) { Text("Back to channel") }
         }
         HorizontalDivider(color = Border)
-        if (thread.loading) Text("Loading thread…", Modifier.padding(18.dp), color = TextMuted)
         thread.error?.let { Text(it, Modifier.padding(12.dp), color = ErrorText); TextButton({ viewModel.loadThread() }) { Text("Retry") } }
         if (thread.hasMore) TextButton({ viewModel.loadThread(older = true) }, enabled = !thread.loading) { Text("Load older replies") }
         val rows = state.messages.filter { it.id == thread.rootId || it.threadRootId == thread.rootId }
@@ -1426,6 +1425,19 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
               }
             }
         }
+        if (inThread && state.thread?.loading == true && messages.none { it.threadRootId == state.thread.rootId }) item("thread-loading") {
+            Column(Modifier.fillMaxWidth().semantics { contentDescription = "Loading thread replies" }) {
+                repeat(2) { index ->
+                    Row(Modifier.fillMaxWidth().height(70.dp).padding(horizontal = 18.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Box(Modifier.size(34.dp).background(Border, CircleShape))
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Box(Modifier.width(96.dp).height(12.dp).background(Border, RoundedCornerShape(4.dp)))
+                            Box(Modifier.fillMaxWidth(if (index == 0) 0.76f else 0.54f).height(10.dp).background(Border, RoundedCornerShape(4.dp)))
+                        }
+                    }
+                }
+            }
+        }
         state.pendingMessage?.takeIf { inThread || it.threadRootId == null }?.let { pending -> item("pending:${pending.clientMessageId}") {
             Column {
                 if (messages.lastOrNull()?.createdAt?.let { sameLocalDay(it, pending.createdAt) } != true) {
@@ -1435,7 +1447,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 Box(Modifier.padding(start = 62.dp, end = 18.dp)) { Column { pendingStatus() } }
             }
         } }
-        if (messages.isEmpty() && state.pendingMessage == null) item { Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
+        if (messages.isEmpty() && state.pendingMessage == null && !(inThread && state.thread?.loading == true)) item { Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(7.dp)) {
                 Text("No messages yet.", color = TextMuted)
                 Text("Start the conversation in #${state.selectedChannel?.name.orEmpty()}.", color = TextMuted, fontSize = 12.sp)

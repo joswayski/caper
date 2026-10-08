@@ -71,6 +71,14 @@ try {
   wait(
     `!!document.querySelector('${channel(root.clientMessageId)}') && !document.querySelector('.chat-initial-messages')`,
   );
+  evaluate(`(() => {
+    const original = window.fetch.bind(window);
+    window.threadRequests = [];
+    window.fetch = (input, init) => {
+      if (String(input).includes('/thread')) window.threadRequests.push(String(input));
+      return original(input, init);
+    };
+  })()`);
   if (process.env.MESSAGE_TEST_CHROME) {
     assert.equal(evaluate('matchMedia("(hover: hover) and (pointer: fine)").matches'), true);
     browser("hover", "#chat-heading");
@@ -149,6 +157,30 @@ try {
   );
   screenshot("threads-desktop");
   browser("fill", "#chat-thread-reply", "Saved draft for Alex");
+  const requestCount = evaluate("window.threadRequests.length");
+  const positions = () =>
+    evaluate(
+      `Array.from(document.querySelectorAll('.chat-thread-panel .chat-message')).map(row => row.getBoundingClientRect().top)`,
+    );
+  const before = positions();
+  browser("click", `${channel(root.clientMessageId)} .chat-thread-summary`);
+  browser("click", `${channel(root.clientMessageId)} .chat-thread-summary`);
+  assert.equal(evaluate("window.threadRequests.length"), requestCount, "repeated clicks cannot fetch again");
+  assert.deepEqual(positions(), before, "repeated clicks cannot shift the displayed replies");
+  assert.equal(
+    evaluate('!!document.querySelector(".chat-thread-skeleton, .chat-thread-messages[aria-busy=true]")'),
+    false,
+  );
+  assert.equal(evaluate('document.querySelector("#chat-thread-reply").value'), "Saved draft for Alex");
+  if (process.env.MESSAGE_TEST_CHROME) {
+    browser("hover", `${channel(other.clientMessageId)} .chat-reply-thread`);
+    wait(`window.threadRequests.some(url => url.includes('/${other.id}/thread'))`);
+    assert.equal(
+      evaluate(`!!document.querySelector('${thread(root.clientMessageId)}')`),
+      true,
+      "hover does not change the open thread",
+    );
+  }
   open(other.clientMessageId);
   assert.equal(evaluate('document.querySelector("#chat-thread-reply").value'), "");
   browser("fill", "#chat-thread-reply", "Saved draft for Maya");
@@ -165,6 +197,11 @@ try {
   browser("click", `${channel(broadcast.clientMessageId)} .chat-thread-context`);
   wait(`!!document.querySelector('${thread(root.clientMessageId)}')`);
   assert.equal(
+    evaluate(`window.threadRequests.filter(url => url.includes('/${root.id}/thread')).length`),
+    1,
+    "closing and reopening uses the loaded thread",
+  );
+  assert.equal(
     evaluate('document.querySelectorAll(".chat-thread-panel .chat-message").length'),
     3,
     "A broadcast opens its original root, never a nested thread",
@@ -177,8 +214,13 @@ try {
     window.threadFetch = original;
     window.fetch = (input, init) => String(input).includes('/thread') ? new Promise(resolve => { window.releaseThread = () => resolve(Response.json({ error: 'TEST FIXTURE: thread unavailable' }, { status: 503 })); }) : original(input, init);
   })()`);
-  browser("click", `${channel(other.clientMessageId)} .chat-reply-thread`);
+  browser("click", `${channel(initial.messages[0].clientMessageId)} .chat-reply-thread`);
   wait('document.querySelector(".chat-thread-messages").getAttribute("aria-busy") === "true"');
+  assert.equal(
+    evaluate('document.querySelector(".chat-thread-skeleton").getAttribute("aria-label")'),
+    "Loading thread replies",
+  );
+  assert.equal(evaluate('document.querySelector(".chat-thread-status")'), null, "no text loading row");
   screenshot("threads-desktop-loading");
   evaluate("window.releaseThread()");
   wait('document.querySelector(".chat-thread-status[role=alert]")?.textContent.includes("TEST FIXTURE")');
@@ -228,6 +270,17 @@ try {
     "Touch controls must not overlap",
   );
   screenshot("threads-mobile-channel");
+  evaluate(`(() => {
+    const original = window.fetch.bind(window);
+    window.threadFetch = original;
+    window.fetch = (input, init) => String(input).includes('/thread') ? new Promise((resolve, reject) => { window.releaseThread = () => original(input, init).then(resolve, reject); }) : original(input, init);
+  })()`);
+  browser("click", `${channel(initial.messages[2].clientMessageId)} .chat-reply-thread`);
+  wait('!!document.querySelector(".chat-thread-skeleton")');
+  screenshot("threads-mobile-loading");
+  evaluate("window.fetch = window.threadFetch; window.releaseThread()");
+  wait('!document.querySelector(".chat-thread-messages[aria-busy=true]")');
+  close();
   open(root.clientMessageId);
   wait('document.querySelector(".chat-thread-panel").getAttribute("aria-modal") === "true"');
   assert.equal(evaluate('document.querySelector(".chat-panel").inert'), true);
@@ -246,7 +299,7 @@ try {
   wait('!document.querySelector(".chat-thread-panel")');
   assert.equal(evaluate('document.querySelector(".chat-panel").inert'), false);
   console.log(
-    "PASS: isolated replies, root highlight/count/avatars, shared broadcast/reaction identity, per-root drafts, loading/error/retry, focus restoration, touch target separation, full-screen dialog, inert background and mobile Back.",
+    "PASS: repeated clicks make zero requests and zero reply-position changes; hover/focus prefetch, cached reopening, cold-load skeletons, loading/error/retry, isolated replies, shared broadcast reactions, drafts, focus restoration, touch targets, full-screen dialog, inert background and mobile Back.",
   );
 } finally {
   socket?.close();

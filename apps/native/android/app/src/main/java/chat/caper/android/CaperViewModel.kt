@@ -69,6 +69,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var notificationEdits: NotificationEdits? = null
     private var foreground = false
     private var threadRequest = 0L
+    private val threadPages = mutableMapOf<String, ThreadUi>()
 
     init {
         loadHome()
@@ -922,8 +923,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun closeThread() { ++threadRequest; mutable.value = mutable.value.copy(thread = null) }
 
     fun openThread(root: String) {
-        mutable.value = mutable.value.copy(thread = ThreadUi(root))
-        loadThread()
+        if (mutable.value.thread?.rootId == root) return
+        ++threadRequest
+        val cached = threadPages[root]
+        mutable.value = mutable.value.copy(thread = cached ?: ThreadUi(root))
+        if (cached == null) loadThread()
     }
 
     fun loadThread(older: Boolean = false) {
@@ -938,10 +942,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 if (request != threadRequest || channelRequest != generation || mutable.value.thread?.rootId != thread.rootId) return@launch
                 val rows = listOf(page.root) + page.messages
                 val loaded = mutable.value.messages.map { it.id }.toSet()
+                val pageState = thread.copy(loading = false, error = null, hasMore = page.hasMore, before = page.messages.firstOrNull()?.seq ?: thread.before)
+                threadPages[thread.rootId] = pageState
                 mutable.value = mutable.value.copy(
                     messages = projectMessages(mergeTimelinePins(mergeMessages(authoritativeMessages(), rows, unloadedReactions))),
                     threadOnlyRows = mutable.value.threadOnlyRows + rows.filter { it.id !in loaded && (it.threadRootId == null || it.broadcast) }.map { it.id },
-                    thread = thread.copy(loading = false, hasMore = page.hasMore, before = page.messages.firstOrNull()?.seq ?: thread.before),
+                    thread = pageState,
                 )
             } catch (error: Throwable) {
                 if (request != threadRequest || channelRequest != generation) return@launch
@@ -1542,6 +1548,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun closeChannel(clearPending: Boolean) {
         gateway?.close(); gateway = null
+        ++threadRequest
+        threadPages.clear()
         durableReplayCursor = null
         refreshingHistory = false
         gatewayStatus?.cancel(); gatewayStatus = null
