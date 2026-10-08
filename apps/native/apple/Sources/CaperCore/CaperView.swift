@@ -3680,6 +3680,7 @@ private struct LoginPage: View {
                     .font(CaperTheme.font(16)).foregroundStyle(CaperTheme.muted).lineSpacing(7).padding(.bottom, 20)
                 if model.challengeID == nil {
                     CaperField(title: "Email address", text: $email, placeholder: "you@example.com")
+                        .disabled(model.busy)
                     if let error = model.error { LoginError(message: error).padding(.top, 18) }
                     Button { Task { await model.requestCode(email: email) } } label: {
                         HStack(spacing: 12) { Text(model.busy ? "Sending…" : "Email me a code"); Image(systemName: "arrow.right") }
@@ -3687,7 +3688,7 @@ private struct LoginPage: View {
                         .frame(maxWidth: .infinity, alignment: .trailing).padding(.top, 12)
                 } else {
                     CaperField(title: "Sign-in code", text: $code)
-                        .disabled(model.loginAttemptsRemaining == 0)
+                        .disabled(model.busy || model.loginAttemptsRemaining == 0)
                         .onChange(of: code) { _, value in
                             // Web accepts the unambiguous code alphabet only, uppercased, six characters.
                             let allowed = Set("ABCDEFGHJKMNPQRSTWXYZ23456789")
@@ -3713,7 +3714,7 @@ private struct LoginPage: View {
                             HStack { Text(model.busy ? "Checking…" : "Continue"); Spacer(); Image(systemName: "arrow.right") }
                         }.buttonStyle(LoginActionButton()).disabled(model.busy || code.count != 6).padding(.top, 12)
                     }
-                    Button("Use a different email") { model.challengeID = nil; model.error = nil }.buttonStyle(.plain).foregroundStyle(CaperTheme.muted).padding(.top, 18).modifier(ControlHover())
+                    Button("Use a different email") { model.challengeID = nil; model.error = nil }.buttonStyle(.plain).foregroundStyle(CaperTheme.muted).padding(.top, 18).modifier(ControlHover()).disabled(model.busy)
                 }
             }
             .frame(maxWidth: 440)

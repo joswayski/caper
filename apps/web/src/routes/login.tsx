@@ -34,13 +34,14 @@ function Login() {
   }, [navigate]);
 
   async function sendCode() {
+    if (pending) return;
     setPending(true);
     setError(undefined);
-    setAttemptsRemaining(undefined);
     try {
       const result = await requestEmailCode(email);
       setChallengeId(result.challengeId);
       setCode("");
+      setAttemptsRemaining(undefined);
     } catch (requestError) {
       setError(loginError(requestError));
     } finally {
@@ -55,7 +56,7 @@ function Login() {
 
   async function verifyCode(event: FormEvent) {
     event.preventDefault();
-    if (!challengeId) return;
+    if (!challengeId || pending || attemptsRemaining === 0) return;
     setPending(true);
     setError(undefined);
     try {
@@ -107,7 +108,7 @@ function Login() {
                 spellCheck={false}
                 pattern="[A-HJKMNPQRSTWXYZ2-9]{6}"
                 maxLength={6}
-                disabled={attemptsRemaining === 0}
+                disabled={pending || attemptsRemaining === 0}
                 required
                 autoFocus
               />
@@ -189,6 +190,7 @@ function Login() {
                 onChange={(event) => setEmail(event.target.value)}
                 autoComplete="email"
                 placeholder="you@example.com"
+                disabled={pending}
                 required
                 autoFocus
               />
