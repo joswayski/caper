@@ -15801,8 +15801,10 @@ mod tests {
             assert!(
                 images.iter().any(|rect| (rect.width() - 20.0).abs() < 0.01
                     && (rect.height() - 20.0).abs() < 0.01
-                    && (rect.center().x as f64 - (row.x0 + 17.5)).abs() < 0.5
-                    && (rect.center().y as f64 - (row.y0 + row.y1) / 2.0).abs() < 0.5),
+                    // Images snap to whole pixels, so a centre drawn at
+                    // +17.5 lands up to half a pixel away.
+                    && (rect.center().x as f64 - (row.x0 + 17.5)).abs() <= 0.5
+                    && (rect.center().y as f64 - (row.y0 + row.y1) / 2.0).abs() <= 0.5),
                 "Each DM uses saved avatar artwork, aligned with self-notes in {row:?}: {images:?}"
             );
         }
