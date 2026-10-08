@@ -31,8 +31,7 @@ def with_changelog(latest, previous):
             if previous["commit"] != commit:
                 raise ValueError("a published build number cannot change commits")
             # A workflow rerun must not replace the original notes with an empty range.
-            return fit({**latest, "notes": previous["notes"], "changelog": history,
-                        "changelog_from_build": oldest})
+            return fit({**latest, "notes": previous["notes"], "changelog": history, "changelog_from_build": oldest})
         ancestor = subprocess.run(
             ["git", "merge-base", "--is-ancestor", previous["commit"], commit],
             check=False,
@@ -42,7 +41,7 @@ def with_changelog(latest, previous):
         if ancestor == 1:
             notes = f"• Rebuilt earlier source {commit[:7]}; replaces the previous release."
         else:
-            subjects = git("log", "--first-parent", "--format=%s", f'{previous["commit"]}..{commit}')
+            subjects = git("log", "--first-parent", "--format=%s", f"{previous['commit']}..{commit}")
             notes = "\n".join(f"• {subject}" for subject in subjects.splitlines())
     else:
         subjects = git("log", "--first-parent", "--format=%s", commit)

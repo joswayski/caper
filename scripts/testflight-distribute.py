@@ -44,10 +44,15 @@ def call(method: str, path: str, body: dict | None = None, query: dict | None = 
     if query:
         url += "?" + urllib.parse.urlencode(query)
     data = json.dumps(body).encode() if body is not None else None
-    request = urllib.request.Request(url, data=data, method=method, headers={
-        "Authorization": f"Bearer {token()}",
-        "Content-Type": "application/json",
-    })
+    request = urllib.request.Request(
+        url,
+        data=data,
+        method=method,
+        headers={
+            "Authorization": f"Bearer {token()}",
+            "Content-Type": "application/json",
+        },
+    )
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
             raw = response.read()
@@ -82,9 +87,18 @@ def main() -> None:
     deadline = time.monotonic() + PROCESSING_TIMEOUT_S
     build = None
     while time.monotonic() < deadline:
-        found = must(call("GET", "/builds", query={
-            "filter[app]": app_id, "filter[version]": build_number, "limit": "1",
-        }), "Looking up the build")["data"]
+        found = must(
+            call(
+                "GET",
+                "/builds",
+                query={
+                    "filter[app]": app_id,
+                    "filter[version]": build_number,
+                    "limit": "1",
+                },
+            ),
+            "Looking up the build",
+        )["data"]
         state = found[0]["attributes"].get("processingState") if found else "NOT_LISTED"
         print(f"Build {build_number}: {state}", flush=True)
         if state == "VALID":
@@ -101,15 +115,35 @@ def main() -> None:
         localizations = must(call("GET", f"/builds/{build_id}/betaBuildLocalizations"), "Reading What to Test")["data"]
         english = next((item for item in localizations if item["attributes"].get("locale") == "en-US"), None)
         if english:
-            must(call("PATCH", f"/betaBuildLocalizations/{english['id']}", {"data": {
-                "type": "betaBuildLocalizations", "id": english["id"], "attributes": {"whatsNew": notes},
-            }}), "Updating What to Test")
+            must(
+                call(
+                    "PATCH",
+                    f"/betaBuildLocalizations/{english['id']}",
+                    {
+                        "data": {
+                            "type": "betaBuildLocalizations",
+                            "id": english["id"],
+                            "attributes": {"whatsNew": notes},
+                        }
+                    },
+                ),
+                "Updating What to Test",
+            )
         else:
-            must(call("POST", "/betaBuildLocalizations", {"data": {
-                "type": "betaBuildLocalizations",
-                "attributes": {"locale": "en-US", "whatsNew": notes},
-                "relationships": {"build": {"data": {"type": "builds", "id": build_id}}},
-            }}), "Setting What to Test")
+            must(
+                call(
+                    "POST",
+                    "/betaBuildLocalizations",
+                    {
+                        "data": {
+                            "type": "betaBuildLocalizations",
+                            "attributes": {"locale": "en-US", "whatsNew": notes},
+                            "relationships": {"build": {"data": {"type": "builds", "id": build_id}}},
+                        }
+                    },
+                ),
+                "Setting What to Test",
+            )
 
     groups = must(call("GET", f"/apps/{app_id}/betaGroups", query={"limit": "200"}), "Listing tester groups")["data"]
     if not groups:
@@ -121,25 +155,37 @@ def main() -> None:
         if attributes.get("isInternalGroup") and attributes.get("hasAccessToAllBuilds"):
             print(f"{name}: internal group already receives every build")
             continue
-        status, body = call("POST", f"/betaGroups/{group['id']}/relationships/builds", {
-            "data": [{"type": "builds", "id": build_id}],
-        })
+        status, body = call(
+            "POST",
+            f"/betaGroups/{group['id']}/relationships/builds",
+            {
+                "data": [{"type": "builds", "id": build_id}],
+            },
+        )
         if status >= 300 and status != 409:
             sys.exit(f"Adding the build to {name} failed with HTTP {status}: {json.dumps(body)[:2000]}")
         print(f"{name}: build {build_number} added")
         external = external or not attributes.get("isInternalGroup")
 
     if external:
-        status, body = call("POST", "/betaAppReviewSubmissions", {"data": {
-            "type": "betaAppReviewSubmissions",
-            "relationships": {"build": {"data": {"type": "builds", "id": build_id}}},
-        }})
+        status, body = call(
+            "POST",
+            "/betaAppReviewSubmissions",
+            {
+                "data": {
+                    "type": "betaAppReviewSubmissions",
+                    "relationships": {"build": {"data": {"type": "builds", "id": build_id}}},
+                }
+            },
+        )
         if status == 409:
             print("Beta app review: already submitted or not required for this build")
         elif status >= 300:
             sys.exit(f"Submitting for beta app review failed with HTTP {status}: {json.dumps(body)[:2000]}")
         else:
-            print("Submitted for beta app review; external testers get it once Apple approves (usually quickly after the first build)")
+            print(
+                "Submitted for beta app review; external testers get it once Apple approves (usually quickly after the first build)"
+            )
 
 
 if __name__ == "__main__":

@@ -129,6 +129,15 @@ rustup toolchain install 1.94.0 --profile minimal --component rustfmt --componen
 step "installing JavaScript dependencies"
 npm ci
 
+step "installing locked Python tooling"
+uv_version="$(sed -n 's/^required-version = "==\([^"]*\)"/\1/p' pyproject.toml)"
+if ! command -v uv >/dev/null 2>&1 || [[ "$(uv --version | awk '{print $2}')" != "$uv_version" ]]; then
+  curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 \
+    "https://astral.sh/uv/$uv_version/install.sh" | env UV_NO_MODIFY_PATH=1 sh
+  export PATH="$HOME/.local/bin:$PATH"
+fi
+uv sync --locked
+
 step "fetching Rust dependencies"
 cargo fetch --locked
 

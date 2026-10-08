@@ -1,6 +1,6 @@
 """Standard Finder installation layout; dmgbuild writes it without a GUI."""
 
-files = [defines["app"]]
+files = [defines["app"]]  # noqa: F821 - dmgbuild injects defines when executing this file.
 symlinks = {"Applications": "/Applications"}
 format = "UDZO"
 background = "builtin-arrow"

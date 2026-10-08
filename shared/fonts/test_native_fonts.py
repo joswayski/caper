@@ -42,8 +42,9 @@ class NativeFontsTest(unittest.TestCase):
                 archive.writestr(member, font)
                 archive.writestr(native_fonts.LICENSE_MEMBER, license_text)
                 archive.writestr("../unexpected.txt", b"must not be extracted")
-            with patch.object(native_fonts, "LICENSE_SHA256", native_fonts.sha256(license_text)), patch.object(
-                native_fonts, "FONTS", {member: ("Test.otf", native_fonts.sha256(font))}
+            with (
+                patch.object(native_fonts, "LICENSE_SHA256", native_fonts.sha256(license_text)),
+                patch.object(native_fonts, "FONTS", {member: ("Test.otf", native_fonts.sha256(font))}),
             ):
                 cache = root / "cache"
                 native_fonts.extract_fonts(archive_path, cache)
@@ -58,9 +59,11 @@ class NativeFontsTest(unittest.TestCase):
     def test_container_metadata_can_vary_but_resource_bytes_cannot(self) -> None:
         member = "Satoshi_Complete/Fonts/OTF/Test.otf"
         font, license_text = b"font", b"license"
-        with tempfile.TemporaryDirectory() as temporary, patch.object(
-            native_fonts, "FONTS", {member: ("Test.otf", native_fonts.sha256(font))}
-        ), patch.object(native_fonts, "LICENSE_SHA256", native_fonts.sha256(license_text)):
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            patch.object(native_fonts, "FONTS", {member: ("Test.otf", native_fonts.sha256(font))}),
+            patch.object(native_fonts, "LICENSE_SHA256", native_fonts.sha256(license_text)),
+        ):
             root = Path(temporary)
             hashes = []
             for year in (2020, 2026):

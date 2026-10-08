@@ -23,15 +23,23 @@ class ChangelogTests(unittest.TestCase):
         self.git("config", "user.email", "fixture@example.test")
 
     def git(self, *args):
-        return subprocess.check_output(["git", "-c", "commit.gpgsign=false", "-C", str(self.repo), *args], text=True).strip()
+        return subprocess.check_output(
+            ["git", "-c", "commit.gpgsign=false", "-C", str(self.repo), *args], text=True
+        ).strip()
 
     def commit(self, subject):
         self.git("commit", "--allow-empty", "-qm", subject)
         return self.git("rev-parse", "HEAD")
 
     def latest(self, build, commit):
-        return {"schema": 1, "build": build, "version": f"0.1.{build}", "commit": commit,
-                "notes": "Legacy title", "platforms": {}}
+        return {
+            "schema": 1,
+            "build": build,
+            "version": f"0.1.{build}",
+            "commit": commit,
+            "notes": "Legacy title",
+            "platforms": {},
+        }
 
     def produce(self, latest, previous=None):
         path = self.repo / "latest.json"
@@ -84,11 +92,14 @@ class ChangelogTests(unittest.TestCase):
 
     def test_size_limit_keeps_whole_groups_and_advances_exact_cutoff(self):
         manifest = self.latest(12, "abc")
-        manifest.update(changelog_from_build=0, changelog=[
-            {"build": 12, "version": "0.1.12", "notes": "Newest"},
-            {"build": 9, "version": "0.1.9", "notes": "Keep this"},
-            {"build": 4, "version": "0.1.4", "notes": "ü" * 200},
-        ])
+        manifest.update(
+            changelog_from_build=0,
+            changelog=[
+                {"build": 12, "version": "0.1.12", "notes": "Newest"},
+                {"build": 9, "version": "0.1.9", "notes": "Keep this"},
+                {"build": 4, "version": "0.1.4", "notes": "ü" * 200},
+            ],
+        )
         limit = len(changelog.encode({**manifest, "changelog": manifest["changelog"][:2], "changelog_from_build": 4}))
         with patch.object(changelog, "MAX_MANIFEST_BYTES", limit):
             result = changelog.fit(manifest)

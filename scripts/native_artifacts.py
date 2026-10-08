@@ -44,8 +44,10 @@ def stage(target: str, revision: str, source: Path, destination: Path) -> None:
         "target": target,
         "channel": "development",
         "distribution": (
-            "simulator-only" if target.startswith("ios-simulator")
-            else "debug-signed" if target == "android-debug"
+            "simulator-only"
+            if target.startswith("ios-simulator")
+            else "debug-signed"
+            if target == "android-debug"
             else "not-distribution-signed"
         ),
         "featureParityVerified": False,

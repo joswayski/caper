@@ -57,8 +57,18 @@ for (const [name, url, hash] of [
 }
 const exporter = `import json,onnx,sys\nm=onnx.load(sys.argv[1]);d={x.key:x.value for x in m.metadata_props};o={'stateSize':int(d['state_size']),'erbNormStateSize':int(d['erb_norm_state_size']),'erbNormInit':[float(x) for x in d['erb_norm_init'].split(',')],'specNormInit':[float(x) for x in d['spec_norm_init'].split(',')]};open(sys.argv[2],'w').write(json.dumps(o,separators=(',',':'))+'\\n')`;
 const result = spawnSync(
-  "python",
-  ["-c", exporter, new URL(filename, destination).pathname, new URL("metadata.json", destination).pathname],
-  { stdio: "inherit" },
+  "uv",
+  [
+    "run",
+    "--locked",
+    "--only-group",
+    "audio",
+    "python",
+    "-c",
+    exporter,
+    new URL(filename, destination).pathname,
+    new URL("metadata.json", destination).pathname,
+  ],
+  { cwd: new URL("../", import.meta.url), stdio: "inherit" },
 );
-if (result.status !== 0) throw new Error("metadata export failed (install Python package `onnx`)");
+if (result.status !== 0) throw new Error("metadata export failed (requires uv and the locked audio dependency group)");

@@ -3428,6 +3428,8 @@ and disables recording during initialization. A fallback preserves the existing
 tracks and clips; record a fresh sample to hear the newly active filter. Its 14.9 MB model and
 runtime load lazily from the same versioned asset directory.
 Use `node scripts/vendor-dpdfnet.mjs 8` to reproduce its model/metadata/licenses.
+Offline authoring requires uv 0.12.23; the script runs ONNX metadata export in the
+locked `audio` dependency group, without a global Python package installation.
 The active status appears only after the processor acknowledges initialization.
 The recovery order is DPDFNet-8 HR → DPDFNet-2 HR → RNNoise, for initialization
 failure, sustained backlog or processor failure. Healthy 8 HR is never downgraded
