@@ -145,10 +145,13 @@ enum TimelineEntry: Equatable, Identifiable {
     case message(ChatMessage)
     case blocked(BlockedRun)
 
+    /// The newest message the entry contains: both the row's list identity
+    /// and its scroll `.id`. When blocks load and messages fold into a run,
+    /// the run takes over that message's row instead of clashing with it.
     var id: String {
         switch self {
         case let .message(message): return message.id
-        case let .blocked(run): return run.id
+        case let .blocked(run): return run.messages.last?.id ?? run.id
         }
     }
     var messages: [ChatMessage] {
@@ -158,7 +161,7 @@ enum TimelineEntry: Equatable, Identifiable {
         }
     }
     /// The scroll target: the last message the entry contains.
-    var scrollID: String { messages.last?.id ?? id }
+    var scrollID: String { id }
     var firstCreatedAt: String { messages.first?.createdAt ?? "" }
     var lastCreatedAt: String { messages.last?.createdAt ?? "" }
 }

@@ -119,6 +119,13 @@ final class MessageRequestsTests: XCTestCase {
         XCTAssertEqual(run.label, "2 blocked messages")
         XCTAssertEqual(run.id, "blocked-m2")
         XCTAssertEqual(TimelineEntry.blocked(run).scrollID, "m3", "scrolling to the newest message lands on its run")
+        XCTAssertEqual(TimelineEntry.blocked(run).id, "m3", "a run's list identity is its scroll anchor")
+        // Blocks arrive after history: every entry keeps a message's own ID,
+        // so folding messages into a run never adds a clashing identity.
+        let unblocked = Set(BlockedMessages.entries(messages, blocked: [], viewerID: me).map(\.id))
+        let collapsed = BlockedMessages.entries(messages, blocked: blocked, viewerID: me).map(\.id)
+        XCTAssertEqual(Set(collapsed).count, collapsed.count)
+        XCTAssertTrue(Set(collapsed).isSubset(of: unblocked))
         XCTAssertEqual(BlockedRun(messages: [messages[4]], revealed: false).label, "1 blocked message")
     }
 
