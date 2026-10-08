@@ -855,13 +855,17 @@ final class CaperParityUITests: XCTestCase {
         let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: mute)
         XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 5), .completed, "Mute is available once settings load")
         #if os(macOS)
-        // One typeText call. Each XCUITest action first snapshots the app's
-        // accessibility tree, and in CI's recordings that closed the open
-        // "Mute channel" submenu every time (after a hover, an existence check,
-        // or the next separate key press), so the choice never landed. One
-        // call snapshots once, while only the top-level menu is open. ↓↓↓
-        // reaches "Mute channel" after Channel settings and Notifications,
-        // → opens its submenu at "For 15 minutes", ↓↓↓↓ reaches the last preset.
+        // Notification settings load just after launch, so this menu opened
+        // with both submenus disabled, and the Mac menu keeps that for
+        // keyboard navigation: in CI's recording ↓ only alternated between
+        // Channel settings and Leave channel. Reopen it now that they are
+        // enabled, then type the keys in one call, which snapshots the app
+        // once while only the top-level menu is open. ↓↓↓ reaches "Mute
+        // channel", → opens its submenu at "For 15 minutes", ↓↓↓↓ reaches the
+        // last preset.
+        app.typeKey(.escape, modifierFlags: [])
+        options.tap()
+        XCTAssertTrue(mute.waitForExistence(timeout: 5))
         let down = XCUIKeyboardKey.downArrow.rawValue
         app.typeText(String(repeating: down, count: 3) + XCUIKeyboardKey.rightArrow.rawValue
                      + String(repeating: down, count: 4) + XCUIKeyboardKey.return.rawValue)
