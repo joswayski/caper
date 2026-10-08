@@ -639,8 +639,10 @@ Delivery and recovery:
    checked per subscription; this is not a claim of zero per-recipient SQL work.
 
 Limits: 30 new messages/guest/minute, 120/channel/minute, and 60 new sender
-sessions/minute per account (clients mint one per opened conversation, so a
-site-wide budget let a few accounts block everyone). `GATEWAY_MAX_CONNECTIONS` defaults to 4096
+sessions/minute per account (a site-wide budget let a few accounts block
+everyone). Signed-in clients reuse one sender session per account across
+conversations (web per page, Apple/Android/Rust desktop per sign-in) and mint a
+new one only after a 401 or a profile rename; a 403 refusal never replaces it. `GATEWAY_MAX_CONNECTIONS` defaults to 4096
 per pod (an admission limit, **not measured capacity**). Each channel has a bounded
 256-event ring. A lagging receiver replays from Postgres in batches of 128.
 Application sockets use 4 KiB read buffers, a 256-frame outgoing queue, and a
@@ -3219,7 +3221,10 @@ contain `{}`. Older clients without `snapshots=1` still receive `changed` and fe
 the roster. No private monitor session is exposed or authorized
 to receive the public stream. One stream per participant is retained; a new one
 replaces the previous stream. Auth/expiry is rechecked for every event, and SSE
-alone never renews the lease. There is no durable event log or second registry.
+alone never renews the lease. A transient (5xx) database recheck failure on a
+heartbeat or roster change sends nothing for that event and keeps the stream; the
+next successful check delivers any missed revision. Denials, setup failures, three
+consecutive transient failures (about 30s) and a shared-store outage still end it. There is no durable event log or second registry.
 
 Join/rejoin waits for the selected audio processor before publication. The SSE
 handshake and publication run concurrently; the published track stays disabled
@@ -4714,6 +4719,11 @@ account's message, and from a request. Clients confirm first. A block:
   their sends in an existing DM fail with the same refusal a privacy setting gives,
   so they can't tell which it was. You see "You blocked @name" with **Unblock**
   instead of the composer.
+- stops every other interaction in that DM too: reactions, pins, edits and typing
+  get the same 403 refusal (`dm_not_accepted` for the blocked person, `dm_blocked`
+  for you), and none of them accepts a pending request. Every client shows the
+  refusal on the message and keeps the conversation open, treats a refused send as
+  final (Edit or Dismiss), and hides reactions, pins and edits in a DM you blocked.
 - declines any pending request from them.
 - hides their messages wherever you share a conversation. Each run of consecutive
   messages becomes one row, "⊘ N blocked messages — Show", in channels, threads and

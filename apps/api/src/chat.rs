@@ -613,7 +613,11 @@ async fn publish_typing(
         let mut connection = chat.pool.acquire().await.map_err(database_error)?;
         authorize_sender(&mut connection, token).await?
     };
-    channel_participation(&chat.pool, channel, user_id).await?;
+    let access = channel_participation(&chat.pool, channel, user_id).await?;
+    if let (None, Some(user_id)) = (access.space_id, user_id) {
+        let mut connection = chat.pool.acquire().await.map_err(database_error)?;
+        crate::direct::authorize_interaction(&mut connection, access.id, user_id).await?;
+    }
     let event = json!({"type":"typing.updated","channelId":channel,"author":{"id":author_id,"name":name,"isGuest":user_id.is_none(),"avatarId":avatar_id},"typing":typing});
     // Atomic shared limits and publication. No draft text, DB write, outbox, or
     // sequence allocation. Broker time orders duplicate/overlapping streams;
@@ -901,6 +905,9 @@ async fn persist_reaction(
         .bind(channel).bind(user_id).fetch_optional(&mut *tx).await.map_err(database_error)?;
     let (channel_id, head) =
         access.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
+    if let (None, Some(user_id)) = (space_id, user_id) {
+        crate::direct::authorize_interaction(&mut tx, channel_id, user_id).await?;
+    }
     let row: Option<(i64, Value)> = sqlx::query_as(
         "SELECT id,payload FROM public.messages WHERE channel_id=$1 AND external_id=$2 FOR UPDATE",
     )
@@ -1042,6 +1049,9 @@ async fn persist_pin(
         .bind(channel).bind(user_id).fetch_optional(&mut *tx).await.map_err(database_error)?;
     let (channel_id, head) =
         access.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
+    if let (None, Some(user_id)) = (space_id, user_id) {
+        crate::direct::authorize_interaction(&mut tx, channel_id, user_id).await?;
+    }
     let row: Option<(i64, Value, Option<i16>, Option<String>)> = sqlx::query_as(
         "SELECT m.id,m.payload,u.avatar_id,u.display_name FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.channel_id=$1 AND m.external_id=$2 FOR UPDATE OF m")
         .bind(channel_id).bind(message).fetch_optional(&mut *tx).await.map_err(database_error)?;
