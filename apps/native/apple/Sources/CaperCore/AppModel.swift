@@ -13,6 +13,7 @@ public final class AppModel {
     public var selectedSpaceID: String?
     public var selectedChannelID: String?
     public var directMessages: [DirectMessageConversation] = []
+    public private(set) var directMessagesError: String?
     public var selectedDirectMessageID: String?
     /// `GET /api/people` for `@` suggestions in DMs; nil until the first load
     /// succeeds. A refresh keeps the previous list until it completes.
@@ -213,7 +214,7 @@ public final class AppModel {
         voice.leaveImmediately()
         directMessageRefreshTask?.cancel(); directMessageRefreshTask = nil
         account = nil; spaces = []; invitations = []; pendingMembers = []; detail = nil
-        directMessages = []; selectedDirectMessageID = nil; people = nil; showingMessageRequests = false
+        directMessages = []; directMessagesError = nil; selectedDirectMessageID = nil; people = nil; showingMessageRequests = false
         blockedAccounts = []; blockedIDs = []; blocksLoaded = false; blocksError = nil
         directMessagePrivacy = nil; privacyError = nil; chat.setBlockedAuthors([])
         spacesLoaded = false; spacesError = nil
@@ -286,6 +287,7 @@ public final class AppModel {
             guard generation == attempt, account != nil else { return }
             let wasRequest = selectedDirectMessage?.status == .incoming
             directMessages = conversations
+            directMessagesError = nil
             // Accepted elsewhere (or by sending from an older client): reopen it
             // with a chat session so the composer works.
             if wasRequest, let selected = selectedDirectMessage, selected.status != .incoming {
@@ -293,7 +295,7 @@ public final class AppModel {
             }
         } catch is CancellationError {} catch {
             guard generation == attempt else { return }
-            self.error = error.localizedDescription
+            directMessagesError = error.localizedDescription
         }
     }
 

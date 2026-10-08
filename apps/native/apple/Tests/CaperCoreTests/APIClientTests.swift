@@ -1720,6 +1720,84 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(try JSONSerialization.jsonObject(with: XCTUnwrap(requests[2].2)) as? [String: String], ["seq": "12"])
     }
 
+    @MainActor
+    func testDirectMessageRefreshClearsRecoveredDNSErrorWithoutClearingOtherErrors() async {
+        let model = AppModel(api: client())
+        model.account = Account(id: "me", username: "me", displayName: "Me")
+        let previous = DirectMessageConversation(id: "dm0000000001", peer: DirectMessagePeer(id: "peer", username: "peer", displayName: "Peer"), lastSeq: "1", readSeq: "0")
+        model.directMessages = [previous]
+        model.error = "Your profile could not be saved."
+        var failure = true
+        var empty = false
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path, "/api/dms")
+            if failure { throw URLError(.cannotFindHost) }
+            if empty { return (200, Data(#"{"conversations":[]}"#.utf8)) }
+            return (200, Data(#"{"conversations":[{"id":"dm0000000001","peer":{"id":"peer","username":"peer","displayName":"Peer"},"lastSeq":"12","readSeq":"9"}]}"#.utf8))
+        }
+
+        await model.refreshDirectMessages()
+        XCTAssertEqual(model.directMessages, [previous], "a failed refresh keeps the last list")
+        XCTAssertEqual(model.directMessagesError, URLError(.cannotFindHost).localizedDescription)
+        XCTAssertEqual(model.error, "Your profile could not be saved.", "DM failures must not replace operation errors")
+
+        failure = false
+        await model.refreshDirectMessages()
+        XCTAssertNil(model.directMessagesError, "network recovery clears the stale DM error")
+        XCTAssertEqual(model.directMessages.map(\.id), ["dm0000000001"])
+        XCTAssertEqual(model.directMessages.first?.lastSeq, "12")
+        XCTAssertEqual(model.directMessages.first?.readSeq, "9")
+        XCTAssertEqual(model.error, "Your profile could not be saved.", "background success must not hide another failure")
+
+        failure = true
+        await model.refreshDirectMessages()
+        XCTAssertNotNil(model.directMessagesError)
+        failure = false; empty = true
+        await model.refreshDirectMessages()
+        XCTAssertTrue(model.directMessages.isEmpty)
+        XCTAssertNil(model.directMessagesError, "an empty successful list also clears the error")
+        XCTAssertEqual(model.error, "Your profile could not be saved.")
+    }
+
+    @MainActor
+    func testLogoutClearsDMRefreshErrorAndFencesLateRefreshResults() async {
+        for status in [200, 503] {
+            let model = AppModel(api: client())
+            model.account = Account(id: "me", username: "me", displayName: "Me")
+            MockURLProtocol.handler = { request in
+                if request.url?.path == "/api/auth/logout" { return (204, Data()) }
+                XCTAssertEqual(request.url?.path, "/api/dms")
+                throw URLError(.cannotFindHost)
+            }
+            await model.refreshDirectMessages()
+            XCTAssertNotNil(model.directMessagesError)
+            XCTAssertNil(model.error, "a background refresh uses its own error state")
+
+            let refreshStarted = expectation(description: "DM refresh started before logout (\(status))")
+            var delayedRefresh: MockURLProtocol?
+            MockURLProtocol.deferred = { request, urlRequest in
+                guard urlRequest.url?.path == "/api/dms" else { return false }
+                delayedRefresh = request
+                refreshStarted.fulfill()
+                return true
+            }
+            let refresh = Task { await model.refreshDirectMessages() }
+            await fulfillment(of: [refreshStarted], timeout: 1)
+            await model.logout()
+            XCTAssertNil(model.directMessagesError, "logout clears the previous account's error immediately")
+            let data = status == 200
+                ? Data(#"{"conversations":[{"id":"dm0000000001","peer":{"id":"peer","username":"peer","displayName":"Peer"},"lastSeq":"12","readSeq":"9"}]}"#.utf8)
+                : Data(#"{"error":"Late DM refresh failure."}"#.utf8)
+            delayedRefresh?.respond(status: status, data: data)
+            await refresh.value
+            MockURLProtocol.deferred = nil
+            XCTAssertNil(model.account)
+            XCTAssertTrue(model.directMessages.isEmpty, "an old request cannot restore signed-out data")
+            XCTAssertNil(model.directMessagesError, "an old failure cannot restore the banner")
+            XCTAssertNil(model.error)
+        }
+    }
+
     func testPeopleGETUsesAccountAuthorizationAndDecodesNullAvatar() async throws {
         var routes: [String] = []
         MockURLProtocol.handler = { request in
