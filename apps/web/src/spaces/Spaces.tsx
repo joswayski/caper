@@ -1453,6 +1453,11 @@ export default function Spaces({
       ? { space: { id: "", name: "Direct messages", ownerId: "" }, channels: [], members: [] }
       : undefined);
   const navigation = useRef(createSpaceNavigation());
+  // The rendered detail, for the poll below whose effect tracks only the space id.
+  const shownDetail = useRef(detail);
+  useEffect(() => {
+    shownDetail.current = detail;
+  });
   const [selected, setSelected] = useState<{ spaceId?: string; channelId?: string; dmId?: string }>(() =>
     embedded ? {} : selectedFromUrl(),
   );
@@ -1771,7 +1776,14 @@ export default function Spaces({
           choose(result.spaces[0]?.id, undefined, true, selected.dmId);
         if (!selected.dmId && detail?.space.id && available.has(detail.space.id) && !membershipSubmitting.current) {
           const next = await getSpace(detail.space.id);
-          if (current && revision === membershipRevision.current && activeSpace.current === next.space.id)
+          // Replacing forgets every visited channel's saved history in the
+          // space, so an unchanged poll result must not cost a refetch later.
+          if (
+            current &&
+            revision === membershipRevision.current &&
+            activeSpace.current === next.space.id &&
+            JSON.stringify(next) !== JSON.stringify(shownDetail.current)
+          )
             replaceDetail(next);
         }
       } catch {

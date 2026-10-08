@@ -374,11 +374,21 @@ export class ChatClient {
     const now = Date.now();
     for (const [id, entry] of this.typers) if (entry.expires <= now) this.typers.delete(id);
     const entries = [...this.typers.values()];
-    this.update({
-      typingAuthors: entries
-        .filter((entry) => entry.typing && entry.author.id !== this.state.author?.id)
-        .map((entry) => entry.author),
-    });
+    const typingAuthors = entries
+      .filter((entry) => entry.typing && entry.author.id !== this.state.author?.id)
+      .map((entry) => entry.author);
+    // Typers refresh every 500ms; re-render only when who is shown changes.
+    const shown = this.state.typingAuthors;
+    if (
+      typingAuthors.length !== shown.length ||
+      typingAuthors.some(
+        (author, index) =>
+          author.id !== shown[index].id ||
+          author.name !== shown[index].name ||
+          author.avatarId !== shown[index].avatarId,
+      )
+    )
+      this.update({ typingAuthors });
     if (entries.length)
       this.typingExpiryTimer = setTimeout(
         () => this.refreshTypers(),

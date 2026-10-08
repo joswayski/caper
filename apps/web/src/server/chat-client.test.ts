@@ -2062,3 +2062,19 @@ test("failed optimistic edit reveals a newer remote revision while keeping indep
   assert.deepEqual(f.state.pinnedMessages[0].pin, pinned.pin);
   assert.equal(f.client.snapshotHistory()?.cursor, "2");
 });
+
+test("typing refreshes from the same people do not re-render the chat", async (t) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "Date", "clearTimeout"], now: 1_000 });
+  const f = await sendingFixture(t);
+  f.sockets[0].frame(typingEvent("a"));
+  const shown = f.state;
+  assert.deepEqual(
+    shown.typingAuthors.map((author) => author.id),
+    ["a"],
+  );
+  vi.advanceTimersByTime(500);
+  f.sockets[0].frame(typingEvent("a", "9007199254740993"));
+  assert.equal(f.state, shown, "an unchanged typer list publishes no new state");
+  f.sockets[0].frame(typingEvent("a", "9007199254740994", false));
+  assert.deepEqual(f.state.typingAuthors, []);
+});
