@@ -332,7 +332,7 @@ public enum AttachmentPreparer {
         return "libavif \(String(cString: avifVersion())) \(codecVersions)"
     }()
 
-    /// libavif was built with an AV1 encoder (aom, by build-libavif.sh).
+    /// libavif was built with an AV1 encoder (aom, by joswayski/libavif-apple).
     /// ImageIO decodes AVIF (iOS 16 / macOS 13 and later) but offers no AVIF
     /// destination, and any future one would take a 0...1 quality unrelated
     /// to libavif's scale, so photos are always encoded with libavif.

@@ -16,7 +16,7 @@ let package = Package(
     ],
     targets: [
         // AVIF photo encoding: libavif 1.4.2 with aom 3.15.1's encoder, one static
-        // XCFramework built from pinned sources by build-libavif.sh (run prepare.sh
+        // XCFramework from joswayski/libavif-apple, fetched by prepare.sh (run prepare.sh
         // first; BSD, Resources/libavif-LICENSE.txt, libaom-LICENSE.txt, libaom-PATENTS.txt).
         .binaryTarget(name: "libavif", path: ".build/libavif-1.4.2/libavif.xcframework"),
         .target(name: "CaperCore", dependencies: [.product(name: "WebRTC", package: "WebRTC"), .product(name: "libwebp", package: "libwebp-Xcode"), "libavif"],

@@ -252,27 +252,10 @@ jobs:
         run: |
           python3 -m pip install dmgbuild==1.6.7
           python3 -m unittest discover -s tests -p test_apple_release_signing.py -v
-      # The libavif/aom XCFramework takes several minutes to compile and
-      # checkout wipes .build, so reuse it. The key is the build script, which
-      # pins the versions and flags; build-libavif.sh still rebuilds when its
-      # recorded recipe differs (for example once nasm is installed).
-      - name: Restore the libavif/aom XCFramework
-        id: libavif-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: apps/native/apple/.build/libavif-1.4.2
-          key: apple-libavif-${{ runner.arch }}-${{ hashFiles('apps/native/apple/build-libavif.sh') }}
       - name: Build and package Apple development client
         env:
           PLATFORM: ${{ matrix.platform }}
         run: bash apps/native/apple/build.sh "$PLATFORM"
-      - name: Save the libavif/aom XCFramework
-        # Like the Rust caches: main writes, manual runs on other branches only restore.
-        if: steps.libavif-cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
-        uses: actions/cache/save@v4
-        with:
-          path: apps/native/apple/.build/libavif-1.4.2
-          key: ${{ steps.libavif-cache.outputs.cache-primary-key }}
       # wait-all rather than naming the smoke test: that step is skipped for iOS.
       - name: Wait for the disk image smoke test
         wait-all:

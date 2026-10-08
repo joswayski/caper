@@ -1,6 +1,6 @@
 libavif 1.4.2 (https://github.com/AOMediaCodec/libavif), built from its release
-source by build-libavif.sh. Caper uses it to encode AVIF photo attachments;
-its src/obu.c and bundled third_party/libyuv scaling code are compiled in.
+source by joswayski/libavif-apple to encode AVIF images; its src/obu.c and
+bundled third_party/libyuv scaling code are compiled in.
 
 Copyright 2019 Joe Drago. All rights reserved.
 

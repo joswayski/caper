@@ -1,6 +1,6 @@
 libaom 3.15.1 (https://aomedia.googlesource.com/aom), AV1 encoder only, built
-from its signed release source by build-libavif.sh. Caper uses it (through
-libavif) to encode AVIF photo attachments. The AOMedia patent license is in
+from its signed release source by joswayski/libavif-apple and used through
+libavif to encode AVIF images. The AOMedia patent license is in
 libaom-PATENTS.txt. Licences of third-party code compiled into it follow.
 
 Copyright (c) 2016, Alliance for Open Media. All rights reserved.

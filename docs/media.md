@@ -1005,7 +1005,7 @@ open-source Chromium builds without H.264 keep the original file.
 | --- | --- | --- | --- | --- |
 | Web | libavif 1.0.1 + aom 3.7.0 WASM (`@jsquash/avif` 2.1.1), single-threaded worker, speed 9 (≈3 s per 12 MP here) | `@jsquash/webp` 1.5.0 worker; indexed PNG | Mediabunny/WebCodecs H.264; HDR tone mapped on WebGL2 | 3.5 MB WASM (1.1 MB gzipped), fetched only when a photo is encoded |
 | Android | libavif 1.4.2 + aom 3.15.1 JNI built from pinned sources (`prepare-avif.sh`), speed 8, `tune=ssim`; AOMedia decoder shows AVIF on API 26–30 | Bitmap lossless WebP; indexed PNG | Media3 Transformer H.264; HDR tone mapped with OpenGL | +1.8 MB download per ABI (3.75 MB installed) |
-| Apple | libavif 1.4.2 + aom 3.15.1 static XCFramework built from pinned sources (`build-libavif.sh`, Neon on arm64), speed 6, `tune=ssim`; ImageIO decodes | libwebp 1.6.0 lossless; indexed PNG | AVAssetExportSession H.264 presets; HDR to BT.709 via AVVideoComposition | ≈4.3 MB uncompressed per arm64 slice (estimate) |
+| Apple | libavif 1.4.2 + aom 3.15.1 static XCFramework from [joswayski/libavif-apple](https://github.com/joswayski/libavif-apple) (built from pinned sources, Neon on arm64, SSE/AVX on x86_64), speed 6, `tune=ssim`; ImageIO decodes | libwebp 1.6.0 lossless; indexed PNG | AVAssetExportSession H.264 presets; HDR to BT.709 via AVVideoComposition | ≈4.3 MB uncompressed per arm64 slice (estimate) |
 | Desktop (Windows, Linux) | rav1e 0.8.1 + avif-serialize, speed 10, quantizer 55 for quality 85; x86 assembly when nasm is present (1.4 s vs 4.6 s per 14 MP) | libwebp 1.6.0 lossless (`webpx`); indexed PNG | Videos upload unchanged (no transcoder); metadata stripped | ≈2.4 MB uncompressed (1 MB gzipped) |
 
 ### Server-side processing (parked)

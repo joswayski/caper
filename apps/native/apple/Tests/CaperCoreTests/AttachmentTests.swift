@@ -993,7 +993,7 @@ final class AttachmentTests: XCTestCase {
 
     func testAVIFEncoderIsBundled() {
         XCTAssertTrue(AttachmentPreparer.avifEncodable, "libavif is built with the aom encoder")
-        // The pinned versions from build-libavif.sh, encoder only (no aom decoder).
+        // The pinned joswayski/libavif-apple release, encoder only (no aom decoder).
         XCTAssertEqual(AttachmentPreparer.avifLibraryVersions, "libavif 1.4.2 aom [enc]:v3.15.1")
         XCTAssertEqual(AttachmentPreparer.avifSpeed, 6, "all-intra good-quality mode, as avifenc -s 6")
         XCTAssertEqual(AttachmentPreparer.avifColorTune, "ssim", "keeps avifenc 1.0's quality scale instead of tune=iq")

@@ -1,6 +1,6 @@
 Alliance for Open Media Patent License 1.0, as shipped with libaom 3.15.1
-(https://aomedia.googlesource.com/aom), which Caper uses through libavif to
-encode AVIF photo attachments.
+(https://aomedia.googlesource.com/aom), used through libavif to encode AVIF
+images.
 
 Alliance for Open Media Patent License 1.0
 

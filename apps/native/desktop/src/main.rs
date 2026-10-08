@@ -12484,7 +12484,7 @@ mod tests {
         );
 
         // A send refused because of a block is a rejection, not an expired session.
-        app.pending = Some(PendingSend::prepare(None, "hello"));
+        app.pending = Some(PendingSend::prepare(None, "hello", Vec::new()));
         app.sent(Err(crate::worker::SendFailure {
             status: Some(403),
             message: "You blocked this person. Unblock them to message them.".into(),

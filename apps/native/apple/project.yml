@@ -106,7 +106,7 @@ targets:
         link: true
         embed: false
       # AVIF photo attachments: libavif 1.4.2 + aom 3.15.1 encoder, a static
-      # XCFramework built from pinned sources by build-libavif.sh (BSD;
+      # XCFramework from joswayski/libavif-apple, fetched by prepare.sh (BSD;
       # Resources/libavif-LICENSE.txt, libaom-LICENSE.txt, libaom-PATENTS.txt).
       # Imported implementation-only by CaperCore.
       - framework: .build/libavif-1.4.2/libavif.xcframework
@@ -144,7 +144,7 @@ targets:
         link: true
         embed: false
       # AVIF photo attachments: libavif 1.4.2 + aom 3.15.1 encoder, a static
-      # XCFramework built from pinned sources by build-libavif.sh (BSD;
+      # XCFramework from joswayski/libavif-apple, fetched by prepare.sh (BSD;
       # Resources/libavif-LICENSE.txt, libaom-LICENSE.txt, libaom-PATENTS.txt).
       # Imported implementation-only by CaperCore.
       - framework: .build/libavif-1.4.2/libavif.xcframework
