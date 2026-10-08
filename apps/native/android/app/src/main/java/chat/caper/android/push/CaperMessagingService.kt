@@ -15,10 +15,37 @@ import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withTimeoutOrNull
 import java.security.MessageDigest
 
+/** What opening the app does about push for an account that hasn't turned it on on this phone. */
+enum class PushOffer { NONE, ENABLE, ASK }
+
+/**
+ * Push is on by default. Opening the app turns it on when Android already allows
+ * notifications, or asks once (Android 13+), unless the account turned it off here
+ * or the server doesn't offer FCM.
+ */
+fun pushOffer(firebase: Boolean, turnedOff: Boolean, offered: Boolean, permitted: Boolean, asked: Boolean): PushOffer = when {
+    !firebase || turnedOff || !offered -> PushOffer.NONE
+    permitted -> PushOffer.ENABLE
+    asked -> PushOffer.NONE
+    else -> PushOffer.ASK
+}
+
 object PushRegistration {
     private const val PREFS = "push_preferences"
     private const val ENABLED = "enabledSession"
+    /** Per account: turned push off in User settings on this phone. Logout doesn't set it. */
+    private const val TURNED_OFF = "turnedOff:"
+    /** Per account: already shown the Android 13+ prompt, so app open never asks again. */
+    private const val ASKED = "asked:"
     private fun sessionKey(token: String) = MessageDigest.getInstance("SHA-256").digest(token.toByteArray()).joinToString("") { "%02x".format(it) }
+    private fun preferences(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    fun turnedOff(context: Context, accountId: String) = preferences(context).getBoolean(TURNED_OFF + accountId, false)
+    fun setTurnedOff(context: Context, accountId: String, off: Boolean) {
+        preferences(context).edit().putBoolean(TURNED_OFF + accountId, off).apply()
+    }
+    fun asked(context: Context, accountId: String) = preferences(context).getBoolean(ASKED + accountId, false)
+    fun markAsked(context: Context, accountId: String) { preferences(context).edit().putBoolean(ASKED + accountId, true).apply() }
 
     fun enabled(context: Context): Boolean {
         if (!BuildConfig.FIREBASE_ENABLED) return false

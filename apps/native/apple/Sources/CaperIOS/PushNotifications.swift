@@ -21,7 +21,7 @@ final class PushNotifications: NSObject, UIApplicationDelegate, UNUserNotificati
 
     private func bindModel() {
         model?.setPushEnabled = { [weak self] enabled in await self?.setEnabled(enabled) }
-        model?.disablePushLocally = { [weak self] in self?.disableLocally() }
+        model?.disablePushLocally = { [weak self] in self?.disableLocally(remember: false) }
         if let model, let route = pendingRoute {
             pendingRoute = nil
             // The model holds it until the account's spaces load.
@@ -44,9 +44,14 @@ final class PushNotifications: NSObject, UIApplicationDelegate, UNUserNotificati
                 return
             }
             let available = config.platforms.contains(wanted)
-            model.configurePush(available: available, enabled: available && UserDefaults.standard.bool(forKey: "caper.push.enabled.\(account.id)"))
+            let choice = Self.choice(for: account.id)
+            model.configurePush(available: available, enabled: available && choice == true)
             platform = available ? wanted : nil
+            // On by default: until the account turns push on or off here, each
+            // launch asks iOS. It prompts only once; after that it answers with
+            // the person's decision, so allowing later in Settings turns push on.
             if model.pushEnabled { UIApplication.shared.registerForRemoteNotifications() }
+            else if available && choice == nil { await setEnabled(true) }
         } catch { if model.account?.id == account.id { model.configurePush(available: false, enabled: false) } }
     }
 
@@ -63,10 +68,21 @@ final class PushNotifications: NSObject, UIApplicationDelegate, UNUserNotificati
         #endif
     }
 
-    private func disableLocally() {
+    /// This account's choice on this phone: nil until it turns push on or off
+    /// here. (A new key: older builds also wrote `false` on logout.)
+    private static func choice(for accountID: String) -> Bool? {
+        UserDefaults.standard.object(forKey: "caper.push.choice.\(accountID)") as? Bool
+    }
+
+    private static func setChoice(_ on: Bool, for accountID: String) {
+        UserDefaults.standard.set(on, forKey: "caper.push.choice.\(accountID)")
+    }
+
+    /// Logout stops push without recording a choice, so signing in again keeps the default.
+    private func disableLocally(remember: Bool) {
         optInGeneration += 1
         model?.configurePush(available: platform != nil, enabled: false)
-        if let accountID { UserDefaults.standard.set(false, forKey: "caper.push.enabled.\(accountID)") }
+        if remember, let accountID { Self.setChoice(false, for: accountID) }
         pendingRoute = nil
         UIApplication.shared.unregisterForRemoteNotifications()
     }
@@ -79,11 +95,11 @@ final class PushNotifications: NSObject, UIApplicationDelegate, UNUserNotificati
             let granted = (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound])) == true
             guard model.account?.id == accountID, optInGeneration == attempt else { return }
             guard granted else { model.configurePush(available: true, enabled: false); return }
-            UserDefaults.standard.set(true, forKey: "caper.push.enabled.\(accountID)")
+            Self.setChoice(true, for: accountID)
             model.configurePush(available: true, enabled: true)
             UIApplication.shared.registerForRemoteNotifications()
         } else {
-            disableLocally()
+            disableLocally(remember: true)
             if let token { try? await model.api.unregisterPushDevice(platform: platform, token: token, appID: appID) }
         }
     }

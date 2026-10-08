@@ -313,6 +313,8 @@ data class AppUiState(
     val pinIntents: Map<String, PinIntentUi> = emptyMap(),
     val editIntents: Map<String, EditIntentUi> = emptyMap(),
     val chatAuthorId: String? = null,
+    /** Ask Android 13+ for notification permission now; set once per account by app open. */
+    val pushPrompt: Boolean = false,
     val busy: Boolean = false,
     val error: String? = null,
 ) {
