@@ -1677,7 +1677,9 @@ content stays inside that channel once a member forwards it.
 The API stores `messages.forward_source_id`, retaining both records. It does not
 copy the original content into an independently editable message. The destination
 wrapper has its own author, optional note, creation sequence, reactions, pins
-and thread summary. Shared source snapshots omit source pins and parent linkage.
+and thread summary. `@mentions` in the note resolve like a message's
+(`content.mentions`), so every client highlights them and opens profile cards,
+but they never notify: the forward notifies as an ordinary message only. Shared source snapshots omit source pins and parent linkage.
 Removing destination membership/grants revokes the scoped read; an independently
 re-forwarded DM remains authorized by that DM, not the intermediate space.
 Deleted source spaces/channels render an unavailable original without exposing

@@ -1365,6 +1365,62 @@ async fn sends_and_forwards_enqueue_in_their_transaction_and_edits_do_not(pool: 
 
 #[sqlx::test(migrations = "./migrations")]
 #[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
+async fn forward_notes_show_mentions_without_notifying_them(pool: PgPool) {
+    let h = harness(&pool).await;
+    let alice = person(&pool, "alice").await;
+    let bob = person(&pool, "bob").await;
+    let carol = person(&pool, "carol").await;
+    let (space_id, _) = space(&pool, &alice, &[&bob, &carol]).await;
+    let general = channel(&pool, space_id, "general", false, &[&alice, &bob, &carol]).await;
+    // Only a mention can reach carol.
+    let (status, _) = call(
+        &h.app,
+        "PUT",
+        "/api/notifications/settings",
+        Some(&carol.token),
+        None,
+        json!({"level": "mentions"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let first = send(&h, &alice, &general, "hello", None).await;
+    let (status, forward) = call(
+        &h.app,
+        "POST",
+        &format!("/api/chat/channels/{general}/forwards"),
+        None,
+        Some(&bob.chat),
+        json!({"sourceChannelId": general, "sourceMessageId": first,
+               "clientMessageId": Uuid::new_v4(), "text": "look @carol @everyone"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{forward}");
+    // The note's mentions are resolved, so clients highlight them and open cards.
+    assert_eq!(
+        forward["content"]["mentions"],
+        json!([
+            {"type":"user","id":carol.external_id,"username":"carol"},
+            {"type":"everyone"},
+        ])
+    );
+    let message = send(&h, &bob, &general, "look @carol", None).await;
+    expand(&h).await;
+    let forwarded = notified(&pool, forward["id"].as_str().unwrap()).await;
+    assert!(
+        !forwarded.iter().any(|(user, _)| user == "carol"),
+        "a forward's note never notifies its mentions: {forwarded:?}"
+    );
+    // The forward itself still notifies like a message, and the same text in
+    // a message mentions her.
+    assert!(forwarded.iter().any(|(user, _)| user == "alice"));
+    assert_eq!(
+        notified(&pool, &message).await,
+        pairs(&[("alice", "channel.message"), ("carol", "mention.user")])
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
 async fn recipients_follow_requests_blocks_mutes_levels_mentions_and_threads(pool: PgPool) {
     let h = harness(&pool).await;
     let names = [

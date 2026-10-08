@@ -150,6 +150,14 @@ async fn persist_forward(
             "sending too quickly; try again shortly",
         ));
     }
+    // Mentions in the note are highlighted and open profile cards like any
+    // message's. The forward notifies as a message; its note's mentions don't.
+    let content = with_mentions(
+        &mut tx,
+        content,
+        &mentions::parse(&input.text, destination.space_id.is_some()),
+    )
+    .await?;
     let head: i64 = sqlx::query_scalar("SELECT last_seq FROM public.channels WHERE id=$1")
         .bind(destination.id)
         .fetch_one(&mut *tx)
