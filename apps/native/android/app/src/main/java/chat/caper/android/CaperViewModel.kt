@@ -5,6 +5,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import chat.caper.android.data.*
 import chat.caper.android.model.*
+import chat.caper.android.push.CaperNotifications
+import chat.caper.android.push.ForegroundConversation
 import chat.caper.android.push.PushRegistration
 import chat.caper.android.voice.VoiceCallService
 import chat.caper.android.voice.VoiceState
@@ -16,6 +18,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -55,13 +59,19 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var directRefresh: Job? = null
     private var peopleRefresh: Job? = null
     private var pendingDirectIntent: String? = null
+    private var pendingChannelIntent: Pair<String, String>? = null
+    private var notificationEdits: NotificationEdits? = null
     private var foreground = false
     private var threadRequest = 0L
 
-    init { loadHome() }
+    init {
+        loadHome()
+        viewModelScope.launch { state.map { it.selectedChannel?.id }.distinctUntilChanged().collect { publishForegroundConversation() } }
+    }
 
     private fun loadHome() {
         val requestAccountGeneration = accountGeneration
+        notificationEdits = null
         mutable.value = AppUiState(screen = SessionScreen.Loading, busy = true)
         viewModelScope.launch {
             try {
@@ -91,6 +101,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     error = directs.exceptionOrNull()?.let(::message),
                 )
                 refreshBlocks()
+                refreshNotificationSettings()
                 createChatSession(requestAccountGeneration)
                 if (requestAccountGeneration != accountGeneration) return@launch
                 startDirectRefresh()
@@ -98,7 +109,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     runCatching { PushRegistration.enable(getApplication()) }
                 }
                 val pending = pendingDirectIntent?.let { id -> mutable.value.directConversations.firstOrNull { it.id == id } }
+                val pendingChannel = pendingChannelIntent?.takeIf { (space, _) -> list.spaces.any { it.id == space } }
+                pendingChannelIntent = null
                 if (pending != null) { pendingDirectIntent = null; selectDirect(pending) }
+                else if (pendingChannel != null) selectSpace(pendingChannel.first, pendingChannel.second)
                 else list.spaces.firstOrNull()?.let { selectSpace(it.id) }
             } catch (error: Throwable) {
                 if (requestAccountGeneration == accountGeneration) {
@@ -160,6 +174,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         directRefresh?.cancel(); directRefresh = null
         peopleRefresh?.cancel(); peopleRefresh = null
         tokens.clear()
+        notificationEdits = null
         if (token != null) {
             viewModelScope.launch { PushRegistration.disable(getApplication(), token) }
             viewModelScope.launch { runCatching { api.logout(token) } }
@@ -167,9 +182,23 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         loadHome()
     }
 
-    fun openDirectFromNotification(id: String?) {
-        if (id == null || !Regex("^[A-Za-z0-9]{12}$").matches(id)) return
-        mutable.value.directConversations.firstOrNull { it.id == id }?.let(::selectDirect) ?: run { pendingDirectIntent = id; refreshDirectConversations() }
+    /** A notification tap: a DM by [conversationId], or a channel by [spaceId] and [channelId]. */
+    fun openFromNotification(conversationId: String?, spaceId: String?, channelId: String?) {
+        val id = Regex("^[A-Za-z0-9]{12}$")
+        if (conversationId != null) {
+            if (!id.matches(conversationId)) return
+            pendingChannelIntent = null
+            mutable.value.directConversations.firstOrNull { it.id == conversationId }?.let(::selectDirect)
+                ?: run { pendingDirectIntent = conversationId; refreshDirectConversations() }
+            return
+        }
+        if (spaceId == null || channelId == null || !id.matches(spaceId) || !id.matches(channelId)) return
+        pendingDirectIntent = null
+        val current = mutable.value
+        if (current.screen != SessionScreen.Home) { pendingChannelIntent = spaceId to channelId; return }
+        if (current.selectedChannel?.id == channelId) return
+        val loaded = current.selectedSpace?.takeIf { it.space.id == spaceId }?.channels?.firstOrNull { it.id == channelId }
+        if (loaded != null) selectChannel(loaded) else selectSpace(spaceId, channelId)
     }
 
     suspend fun canEnablePush(): Boolean {
@@ -178,9 +207,24 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         return runCatching { "fcm" in api.pushConfig(token).platforms }.getOrDefault(false) && epoch == accountGeneration
     }
 
-    suspend fun disablePush() { PushRegistration.disable(getApplication(), accountToken) }
+    /** Turns on push for this sign-in session; [done] gets the error to show, or null. */
+    fun enablePush(done: (String?) -> Unit) {
+        val request = accountGeneration
+        viewModelScope.launch {
+            val error = try { PushRegistration.enable(getApplication()); null }
+            catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { error.message ?: "Notifications could not be enabled." }
+            if (request == accountGeneration) done(error)
+        }
+    }
 
-    fun selectSpace(id: String) {
+    fun disablePush(done: () -> Unit) {
+        val token = accountToken
+        viewModelScope.launch { PushRegistration.disable(getApplication(), token); done() }
+    }
+
+    /** Opens a space at [preferredChannelId] when it has one, otherwise its first joined channel. */
+    fun selectSpace(id: String, preferredChannelId: String? = null) {
         if (mutable.value.spaces.none { it.id == id }) return
         ++spaceAccessGeneration
         val request = ++generation
@@ -192,11 +236,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 val detail = api.space(requireAccountToken(), id)
                 if (request != generation) return@launch
                 mutable.value = mutable.value.copy(selectedSpace = detail, busy = false, presencePage = 0)
-                detail.channels.firstOrNull { it.joined }?.let(::selectChannel)
+                (detail.channels.firstOrNull { it.id == preferredChannelId } ?: detail.channels.firstOrNull { it.joined })?.let(::selectChannel)
             } catch (error: Throwable) {
                 if (request == generation) {
                     if (error is ApiException && error.status == 404) removeUnavailableSpace(id)
-                    else { retryOpen = { selectSpace(id) }; mutable.value = mutable.value.copy(busy = false, openError = message(error)) }
+                    else { retryOpen = { selectSpace(id, preferredChannelId) }; mutable.value = mutable.value.copy(busy = false, openError = message(error)) }
                 }
             }
         }
@@ -403,6 +447,89 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         return api.setDirectPrivacy(requireAccountToken(), value).directMessages
     }
 
+    /**
+     * The DM or channel on screen while the app is in the foreground: its pushes show
+     * nothing, and its notification is cleared.
+     */
+    private fun publishForegroundConversation() {
+        val id = mutable.value.selectedChannel?.id.takeIf { foreground }
+        ForegroundConversation.id = id
+        if (id != null) runCatching { CaperNotifications.cancel(getApplication(), id) }
+    }
+
+    /** Loads notification settings after sign-in and when settings or menus open. */
+    fun refreshNotificationSettings() {
+        val token = accountToken ?: return
+        val request = accountGeneration
+        viewModelScope.launch {
+            try {
+                val settings = api.notificationSettings(token)
+                if (request != accountGeneration) return@launch
+                val edits = notificationEdits?.apply { loaded(settings) } ?: NotificationEdits(settings).also { notificationEdits = it }
+                mutable.value = mutable.value.copy(notificationSettings = edits.shown, notificationSettingsError = null)
+            } catch (error: CancellationException) { throw error }
+            catch (error: Throwable) {
+                if (request == accountGeneration && mutable.value.notificationSettings == null)
+                    mutable.value = mutable.value.copy(notificationSettingsError = "Couldn’t load notification settings.")
+            }
+        }
+    }
+
+    fun setNotificationLevel(level: String) = editNotifications(ACCOUNT_LEVEL_KEY, { it.copy(level = level) }) { token ->
+        val saved = api.updateNotificationSettings(token, level = level).level
+        return@editNotifications { it.copy(level = saved) }
+    }
+
+    fun setMobileNotifications(mobile: String) = editNotifications(MOBILE_KEY, { it.copy(mobile = mobile) }) { token ->
+        val saved = api.updateNotificationSettings(token, mobile = mobile).mobile
+        return@editNotifications { it.copy(mobile = saved) }
+    }
+
+    fun setSpaceNotifications(spaceId: String, change: OverrideChange) =
+        editOverride(NotificationOverride(spaceId = spaceId), change) { api.setSpaceNotifications(it, spaceId, change) }
+
+    fun setChannelNotifications(spaceId: String, channelId: String, change: OverrideChange) =
+        editOverride(NotificationOverride(spaceId = spaceId, channelId = channelId), change) { api.setChannelNotifications(it, spaceId, channelId, change) }
+
+    fun setDirectNotifications(conversationId: String, change: OverrideChange) =
+        editOverride(NotificationOverride(conversationId = conversationId), change) { api.setDirectNotifications(it, conversationId, change) }
+
+    fun dismissNotificationError(key: String) { mutable.value = mutable.value.copy(notificationErrors = mutable.value.notificationErrors - key) }
+
+    private fun editOverride(scope: NotificationOverride, change: OverrideChange, save: suspend (String) -> NotificationOverride) {
+        val key = scope.key
+        editNotifications(key, { it.withOverride(key, (it.override(key) ?: scope).applying(change)) }) { token ->
+            val saved = save(token)
+            return@editNotifications { it.withOverride(key, saved) }
+        }
+    }
+
+    /** Shows [edit] at once, saves it, and puts [key] back with a short error when the save fails. */
+    private fun editNotifications(
+        key: String,
+        edit: (NotificationSettings) -> NotificationSettings,
+        save: suspend (String) -> (NotificationSettings) -> NotificationSettings,
+    ) {
+        val token = accountToken ?: return
+        val edits = notificationEdits ?: return
+        val request = accountGeneration
+        val ticket = edits.begin(key, edit)
+        mutable.value = mutable.value.copy(notificationSettings = edits.shown, notificationErrors = mutable.value.notificationErrors - key)
+        viewModelScope.launch {
+            try {
+                val answer = save(token)
+                if (request != accountGeneration) return@launch
+                edits.succeeded(key, ticket, answer)
+                mutable.value = mutable.value.copy(notificationSettings = edits.shown)
+            } catch (error: CancellationException) { throw error }
+            catch (error: Throwable) {
+                if (request != accountGeneration) return@launch
+                edits.failed(key, ticket)
+                mutable.value = mutable.value.copy(notificationSettings = edits.shown, notificationErrors = mutable.value.notificationErrors + (key to NOTIFICATION_SAVE_ERROR))
+            }
+        }
+    }
+
     private fun accountRequest(failed: (String) -> Unit, block: suspend (String, Long) -> Unit) = viewModelScope.launch {
         val request = accountGeneration
         try { block(requireAccountToken(), request) }
@@ -417,6 +544,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setForeground(active: Boolean) {
         foreground = active
+        publishForegroundConversation()
         if (!active) return
         refreshDirectConversations()
         val current = mutable.value
@@ -1389,7 +1517,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         finally { if (request == accountGeneration) mutable.value = mutable.value.copy(busy = false) }
     }
 
-    override fun onCleared() { gateway?.close(); super.onCleared() }
+    override fun onCleared() {
+        gateway?.close()
+        ForegroundConversation.id = null
+        super.onCleared()
+    }
 
     /** Web's profile save copy (`account/ProfileForm.tsx`). */
     private suspend fun <T> profileRequest(block: suspend () -> T): T = try { block() } catch (error: ApiException) {
