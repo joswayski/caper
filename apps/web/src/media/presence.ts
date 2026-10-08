@@ -9,9 +9,18 @@ export function watchPresence(
   apiRoot = "/api/media",
 ) {
   const owner = new AbortController();
-  const stream = new EventConnection(() => undefined, () => undefined, callback, () => undefined,
-    apiRoot, status);
+  const stream = new EventConnection(
+    () => undefined,
+    () => undefined,
+    callback,
+    () => undefined,
+    apiRoot,
+    status,
+  );
   status(false);
   void stream.openPresence(owner.signal).catch(() => status(false));
-  return () => { owner.abort(); stream.stop(); };
+  return () => {
+    owner.abort();
+    stream.stop();
+  };
 }

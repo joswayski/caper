@@ -5,7 +5,11 @@ export interface EmojiChoice {
   keywords: string;
 }
 
-export interface EmojiToken { start: number; end: number; query: string }
+export interface EmojiToken {
+  start: number;
+  end: number;
+  query: string;
+}
 const queryCharacter = /^[a-z0-9_+-]$/i;
 const normalize = (value: string) => value.toLowerCase().replace(/[_-]/g, " ");
 
@@ -19,16 +23,31 @@ export function emojiToken(text: string, start: number, end = start): EmojiToken
 }
 
 export function emojiSuggestions(catalog: EmojiChoice[], query: string): EmojiChoice[] {
-  if (!query) return ["1f44d", "1f600", "2764", "1f389", "1f680", "1f440"]
-    .flatMap((id) => catalog.find((entry) => entry.id === id) ?? []);
+  if (!query)
+    return ["1f44d", "1f600", "2764", "1f389", "1f680", "1f440"].flatMap(
+      (id) => catalog.find((entry) => entry.id === id) ?? [],
+    );
   const needle = normalize(query);
-  return catalog.map((entry) => {
-    const name = normalize(entry.name), keywords = normalize(entry.keywords);
-    const rank = name === needle ? 0 : name.startsWith(needle) ? 1
-      : keywords.startsWith(needle) || keywords.includes(` ${needle}`) ? 2
-      : name.includes(needle) || keywords.includes(needle) ? 3 : 4;
-    return { entry, rank };
-  }).filter(({ rank }) => rank < 4).sort((a, b) => a.rank - b.rank).slice(0, 6).map(({ entry }) => entry);
+  return catalog
+    .map((entry) => {
+      const name = normalize(entry.name),
+        keywords = normalize(entry.keywords);
+      const rank =
+        name === needle
+          ? 0
+          : name.startsWith(needle)
+            ? 1
+            : keywords.startsWith(needle) || keywords.includes(` ${needle}`)
+              ? 2
+              : name.includes(needle) || keywords.includes(needle)
+                ? 3
+                : 4;
+      return { entry, rank };
+    })
+    .filter(({ rank }) => rank < 4)
+    .sort((a, b) => a.rank - b.rank)
+    .slice(0, 6)
+    .map(({ entry }) => entry);
 }
 
 export function insertEmoji(text: string, token: EmojiToken, emoji: string) {
@@ -39,8 +58,13 @@ export function insertEmoji(text: string, token: EmojiToken, emoji: string) {
 
 let catalog: Promise<EmojiChoice[]> | undefined;
 export function loadEmojiChoices() {
-  return catalog ??= fetch("/emoji/twemoji-15/autocomplete-v2.json").then(async (response) => {
-    if (!response.ok) throw new Error("Emoji suggestions unavailable.");
-    return await response.json() as EmojiChoice[];
-  }).catch((error) => { catalog = undefined; throw error; });
+  return (catalog ??= fetch("/emoji/twemoji-15/autocomplete-v2.json")
+    .then(async (response) => {
+      if (!response.ok) throw new Error("Emoji suggestions unavailable.");
+      return (await response.json()) as EmojiChoice[];
+    })
+    .catch((error) => {
+      catalog = undefined;
+      throw error;
+    }));
 }

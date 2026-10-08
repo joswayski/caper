@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { test, vi } from "vitest";
 import { createSpaceNavigation } from "../spaces/navigation.ts";
-import { acceptChannelInvitation, declineChannelInvitation, joinChannel, leaveChannel, SpacesApiError } from "../spaces/client.ts";
+import {
+  acceptChannelInvitation,
+  declineChannelInvitation,
+  joinChannel,
+  leaveChannel,
+  SpacesApiError,
+} from "../spaces/client.ts";
 
 const space = { id: "space1234567", name: "Studio", ownerId: "owner1234567" };
 const preview = { id: "other1234567", spaceId: space.id, name: "design", private: false, joined: false };
@@ -13,18 +19,28 @@ test("landing selects a joined channel; explicit preview performs reads without 
   const paths: string[] = [];
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
     assert.ok(!init?.method, "navigation must never issue a membership write");
-    const path = String(input); paths.push(path);
-    return Response.json(path.startsWith("/api/spaces/") ? detail : history(path.includes(preview.id) ? preview : joined));
+    const path = String(input);
+    paths.push(path);
+    return Response.json(
+      path.startsWith("/api/spaces/") ? detail : history(path.includes(preview.id) ? preview : joined),
+    );
   });
   assert.equal((await createSpaceNavigation().take(space.id)).channelId, joined.id);
   assert.equal((await createSpaceNavigation().take(space.id, preview.id)).channelId, preview.id);
-  assert.deepEqual(paths, [`/api/spaces/${space.id}`, `/api/chat/channels/${joined.id}/messages`, `/api/spaces/${space.id}`, `/api/chat/channels/${preview.id}/messages`]);
+  assert.deepEqual(paths, [
+    `/api/spaces/${space.id}`,
+    `/api/chat/channels/${joined.id}/messages`,
+    `/api/spaces/${space.id}`,
+    `/api/chat/channels/${preview.id}/messages`,
+  ]);
 });
 
 test("returning to a space does not restore an unjoined preview's channel or history as the landing conversation", async () => {
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
     const path = String(input);
-    return Response.json(path.startsWith("/api/spaces/") ? detail : history(path.includes(preview.id) ? preview : joined));
+    return Response.json(
+      path.startsWith("/api/spaces/") ? detail : history(path.includes(preview.id) ? preview : joined),
+    );
   });
   const navigation = createSpaceNavigation();
   navigation.remember(await navigation.take(space.id, preview.id));
@@ -36,7 +52,13 @@ test("returning to a space does not restore an unjoined preview's channel or his
 test("no joined channels leaves browsing available without choosing or loading an unjoined channel", async () => {
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
     assert.equal(String(input), `/api/spaces/${space.id}`);
-    return Response.json({ ...detail, channels: [preview], channelInvitations: [{ channel: { ...preview, private: true }, inviter: { username: "owner", displayName: "Owner" } }] });
+    return Response.json({
+      ...detail,
+      channels: [preview],
+      channelInvitations: [
+        { channel: { ...preview, private: true }, inviter: { username: "owner", displayName: "Owner" } },
+      ],
+    });
   });
   const view = await createSpaceNavigation().take(space.id);
   assert.equal(view.channelId, undefined);
@@ -48,10 +70,13 @@ for (const cached of [false, true]) {
     const paths: string[] = [];
     let accessible = false;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
-      const path = String(input); paths.push(path);
-      return Response.json(path.startsWith("/api/spaces/")
-        ? { ...detail, channels: accessible ? [preview, joined] : [joined] }
-        : history(path.includes(preview.id) ? preview : joined));
+      const path = String(input);
+      paths.push(path);
+      return Response.json(
+        path.startsWith("/api/spaces/")
+          ? { ...detail, channels: accessible ? [preview, joined] : [joined] }
+          : history(path.includes(preview.id) ? preview : joined),
+      );
     });
     const navigation = createSpaceNavigation();
     if (cached) navigation.remember({ detail, channelId: preview.id, history: history(preview) });
@@ -68,7 +93,11 @@ for (const cached of [false, true]) {
     const retry = await navigation.take(space.id, preview.id);
     assert.equal(retry.channelId, preview.id);
     assert.equal(retry.history?.channel.id, preview.id);
-    assert.deepEqual(paths.slice(1), [`/api/spaces/${space.id}`, `/api/chat/channels/${preview.id}/messages`], "retry rechecks access and fetches fresh history");
+    assert.deepEqual(
+      paths.slice(1),
+      [`/api/spaces/${space.id}`, `/api/chat/channels/${preview.id}/messages`],
+      "retry rechecks access and fetches fresh history",
+    );
   });
 }
 
@@ -77,8 +106,10 @@ test("an explicit channel in an empty space rejects instead of becoming an empty
     assert.equal(String(input), `/api/spaces/${space.id}`);
     return Response.json({ ...detail, channels: [] });
   });
-  await assert.rejects(createSpaceNavigation().take(space.id, preview.id), (error: unknown) =>
-    error instanceof SpacesApiError && error.status === 404);
+  await assert.rejects(
+    createSpaceNavigation().take(space.id, preview.id),
+    (error: unknown) => error instanceof SpacesApiError && error.status === 404,
+  );
 });
 
 test("join, leave and invitation responses use separate explicit mutation endpoints", async () => {

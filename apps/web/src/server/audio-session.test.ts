@@ -4,8 +4,14 @@ import { beginCapture, mixWithOtherAudio } from "../audio/session.ts";
 
 function installSession(t: TestContext, session?: { type: string }) {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
-  Object.defineProperty(globalThis, "navigator", { value: session ? { audioSession: session } : {}, configurable: true });
-  t.onTestFinished(() => { if (descriptor) Object.defineProperty(globalThis, "navigator", descriptor); else Reflect.deleteProperty(globalThis, "navigator"); });
+  Object.defineProperty(globalThis, "navigator", {
+    value: session ? { audioSession: session } : {},
+    configurable: true,
+  });
+  t.onTestFinished(() => {
+    if (descriptor) Object.defineProperty(globalThis, "navigator", descriptor);
+    else Reflect.deleteProperty(globalThis, "navigator");
+  });
 }
 
 test("UI sounds mix with other apps' audio, but never while the microphone is captured", (t) => {
@@ -38,5 +44,8 @@ test("UI sounds mix with other apps' audio, but never while the microphone is ca
 
 test("browsers without the Audio Session API are left alone", (t) => {
   installSession(t);
-  assert.doesNotThrow(() => { mixWithOtherAudio(); beginCapture().end(); });
+  assert.doesNotThrow(() => {
+    mixWithOtherAudio();
+    beginCapture().end();
+  });
 });

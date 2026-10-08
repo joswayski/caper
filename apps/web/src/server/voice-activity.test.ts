@@ -4,7 +4,7 @@ import { hasVoiceActivity, watchVoiceActivity } from "../media/voice-activity.ts
 import { playbackDiagnostics } from "../media/audio-context.ts";
 
 function signal(rms: number) {
-  return Float32Array.from({ length: 256 }, (_, index) => index % 2 ? rms : -rms);
+  return Float32Array.from({ length: 256 }, (_, index) => (index % 2 ? rms : -rms));
 }
 
 test("quiet audible speech activates the speaking indicator", () => {
@@ -28,20 +28,35 @@ function audioEnvironment(t: TestContext) {
   const changes: boolean[] = [];
   const stream = {} as MediaStream;
   class Context {
-    createMediaStreamSource() { return { connect() {}, disconnect() { disconnected++; } }; }
+    createMediaStreamSource() {
+      return {
+        connect() {},
+        disconnect() {
+          disconnected++;
+        },
+      };
+    }
     createAnalyser() {
       if (failSetup) throw new Error("analyser unavailable");
       return {
         fftSize: 256,
-        getFloatTimeDomainData(samples: Float32Array) { samples.set(signal(rms)); reads++; },
-        disconnect() { disconnected++; },
+        getFloatTimeDomainData(samples: Float32Array) {
+          samples.set(signal(rms));
+          reads++;
+        },
+        disconnect() {
+          disconnected++;
+        },
       };
     }
     async resume() {}
-    async close() { closed++; }
+    async close() {
+      closed++;
+    }
   }
   for (const [name, value] of Object.entries({
-    document, AudioContext: Context,
+    document,
+    AudioContext: Context,
     window: {
       setInterval(callback: () => void, delay: number) {
         assert.equal(delay, 32);
@@ -49,7 +64,9 @@ function audioEnvironment(t: TestContext) {
         timers.set(id, callback);
         return id;
       },
-      clearInterval(id: number) { timers.delete(id); },
+      clearInterval(id: number) {
+        timers.delete(id);
+      },
     },
   })) {
     const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
@@ -61,12 +78,32 @@ function audioEnvironment(t: TestContext) {
   }
   vi.spyOn(performance, "now").mockImplementation(() => now);
   return {
-    stream, changes, timers,
-    get reads() { return reads; }, get closed() { return closed; }, get disconnected() { return disconnected; },
-    failSetup() { failSetup = true; },
-    sample(at: number, level: number) { now = at; rms = level; for (const callback of timers.values()) callback(); },
-    visibility(state: string) { document.visibilityState = state; document.dispatchEvent(new Event("visibilitychange")); },
-    watch: (muted = false, input: MediaStream | undefined = stream) => watchVoiceActivity(input, muted, (active) => changes.push(active)),
+    stream,
+    changes,
+    timers,
+    get reads() {
+      return reads;
+    },
+    get closed() {
+      return closed;
+    },
+    get disconnected() {
+      return disconnected;
+    },
+    failSetup() {
+      failSetup = true;
+    },
+    sample(at: number, level: number) {
+      now = at;
+      rms = level;
+      for (const callback of timers.values()) callback();
+    },
+    visibility(state: string) {
+      document.visibilityState = state;
+      document.dispatchEvent(new Event("visibilitychange"));
+    },
+    watch: (muted = false, input: MediaStream | undefined = stream) =>
+      watchVoiceActivity(input, muted, (active) => changes.push(active)),
   };
 }
 

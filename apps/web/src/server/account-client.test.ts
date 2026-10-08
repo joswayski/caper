@@ -1,11 +1,21 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "vitest";
-import { AccountApiError, getAccount, getRememberedAccount, logout, requestEmailCode, updateProfile, verifyEmailCode } from "../account/client.ts";
+import {
+  AccountApiError,
+  getAccount,
+  getRememberedAccount,
+  logout,
+  requestEmailCode,
+  updateProfile,
+  verifyEmailCode,
+} from "../account/client.ts";
 
 function mockFetch(t: TestContext, handler: (path: string, init?: RequestInit) => Response) {
   const original = globalThis.fetch;
   globalThis.fetch = async (input, init) => handler(String(input), init);
-  t.onTestFinished(() => { globalThis.fetch = original; });
+  t.onTestFinished(() => {
+    globalThis.fetch = original;
+  });
 }
 
 test("web account client uses cookie sessions across the complete onboarding flow", async (t) => {
@@ -13,8 +23,10 @@ test("web account client uses cookie sessions across the complete onboarding flo
   mockFetch(t, (path, init) => {
     calls.push([path, init]);
     if (path.endsWith("/request")) return Response.json({ challengeId: "challenge-1" }, { status: 202 });
-    if (path.endsWith("/verify")) return Response.json({ account: { id: "public", username: null, displayName: null } });
-    if (path.endsWith("/profile")) return Response.json({ id: "public", username: "caper_user", displayName: "Caper User" });
+    if (path.endsWith("/verify"))
+      return Response.json({ account: { id: "public", username: null, displayName: null } });
+    if (path.endsWith("/profile"))
+      return Response.json({ id: "public", username: "caper_user", displayName: "Caper User" });
     if (path.endsWith("/logout")) return new Response(null, { status: 204 });
     return Response.json({ id: "public", username: "caper_user", displayName: "Caper User" });
   });
@@ -28,13 +40,16 @@ test("web account client uses cookie sessions across the complete onboarding flo
   await logout();
   assert.equal(getRememberedAccount(), undefined);
 
-  assert.deepEqual(calls.map(([path]) => path), [
-    "/api/auth/email/request",
-    "/api/auth/email/verify",
-    "/api/account/profile",
-    "/api/account/me",
-    "/api/auth/logout",
-  ]);
+  assert.deepEqual(
+    calls.map(([path]) => path),
+    [
+      "/api/auth/email/request",
+      "/api/auth/email/verify",
+      "/api/account/profile",
+      "/api/account/me",
+      "/api/auth/logout",
+    ],
+  );
   assert.ok(calls.every(([, init]) => init?.credentials === "same-origin"));
   assert.deepEqual(JSON.parse(String(calls[1]?.[1]?.body)), {
     challengeId: "challenge-1",
@@ -53,8 +68,6 @@ test("verification errors preserve the server's remaining-attempt count", async 
 
   await assert.rejects(
     verifyEmailCode("challenge-1", "WRONG1"),
-    (error: unknown) => error instanceof AccountApiError
-      && error.status === 401
-      && error.attemptsRemaining === 1,
+    (error: unknown) => error instanceof AccountApiError && error.status === 401 && error.attemptsRemaining === 1,
   );
 });

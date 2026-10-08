@@ -26,7 +26,14 @@ test("media projections reject wrong revisions and track shapes before reconcili
   for (const sessionStartedAt of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, "1234", Infinity]) {
     assert.throws(() => callSnapshot({ ...spectator, sessionStartedAt }, true), /Invalid live update/);
   }
-  assert.throws(() => callSnapshot({ ...authenticated, participants: [{ ...person, tracks: [{ id: "camera", kind: "camera" }] }] }, false), /Invalid live update/);
+  assert.throws(
+    () =>
+      callSnapshot(
+        { ...authenticated, participants: [{ ...person, tracks: [{ id: "camera", kind: "camera" }] }] },
+        false,
+      ),
+    /Invalid live update/,
+  );
 });
 
 class FakeSocket extends EventTarget {
@@ -34,46 +41,81 @@ class FakeSocket extends EventTarget {
   closed = false;
   readonly url: string;
 
-  constructor(url: string) { super(); this.url = url; }
-  send(data: string) { this.sent.push(JSON.parse(data)); }
-  close() { this.closed = true; }
-  frame(value: unknown) { this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(value) })); }
-  fail() { this.dispatchEvent(new Event("close")); }
+  constructor(url: string) {
+    super();
+    this.url = url;
+  }
+  send(data: string) {
+    this.sent.push(JSON.parse(data));
+  }
+  close() {
+    this.closed = true;
+  }
+  frame(value: unknown) {
+    this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(value) }));
+  }
+  fail() {
+    this.dispatchEvent(new Event("close"));
+  }
 }
 
 function setup(t: TestContext) {
   const originalWindow = globalThis.window;
   Object.defineProperty(globalThis, "window", { configurable: true, value: new FakeWindow() });
-  t.onTestFinished(() => { Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow }); });
-  let nextId = 0;
-  vi.spyOn(globalThis.crypto, "randomUUID").mockImplementation(() => `00000000-0000-4000-8000-${String(++nextId).padStart(12, "0")}`);
-  const sockets: FakeSocket[] = [];
-  const gateway = new AppGateway((url) => {
-    const socket = new FakeSocket(url);
-    sockets.push(socket);
-    return socket;
-  }, () => 0);
-  t.onTestFinished(() => gateway.destroy());
-  const hello = (index: number, serverTime = Date.now()) => sockets[index].frame({
-    type: "hello", idleTimeoutSeconds: 600, serverTime,
+  t.onTestFinished(() => {
+    Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
   });
-  const subscribe = (index: number, offset = 0) => sockets[index].sent.filter((frame) => frame.type === "subscribe")[offset];
+  let nextId = 0;
+  vi.spyOn(globalThis.crypto, "randomUUID").mockImplementation(
+    () => `00000000-0000-4000-8000-${String(++nextId).padStart(12, "0")}`,
+  );
+  const sockets: FakeSocket[] = [];
+  const gateway = new AppGateway(
+    (url) => {
+      const socket = new FakeSocket(url);
+      sockets.push(socket);
+      return socket;
+    },
+    () => 0,
+  );
+  t.onTestFinished(() => gateway.destroy());
+  const hello = (index: number, serverTime = Date.now()) =>
+    sockets[index].frame({
+      type: "hello",
+      idleTimeoutSeconds: 600,
+      serverTime,
+    });
+  const subscribe = (index: number, offset = 0) =>
+    sockets[index].sent.filter((frame) => frame.type === "subscribe")[offset];
   return { gateway, sockets, hello, subscribe };
 }
 
 test("chat, media, and scoped presence share one credential-free same-origin socket", async (t) => {
   const f = setup(t);
-  const chat = f.gateway.subscribe({ kind: "chat", channelId: "general", after: "4" }, { event: () => undefined, cursor: () => "4" });
+  const chat = f.gateway.subscribe(
+    { kind: "chat", channelId: "general", after: "4" },
+    { event: () => undefined, cursor: () => "4" },
+  );
   const media = f.gateway.subscribe({ kind: "media", token: "media-secret" }, { event: () => undefined });
-  const presence = f.gateway.subscribe({ kind: "presence", spaceId: "space", userIds: ["one", "two"] }, { event: () => undefined });
-  t.onTestFinished(() => { chat.unsubscribe(); media.unsubscribe(); presence.unsubscribe(); });
+  const presence = f.gateway.subscribe(
+    { kind: "presence", spaceId: "space", userIds: ["one", "two"] },
+    { event: () => undefined },
+  );
+  t.onTestFinished(() => {
+    chat.unsubscribe();
+    media.unsubscribe();
+    presence.unsubscribe();
+  });
 
   assert.equal(f.sockets.length, 1);
   assert.equal(f.sockets[0].url, "wss://caper.test/api/chat/events");
   assert.equal(new URL(f.sockets[0].url).search, "", "capabilities never enter the URL");
   f.hello(0);
   const frames = f.sockets[0].sent.filter((frame) => frame.type === "subscribe");
-  assert.deepEqual(frames.map((frame) => frame.kind), ["chat", "media", "presence"]);
+  assert.deepEqual(
+    frames.map((frame) => frame.kind),
+    ["chat", "media", "presence"],
+  );
   assert.equal(frames[1].token, "media-secret");
   assert.deepEqual(frames[2].userIds, ["one", "two"]);
   for (const frame of frames) f.sockets[0].frame({ type: "subscribed", id: frame.id });
@@ -84,16 +126,19 @@ test("handoff retains the old socket through overlap and promotes only after cha
   const f = setup(t);
   let cursor = "5";
   const delivered: string[] = [];
-  const subscription = f.gateway.subscribe({ kind: "chat", channelId: "general", after: cursor }, {
-    cursor: () => cursor,
-    event: (event) => {
-      const value = event as { type: string; seq?: string };
-      if (value.type === "message.created" && BigInt(value.seq!) > BigInt(cursor)) {
-        cursor = value.seq!;
-        delivered.push(cursor);
-      }
+  const subscription = f.gateway.subscribe(
+    { kind: "chat", channelId: "general", after: cursor },
+    {
+      cursor: () => cursor,
+      event: (event) => {
+        const value = event as { type: string; seq?: string };
+        if (value.type === "message.created" && BigInt(value.seq!) > BigInt(cursor)) {
+          cursor = value.seq!;
+          delivered.push(cursor);
+        }
+      },
     },
-  });
+  );
   t.onTestFinished(() => subscription.unsubscribe());
   f.hello(0);
   const id = f.subscribe(0).id;
@@ -118,13 +163,19 @@ test("candidate gaps or failure cannot kill a healthy active stream", (t) => {
   const f = setup(t);
   let cursor = "2";
   const delivered: string[] = [];
-  const subscription = f.gateway.subscribe({ kind: "chat", channelId: "general", after: cursor }, {
-    cursor: () => cursor,
-    event: (event) => {
-      const seq = (event as { seq?: string }).seq;
-      if (seq && BigInt(seq) > BigInt(cursor)) { cursor = seq; delivered.push(seq); }
+  const subscription = f.gateway.subscribe(
+    { kind: "chat", channelId: "general", after: cursor },
+    {
+      cursor: () => cursor,
+      event: (event) => {
+        const seq = (event as { seq?: string }).seq;
+        if (seq && BigInt(seq) > BigInt(cursor)) {
+          cursor = seq;
+          delivered.push(seq);
+        }
+      },
     },
-  });
+  );
   t.onTestFinished(() => subscription.unsubscribe());
   f.hello(0);
   const id = f.subscribe(0).id;
@@ -147,19 +198,31 @@ test("repeated deployments keep chat and media online through a failed candidate
   const revisions: number[] = [];
   const chatStatus: boolean[] = [];
   const mediaStatus: boolean[] = [];
-  const chat = f.gateway.subscribe({ kind: "chat", channelId: "general", after: cursor }, {
-    cursor: () => cursor,
-    status: (online) => chatStatus.push(online),
-    event: (event) => {
-      const seq = (event as { seq?: string }).seq;
-      if (seq && BigInt(seq) > BigInt(cursor)) { cursor = seq; delivered.push(seq); }
+  const chat = f.gateway.subscribe(
+    { kind: "chat", channelId: "general", after: cursor },
+    {
+      cursor: () => cursor,
+      status: (online) => chatStatus.push(online),
+      event: (event) => {
+        const seq = (event as { seq?: string }).seq;
+        if (seq && BigInt(seq) > BigInt(cursor)) {
+          cursor = seq;
+          delivered.push(seq);
+        }
+      },
     },
+  );
+  const media = f.gateway.subscribe(
+    { kind: "media", channelId: "voice", token: "existing-session" },
+    {
+      status: (online) => mediaStatus.push(online),
+      event: (event) => revisions.push((event as { revision: number }).revision),
+    },
+  );
+  t.onTestFinished(() => {
+    chat.unsubscribe();
+    media.unsubscribe();
   });
-  const media = f.gateway.subscribe({ kind: "media", channelId: "voice", token: "existing-session" }, {
-    status: (online) => mediaStatus.push(online),
-    event: (event) => revisions.push((event as { revision: number }).revision),
-  });
-  t.onTestFinished(() => { chat.unsubscribe(); media.unsubscribe(); });
   f.hello(0);
   f.sockets[0].frame({ type: "event", id: chat.id, event: { type: "ready", cursor } });
   f.sockets[0].frame({ type: "subscribed", id: chat.id });
@@ -173,7 +236,10 @@ test("repeated deployments keep chat and media online through a failed candidate
   vi.advanceTimersByTime(188);
   assert.equal(f.sockets.length, 3);
 
-  for (const [activeIndex, candidateIndex, seq, revision] of [[0, 2, "7", 9], [2, 3, "8", 10]] as const) {
+  for (const [activeIndex, candidateIndex, seq, revision] of [
+    [0, 2, "7", 9],
+    [2, 3, "8", 10],
+  ] as const) {
     if (activeIndex !== 0) f.sockets[activeIndex].frame({ type: "migrating" });
     f.hello(candidateIndex);
     const active = f.sockets[activeIndex];
@@ -184,11 +250,19 @@ test("repeated deployments keep chat and media online through a failed candidate
     active.frame({ type: "event", id: chat.id, event: { type: "message.created", seq } });
     candidate.frame({ type: "subscribed", id: chat.id });
     candidate.frame({ type: "event", id: chat.id, event: { type: "message.created", seq } });
-    candidate.frame({ type: "event", id: media.id, event: { type: "snapshot", revision: revision - 2, participants: [] } });
+    candidate.frame({
+      type: "event",
+      id: media.id,
+      event: { type: "snapshot", revision: revision - 2, participants: [] },
+    });
     candidate.frame({ type: "subscribed", id: media.id });
     assert.equal(active.closed, false, "chat catch-up cannot promote a stale media subscription");
     active.frame({ type: "event", id: media.id, event: { type: "snapshot", revision, participants: [] } });
-    candidate.frame({ type: "event", id: media.id, event: { type: "snapshot", revision: revision - 1, participants: [] } });
+    candidate.frame({
+      type: "event",
+      id: media.id,
+      event: { type: "snapshot", revision: revision - 1, participants: [] },
+    });
     assert.equal(active.closed, false, "the old stream continues carrying newer state during catch-up");
     candidate.frame({ type: "event", id: media.id, event: { type: "snapshot", revision, participants: [] } });
     assert.equal(active.closed, true);
@@ -206,7 +280,12 @@ test("pending commands retry with identical identity on reconnect, command_pendi
   const result = f.gateway.command({ method: "media.state", token: "secret", body: { muted: true }, timeoutMs: 5_000 });
   f.hello(0);
   const first = f.sockets[0].sent.find((frame) => frame.type === "command")!;
-  f.sockets[0].frame({ type: "result", id: first.id, status: 409, body: { code: "command_pending", error: "pending" } });
+  f.sockets[0].frame({
+    type: "result",
+    id: first.id,
+    status: 409,
+    body: { code: "command_pending", error: "pending" },
+  });
   vi.advanceTimersByTime(100);
   const retry = f.sockets[0].sent.filter((frame) => frame.type === "command").at(-1)!;
   assert.deepEqual(retry, first);
@@ -216,7 +295,12 @@ test("pending commands retry with identical identity on reconnect, command_pendi
   f.hello(1);
   const reconnectRetry = f.sockets[1].sent.find((frame) => frame.type === "command")!;
   assert.deepEqual(reconnectRetry, first, "reconnect preserves id and issuedAt for backend deduplication");
-  f.sockets[1].frame({ type: "result", id: first.id, status: 503, body: { code: "gateway_draining", error: "draining" } });
+  f.sockets[1].frame({
+    type: "result",
+    id: first.id,
+    status: 503,
+    body: { code: "gateway_draining", error: "draining" },
+  });
   assert.equal(f.sockets.length, 3);
   f.hello(2);
   const drainingRetry = f.sockets[2].sent.find((frame) => frame.type === "command")!;
@@ -231,12 +315,20 @@ for (const interruption of ["disconnect", "handoff", "draining", "pending"] as c
     const f = setup(t);
     await assert.rejects(f.gateway.command({ method: "typing" }), /reconnecting/);
     assert.equal(f.sockets.length, 0, "typing alone cannot open a connection or queue old activity");
-    const subscription = f.gateway.subscribe({ kind: "chat", channelId: "general", after: "0" }, { event: () => undefined });
+    const subscription = f.gateway.subscribe(
+      { kind: "chat", channelId: "general", after: "0" },
+      { event: () => undefined },
+    );
     void subscription.ready.catch(() => undefined);
     t.onTestFinished(() => subscription.unsubscribe());
     f.hello(0);
     f.sockets[0].frame({ type: "subscribed", id: subscription.id });
-    const pulse = f.gateway.command({ method: "typing", channelId: "general", body: { typing: true }, timeoutMs: 2_000 });
+    const pulse = f.gateway.command({
+      method: "typing",
+      channelId: "general",
+      body: { typing: true },
+      timeoutMs: 2_000,
+    });
     const lost = assert.rejects(pulse);
     const first = f.sockets[0].sent.find((frame) => frame.type === "command")!;
     assert.equal(first.method, "typing");
@@ -251,8 +343,12 @@ for (const interruption of ["disconnect", "handoff", "draining", "pending"] as c
       f.sockets[1].frame({ type: "subscribed", id: subscription.id });
       assert.equal(f.sockets[0].closed, true);
     } else {
-      f.sockets[0].frame({ type: "result", id: first.id, status: interruption === "draining" ? 503 : 409,
-        body: { code: interruption === "draining" ? "gateway_draining" : "command_pending" } });
+      f.sockets[0].frame({
+        type: "result",
+        id: first.id,
+        status: interruption === "draining" ? 503 : 409,
+        body: { code: interruption === "draining" ? "gateway_draining" : "command_pending" },
+      });
       vi.advanceTimersByTime(1_000);
     }
     await lost;
@@ -284,13 +380,16 @@ test("local presence follows connection and the server idle timeout without a pr
   assert.equal(f.gateway.localPresence(false), "offline");
   globalThis.window.dispatchEvent(new Event("pointerdown"));
   assert.equal(f.gateway.localPresence(true), "online");
-  assert.equal(f.sockets[0].sent.filter(frame => frame.type === "subscribe").length, 1);
+  assert.equal(f.sockets[0].sent.filter((frame) => frame.type === "subscribe").length, 1);
 });
 
 test("pointer movement reports throttled activity without focus state", (t) => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const f = setup(t);
-  const subscription = f.gateway.subscribe({ kind: "presence", spaceId: "space", userIds: [] }, { event: () => undefined });
+  const subscription = f.gateway.subscribe(
+    { kind: "presence", spaceId: "space", userIds: [] },
+    { event: () => undefined },
+  );
   void subscription.ready.catch(() => undefined);
   t.onTestFinished(() => subscription.unsubscribe());
   f.hello(0);
@@ -310,7 +409,10 @@ test("a command is stamped once from the first server clock and preserves that s
   const f = setup(t);
   const serverTime = Date.now() + 45_000;
   void f.gateway.command({ method: "media.snapshot", timeoutMs: 5_000 }).catch(() => undefined);
-  assert.equal(f.sockets[0].sent.some((frame) => frame.type === "command"), false);
+  assert.equal(
+    f.sockets[0].sent.some((frame) => frame.type === "command"),
+    false,
+  );
   f.hello(0, serverTime);
   const first = f.sockets[0].sent.find((frame) => frame.type === "command")!;
   assert.equal(first.issuedAt, serverTime);
@@ -318,14 +420,20 @@ test("a command is stamped once from the first server clock and preserves that s
   f.sockets[0].fail();
   vi.advanceTimersByTime(188);
   f.hello(1, serverTime + 90_000);
-  assert.deepEqual(f.sockets[1].sent.find((frame) => frame.type === "command"), first);
+  assert.deepEqual(
+    f.sockets[1].sent.find((frame) => frame.type === "command"),
+    first,
+  );
 });
 
 test("queued frames for an unsubscribed logical ID do not disconnect healthy subscriptions", (t) => {
   const f = setup(t);
   const stale = f.gateway.subscribe({ kind: "chat", channelId: "old" }, { event: () => undefined });
   const received: unknown[] = [];
-  const healthy = f.gateway.subscribe({ kind: "chat", channelId: "current" }, { event: (event) => received.push(event) });
+  const healthy = f.gateway.subscribe(
+    { kind: "chat", channelId: "current" },
+    { event: (event) => received.push(event) },
+  );
   void stale.ready.catch(() => undefined);
   t.onTestFinished(() => healthy.unsubscribe());
   f.hello(0);
@@ -347,10 +455,13 @@ test("subscription 503 retries the same ID while authorization errors terminate 
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const f = setup(t);
   const live: boolean[] = [];
-  const transient = f.gateway.subscribe({ kind: "presence", spaceId: "space", userIds: ["one"] }, {
-    event: () => undefined,
-    status: (online) => live.push(online),
-  });
+  const transient = f.gateway.subscribe(
+    { kind: "presence", spaceId: "space", userIds: ["one"] },
+    {
+      event: () => undefined,
+      status: (online) => live.push(online),
+    },
+  );
   f.hello(0);
   const transientId = f.subscribe(0).id;
   f.sockets[0].frame({ type: "error", id: transientId, status: 503, error: "draining" });
@@ -372,15 +483,21 @@ test("subscription 503 retries the same ID while authorization errors terminate 
   assert.deepEqual(live, [false, false, true], "candidate failure does not mark the healthy active stream offline");
 
   const errors: number[] = [];
-  const denied = f.gateway.subscribe({ kind: "presence", spaceId: "space", userIds: ["two"] }, {
-    event: () => undefined,
-    error: (error) => errors.push(error.status),
-  });
+  const denied = f.gateway.subscribe(
+    { kind: "presence", spaceId: "space", userIds: ["two"] },
+    {
+      event: () => undefined,
+      error: (error) => errors.push(error.status),
+    },
+  );
   const deniedId = f.sockets[0].sent.filter((frame) => frame.type === "subscribe").at(-1)!.id;
   f.sockets[0].frame({ type: "error", id: deniedId, status: 403, error: "forbidden" });
   await assert.rejects(denied.ready, (error: unknown) => (error as { status?: number }).status === 403);
-  assert.equal(f.sockets[0].sent.some((frame) => frame.type === "unsubscribe" && frame.id === deniedId), true,
-    "terminal subscription errors release the server-side active slot");
+  assert.equal(
+    f.sockets[0].sent.some((frame) => frame.type === "unsubscribe" && frame.id === deniedId),
+    true,
+    "terminal subscription errors release the server-side active slot",
+  );
   vi.advanceTimersByTime(5_000);
   assert.equal(f.sockets[0].sent.filter((frame) => frame.type === "subscribe" && frame.id === deniedId).length, 1);
   assert.deepEqual(errors, [403]);
@@ -389,7 +506,10 @@ test("subscription 503 retries the same ID while authorization errors terminate 
 
 test("promotion resolves a subscription first established on the candidate", async (t) => {
   const f = setup(t);
-  const existing = f.gateway.subscribe({ kind: "chat", channelId: "existing", after: "0" }, { event: () => undefined, cursor: () => "0" });
+  const existing = f.gateway.subscribe(
+    { kind: "chat", channelId: "existing", after: "0" },
+    { event: () => undefined, cursor: () => "0" },
+  );
   f.hello(0);
   const existingId = f.subscribe(0).id;
   f.sockets[0].frame({ type: "event", id: existingId, event: { type: "ready", cursor: "0" } });
@@ -398,7 +518,10 @@ test("promotion resolves a subscription first established on the candidate", asy
   t.onTestFinished(() => existing.unsubscribe());
 
   f.sockets[0].frame({ type: "migrating" });
-  const candidateOnly = f.gateway.subscribe({ kind: "chat", channelId: "new", after: "0" }, { event: () => undefined, cursor: () => "0" });
+  const candidateOnly = f.gateway.subscribe(
+    { kind: "chat", channelId: "new", after: "0" },
+    { event: () => undefined, cursor: () => "0" },
+  );
   t.onTestFinished(() => candidateOnly.unsubscribe());
   f.hello(1);
   for (const frame of f.sockets[1].sent.filter((value) => value.type === "subscribe")) {
@@ -412,9 +535,12 @@ test("promotion resolves a subscription first established on the candidate", asy
 test("handoff waits for a media snapshot at least as new as the applied revision", (t) => {
   const f = setup(t);
   const revisions: number[] = [];
-  const subscription = f.gateway.subscribe({ kind: "media" }, {
-    event: (event) => revisions.push((event as { revision: number }).revision),
-  });
+  const subscription = f.gateway.subscribe(
+    { kind: "media" },
+    {
+      event: (event) => revisions.push((event as { revision: number }).revision),
+    },
+  );
   t.onTestFinished(() => subscription.unsubscribe());
   f.hello(0);
   const id = f.subscribe(0).id;
@@ -437,9 +563,12 @@ test("handoff waits for a media snapshot at least as new as the applied revision
 test("candidate presence snapshots remain hidden until promotion and only the latest is applied", (t) => {
   const f = setup(t);
   const states: string[] = [];
-  const subscription = f.gateway.subscribe({ kind: "presence", spaceId: "space", userIds: ["one"] }, {
-    event: (event) => states.push((event as { members: Array<{ status: string }> }).members[0].status),
-  });
+  const subscription = f.gateway.subscribe(
+    { kind: "presence", spaceId: "space", userIds: ["one"] },
+    {
+      event: (event) => states.push((event as { members: Array<{ status: string }> }).members[0].status),
+    },
+  );
   t.onTestFinished(() => subscription.unsubscribe());
   f.hello(0);
   const id = f.subscribe(0).id;
@@ -464,7 +593,10 @@ test("legacy spectator presence reports live status across gateway reconnect", (
   setAppGatewayForTests(f.gateway);
   t.onTestFinished(() => setAppGatewayForTests(undefined));
   const live: boolean[] = [];
-  const stop = watchMediaPresence(() => undefined, (online) => live.push(online));
+  const stop = watchMediaPresence(
+    () => undefined,
+    (online) => live.push(online),
+  );
   t.onTestFinished(stop);
   f.hello(0);
   const id = f.subscribe(0).id;
@@ -480,9 +612,18 @@ test("legacy spectator presence reports live status across gateway reconnect", (
 
 test("presence subscriptions reject more than 100 users", (t) => {
   const f = setup(t);
-  assert.throws(() => f.gateway.subscribe({
-    kind: "presence", spaceId: "space", userIds: Array.from({ length: 101 }, (_, index) => String(index)),
-  }, { event: () => undefined }), /at most 100/);
+  assert.throws(
+    () =>
+      f.gateway.subscribe(
+        {
+          kind: "presence",
+          spaceId: "space",
+          userIds: Array.from({ length: 101 }, (_, index) => String(index)),
+        },
+        { event: () => undefined },
+      ),
+    /at most 100/,
+  );
   assert.equal(f.sockets.length, 0);
 });
 
@@ -503,15 +644,23 @@ test("public watchPresence delivers scoped member states", (t) => {
 test("edited messages advance gateway handoff positions independently of original message sequence", (t) => {
   const f = setup(t);
   let cursor = "4";
-  const subscription = f.gateway.subscribe({ kind: "chat", channelId: "room", after: cursor }, {
-    cursor: () => cursor,
-    event: (event) => { const seq = (event as { seq?: string }).seq; if (seq && BigInt(seq) > BigInt(cursor)) cursor = seq; },
-  });
+  const subscription = f.gateway.subscribe(
+    { kind: "chat", channelId: "room", after: cursor },
+    {
+      cursor: () => cursor,
+      event: (event) => {
+        const seq = (event as { seq?: string }).seq;
+        if (seq && BigInt(seq) > BigInt(cursor)) cursor = seq;
+      },
+    },
+  );
   t.onTestFinished(() => subscription.unsubscribe());
-  f.hello(0); const id = f.subscribe(0).id;
+  f.hello(0);
+  const id = f.subscribe(0).id;
   f.sockets[0].frame({ type: "event", id, event: { type: "ready", cursor } });
   f.sockets[0].frame({ type: "subscribed", id });
-  f.sockets[0].frame({ type: "migrating" }); f.hello(1);
+  f.sockets[0].frame({ type: "migrating" });
+  f.hello(1);
   const edit = { type: "message.edited", channelId: "room", seq: "5", message: { seq: "1", editSeq: "5" } };
   f.sockets[0].frame({ type: "event", id, event: edit });
   f.sockets[1].frame({ type: "event", id, event: edit });

@@ -19,7 +19,9 @@ test("DM requests are global and unread comparisons preserve large sequence valu
   const calls: Array<{ path: string; body?: string }> = [];
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
     calls.push({ path: String(input), body: init?.body as string | undefined });
-    return init?.method === "POST" && String(input).endsWith("/read") ? new Response(null, { status: 204 }) : Response.json({ conversations: [] });
+    return init?.method === "POST" && String(input).endsWith("/read")
+      ? new Response(null, { status: 204 })
+      : Response.json({ conversations: [] });
   });
   await listDirectConversations();
   await createDirectConversation(" @Mira ");
@@ -30,8 +32,14 @@ test("DM requests are global and unread comparisons preserve large sequence valu
     { path: "/api/dms/direct000001/read", body: '{"seq":"9007199254740993"}' },
   ]);
   const peer = { id: "account00002", username: "mira", displayName: "Mira" };
-  assert.equal(directUnread({ id: "direct000001", peer, lastSeq: "9007199254740993", readSeq: "9007199254740992" }), true);
-  assert.equal(directUnread({ id: "direct000001", peer, lastSeq: "9007199254740992", readSeq: "9007199254740993" }), false);
+  assert.equal(
+    directUnread({ id: "direct000001", peer, lastSeq: "9007199254740993", readSeq: "9007199254740992" }),
+    true,
+  );
+  assert.equal(
+    directUnread({ id: "direct000001", peer, lastSeq: "9007199254740992", readSeq: "9007199254740993" }),
+    false,
+  );
 });
 
 test("space and channel names enforce the browser-visible API rules", () => {
@@ -56,8 +64,10 @@ test("CRUD sends only the specified payload and preserves server error details",
   const requests: Array<{ path: string; init?: RequestInit }> = [];
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
     requests.push({ path: String(input), init });
-    if (String(input) === "/api/spaces") return Response.json({ id: "space1234567", name: "Studio", ownerId: "owner1234567" });
-    if (init?.method === "DELETE") return Response.json({ error: "The default space cannot be deleted." }, { status: 409 });
+    if (String(input) === "/api/spaces")
+      return Response.json({ id: "space1234567", name: "Studio", ownerId: "owner1234567" });
+    if (init?.method === "DELETE")
+      return Response.json({ error: "The default space cannot be deleted." }, { status: 409 });
     return Response.json({ id: "chanl1234567", spaceId: "space1234567", name: "launch-plans", private: true });
   });
 
@@ -85,22 +95,31 @@ const spaceDetail = {
   members: [],
 };
 const history = (id: string) => ({
-  space: spaceDetail.space, channel: { id, name: id }, messages: [], cursor: "7", hasMore: false,
+  space: spaceDetail.space,
+  channel: { id, name: id },
+  messages: [],
+  cursor: "7",
+  hasMore: false,
 });
 
 test("hover and click share one read, wait for history, and consume the snapshot only once", async () => {
   const paths: string[] = [];
   let release!: (response: Response) => void;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
-    const path = String(input); paths.push(path);
+    const path = String(input);
+    paths.push(path);
     if (path === "/api/spaces/space1234567") return Response.json(spaceDetail);
-    return new Promise<Response>((resolve) => { release = resolve; });
+    return new Promise<Response>((resolve) => {
+      release = resolve;
+    });
   });
   const navigation = createSpaceNavigation();
   const hover = navigation.prepare("space1234567", "other1234567");
   assert.equal(navigation.take("space1234567", "other1234567"), hover);
   let settled = false;
-  void hover.then(() => { settled = true; });
+  void hover.then(() => {
+    settled = true;
+  });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(settled, false, "a channel list alone must not replace the visible space");
   assert.deepEqual(paths, ["/api/spaces/space1234567", "/api/chat/channels/other1234567/messages"]);
@@ -124,7 +143,12 @@ test("expired and invalidated speculation is not reused; genuinely empty spaces 
   });
   const navigation = createSpaceNavigation();
   const first = navigation.prepare("space1234567");
-  assert.deepEqual(await first, { detail: { ...spaceDetail, channels: [] }, channelId: undefined, history: undefined, historyError: undefined });
+  assert.deepEqual(await first, {
+    detail: { ...spaceDetail, channels: [] },
+    channelId: undefined,
+    history: undefined,
+    historyError: undefined,
+  });
   now = 5_099;
   assert.equal(navigation.prepare("space1234567"), first);
   now = 5_100;
@@ -151,8 +175,10 @@ test("failed speculation retries and rejects history for another space", async (
 
 test("a message outage preserves channel navigation and space management", async () => {
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) =>
-    String(input).startsWith("/api/spaces/") ? Response.json(spaceDetail)
-      : Response.json({ error: "Messaging unavailable" }, { status: 503 }));
+    String(input).startsWith("/api/spaces/")
+      ? Response.json(spaceDetail)
+      : Response.json({ error: "Messaging unavailable" }, { status: 503 }),
+  );
   const next = await createSpaceNavigation().take("space1234567");
   assert.deepEqual(next.detail, spaceDetail);
   assert.equal(next.channelId, "first1234567");
@@ -164,9 +190,10 @@ test("returning restores each channel snapshot, rechecks access, and forgets rev
   const paths: string[] = [];
   let denied = false;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
-    const path = String(input); paths.push(path);
-    if (path.startsWith("/api/spaces/")) return denied
-      ? Response.json({ error: "Access removed" }, { status: 404 }) : Response.json(spaceDetail);
+    const path = String(input);
+    paths.push(path);
+    if (path.startsWith("/api/spaces/"))
+      return denied ? Response.json({ error: "Access removed" }, { status: 404 }) : Response.json(spaceDetail);
     return Response.json(history(path.includes("other") ? "other1234567" : "first1234567"));
   });
   const navigation = createSpaceNavigation();
@@ -177,7 +204,11 @@ test("returning restores each channel snapshot, rechecks access, and forgets rev
   assert.deepEqual(navigation.peek("space1234567", "first1234567")?.history, liveSnapshot);
   const returning = await navigation.take("space1234567", "first1234567");
   assert.deepEqual(returning.history, liveSnapshot);
-  assert.equal(paths.filter((path) => path.startsWith("/api/chat/")).length, 2, "visited channels resume replay instead of fetching another first page");
+  assert.equal(
+    paths.filter((path) => path.startsWith("/api/chat/")).length,
+    2,
+    "visited channels resume replay instead of fetching another first page",
+  );
   assert.equal(paths.filter((path) => path.startsWith("/api/spaces/")).length, 3);
   assert.equal(navigation.peek("space1234567", "other1234567")?.history?.cursor, "7");
   denied = true;

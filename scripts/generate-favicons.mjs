@@ -1,35 +1,49 @@
 // Original mascot for static web/desktop identities and pre-JavaScript fallbacks.
 // Requires ImageMagick 7 and librsvg (rsvg-convert); node scripts/generate-favicons.mjs
 // Use --check to detect stale assets without writing them.
-import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const source = fileURLToPath(new URL('../apps/web/public/caper-face.svg', import.meta.url));
-const output = fileURLToPath(new URL('../apps/web/public/icons/', import.meta.url));
-const desktop = fileURLToPath(new URL('../apps/native/desktop/resources/', import.meta.url));
-const mac = fileURLToPath(new URL('../apps/native/apple/Resources/CaperIcons.xcassets/AppIcon.appiconset/', import.meta.url));
+const source = fileURLToPath(new URL("../apps/web/public/caper-face.svg", import.meta.url));
+const output = fileURLToPath(new URL("../apps/web/public/icons/", import.meta.url));
+const desktop = fileURLToPath(new URL("../apps/native/desktop/resources/", import.meta.url));
+const mac = fileURLToPath(
+  new URL("../apps/native/apple/Resources/CaperIcons.xcassets/AppIcon.appiconset/", import.meta.url),
+);
 const files = new Map();
-const raster = execFileSync('rsvg-convert', ['--width', '1024', '--height', '1024', source]);
+const raster = execFileSync("rsvg-convert", ["--width", "1024", "--height", "1024", source]);
 for (const size of [32, 180, 192, 512]) {
-  const png = execFileSync('magick', [
-    'png:-', '-resize', `${size}x${size}`,
-    // Installed icons are opaque; the small browser fallback retains transparency.
-    ...(size !== 32 ? ['-background', '#0C0D0F', '-alpha', 'remove', '-alpha', 'off'] : []),
-    '-depth', '8', '-strip', 'png:-',
-  ], { input: raster });
+  const png = execFileSync(
+    "magick",
+    [
+      "png:-",
+      "-resize",
+      `${size}x${size}`,
+      // Installed icons are opaque; the small browser fallback retains transparency.
+      ...(size !== 32 ? ["-background", "#0C0D0F", "-alpha", "remove", "-alpha", "off"] : []),
+      "-depth",
+      "8",
+      "-strip",
+      "png:-",
+    ],
+    { input: raster },
+  );
   files.set(`${output}caper-main-v3-${size}.png`, png);
 }
 
 // Share the same transparent rasters across Windows, Linux and macOS.
 // Render from the main artwork, not an intermediate platform export.
-const pngs = new Map([16, 24, 32, 48, 64, 128, 256, 512, 1024].map(size => [size,
-  execFileSync('magick', [
-    'png:-', '-resize', `${size}x${size}`, '-depth', '8', '-strip', 'PNG32:-',
-  ], { input: raster }),
-]));
+const pngs = new Map(
+  [16, 24, 32, 48, 64, 128, 256, 512, 1024].map((size) => [
+    size,
+    execFileSync("magick", ["png:-", "-resize", `${size}x${size}`, "-depth", "8", "-strip", "PNG32:-"], {
+      input: raster,
+    }),
+  ]),
+);
 files.set(`${desktop}caper-icon.png`, pngs.get(128));
 files.set(`${desktop}caper.svg`, readFileSync(source));
 for (const size of [16, 32, 64, 128, 256, 512, 1024]) {
@@ -38,7 +52,7 @@ for (const size of [16, 32, 64, 128, 256, 512, 1024]) {
 
 // Windows Search and Explorer choose different ICO frames at different DPIs.
 const sizes = [16, 24, 32, 48, 64, 128, 256];
-const frames = sizes.map(size => pngs.get(size));
+const frames = sizes.map((size) => pngs.get(size));
 // ICO header + directory, followed by PNG payloads (supported since Vista).
 const directory = Buffer.alloc(6 + 16 * sizes.length);
 directory.writeUInt16LE(1, 2); // Image type: icon.
@@ -56,11 +70,13 @@ for (const [index, size] of sizes.entries()) {
 files.set(`${desktop}caper.ico`, Buffer.concat([directory, ...frames]));
 
 for (const [file, bytes] of files) {
-  if (process.argv.includes('--check')) {
+  if (process.argv.includes("--check")) {
     assert.ok(readFileSync(file).equals(bytes), `Static Caper icon drift: ${file}`);
   } else {
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, bytes);
   }
 }
-console.log(`${process.argv.includes('--check') ? 'Verified' : 'Exported'} static web PNGs, Windows ICO, Linux SVG/PNG and macOS PNGs from the main mascot SVG.`);
+console.log(
+  `${process.argv.includes("--check") ? "Verified" : "Exported"} static web PNGs, Windows ICO, Linux SVG/PNG and macOS PNGs from the main mascot SVG.`,
+);

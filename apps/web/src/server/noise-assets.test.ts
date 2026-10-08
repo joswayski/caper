@@ -36,7 +36,9 @@ test("RNNoise uses its own cached module and never downloads a DeepFilter model"
 
 test("a failed preload is evicted so a later join can retry", async () => {
   const { assets, compile } = setup();
-  compile.mockImplementationOnce(async () => { throw new Error("compile failed"); });
+  compile.mockImplementationOnce(async () => {
+    throw new Error("compile failed");
+  });
   await assert.rejects(assets.load("deepfilter"), /compile failed/);
   const prepared = await assets.load("deepfilter");
   assert.ok(prepared.module);
@@ -46,7 +48,12 @@ test("a failed preload is evicted so a later join can retry", async () => {
 test("aborting one capture does not cancel shared preparation or another capture", async () => {
   const { assets, compile } = setup();
   let finish!: (module: WebAssembly.Module) => void;
-  compile.mockImplementation(() => new Promise<WebAssembly.Module>((resolve) => { finish = resolve; }));
+  compile.mockImplementation(
+    () =>
+      new Promise<WebAssembly.Module>((resolve) => {
+        finish = resolve;
+      }),
+  );
   const controller = new AbortController();
   const cancelled = assets.load("deepfilter", controller.signal);
   const other = assets.load("deepfilter");

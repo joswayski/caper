@@ -45,8 +45,11 @@ export function layoutLiveScene(stage: HTMLElement, scene: HTMLElement) {
     const left = bounds.left - stageBox.left + (bounds.width - width) / 2;
     const top = bounds.top - stageBox.top + (bounds.height - height) / 2;
     geometry = {
-      width, height, left, top,
-      scale: Math.min(stageBox.width * 0.92 / width, stageBox.height * 0.9 / height),
+      width,
+      height,
+      left,
+      top,
+      scale: Math.min((stageBox.width * 0.92) / width, (stageBox.height * 0.9) / height),
       dx: stageBox.width / 2 - (left + width / 2),
       dy: stageBox.height / 2 - (top + height / 2),
     };
@@ -54,10 +57,15 @@ export function layoutLiveScene(stage: HTMLElement, scene: HTMLElement) {
     // The resting card keeps the viewport's width so the app inside already
     // uses the same layout it will have full screen.
     const width = viewportWidth;
-    const height = Math.round(width * stageBox.height / stageBox.width);
+    const height = Math.round((width * stageBox.height) / stageBox.width);
     geometry = {
-      width, height, left: (stageBox.width - width) / 2, top: (stageBox.height - height) / 2,
-      scale: Math.min(stageBox.width * 0.93 / width, stageBox.height * 0.93 / height), dx: 0, dy: 0,
+      width,
+      height,
+      left: (stageBox.width - width) / 2,
+      top: (stageBox.height - height) / 2,
+      scale: Math.min((stageBox.width * 0.93) / width, (stageBox.height * 0.93) / height),
+      dx: 0,
+      dy: 0,
     };
   }
   // The window intentionally turns toward the hero copy; compensate for the
@@ -73,9 +81,10 @@ export function layoutLiveScene(stage: HTMLElement, scene: HTMLElement) {
   scene.style.setProperty("--counter-scale", (1 / geometry.scale).toFixed(4));
   scene.style.setProperty("--depth", "1");
   const applyRestTransform = () => {
-    scene.style.transform = `translate3d(${geometry.dx.toFixed(2)}px, ${geometry.dy.toFixed(2)}px, 0) `
-      + `scale3d(${geometry.scale.toFixed(4)}, ${geometry.scale.toFixed(4)}, ${geometry.scale.toFixed(4)}) `
-      + `rotateX(${rest.x.toFixed(3)}deg) rotateY(${rest.y.toFixed(3)}deg) rotateZ(${rest.z.toFixed(3)}deg)`;
+    scene.style.transform =
+      `translate3d(${geometry.dx.toFixed(2)}px, ${geometry.dy.toFixed(2)}px, 0) ` +
+      `scale3d(${geometry.scale.toFixed(4)}, ${geometry.scale.toFixed(4)}, ${geometry.scale.toFixed(4)}) ` +
+      `rotateX(${rest.x.toFixed(3)}deg) rotateY(${rest.y.toFixed(3)}deg) rotateZ(${rest.z.toFixed(3)}deg)`;
   };
   applyRestTransform();
   // The homepage's arrival animation temporarily translates the whole scene.
@@ -160,15 +169,19 @@ export function attachLiveMotion(stage: HTMLElement, scene: HTMLElement, options
       scene.dataset.settled = "";
     } else {
       delete scene.dataset.settled;
-      scene.style.transform = `translate3d(${(geometry.dx * closed).toFixed(2)}px, ${(geometry.dy * closed + lift).toFixed(2)}px, 0) `
-        + `scale3d(${scale.toFixed(4)}, ${scale.toFixed(4)}, ${scale.toFixed(4)}) `
-        + `rotateX(${x.toFixed(3)}deg) rotateY(${y.toFixed(3)}deg) rotateZ(${z.toFixed(3)}deg)`;
+      scene.style.transform =
+        `translate3d(${(geometry.dx * closed).toFixed(2)}px, ${(geometry.dy * closed + lift).toFixed(2)}px, 0) ` +
+        `scale3d(${scale.toFixed(4)}, ${scale.toFixed(4)}, ${scale.toFixed(4)}) ` +
+        `rotateX(${x.toFixed(3)}deg) rotateY(${y.toFixed(3)}deg) rotateZ(${z.toFixed(3)}deg)`;
     }
   };
 
-  const settled = () => Math.abs(target.x - tilt.x) < 0.01 && Math.abs(target.y - tilt.y) < 0.01
-    && Math.abs(hover.tx - hover.x) < 0.01 && Math.abs(hover.ty - hover.y) < 0.01
-    && open === (active && mode === "expand" ? 1 : 0);
+  const settled = () =>
+    Math.abs(target.x - tilt.x) < 0.01 &&
+    Math.abs(target.y - tilt.y) < 0.01 &&
+    Math.abs(hover.tx - hover.x) < 0.01 &&
+    Math.abs(hover.ty - hover.y) < 0.01 &&
+    open === (active && mode === "expand" ? 1 : 0);
   const loop = (time: number) => {
     apply(time);
     frame = 0;
@@ -188,7 +201,11 @@ export function attachLiveMotion(stage: HTMLElement, scene: HTMLElement, options
     if (interactive(event.target)) return;
     options.interacted();
     press = { id: event.pointerId, x: event.clientX, y: event.clientY, tiltX: tilt.x, tiltY: tilt.y, dragging: false };
-    try { stage.setPointerCapture(event.pointerId); } catch { /* Synthetic pointers cannot be captured. */ }
+    try {
+      stage.setPointerCapture(event.pointerId);
+    } catch {
+      /* Synthetic pointers cannot be captured. */
+    }
   };
   const pointerMove = (event: PointerEvent) => {
     if (active) return;
@@ -196,10 +213,13 @@ export function attachLiveMotion(stage: HTMLElement, scene: HTMLElement, options
     if (press?.id === event.pointerId) {
       const dx = event.clientX - press.x;
       const dy = event.clientY - press.y;
-      if (!press.dragging && Math.hypot(dx, dy) > 6) { press.dragging = true; stage.dataset.dragging = ""; }
+      if (!press.dragging && Math.hypot(dx, dy) > 6) {
+        press.dragging = true;
+        stage.dataset.dragging = "";
+      }
       if (!press.dragging) return;
-      target.y = clamp(press.tiltY + dx / width * 70);
-      target.x = clamp(press.tiltX - dy / height * 50);
+      target.y = clamp(press.tiltY + (dx / width) * 70);
+      target.x = clamp(press.tiltX - (dy / height) * 50);
       wake();
     } else if (event.pointerType === "mouse" && !motion.matches) {
       hover.ty = ((event.clientX - left) / width - 0.5) * 2 * HOVER;
@@ -217,7 +237,10 @@ export function attachLiveMotion(stage: HTMLElement, scene: HTMLElement, options
     wake();
     if (clicked) options.activate();
   };
-  const pointerLeave = () => { hover.tx = hover.ty = 0; wake(); };
+  const pointerLeave = () => {
+    hover.tx = hover.ty = 0;
+    wake();
+  };
   const cancel = () => release();
   const keyDown = (event: KeyboardEvent) => {
     if (active || !(event.target as Element | null)?.matches?.("[data-live-activator]")) return;
@@ -236,7 +259,11 @@ export function attachLiveMotion(stage: HTMLElement, scene: HTMLElement, options
   const documentKey = (event: KeyboardEvent) => {
     if (!active || event.key !== "Escape" || event.defaultPrevented) return;
     const from = event.target as Element | null;
-    if (from?.closest?.("dialog, details[open], [popover]") || scene.querySelector('details[open], dialog[open], [role="dialog"]')) return;
+    if (
+      from?.closest?.("dialog, details[open], [popover]") ||
+      scene.querySelector('details[open], dialog[open], [role="dialog"]')
+    )
+      return;
     options.deactivate();
   };
   const documentPress = (event: PointerEvent) => {
@@ -259,7 +286,10 @@ export function attachLiveMotion(stage: HTMLElement, scene: HTMLElement, options
   observer.observe(stage);
   const boundsElement = options.bounds();
   if (boundsElement) observer.observe(boundsElement);
-  const visibility = new IntersectionObserver(([entry]) => { visible = entry.isIntersecting; wake(); });
+  const visibility = new IntersectionObserver(([entry]) => {
+    visible = entry.isIntersecting;
+    wake();
+  });
   visibility.observe(stage);
   motion.addEventListener("change", wake);
   document.addEventListener("visibilitychange", wake);
@@ -267,7 +297,9 @@ export function attachLiveMotion(stage: HTMLElement, scene: HTMLElement, options
   wake();
 
   return {
-    get mode() { return mode; },
+    get mode() {
+      return mode;
+    },
     setActive(next: boolean) {
       if (active === next) return;
       active = next;

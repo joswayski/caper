@@ -12,7 +12,10 @@ test("shipped browser ONNX runtime is the intact pinned WASM binary", async () =
   // Model inference below uses node_modules; also verify the bytes actually served to browsers.
   const wasm = await readFile(new URL("ort-wasm-simd-threaded.wasm", assets));
   assert.equal(wasm.length, 11_905_541);
-  assert.equal(createHash("sha256").update(wasm).digest("hex"), "45eaee27761ad883742a8d4b8fce1538d60ce43b51adf1726fafccc59b8c1a15");
+  assert.equal(
+    createHash("sha256").update(wasm).digest("hex"),
+    "45eaee27761ad883742a8d4b8fce1538d60ce43b51adf1726fafccc59b8c1a15",
+  );
   assert.equal(WebAssembly.validate(wasm), true);
 });
 
@@ -20,7 +23,10 @@ test("pinned DPDFNet-8 model performs stateful inference on real spectra", async
   ort.env.wasm.numThreads = 1;
   const model = await readFile(new URL("dpdfnet8_48khz_hr.onnx", assets));
   assert.equal(model.length, 14_857_107);
-  assert.equal(createHash("sha256").update(model).digest("hex"), "7b3afbb260a08fe9af3d16e3bda992971be1e7e951d1dee7c2d235f5c43f5631");
+  assert.equal(
+    createHash("sha256").update(model).digest("hex"),
+    "7b3afbb260a08fe9af3d16e3bda992971be1e7e951d1dee7c2d235f5c43f5631",
+  );
   const metadata = JSON.parse(await readFile(new URL("metadata.json", assets), "utf8"));
   assert.equal(metadata.erbNormInit.length, 481);
   assert.equal(metadata.specNormInit.length, 96);
@@ -40,7 +46,10 @@ test("pinned DPDFNet-8 model performs stateful inference on real spectra", async
   const started = performance.now();
   let energy = 0;
   for (let frame = 0; frame < 8; frame++) {
-    const input = Float32Array.from({ length: 480 }, (_, i) => 0.05 * Math.sin(2 * Math.PI * 440 * (frame * 480 + i) / 48_000));
+    const input = Float32Array.from(
+      { length: 480 },
+      (_, i) => 0.05 * Math.sin((2 * Math.PI * 440 * (frame * 480 + i)) / 48_000),
+    );
     const output = await stream.process(input);
     assert.equal(output.length, 480);
     assert.ok(output.every(Number.isFinite));
@@ -50,7 +59,9 @@ test("pinned DPDFNet-8 model performs stateful inference on real spectra", async
   assert.equal(calls, 8);
   assert.ok(energy > 0, "actual model output must not remain silent");
   // Diagnostic only: shared CI/orb CPU speed is not a correctness gate.
-  console.log(`DPDFNet-8: ${(elapsed / calls).toFixed(1)} ms/hop (${elapsed.toFixed(0)} ms total; includes startup, not a sustained benchmark)`);
+  console.log(
+    `DPDFNet-8: ${(elapsed / calls).toFixed(1)} ms/hop (${elapsed.toFixed(0)} ms total; includes startup, not a sustained benchmark)`,
+  );
   await session.release();
 });
 
@@ -59,19 +70,24 @@ async function loadWorklet() {
   const messages: unknown[] = [];
   let Processor: any;
   new Function("AudioWorkletProcessor", "registerProcessor", code)(
-    class { port = { onmessage: null, postMessage: (message: unknown) => messages.push(message), close() {} }; },
-    (_name: string, value: unknown) => { Processor = value; },
+    class {
+      port = { onmessage: null, postMessage: (message: unknown) => messages.push(message), close() {} };
+    },
+    (_name: string, value: unknown) => {
+      Processor = value;
+    },
   );
   return { processor: new Processor(), messages };
 }
 
 test("DPDFNet identity STFT has one-hop alignment and unity gain", async () => {
   const identity = new DpdfnetStream(async (spec, state) => ({ spec, state }), new Float32Array());
-  const input = Float32Array.from({ length: 480 * 8 }, (_, i) =>
-    0.13 * Math.sin(2 * Math.PI * 997 * i / 48_000) + (i === 731 ? 0.7 : 0));
+  const input = Float32Array.from(
+    { length: 480 * 8 },
+    (_, i) => 0.13 * Math.sin((2 * Math.PI * 997 * i) / 48_000) + (i === 731 ? 0.7 : 0),
+  );
   const output = new Float32Array(input.length);
-  for (let at = 0; at < input.length; at += 480)
-    output.set(await identity.process(input.subarray(at, at + 480)), at);
+  for (let at = 0; at < input.length; at += 480) output.set(await identity.process(input.subarray(at, at + 480)), at);
   assert.ok(output.subarray(0, 480).every((sample) => sample === 0));
   let maxError = 0;
   for (let i = 480; i < output.length; i++) maxError = Math.max(maxError, Math.abs(output[i] - input[i - 480]));
@@ -109,7 +125,10 @@ test("DPDFNet adapter prebuffers three hops and stays continuous across variable
   assert.ok(firstAudio >= 1_440, `startup was only ${firstAudio} samples`);
   const live = rendered.slice(firstAudio);
   assert.deepEqual(live, submitted.slice(0, live.length));
-  assert.ok(live.every((sample) => sample !== 0), "no holes after startup");
+  assert.ok(
+    live.every((sample) => sample !== 0),
+    "no holes after startup",
+  );
 });
 
 test("DPDFNet adapter bounds sustained overload but recovers from a transient underrun", async () => {
@@ -125,18 +144,20 @@ test("DPDFNet adapter bounds sustained overload but recovers from a transient un
   assert.deepEqual(overloadOutput, new Float32Array(128).fill(35));
 
   const underrun = await loadWorklet();
-  for (let i = 0; i < 3; i++) underrun.processor.port.onmessage({
-    data: { type: "output", samples: new Float32Array(480).fill(i + 1).buffer },
-  });
+  for (let i = 0; i < 3; i++)
+    underrun.processor.port.onmessage({
+      data: { type: "output", samples: new Float32Array(480).fill(i + 1).buffer },
+    });
   assert.equal(underrun.processor.process([[new Float32Array(1_440)]], [[new Float32Array(1_440)]]), true);
   const input = new Float32Array([0.25]);
   const output = new Float32Array(1);
   assert.equal(underrun.processor.process([[input]], [[output]]), true);
   assert.ok(!underrun.messages.includes("bypassed"));
   assert.deepEqual(output, new Float32Array(1), "never leak raw input during refill");
-  for (let i = 0; i < 3; i++) underrun.processor.port.onmessage({
-    data: { type: "output", samples: new Float32Array(480).fill(0.1 * (i + 1)).buffer },
-  });
+  for (let i = 0; i < 3; i++)
+    underrun.processor.port.onmessage({
+      data: { type: "output", samples: new Float32Array(480).fill(0.1 * (i + 1)).buffer },
+    });
   const recovered = new Float32Array(128);
   underrun.processor.process([[new Float32Array(128).fill(0.9)]], [[recovered]]);
   assert.deepEqual(recovered, new Float32Array(128).fill(0.1), "resume processed samples after refilling");
