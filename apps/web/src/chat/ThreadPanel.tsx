@@ -161,9 +161,11 @@ export default function ThreadPanel({
         }}
       >
         {root && <div className="chat-thread-parent">{renderMessage(0, root, true)}</div>}
-        <div className="chat-thread-divider">
-          {root?.thread?.replyCount ?? 0} {root?.thread?.replyCount === 1 ? "reply" : "replies"}
-        </div>
+        {!!root?.thread?.replyCount && (
+          <div className="chat-thread-divider">
+            {root.thread.replyCount} {root.thread.replyCount === 1 ? "reply" : "replies"}
+          </div>
+        )}
         {state.thread.loading && (
           <p className="chat-thread-status" role="status">
             Loading thread…

@@ -295,15 +295,15 @@
   .live-app .sidebar-channels {
     padding-top: 10px;
   }
-  .live-app .chat-heading {
-    min-height: 61px;
+  .live-app .chat-layout {
+    --chat-header-height: 61px;
   }
   /* Spaces already provide their own aligned 54px navigation header. */
   .live-app .spaces-room .sidebar-channels {
     padding-top: 0;
   }
-  .live-app .spaces-room .chat-heading {
-    min-height: 54px;
+  .live-app .spaces-room .chat-layout {
+    --chat-header-height: 54px;
   }
   /* A wide saved app sidebar must not overwhelm the homepage room. */
   .live-app .people-panel {

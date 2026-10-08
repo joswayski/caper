@@ -393,12 +393,15 @@ final class CaperParityUITests: XCTestCase {
         let app = launch()
         let row = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30,
                               "Missing fixture message")
+        XCTAssertFalse(app.buttons["Reply in thread"].exists, "Unthreaded messages must not show a reply link")
         hold(row)
         // Each row also has its own "Reply in thread" link, so look in the sheet.
         let rowActions = try require(app.descendants(matching: .any)["message-actions-sheet"], timeout: 5,
                                      "Missing message actions")
         try require(rowActions.buttons["Reply in thread"], timeout: 5, "Missing thread action").tap()
         try require(app.buttons["Back to channel"], timeout: 5, "Thread did not open")
+        try require(app.staticTexts["No replies yet. Start the thread."], timeout: 5, "Missing empty thread state")
+        XCTAssertFalse(app.staticTexts["0 replies"].exists, "Empty threads must not repeat the zero reply count")
         let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 5,
                                    "Missing thread composer")
         XCTAssertTrue(focus(composer))
@@ -422,12 +425,18 @@ final class CaperParityUITests: XCTestCase {
 
         send.tap()
         let reply = try require(app.staticTexts["Short reply"], timeout: 5, "Reply was not sent")
+        try require(app.staticTexts["1 reply"], timeout: 5, "Populated threads must keep their reply count")
+        XCTAssertFalse(app.staticTexts["No replies yet. Start the thread."].exists)
         hold(reply)
         let replyActions = try require(app.descendants(matching: .any)["message-actions-sheet"], timeout: 5,
                                        "Missing thread reply actions")
         XCTAssertFalse(replyActions.buttons["Reply in thread"].exists, "Replies cannot start nested threads")
         XCTAssertTrue(replyActions.buttons["Copy text"].exists)
         capture("thread-reply-actions-fixture", app: app)
+        replyActions.buttons["Copy text"].tap()
+        try require(app.buttons["Back to channel"], timeout: 5, "Missing thread navigation").tap()
+        try require(app.buttons["View thread"], timeout: 5, "Existing thread links must remain available")
+        XCTAssertFalse(app.buttons["Reply in thread"].exists)
     }
     #endif
 
@@ -563,6 +572,44 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertFalse(try hasTerracottaOutline(other), "An unselected chip must not inherit another control's focus ring")
         XCTAssertFalse(try hasTerracottaOutline(unrelatedAdd), "Focusing one add-reaction button must not highlight another message's button")
         capture("reaction-focus-isolated-fixture", app: app)
+    }
+
+    func testThreadFocusDoesNotOutlineOtherThreadLinks() async throws {
+        try await Self.fixtureControl(["reset": true])
+        addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+        for rootID in ["chan00000001m01", "chan00000001m02", "chan00000001m03"] {
+            try await Self.fixtureControl(["incomingReply": ["rootId": rootID, "text": "Focus isolation reply"]])
+        }
+        let app = launch()
+        let selectedRow = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30,
+                                      "Missing fixture thread root")
+        try require(selectedRow.buttons["View thread"], timeout: 5, "Missing existing thread link").click()
+        try require(app.buttons["Back to channel"], timeout: 5, "Thread did not open")
+
+        // Focusing the list must not outline every descendant link. Clicking a
+        // thread button can leave this focusable ancestor active on macOS.
+        let timeline = try require(app.descendants(matching: .any)["chat-timeline"], timeout: 5, "Missing timeline")
+        timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.9)).click()
+        XCTAssertTrue(hasKeyboardFocus(timeline), "The regression requires the message list to hold focus")
+        let window = app.windows.firstMatch
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: window.screenshot().pngRepresentation))
+        let scaleX = CGFloat(bitmap.pixelsWide) / window.frame.width
+        let scaleY = CGFloat(bitmap.pixelsHigh) / window.frame.height
+        for rootID in ["chan00000001m02", "chan00000001m03"] {
+            let row = try require(app.descendants(matching: .any)["message-row-\(rootID)"], timeout: 5,
+                                  "Missing unrelated thread root")
+            let link = try require(row.buttons["View thread"], timeout: 5, "Missing unrelated thread link")
+            XCTAssertTrue(link.isHittable)
+            let x = Int((link.frame.midX - window.frame.minX) * scaleX)
+            let y = Int((link.frame.minY - window.frame.minY) * scaleY)
+            // Only sample the straight top border, not the terracotta label.
+            for offset in -1...2 {
+                let color = try XCTUnwrap(bitmap.colorAt(x: x, y: y + offset)?.usingColorSpace(.sRGB))
+                XCTAssertFalse(color.redComponent > 0.6 && color.redComponent - color.greenComponent > 0.25,
+                               "An unrelated thread link must not inherit the timeline's focus outline")
+            }
+        }
+        capture("thread-focus-isolated-fixture", app: app)
     }
     #endif
 
