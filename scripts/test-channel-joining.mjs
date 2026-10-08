@@ -73,6 +73,13 @@ function fixture() {
       });
     const membership = path.match(/\/channels\/([^/]+)\/membership$/);
     if (membership) {
+      if (control.holdMembership) {
+        const fail = control.holdMembership === "fail";
+        await new Promise((resolve) => {
+          control.completeMembership = resolve;
+        });
+        if (fail) return error(503, "TEST FIXTURE: delayed join failure");
+      }
       if (control.fail) return error(503, "TEST FIXTURE: try again");
       const channel = channels.find((channel) => channel.id === membership[1]);
       if (!channel) return error(404, "resource not found");
@@ -226,13 +233,59 @@ try {
   );
   assert.equal(evaluate('document.querySelector(".chat-reaction").textContent'), "2");
   screenshot("public-channel-preview-1280");
+  evaluate('channelFixture.holdMembership = "fail"');
+  browser("find", "role", "button", "click", "--name", "Join channel", "--exact");
+  wait("!!channelFixture.completeMembership");
+  browser("find", "role", "button", "click", "--name", "general", "--exact");
+  wait('document.querySelector("#chat-heading")?.textContent.includes("general")');
+  browser("click", ".space-menu summary");
+  browser("find", "role", "button", "click", "--name", "Browse channels", "--exact");
+  wait('!!document.querySelector(".channel-directory")');
+  browser("find", "role", "button", "click", "--name", "Preview #design", "--exact");
+  wait('!!document.querySelector(".channel-preview")');
+  evaluate("channelFixture.holdMembership = false; channelFixture.completeMembership()");
+  wait('!document.querySelector(".channel-preview button").disabled');
+  assert.equal(
+    evaluate('document.querySelector(".channel-preview [role=alert]")?.textContent ?? null'),
+    null,
+    "An abandoned join cannot show an error after navigating away and back",
+  );
   evaluate("channelFixture.fail = true");
   browser("find", "role", "button", "click", "--name", "Join channel", "--exact");
   wait('!!document.querySelector(".channel-preview [role=alert]")');
   assert.equal(evaluate('channelFixture.state.joined.includes("other1234567")'), false);
-  evaluate("channelFixture.fail = false");
-  browser("find", "role", "button", "click", "--name", "Join channel", "--exact");
+  for (const navigate of [false, true]) {
+    evaluate(
+      'channelFixture.fail = false; channelFixture.holdMembership = "success"; delete channelFixture.completeMembership',
+    );
+    browser("find", "role", "button", "click", "--name", "Join channel", "--exact");
+    wait("!!channelFixture.completeMembership");
+    if (navigate) {
+      browser("find", "role", "button", "click", "--name", "general", "--exact");
+      wait('document.querySelector("#chat-heading")?.textContent.includes("general")');
+    }
+    browser("click", ".pending-channel-invite");
+    wait('!!document.querySelector(".channel-invitation-consent")');
+    evaluate("channelFixture.holdMembership = false; channelFixture.completeMembership()");
+    wait('document.querySelector("#space-channel-list").textContent.includes("design")');
+    assert.ok(
+      evaluate('!!document.querySelector(".channel-invitation-consent")'),
+      "A join refreshes memberships without closing a newer invitation, with or without navigation",
+    );
+    assert.ok(
+      evaluate(`document.querySelector("#chat-heading")?.textContent.includes("${navigate ? "general" : "design"}")`),
+    );
+    browser("press", "Escape");
+    if (!navigate) {
+      evaluate('channelFixture.state.joined = ["first1234567"]; window.dispatchEvent(new Event("focus"))');
+      wait('!!document.querySelector(".channel-preview")');
+    }
+  }
+  browser("find", "role", "button", "click", "--name", "design", "--exact");
   wait('!!document.querySelector("#chat-message") && channelFixture.state.joined.includes("other1234567")');
+  console.log(
+    "PASS: stale join errors and completions cannot alter a newer navigation or dialog; current failures still retry.",
+  );
   assert.equal(evaluate("channelFixture.microphones"), 0);
   browser("reload");
   wait('document.querySelector("#space-channel-list").textContent.includes("design")');
@@ -343,7 +396,7 @@ try {
     true,
   );
   screenshot("public-channel-preview-390");
-  browser("find", "role", "button", "click", "--name", "Browse", "--exact");
+  browser("find", "role", "button", "click", "--name", "Back to Browse", "--exact");
   browser("click", ".pending-channel-invite");
   wait('!!document.querySelector(".channel-invitation-consent")');
   screenshot("private-channel-consent-390");
