@@ -86,15 +86,23 @@ class CaperApi(
         return result
     }
     suspend fun general(): ChatHistory = validatedHistory(get("/api/chat/general"))
-    suspend fun history(token: String?, channel: String, before: String? = null): ChatHistory {
+    suspend fun history(token: String?, channel: String, before: String? = null, after: String? = null, around: String? = null): ChatHistory {
+        val query = historyQuery(before, after, around)
         val history: ChatHistory = get(
-            "/api/chat/channels/${channel.pathId()}/messages" + (before?.let { "?before=$it" } ?: ""), token,
+            "/api/chat/channels/${channel.pathId()}/messages$query", token,
         )
         return validatedHistory(history, channel)
     }
-    suspend fun thread(token: String?, channel: String, root: String, before: String? = null): ThreadHistory {
+    private fun historyQuery(before: String?, after: String?, around: String?): String {
+        require(listOfNotNull(before, after, around).size <= 1) { "Use one history anchor." }
+        if (around != null) { require(messageId.matches(around)); return "?around=$around" }
+        val cursor = before ?: after ?: return ""
+        require(Regex("^(0|[1-9][0-9]*)$").matches(cursor)) { "Invalid history cursor." }
+        return "?${if (before != null) "before" else "after"}=$cursor"
+    }
+    suspend fun thread(token: String?, channel: String, root: String, before: String? = null, after: String? = null, around: String? = null): ThreadHistory {
         require(messageId.matches(root)) { "Invalid message ID." }
-        val page: ThreadHistory = get("/api/chat/channels/${channel.pathId()}/messages/$root/thread" + (before?.let { "?before=$it" } ?: ""), token)
+        val page: ThreadHistory = get("/api/chat/channels/${channel.pathId()}/messages/$root/thread" + historyQuery(before, after, around), token)
         page.root.validated(channel)
         require(page.root.id == root && page.root.threadRootId == null) { "Invalid thread parent." }
         page.messages.forEach { it.validated(channel); require(it.threadRootId == root) { "Invalid thread reply." } }

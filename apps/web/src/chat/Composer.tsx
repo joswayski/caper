@@ -33,10 +33,9 @@ interface ComposerProps {
   mentionMembers?: MentionCandidate[];
   onSend: (text: string) => Promise<unknown> | undefined;
   onTyping: (active: boolean) => void;
-  /** A local send follows the newest message. */
-  onWillSend: () => void;
-  /** The composer changed height; keep the newest message in view. */
-  onResize: () => void;
+  /** Wraps each resize, which reports whether the height changed, so the
+   * conversation can measure its position first and stay on the newest message. */
+  onResize: (resize: () => boolean) => void;
   /** Whether a draft exists, for actions that would replace it. */
   onDraftPresence: (hasDraft: boolean) => void;
 }
@@ -58,7 +57,6 @@ export default function Composer({
   mentionMembers,
   onSend,
   onTyping,
-  onWillSend,
   onResize,
   onDraftPresence,
 }: ComposerProps) {
@@ -126,13 +124,15 @@ export default function Composer({
     setDraft((current) => (current === sent ? "" : current));
   }, [pendingId]);
 
-  const resize = () => {
-    const composer = composerRef.current;
-    if (!composer) return;
-    composer.style.height = "0px";
-    composer.style.height = `${composer.scrollHeight + composer.offsetHeight - composer.clientHeight}px`;
-    onResize();
-  };
+  const resize = () =>
+    onResize(() => {
+      const composer = composerRef.current;
+      if (!composer) return false;
+      const height = composer.offsetHeight;
+      composer.style.height = "0px";
+      composer.style.height = `${composer.scrollHeight + composer.offsetHeight - composer.clientHeight}px`;
+      return composer.offsetHeight !== height;
+    });
   const resizeRef = useRef(resize);
   resizeRef.current = resize;
   useLayoutEffect(resize, [draft]);
@@ -179,7 +179,6 @@ export default function Composer({
   const submit = async () => {
     if (!identityReady || sending || sendRejected || pendingSend?.threadRootId) return;
     setValidationError(undefined);
-    onWillSend();
     const submitted = pendingSend?.text ?? draft;
     try {
       await onSend(submitted);

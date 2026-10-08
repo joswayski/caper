@@ -90,9 +90,19 @@ pub enum Command {
     },
     LoadOlder {
         generation: u64,
+        request: u64,
         token: Option<String>,
         channel: String,
         before: String,
+    },
+    LoadContext {
+        generation: u64,
+        request: u64,
+        token: Option<String>,
+        channel: String,
+        root: Option<String>,
+        anchor: String,
+        newer: bool,
     },
     LoadThread {
         generation: u64,
@@ -447,8 +457,18 @@ pub enum Event {
     },
     OlderLoaded {
         generation: u64,
+        request: u64,
         channel: String,
         result: Result<History, LoadError>,
+    },
+    ContextLoaded {
+        generation: u64,
+        request: u64,
+        channel: String,
+        root: Option<String>,
+        anchor: String,
+        newer: bool,
+        result: Result<crate::model::MessageContext, LoadError>,
     },
     ThreadLoaded {
         generation: u64,
@@ -1058,14 +1078,35 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
         }
         Command::LoadOlder {
             generation,
+            request,
             token,
             channel,
             before,
         } => Event::OlderLoaded {
             generation,
+            request,
             channel: channel.clone(),
             result: api
                 .history(token.as_deref(), &channel, Some(&before))
+                .map_err(LoadError::from),
+        },
+        Command::LoadContext {
+            generation,
+            request,
+            token,
+            channel,
+            root,
+            anchor,
+            newer,
+        } => Event::ContextLoaded {
+            generation,
+            request,
+            channel: channel.clone(),
+            root: root.clone(),
+            anchor: anchor.clone(),
+            newer,
+            result: api
+                .message_context(token.as_deref(), &channel, root.as_deref(), &anchor, newer)
                 .map_err(LoadError::from),
         },
         Command::LoadThread {
