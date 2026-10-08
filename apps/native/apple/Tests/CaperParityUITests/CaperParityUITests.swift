@@ -889,9 +889,30 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [matches], timeout: 5), .completed, message)
     }
 
+    /// Mutes #design for the fixture account through the API, as another client would.
+    private nonisolated static func muteDesignInFixture() async throws {
+        let url = URL(string: "http://127.0.0.1:3001/api/spaces/space0000001/channels/chan00000002/notifications")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("Bearer fixture-owner-token", forHTTPHeaderField: "authorization")
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["mutedUntil": "forever"])
+        let (_, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+    }
+
     func testMuteChannelFromItsOptionsMenu() async throws {
         try await Self.fixtureControl(["reset": true])
         addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+        #if os(macOS)
+        // People can choose a preset with the mouse or the keyboard (checked
+        // by hand on a Mac), but XCUITest on CI's Macs can't: its pointer
+        // closes the "Mute channel" submenu, and its arrow keys skip both
+        // submenus. iPhone drives this same SwiftUI menu end to end, so here
+        // the mute comes from the server before launch, and the test checks
+        // the app shows it and that Unmute, a top-level item, clears it.
+        try await Self.muteDesignInFixture()
+        #endif
         let app = launch()
         assertElement("selected-channel-name", label: "# general", in: app)
         #if os(iOS)
@@ -899,31 +920,16 @@ final class CaperParityUITests: XCTestCase {
         #endif
         let design = app.buttons["channel-chan00000002"]
         XCTAssertTrue(design.waitForExistence(timeout: 10))
-        XCTAssertEqual(design.value as? String ?? "", "", "An unselected, unmuted channel has no state")
-
         let options = app.descendants(matching: .any)["channel-options-chan00000002"]
+        let mute = app.descendants(matching: .any)["Mute channel"].firstMatch
+
+        #if os(iOS)
+        XCTAssertEqual(design.value as? String ?? "", "", "An unselected, unmuted channel has no state")
         options.tap()
         XCTAssertTrue(app.descendants(matching: .any)["Notifications"].firstMatch.waitForExistence(timeout: 5))
-        let mute = app.descendants(matching: .any)["Mute channel"].firstMatch
         XCTAssertTrue(mute.waitForExistence(timeout: 5), "The channel menu offers Mute channel")
         let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: mute)
         XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 5), .completed, "Mute is available once settings load")
-        #if os(macOS)
-        // Notification settings load just after launch, so this menu opened
-        // with both submenus disabled, and the Mac menu keeps that for
-        // keyboard navigation: in CI's recording ↓ only alternated between
-        // Channel settings and Leave channel. Reopen it now that they are
-        // enabled, then type the keys in one call, which snapshots the app
-        // once while only the top-level menu is open. ↓↓↓ reaches "Mute
-        // channel", → opens its submenu at "For 15 minutes", ↓↓↓↓ reaches the
-        // last preset.
-        app.typeKey(.escape, modifierFlags: [])
-        options.tap()
-        XCTAssertTrue(mute.waitForExistence(timeout: 5))
-        let down = XCUIKeyboardKey.downArrow.rawValue
-        app.typeText(String(repeating: down, count: 3) + XCUIKeyboardKey.rightArrow.rawValue
-                     + String(repeating: down, count: 4) + XCUIKeyboardKey.return.rawValue)
-        #else
         let forever = app.descendants(matching: .any)["Until I turn it back on"].firstMatch
         mute.tap()
         XCTAssertTrue(forever.waitForExistence(timeout: 3))
@@ -942,6 +948,11 @@ final class CaperParityUITests: XCTestCase {
         waitForMuted(design, false, "Unmuting clears the sidebar mark")
         overrides = try await Self.fixtureNotificationOverrides()
         XCTAssertEqual(overrides, [], "Unmuting clears the override on the server")
+        #if os(macOS)
+        options.tap()
+        XCTAssertTrue(mute.waitForExistence(timeout: 3), "An unmuted channel's menu offers Mute channel again")
+        app.typeKey(.escape, modifierFlags: [])
+        #endif
     }
 
     func testSpectatorRosterCollapsesAndVoiceTargetDoesNotChangeChat() async throws {
