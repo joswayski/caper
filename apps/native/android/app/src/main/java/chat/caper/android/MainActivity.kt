@@ -42,6 +42,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.GenericShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -56,13 +57,15 @@ import androidx.compose.ui.zIndex
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.CustomAccessibilityAction
@@ -384,13 +387,16 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
                     val drawer = rememberBrowseDrawer(navigationOpen)
                     val latestSetNavigationOpen by rememberUpdatedState(setNavigationOpen)
                     LaunchedEffect(navigationOpen) { if (!drawer.dragging) drawer.settle(navigationOpen) }
-                    // Both views stay composed only while the conversation slides.
+                    // How much of the conversation stays in view beside Browse.
+                    val peek = (maxWidth * 0.2f).coerceIn(56.dp, 96.dp)
+                    drawer.peek = with(LocalDensity.current) { peek.toPx() }
+                    var barHeight by remember { mutableIntStateOf(0) }
+                    // Browse is composed only while it shows or the conversation moves.
                     val browseUncovered by remember { derivedStateOf { drawer.progress.value > 0f } }
-                    val conversationShown by remember { derivedStateOf { drawer.progress.value < 1f } }
                     CompositionLocalProvider(LocalBrowseDrawer provides drawer) {
-                        Box(Modifier.fillMaxSize().clipToBounds().browseDrag(drawer) { latestSetNavigationOpen(it) }) {
-                            if (navigationOpen || browseUncovered) Column(Modifier.fillMaxSize().browseLayer(drawer).background(Blackout)) {
-                                Row(Modifier.weight(1f)) {
+                        Box(Modifier.fillMaxSize().clipToBounds().background(Blackout).browseDrag(drawer) { latestSetNavigationOpen(it) }) {
+                            if (navigationOpen || browseUncovered) Column(Modifier.fillMaxSize()) {
+                                Row(Modifier.weight(1f).padding(end = peek)) {
                                     SpaceRail(state, viewModel, show, Modifier.width(60.dp))
                                     ChannelSidebar(state, voice, viewModel, show,
                                         Modifier.weight(1f).padding(top = 8.dp, end = 8.dp).clip(RoundedCornerShape(16.dp))
@@ -398,9 +404,11 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
                                         channelsExpanded, { channelsExpanded = it }, joinVoice, pendingVoiceJoin, voicePermissionError,
                                         { voicePermissionError = null }, showAccountBar = false) { setNavigationOpen(false) }
                                 }
-                                AccountBar(state, voice, viewModel, show)
+                                // The account bar keeps the full width, below the conversation's edge.
+                                Box(Modifier.onSizeChanged { barHeight = it.height }) { AccountBar(state, voice, viewModel, show) }
                             }
-                            if (!navigationOpen || conversationShown) Box(Modifier.fillMaxSize().conversationLayer(drawer).background(Surface)) {
+                            Box(Modifier.fillMaxSize().conversationLayer(drawer, barHeight).background(Surface)
+                                .then(if (navigationOpen) Modifier.clearAndSetSemantics {} else Modifier)) {
                                 conversationState.SaveableStateProvider(state.selectedChannel?.id ?: "empty") {
                                     Conversation(state, voice, viewModel, show, true, membersVisible, { membersVisible = !membersVisible }, voicePermissionError) { setNavigationOpen(true) }
                                 }
@@ -415,6 +423,12 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
                                         close = { membersVisible = false })
                                 }
                             }
+                            // Beside Browse the conversation's edge is inert: tapping or dragging it returns.
+                            if (navigationOpen) Box(Modifier.align(Alignment.TopEnd).width(peek).fillMaxHeight()
+                                .padding(bottom = with(LocalDensity.current) { barHeight.toDp() })
+                                .browseSwipeRegion(drawer, enabled = true)
+                                .clickable(onClickLabel = "Back to conversation") { setNavigationOpen(false) }
+                                .semantics { contentDescription = "Back to conversation" })
                         }
                     }
                 } else Row {
@@ -434,18 +448,20 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
 }
 
 /**
- * Phones show Browse (spaces and channels) or the conversation. The
- * conversation slides over Browse like a navigation stack, following a finger
- * from the timeline or channel list, while Browse sits a little behind it and
- * dims. Buttons, Back and channel choices animate the same slide.
+ * Phones show the conversation, or Browse (spaces and channels) with the
+ * conversation's edge still in view. The conversation slides over the still
+ * Browse, following a finger from the timeline, channel list or that edge.
+ * Buttons, Back and channel choices animate the same slide.
  */
 @Stable
 private class BrowseDrawer(private val scope: CoroutineScope, open: Boolean) {
     /** How much of Browse is uncovered: 0 shows the conversation, 1 shows Browse. */
     val progress = Animatable(if (open) 1f else 0f)
     var dragging = false
-    /** Set when a touch lands on the timeline or channel list; elsewhere keeps its own drags. */
+    /** Set when a touch lands on the timeline, channel list or the conversation's edge; elsewhere keeps its own drags. */
     var regionTouched = false
+    /** The conversation's edge kept in view beside Browse, in pixels. */
+    var peek = 0f
 
     fun drag(value: Float) {
         scope.launch(start = CoroutineStart.UNDISPATCHED) { progress.snapTo(value.coerceIn(0f, 1f)) }
@@ -467,20 +483,16 @@ private class BrowseDrawer(private val scope: CoroutineScope, open: Boolean) {
 }
 
 private val LocalBrowseDrawer = staticCompositionLocalOf<BrowseDrawer?> { null }
-/** How far Browse sits under the conversation, as a share of its width. */
-private const val BrowseParallax = 0.3f
 
-private fun Modifier.browseLayer(drawer: BrowseDrawer): Modifier =
-    graphicsLayer { translationX = -(1f - drawer.progress.value) * size.width * BrowseParallax }
-        .drawWithContent {
-            drawContent()
-            drawRect(Color.Black, alpha = 0.5f * (1f - drawer.progress.value))
-        }
-
-private fun Modifier.conversationLayer(drawer: BrowseDrawer): Modifier = graphicsLayer {
+/** Moves the conversation over Browse, lifting its bottom edge off Browse's account bar on the way. */
+private fun Modifier.conversationLayer(drawer: BrowseDrawer, barHeight: Int): Modifier = graphicsLayer {
     val uncovered = drawer.progress.value
-    translationX = uncovered * size.width
-    shadowElevation = if (uncovered > 0f && uncovered < 1f) 16.dp.toPx() else 0f
+    translationX = uncovered * (size.width - drawer.peek)
+    // A clipped layer also clips touches, so the bar's controls stay reachable.
+    val inset = uncovered * barHeight
+    clip = uncovered > 0f
+    shape = GenericShape { size, _ -> addRect(Rect(0f, 0f, size.width, size.height - inset)) }
+    shadowElevation = if (uncovered > 0f) 16.dp.toPx() else 0f
 }
 
 // Only the timeline/sidebar starts this gesture; the composer and audio controls
@@ -505,7 +517,7 @@ private fun Modifier.browseDrag(drawer: BrowseDrawer, setOpen: (Boolean) -> Unit
             drawer.regionTouched = false
             if (!allowed) return@awaitEachGesture
             val opening = drawer.progress.targetValue < 0.5f
-            val width = size.width.toFloat().coerceAtLeast(1f)
+            val width = (size.width - drawer.peek).coerceAtLeast(1f)
             val start = drawer.progress.value
             var dragging = false
             var dx = 0f

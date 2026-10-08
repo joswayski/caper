@@ -1,17 +1,25 @@
-import { useEffect, useRef, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+  type RefObject,
+} from "react";
 import { flushSync } from "react-dom";
 
-// Phones show Browse (spaces and channels) or the conversation, one at a time.
-// Moving between them slides the conversation over Browse like a native
-// navigation stack, following a finger when swiped. Both views share the
-// room's DOM, so a view transition snapshots the outgoing view while the
-// incoming one renders live; the pseudo-elements are posed by hand so a swipe
-// can scrub them and then settle forward or back.
+// Phones show the conversation, or Browse (spaces and channels) with the
+// conversation pushed to the right edge. Moving between them slides the
+// conversation over the still Browse, following a finger when swiped. Both
+// views share the room's DOM, so a view transition snapshots the outgoing view
+// while the incoming one renders live; the conversation's snapshot is posed by
+// hand so a swipe can scrub it and then settle forward or back.
 
 const NARROW = "(max-width: 760px)";
+const ROOM = ".call-room.spaces-room";
 const NAME = "browse-room";
-/** How far Browse sits under the conversation, as a share of its width. */
-const PARALLAX = 0.3;
+/** Browse's account and voice bar, which stays uncovered at the bottom. */
+const BAR = ":scope > .people-panel > :is(.voice-panel, .empty-channel-account)";
 const SETTLE = { duration: 320, easing: "cubic-bezier(0.32, 0.72, 0, 1)" };
 /** An ease-out whose initial speed is three times its average, to carry on from a finger. */
 const RELEASE_EASING = "cubic-bezier(0.2, 0.6, 0.35, 1)";
@@ -32,11 +40,48 @@ function animatable() {
   );
 }
 
-/** How much of Browse is uncovered, from 0 (conversation) to 1 (Browse). */
-function pose(conversation: boolean, uncovered: number): Keyframe {
-  return conversation
-    ? { transform: `translateX(${uncovered * 100}%)` }
-    : { transform: `translateX(${(uncovered - 1) * PARALLAX * 100}%)`, opacity: 0.5 + 0.5 * uncovered };
+/** How far the conversation moves to reveal Browse: the room, less the edge it keeps in view. */
+export function browseTravel(room: Element) {
+  const peek = parseFloat(getComputedStyle(room).getPropertyValue("--browse-peek")) || 0;
+  return Math.max(1, room.getBoundingClientRect().width - peek);
+}
+
+/**
+ * Lines the conversation's edge view up with the conversation on phones: it
+ * keeps the offset it has below its channel row, and stops above Browse's
+ * account bar so the bar's controls keep their full width.
+ */
+export function useBrowseLayout(roomRef: RefObject<HTMLElement | null>, open: boolean) {
+  useLayoutEffect(() => {
+    const room = roomRef.current;
+    if (!room) return;
+    const media = matchMedia(NARROW);
+    let observer: ResizeObserver | undefined;
+    const watch = () => {
+      observer?.disconnect();
+      if (!media.matches) return;
+      const stage = room.querySelector<HTMLElement>(":scope > .stage");
+      const bar = room.querySelector<HTMLElement>(BAR);
+      const measure = () => {
+        // The bar's 12px margin above it is part of the uncovered area.
+        if (open && bar)
+          room.style.setProperty(
+            "--browse-bar",
+            `${room.getBoundingClientRect().bottom - bar.getBoundingClientRect().top + 12}px`,
+          );
+        if (!open && stage) room.style.setProperty("--browse-stage-top", `${stage.offsetTop}px`);
+      };
+      measure();
+      observer = new ResizeObserver(measure);
+      for (const element of [room, open ? bar : stage]) if (element) observer.observe(element);
+    };
+    watch();
+    media.addEventListener("change", watch);
+    return () => {
+      media.removeEventListener("change", watch);
+      observer?.disconnect();
+    };
+  }, [roomRef, open]);
 }
 
 let current: Slide | undefined;
@@ -49,6 +94,8 @@ function start(opening: boolean, update: (open: boolean) => void, interactive: b
 
 class Slide implements BrowseDrag {
   private readonly transition: ViewTransition;
+  private readonly room: HTMLElement | null;
+  private readonly travel: number;
   private progress = 0;
   private scrub: Animation[] = [];
   /** Every animation on the transition's pseudo-elements, cancelled when it ends. */
@@ -64,6 +111,8 @@ class Slide implements BrowseDrag {
     interactive: boolean,
   ) {
     const root = document.documentElement;
+    const room = (this.room = document.querySelector<HTMLElement>(ROOM));
+    this.travel = room ? browseTravel(room) : 1;
     root.dataset.browseTransition = opening ? "open" : "close";
     this.transition = document.startViewTransition(() => flushSync(() => update(opening)));
     if (!interactive) this.released = { commit: true, velocity: 0 };
@@ -115,19 +164,25 @@ class Slide implements BrowseDrag {
     } else if (this.ready) this.settle();
   }
 
-  /** Poses the outgoing (old) and incoming (new) snapshots between two progress values. */
+  /**
+   * Moves the conversation's snapshot (outgoing when opening Browse) between two
+   * progress values, lifting its bottom edge off Browse's account bar on the way.
+   */
   private animate(from: number, to: number, timing: KeyframeAnimationOptions) {
-    const root = document.documentElement;
-    const uncovered = (progress: number) => (this.opening ? progress : 1 - progress);
-    const animations = (["old", "new"] as const).map((part) => {
-      const conversation = (part === "old") === this.opening;
-      return root.animate([pose(conversation, uncovered(from)), pose(conversation, uncovered(to))], {
-        ...timing,
-        pseudoElement: `::view-transition-${part}(${NAME})`,
-      });
+    const bar = parseFloat(this.room?.style.getPropertyValue("--browse-bar") ?? "") || 0;
+    const offset = (progress: number) => {
+      const uncovered = this.opening ? progress : 1 - progress;
+      return {
+        transform: `translateX(${uncovered * this.travel}px)`,
+        clipPath: `inset(0 0 ${uncovered * bar}px -48px)`,
+      };
+    };
+    const animation = document.documentElement.animate([offset(from), offset(to)], {
+      ...timing,
+      pseudoElement: `::view-transition-${this.opening ? "old" : "new"}(${NAME})`,
     });
-    this.animations.push(...animations);
-    return animations;
+    this.animations.push(animation);
+    return [animation];
   }
 
   private settle() {
@@ -184,7 +239,7 @@ export function dragBrowse(opening: boolean, update: (open: boolean) => void): B
 
 const BLOCKING = "dialog[open], details[open], [role=dialog], [popover]:popover-open";
 const OWN_GESTURES =
-  "input, textarea, select, [contenteditable=true], [role=slider], a, summary, button:not(.channel-select):not(.direct-select)";
+  "input, textarea, select, [contenteditable=true], [role=slider], a, summary, button:not(.channel-select, .direct-select, .browse-peek)";
 
 /**
  * Touch swipes on the room: right from the conversation reveals Browse, left
@@ -221,7 +276,7 @@ export function useBrowseSwipe(enabled: boolean, open: boolean, change: ((open: 
         startX = event.clientX,
         startY = event.clientY,
         startTime = event.timeStamp,
-        width = event.currentTarget.getBoundingClientRect().width || 1,
+        travel = browseTravel(event.currentTarget),
         opening = !open,
         direction = opening ? 1 : -1;
       let drag: BrowseDrag | undefined;
@@ -249,8 +304,8 @@ export function useBrowseSwipe(enabled: boolean, open: boolean, change: ((open: 
           first && last.time - first.time >= 8 ? (last.distance - first.distance) / (last.time - first.time) : 0;
         if (drag)
           drag.release(
-            released && velocity > -0.3 && (distance >= width / 2 || (velocity >= 0.3 && distance >= 40)),
-            velocity / width,
+            released && velocity > -0.3 && (distance >= travel / 2 || (velocity >= 0.3 && distance >= 40)),
+            velocity / travel,
           );
         // Without a slide, keep the original quick-swipe threshold.
         else if (
@@ -289,7 +344,7 @@ export function useBrowseSwipe(enabled: boolean, open: boolean, change: ((open: 
             distance: Math.max(0, (move.clientX - startX) * direction),
           })),
         ];
-        drag?.move(distance / width);
+        drag?.move(distance / travel);
       };
       window.addEventListener("pointermove", move);
       window.addEventListener("pointerup", lift);

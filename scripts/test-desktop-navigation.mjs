@@ -266,7 +266,7 @@ try {
   const p = point(".chat-messages");
   for (const [dx, dy, end, duration] of [
     [60, 0, "touchEnd", 800],
-    [150, 0, "touchEnd", 1200],
+    [120, 0, "touchEnd", 1200],
     [30, 0],
     [-100, 0],
     [90, 140],
@@ -285,12 +285,16 @@ try {
     "mobile draft survives both swipe directions",
   );
 
-  // The conversation follows the finger: Browse is live under it, and the
-  // slide's snapshots are posed by the drag's progress.
-  const width = evaluate('document.querySelector(".spaces-room").getBoundingClientRect().width');
+  // The conversation follows the finger over a still, live Browse. It travels
+  // the room's width less the edge it keeps in view beside Browse.
+  const peekWidth = evaluate(
+    'parseFloat(getComputedStyle(document.querySelector(".spaces-room")).getPropertyValue("--browse-peek"))',
+  );
+  assert.ok(peekWidth >= 56 && peekWidth <= 96, `peek ${peekWidth}`);
+  const travel = evaluate('document.querySelector(".spaces-room").getBoundingClientRect().width') - peekWidth;
   await touch("touchStart", p.x - 100, p.y);
   for (let step = 1; step <= 10; step++) await touch("touchMove", p.x - 100 + step * 10, p.y);
-  wait('document.getAnimations().filter(a => a.effect?.pseudoElement?.includes("browse-room")).length === 2');
+  wait('document.getAnimations().filter(a => a.effect?.pseudoElement?.includes("browse-room")).length === 1');
   assert.equal(evaluate("document.documentElement.dataset.browseTransition"), "open");
   assert.equal(browsing(), true, "Browse renders live beneath the sliding conversation");
   const scrubbed = evaluate(
@@ -298,7 +302,7 @@ try {
   );
   for (const [state, time] of scrubbed) {
     assert.equal(state, "paused");
-    assert.ok(Math.abs(time - (100 / width) * 1000) < 15, `slide follows the finger (${time})`);
+    assert.ok(Math.abs(time - (100 / travel) * 1000) < 15, `slide follows the finger (${time})`);
   }
   screenshot("mobile-swipe-midway");
   await touch("touchEnd", 0, 0, 0.2); // Held still before lifting: not a fling.
@@ -325,6 +329,18 @@ try {
   await swipe(p.x - 60, p.y, 68);
   settled();
   assert.equal(browsing(), true, "A quick right flick reveals Browse");
+  // Browse stays put and fits beside the conversation, which rests at the edge.
+  const edge = evaluate(`(() => {
+    const room = document.querySelector(".spaces-room").getBoundingClientRect();
+    return {
+      peek: room.right - document.querySelector(".spaces-room > .stage").getBoundingClientRect().left,
+      browse: room.right - document.querySelector(".sidebar-channels").getBoundingClientRect().right,
+      inert: document.querySelector(".spaces-room > .stage").inert,
+    };
+  })()`);
+  assert.ok(Math.abs(edge.peek - peekWidth) < 2, `conversation rests at the edge (${edge.peek})`);
+  assert.ok(edge.browse >= peekWidth, "Browse is not covered by the conversation's edge");
+  assert.equal(edge.inert, true, "The conversation's edge is not interactive");
   screenshot("mobile-browse");
   const row = point('.channel-select:not([aria-current="page"])');
   await swipe(row.x + 60, row.y, -110);
@@ -333,7 +349,7 @@ try {
   await swipe(p.x - 100, p.y, 220, 0, "touchEnd", 1200);
   settled();
   assert.equal(browsing(), true, "A slow drag past halfway reveals Browse");
-  await swipe(row.x + 100, row.y, -220, 0, "touchEnd", 1200);
+  await swipe(row.x + 40, row.y, -200, 0, "touchEnd", 1200);
   settled();
   assert.equal(browsing(), false, "A slow drag back past halfway returns to the conversation");
   assert.equal(evaluate("location.href"), currentUrl);
@@ -393,6 +409,17 @@ try {
   browser("click", ".navigation-toggle");
   settled();
   assert.equal(browsing(), true, "Back button must open Browse");
+  browser("click", ".browse-peek");
+  settled();
+  assert.equal(browsing(), false, "Tapping the conversation's edge returns to it");
+  browser("click", ".navigation-toggle");
+  settled();
+  const peek = point(".browse-peek");
+  await swipe(peek.x, peek.y, -200, 0, "touchEnd", 1200);
+  settled();
+  assert.equal(browsing(), false, "Dragging the conversation's edge back returns to it");
+  browser("click", ".navigation-toggle");
+  settled();
   browser("click", '.channel-select[aria-current="page"]');
   settled();
   assert.equal(browsing(), false);
@@ -431,7 +458,7 @@ try {
   if (process.env.NAVIGATION_TEST_NARROW_SCREENSHOT)
     browser("screenshot", process.env.NAVIGATION_TEST_NARROW_SCREENSHOT);
   console.log(
-    "PASS: desktop navigation/presence; Chromium touch: finger-tracked bidirectional Browse slides, fling/halfway/snap-back, direction/vertical/cancel guards, reduced motion, composer and overlays, row release-click protection, draft/history retention, Back button, Members dropdown, empty Pins and 320px layout.",
+    "PASS: desktop navigation/presence; Chromium touch: finger-tracked bidirectional Browse slides over a still Browse with the conversation's edge kept in view (tap/drag back), fling/halfway/snap-back, direction/vertical/cancel guards, reduced motion, composer and overlays, row release-click protection, draft/history retention, Back button, Members dropdown, empty Pins and 320px layout.",
   );
 } finally {
   socket?.close();

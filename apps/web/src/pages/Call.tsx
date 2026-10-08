@@ -58,7 +58,7 @@ import MicPlayback, { SpeakerTest } from "./MicPlayback";
 import AudioDiagnostics from "./AudioDiagnostics";
 import VoiceActivity from "./VoiceActivity";
 import ChannelSidebar from "./ChannelSidebar";
-import { useBrowseSwipe } from "../spaces/browseTransition";
+import { useBrowseLayout, useBrowseSwipe } from "../spaces/browseTransition";
 import "./call.css";
 
 const initialState: CallViewState = {
@@ -506,6 +506,9 @@ export default function Call({
     return () => media.removeEventListener("change", update);
   }, []);
   const navigationSwipe = useBrowseSwipe(narrow && !membersVisible, navigationOpen, onNavigationChange);
+  const roomRef = useRef<HTMLElement>(null);
+  const peeking = narrow && navigationOpen && !!onNavigationToggle;
+  useBrowseLayout(roomRef, navigationOpen);
   const [selfPresence, setSelfPresence] = useState<PresenceStatus>();
   const [localPresence, setLocalPresence] = useState<PresenceStatus>("offline");
   const [presenceLive, setPresenceLive] = useState(false);
@@ -1275,6 +1278,7 @@ export default function Call({
         </header>
       )}
       <section
+        ref={roomRef}
         className={`call-room${channel ? " spaces-room" : ""}${navigationOpen ? " navigation-open" : ""}`}
         data-direct={channel?.direct ? "" : undefined}
         {...navigationSwipe}
@@ -1515,7 +1519,7 @@ export default function Call({
             </div>
           </div>
         </ChannelSidebar>
-        <div className="stage">
+        <div className="stage" inert={peeking}>
           {state.remoteMedia.map((media) => (
             <AudioOutput
               key={media.trackId}
@@ -1618,6 +1622,14 @@ export default function Call({
             />
             {membersPanel(() => setMembersVisible(false))}
           </>
+        )}
+        {peeking && (
+          <button
+            type="button"
+            className="browse-peek"
+            aria-label={`Back to ${channel?.direct ? "" : "#"}${channel?.name ?? "conversation"}`}
+            onClick={onNavigationToggle}
+          />
         )}
       </section>
       <dialog

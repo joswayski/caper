@@ -199,32 +199,43 @@ private struct CaperIcon: View {
     }
 }
 
-/// Phones show Browse (spaces and channels) or the conversation. The
-/// conversation slides over Browse like a navigation stack, following a finger
-/// from the screen edge, while Browse sits a little behind it and dims.
-/// Buttons, Back and channel choices animate the same slide.
+/// Phones show the conversation, or Browse (spaces and channels) with the
+/// conversation's edge still in view. The conversation slides over the still
+/// Browse, following a finger from the screen edge or that edge view. Buttons,
+/// Back and channel choices animate the same slide.
 @Observable private final class BrowseDrawer {
     /// While a finger drags: how much of Browse is uncovered, from 0 (conversation) to 1 (Browse).
     var drag: CGFloat?
-    var width: CGFloat = 1
+    /// How far the conversation moves: the width, less the edge kept in view.
+    var travel: CGFloat = 1
     static let settle = Animation.interpolatingSpring(duration: 0.35, bounce: 0)
-    /// How far Browse sits under the conversation, as a share of its width.
-    static let parallax: CGFloat = 0.3
 }
 
-/// Poses one of the two phone views. Only this reads the drag, so a moving finger
-/// re-renders the pose rather than the views themselves.
+/// The conversation's outline, lifted off Browse's account bar at the bottom
+/// and widened to the left for its edge shadow.
+private struct BrowseEdge: Shape {
+    var inset: CGFloat
+    var animatableData: CGFloat {
+        get { inset }
+        set { inset = newValue }
+    }
+    func path(in rect: CGRect) -> Path {
+        Path(CGRect(x: rect.minX - 48, y: rect.minY, width: rect.width + 48, height: max(0, rect.height - inset)))
+    }
+}
+
+/// Poses the conversation over Browse on phones. Only this reads the drag, so a
+/// moving finger re-renders the pose rather than the conversation itself.
 private struct BrowseLayer: ViewModifier {
-    let conversation: Bool
-    let narrow: Bool
     let showsBrowse: Bool
-    let width: CGFloat
+    let travel: CGFloat
+    let bar: CGFloat
     @Environment(BrowseDrawer.self) private var drawer: BrowseDrawer?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
-        let drag = narrow ? drawer?.drag : nil
-        let uncovered = narrow ? drag ?? (showsBrowse ? 1 : 0) : 1
+        let drag = drawer?.drag
+        let uncovered = drag ?? (showsBrowse ? 1 : 0)
         let reduceMotion = self.reduceMotion
         // Follow the finger while dragged and spring into place otherwise,
         // keeping a release's own spring (and speed).
@@ -232,12 +243,7 @@ private struct BrowseLayer: ViewModifier {
             if drag != nil || reduceMotion { transaction.animation = nil }
             else if transaction.animation == nil { transaction.animation = BrowseDrawer.settle }
         } body: { layer in
-            if conversation {
-                layer.offset(x: uncovered * width)
-            } else {
-                layer.offset(x: -(1 - uncovered) * width * BrowseDrawer.parallax)
-                    .overlay { Color.black.opacity(0.5 * (1 - uncovered)).allowsHitTesting(false) }
-            }
+            layer.clipShape(BrowseEdge(inset: uncovered * bar)).offset(x: uncovered * travel)
         }
     }
 }
@@ -247,6 +253,8 @@ private struct BrowseLayer: ViewModifier {
 private struct BrowseSwipe: ViewModifier {
     let open: Bool
     let enabled: Bool
+    /// Starts anywhere on the view, not just at its edge.
+    var anywhere = false
     let navigate: () -> Void
     @Environment(BrowseDrawer.self) private var drawer: BrowseDrawer?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -263,11 +271,11 @@ private struct BrowseSwipe: ViewModifier {
                 .onChanged { value in
                     let dx = value.translation.width, dy = value.translation.height
                     if tracking == nil {
-                        let edge = open ? value.startLocation.x >= frame.maxX - 24 : value.startLocation.x <= frame.minX + 24
+                        let edge = anywhere || (open ? value.startLocation.x >= frame.maxX - 24 : value.startLocation.x <= frame.minX + 24)
                         tracking = enabled && drawer != nil && edge && abs(dx) > abs(dy) && (open ? dx < 0 : dx > 0)
                     }
                     guard tracking == true, let drawer else { return }
-                    drawer.drag = min(1, max(0, (open ? 1 : 0) + dx / drawer.width))
+                    drawer.drag = min(1, max(0, (open ? 1 : 0) + dx / drawer.travel))
                 }
                 .onEnded { value in
                     defer { tracking = nil }
@@ -279,7 +287,7 @@ private struct BrowseSwipe: ViewModifier {
                     let target: CGFloat = commit != open ? 1 : 0
                     // Carry the finger's speed into the spring, relative to the distance left.
                     let remaining = target - uncovered
-                    let velocity = abs(remaining) > 0.01 ? value.velocity.width / drawer.width / remaining : 0
+                    let velocity = abs(remaining) > 0.01 ? value.velocity.width / drawer.travel / remaining : 0
                     withAnimation(reduceMotion ? nil : .interpolatingSpring(duration: 0.35, bounce: 0, initialVelocity: min(max(velocity, -20), 20))) {
                         drawer.drag = nil
                         if commit { navigate() }
@@ -329,6 +337,7 @@ private struct WorkspaceView: View {
     @State private var membersPreference = false
     @State private var modalDismissDisabled = false
     @State private var browseDrawer = BrowseDrawer()
+    @State private var browseBarHeight: CGFloat = 0
     private let parityFixture: String?
     private let parityMode: Bool
 
@@ -360,6 +369,8 @@ private struct WorkspaceView: View {
                 // Phones slide the conversation over Browse; wider windows show both.
                 let conversationAvailable = !model.spaces.isEmpty || model.selectedDirectMessageID != nil
                 let showsBrowse = !narrow || model.navigationOpen || !conversationAvailable
+                // How much of the conversation stays in view beside Browse.
+                let peek = min(96, max(56, geometry.size.width * 0.2))
                 ZStack(alignment: .leading) {
                     VStack(spacing: 0) {
                         HStack(spacing: 0) {
@@ -444,10 +455,14 @@ private struct WorkspaceView: View {
                                 }
                             }
                         }
+                        .padding(.trailing, narrow ? peek : 0)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        if narrow { AccountBar(model: model, sheet: $sheet) }
+                        // The account bar keeps the full width, below the conversation's edge.
+                        if narrow {
+                            AccountBar(model: model, sheet: $sheet)
+                                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { browseBarHeight = $0 }
+                        }
                     }
-                    .modifier(BrowseLayer(conversation: false, narrow: narrow, showsBrowse: showsBrowse, width: geometry.size.width))
                     .allowsHitTesting(showsBrowse)
                     .accessibilityHidden(!showsBrowse)
                     if narrow && conversationAvailable {
@@ -472,14 +487,28 @@ private struct WorkspaceView: View {
                             LinearGradient(colors: [.clear, .black.opacity(0.35)], startPoint: .trailing, endPoint: .leading)
                                 .frame(width: 16).offset(x: -16).allowsHitTesting(false).accessibilityHidden(true)
                         }
-                        .modifier(BrowseLayer(conversation: true, narrow: narrow, showsBrowse: showsBrowse, width: geometry.size.width))
+                        .modifier(BrowseLayer(showsBrowse: showsBrowse, travel: geometry.size.width - peek, bar: browseBarHeight))
                         .allowsHitTesting(!showsBrowse)
                         .accessibilityHidden(showsBrowse)
+                    }
+                    // Beside Browse the conversation's edge is inert: tapping or dragging it returns.
+                    if narrow && conversationAvailable && showsBrowse {
+                        Color.clear
+                            .frame(width: peek)
+                            .contentShape(Rectangle())
+                            .onTapGesture { model.navigationOpen = false }
+                            .modifier(BrowseSwipe(open: true, enabled: true, anywhere: true, navigate: { model.navigationOpen = false }))
+                            .accessibilityElement()
+                            .accessibilityLabel("Back to conversation")
+                            .accessibilityAddTraits(.isButton)
+                            .accessibilityAction { model.navigationOpen = false }
+                            .padding(.bottom, browseBarHeight)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipped()
-                .onChange(of: geometry.size.width, initial: true) { _, width in browseDrawer.width = max(width, 1) }
+                .onChange(of: geometry.size.width - peek, initial: true) { _, travel in browseDrawer.travel = max(travel, 1) }
                 .onChange(of: showsBrowse) { _, _ in endEditing() }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

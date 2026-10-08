@@ -45,7 +45,7 @@ import {
 } from "./notifications";
 import Tooltip from "../components/Tooltip";
 import { createSpaceNavigation, type PreparedSpace } from "./navigation";
-import { transitionBrowse } from "./browseTransition";
+import { transitionBrowse, useBrowseLayout } from "./browseTransition";
 import {
   acceptChannelInvitation,
   acceptDirectRequest,
@@ -1496,6 +1496,8 @@ export default function Spaces({
     navigationTarget.current = open;
     transitionBrowse(open, () => showNavigation(open));
   }, []);
+  const emptyRoomRef = useRef<HTMLElement>(null);
+  useBrowseLayout(emptyRoomRef, navigationOpen);
   const spaceMenu = useRef<HTMLDetailsElement>(null);
   const channelMenu = useRef<HTMLDetailsElement>(null);
   const channelNavigationRef = useRef<HTMLElement>(null);
@@ -2650,7 +2652,10 @@ export default function Spaces({
           <header className="call-header">
             <Wordmark />
           </header>
-          <section className={`call-room spaces-room empty-channel-room${navigationOpen ? " navigation-open" : ""}`}>
+          <section
+            ref={emptyRoomRef}
+            className={`call-room spaces-room empty-channel-room${navigationOpen ? " navigation-open" : ""}`}
+          >
             {rail}
             <ChannelSidebar>
               <div className="sidebar-channels">{channelNavigation(() => null)}</div>
@@ -2697,6 +2702,14 @@ export default function Spaces({
                 New direct message
               </button>
             </div>
+            {navigationOpen && (
+              <button
+                type="button"
+                className="browse-peek"
+                aria-label="Back to conversation"
+                onClick={() => setNavigationOpen(false)}
+              />
+            )}
           </section>
         </main>
         {dialog === "space" && (

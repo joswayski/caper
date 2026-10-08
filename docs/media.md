@@ -5132,21 +5132,32 @@ presents Pins as a sheet over the mounted conversation and is unchanged.
 
 ### Sliding Browse on phones (October 8, 2026)
 
-On narrow layouts the conversation slides over Browse like a navigation stack
-instead of the two views swapping in place. A swipe moves the conversation with
-the finger while Browse sits 30% behind it and dims. Releasing past halfway, or
-flicking at least 300 CSS pixels/points per second after 40 of travel, completes
-the move; otherwise it springs back. A flick back toward the start cancels.
-Back to Browse, Close navigation, and choosing a channel or DM animate the same
-slide. Where a swipe may start is unchanged from the October 6 rules above. The
-gesture still never selects a channel, and drafts and history are kept.
+On narrow layouts, Browse works like Discord's mobile drawer instead of the two
+views swapping in place:
+
+- **Still Browse:** Browse (spaces, channels and DMs) stays still underneath.
+  The conversation slides over it, following the finger during a swipe.
+- **Resting edge:** with Browse shown, the conversation's left edge stays in
+  view on the right, about 20% of the width (56–96 CSS px/dp/pt). Browse's
+  channel list is laid out beside it.
+- **Account bar:** keeps the full width at the bottom, and the edge view stops
+  above it. During the slide, the conversation's bottom edge lifts off the bar.
+- **Edge view:** inert. Tapping it, or dragging it left, returns to the
+  conversation.
+- **Release:** past halfway, or a flick of at least 300 CSS px/points per second
+  after 40 of travel, completes the move; anything else springs back. A flick
+  back toward the start cancels.
+- **Buttons:** Back to Browse, Close navigation, and choosing a channel or DM
+  animate the same slide.
+- **Swipe starts:** unchanged from the October 6 rules above, plus the edge
+  view. Swipes never select a channel. Drafts and history are kept.
 
 | Platform | Behavior and validation boundary |
 | --- | --- |
-| Web ≤760px | Uses same-document View Transitions. The room is snapshotted, and the old and new views' pseudo-elements are posed by the drag, then settled with WAAPI. The rest of the page stays live. Without View Transitions or with `prefers-reduced-motion`, Browse switches at once and keeps the original 64px/600ms quick-swipe rule. The conversation stays laid out but hidden behind Browse, so its scroll position now survives opening Browse and cancelled swipes (it previously reset to the latest message). `npm run check` passes, and `npm test` passes 471 tests on Node 24. `scripts/test-desktop-navigation.mjs` passes against disposable mocks in Chromium touch emulation, with timestamped touches. It covers mid-drag scrubbing, slow snap-back, halfway and fling commits in both directions, cancel/vertical/wrong-direction/multi-touch guards, reduced motion, Back/Close, overlays, drafts and history reads. The test's stale members-default and Pins-header expectations (#363/#366) were updated. 390px mid-swipe, settled and button-slide captures were inspected. Not Safari, Firefox or physical-device acceptance. |
-| Android narrow | Compose `Animatable` with a critically damped spring that carries the release velocity. Browse and the conversation are both composed only while the slide moves. The finger is tracked on the unmoving container; touches still start only on the timeline or channel list. Back, buttons and channel choices animate. Follows the system animator duration scale. `./gradlew :app:compileDebugKotlin` and `:app:lintDebug` pass (Android SDK 36). No emulator or device run: there is no KVM in this environment. |
-| Apple narrow | SwiftUI offsets with scoped transactions: no animation while dragged, then an interpolating spring carrying the release velocity. Model-driven changes use the default spring, and Reduce Motion switches without animation. Both views stay in the hierarchy on phones; the hidden one is not hit-testable or exposed to accessibility, and switching dismisses the keyboard. Edge-start rules (24pt) are unchanged. Swift/Xcode are unavailable in this Linux environment, so this is not compiled, UI-tested or device-checked. The existing iOS UI test's swipe/Back expectations are expected to hold. |
-| Rust desktop narrow | No touch gestures. Toggling Browse slides the conversation with the same parallax and dimming over 0.3s (cubic ease-out). Fmt, application-package Clippy (`--no-deps`) and the debug build pass, and 288 tests pass (9 existing ignored). A 60 fps Xvfb recording of the `parity-narrow` fixture (Browse, then Close navigation) was inspected frame by frame. Not macOS or Windows acceptance. |
+| Web ≤760px | Same-document View Transitions snapshot the room. The conversation's snapshot is moved (and its bottom clipped) by the drag, then settled with WAAPI. The rest of the page stays live. Browse's live layout keeps the conversation laid out at the edge: inert, at its usual offset, and clipped above the bar. That keeps its scroll position, which previously reset to the latest message on every Browse. Without View Transitions, or with `prefers-reduced-motion`, Browse switches at once, keeping the edge view and the original 64px/600ms quick-swipe rule. `npm run check` passes, and `npm test` passes 471 tests on Node 24. `scripts/test-desktop-navigation.mjs` passes against disposable mocks in Chromium touch emulation, with timestamped touches. It covers mid-drag tracking, slow snap-back, halfway and fling commits both ways, the resting edge (position, inert, Browse not covered), tap and drag back from the edge, cancel/vertical/wrong-direction/multi-touch guards, reduced motion, Back/Close, overlays, drafts and history reads. The test's stale members-default and Pins-header expectations (#363/#366) were updated. 320px and 390px captures (resting edge, mid-swipe, button slide) were inspected. Not Safari, Firefox or physical-device acceptance. |
+| Android narrow | Compose `Animatable` with a critically damped spring that carries the release velocity. The conversation stays composed. Its layer is translated and clipped above the account bar; the clip also limits touches, so the bar's controls stay reachable. The finger is tracked on the unmoving container. Follows the system animator duration scale. `./gradlew :app:compileDebugKotlin` and `:app:lintDebug` pass (Android SDK 36). No emulator or device run: there is no KVM in this environment. |
+| Apple narrow | SwiftUI offset and clip shape inside a scoped transaction: no animation while dragged, then an interpolating spring carrying the release velocity. Model-driven changes use the default spring, and Reduce Motion switches without animation. Only a small modifier reads the drag, so the chat itself doesn't re-render per frame. The conversation stays in the hierarchy. Beside Browse it is not hit-testable or exposed to accessibility, and a "Back to conversation" target covers its edge. Switching dismisses the keyboard. Timeline and channel-list edge-start rules (24pt) are unchanged. Swift/Xcode are unavailable in this Linux environment, so this is not compiled, UI-tested or device-checked. The existing iOS UI test's swipe/Back expectations are expected to hold. |
+| Rust desktop narrow | No touch gestures. Toggling Browse slides the conversation over a still Browse to the same resting edge (0.3s cubic ease-out). The account bar moves to a full-width bottom bar in narrow Browse, and the conversation's rect stops above it (egui panels set their own clip). Clicking the edge returns. Fmt, application-package Clippy (`--no-deps`) and the debug build pass, and 288 tests pass (9 existing ignored). 60 fps Xvfb recordings of the `parity-narrow` fixture were inspected frame by frame. Not macOS or Windows acceptance. |
 | Containers/services | No API, gateway, infrastructure, secret/configuration or database change. No deployment performed. |
 
 #### Deployment order
@@ -5171,6 +5182,8 @@ gesture still never selects a channel, and drafts and history are kept.
    and `bash apps/native/desktop/build.sh`. Build output is not a store release.
 4. On a real iPhone, an Android phone and mobile Safari/Chrome, verify:
    - slow drags snapping back, half-way drags, and flicks in both directions;
+   - tapping and dragging the conversation's edge beside Browse;
+   - the account bar's controls beside that edge;
    - catching a slide mid-animation;
    - vertical scrolling while horizontally still;
    - Back to Browse and Close navigation;
