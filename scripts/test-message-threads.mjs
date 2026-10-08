@@ -31,6 +31,23 @@ const screenshot = (name) => {
 const row = (id) => `[data-message-key="${id}"]`;
 const channel = (id) => `.chat-panel ${row(id)}`;
 const thread = (id) => `.chat-thread-panel ${row(id)}`;
+const assertReplyAction = (expected) => {
+  wait('!!document.querySelector(".chat-message-actions")');
+  const actions = evaluate(
+    '[...document.querySelectorAll(".chat-message-actions button")].map(button => button.textContent.trim())',
+  );
+  assert.equal(actions.includes("Reply in thread"), expected);
+  for (const action of ["Pin message", "Copy text", "Copy message ID"]) assert.ok(actions.includes(action));
+  assert.equal(evaluate('!!document.querySelector(".chat-quick-reactions")'), true);
+};
+const actions = (selector, expected) => {
+  browser("click", `${selector} .chat-message-actions-trigger`);
+  assertReplyAction(expected);
+};
+const dismissActions = () => {
+  browser("find", "role", "button", "click", "--name", "Close message actions", "--exact");
+  wait('!document.querySelector(".chat-message-actions")');
+};
 const headers = { authorization: "Bearer fixture-owner-token", connection: "close" };
 const history = async () => (await fetch(`${api}/api/chat/channels/chan00000001/messages`, { headers })).json();
 const close = () => {
@@ -101,6 +118,8 @@ try {
       ],
     );
   }
+  actions(channel(root.clientMessageId), true);
+  dismissActions();
   open(root.clientMessageId);
   assert.equal(evaluate("document.activeElement.id"), "chat-thread-reply");
   assert.equal(evaluate('document.querySelector(".chat-thread-send-row input").checked'), false);
@@ -116,6 +135,8 @@ try {
     "No replies yet. Start the thread.",
   );
   screenshot("threads-desktop-empty");
+  actions(thread(root.clientMessageId), false);
+  dismissActions();
   reply("TEST FIXTURE — Keep the layout discussion here. 🙂");
   wait(
     `document.querySelector('${channel(root.clientMessageId)} .chat-thread-summary strong')?.textContent === '1 reply'`,
@@ -141,8 +162,12 @@ try {
     `!!document.querySelector('${channel(broadcast.clientMessageId)}') && !!document.querySelector('${thread(broadcast.clientMessageId)}')`,
   );
   assert.equal((await history()).messages.filter((message) => message.id === broadcast.id).length, 1);
-  browser("click", `${thread(broadcast.clientMessageId)} .chat-message-actions-trigger`);
-  wait('!!document.querySelector(".chat-message-actions")');
+  // The same reply keeps its action in the channel, but loses it inside the thread.
+  actions(channel(broadcast.clientMessageId), true);
+  screenshot("thread-actions-desktop-channel");
+  dismissActions();
+  actions(thread(broadcast.clientMessageId), false);
+  screenshot("thread-actions-desktop-reply");
   browser("find", "role", "button", "click", "--name", "React with 🎉", "--exact");
   wait(
     `document.querySelector('${thread(broadcast.clientMessageId)} .chat-reaction')?.getAttribute('aria-pressed') === 'true' && document.querySelector('${channel(broadcast.clientMessageId)} .chat-reaction')?.getAttribute('aria-pressed') === 'true'`,
@@ -228,6 +253,8 @@ try {
     "Touch controls must not overlap",
   );
   screenshot("threads-mobile-channel");
+  actions(channel(root.clientMessageId), true);
+  dismissActions();
   open(root.clientMessageId);
   wait('document.querySelector(".chat-thread-panel").getAttribute("aria-modal") === "true"');
   assert.equal(evaluate('document.querySelector(".chat-panel").inert'), true);
@@ -238,6 +265,18 @@ try {
     [0, 0, 390, 844],
   );
   screenshot("threads-mobile");
+  actions(thread(root.clientMessageId), false);
+  dismissActions();
+  // Exercise the held-finger path as well as the overflow button.
+  const point = evaluate(
+    `(() => { const rect = document.querySelector('${thread(broadcast.clientMessageId)} p').getBoundingClientRect(); return { x: rect.x + 10, y: rect.y + 10 }; })()`,
+  );
+  await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point] }, sessionId);
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] }, sessionId);
+  assertReplyAction(false);
+  screenshot("thread-actions-mobile-reply");
+  dismissActions();
   evaluate("history.back()");
   wait('!document.querySelector(".chat-thread-panel")');
   assert.equal(evaluate('document.querySelector(".chat-panel").inert'), false);
@@ -246,7 +285,7 @@ try {
   wait('!document.querySelector(".chat-thread-panel")');
   assert.equal(evaluate('document.querySelector(".chat-panel").inert'), false);
   console.log(
-    "PASS: isolated replies, root highlight/count/avatars, shared broadcast/reaction identity, per-root drafts, loading/error/retry, focus restoration, touch target separation, full-screen dialog, inert background and mobile Back.",
+    "PASS: reply actions hidden on thread roots/replies and retained in the channel (desktop, narrow and touch long-press); isolated replies, root highlight/count/avatars, shared broadcast/reaction identity, per-root drafts, loading/error/retry, focus restoration, touch target separation, full-screen dialog, inert background and mobile Back.",
   );
 } finally {
   socket?.close();
