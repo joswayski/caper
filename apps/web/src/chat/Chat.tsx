@@ -1184,96 +1184,94 @@ export default function Chat({
               </div>
             </PinsDialog>
           )}
-          {
-            <>
-              {state.phase === "loading" && (
-                <p className="chat-state" role="status">
-                  Loading messages…
-                </p>
-              )}
-              {state.phase === "error" && (
-                <div className="chat-state" role="alert">
-                  <p>{state.error}</p>
-                  <button type="button" onClick={() => clientRef.current?.retryLoad()}>
-                    Try again
-                  </button>
-                </div>
-              )}
-              {state.phase === "ready" && !messages.length && (
-                <div className="chat-state">
-                  <p>No messages yet.</p>
-                  <small>
-                    {direct
-                      ? `Only you and ${channelName} can read this conversation.`
-                      : `Start the conversation in #${channelName}.`}
-                  </small>
-                </div>
-              )}
-              {state.phase === "ready" && messages.length > 0 && hydrated && (
-                <Virtuoso
-                  key={listWindow}
-                  ref={listRef}
-                  data={messages}
-                  firstItemIndex={firstItemIndex}
-                  initialTopMostItemIndex={{
-                    index: scrollIndex === -1 ? "LAST" : scrollIndex,
-                    align: scrollTarget && scrollTarget !== "latest" ? "center" : "end",
-                  }}
-                  computeItemKey={(_, message) => `${message.author?.id ?? "pending"}:${message.clientMessageId}`}
-                  defaultItemHeight={70}
-                  // Layout sizes, not getBoundingClientRect: inside the homepage's tilted
-                  // window the rect is scaled, which would hide the newest messages.
-                  itemSize={measureItem}
-                  increaseViewportBy={{ top: 250, bottom: 150 }}
-                  followOutput={allowFollow.current ? "auto" : false}
-                  atBottomThreshold={80}
-                  atBottomStateChange={(atBottom) => {
-                    followLatest.current = atBottom;
-                  }}
-                  startReached={() => {
-                    if (!state.olderError) loadOlder();
-                  }}
-                  components={listComponents}
-                  context={{
-                    hasMore: state.hasMore,
-                    loadingOlder: state.loadingOlder,
-                    olderError: state.olderError,
-                    loadOlder,
-                    onListReady: listReady ? undefined : () => setListReady(true),
-                  }}
-                  className="chat-scroller"
-                  aria-hidden={!listReady}
-                  tabIndex={listReady ? 0 : -1}
-                  role="region"
-                  aria-label={`Messages in ${channelName}`}
-                  onKeyDown={(event) => {
-                    if (event.target === event.currentTarget && event.key === "End") {
-                      event.preventDefault();
-                      listRef.current?.scrollToIndex({ index: "LAST", align: "end" });
-                    }
-                  }}
-                  itemContent={(index, message) => renderMessage(index - firstItemIndex, message)}
-                />
-              )}
-              {state.phase === "ready" && messages.length > 0 && !listReady && (
-                <div
-                  ref={initialListRef}
-                  className="chat-initial-messages"
-                  role="region"
-                  aria-label={`Messages in ${channelName}`}
-                >
-                  <HistoryHeader context={{ hasMore: state.hasMore, loadingOlder: false, loadOlder }} />
-                  {messages.slice(previewStart).map((message, index) => renderMessage(previewStart + index, message))}
-                </div>
-              )}
-              <p className="sr-only" aria-live="polite" aria-atomic="true">
-                {state.phase === "ready" && announcement}
+          <div className="chat-timeline" inert={showPins} aria-hidden={showPins}>
+            {state.phase === "loading" && (
+              <p className="chat-state" role="status">
+                Loading messages…
               </p>
-              <p className="sr-only" role="status">
-                {actionStatus}
-              </p>
-            </>
-          }
+            )}
+            {state.phase === "error" && (
+              <div className="chat-state" role="alert">
+                <p>{state.error}</p>
+                <button type="button" onClick={() => clientRef.current?.retryLoad()}>
+                  Try again
+                </button>
+              </div>
+            )}
+            {state.phase === "ready" && !messages.length && (
+              <div className="chat-state">
+                <p>No messages yet.</p>
+                <small>
+                  {direct
+                    ? `Only you and ${channelName} can read this conversation.`
+                    : `Start the conversation in #${channelName}.`}
+                </small>
+              </div>
+            )}
+            {state.phase === "ready" && messages.length > 0 && hydrated && (
+              <Virtuoso
+                key={listWindow}
+                ref={listRef}
+                data={messages}
+                firstItemIndex={firstItemIndex}
+                initialTopMostItemIndex={{
+                  index: scrollIndex === -1 ? "LAST" : scrollIndex,
+                  align: scrollTarget && scrollTarget !== "latest" ? "center" : "end",
+                }}
+                computeItemKey={(_, message) => `${message.author?.id ?? "pending"}:${message.clientMessageId}`}
+                defaultItemHeight={70}
+                // Layout sizes, not getBoundingClientRect: inside the homepage's tilted
+                // window the rect is scaled, which would hide the newest messages.
+                itemSize={measureItem}
+                increaseViewportBy={{ top: 250, bottom: 150 }}
+                followOutput={allowFollow.current ? "auto" : false}
+                atBottomThreshold={80}
+                atBottomStateChange={(atBottom) => {
+                  followLatest.current = atBottom;
+                }}
+                startReached={() => {
+                  if (!state.olderError) loadOlder();
+                }}
+                components={listComponents}
+                context={{
+                  hasMore: state.hasMore,
+                  loadingOlder: state.loadingOlder,
+                  olderError: state.olderError,
+                  loadOlder,
+                  onListReady: listReady ? undefined : () => setListReady(true),
+                }}
+                className="chat-scroller"
+                aria-hidden={!listReady}
+                tabIndex={listReady ? 0 : -1}
+                role="region"
+                aria-label={`Messages in ${channelName}`}
+                onKeyDown={(event) => {
+                  if (event.target === event.currentTarget && event.key === "End") {
+                    event.preventDefault();
+                    listRef.current?.scrollToIndex({ index: "LAST", align: "end" });
+                  }
+                }}
+                itemContent={(index, message) => renderMessage(index - firstItemIndex, message)}
+              />
+            )}
+            {state.phase === "ready" && messages.length > 0 && !listReady && (
+              <div
+                ref={initialListRef}
+                className="chat-initial-messages"
+                role="region"
+                aria-label={`Messages in ${channelName}`}
+              >
+                <HistoryHeader context={{ hasMore: state.hasMore, loadingOlder: false, loadOlder }} />
+                {messages.slice(previewStart).map((message, index) => renderMessage(previewStart + index, message))}
+              </div>
+            )}
+            <p className="sr-only" aria-live="polite" aria-atomic="true">
+              {state.phase === "ready" && announcement}
+            </p>
+            <p className="sr-only" role="status">
+              {actionStatus}
+            </p>
+          </div>
         </div>
         {state.hasNewer && (
           <div className="chat-history" role="status">
@@ -1399,14 +1397,16 @@ export default function Chat({
         ) : (
           <div className="chat-composer">
             {composerBanner}
-            {state.pendingSend?.threadRootId && (
-              <p className="chat-inline-error">
-                A thread reply is awaiting confirmation.{" "}
-                <button type="button" onClick={() => openThread(state.pendingSend!.threadRootId!)}>
-                  Open thread
-                </button>
-              </p>
-            )}
+            {state.pendingSend?.threadRootId &&
+              state.sendError &&
+              state.thread?.rootId !== state.pendingSend.threadRootId && (
+                <p className="chat-inline-error" role="alert">
+                  {state.sendRejected ? "A thread reply wasn’t sent." : "A thread reply couldn’t be confirmed."}{" "}
+                  <button type="button" onClick={() => openThread(state.pendingSend!.threadRootId!)}>
+                    Review reply
+                  </button>
+                </p>
+              )}
             {state.sessionError && (
               <p className="chat-inline-error" role="alert">
                 {state.sessionError}{" "}

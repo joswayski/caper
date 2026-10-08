@@ -234,6 +234,13 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(result, .completed, "Pasteboard holds \(pasteboard.exists ? pasteboard.label : "nothing"), expected \(expected)",
                        file: file, line: line)
     }
+    #else
+    /// Hovers a message on its header text, like `hold` on iPhone. The row's
+    /// centre can fall on a reaction chip, and that chip's "who reacted"
+    /// tooltip then covers the row's own Add reaction button.
+    private func hoverMessage(_ row: XCUIElement) {
+        row.staticTexts.firstMatch.hover()
+    }
     #endif
 
     private func openReactionPicker(for messageID: String, in app: XCUIApplication) throws {
@@ -246,7 +253,7 @@ final class CaperParityUITests: XCTestCase {
         #else
         let row = try require(app.descendants(matching: .any)["message-row-\(messageID)"], timeout: 10,
                               "Missing message-row-\(messageID)")
-        row.hover()
+        hoverMessage(row)
         let add = try require(app.buttons["add-reaction-\(messageID)"], timeout: 10,
                               "Hovering \(messageID) did not reveal Add reaction")
         #endif
@@ -360,14 +367,26 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(send.isHittable, "Send must remain available above the keyboard at the height cap")
         capture("composer-capped-keyboard", app: app)
 
-        composer.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: multiline.count + overflow.count))
+        deleteBack(to: short, in: composer)
         XCTAssertEqual(composer.value as? String, short)
         XCTAssertEqual(composer.frame.height, 42, accuracy: 2, "Removing extra lines must shrink the composer")
         XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
-        composer.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: short.count))
+        deleteBack(to: "", in: composer)
         XCTAssertEqual(composer.value as? String, "")
         XCTAssertEqual(composer.frame.height, 42, accuracy: 2)
         XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
+    }
+
+    /// Deletes from the end until the field holds `target`. On the simulator a
+    /// long burst of Delete keys loses some while the composer shrinks a line
+    /// at a time (in CI, 36 of 103 characters were left), so this deletes in
+    /// small batches and recounts.
+    private func deleteBack(to target: String, in field: XCUIElement) {
+        for _ in 0..<30 {
+            let value = field.value as? String ?? ""
+            guard value.count > target.count, value.hasPrefix(target) else { return }
+            field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: min(10, value.count - target.count)))
+        }
     }
 
     func testIPhoneThreadComposerDoesNotFillItsMaximumHeight() throws {
@@ -375,7 +394,10 @@ final class CaperParityUITests: XCTestCase {
         let row = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30,
                               "Missing fixture message")
         hold(row)
-        try require(app.buttons["Reply in thread"], timeout: 5, "Missing thread action").tap()
+        // Each row also has its own "Reply in thread" link, so look in the sheet.
+        let rowActions = try require(app.descendants(matching: .any)["message-actions-sheet"], timeout: 5,
+                                     "Missing message actions")
+        try require(rowActions.buttons["Reply in thread"], timeout: 5, "Missing thread action").tap()
         try require(app.buttons["Back to channel"], timeout: 5, "Thread did not open")
         let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 5,
                                    "Missing thread composer")
@@ -420,7 +442,7 @@ final class CaperParityUITests: XCTestCase {
         let hoverTargetID = "chan00000001m01"
         let target = app.descendants(matching: .any)["message-row-\(hoverTargetID)"]
         XCTAssertTrue(target.waitForExistence(timeout: 5))
-        target.hover()
+        hoverMessage(target)
         XCTAssertTrue(app.buttons["add-reaction-\(hoverTargetID)"].waitForExistence(timeout: 2), "Message controls appear on hover")
         #else
         XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label == %@", "Add reaction")).count, 0, "iPhone must not show an add-reaction button under each message")
@@ -514,7 +536,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
         let unrelatedRow = try require(app.descendants(matching: .any)["message-row-chan00000001m02"], timeout: 5,
                                        "Missing unrelated hover target")
-        unrelatedRow.hover()
+        hoverMessage(unrelatedRow)
         let unrelatedAdd = try require(app.buttons["add-reaction-chan00000001m02"], timeout: 5,
                                        "Hovering another message did not reveal Add reaction")
 
@@ -833,17 +855,16 @@ final class CaperParityUITests: XCTestCase {
         let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: mute)
         XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 5), .completed, "Mute is available once settings load")
         #if os(macOS)
-        // Keyboard only, without touching the submenu through accessibility.
-        // In CI's recordings the open "Mute channel" submenu closed whenever
-        // the test looked up one of its items (an existence check, or a hover,
-        // which XCUITest starts by re-hovering the parent), so the choice
-        // never landed. ↓↓↓ reaches "Mute channel" after Channel settings and
-        // Notifications, → opens its submenu at "For 15 minutes", and ↓↓↓↓
-        // reaches the last preset.
-        for _ in 0..<3 { app.typeKey(.downArrow, modifierFlags: []) }
-        app.typeKey(.rightArrow, modifierFlags: [])
-        for _ in 0..<4 { app.typeKey(.downArrow, modifierFlags: []) }
-        app.typeKey(.return, modifierFlags: [])
+        // One typeText call. Each XCUITest action first snapshots the app's
+        // accessibility tree, and in CI's recordings that closed the open
+        // "Mute channel" submenu every time (after a hover, an existence check,
+        // or the next separate key press), so the choice never landed. One
+        // call snapshots once, while only the top-level menu is open. ↓↓↓
+        // reaches "Mute channel" after Channel settings and Notifications,
+        // → opens its submenu at "For 15 minutes", ↓↓↓↓ reaches the last preset.
+        let down = XCUIKeyboardKey.downArrow.rawValue
+        app.typeText(String(repeating: down, count: 3) + XCUIKeyboardKey.rightArrow.rawValue
+                     + String(repeating: down, count: 4) + XCUIKeyboardKey.return.rawValue)
         #else
         let forever = app.descendants(matching: .any)["Until I turn it back on"].firstMatch
         mute.tap()
@@ -1205,6 +1226,74 @@ final class CaperParityUITests: XCTestCase {
         // Web shows its save bar only once something changed.
         XCTAssertFalse(app.buttons["Save changes"].exists)
         assertStaticText("Delete this channel for everyone in the space.", in: app)
+    }
+
+    func testPendingSendIsVisibleAndLeftAlignedBeforeConfirmation() async throws {
+        let app = launch()
+        let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 30,
+                                   "Missing message composer")
+        let timeline = app.scrollViews["chat-timeline"]
+        let send = app.buttons["send-message-button"]
+        let path = "http://127.0.0.1:3001/api/chat/channels/chan00000001/messages"
+        func holdSends(_ hold: Bool) async throws {
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:3001/__fixture/control")!)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: ["holdSends": hold])
+            let (_, response) = try await URLSession.shared.data(for: request)
+            XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        }
+        // The short row catches intrinsic-width centering; the long row catches
+        // wrapping/height changes with the keyboard reducing the viewport.
+        let suffix = String(UUID().uuidString.prefix(4))
+        for message in ["Hi \(suffix)", String(repeating: "A wrapping pending message. ", count: 8) + suffix] {
+            XCTAssertTrue(focus(composer))
+            composer.typeText(message)
+            // Sending must reveal the row even from older history.
+            #if os(macOS)
+            timeline.scroll(byDeltaX: 0, deltaY: 600)
+            #else
+            timeline.swipeDown()
+            #endif
+            try await holdSends(true)
+            do {
+                send.tap()
+                let cleared = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == ''"), object: composer)
+                XCTAssertEqual(XCTWaiter.wait(for: [cleared], timeout: 3), .completed)
+                // Do not wait for confirmation: the server has neither stored
+                // nor broadcast this send. Inspect the local pending row now.
+                let pending = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "pending-message-")).firstMatch
+                XCTAssertTrue(pending.exists, "Clearing the composer must leave a visible pending message")
+                let text = pending.staticTexts[message].firstMatch
+                XCTAssertTrue(text.exists)
+                XCTAssertTrue(timeline.frame.contains(text.frame), "Pending text must be in the visible timeline")
+                XCTAssertEqual(pending.frame.minX, timeline.frame.minX, accuracy: 2)
+                XCTAssertEqual(pending.frame.width, timeline.frame.width, accuracy: 2)
+                XCTAssertEqual(text.frame.minX, timeline.frame.minX + 62, accuracy: 2,
+                               "Pending text must share confirmed messages' 18 + 34 + 10 point inset")
+                #if os(iOS)
+                XCTAssertTrue(app.keyboards.firstMatch.exists, "Sending must retain the software keyboard")
+                #endif
+                let pendingX = text.frame.minX
+                let clientID = String(pending.identifier.dropFirst("pending-message-".count))
+                var history = URLRequest(url: URL(string: path)!)
+                history.setValue("Bearer fixture-owner-token", forHTTPHeaderField: "authorization")
+                let (before, _) = try await URLSession.shared.data(for: history)
+                let stored = try XCTUnwrap(JSONSerialization.jsonObject(with: before) as? [String: Any])
+                XCTAssertFalse((stored["messages"] as? [[String: Any]] ?? []).contains { $0["clientMessageId"] as? String == clientID })
+                capture(message.count < 20 ? "send-pending-short" : "send-pending-wrapped", app: app)
+                try await holdSends(false)
+                let confirmed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: pending)
+                XCTAssertEqual(XCTWaiter.wait(for: [confirmed], timeout: 10), .completed)
+                let delivered = staticTexts(message, in: app)
+                XCTAssertEqual(delivered.count, 1)
+                XCTAssertEqual(delivered.firstMatch.frame.minX, pendingX, accuracy: 2,
+                               "Confirmation must not shift text horizontally")
+            } catch {
+                try await holdSends(false)
+                throw error
+            }
+        }
     }
 
     func testAccountCanSendExactlyOneMessageAndComposerClears() async throws {

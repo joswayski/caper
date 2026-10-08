@@ -98,6 +98,18 @@ with Xcode before release and inspect the composer attachments. These new iPhone
 checks and native rendering were not executed in the Linux orb; passing web and
 fixture tests do not validate SwiftUI/UIKit/AppKit sizing.
 
+Apple pending sends use the confirmed row's full-width, leading-aligned layout.
+The channel requests scrolling on the pending-state update and on content-size
+changes without yielding another task first. The parity send regression holds
+the fixture before persistence/gateway fanout, checks short and wrapping pending
+text in the viewport with an empty composer, then checks unchanged horizontal
+alignment and one row after confirmation. `npm test -- --maxWorkers=2` passes
+450 web/shared tests and `npm run check` passes; the Apple regression and rendered
+frame timing were not run in this Linux orb (no Xcode or connected Apple runner).
+Run both Apple parity scripts above and inspect the pending-send captures and
+iPhone send transition before release. No API/configuration/migration change is
+needed; only updated Apple binaries receive this fix.
+
 Web channel names and `⋯` actions have a separate row above voice
 activity. Join, Joining and Switch here use one fixed-width action slot;
 connected channels reserve that space without an inline Leave action.
@@ -912,8 +924,10 @@ pre-spaces image after migration; complete the forward rollout instead.
 
 ## Message reactions
 
-Desktop web exposes **Add reaction** on message hover or keyboard focus. Mobile
-web, Android and iPhone hide the per-message add button. Press and hold a
+Desktop web exposes **Add reaction** on message hover or keyboard focus; clicking
+a message or reaction does not keep the toolbar visible after the pointer leaves.
+Reaction chips have no outer focus ring; keyboard navigation uses an inset cue.
+Mobile web, Android and iPhone hide the per-message add button. Press and hold a
 committed message to open a bottom drawer with five fixed quick reactions
 (👍 ❤️ 😂 🎉 👀), the searchable emoji picker, **Copy text**, and
 **Copy message ID**. Copy uses the exact text or globally unique public message
@@ -1089,6 +1103,25 @@ Android, web on touch) open a Reactions sheet on press-and-hold: one tab per
 emoji with its count, then each person's avatar, name and @username. On web,
 right-click opens the same panel as a popover, and message actions include
 **View reactions**. A tap or click still toggles your own reaction.
+
+Web and Rust desktop retain known names during revision refreshes (including
+failed refreshes), project them onto the currently displayed reactor IDs, and
+name your optimistic contribution as "You" immediately. They do not temporarily
+replace a named tooltip with a count when you toggle an existing reaction.
+Removed IDs are excluded immediately; a genuinely unknown person still uses the
+snapshot-count fallback until their name loads. Apple already reconciles names
+this way; Android uses a separate hold-to-open sheet rather than hover tooltips.
+`scripts/test-chat-reactors.mjs` checks every tooltip DOM update while fixture
+writes/name refreshes are held, rapid toggles, refresh failure, pointer-only
+toolbar visibility, and keyboard focus. Run its desktop checks with a fine-pointer
+Chromium configuration (`AGENT_BROWSER_EXECUTABLE_PATH` in headless orbs).
+
+Interaction-fix validation: `npm run check` and all 450 web/native-support tests
+pass; both browser interaction scripts pass, including verified coarse-pointer
+touch input. Rust desktop passes 275 tests (9 existing ignored), package Clippy,
+fmt and a Linux build; its fixture tooltip was rendered under 2× Xvfb and inspected.
+These are local fixture checks, not physical-phone, Windows/macOS or live-service
+acceptance. No Docker daemon was available; web build stages ran directly.
 
 The parity fixture serves this endpoint, and its `incomingReaction` control
 accepts an optional `userId` so tests can react as any fixture account. Desktop
@@ -1420,8 +1453,8 @@ are pruned. Pins do not send system messages, play message sounds, or create pus
 | Platform | Evidence and remaining gap |
 | --- | --- |
 | API/gateway | Disposable Postgres tests additionally cover channel/thread context, exact 30-before/30-after limits despite edit-sequence gaps, forward paging, boundary flags, mutually exclusive anchors and access isolation. Existing pin coverage includes shared delivery/replay and persistence. No production write or deployment |
-| Web | 452 web/shared-native-support tests, build/typecheck/lint and `scripts/test-message-pins.mjs`: hover-menu optimistic unpin before server echo, outside/Escape dismissal, pinner profile by account ID, nested-menu layering, failed-jump retry, old context with 30 rows either side, centered highlight, Back to newest message, sends from channel/thread context, narrow layout and pinned thread navigation. Desktop/narrow screenshots inspected. Browser fixture only, not Safari or a physical phone |
-| Rust desktop | Linux build, Clippy, 280 tests passed (9 ignored), including pending-unpin projection, resize/clip bounds and fixture pin counts. Inspected labeled static `parity-pins`, `parity-pins-empty`, and `parity-pins-long` renders: populated/empty cards, hover actions, long/multiple-pin scrolling, and a 390px window. Actual Linux menu/outside/Escape dismissal exercised; not live account acceptance. Windows build/runtime and production cross-client checks remain release validation |
+| Web | 454 web/shared-native-support tests, build/typecheck/lint and `scripts/test-message-pins.mjs`: hover-menu optimistic unpin before server echo, outside/Escape dismissal, pinner profile by account ID, nested-menu layering, failed-jump retry, old context with 30 rows either side, centered highlight, Back to newest message, sends from channel/thread context, narrow layout and pinned thread navigation. `scripts/test-chat-history.mjs` checks retained viewport/scrollbar and 30 painted return frames per Pins round trip, including incoming messages and narrow layouts. Desktop/narrow screenshots inspected. Browser fixture only, not Safari or a physical phone |
+| Rust desktop | Linux build, Clippy, 281 tests passed (9 ignored), including retained Pins viewport/paging anchors, pending-unpin projection, resize/clip bounds and fixture pin counts. Inspected labeled static `parity-pins`, `parity-pins-empty`, and `parity-pins-long` renders: populated/empty cards, hover actions, long/multiple-pin scrolling, and a 390px window. Actual Linux menu/outside/Escape dismissal exercised; not live account acceptance. Windows build/runtime and production cross-client checks remain release validation |
 | Android | Context/paging models, API, request fencing, Compose dialog/actions/navigation implemented. JDK present; `compileDebugKotlin` blocked by missing Android SDK. Compilation, rendered states and physical-device checks require CI/a native runner |
 | Apple | Models, gateway, SwiftUI actions/list and protocol regressions implemented. Swift/Xcode unavailable in this Linux orb; macOS/iOS builds, rendered states and devices require CI/a native runner |
 | Containers/live | Docker has no running daemon. Validate web/API build stages directly; no container-image, live account/SFU or physical-device acceptance is inferred from fixtures |
@@ -1506,6 +1539,12 @@ checkbox choice are per-root for the current channel session; retry commands
 freeze the root and broadcast choice. Ordinary sends cannot retry a pending reply
 into the channel. Replies use the existing participation and read permissions;
 thread reads do not expose another channel's messages.
+
+Normal in-flight sends show no cross-composer warning. A delivery problem stays
+with its reply in the thread; the channel offers **Review reply** only when that
+thread is closed or another thread is open. Sending still allows one outstanding
+command per channel, and retries keep the original ID, text, root and broadcast
+choice so an uncertain outcome cannot become a duplicate or a channel message.
 
 `POST /api/chat/channels/{channel}/messages` adds optional `threadRootId` and
 default-false `broadcast`. The root must be a same-channel, top-level message.
@@ -4995,3 +5034,21 @@ controls do not register a pointing-hand region.
 | Android | Projection/rollback coverage added. Gradle unit-test invocation blocked by missing Android SDK; no Android build or device test in this orb. |
 | iOS/macOS | Projection/rollback coverage added. No Swift/Xcode build, device run or AppKit cursor runtime check in this Linux orb; native build and enabled/disabled hover acceptance remain required. |
 | Containers/services | Web build stage passes directly; Docker daemon unavailable. No API/gateway change, infrastructure/configuration change, migration, deployment or live SFU validation. Clients can release independently. |
+
+### Returning from Pins (October 8, 2026)
+
+Web keeps the virtualized conversation mounted and measurable behind Pins, but
+invisible and inert to pointer, keyboard and accessibility navigation. Returning
+reveals the existing viewport without repeating initial measurement or showing
+an empty history. Live arrivals follow the bottom only for readers already there;
+readers in older history retain their position. Android retains its channel's
+lazy-list state across the Pins branch. Rust desktop uses a separate Pins scroll
+area without changing conversation offsets or pagination anchors. Apple already
+presents Pins as a sheet over the mounted conversation and is unchanged.
+
+| Platform | Validation boundary |
+| --- | --- |
+| Web | Build/typecheck/lint/format and 449 web/shared-native-support tests pass. Disposable Chromium regressions sample every return frame for desktop/narrow, latest/older history, live arrivals, short/empty conversations and an open thread with a draft. The timeline is invisible and unfocusable behind Pins; screenshots inspected. Narrow viewport checks are not physical-device or Safari acceptance. |
+| Rust desktop | 276 tests pass, 9 existing tests ignored, including rendered scroll-anchor/paging preservation across empty Pins. No macOS/Windows or physical-device acceptance. |
+| Android | Scroll state is hoisted above Pins navigation. Gradle compile attempt is blocked by the missing Android SDK; no native build or device verification. |
+| Deployment | Web, Android and Rust desktop can release independently. No API/gateway, infrastructure, secret/configuration, database or Apple release is required. Docker daemon unavailable; web build stages validated directly. No deployment performed. |

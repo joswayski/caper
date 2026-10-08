@@ -29,6 +29,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -1084,7 +1085,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 Text("Also send to #${state.selectedChannel?.name}", Modifier.weight(1f), fontSize = 12.sp)
                 TextButton(::send, enabled = !thread.loading && state.chatAuthorId != null && state.pendingMessage == null && draft.isNotBlank()) { Text("Send reply") }
             }
-            if (state.pendingMessage != null && pending == null) Text("Confirm or dismiss the pending channel message first.", color = TextMuted)
+            if (state.pendingMessage?.error != null && pending == null) Text("Confirm or dismiss the pending message first.", color = TextMuted)
         } else Text(if (state.selectedDirect?.incoming == true) "Accept the request to reply." else "Join the channel to reply.", Modifier.padding(18.dp), color = TextMuted)
     }
 }
@@ -1099,6 +1100,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     var draft by rememberSaveable(channel.id, stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("")) }
     var channelMenuOpen by remember(channel.id) { mutableStateOf(false) }
     var showingPins by remember(channel.id) { mutableStateOf(false) }
+    // Switching to Pins must not discard the channel's measured scroll position.
+    val timelineState = key(channel.id) { rememberLazyListState() }
     val joined = channel.joined
     // A 1:1 DM (not your notes) offers Block / Unblock; a request does so in its own bar.
     val direct = state.selectedDirect?.takeIf { channel.direct && it.peer.id != state.account?.id && !it.incoming }
@@ -1173,7 +1176,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 }
             }
         }
-        MessageTimeline(state, viewModel, Modifier.weight(1f).browseSwipe(open = false, enabled = narrow && !membersVisible && !channelMenuOpen, onOpenChange = { openNavigation() })) {
+        MessageTimeline(state, viewModel, Modifier.weight(1f).browseSwipe(open = false, enabled = narrow && !membersVisible && !channelMenuOpen, onOpenChange = { openNavigation() }), listState = timelineState) {
             channelPending?.error?.let { pending ->
                 val editable = canEditRejectedMessage(draft.text, channelPending.text)
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1200,7 +1203,14 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         else if (joined && direct?.blocked == true) BlockedDirectNotice(direct, viewModel)
         else if (joined) Column(Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
             if (direct?.outgoing == true) OutgoingRequestNotice(direct)
-            state.pendingMessage?.threadRootId?.let { root -> TextButton({ viewModel.openThread(root) }) { Text("Pending reply · Open thread") } }
+            state.pendingMessage?.takeIf { it.error != null && it.threadRootId != state.thread?.rootId }?.let { pending ->
+                pending.threadRootId?.let { root ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(if (pending.rejected) "A thread reply wasn’t sent." else "A thread reply couldn’t be confirmed.", Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
+                        TextButton({ viewModel.openThread(root) }) { Text("Review reply") }
+                    }
+                }
+            }
             state.sessionError?.let { error ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(error, Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
@@ -1357,7 +1367,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     }
 }
 
-@Composable private fun MessageTimeline(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, inThread: Boolean = false, pendingStatus: @Composable () -> Unit = {}) {
+@Composable private fun MessageTimeline(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, inThread: Boolean = false, listState: LazyListState = rememberLazyListState(), pendingStatus: @Composable () -> Unit = {}) {
     var actionTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var pickerTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var forwardTarget by remember { mutableStateOf<ChatMessage?>(null) }
@@ -1375,7 +1385,6 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     val selfId = state.chatAuthorId ?: state.account?.id
     val blocked = state.blockedIds
     val rows = remember(messages, blocked, selfId, revealedRuns) { timelineRows(groupBlocked(messages, blocked, selfId, revealedRuns)) }
-    val listState = rememberLazyListState()
     LaunchedEffect(state.focusRevision, state.selectedChannel?.id) {
         val target = state.focusedMessageId ?: return@LaunchedEffect
         val run = rows.filterIsInstance<TimelineRow.Blocked>().firstOrNull { it.run.messages.any { message -> message.id == target } }

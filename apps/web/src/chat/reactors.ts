@@ -45,6 +45,18 @@ export function reactorName(author: Pick<ReactionAuthor, "displayName" | "userna
   return author.displayName || author.username || "Someone";
 }
 
+/** Reuse names, not membership: the displayed snapshot (including local intent) owns who reacted. */
+export function reactionPeople(reaction: ChatReaction, selfId: string | undefined, list?: ReactionList) {
+  const group = list?.reactions.find((item) => item.emoji === reaction.emoji);
+  const known = new Map(list?.reactions.flatMap((item) => item.authors.map((author) => [author.id, author] as const)));
+  const ids = [
+    ...(group?.authors.map((author) => author.id).filter((id) => reaction.authorIds.includes(id)) ?? []),
+    ...reaction.authorIds.filter((id) => !group?.authors.some((author) => author.id === id)),
+  ];
+  if (ids.some((id) => id !== selfId && !known.has(id))) return undefined;
+  return ids.map((id) => ({ id, name: id === selfId ? "You" : reactorName(known.get(id)!) }));
+}
+
 /** The emoji's catalog name as `:name:`, or the glyph when it has none. */
 export function emojiLabel(emoji: string, name?: string) {
   return name ? `:${name}:` : emoji;

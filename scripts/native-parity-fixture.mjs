@@ -211,6 +211,8 @@ function socketFrame(value, opcode = 1) {
 export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
   let state = initialState();
   const sockets = new Set();
+  let holdSends = false;
+  const heldSends = new Set();
   const identity = (request) =>
     request.headers.authorization === "Bearer fixture-owner-token" ||
     /(?:^|;\s*)caper_fixture=owner(?:;|$)/.test(request.headers.cookie ?? "")
@@ -437,6 +439,10 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         return json(response, 200, { devices: state.pushDevices, requests: state.pushRequests });
       if (path === "/__fixture/control" && method === "POST") {
         if (body.reset) state = initialState();
+        if (body.reset || typeof body.holdSends === "boolean") {
+          holdSends = !body.reset && body.holdSends;
+          if (!holdSends) for (const release of heldSends) release();
+        }
         if (body.pushPlatforms !== undefined) {
           if (
             !Array.isArray(body.pushPlatforms) ||
@@ -583,7 +589,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
               }
           }
         }
-        return json(response, 200, { fixture: true });
+        return json(response, 200, { fixture: true, heldSends: heldSends.size });
       }
       const failureIndex = state.failures.findIndex(
         (failure) => failure.path === path && (!failure.method || failure.method === method),
@@ -1085,6 +1091,19 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         if (channel.id !== ids.demo && !user) return reject(response, 401, "Sign in required.");
         if (!canRead(channel, user) || (method === "POST" && !canParticipate(channel, user)))
           return reject(response, 404, "resource not found");
+        // Pause before persistence and gateway fanout, not just the HTTP ack.
+        if (method === "POST" && holdSends) {
+          await new Promise((resolve) => {
+            const release = () => {
+              heldSends.delete(release);
+              response.off("close", release);
+              resolve();
+            };
+            heldSends.add(release);
+            response.once("close", release);
+          });
+          if (response.destroyed) return;
+        }
         const messages = state.messages.get(channel.id) ?? [];
         if (method === "POST") {
           const who = state.chatSessions.get(request.headers["x-caper-chat-token"]);
@@ -1552,6 +1571,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
     gatewayPort: servers.at(-1).address().port,
     async close() {
       for (const client of sockets) client.socket.destroy();
+      for (const release of heldSends) release();
       await Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))));
     },
   };
