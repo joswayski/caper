@@ -1,5 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
+  ArrowLeft,
   Ban,
   BellOff,
   ChevronDown,
@@ -80,17 +81,27 @@ import {
   type SpaceDetail,
   type SpaceLimits,
 } from "./client";
+import { friendlyError as errorMessage } from "./errors";
 import "./spaces.css";
 
-function errorMessage(error: unknown) {
-  if (error instanceof SpacesApiError) {
-    if (error.message === "user not found") return "User not found. Check the username and try again.";
-    if (error.message === "user already in space") return "This person is already in the space.";
-    if (error.message === "user already in channel") return "This person already has access to this channel.";
-    if (error.message === "user already invited") return "This person already has a pending invitation.";
-    if (error.message === "invalid username") return "Use 3–32 lowercase letters, numbers, or underscores.";
-  }
-  return error instanceof Error ? error.message : "That request did not work.";
+/** Closes a menu with focus on its button, so a dialog opened from it restores focus there, not to <body>. */
+function closeMenu(menu: HTMLDetailsElement | null) {
+  if (!menu) return;
+  menu.open = false;
+  menu.querySelector("summary")?.focus();
+}
+
+/** Row menus open upward when the scrolling sidebar has no room below them. */
+function placeMenu(menu: HTMLDetailsElement) {
+  delete menu.dataset.placement;
+  const panel = menu.querySelector<HTMLElement>(".space-actions");
+  const scroller = menu.closest<HTMLElement>(".channel-navigation");
+  if (!menu.open || !panel || !scroller) return;
+  const area = scroller.getBoundingClientRect();
+  const row = menu.getBoundingClientRect();
+  const below = Math.min(area.bottom, window.innerHeight) - row.bottom;
+  const above = row.top - Math.max(area.top, 0);
+  if (panel.offsetHeight + 8 > below && above > below) menu.dataset.placement = "above";
 }
 
 function selectedFromUrl() {
@@ -266,6 +277,8 @@ function NameField({
   label,
   value,
   onChange,
+  onEdit,
+  focus,
   channel = false,
   privateChannel = false,
   showIcon = false,
@@ -273,6 +286,10 @@ function NameField({
   label: string;
   value: string;
   onChange: (value: string) => void;
+  /** Typing only; blur normalization also calls `onChange`. */
+  onEdit?: () => void;
+  /** `auto` focuses on mount (inline forms); Dialog focuses `initial` after showModal(). */
+  focus?: "auto" | "initial";
   channel?: boolean;
   privateChannel?: boolean;
   showIcon?: boolean;
@@ -283,7 +300,8 @@ function NameField({
       <span className={showIcon ? "channel-name-input" : undefined}>
         {showIcon && (privateChannel ? <LockKeyhole aria-hidden="true" /> : <Hash aria-hidden="true" />)}
         <input
-          autoFocus
+          autoFocus={focus === "auto"}
+          data-initial-focus={focus === "initial" ? "" : undefined}
           value={value}
           maxLength={80}
           autoComplete="off"
@@ -291,6 +309,7 @@ function NameField({
           placeholder={channel ? "project-updates" : "Studio"}
           onChange={(event) => {
             const input = event.currentTarget;
+            onEdit?.();
             if (!channel) return onChange(input.value);
             const caret = normalizeChannelName(input.value.slice(0, input.selectionStart ?? input.value.length)).length;
             onChange(normalizeChannelName(input.value));
@@ -346,21 +365,24 @@ function ChannelPrivacy({
 function SubmitRow({
   pending,
   label,
+  pendingLabel = "Saving…",
   onCancel,
-  destructive = false,
+  disabled = false,
 }: {
   pending: boolean;
   label: string;
+  pendingLabel?: string;
   onCancel: () => void;
-  destructive?: boolean;
+  /** The form can't be submitted yet, e.g. its required field is empty. */
+  disabled?: boolean;
 }) {
   return (
     <div className="space-dialog-actions">
-      <button type="button" className="secondary" onClick={onCancel}>
+      <button type="button" className="secondary" disabled={pending} onClick={onCancel}>
         Cancel
       </button>
-      <button type="submit" className={destructive ? "danger" : "primary"} disabled={pending}>
-        {pending ? "Saving…" : label}
+      <button type="submit" className="primary" disabled={pending || disabled}>
+        {pending ? pendingLabel : label}
       </button>
     </div>
   );
@@ -394,7 +416,13 @@ function CreateSpaceForm({
   };
   const form = (
     <form onSubmit={(event) => void submit(event)}>
-      <NameField label="Space name" value={name} onChange={setName} />
+      <NameField
+        label="Space name"
+        value={name}
+        onChange={setName}
+        onEdit={() => setError(undefined)}
+        focus={onCancel ? "initial" : "auto"}
+      />
       {error && (
         <p className="space-form-error" role="alert">
           {error}
@@ -413,7 +441,13 @@ function CreateSpaceForm({
     </form>
   );
   return onCancel ? (
-    <Dialog title="Create a space" dismissOnBackdrop={!pending} onClose={onCancel}>
+    <Dialog
+      title="Create a space"
+      dismissOnBackdrop={!pending}
+      onClose={() => {
+        if (!pending) onCancel();
+      }}
+    >
       {form}
     </Dialog>
   ) : (
@@ -440,6 +474,7 @@ function CreateChannelDialog({
   const [pending, setPending] = useState(false);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
+    if (pending) return;
     const channelName = name.replace(/-$/, "");
     const invalid = channelNameError(channelName);
     if (invalid) return setError(invalid);
@@ -453,15 +488,23 @@ function CreateChannelDialog({
     }
   };
   return (
-    <Dialog title="Create a channel" dismissOnBackdrop={!pending} onClose={onClose}>
+    <Dialog
+      title="Create a channel"
+      dismissOnBackdrop={!pending}
+      onClose={() => {
+        if (!pending) onClose();
+      }}
+    >
       <form onSubmit={(event) => void submit(event)}>
         <NameField
           channel
           showIcon
+          focus="initial"
           privateChannel={privateChannel}
           label="Channel name"
           value={name}
           onChange={setName}
+          onEdit={() => setError(undefined)}
         />
         <p className="channel-name-guidance">
           Channels are where conversations happen around a topic. Use a name that is easy to find and understand.
@@ -472,7 +515,13 @@ function CreateChannelDialog({
             {error}
           </p>
         )}
-        <SubmitRow pending={pending} label="Create channel" onCancel={onClose} />
+        <SubmitRow
+          pending={pending}
+          label="Create channel"
+          pendingLabel="Creating…"
+          disabled={!name.replace(/-$/, "")}
+          onCancel={onClose}
+        />
       </form>
     </Dialog>
   );
@@ -491,32 +540,47 @@ function LeaveSpaceDialog({
 }) {
   const [error, setError] = useState<string>();
   const [pending, setPending] = useState(false);
+  const submitting = useRef(false);
   return (
     <Dialog
       title={`Leave ${space.name}?`}
-      description="You will lose access to its channels and conversations. An owner can add you again later."
-      onClose={onClose}
+      onClose={() => {
+        if (!submitting.current) onClose();
+      }}
     >
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          setPending(true);
-          setError(undefined);
-          void removeSpaceMember(space.id, account.id)
-            .then(onLeft)
-            .catch((reason) => {
-              setError(errorMessage(reason));
-              setPending(false);
-            });
-        }}
-      >
+      <div className="delete-confirmation">
+        <p>You will lose access to its channels and conversations. An owner can add you again later.</p>
         {error && (
           <p className="space-form-error" role="alert">
             {error}
           </p>
         )}
-        <SubmitRow pending={pending} label="Leave space" destructive onCancel={onClose} />
-      </form>
+        <div className="space-dialog-actions">
+          <button type="button" className="secondary" data-initial-focus disabled={pending} onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="danger"
+            disabled={pending}
+            onClick={() => {
+              if (submitting.current) return;
+              submitting.current = true;
+              setPending(true);
+              setError(undefined);
+              void removeSpaceMember(space.id, account.id)
+                .then(onLeft)
+                .catch((reason) => {
+                  setError(errorMessage(reason));
+                  submitting.current = false;
+                  setPending(false);
+                });
+            }}
+          >
+            {pending ? "Leaving…" : "Leave space"}
+          </button>
+        </div>
+      </div>
     </Dialog>
   );
 }
@@ -524,6 +588,7 @@ function LeaveSpaceDialog({
 function MemberManager({
   members,
   invitations,
+  invitationsLoaded = true,
   onCancel,
   onAdd,
   onRemove,
@@ -531,6 +596,7 @@ function MemberManager({
 }: {
   members: Member[];
   invitations?: Member[];
+  invitationsLoaded?: boolean;
   onCancel?: (member: Member) => Promise<void>;
   onAdd: (username: string) => Promise<void>;
   onRemove: (member: Member) => Promise<void>;
@@ -540,6 +606,15 @@ function MemberManager({
   const [error, setError] = useState<string>();
   const [success, setSuccess] = useState<string>();
   const submitting = useRef(false);
+  const input = useRef<HTMLInputElement>(null);
+  // The input is disabled while a request runs, so it loses focus. Return focus
+  // once it is enabled again so several people can be invited in a row.
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (pending || !refocus.current) return;
+    refocus.current = false;
+    input.current?.focus();
+  });
   return (
     <section className="member-manager">
       <div className="dialog-section-heading">
@@ -548,13 +623,14 @@ function MemberManager({
       </div>
       <form
         className="member-add"
+        noValidate
         onSubmit={(event) => {
           event.preventDefault();
           if (submitting.current || pending) return;
           const invalid = usernameError(username);
           if (invalid) return setError(invalid);
           if (invitations && members.some((member) => member.username === username))
-            return setError("This person is already in the space.");
+            return setError("This person is already a member.");
           if (invitations?.some((member) => member.username === username))
             return setError("This person already has a pending invitation.");
           submitting.current = true;
@@ -562,10 +638,14 @@ function MemberManager({
           setSuccess(undefined);
           void onAdd(username)
             .then(() => {
+              refocus.current = true;
               setUsername("");
               setSuccess(invitations ? "Invitation sent. They must accept before joining." : "Access granted.");
             })
-            .catch((reason) => setError(errorMessage(reason)))
+            .catch((reason) => {
+              refocus.current = true;
+              setError(errorMessage(reason));
+            })
             .finally(() => {
               submitting.current = false;
             });
@@ -575,6 +655,7 @@ function MemberManager({
           Exact username
         </label>
         <input
+          ref={input}
           id="member-username"
           value={username}
           autoComplete="off"
@@ -640,28 +721,32 @@ function MemberManager({
         <>
           <div className="dialog-section-heading">
             <h3>Pending invitations</h3>
-            <span>{invitations.length}</span>
+            {invitations.length > 0 && <span>{invitations.length}</span>}
           </div>
-          <ul>
-            {invitations.map((member) => (
-              <li key={member.id}>
-                <span className="member-avatar" aria-hidden="true">
-                  {member.displayName.slice(0, 1).toUpperCase()}
-                </span>
-                <span>
-                  <strong>{member.displayName}</strong>
-                  <small>@{member.username} · Invited</small>
-                </span>
-                <button
-                  type="button"
-                  disabled={pending}
-                  onClick={() => void onCancel?.(member).catch((reason) => setError(errorMessage(reason)))}
-                >
-                  Cancel invite
-                </button>
-              </li>
-            ))}
-          </ul>
+          {!invitations.length ? (
+            invitationsLoaded && <p className="member-manager-empty">No pending invitations.</p>
+          ) : (
+            <ul>
+              {invitations.map((member) => (
+                <li key={member.id}>
+                  <span className="member-avatar" aria-hidden="true">
+                    <Avatar avatarId={member.avatarId} name={member.displayName} />
+                  </span>
+                  <span>
+                    <strong>{member.displayName}</strong>
+                    <small>@{member.username} · Invited</small>
+                  </span>
+                  <button
+                    type="button"
+                    disabled={pending}
+                    onClick={() => void onCancel?.(member).catch((reason) => setError(errorMessage(reason)))}
+                  >
+                    Cancel invite
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
         </>
       )}
     </section>
@@ -682,6 +767,7 @@ function ManageSpaceDialog({
   const [name, setName] = useState(detail.space.name);
   const [members, setMembers] = useState(detail.members);
   const [invitations, setInvitations] = useState<Member[]>([]);
+  const [invitationsLoaded, setInvitationsLoaded] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string>();
   const [pending, setPending] = useState(false);
@@ -689,7 +775,9 @@ function ManageSpaceDialog({
     let current = true;
     void listSpaceInvitations(detail.space.id)
       .then((result) => {
-        if (current) setInvitations(result.members);
+        if (!current) return;
+        setInvitations(result.members);
+        setInvitationsLoaded(true);
       })
       .catch((reason) => {
         if (current) setError(errorMessage(reason));
@@ -728,7 +816,7 @@ function ManageSpaceDialog({
         }}
       >
         <fieldset disabled={pending}>
-          <NameField label="Space name" value={name} onChange={setName} />
+          <NameField label="Space name" value={name} onChange={setName} onEdit={() => setError(undefined)} />
           <div className="inline-save">
             <button className="secondary" disabled={pending || name.trim() === detail.space.name} type="submit">
               Save name
@@ -744,6 +832,7 @@ function ManageSpaceDialog({
       <MemberManager
         members={members}
         invitations={invitations}
+        invitationsLoaded={invitationsLoaded}
         pending={pending}
         onAdd={(username) =>
           run(async () => {
@@ -805,6 +894,7 @@ function ManageChannelDialog({
   const [privateChannel, setPrivateChannel] = useState(channel.private);
   const [members, setMembers] = useState<Member[]>([]);
   const [invitations, setInvitations] = useState<Member[]>([]);
+  const [membersLoaded, setMembersLoaded] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string>();
   const [pending, setPending] = useState(false);
@@ -824,6 +914,7 @@ function ManageChannelDialog({
         .then((value) => {
           setMembers(value.members);
           setInvitations(value.invitations ?? []);
+          setMembersLoaded(true);
         })
         .catch((reason) => setError(errorMessage(reason)));
   }, [channel.id, channel.private, detail.space.id]);
@@ -845,7 +936,7 @@ function ManageChannelDialog({
         }}
       >
         <fieldset disabled={pending}>
-          <NameField channel label="Channel name" value={name} onChange={setName} />
+          <NameField channel label="Channel name" value={name} onChange={setName} onEdit={() => setError(undefined)} />
           <ChannelPrivacy spaceName={detail.space.name} checked={privateChannel} onChange={setPrivateChannel} />
         </fieldset>
       </form>
@@ -858,6 +949,7 @@ function ManageChannelDialog({
         <MemberManager
           members={members}
           invitations={invitations}
+          invitationsLoaded={membersLoaded}
           pending={pending}
           onAdd={async (username) =>
             run(async () => {
@@ -935,8 +1027,10 @@ function StartDirectDialog({
     <Dialog
       title="New direct message"
       description="Enter an exact username. Conversations stay private across all your spaces."
-      dismissOnBackdrop
-      onClose={onClose}
+      dismissOnBackdrop={!pending}
+      onClose={() => {
+        if (!pending) onClose();
+      }}
     >
       <form
         onSubmit={(event) => {
@@ -955,12 +1049,15 @@ function StartDirectDialog({
         <label className="space-field">
           Username
           <input
-            autoFocus
+            data-initial-focus
             autoComplete="off"
             value={username}
             maxLength={33}
             placeholder="@username"
-            onChange={(event) => setUsername(event.target.value)}
+            onChange={(event) => {
+              setUsername(event.target.value);
+              setError(undefined);
+            }}
           />
         </label>
         {error && (
@@ -968,7 +1065,13 @@ function StartDirectDialog({
             {error}
           </p>
         )}
-        <SubmitRow pending={pending} label="Open conversation" onCancel={onClose} />
+        <SubmitRow
+          pending={pending}
+          label="Open conversation"
+          pendingLabel="Opening…"
+          disabled={!username.trim()}
+          onCancel={onClose}
+        />
       </form>
     </Dialog>
   );
@@ -1134,13 +1237,13 @@ function InvitationDialog({
   onAccepted: (space: Space) => void;
   onDeclined: () => void;
 }) {
-  const [pending, setPending] = useState(false);
+  const [pending, setPending] = useState<"accept" | "decline">();
   const [error, setError] = useState<string>();
   const submitting = useRef(false);
   const respond = async (accept: boolean) => {
     if (submitting.current) return;
     submitting.current = true;
-    setPending(true);
+    setPending(accept ? "accept" : "decline");
     setError(undefined);
     try {
       if (accept) onAccepted(await acceptSpaceInvitation(space.id));
@@ -1154,7 +1257,7 @@ function InvitationDialog({
       } else setError(errorMessage(reason));
     } finally {
       submitting.current = false;
-      setPending(false);
+      setPending(undefined);
     }
   };
   return (
@@ -1182,13 +1285,13 @@ function InvitationDialog({
             className="secondary"
             type="button"
             data-initial-focus
-            disabled={pending}
+            disabled={!!pending}
             onClick={() => void respond(false)}
           >
-            Decline
+            {pending === "decline" ? "Declining…" : "Decline"}
           </button>
-          <button className="primary" type="button" disabled={pending} onClick={() => void respond(true)}>
-            {pending ? "Saving…" : "Accept invitation"}
+          <button className="primary" type="button" disabled={!!pending} onClick={() => void respond(true)}>
+            {pending === "accept" ? "Accepting…" : "Accept invitation"}
           </button>
         </div>
       </div>
@@ -1208,13 +1311,16 @@ function BrowseChannelsDialog({
   onManage?: (channel: Channel) => void;
 }) {
   const [query, setQuery] = useState("");
-  const channels = detail.channels.filter((item) => item.name.includes(query.trim().toLowerCase()));
+  // People often type the name as it is shown, with its `#`.
+  const search = query.trim().replace(/^#+/, "").trim().toLowerCase();
+  const channels = detail.channels.filter((item) => item.name.includes(search));
   return (
     <Dialog
       title="Browse channels"
       description={`Find conversations in ${detail.space.name}. Previewing a channel doesn’t join it.`}
       onClose={onClose}
       width="wide"
+      dismissOnBackdrop
     >
       <div className="channel-directory">
         <label className="space-field">
@@ -1249,7 +1355,9 @@ function BrowseChannelsDialog({
             </li>
           ))}
         </ul>
-        {!channels.length && <p role="status">No channels match your search.</p>}
+        {!channels.length && (
+          <p role="status">{search ? "No channels match your search." : "This space has no channels yet."}</p>
+        )}
       </div>
     </Dialog>
   );
@@ -1266,13 +1374,13 @@ function ChannelInvitationDialog({
   onClose: () => void;
   onRespond: (accept: boolean) => Promise<void>;
 }) {
-  const [pending, setPending] = useState(false);
+  const [pending, setPending] = useState<"accept" | "decline">();
   const [error, setError] = useState<string>();
   const submitting = useRef(false);
   const respond = async (accept: boolean) => {
     if (submitting.current) return;
     submitting.current = true;
-    setPending(true);
+    setPending(accept ? "accept" : "decline");
     setError(undefined);
     try {
       await onRespond(accept);
@@ -1280,7 +1388,7 @@ function ChannelInvitationDialog({
       setError(errorMessage(reason));
     } finally {
       submitting.current = false;
-      setPending(false);
+      setPending(undefined);
     }
   };
   return (
@@ -1311,13 +1419,13 @@ function ChannelInvitationDialog({
             type="button"
             className="secondary"
             data-initial-focus
-            disabled={pending}
+            disabled={!!pending}
             onClick={() => void respond(false)}
           >
-            Decline
+            {pending === "decline" ? "Declining…" : "Decline"}
           </button>
-          <button type="button" className="primary" disabled={pending} onClick={() => void respond(true)}>
-            {pending ? "Saving…" : "Accept invitation"}
+          <button type="button" className="primary" disabled={!!pending} onClick={() => void respond(true)}>
+            {pending === "accept" ? "Accepting…" : "Accept invitation"}
           </button>
         </div>
       </div>
@@ -1411,7 +1519,8 @@ export default function Spaces({
   const [directs, setDirects] = useState<DirectConversation[]>([]);
   const [directError, setDirectError] = useState<string>();
   const [selfDirectPending, setSelfDirectPending] = useState(false);
-  const [requestsOpen, setRequestsOpen] = useState(false);
+  // Undefined follows the view: open while a request is shown. A click overrides it.
+  const [requestsOpen, setRequestsOpen] = useState<boolean>();
   const [blockTarget, setBlockTarget] = useState<BlockedAccount>();
   const blockedIds = useBlockedIds();
   const notifications = useNotificationSettings();
@@ -1901,7 +2010,7 @@ export default function Spaces({
 
   const incomingRequests = directs.filter((conversation) => directStatus(conversation) === "incoming");
   const requestsShown =
-    requestsOpen || incomingRequests.some((conversation) => conversation.id === directView?.conversation.id);
+    requestsOpen ?? incomingRequests.some((conversation) => conversation.id === directView?.conversation.id);
   const leaveRequest = (request: DirectConversation) => {
     const next = incomingRequests.find((conversation) => conversation.id !== request.id);
     if (directView?.conversation.id === request.id) {
@@ -2029,6 +2138,7 @@ export default function Spaces({
                   </button>
                   <details
                     className="channel-menu direct-menu"
+                    onToggle={(event) => placeMenu(event.currentTarget)}
                     onKeyDown={(event) => {
                       if (event.key === "Escape") {
                         event.currentTarget.open = false;
@@ -2322,15 +2432,16 @@ export default function Spaces({
           Opening {spaces.find((space) => space.id === selected.spaceId)?.name}…
         </span>
       )}
-      {notice && (
-        <p className="space-access-notice" role="status">
-          {notice}
-          <button type="button" aria-label="Dismiss notice" onClick={() => setNotice(undefined)}>
-            <X aria-hidden="true" />
-          </button>
-        </p>
-      )}
     </nav>
+  );
+  // Outside the rail: phones hide the rail, and its tile styles must not apply.
+  const accessNotice = notice && (
+    <p className="space-access-notice" role="status">
+      {notice}
+      <button type="button" aria-label="Dismiss notice" onClick={() => setNotice(undefined)}>
+        <X aria-hidden="true" />
+      </button>
+    </p>
   );
   const channelNavigation = (voiceFor: (channelId: string) => VoiceSlot | null) => (
     <nav
@@ -2369,7 +2480,7 @@ export default function Spaces({
                 <button
                   type="button"
                   onClick={() => {
-                    spaceMenu.current!.open = false;
+                    closeMenu(spaceMenu.current);
                     setBrowseOpen(true);
                   }}
                 >
@@ -2392,7 +2503,7 @@ export default function Spaces({
                     <button
                       type="button"
                       onClick={() => {
-                        spaceMenu.current!.open = false;
+                        closeMenu(spaceMenu.current);
                         setDialog("manage-space");
                       }}
                     >
@@ -2405,7 +2516,7 @@ export default function Spaces({
                     type="button"
                     className="leave-space"
                     onClick={() => {
-                      spaceMenu.current!.open = false;
+                      closeMenu(spaceMenu.current);
                       setDialog("leave-space");
                     }}
                   >
@@ -2470,7 +2581,7 @@ export default function Spaces({
                     type="button"
                     disabled={!canCreateChannel}
                     onClick={() => {
-                      channelMenu.current!.open = false;
+                      closeMenu(channelMenu.current);
                       setDialog("channel");
                     }}
                   >
@@ -2480,7 +2591,7 @@ export default function Spaces({
                   <button
                     type="button"
                     onClick={() => {
-                      channelMenu.current!.open = false;
+                      closeMenu(channelMenu.current);
                       setChannelsExpanded((value) => !value);
                     }}
                   >
@@ -2522,6 +2633,7 @@ export default function Spaces({
                 {!detail.space.demo && (
                   <details
                     className="channel-menu"
+                    onToggle={(event) => placeMenu(event.currentTarget)}
                     onKeyDown={(event) => {
                       if (event.key === "Escape") {
                         event.currentTarget.open = false;
@@ -2643,14 +2755,14 @@ export default function Spaces({
               <button
                 className="navigation-toggle"
                 type="button"
+                aria-label="Back to Browse"
                 aria-expanded={navigationOpen}
                 onClick={() => setNavigationOpen((open) => !open)}
               >
-                <Hash aria-hidden="true" />
-                Browse spaces
+                <ArrowLeft aria-hidden="true" />
               </button>
               <Hash aria-hidden="true" />
-              <h2>{spaces.length ? "No joined channels" : "Start a conversation."}</h2>
+              <h2>{spaces.length ? "No joined channels" : "Start a conversation"}</h2>
               <p>
                 {!spaces.length
                   ? "Create a space for your people, or start a direct message."
@@ -2658,25 +2770,31 @@ export default function Spaces({
                     ? "Browse channels or create one to start a conversation."
                     : "Browse channels to find a conversation, or accept a private channel invitation."}
               </p>
-              <button type="button" onClick={() => setBrowseOpen(true)}>
-                Browse channels
-              </button>
-              {owner && (
-                <button type="button" onClick={() => setDialog("channel")}>
-                  Create channel
+              {/* One primary action; the rest are secondary. */}
+              <div className="empty-channel-actions">
+                {spaces.length > 0 && (
+                  <button type="button" className={owner ? "secondary" : "primary"} onClick={() => setBrowseOpen(true)}>
+                    Browse channels
+                  </button>
+                )}
+                {owner && (
+                  <button type="button" className="primary" onClick={() => setDialog("channel")}>
+                    Create channel
+                  </button>
+                )}
+                {!spaces.length && (
+                  <button type="button" className="primary" onClick={() => setDialog("space")}>
+                    Create your first space
+                  </button>
+                )}
+                <button type="button" className="secondary" onClick={() => setDialog("direct")}>
+                  New direct message
                 </button>
-              )}
-              {!spaces.length && (
-                <button type="button" onClick={() => setDialog("space")}>
-                  Create your first space
-                </button>
-              )}
-              <button type="button" onClick={() => setDialog("direct")}>
-                New direct message
-              </button>
+              </div>
             </div>
           </section>
         </main>
+        {accessNotice}
         {dialog === "space" && (
           <CreateSpaceDialog
             onClose={() => setDialog(undefined)}
@@ -2808,7 +2926,9 @@ export default function Spaces({
           ...directs.map((conversation) => conversation.peer),
         ]}
         onMessagePerson={async (username) => {
-          const conversation = await createDirectConversation(username);
+          const conversation = await createDirectConversation(username).catch((reason: unknown) => {
+            throw new Error(errorMessage(reason));
+          });
           setDirects((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
           openDirect(conversation);
         }}
@@ -2830,6 +2950,7 @@ export default function Spaces({
         navigationOpen={navigationOpen}
         onNavigationToggle={() => setNavigationOpen((open) => !open)}
       />
+      {accessNotice}
       {dialog === "space" && (
         <CreateSpaceDialog
           onClose={() => setDialog(undefined)}

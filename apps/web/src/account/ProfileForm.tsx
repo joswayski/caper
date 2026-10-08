@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { AccountApiError, normalizeUsername, updateProfile, type Account } from "./client";
+import { AccountApiError, normalizeUsername, updateProfile, usernameError, type Account } from "./client";
 
 export default function ProfileForm({
   account,
@@ -15,6 +15,10 @@ export default function ProfileForm({
 
   async function save(event: FormEvent) {
     event.preventDefault();
+    if (pending) return;
+    // The form shows its own errors instead of the browser's validation bubbles.
+    const invalid = usernameError(username) ?? (displayName.trim() ? undefined : "Enter a display name.");
+    if (invalid) return setError(invalid);
     setPending(true);
     setError(undefined);
     try {
@@ -30,7 +34,7 @@ export default function ProfileForm({
   }
 
   return (
-    <form onSubmit={(event) => void save(event)}>
+    <form noValidate onSubmit={(event) => void save(event)}>
       <label className="my-2 mt-6 block text-[.9rem] font-bold" htmlFor="username">
         Username
       </label>
@@ -39,7 +43,10 @@ export default function ProfileForm({
         id="username"
         name="username"
         value={username}
-        onChange={(event) => setUsername(normalizeUsername(event.target.value))}
+        onChange={(event) => {
+          setUsername(normalizeUsername(event.target.value));
+          setError(undefined);
+        }}
         autoComplete="username"
         minLength={3}
         maxLength={32}
@@ -47,7 +54,7 @@ export default function ProfileForm({
         required
       />
       <small className="mt-2.5 block text-[.8rem] leading-[1.5] text-content-muted">
-        3-32 lowercase letters, numbers, or underscores.
+        3–32 lowercase letters, numbers, or underscores.
       </small>
       <label className="my-2 mt-6 block text-[.9rem] font-bold" htmlFor="display-name">
         Display name
@@ -57,7 +64,10 @@ export default function ProfileForm({
         id="display-name"
         name="displayName"
         value={displayName}
-        onChange={(event) => setDisplayName(event.target.value.slice(0, 64))}
+        onChange={(event) => {
+          setDisplayName(event.target.value.slice(0, 64));
+          setError(undefined);
+        }}
         autoComplete="name"
         maxLength={64}
         required
@@ -65,15 +75,8 @@ export default function ProfileForm({
       <small className="mt-2.5 block text-[.8rem] leading-[1.5] text-content-muted">
         Shown to other people. It does not need to be unique.
       </small>
-      <p
-        className={`mt-5 min-h-[74px] rounded-control border border-terracotta px-3.5 py-3 leading-[1.5] ${error ? "" : "invisible"}`}
-        role={error ? "alert" : undefined}
-        aria-hidden={!error}
-      >
-        {error}
-      </p>
       <button
-        className="mt-7 flex w-full cursor-pointer items-center justify-between gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
+        className="mt-7 flex w-full cursor-pointer items-center justify-between gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content transition-colors enabled:hover:border-terracotta-bright enabled:hover:bg-terracotta-bright disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
         type="submit"
         disabled={pending}
       >
@@ -85,6 +88,12 @@ export default function ProfileForm({
           </>
         )}
       </button>
+      {/* Below the button, so an error never moves anything above it. */}
+      {error && (
+        <p className="mt-4 mb-0 rounded-control border border-terracotta px-3.5 py-3 leading-[1.5]" role="alert">
+          {error}
+        </p>
+      )}
     </form>
   );
 }

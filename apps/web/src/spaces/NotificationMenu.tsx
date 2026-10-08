@@ -119,7 +119,8 @@ export function LevelNotificationItems({
         <Bell aria-hidden="true" />
         <span className="notification-item">
           Notifications
-          <small>{name(level)}</small>
+          {/* Until settings load, `level` and `inherited` are guesses. */}
+          <small>{loaded ? name(level) : "Loading…"}</small>
         </span>
         <ChevronRight className="notification-chevron" aria-hidden="true" />
       </button>
