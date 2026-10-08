@@ -5504,7 +5504,7 @@ impl CaperApp {
                                     ui,
                                     egui::vec2(ui.available_width(), 32.0),
                                     &name,
-                                    if private { NavIcon::Lock } else { NavIcon::Hash },
+                                    Some(if private { NavIcon::Lock } else { NavIcon::Hash }),
                                     active,
                                     self.detail
                                         .as_ref()
@@ -5714,10 +5714,19 @@ impl CaperApp {
                         ui,
                         egui::vec2(ui.available_width() - 18.0, 28.0),
                         &direct.peer.display_name,
-                        NavIcon::Speech,
+                        None,
                         active,
                         None,
                         None,
+                    );
+                    paint_avatar(
+                        ui,
+                        egui::Rect::from_center_size(
+                            egui::pos2(response.rect.left() + 17.5, response.rect.center().y),
+                            egui::vec2(20.0, 20.0),
+                        ),
+                        &direct.peer.display_name,
+                        direct.peer.avatar_id,
                     );
                     if unread {
                         ui.label(RichText::new("●").size(9.0).color(TERRACOTTA_BRIGHT));
@@ -5737,7 +5746,7 @@ impl CaperApp {
                 ui,
                 egui::vec2(ui.available_width(), 28.0),
                 action,
-                NavIcon::Plus,
+                Some(NavIcon::Plus),
                 false,
                 None,
                 None,
@@ -5899,11 +5908,11 @@ impl CaperApp {
                 ui,
                 egui::vec2(ui.available_width() - 18.0, 28.0),
                 "Message requests",
-                if open {
+                Some(if open {
                     NavIcon::Chevron
                 } else {
                     NavIcon::ChevronRight
-                },
+                }),
                 false,
                 None,
                 None,
@@ -10989,7 +10998,7 @@ fn channel_button(
     ui: &mut egui::Ui,
     size: egui::Vec2,
     name: &str,
-    icon: NavIcon,
+    icon: Option<NavIcon>,
     active: bool,
     manageable: Option<bool>,
     duration: Option<&str>,
@@ -11023,15 +11032,17 @@ fn channel_button(
         );
     }
     let color = if active { TEXT } else { MUTED };
-    paint_icon(
-        ui.painter(),
-        egui::Rect::from_center_size(
-            egui::pos2(rect.left() + 17.5, rect.center().y),
-            egui::vec2(17.0, 17.0),
-        ),
-        icon,
-        if active { TERRACOTTA_BRIGHT } else { color },
-    );
+    if let Some(icon) = icon {
+        paint_icon(
+            ui.painter(),
+            egui::Rect::from_center_size(
+                egui::pos2(rect.left() + 17.5, rect.center().y),
+                egui::vec2(17.0, 17.0),
+            ),
+            icon,
+            if active { TERRACOTTA_BRIGHT } else { color },
+        );
+    }
     let timer_font = egui::FontId::monospace(11.0);
     let timer_right = rect.right() - if manageable.is_some() { 34.0 } else { 6.0 };
     let timer_width = duration.map_or(0.0, |text| {
@@ -16844,10 +16855,12 @@ mod tests {
             crate::api::Api::new("http://127.0.0.1:9").unwrap(),
             Some("parity-direct"),
         );
+        app.directs[0].peer.avatar_id = Some(31);
         let mut second = app.directs[0].clone();
         second.id = "second-direct".into();
         second.peer.id = "second-peer".into();
         second.peer.display_name = "Second fixture peer".into();
+        second.peer.avatar_id = Some(799);
         second.last_seq = "7".into();
         app.directs.push(second);
         render(&mut app, &context, vec![]);
@@ -16893,12 +16906,15 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert!(
-            images.iter().any(|rect| (rect.width() - 20.0).abs() < 0.01
-                && (rect.height() - 20.0).abs() < 0.01
-                && (rect.center().y as f64 - (self_row.y0 + self_row.y1) / 2.0).abs() < 0.5),
-            "DM artwork stays small and vertically centered in {self_row:?}: {images:?}"
-        );
+        for row in [self_row, peer, second_peer] {
+            assert!(
+                images.iter().any(|rect| (rect.width() - 20.0).abs() < 0.01
+                    && (rect.height() - 20.0).abs() < 0.01
+                    && (rect.center().x as f64 - (row.x0 + 17.5)).abs() < 0.5
+                    && (rect.center().y as f64 - (row.y0 + row.y1) / 2.0).abs() < 0.5),
+                "Each DM uses saved avatar artwork, aligned with self-notes in {row:?}: {images:?}"
+            );
+        }
         let microphone = bounds("Mute microphone");
         assert!(
             images.iter().any(|rect| (rect.width() - 30.0).abs() < 0.01
