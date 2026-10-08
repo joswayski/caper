@@ -127,6 +127,62 @@ pub struct Privacy {
     pub direct_messages: String,
 }
 
+/// An account, space or channel notification level. DMs use only `Nothing`
+/// (notifications off). Unknown future values read as `Mentions`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotificationLevel {
+    All,
+    Mentions,
+    Nothing,
+}
+
+impl NotificationLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Mentions => "mentions",
+            Self::Nothing => "nothing",
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for NotificationLevel {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(deserializer)?.as_str() {
+            "all" => Self::All,
+            "nothing" => Self::Nothing,
+            _ => Self::Mentions,
+        })
+    }
+}
+
+/// `GET/PUT /api/notifications/settings`. Desktop never changes `mobile`.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationSettings {
+    pub level: NotificationLevel,
+    pub mobile: String,
+    #[serde(default)]
+    pub overrides: Vec<NotificationOverride>,
+}
+
+/// A space (`spaceId`), channel (`spaceId` + `channelId`) or DM
+/// (`conversationId`) override. `mutedUntil` is an RFC 3339 time or `forever`.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationOverride {
+    #[serde(default)]
+    pub space_id: Option<String>,
+    #[serde(default)]
+    pub channel_id: Option<String>,
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+    #[serde(default)]
+    pub level: Option<NotificationLevel>,
+    #[serde(default)]
+    pub muted_until: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct DirectConversations {
     pub conversations: Vec<DirectConversation>,

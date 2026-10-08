@@ -392,7 +392,8 @@ async fn serve(socket: WebSocket, state: Gateway, identity: Identity) {
     });
     let mut subscriptions: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
     let mut commands = tokio::task::JoinSet::new();
-    let connection = Uuid::new_v4().to_string();
+    // `{tag}:{uuid}`: notification delivery tells this sign-in session apart.
+    let connection = crate::presence::connection_id(identity.hash.as_deref());
     let mut last_heartbeat = tokio::time::Instant::now();
     let mut timer = tokio::time::interval(Duration::from_secs(10));
     let mut drain = state.drain.subscribe();

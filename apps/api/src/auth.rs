@@ -441,17 +441,22 @@ impl AuthVerifier {
         Ok(Principal { user, token_hash })
     }
 
+    /// Revokes the session and, with it, the push devices it registered.
     pub async fn logout(&self, pool: Option<&PgPool>, token_hash: &[u8]) -> Result<(), ApiError> {
         let pool = pool.ok_or_else(unavailable)?;
+        let mut transaction = pool.begin().await.map_err(database_unavailable)?;
         sqlx::query(
             "UPDATE public.account_sessions SET revoked_at = now()
              WHERE token_hash = $1 AND revoked_at IS NULL",
         )
         .bind(token_hash)
-        .execute(pool)
+        .execute(&mut *transaction)
         .await
         .map_err(database_unavailable)?;
-        Ok(())
+        crate::push::revoke_session(&mut transaction, token_hash)
+            .await
+            .map_err(database_unavailable)?;
+        transaction.commit().await.map_err(database_unavailable)
     }
 }
 

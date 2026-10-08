@@ -520,7 +520,7 @@
   top: calc(100% + 4px);
   left: auto;
   right: 6px;
-  width: 180px;
+  width: 220px;
 }
 @media (max-width: 760px), (hover: none), (pointer: coarse) {
   .channel-select {
@@ -548,6 +548,140 @@
 }
 .channel-manage svg {
   width: 18px;
+}
+/* Notification and mute items in the space, channel and DM menus. */
+.notification-actions {
+  display: grid;
+}
+.space-actions > .notification-actions:not(:first-child) {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid var(--border);
+}
+.space-actions > .notification-actions:not(:last-child) {
+  margin-bottom: 5px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid var(--border);
+}
+.notification-item {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.notification-item small {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.space-actions .notification-chevron {
+  width: 14px;
+  height: 14px;
+  color: var(--text-muted);
+  transition: transform 120ms ease;
+}
+.space-actions [aria-expanded="true"] > .notification-chevron {
+  transform: rotate(90deg);
+}
+.notification-choices {
+  display: grid;
+}
+.space-actions .notification-choices button {
+  padding-block: 8px;
+}
+/* Choices line up with their parent's label; a check marks the current level. */
+.space-actions .notification-choices button:not(:has(svg)) {
+  padding-left: 33px;
+}
+.notification-choices button[aria-pressed="false"] svg {
+  visibility: hidden;
+}
+.notification-choices button[aria-pressed="true"] svg {
+  color: var(--terracotta-bright);
+}
+.notification-note {
+  margin: 0;
+  padding: 4px 8px 6px 33px;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+/* Muted spaces, channels and DMs recede and show a bell-slash. */
+.space-rail-item[data-muted] button > span {
+  opacity: 0.45;
+}
+.space-rail .space-rail-muted {
+  position: absolute;
+  right: -6px;
+  bottom: -6px;
+  width: 18px;
+  height: 18px;
+  padding: 2px;
+  border-radius: 50%;
+  color: var(--text-muted);
+  background: var(--blackout);
+}
+.space-menu .space-muted {
+  display: grid;
+  color: var(--text-muted);
+}
+.space-menu .space-muted svg {
+  width: 15px;
+  height: 15px;
+}
+.channel-navigation li[data-muted] .channel-select {
+  opacity: 0.5;
+}
+.channel-select .muted-icon,
+.channel-select[aria-current="page"] .muted-icon {
+  width: 14px;
+  height: 14px;
+  margin-left: auto;
+  color: var(--text-muted);
+}
+.channel-navigation li:has(> .notification-error) {
+  flex-wrap: wrap;
+}
+.space-sidebar-error.notification-error {
+  flex: 1 1 100%;
+  margin: 2px 9px 6px;
+}
+.space-sidebar-error.notification-error button {
+  display: inline;
+  margin: 0 0 0 6px;
+}
+.direct-line {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  border-radius: 6px;
+}
+.direct-line .direct-select,
+.direct-line .direct-select:hover,
+.direct-line .direct-select[aria-current="page"] {
+  background: transparent;
+}
+.direct-line:has(.direct-select[aria-current="page"]) {
+  background: rgb(182 77 50 / 0.16);
+}
+.direct-line:hover:not(:has(.direct-select[aria-current="page"])) {
+  background: var(--surface-raised);
+}
+.direct-section .direct-line .direct-select {
+  padding-right: 4px;
+}
+/* With a mouse the DM options button appears on hover or focus; touch always shows it. */
+@media (min-width: 761px) and (hover: hover) and (pointer: fine) {
+  .direct-menu .channel-manage {
+    width: 28px;
+    height: 28px;
+  }
+  .direct-line:not(:hover, :focus-within) .direct-menu:not([open]) .channel-manage {
+    opacity: 0;
+  }
 }
 .space-sidebar-error {
   margin: 14px 5px;
@@ -1694,8 +1828,10 @@
   .spaces-room .sidebar-channels {
     padding: 0 14px 18px;
   }
+  /* The navigation scrolls, not its lists, so row menus are never clipped. */
   .spaces-room .people-panel ul {
     max-height: none;
+    overflow: visible;
   }
   /* As in the homepage room on phones, the viewed channel's line (who is in
      its voice, and Join) and the voice panel sit above the conversation, so

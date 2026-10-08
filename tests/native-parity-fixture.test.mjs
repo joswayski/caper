@@ -1,4 +1,4 @@
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { startFixture, fixtureIDs as ids } from "../scripts/native-parity-fixture.mjs";
@@ -928,4 +928,191 @@ test("message requests, blocks and DM privacy follow the API contract", async (t
     { directMessages: "spaces" },
   );
   assert.deepEqual((await request("/api/account/privacy", { auth: true })).value, { directMessages: "spaces" });
+});
+
+test("push config and device registration follow the API contract", async (t) => {
+  const { request } = await setup(t);
+  const apnsToken = "AB".repeat(32);
+  const devices = async () => (await request("/__fixture/push-devices")).value;
+  assert.equal((await request("/api/push/config")).response.status, 401);
+  assert.deepEqual((await request("/api/push/config", { auth: true })).value, { platforms: [] });
+  assert.equal(
+    (await request("/__fixture/control", { method: "POST", body: { pushPlatforms: ["webpush"] } })).response.status,
+    400,
+  );
+  const register = (body, auth = true, method = "POST") =>
+    request("/api/push/devices", { auth, method, body }).then(({ response, value }) => [response.status, value]);
+  assert.deepEqual(await register({ platform: "fcm", token: "fcm-token" }, false), [
+    401,
+    { error: "Sign in required." },
+  ]);
+  assert.deepEqual(await register({ platform: "fcm", token: "fcm-token" }), [
+    400,
+    { error: "push platform unavailable" },
+  ]);
+  await request("/__fixture/control", { method: "POST", body: { pushPlatforms: ["apns", "fcm"] } });
+  assert.deepEqual((await request("/api/push/config", { auth: true })).value, { platforms: ["apns", "fcm"] });
+  assert.deepEqual(await register({ platform: "apnsSandbox", token: apnsToken }), [
+    400,
+    { error: "push platform unavailable" },
+  ]);
+  for (const body of [
+    { platform: "apns", token: "ab".repeat(31) },
+    { platform: "apns", token: "zz".repeat(32) },
+    { platform: "apns", token: "a".repeat(201) },
+    { platform: "fcm", token: "" },
+    { platform: "fcm", token: "has space" },
+    { platform: "fcm", token: "x".repeat(4097) },
+  ])
+    assert.deepEqual(await register(body), [400, { error: "invalid push token" }], JSON.stringify(body));
+  assert.deepEqual(await register({ platform: "fcm", token: "fcm-token", appId: "bad id" }), [
+    400,
+    { error: "invalid app id" },
+  ]);
+  assert.deepEqual(await register({ platform: "apns", token: apnsToken, appId: "chat.caper.ios" }), [204, undefined]);
+  assert.deepEqual((await devices()).devices, [
+    { platform: "apns", token: apnsToken.toLowerCase(), appId: "chat.caper.ios", userId: ids.owner },
+  ]);
+  // The member registering the same address takes it over.
+  assert.deepEqual(await register({ platform: "apns", token: apnsToken }, "fixture-member-token"), [204, undefined]);
+  assert.deepEqual(
+    (await devices()).devices.map(({ userId }) => userId),
+    [ids.member],
+  );
+  // The owner's DELETE only revokes the owner's own registration, and is idempotent.
+  for (let attempt = 0; attempt < 2; attempt++)
+    assert.deepEqual(await register({ platform: "apns", token: apnsToken }, true, "DELETE"), [204, undefined]);
+  assert.equal((await devices()).devices.length, 1);
+  assert.deepEqual(await register({ platform: "fcm", token: "fcm:token-1" }), [204, undefined]);
+  // A new address replaces the session's previous one.
+  assert.deepEqual(await register({ platform: "fcm", token: "fcm:token-2" }), [204, undefined]);
+  assert.deepEqual(
+    (await devices()).devices.map(({ token }) => token),
+    [apnsToken.toLowerCase(), "fcm:token-2"],
+  );
+  // Unregistering still works once the platform is no longer advertised.
+  await request("/__fixture/control", { method: "POST", body: { pushPlatforms: [] } });
+  assert.deepEqual(await register({ platform: "fcm", token: "fcm:token-2" }, true, "DELETE"), [204, undefined]);
+  assert.deepEqual(await register({ platform: "webpush", token: "x" }, true, "DELETE"), [
+    400,
+    { error: "push platform unavailable" },
+  ]);
+  const { devices: remaining, requests } = await devices();
+  assert.deepEqual(
+    remaining.map(({ userId }) => userId),
+    [ids.member],
+  );
+  assert.deepEqual(
+    requests.map(({ method, platform }) => `${method} ${platform}`),
+    ["POST apns", "POST apns", "DELETE apns", "DELETE apns", "POST fcm", "POST fcm", "DELETE fcm"],
+  );
+  await request("/__fixture/control", { method: "POST", body: { pushPlatforms: ["fcm"] } });
+  await request("/__fixture/control", { method: "POST", body: { reset: true } });
+  assert.deepEqual((await request("/api/push/config", { auth: true })).value, { platforms: [] });
+  assert.deepEqual(await devices(), { devices: [], requests: [] });
+});
+
+test("notification settings and overrides validate, persist in memory and reset", async (t) => {
+  const { request } = await setup(t);
+  const defaults = { level: "all", mobile: "whenInactive", overrides: [] };
+  assert.equal((await request("/api/notifications/settings")).response.status, 401);
+  assert.deepEqual((await request("/api/notifications/settings", { auth: true })).value, defaults);
+  const put = (path, body, auth = true) =>
+    request(path, { auth, method: "PUT", body }).then(({ response, value }) => [response.status, value]);
+  for (const [body, error] of [
+    [{ level: "mentions", extra: true }, "invalid notification settings"],
+    [{ level: null }, "level must be all, mentions or nothing"],
+    [{ level: "some" }, "level must be all, mentions or nothing"],
+    [{ mobile: "never" }, "mobile must be always or whenInactive"],
+  ])
+    assert.deepEqual(await put("/api/notifications/settings", body), [400, { error }], JSON.stringify(body));
+  assert.deepEqual(await put("/api/notifications/settings", { level: "mentions" }), [
+    200,
+    { ...defaults, level: "mentions" },
+  ]);
+  assert.deepEqual(await put("/api/notifications/settings", { mobile: "always" }), [
+    200,
+    { level: "mentions", mobile: "always", overrides: [] },
+  ]);
+
+  const space = `/api/spaces/${ids.space}/notifications`;
+  const channel = `/api/spaces/${ids.space}/channels/${ids.design}/notifications`;
+  const direct = `/api/dms/${ids.direct}/notifications`;
+  assert.deepEqual(await put(space, {}, false), [401, { error: "Sign in required." }]);
+  const inHalfAnHour = new Date(Date.now() + 30 * 60 * 1000);
+  const muted = new Date(Math.floor(inHalfAnHour.getTime() / 1000) * 1000).toISOString().replace(".000Z", "Z");
+  for (const [body, error] of [
+    [{ level: "loud" }, "level must be all, mentions, nothing or null"],
+    [{ muted: true }, "invalid notification settings"],
+    [[], "invalid notification settings"],
+    [{ mutedUntil: "tomorrow" }, "mutedUntil must be forever or a time within the next year"],
+    [{ mutedUntil: "2020-01-01T00:00:00Z" }, "mutedUntil must be forever or a time within the next year"],
+    [
+      { mutedUntil: new Date(Date.now() + 400 * 24 * 60 * 60 * 1000).toISOString() },
+      "mutedUntil must be forever or a time within the next year",
+    ],
+  ])
+    assert.deepEqual(await put(space, body), [400, { error }], JSON.stringify(body));
+  assert.deepEqual(await put(space, { level: "mentions" }), [
+    200,
+    { spaceId: ids.space, level: "mentions", mutedUntil: null },
+  ]);
+  assert.deepEqual(
+    await put(space, { mutedUntil: inHalfAnHour.toISOString() }),
+    [200, { spaceId: ids.space, level: "mentions", mutedUntil: muted }],
+    "a missing key leaves that field unchanged",
+  );
+  assert.deepEqual(await put(channel, { mutedUntil: "forever" }), [
+    200,
+    { spaceId: ids.space, channelId: ids.design, level: null, mutedUntil: "forever" },
+  ]);
+  assert.deepEqual(await put(direct, { level: "mentions" }), [400, { error: "level must be nothing or null" }]);
+  assert.deepEqual(await put(direct, {}), [404, { error: "conversation not found" }]);
+  await request("/api/dms", { auth: true, method: "POST", body: { username: "fixture_alex" } });
+  assert.deepEqual(await put(direct, { level: "nothing", mutedUntil: "forever" }), [
+    200,
+    { conversationId: ids.direct, level: "nothing", mutedUntil: "forever" },
+  ]);
+  assert.deepEqual((await request("/api/notifications/settings", { auth: true })).value, {
+    level: "mentions",
+    mobile: "always",
+    overrides: [
+      { spaceId: ids.space, level: "mentions", mutedUntil: muted },
+      { spaceId: ids.space, channelId: ids.design, level: null, mutedUntil: "forever" },
+      { conversationId: ids.direct, level: "nothing", mutedUntil: "forever" },
+    ],
+  });
+  assert.deepEqual(
+    await put(direct, { level: null, mutedUntil: null }),
+    [200, { conversationId: ids.direct, level: null, mutedUntil: null }],
+    "null resets",
+  );
+
+  // No access is 404: Alex has no grant for the private channel, and no space or channel elsewhere.
+  const other = "fixture-other-token";
+  const privateChannel = `/api/spaces/${ids.space}/channels/${ids.private}/notifications`;
+  assert.deepEqual(await put(privateChannel, { level: "all" }, other), [404, { error: "channel not found" }]);
+  assert.equal((await put(privateChannel, { level: "all" })).at(0), 200, "the owner can read it");
+  assert.deepEqual(await put(`/api/spaces/${ids.demoSpace}/channels/${ids.demo}/notifications`, {}), [
+    404,
+    { error: "channel not found" },
+  ]);
+  assert.deepEqual(await put(`/api/spaces/${ids.demoSpace}/channels/${ids.general}/notifications`, {}), [
+    404,
+    { error: "channel not found" },
+  ]);
+  assert.deepEqual(await put("/api/spaces/missing/notifications", {}), [404, { error: "space not found" }]);
+  assert.deepEqual((await request("/api/notifications/settings", { auth: other })).value, defaults);
+
+  // Expired mutes read as null, and an override with nothing left is omitted.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  t.onTestFinished(() => vi.useRealTimers());
+  vi.setSystemTime(Date.now() + 60 * 60 * 1000);
+  assert.deepEqual(
+    (await request("/api/notifications/settings", { auth: true })).value.overrides.map(({ mutedUntil }) => mutedUntil),
+    [null, "forever", null],
+  );
+  vi.useRealTimers();
+  await request("/__fixture/control", { method: "POST", body: { reset: true } });
+  assert.deepEqual((await request("/api/notifications/settings", { auth: true })).value, defaults);
 });

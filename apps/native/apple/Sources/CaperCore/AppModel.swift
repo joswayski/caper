@@ -40,6 +40,23 @@ public final class AppModel {
     public var pushEnabled = false
     @ObservationIgnored public var setPushEnabled: ((Bool) async -> Void)?
     @ObservationIgnored public var disablePushLocally: (() -> Void)?
+    /// `GET /api/notifications/settings`; nil until the first load, so menus
+    /// never show a guessed level.
+    public private(set) var notificationSettings: NotificationSettings?
+    /// A failed notification change, shown inline until dismissed or the next change.
+    public var notificationError: String?
+    /// The settings could not load; shown in Notifications settings.
+    public private(set) var notificationsLoadError: String?
+    /// Bumped when a timed mute ends, so muted rows redraw.
+    public private(set) var muteExpiryTick = 0
+    @ObservationIgnored private var notificationsLoadedAt: Date?
+    @ObservationIgnored private var notificationRequest = 0
+    @ObservationIgnored private var notificationChangesInFlight = 0
+    @ObservationIgnored private var accountNotificationRevisions: [String: Int] = [:]
+    @ObservationIgnored private var overrideRevisions: [NotificationScope: Int] = [:]
+    @ObservationIgnored private var muteExpiryTask: Task<Void, Never>?
+    /// A tapped push that arrived before spaces loaded; opened in their place.
+    @ObservationIgnored private var pendingNotificationRoute: NotificationRoute?
     public var previewingChannel: Bool { selectedChannel?.joined == false }
     public var selectedChannel: Channel? { detail?.channels.first { $0.id == selectedChannelID } }
     public var error: String?
@@ -128,6 +145,8 @@ public final class AppModel {
             guard generation == attempt else { return }
             self.account = account
             phase = account == nil ? .signedOut : needsProfile ? .onboarding : .ready
+            // A push tapped while signed out never opens for whoever signs in next.
+            if account == nil { pendingNotificationRoute = nil }
             if phase == .ready { await loadSpaces(); startDirectMessageRefresh() }
         } catch {
             guard generation == attempt else { return }
@@ -217,6 +236,7 @@ public final class AppModel {
         directMessages = []; directMessagesError = nil; selectedDirectMessageID = nil; people = nil; showingMessageRequests = false
         blockedAccounts = []; blockedIDs = []; blocksLoaded = false; blocksError = nil
         directMessagePrivacy = nil; privacyError = nil; chat.setBlockedAuthors([])
+        clearNotificationState()
         spacesLoaded = false; spacesError = nil
         selectedSpaceID = nil; selectedChannelID = nil; challengeID = nil
         navigationGeneration += 1
@@ -247,10 +267,21 @@ public final class AppModel {
             self.spaces = response.spaces
             self.invitations = response.invitations
             self.spacesLoaded = true
+            // A tapped push opens its channel instead of the usual space.
+            let route = self.pendingNotificationRoute
+            self.pendingNotificationRoute = nil
+            if case let .channel(spaceID, channelID)? = route,
+               let space = self.spaces.first(where: { $0.id == spaceID }) {
+                await self.navigate(space: space, channelID: channelID)
+                return
+            }
             if let selected = self.spaces.first(where: { $0.id == self.selectedSpaceID })
                 ?? self.spaces.first(where: { $0.id == self.preferredInitialSpaceID })
                 ?? self.spaces.first {
                 await self.select(space: selected)
+            }
+            if case let .direct(conversationID)? = route, self.generation == attempt {
+                await self.openDirectMessage(id: conversationID)
             }
         }
     }
@@ -375,6 +406,18 @@ public final class AppModel {
         await select(directMessage: conversation)
     }
 
+    /// Opens a channel by id, as a tapped push does. A space this client has
+    /// not loaded yet refreshes the space list first.
+    public func openChannel(spaceID: String, channelID: String) async {
+        guard account != nil else { return }
+        if let space = spaces.first(where: { $0.id == spaceID }) {
+            await navigate(space: space, channelID: channelID)
+        } else {
+            pendingNotificationRoute = .channel(spaceID: spaceID, channelID: channelID)
+            await loadSpaces()
+        }
+    }
+
     // MARK: Message requests, blocking and DM privacy
 
     /// Accepts the request: it joins the main list and, when open, gains a composer.
@@ -490,6 +533,7 @@ public final class AppModel {
         if active, account != nil {
             markSelectedDirectRead()
             Task { await refreshDirectMessages() }
+            refreshNotificationSettingsIfStale()
         }
     }
 
@@ -523,6 +567,8 @@ public final class AppModel {
         directMessageRefreshTask?.cancel()
         let attempt = generation
         Task { [weak self] in await self?.refreshBlocks() }
+        // After sign-in (every path starts here), like the block list.
+        Task { [weak self] in await self?.loadNotificationSettings() }
         directMessageRefreshTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refreshDirectMessages()
@@ -1116,6 +1162,176 @@ public final class AppModel {
             self.error = error.localizedDescription
         }
         if expectedGeneration == nil || generation == expectedGeneration { busy = false }
+    }
+}
+
+// MARK: Notifications
+
+extension AppModel {
+    /// Loads after sign-in, on returning to the app, and when settings or a
+    /// menu opens. A change made meanwhile wins over the older snapshot.
+    public func loadNotificationSettings() async {
+        guard account != nil else { return }
+        let attempt = generation
+        notificationRequest += 1
+        let request = notificationRequest
+        notificationsLoadedAt = Date()
+        do {
+            let settings = try await api.notificationSettings()
+            guard generation == attempt, notificationRequest == request, notificationChangesInFlight == 0, account != nil else { return }
+            notificationSettings = settings
+            notificationsLoadError = nil
+            scheduleMuteExpiry()
+        } catch is CancellationError {} catch {
+            guard generation == attempt, notificationRequest == request else { return }
+            notificationsLoadError = NotificationLabels.loadFailed
+        }
+    }
+
+    /// For menus: reloads unless the settings loaded in the last 30 seconds.
+    public func refreshNotificationSettingsIfStale() {
+        guard account != nil else { return }
+        if let loadedAt = notificationsLoadedAt, Date().timeIntervalSince(loadedAt) < 30 { return }
+        Task { [weak self] in await self?.loadNotificationSettings() }
+    }
+
+    /// Muted itself or, for a channel, through its space.
+    public func notificationsMuted(_ scope: NotificationScope) -> Bool {
+        _ = muteExpiryTick
+        return notificationSettings?.isMuted(scope, now: Date()) ?? false
+    }
+
+    /// The scope's own active mute, for "Unmute …" and "Muted until …".
+    public func notificationMute(_ scope: NotificationScope) -> MuteUntil? {
+        _ = muteExpiryTick
+        return notificationSettings?.ownMute(for: scope, now: Date())
+    }
+
+    public func notificationsMutedWithSpace(_ scope: NotificationScope) -> Bool {
+        _ = muteExpiryTick
+        return notificationSettings?.isMutedWithSpace(scope, now: Date()) ?? false
+    }
+
+    /// "Notify me about". Optimistic; a failure reverts and shows why.
+    public func setAccountNotificationLevel(_ level: NotificationLevel) async {
+        guard let current = notificationSettings, current.level != level else { return }
+        await saveAccountNotifications(NotificationAccountChange(level: level), field: "level")
+    }
+
+    /// "Send to this phone". Optimistic; a failure reverts and shows why.
+    public func setMobilePushPolicy(_ mobile: MobilePushPolicy) async {
+        guard let current = notificationSettings, current.mobile != mobile else { return }
+        await saveAccountNotifications(NotificationAccountChange(mobile: mobile), field: "mobile")
+    }
+
+    /// A space or channel level (nil is Default), or a DM's on/off (`nothing` or nil).
+    public func setNotificationLevel(_ level: NotificationLevel?, for scope: NotificationScope) async {
+        guard let current = notificationSettings, current.overrideLevel(for: scope) != level else { return }
+        await saveOverride(.level(level), for: scope)
+    }
+
+    /// Mutes until a time or `forever`; nil unmutes.
+    public func setMute(_ until: MuteUntil?, for scope: NotificationScope) async {
+        guard notificationSettings != nil else { return }
+        await saveOverride(.mute(until), for: scope)
+    }
+
+    /// Whether a push's conversation is the one open now.
+    public func isShowing(_ route: NotificationRoute) -> Bool {
+        route.isOpen(spaceID: selectedSpaceID, channelID: selectedChannelID, directMessageID: selectedDirectMessageID)
+    }
+
+    /// Opens a tapped push's channel or DM. Before spaces load, it waits and
+    /// opens in place of the usual first space.
+    public func open(_ route: NotificationRoute) async {
+        guard phase != .signedOut else { return }
+        guard account != nil, spacesLoaded else {
+            pendingNotificationRoute = route
+            return
+        }
+        switch route {
+        case let .direct(conversationID): await openDirectMessage(id: conversationID)
+        case let .channel(spaceID, channelID): await openChannel(spaceID: spaceID, channelID: channelID)
+        }
+    }
+
+    private func saveAccountNotifications(_ change: NotificationAccountChange, field: String) async {
+        guard account != nil, let current = notificationSettings else { return }
+        let attempt = generation
+        let revision = (accountNotificationRevisions[field] ?? 0) + 1
+        accountNotificationRevisions[field] = revision
+        notificationRequest += 1
+        notificationChangesInFlight += 1
+        notificationSettings = current.applying(change)
+        notificationError = nil
+        let restore = NotificationAccountChange(level: change.level == nil ? nil : current.level,
+                                                mobile: change.mobile == nil ? nil : current.mobile)
+        do {
+            let saved = try await api.updateNotificationSettings(change)
+            guard generation == attempt else { return }
+            notificationChangesInFlight -= 1
+            guard accountNotificationRevisions[field] == revision else { return }
+            // Only this change's field: other fields may have changes in flight.
+            let confirmed = NotificationAccountChange(level: change.level == nil ? nil : saved.level,
+                                                      mobile: change.mobile == nil ? nil : saved.mobile)
+            notificationSettings = notificationSettings?.applying(confirmed)
+        } catch {
+            guard generation == attempt else { return }
+            notificationChangesInFlight -= 1
+            guard accountNotificationRevisions[field] == revision else { return }
+            notificationSettings = notificationSettings?.applying(restore)
+            notificationError = NotificationLabels.saveFailed
+        }
+    }
+
+    private func saveOverride(_ change: NotificationOverrideChange, for scope: NotificationScope) async {
+        guard account != nil, let current = notificationSettings else { return }
+        let attempt = generation
+        let revision = (overrideRevisions[scope] ?? 0) + 1
+        overrideRevisions[scope] = revision
+        notificationRequest += 1
+        notificationChangesInFlight += 1
+        let previous = current.override(for: scope)
+        notificationSettings = current.applying(change, to: scope)
+        notificationError = nil
+        scheduleMuteExpiry()
+        do {
+            let saved = try await api.updateNotificationOverride(scope, change: change)
+            guard generation == attempt else { return }
+            notificationChangesInFlight -= 1
+            guard overrideRevisions[scope] == revision else { return }
+            notificationSettings = notificationSettings?.replacing(saved, for: scope)
+        } catch {
+            guard generation == attempt else { return }
+            notificationChangesInFlight -= 1
+            guard overrideRevisions[scope] == revision else { return }
+            notificationSettings = notificationSettings?.replacing(previous, for: scope)
+            notificationError = NotificationLabels.saveFailed
+        }
+        scheduleMuteExpiry()
+    }
+
+    /// Redraws muted rows when the next timed mute ends.
+    private func scheduleMuteExpiry() {
+        muteExpiryTask?.cancel()
+        muteExpiryTask = nil
+        guard let next = notificationSettings?.nextMuteExpiry(after: Date()) else { return }
+        let delay: TimeInterval = max(0, next.timeIntervalSinceNow) + 1
+        let attempt = generation
+        muteExpiryTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, let self, self.generation == attempt else { return }
+            self.muteExpiryTick += 1
+            self.scheduleMuteExpiry()
+        }
+    }
+
+    private func clearNotificationState() {
+        muteExpiryTask?.cancel(); muteExpiryTask = nil
+        notificationSettings = nil; notificationError = nil; notificationsLoadError = nil
+        notificationsLoadedAt = nil; notificationChangesInFlight = 0
+        accountNotificationRevisions = [:]; overrideRevisions = [:]
+        pendingNotificationRoute = nil
     }
 }
 

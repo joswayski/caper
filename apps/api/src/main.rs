@@ -62,6 +62,7 @@ async fn run(environment: &RuntimeEnvironment) -> Result<(), String> {
     state.enable_accounts_from_env(environment).await?;
     state.enable_shared_media(environment).await?;
     state.enable_chat(environment).await?;
+    state.enable_notifications(environment)?;
     spawn_cleanup(state.clone());
     let listener = tokio::net::TcpListener::bind(bind)
         .await

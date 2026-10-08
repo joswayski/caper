@@ -113,3 +113,12 @@
   color: #ff9b82;
   font-size: 0.76rem;
 }
+/* A section title, then a quieter label for its one question. */
+.notification-settings {
+  gap: 8px;
+}
+.notification-settings legend {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 650;
+}

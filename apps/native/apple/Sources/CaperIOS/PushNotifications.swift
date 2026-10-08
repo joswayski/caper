@@ -8,8 +8,11 @@ final class PushNotifications: NSObject, UIApplicationDelegate, UNUserNotificati
     private var token: String?
     private var platform: String?
     private var accountID: String?
-    private var pendingConversationID: String?
+    /// A notification tapped before the model was attached (a cold launch).
+    private var pendingRoute: NotificationRoute?
     private var optInGeneration = 0
+    /// The bundle ID, which the server uses as the APNs topic for this device.
+    private var appID: String? { Bundle.main.bundleIdentifier }
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
@@ -19,6 +22,11 @@ final class PushNotifications: NSObject, UIApplicationDelegate, UNUserNotificati
     private func bindModel() {
         model?.setPushEnabled = { [weak self] enabled in await self?.setEnabled(enabled) }
         model?.disablePushLocally = { [weak self] in self?.disableLocally() }
+        if let model, let route = pendingRoute {
+            pendingRoute = nil
+            // The model holds it until the account's spaces load.
+            Task { await model.open(route) }
+        }
         Task { await refreshConfiguration() }
     }
 
@@ -39,10 +47,6 @@ final class PushNotifications: NSObject, UIApplicationDelegate, UNUserNotificati
             model.configurePush(available: available, enabled: available && UserDefaults.standard.bool(forKey: "caper.push.enabled.\(account.id)"))
             platform = available ? wanted : nil
             if model.pushEnabled { UIApplication.shared.registerForRemoteNotifications() }
-            if let pendingConversationID {
-                self.pendingConversationID = nil
-                await model.openDirectMessage(id: pendingConversationID)
-            }
         } catch { if model.account?.id == account.id { model.configurePush(available: false, enabled: false) } }
     }
 
@@ -63,7 +67,7 @@ final class PushNotifications: NSObject, UIApplicationDelegate, UNUserNotificati
         optInGeneration += 1
         model?.configurePush(available: platform != nil, enabled: false)
         if let accountID { UserDefaults.standard.set(false, forKey: "caper.push.enabled.\(accountID)") }
-        pendingConversationID = nil
+        pendingRoute = nil
         UIApplication.shared.unregisterForRemoteNotifications()
     }
 
@@ -80,7 +84,7 @@ final class PushNotifications: NSObject, UIApplicationDelegate, UNUserNotificati
             UIApplication.shared.registerForRemoteNotifications()
         } else {
             disableLocally()
-            if let token { try? await model.api.unregisterPushDevice(platform: platform, token: token) }
+            if let token { try? await model.api.unregisterPushDevice(platform: platform, token: token, appID: appID) }
         }
     }
 
@@ -88,24 +92,24 @@ final class PushNotifications: NSObject, UIApplicationDelegate, UNUserNotificati
         let value = deviceToken.map { String(format: "%02x", $0) }.joined()
         token = value
         guard let model, model.pushEnabled, let platform, let accountID, model.account?.id == accountID else { return }
+        let bundleID = appID
         Task {
             guard model.pushEnabled, model.account?.id == accountID else { return }
-            try? await model.api.registerPushDevice(platform: platform, token: value)
-            guard model.account?.id == accountID else { return }
-            if let pendingConversationID { self.pendingConversationID = nil; await model.openDirectMessage(id: pendingConversationID) }
+            try? await model.api.registerPushDevice(platform: platform, token: value, appID: bundleID)
         }
     }
 
+    /// A tap opens the push's channel (`spaceId` + `channelId`) or DM (`conversationId`).
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
-        guard let id = response.notification.request.content.userInfo["conversationId"] as? String else { return }
-        guard let model, model.account != nil else { pendingConversationID = id; return }
-        await model.openDirectMessage(id: id)
+        guard let route = NotificationRoute(userInfo: response.notification.request.content.userInfo) else { return }
+        guard let model else { pendingRoute = route; return }
+        await model.open(route)
     }
 
+    /// The server's alert, except for the conversation that is already open.
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        guard let model, model.account != nil, model.pushEnabled,
-              let id = notification.request.content.userInfo["conversationId"] as? String,
-              model.selectedDirectMessageID != id else { return [] }
-        return [.banner, .sound]
+        guard let model, model.account != nil, model.pushEnabled else { return [] }
+        if let route = NotificationRoute(userInfo: notification.request.content.userInfo), model.isShowing(route) { return [] }
+        return [.banner, .list, .sound]
     }
 }

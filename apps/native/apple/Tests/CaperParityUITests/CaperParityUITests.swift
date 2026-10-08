@@ -770,6 +770,69 @@ final class CaperParityUITests: XCTestCase {
         capture("channel-leave-from-menu", app: app)
     }
 
+    /// The signed-in fixture account's overrides, each as "scope id:mutedUntil".
+    private nonisolated static func fixtureNotificationOverrides() async throws -> [String] {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:3001/api/notifications/settings")!)
+        request.setValue("Bearer fixture-owner-token", forHTTPHeaderField: "authorization")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        let settings = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let overrides = try XCTUnwrap(settings["overrides"] as? [[String: Any]])
+        return overrides.map { entry in
+            let channel: String? = entry["channelId"] as? String
+            let conversation: String? = entry["conversationId"] as? String
+            let space: String? = entry["spaceId"] as? String
+            let id: String = channel ?? conversation ?? space ?? "?"
+            let mute: String = entry["mutedUntil"] as? String ?? "null"
+            return "\(id):\(mute)"
+        }
+    }
+
+    /// Waits until the element's accessibility value does (or does not) mention "Muted".
+    private func waitForMuted(_ element: XCUIElement, _ muted: Bool, _ message: String) {
+        let format = muted ? "value CONTAINS %@" : "NOT (value CONTAINS %@)"
+        let matches = XCTNSPredicateExpectation(predicate: NSPredicate(format: format, "Muted"), object: element)
+        XCTAssertEqual(XCTWaiter.wait(for: [matches], timeout: 5), .completed, message)
+    }
+
+    func testMuteChannelFromItsOptionsMenu() async throws {
+        try await Self.fixtureControl(["reset": true])
+        addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+        let app = launch()
+        assertElement("selected-channel-name", label: "# general", in: app)
+        #if os(iOS)
+        app.buttons["Back to Browse"].tap()
+        #endif
+        let design = app.buttons["channel-chan00000002"]
+        XCTAssertTrue(design.waitForExistence(timeout: 10))
+        XCTAssertEqual(design.value as? String ?? "", "", "An unselected, unmuted channel has no state")
+
+        let options = app.descendants(matching: .any)["channel-options-chan00000002"]
+        options.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["Notifications"].firstMatch.waitForExistence(timeout: 5))
+        let mute = app.descendants(matching: .any)["Mute channel"].firstMatch
+        XCTAssertTrue(mute.waitForExistence(timeout: 5), "The channel menu offers Mute channel")
+        let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: mute)
+        XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 5), .completed, "Mute is available once settings load")
+        mute.tap()
+        let forever = app.descendants(matching: .any)["Until I turn it back on"].firstMatch
+        XCTAssertTrue(forever.waitForExistence(timeout: 3))
+        forever.tap()
+        waitForMuted(design, true, "A muted channel is marked in the sidebar")
+        var overrides = try await Self.fixtureNotificationOverrides()
+        XCTAssertEqual(overrides, ["chan00000002:forever"], "The fixture stored the channel mute")
+        capture("channel-muted", app: app)
+
+        options.tap()
+        let unmute = app.descendants(matching: .any)["Unmute channel"].firstMatch
+        XCTAssertTrue(unmute.waitForExistence(timeout: 3), "A muted channel's menu offers Unmute channel")
+        XCTAssertTrue(app.descendants(matching: .any)["Muted"].firstMatch.exists, "The menu says it is muted")
+        unmute.tap()
+        waitForMuted(design, false, "Unmuting clears the sidebar mark")
+        overrides = try await Self.fixtureNotificationOverrides()
+        XCTAssertEqual(overrides, [], "Unmuting clears the override on the server")
+    }
+
     func testSpectatorRosterCollapsesAndVoiceTargetDoesNotChangeChat() async throws {
         let app = launch()
         assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app)

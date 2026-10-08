@@ -120,7 +120,7 @@ rebuilding historical app source does not require that source to contain a lockf
 ## Documentation
 
 - [Configuration, deployment, and testing](docs/media.md)
-- [Notifications research and proposed design](docs/notifications.md) (not implemented)
+- [Notifications: phone push, settings and design](docs/notifications.md)
 - [Native builds and platform status](apps/native/README.md)
 - [Brand and style guide](docs/brand)
 - [Caper character catalog](assets/avatars/README.md)
