@@ -274,6 +274,18 @@ async fn multiplexed_presence_commands_and_cross_gateway_handoff() {
     let snapshot = next(&mut old, "event", Some("people")).await;
     assert_eq!(snapshot["event"]["members"][0]["status"], "online");
     next(&mut old, "subscribed", Some("people")).await;
+    // Presence fields name the sign-in session, so phone push can tell it apart.
+    let mut presence_broker = broker.get_multiplexed_async_connection().await.unwrap();
+    let fields: Vec<String> = redis::cmd("HKEYS")
+        .arg(format!("caper:presence:v1:{{{user_external}}}:sessions"))
+        .query_async(&mut presence_broker)
+        .await
+        .unwrap();
+    let tag = format!("{}:", crate::presence::session_tag(&hash));
+    assert!(
+        fields.iter().any(|field| field.starts_with(&tag)),
+        "{fields:?}"
+    );
 
     // Commit two events but publish only the second: replay must repair the gap
     // and preserve order, rather than treating the broker as an ordered log.

@@ -105,6 +105,46 @@ end
 return current
 "#;
 
+// Read-only: the session tags of connections in use right now (a live lease
+// and activity within the idle timeout). A connection ID without a tag, from an
+// older gateway, reports an empty tag, which matches no session.
+const ACTIVE_SESSIONS: &str = r#"
+local clock = redis.call('TIME')
+local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
+local entries = redis.call('HGETALL', KEYS[1])
+local tags = {}
+
+for i = 1, #entries, 2 do
+    local connection = entries[i]
+    if connection ~= '__status' then
+        local lease, activity = string.match(entries[i + 1], '^(%d+):(%d+)$')
+        if lease and tonumber(lease) > now and now - tonumber(activity) < tonumber(ARGV[1]) then
+            table.insert(tags, string.match(connection, '^([^:]*):') or '')
+        end
+    end
+end
+return tags
+"#;
+
+/// The tag of an account session: the first 8 bytes of its token hash in
+/// lowercase hex. Push devices are compared to connections by this tag.
+pub(crate) fn session_tag(token_hash: &[u8]) -> String {
+    token_hash
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Gateway connection IDs are `{tag}:{uuid}`, with `guest` for no account.
+pub(crate) fn connection_id(token_hash: Option<&[u8]>) -> String {
+    format!(
+        "{}:{}",
+        token_hash.map_or_else(|| "guest".to_owned(), session_tag),
+        uuid::Uuid::new_v4()
+    )
+}
+
 fn unavailable() -> ApiError {
     ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "presence unavailable")
 }
@@ -255,6 +295,37 @@ impl Presence {
     }
 }
 
+impl Presence {
+    /// For each user, the session tags of their active connections (see
+    /// `ACTIVE_SESSIONS`), in the same order as `users`. Never modifies state.
+    pub(crate) async fn active_sessions(
+        &self,
+        users: &[String],
+    ) -> Result<Vec<Vec<String>>, ApiError> {
+        if users.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut pipeline = redis::pipe();
+        for user in users {
+            let mut command = redis::cmd("EVAL");
+            command
+                .arg(ACTIVE_SESSIONS)
+                .arg(1)
+                .arg(key(user))
+                .arg(self.idle_timeout_ms);
+            pipeline.add_command(command);
+        }
+        let mut broker = self.connection().await;
+        match pipeline.query_async(&mut broker).await {
+            Ok(tags) => Ok(tags),
+            Err(_) => {
+                self.repair().await;
+                Err(unavailable())
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,6 +335,58 @@ mod tests {
     fn keys_are_cluster_scoped_and_topics_are_per_user() {
         assert_eq!(key("user123"), "caper:presence:v1:{user123}:sessions");
         assert_eq!(topic("user123"), "caper:presence:v1:user123");
+    }
+
+    #[test]
+    fn connection_ids_carry_the_session_tag() {
+        let hash = [0xab_u8, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+        assert_eq!(session_tag(&hash), "ab01020304050607");
+        let id = connection_id(Some(&hash));
+        let (tag, uuid) = id.split_once(':').unwrap();
+        assert_eq!(tag, "ab01020304050607");
+        assert!(uuid::Uuid::parse_str(uuid).is_ok());
+        assert!(connection_id(None).starts_with("guest:"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires disposable TEST_VALKEY_URL"]
+    async fn active_sessions_report_tags_of_recently_active_connections_only() {
+        let (presence, broker, user) = disposable().await;
+        let idle = format!("presence{}", uuid::Uuid::new_v4().simple());
+        assert_eq!(
+            presence
+                .active_sessions(&[user.clone(), idle.clone()])
+                .await
+                .unwrap(),
+            vec![Vec::<String>::new(), Vec::new()]
+        );
+        presence
+            .renew(&user, "0011223344556677:socket", 0)
+            .await
+            .unwrap();
+        presence.renew(&user, "legacy-socket", 0).await.unwrap();
+        // Connected but past the idle timeout (100ms here): not active.
+        presence
+            .renew(&idle, "8899aabbccddeeff:socket", 500)
+            .await
+            .unwrap();
+        let mut active = presence
+            .active_sessions(&[user.clone(), idle.clone()])
+            .await
+            .unwrap();
+        active[0].sort();
+        assert_eq!(
+            active,
+            vec![vec![String::new(), "0011223344556677".into()], vec![]]
+        );
+        let mut connection = broker.get_multiplexed_async_connection().await.unwrap();
+        for key in [key(&user), key(&idle)] {
+            redis::cmd("DEL")
+                .arg(key)
+                .query_async::<()>(&mut connection)
+                .await
+                .unwrap();
+        }
     }
 
     #[test]

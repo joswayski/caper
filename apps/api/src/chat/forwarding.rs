@@ -157,8 +157,14 @@ async fn persist_forward(
         .map_err(database_error)?;
     let seq = head + 1;
     let payload = json!({"id":random_id(15),"channelId":channel,"seq":seq.to_string(),"author":{"id":author_id,"name":name,"isGuest":false,"avatarId":avatar_id},"content":content,"createdAt":Utc::now().to_rfc3339(),"clientMessageId":input.client_message_id,"forward":forward,"forwardSeq":seq.to_string()});
-    sqlx::query("INSERT INTO public.messages(external_id,channel_id,session_id,client_message_id,request_hash,channel_seq,payload,forward_source_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
-        .bind(payload["id"].as_str()).bind(destination.id).bind(session).bind(input.client_message_id).bind(hash).bind(seq).bind(&payload).bind(source).execute(&mut *tx).await.map_err(database_error)?;
+    let message_id: i64 = sqlx::query_scalar("INSERT INTO public.messages(external_id,channel_id,session_id,client_message_id,request_hash,channel_seq,payload,forward_source_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id")
+        .bind(payload["id"].as_str()).bind(destination.id).bind(session).bind(input.client_message_id).bind(hash).bind(seq).bind(&payload).bind(source).fetch_one(&mut *tx).await.map_err(database_error)?;
+    // A forward is a new message in the destination, so it notifies like one.
+    if user.is_some() {
+        crate::push::enqueue(&mut tx, message_id)
+            .await
+            .map_err(database_error)?;
+    }
     sqlx::query("INSERT INTO public.channel_events(channel_id,seq,payload) VALUES($1,$2,$3)")
         .bind(destination.id).bind(seq).bind(json!({"type":"message.created","schemaVersion":1,"channelId":channel,"seq":seq.to_string(),"message":payload})).execute(&mut *tx).await.map_err(database_error)?;
     sqlx::query("UPDATE public.channels SET last_seq=$2 WHERE id=$1")
