@@ -6,7 +6,7 @@ dependencies = []
 
 [dependency-groups]
 dev = ["ruff==0.16.10"]
-publish = ["pyjwt[crypto]==2.10.1"]
+publish = ["pyjwt[crypto]==2.15.0"]
 dmg = ["dmgbuild==1.6.7; sys_platform == 'darwin'"]
 audio = ["onnx==1.23.2"]
 
