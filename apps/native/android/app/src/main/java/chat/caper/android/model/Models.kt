@@ -345,8 +345,11 @@ data class AppUiState(
 
     val blockedIds: Set<String> get() = blocks.mapTo(HashSet()) { it.id }
 
-    /** You can write here: a joined channel, and not a message request still waiting for your answer. */
-    val canParticipate: Boolean get() = selectedChannel?.joined == true && selectedDirect?.incoming != true
+    /** You can write, react, pin and edit here: a joined channel, not a message request still waiting
+     * for your answer, and not a DM with someone you blocked (the server refuses those too). */
+    val canParticipate: Boolean get() = selectedChannel?.joined == true && selectedDirect?.let {
+        it.incoming || it.blocked || it.peer.id in blockedIds
+    } != true
 
     /** The open DM, when one is selected. */
     val selectedDirect: DirectConversation? get() = selectedDirectId?.let { id -> directConversations.firstOrNull { it.id == id } }

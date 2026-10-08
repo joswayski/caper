@@ -393,6 +393,7 @@ public final class AppModel {
             // An incoming request opens read-only: no chat session, no composer,
             // no read cursor and no chimes. Opening it never accepts it.
             let current = directMessages.first { $0.id == conversation.id } ?? conversation
+            chat.directPeerID = current.peer.id == account?.id ? nil : current.peer.id
             if current.status == .incoming { await chat.preview(history: history) }
             else { await chat.open(history: history, displayName: account?.displayName ?? "") }
             guard generation == attempt, navigationGeneration == navigation else { return }
@@ -690,6 +691,7 @@ public final class AppModel {
             navigationTarget = nil
             if let history {
                 remember(PreparedNavigation(detail: detail, channelID: channel?.id, history: history))
+                chat.directPeerID = nil
                 if channel?.joined == true { await chat.open(history: history, displayName: account?.displayName ?? "Guest") }
                 else { await chat.preview(history: history) }
             }
@@ -1407,6 +1409,14 @@ public final class ChatModel {
     /// Accounts you blocked: their messages collapse in every timeline, and
     /// they never chime or show as typing. Kept in step by `AppModel`.
     public private(set) var blockedAuthorIDs: Set<String> = []
+    /// The other person in the open DM, kept by `AppModel`. Blocking them stops
+    /// reactions, pins and edits as well as sending; the server refuses them too.
+    public var directPeerID: String?
+    /// Reacting, pinning and editing need a chat session (not a preview), and
+    /// never reach someone you blocked.
+    public var canInteract: Bool {
+        !isPreview && currentAuthor != nil && !(directPeerID.map { blockedAuthorIDs.contains($0) } ?? false)
+    }
     /// The signed-in account, also while previewing without a chat session.
     @ObservationIgnored public var viewerAccountID: () -> String? = { nil }
     /// Blocks from message actions in panels that only hold the chat model.
@@ -1465,7 +1475,7 @@ public final class ChatModel {
     }
 
     func canEdit(_ message: ChatMessage) -> Bool {
-        message.forward == nil && !isPreview && channelID == message.channelId && currentAuthor?.isGuest == false && currentAuthor?.id == message.author.id
+        message.forward == nil && canInteract && channelID == message.channelId && currentAuthor?.isGuest == false && currentAuthor?.id == message.author.id
     }
 
     func editMessage(_ message: ChatMessage, text: String) async throws {
@@ -1990,11 +2000,15 @@ public final class ChatModel {
             applyPin(event.message)
         } catch {
             guard generation == requestGeneration, self.channelID == channelID else { return }
-            if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status) {
+            let apiError = error as? APIError
+            // A DM block refusal keeps the conversation open with the reason inline.
+            if let apiError, [401, 403, 404].contains(apiError.status),
+               !DirectMessageErrors.isRefusal(status: apiError.status, code: apiError.code) {
                 onAccessRevoked?(channelID); await stop(); return
             }
             failedPinActions[messageID] = active
-            pinErrors[messageID] = "Couldn’t \(active ? "pin" : "unpin") message. Try again."
+            pinErrors[messageID] = DirectMessageErrors.message(code: apiError?.code)
+                ?? "Couldn’t \(active ? "pin" : "unpin") message. Try again."
         }
     }
 
@@ -2288,7 +2302,10 @@ public final class ChatModel {
                 renderReactions()
             } catch {
                 guard generation == requestGeneration, self.channelID == channelID else { return }
-                if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status) {
+                let apiError = error as? APIError
+                // A DM block refusal keeps the conversation open with the reason inline.
+                if let apiError, [401, 403, 404].contains(apiError.status),
+                   !DirectMessageErrors.isRefusal(status: apiError.status, code: apiError.code) {
                     onAccessRevoked?(channelID)
                     await stop()
                     return
@@ -2296,7 +2313,7 @@ public final class ChatModel {
                 if pendingReactions[messageID]?[emoji] == desired {
                     pendingReactions[messageID]?[emoji] = nil
                     if pendingReactions[messageID]?.isEmpty == true { pendingReactions[messageID] = nil }
-                    reactionErrors[messageID] = "Couldn’t save reaction. Retry."
+                    reactionErrors[messageID] = DirectMessageErrors.message(code: apiError?.code) ?? "Couldn’t save reaction. Retry."
                     failedReactions[messageID] = (emoji, desired.active)
                     renderReactions()
                 }
