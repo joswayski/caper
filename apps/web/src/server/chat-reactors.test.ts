@@ -10,12 +10,40 @@ import {
   fallbackSummary,
   isReactionList,
   loadReactors,
+  reactionPeople,
   reactionSummary,
   reactorName,
   type ReactionList,
 } from "../chat/reactors.ts";
 
 const people = (...names: string[]) => names.map((name) => ({ id: name.toLowerCase(), name }));
+
+test("cached names follow displayed membership through optimistic toggles and newer revisions", () => {
+  const list: ReactionList = {
+    messageId: "optimistic",
+    reactionSeq: "1",
+    reactions: [
+      {
+        emoji: "👍",
+        authors: ["Bob", "Alice"].map((name) => ({
+          id: name.toLowerCase(),
+          displayName: name,
+          username: null,
+          avatarId: null,
+        })),
+      },
+      { emoji: "❤️", authors: [{ id: "carol", displayName: "Carol", username: null, avatarId: null }] },
+    ],
+  };
+  const resolve = (...authorIds: string[]) => reactionPeople({ emoji: "👍", authorIds }, "me", list);
+  assert.deepEqual(resolve("alice", "bob", "me"), [...people("Bob", "Alice"), { id: "me", name: "You" }]);
+  assert.equal(reactionSummary(resolve("bob", "me")!, "me", ":thumbs-up:"), "You and Bob reacted with :thumbs-up:");
+  assert.deepEqual(resolve("alice"), people("Alice"), "removed IDs never survive in the summary");
+  assert.deepEqual(resolve("bob", "carol"), people("Bob", "Carol"), "other emoji can supply known names");
+  assert.equal(resolve("bob", "unknown"), undefined, "unknown IDs require the count fallback");
+  assert.deepEqual(reactionPeople({ emoji: "👍", authorIds: ["me"] }, "me"), [{ id: "me", name: "You" }]);
+  assert.equal(reactionPeople({ emoji: "👍", authorIds: ["bob"] }, "me"), undefined);
+});
 
 test("slower old reactor requests cannot evict a newer cached revision and trigger another fetch", async () => {
   const responses: Array<(response: Response) => void> = [];

@@ -1215,8 +1215,10 @@ and physical devices are not yet validated.
   Transformer transcoding and playback, and uploads to live R2/CDN.
 ## Message reactions
 
-Desktop web exposes **Add reaction** on message hover or keyboard focus. Mobile
-web, Android and iPhone hide the per-message add button. Press and hold a
+Desktop web exposes **Add reaction** on message hover or keyboard focus; clicking
+a message or reaction does not keep the toolbar visible after the pointer leaves.
+Reaction chips have no outer focus ring; keyboard navigation uses an inset cue.
+Mobile web, Android and iPhone hide the per-message add button. Press and hold a
 committed message to open a bottom drawer with five fixed quick reactions
 (👍 ❤️ 😂 🎉 👀), the searchable emoji picker, **Copy text**, and
 **Copy message ID**. Copy uses the exact text or globally unique public message
@@ -1392,6 +1394,25 @@ Android, web on touch) open a Reactions sheet on press-and-hold: one tab per
 emoji with its count, then each person's avatar, name and @username. On web,
 right-click opens the same panel as a popover, and message actions include
 **View reactions**. A tap or click still toggles your own reaction.
+
+Web and Rust desktop retain known names during revision refreshes (including
+failed refreshes), project them onto the currently displayed reactor IDs, and
+name your optimistic contribution as "You" immediately. They do not temporarily
+replace a named tooltip with a count when you toggle an existing reaction.
+Removed IDs are excluded immediately; a genuinely unknown person still uses the
+snapshot-count fallback until their name loads. Apple already reconciles names
+this way; Android uses a separate hold-to-open sheet rather than hover tooltips.
+`scripts/test-chat-reactors.mjs` checks every tooltip DOM update while fixture
+writes/name refreshes are held, rapid toggles, refresh failure, pointer-only
+toolbar visibility, and keyboard focus. Run its desktop checks with a fine-pointer
+Chromium configuration (`AGENT_BROWSER_EXECUTABLE_PATH` in headless orbs).
+
+Interaction-fix validation: `npm run check` and all 450 web/native-support tests
+pass; both browser interaction scripts pass, including verified coarse-pointer
+touch input. Rust desktop passes 275 tests (9 existing ignored), package Clippy,
+fmt and a Linux build; its fixture tooltip was rendered under 2× Xvfb and inspected.
+These are local fixture checks, not physical-phone, Windows/macOS or live-service
+acceptance. No Docker daemon was available; web build stages ran directly.
 
 The parity fixture serves this endpoint, and its `incomingReaction` control
 accepts an optional `userId` so tests can react as any fixture account. Desktop

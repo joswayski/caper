@@ -510,7 +510,10 @@ try {
   browser("press", "Escape");
   wait('!document.querySelector(".chat-message-actions")');
   await open();
-  browser("click", ".chat-actions-overlay");
+  // The drawer can cover the overlay's center. Tap the actual backdrop.
+  assert.ok(evaluate('document.querySelector(".chat-message-actions").getBoundingClientRect().top') > 12);
+  await touch("touchStart", 12, 12);
+  await touch("touchEnd");
   wait('!document.querySelector(".chat-message-actions")');
 
   const left = await fetch(`${api}/api/spaces/space0000001/channels/chan00000002/membership`, {
@@ -528,7 +531,17 @@ try {
   wait('!!document.querySelector(".channel-preview") && !document.querySelector(".chat-initial-messages")');
   await open();
   assert.equal(evaluate('!!document.querySelector(".chat-quick-reactions")'), false);
-  assert.equal(evaluate('document.querySelectorAll(".chat-copy-actions button").length'), 2);
+  const previewActions = evaluate(
+    '[...document.querySelectorAll(".chat-copy-actions button")].map(button => button.textContent.trim())',
+  );
+  assert.deepEqual(
+    previewActions.filter((label) => label.startsWith("Copy ")),
+    ["Copy text", "Copy message ID"],
+  );
+  assert.equal(
+    previewActions.some((label) => label === "Pin message" || label === "Edit message"),
+    false,
+  );
   screenshot("message-actions-mobile-read-only");
   action("Copy message ID");
   wait('!document.querySelector(".chat-message-actions")');
