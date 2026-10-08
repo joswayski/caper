@@ -221,7 +221,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val error = try { PushRegistration.enable(getApplication()); null }
             catch (error: CancellationException) { throw error }
-            catch (error: Throwable) { error.message ?: "Notifications could not be enabled." }
+            catch (error: Throwable) { friendlyError(error, "Notifications could not be enabled.") }
             if (error == null && accountId != null) PushRegistration.setTurnedOff(getApplication(), accountId, false)
             if (request == accountGeneration) done(error)
         }
@@ -406,6 +406,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** A tap on "Message requests": the explicit choice wins over following the open request. */
     fun setRequestsOpen(open: Boolean) { mutable.value = mutable.value.copy(requestsOpen = open) }
 
     /** Accept: the request joins the main list and the composer replaces the request bar. */
@@ -413,7 +414,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val accepted = api.acceptDirectRequest(token, conversation.id)
         if (request != accountGeneration) return@accountRequest
         val directs = mutable.value.directConversations.map { if (it.id == conversation.id) accepted.copy(lastSeq = maxSeq(it.lastSeq, accepted.lastSeq)) else it }
-        mutable.value = mutable.value.copy(directConversations = directs, requestsOpen = messageRequests(directs).isNotEmpty() && mutable.value.requestsOpen)
+        mutable.value = mutable.value.copy(directConversations = directs, requestsOpen = mutable.value.requestsOpen.takeIf { messageRequests(directs).isNotEmpty() })
     }
 
     /** Decline hides the request from you only; the sender is not told. */
@@ -427,7 +428,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     /** Drops a declined (or blocked) request and leaves it if it is open, back toward the requests list. */
     private fun removeRequest(id: String) {
         val directs = mutable.value.directConversations.filter { it.id != id }
-        mutable.value = mutable.value.copy(directConversations = directs, requestsOpen = messageRequests(directs).isNotEmpty())
+        mutable.value = mutable.value.copy(directConversations = directs, requestsOpen = if (messageRequests(directs).isNotEmpty()) true else null)
         if (mutable.value.selectedDirectId != id) return
         val channel = mutable.value.selectedSpace?.channels?.firstOrNull { it.joined }
         if (channel != null) selectChannel(channel) else invalidate()
@@ -439,7 +440,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             try {
                 val blocks = api.blocks(token).blocks
-                if (request == accountGeneration) mutable.value = mutable.value.copy(blocks = blocks, blocksError = null)
+                if (request == accountGeneration) mutable.value = mutable.value.copy(blocks = blocks, blocksError = null, blocksLoaded = true)
             } catch (error: CancellationException) { throw error }
             catch (error: Throwable) { if (request == accountGeneration) mutable.value = mutable.value.copy(blocksError = message(error)) }
         }
@@ -1407,12 +1408,14 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         replaceDetail(detail.copy(channels = channels)); done()
         channels.firstOrNull { it.joined }?.let(::selectChannel) ?: closeChannel(clearPending = true)
     }
-    fun addSpaceMember(username: String) = launchAction { request ->
+    /** [done] runs only after the invitation is sent, so a failed add keeps the typed username. */
+    fun addSpaceMember(username: String, done: () -> Unit = {}) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
         val context = AdminMutationContext(request, detail.space.id)
         val member = api.addSpaceMember(requireAccountToken(), detail.space.id, username)
         if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
         mutable.value = mutable.value.copy(pendingSpaceInvitations = mutable.value.pendingSpaceInvitations.filter { it.id != member.id } + member)
+        done()
     }
     fun loadSpaceInvitations() = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
@@ -1457,12 +1460,13 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
         mutable.value = mutable.value.copy(channelGrants = response.members, pendingChannelInvitations = response.invitations)
     }
-    fun addChannelGrant(channel: Channel, username: String) = launchAction { request ->
+    fun addChannelGrant(channel: Channel, username: String, done: () -> Unit = {}) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
         val context = AdminMutationContext(request, detail.space.id, channel.id)
         val member = api.addChannelMember(requireAccountToken(), detail.space.id, channel.id, username)
         if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
         mutable.value = mutable.value.copy(pendingChannelInvitations = mutable.value.pendingChannelInvitations.filter { it.id != member.id } + member)
+        done()
     }
     fun removeChannelGrant(channel: Channel, member: Member) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
@@ -1579,7 +1583,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun invalidate() { ++generation; closeChannel(clearPending = true) }
     private fun requireAccountToken() = checkNotNull(accountToken) { "Sign in required." }
     private fun fail(error: Throwable) { mutable.value = mutable.value.copy(busy = false, error = message(error)) }
-    private fun message(error: Throwable) = (error as? ApiException)?.code?.let(::directMessageError) ?: error.message ?: "That request did not work."
+    // Display text only: logic compares ApiException's status, code and message, never this.
+    private fun message(error: Throwable) = (error as? ApiException)?.code?.let(::directMessageError) ?: friendlyError(error)
     fun clearError() { mutable.value = mutable.value.copy(error = null) }
 
     private fun launchAccountAction(block: suspend (Long) -> Unit) = viewModelScope.launch {

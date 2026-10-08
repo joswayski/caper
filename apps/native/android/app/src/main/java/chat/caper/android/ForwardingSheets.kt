@@ -12,6 +12,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import chat.caper.android.data.ApiException
+import chat.caper.android.data.friendlyError
 import chat.caper.android.model.*
 import chat.caper.android.ui.Border
 import chat.caper.android.ui.EmojiImage
@@ -70,7 +71,7 @@ import java.util.UUID
     LaunchedEffect(attempt) {
         error = null
         try { destinations = viewModel.forwardDestinations().sortedBy { "${it.spaceName} ${it.name}" } }
-        catch (reason: Throwable) { if (reason is CancellationException) throw reason; error = reason.message }
+        catch (reason: Throwable) { if (reason is CancellationException) throw reason; error = friendlyError(reason, "Destinations are unavailable.") }
     }
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = SurfaceRaised) {
         Column(Modifier.fillMaxWidth().heightIn(max = 660.dp).verticalScroll(rememberScrollState()).padding(18.dp).imePadding(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -103,7 +104,7 @@ import java.util.UUID
                         if (reason is CancellationException) throw reason
                         val rejected = reason is ApiException && reason.status in listOf(400, 401, 403, 404, 409, 422)
                         if (rejected) key = null
-                        error = "${if (rejected) "Not sent." else "Not confirmed. Retry checks the same forward."} ${reason.message.orEmpty()}"
+                        error = "${if (rejected) "Not sent." else "Not confirmed. Retry checks the same forward."} ${friendlyError(reason, "Try again.")}"
                     } finally { sending = false }
                 }
             }, enabled = selected != null && !sending && note.codePointCount(0, note.length) <= 4000) { Text(if (sending) "Forwarding…" else if (key != null) "Retry forward" else "Forward") }
@@ -130,7 +131,7 @@ import java.util.UUID
                 fresh = fresh.copy(messages = earlier.messages + fresh.messages, hasMore = earlier.hasMore); loadedPages++
             }
             oldest = fresh.messages.firstOrNull()?.seq; conversation = fresh
-        } catch (reason: Throwable) { if (reason is CancellationException) throw reason; conversation = null; error = reason.message }
+        } catch (reason: Throwable) { if (reason is CancellationException) throw reason; conversation = null; error = friendlyError(reason, "Conversation is unavailable.") }
         finally { loading = false }
     }
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = SurfaceRaised) {

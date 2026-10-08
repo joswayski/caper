@@ -270,8 +270,13 @@ data class AppUiState(
     /** Accounts you blocked, newest first; their messages collapse everywhere. */
     val blocks: List<BlockedAccount> = emptyList(),
     val blocksError: String? = null,
-    /** The sidebar's "Message requests" list is expanded. */
-    val requestsOpen: Boolean = false,
+    /** The blocked-accounts list loaded at least once, so an empty list means none. */
+    val blocksLoaded: Boolean = false,
+    /**
+     * The sidebar's "Message requests" list is expanded. Null follows the view (open
+     * while a request is shown); a tap stores the explicit choice, which wins.
+     */
+    val requestsOpen: Boolean? = null,
     /** Notification settings with unsaved changes applied; null until they load. */
     val notificationSettings: NotificationSettings? = null,
     /** Why notification settings could not load, while none are shown. */
