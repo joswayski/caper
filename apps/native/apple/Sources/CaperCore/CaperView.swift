@@ -2901,83 +2901,102 @@ private struct MessageActionsSheet: View {
 
     private let quickReactions = ["👍", "❤️", "😂", "🎉", "👀"]
 
+    /// Fits every offered action without scrolling.
+    private var actionsHeight: CGFloat {
+        var height: CGFloat = 330
+        if canForward { height += 50 }
+        if chat.canEdit(message) { height += 44 }
+        if message.forward == nil && (message.revision ?? 1) > 1 { height += 44 }
+        if block != nil { height += 44 }
+        return height
+    }
+
+    private var quickReactionRow: some View {
+        HStack(spacing: 4) {
+            ForEach(quickReactions, id: \.self) { emoji in
+                Button { quickReaction(emoji) } label: {
+                    EmojiArtworkView(emoji: emoji, size: 28).frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .buttonStyle(.plain)
+                .disabled(!canReact)
+                .accessibilityLabel("React with \(emoji)")
+                .accessibilityIdentifier("quick-reaction-\(emoji)")
+            }
+            Button { showingEmojiPicker = true } label: {
+                Image(systemName: "face.smiling").font(.system(size: 24))
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .buttonStyle(.plain)
+            .disabled(!canReact)
+            .accessibilityLabel("Add reaction")
+            .accessibilityIdentifier("message-action-add-reaction")
+        }
+    }
+
+    private var actionList: some View {
+        VStack(spacing: 0) {
+            if chat.canEdit(message) {
+                Button("Edit message", systemImage: "pencil") { editing = true }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                Divider()
+            }
+            if message.forward == nil && (message.revision ?? 1) > 1 {
+                Button("View edit history", systemImage: "clock") { history = true }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                Divider()
+            }
+            Button(action: togglePin) {
+                Label(message.pin == nil ? "Pin message" : "Unpin message", systemImage: message.pin == nil ? "pin" : "pin.slash")
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            }.disabled(!canPin)
+            Divider()
+            Button(action: reply) {
+                Label("Reply in thread", systemImage: "bubble.right").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            }
+            if canForward {
+                Divider()
+                Button(action: forward) {
+                    Label("Forward message", systemImage: "arrowshape.turn.up.right").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                }
+            }
+            Divider()
+            Button {
+                UIPasteboard.general.string = message.content.text
+                dismiss()
+            } label: {
+                Label("Copy text", systemImage: "doc.on.doc").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            }
+            Divider()
+            Button {
+                UIPasteboard.general.string = message.id
+                dismiss()
+            } label: {
+                Label("Copy message ID", systemImage: "number").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            }
+            if block != nil {
+                Divider()
+                Button(role: .destructive) {
+                    blockRequested = true
+                    dismiss()
+                } label: {
+                    Label("Block \(message.author.name)", systemImage: "nosign").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .foregroundStyle(CaperTheme.terracottaBright)
+                }.accessibilityIdentifier("message-action-block")
+            }
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 12)
+        .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    // The sheet is split into properties and its height is built in typed
+    // steps: as one expression, Xcode 16's type checker gave up on the body.
     var body: some View {
         Group {
             if showingEmojiPicker {
                 ReactionPicker(select: selectReaction)
             } else {
                 VStack(spacing: 16) {
-                    HStack(spacing: 4) {
-                        ForEach(quickReactions, id: \.self) { emoji in
-                            Button { quickReaction(emoji) } label: {
-                                EmojiArtworkView(emoji: emoji, size: 28).frame(maxWidth: .infinity, minHeight: 44)
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(!canReact)
-                            .accessibilityLabel("React with \(emoji)")
-                            .accessibilityIdentifier("quick-reaction-\(emoji)")
-                        }
-                        Button { showingEmojiPicker = true } label: {
-                            Image(systemName: "face.smiling").font(.system(size: 24))
-                                .frame(maxWidth: .infinity, minHeight: 44)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(!canReact)
-                        .accessibilityLabel("Add reaction")
-                        .accessibilityIdentifier("message-action-add-reaction")
-                    }
-
-                    VStack(spacing: 0) {
-                        if chat.canEdit(message) {
-                            Button("Edit message", systemImage: "pencil") { editing = true }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                            Divider()
-                        }
-                        if message.forward == nil && (message.revision ?? 1) > 1 {
-                            Button("View edit history", systemImage: "clock") { history = true }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                            Divider()
-                        }
-                        Button(action: togglePin) {
-                            Label(message.pin == nil ? "Pin message" : "Unpin message", systemImage: message.pin == nil ? "pin" : "pin.slash")
-                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                        }.disabled(!canPin)
-                        Divider()
-                        Button(action: reply) {
-                            Label("Reply in thread", systemImage: "bubble.right").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                        }
-                        if canForward {
-                            Divider()
-                            Button(action: forward) {
-                                Label("Forward message", systemImage: "arrowshape.turn.up.right").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                            }
-                        }
-                        Divider()
-                        Button {
-                            UIPasteboard.general.string = message.content.text
-                            dismiss()
-                        } label: {
-                            Label("Copy text", systemImage: "doc.on.doc").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                        }
-                        Divider()
-                        Button {
-                            UIPasteboard.general.string = message.id
-                            dismiss()
-                        } label: {
-                            Label("Copy message ID", systemImage: "number").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                        }
-                        if block != nil {
-                            Divider()
-                            Button(role: .destructive) {
-                                blockRequested = true
-                                dismiss()
-                            } label: {
-                                Label("Block \(message.author.name)", systemImage: "nosign").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                                    .foregroundStyle(CaperTheme.terracottaBright)
-                            }.accessibilityIdentifier("message-action-block")
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, 12)
-                    .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
+                    quickReactionRow
+                    actionList
                 }
                 .padding(16)
                 .font(CaperTheme.font(15))
@@ -2988,7 +3007,7 @@ private struct MessageActionsSheet: View {
             }
         }
         .presentationBackground(CaperTheme.raised)
-        .presentationDetents(showingEmojiPicker ? [.medium, .large] : [.height(330 + (canForward ? 50 : 0) + (chat.canEdit(message) ? 44 : 0) + ((message.revision ?? 1) > 1 && message.forward == nil ? 44 : 0) + (block == nil ? 0 : 44)), .large])
+        .presentationDetents(showingEmojiPicker ? [.medium, .large] : [.height(actionsHeight), .large])
         .onDisappear { if blockRequested { block?() } }
         .presentationDragIndicator(.visible)
         .sheet(isPresented: $editing) { MessageEditorView(chat: chat, message: message) { editing = false; dismiss() } }
