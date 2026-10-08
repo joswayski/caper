@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { test, type TestContext, vi } from "vitest";
-import { ChatClient, initialChatView, loadChatHistory, type ChatViewState } from "../chat/client.ts";
+import {
+  ChatClient,
+  initialChatView,
+  loadChatHistory,
+  resetChatSessionsForTests,
+  type ChatViewState,
+} from "../chat/client.ts";
 import { AppGateway, setAppGatewayForTests } from "../gateway/client.ts";
 import type { ChatEvent, ChatMessage, ChatTypingEvent, GeneralChatHistory } from "../chat/types.ts";
 
@@ -70,6 +76,8 @@ class TestSocket extends EventTarget {
 }
 
 function installBrowser(t: TestContext) {
+  resetChatSessionsForTests();
+  t.onTestFinished(resetChatSessionsForTests);
   const originals = {
     window: globalThis.window,
     localStorage: globalThis.localStorage,
@@ -2077,4 +2085,81 @@ test("typing refreshes from the same people do not re-render the chat", async (t
   assert.equal(f.state, shown, "an unchanged typer list publishes no new state");
   f.sockets[0].frame(typingEvent("a", "9007199254740994", false));
   assert.deepEqual(f.state.typingAuthors, []);
+});
+
+test("signed-in conversations share one chat session per account and replace it only on 401", async (t) => {
+  installBrowser(t);
+  let sessions = 0;
+  const reactions: number[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
+    const path = String(input);
+    if (path === "/api/chat/session") {
+      sessions++;
+      return Response.json({
+        token: `token-${sessions}`,
+        author: { id: "account", name: "Person", isGuest: false },
+      });
+    }
+    if (path.endsWith("/reactions")) {
+      const status = reactions.shift()!;
+      return Response.json(
+        { error: "this person isn't accepting direct messages", code: "dm_not_accepted" },
+        { status },
+      );
+    }
+    return Response.json({
+      space: { id: "space", name: "Caper" },
+      channel: { id: "general", name: "General" },
+      messages: [],
+      cursor: "0",
+      hasMore: false,
+    });
+  });
+  const open = () => {
+    let state!: ChatViewState;
+    const client = new ChatClient((next) => {
+      state = next;
+    });
+    t.onTestFinished(() => client.stop());
+    client.start();
+    client.identify("Person", true, "account");
+    return { client, state: () => state };
+  };
+  const first = open();
+  const second = open();
+  await tick();
+  await tick();
+  assert.equal(sessions, 1, "switching conversations reuses the account's session");
+  assert.equal(first.state().author?.id, "account");
+  assert.equal(second.state().author?.id, "account");
+
+  // A refusal such as a block is not an invalid session.
+  reactions.push(403);
+  await assert.rejects(first.client.setReaction("message", "👍", true), /accepting direct messages/);
+  await tick();
+  assert.equal(sessions, 1);
+
+  reactions.push(401);
+  await assert.rejects(first.client.setReaction("message", "👍", true));
+  await tick();
+  await tick();
+  assert.equal(sessions, 2, "an expired capability is replaced once");
+  const third = open();
+  await tick();
+  await tick();
+  assert.equal(sessions, 2, "later conversations reuse the replacement");
+  assert.equal(third.state().author?.id, "account");
+});
+
+test("a DM send refused by a block is final, like on the native clients", async (t) => {
+  const f = await sendingFixture(t);
+  const sending = f.client.send("are you there?");
+  await tick();
+  f.posts[0].resolve(
+    Response.json({ error: "this person isn't accepting direct messages", code: "dm_not_accepted" }, { status: 403 }),
+  );
+  await sending.catch(() => undefined);
+  await tick();
+  assert.equal(f.state.sendRejected, true);
+  assert.equal(f.state.sendError, "This person isn’t accepting direct messages.");
 });

@@ -97,8 +97,8 @@ export function apiError(response: Response, fallback: string) {
   return response
     .json()
     .catch(() => undefined)
-    .then(
-      (body: { error?: unknown; code?: unknown } | undefined) =>
+    .then((body: { error?: unknown; code?: unknown } | undefined) =>
+      Object.assign(
         new Error(
           typeof body?.code === "string" && directMessageErrors[body.code]
             ? directMessageErrors[body.code]
@@ -106,6 +106,8 @@ export function apiError(response: Response, fallback: string) {
               ? body.error
               : fallback,
         ),
+        { code: typeof body?.code === "string" ? body.code : undefined },
+      ),
     );
 }
 
@@ -220,6 +222,63 @@ function storedSession(): ChatSession | undefined {
   return undefined;
 }
 
+async function mintSession(name: string, signal: AbortSignal): Promise<ChatSession> {
+  const response = await fetch("/api/chat/session", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name }),
+    signal,
+  });
+  if (!response.ok) throw await apiError(response, "Guest messaging is unavailable.");
+  const session = (await response.json()) as Partial<ChatSession>;
+  if (
+    typeof session.token !== "string" ||
+    !session.token ||
+    !session.author ||
+    typeof session.author.id !== "string" ||
+    typeof session.author.name !== "string" ||
+    typeof session.author.isGuest !== "boolean"
+  )
+    throw new Error("The chat service returned an invalid session.");
+  return session as ChatSession;
+}
+
+// A signed-in capability is bound to the account session, not a conversation:
+// mint one per account for this page and share it across channel switches,
+// like the native clients. Logout reloads the page, which drops it.
+// A rename mints a fresh one, so its author name stays current.
+let accountSession: { accountId: string; name: string; session: Promise<ChatSession>; token?: string } | undefined;
+
+function sharedAccountSession(accountId: string, name: string): Promise<ChatSession> {
+  if (accountSession?.accountId === accountId && accountSession.name === name) return accountSession.session;
+  const entry: NonNullable<typeof accountSession> = {
+    accountId,
+    name,
+    // Not tied to one client's lifetime: another conversation may be waiting.
+    session: mintSession(name, AbortSignal.timeout(10_000)).then((minted) => {
+      if (minted.author.id !== accountId || minted.author.isGuest)
+        throw new Error("The chat service returned another identity.");
+      entry.token = minted.token;
+      return minted;
+    }),
+  };
+  accountSession = entry;
+  void entry.session.catch(() => {
+    if (accountSession === entry) accountSession = undefined;
+  });
+  return entry.session;
+}
+
+/** The server refused this capability; the next conversation mints a new one. */
+function forgetAccountSession(token: string) {
+  if (accountSession?.token === token) accountSession = undefined;
+}
+
+/** For tests: each starts with no shared capability. */
+export function resetChatSessionsForTests() {
+  accountSession = undefined;
+}
+
 export class ChatClient {
   private state = initialState;
   private readonly timeline = new ChatTimeline();
@@ -229,6 +288,7 @@ export class ChatClient {
   private sessionGeneration = 0;
   private loadingHistory = false;
   private name = "Guest";
+  private accountId?: string;
   private session?: ChatSession;
   private sending = false;
   private confirmSend?: (message: ChatMessage) => void;
@@ -281,6 +341,12 @@ export class ChatClient {
     this.silenced = ids;
   }
 
+  /** The committed replay cursor, without building a whole history snapshot. */
+  readCursor(): string | undefined {
+    if (this.state.phase !== "ready" || this.spaceId === undefined || !this.channel) return;
+    return this.timeline.cursor;
+  }
+
   snapshotHistory(): GeneralChatHistory | undefined {
     if (this.state.phase !== "ready" || this.spaceId === undefined || !this.channel) return;
     const pinnedMessages = this.timeline.pinnedMessages;
@@ -296,8 +362,9 @@ export class ChatClient {
     };
   }
 
-  identify(name: string, signedIn = false) {
+  identify(name: string, signedIn = false, accountId?: string) {
     this.name = name;
+    this.accountId = signedIn ? accountId : undefined;
     const saved = storedSession();
     // Guest identity may persist. Account names are not unique: mint a fresh
     // capability from the current account cookie rather than matching by name.
@@ -619,10 +686,14 @@ export class ChatClient {
           signal: AbortSignal.any([this.controller.signal, controller.signal, AbortSignal.timeout(10_000)]),
         });
         if (!response.ok) {
-          rejected = [400, 404, 409, 413, 422].includes(response.status);
+          const error = await apiError(response, "Message could not be sent.");
+          // A block or DM privacy refusal is final, as on the native clients.
+          rejected =
+            [400, 404, 409, 413, 422].includes(response.status) ||
+            (response.status === 403 && !!error.code && error.code in directMessageErrors);
           if (
             current() &&
-            (response.status === 401 || response.status === 403) &&
+            response.status === 401 &&
             this.state.pendingSend?.clientMessageId === pending.clientMessageId
           ) {
             try {
@@ -630,10 +701,9 @@ export class ChatClient {
             } catch {
               /* Storage is optional. */
             }
-            this.session = undefined;
-            void this.createSession();
+            this.replaceSession(session);
           }
-          throw await apiError(response, "Message could not be sent.");
+          throw error;
         }
         const message: unknown = await response.json();
         if (
@@ -705,10 +775,7 @@ export class ChatClient {
         if (!current()) return;
         if (!response.ok) {
           const error = await apiError(response, "Reaction could not be saved. Try again.");
-          if (response.status === 401 || response.status === 403) {
-            this.session = undefined;
-            void this.createSession();
-          }
+          if (response.status === 401) this.replaceSession(session);
           throw error;
         }
         const event: unknown = await response.json();
@@ -1020,25 +1087,11 @@ export class ChatClient {
     const generation = ++this.sessionGeneration;
     this.update({ sessionError: undefined });
     try {
-      const response = await fetch("/api/chat/session", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: this.name }),
-        signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
-      });
-      if (!response.ok) throw await apiError(response, "Guest messaging is unavailable.");
-      const session = (await response.json()) as Partial<ChatSession>;
-      if (
-        typeof session.token !== "string" ||
-        !session.token ||
-        !session.author ||
-        typeof session.author.id !== "string" ||
-        typeof session.author.name !== "string" ||
-        typeof session.author.isGuest !== "boolean"
-      )
-        throw new Error("The chat service returned an invalid session.");
+      const session = this.accountId
+        ? await sharedAccountSession(this.accountId, this.name)
+        : await mintSession(this.name, AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]));
       if (this.controller.signal.aborted || generation !== this.sessionGeneration) return;
-      this.session = session as ChatSession;
+      this.session = session;
       try {
         localStorage.setItem(SESSION_KEY, JSON.stringify(session));
       } catch {
@@ -1049,6 +1102,15 @@ export class ChatClient {
       if (!this.controller.signal.aborted && generation === this.sessionGeneration)
         this.update({ sessionError: error instanceof Error ? error.message : "Guest messaging is unavailable." });
     }
+  }
+
+  /** Only 401 means the capability itself is invalid. A 403 is a refusal
+   * (for example a block) that a new session would not change. */
+  private replaceSession(session: ChatSession) {
+    if (this.session !== session) return;
+    forgetAccountSession(session.token);
+    this.session = undefined;
+    void this.createSession();
   }
 
   private update(change: Partial<ChatViewState>) {

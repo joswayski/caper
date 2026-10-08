@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Send, X } from "lucide-react";
 import type { ChatClient, ChatViewState } from "./client.ts";
 import type { ChatMessage } from "./types.ts";
@@ -29,7 +29,10 @@ export default function ThreadPanel({
   const [mobile, setMobile] = useState(false);
   const rootId = state.thread?.rootId;
   const pending = rootId && state.pendingSend?.threadRootId === rootId ? state.pendingSend : undefined;
-  const replies = rootId ? state.messages.filter((message) => message.threadRootId === rootId) : [];
+  const replies = useMemo(
+    () => (rootId ? state.messages.filter((message) => message.threadRootId === rootId) : []),
+    [state.messages, rootId],
+  );
   const draft = rootId ? (drafts[rootId] ?? { text: "", broadcast: false }) : { text: "", broadcast: false };
   const update = (change: Partial<typeof draft>) => {
     if (rootId) setDrafts((current) => ({ ...current, [rootId]: { ...draft, ...change } }));
@@ -116,8 +119,14 @@ export default function ThreadPanel({
     scroll.current.scrollTop = olderAnchor.current.top + scroll.current.scrollHeight - olderAnchor.current.height;
     olderAnchor.current = undefined;
   }, [state.thread?.loadingOlder, replies.length]);
+  const root = useMemo(() => state.messages.find((message) => message.id === rootId), [state.messages, rootId]);
+  // Typing a reply changes only this panel's draft; keep the rendered messages.
+  const renderedRoot = useMemo(() => root && renderMessage(0, root, true), [root, renderMessage]);
+  const renderedReplies = useMemo(
+    () => replies.map((message, index) => renderMessage(index + 1, message, true)),
+    [replies, renderMessage],
+  );
   if (!state.thread) return null;
-  const root = state.messages.find((message) => message.id === rootId);
   const sending = !!state.pendingSend && !state.sendError;
   const blocked = !!state.pendingSend && !pending;
   const submit = async () => {
@@ -160,7 +169,7 @@ export default function ThreadPanel({
           follow.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
         }}
       >
-        {root && <div className="chat-thread-parent">{renderMessage(0, root, true)}</div>}
+        {root && <div className="chat-thread-parent">{renderedRoot}</div>}
         {!!root?.thread?.replyCount && (
           <div className="chat-thread-divider">
             {root.thread.replyCount} {root.thread.replyCount === 1 ? "reply" : "replies"}
@@ -208,7 +217,7 @@ export default function ThreadPanel({
         {!state.thread.loading && !state.thread.error && !replies.length && (
           <p className="chat-thread-status">No replies yet. Start the thread.</p>
         )}
-        {replies.map((message, index) => renderMessage(index + 1, message, true))}
+        {renderedReplies}
         {pending && (
           <article className="chat-message chat-message-pending">
             <div />

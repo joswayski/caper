@@ -93,6 +93,8 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "That request did not work.";
 }
 
+const INACCESSIBLE_DIRECT = "This conversation is not accessible.";
+
 function selectedFromUrl() {
   if (typeof window === "undefined") return {};
   const query = new URLSearchParams(window.location.search);
@@ -1601,9 +1603,11 @@ export default function Spaces({
     const conversation = directs.find((item) => item.id === selected.dmId);
     if (!conversation) {
       setDirectView(undefined);
-      setDirectError("This conversation is not accessible.");
+      setDirectError(INACCESSIBLE_DIRECT);
       return;
     }
+    // A deep link checks before the list loads; drop that error once it arrives.
+    setDirectError((current) => (current === INACCESSIBLE_DIRECT ? undefined : current));
     // ChatClient owns the history read, its cancellation, and explicit retries.
     // Mounting it while also fetching here issued two reads for every DM open.
     setDirectView({ conversation });
