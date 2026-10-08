@@ -437,9 +437,10 @@ async fn devices(
     .fetch_all(&workers.pool)
     .await
     .map_err(|_| ())?;
+    let device_users: HashSet<i64> = devices.iter().map(|device| device.0).collect();
     let holding: Vec<String> = recipients
         .iter()
-        .filter(|r| r.hold && devices.iter().any(|d| d.0 == r.id))
+        .filter(|r| r.hold && device_users.contains(&r.id))
         .map(|r| r.external_id.clone())
         .collect();
     let active = if holding.is_empty() {
@@ -451,10 +452,14 @@ async fn devices(
             Err(()) => return Err(()),
         }
     };
+    let recipients: HashMap<i64, &Recipient> = recipients
+        .iter()
+        .map(|recipient| (recipient.id, recipient))
+        .collect();
     Ok(devices
         .into_iter()
         .map(|(user, device, tag)| {
-            let recipient = recipients.iter().find(|r| r.id == user);
+            let recipient = recipients.get(&user);
             let held = recipient.is_some_and(|r| {
                 r.hold
                     && active

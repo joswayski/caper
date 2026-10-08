@@ -7,8 +7,9 @@ Accounts receive a saved, random Caper avatar from 100 designs and eight colorwa
 Custom photo/GIF uploads and an avatar gallery are not implemented yet.
 
 Signed-in accounts can start persistent, private one-to-one messages by username.
-The Direct messages list is shared across spaces. Mobile push is deferred;
-when needed, the server will integrate directly with APNs for iOS and FCM for Android.
+The Direct messages list is shared across spaces. Phone push is implemented behind
+server flags using APNs for iOS and FCM for Android; real-provider and physical-device
+validation is still pending. See [notification behavior and rollout](docs/notifications.md).
 
 Channel pins are shared with everyone who can read the channel. Joined members
 can pin or unpin in one action; the channel header opens the complete pins list.
