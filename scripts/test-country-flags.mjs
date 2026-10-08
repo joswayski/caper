@@ -1,25 +1,27 @@
 // Real Call UI with a mocked spectator roster, not live SFU/device validation.
 // Run against Vite: node scripts/test-country-flags.mjs http://localhost:5174
-import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 
-const origin = new URL(process.argv[2] ?? 'http://localhost:5174');
-assert.ok(['localhost', '127.0.0.1'].includes(origin.hostname), 'Local development only');
+const origin = new URL(process.argv[2] ?? "http://localhost:5174");
+assert.ok(["localhost", "127.0.0.1"].includes(origin.hostname), "Local development only");
 const session = `flags-${process.pid}`;
 const artifacts = process.env.FLAG_TEST_ARTIFACTS && resolve(process.env.FLAG_TEST_ARTIFACTS);
 if (artifacts) mkdirSync(artifacts, { recursive: true });
 function browser(...args) {
-  const result = JSON.parse(execFileSync('agent-browser', ['--session', session, ...args, '--json'], { encoding: 'utf8', timeout: 60000 }));
+  const result = JSON.parse(
+    execFileSync("agent-browser", ["--session", session, ...args, "--json"], { encoding: "utf8", timeout: 60000 }),
+  );
   assert.ok(result.success, result.error);
   return result.data;
 }
-const evaluate = code => browser('eval', `(async () => { ${code} })()`).result;
+const evaluate = (code) => browser("eval", `(async () => { ${code} })()`).result;
 
 try {
-  browser('open', origin.href);
-  browser('set', 'viewport', '1280', '900', '2');
+  browser("open", origin.href);
+  browser("set", "viewport", "1280", "900", "2");
   evaluate(`
     const {default: React} = await import('/node_modules/.vite/deps/react.js');
     const {default: {createRoot}} = await import('/node_modules/.vite/deps/react-dom_client.js');
@@ -50,19 +52,26 @@ try {
     }));
     window.cleanupFlags = () => root.unmount();
   `);
-  browser('wait', '--fn', 'document.querySelectorAll("#flag-fixture .participant").length === 3');
-  assert.deepEqual(evaluate(`return [...document.querySelectorAll('#flag-fixture .participant')].map(row => ({name: row.querySelector('strong').textContent, flag: !!row.querySelector('.participant-country')}));`), [
-    { name: 'Signed-in participant', flag: false },
-    { name: 'Located guest', flag: false },
-    { name: 'Unknown-location guest', flag: false },
-  ]);
-  if (artifacts) browser('screenshot', '--full', `${artifacts}/roster-desktop.png`);
-  browser('set', 'viewport', '390', '844', '2');
-  evaluate('await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));');
+  browser("wait", "--fn", 'document.querySelectorAll("#flag-fixture .participant").length === 3');
+  assert.deepEqual(
+    evaluate(
+      `return [...document.querySelectorAll('#flag-fixture .participant')].map(row => ({name: row.querySelector('strong').textContent, flag: !!row.querySelector('.participant-country')}));`,
+    ),
+    [
+      { name: "Signed-in participant", flag: false },
+      { name: "Located guest", flag: false },
+      { name: "Unknown-location guest", flag: false },
+    ],
+  );
+  if (artifacts) browser("screenshot", "--full", `${artifacts}/roster-desktop.png`);
+  browser("set", "viewport", "390", "844", "2");
+  evaluate("await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));");
   assert.equal(evaluate('return document.querySelectorAll("#flag-fixture .participant-country").length;'), 0);
-  if (artifacts) browser('screenshot', '--full', `${artifacts}/roster-narrow.png`);
-  evaluate('cleanupFlags();');
-  console.log('PASS: desktop/narrow roster has no flags, including legacy countryCode payloads (mocked API projection)');
+  if (artifacts) browser("screenshot", "--full", `${artifacts}/roster-narrow.png`);
+  evaluate("cleanupFlags();");
+  console.log(
+    "PASS: desktop/narrow roster has no flags, including legacy countryCode payloads (mocked API projection)",
+  );
 } finally {
-  browser('close');
+  browser("close");
 }

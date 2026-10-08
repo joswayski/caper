@@ -21,18 +21,25 @@ export class NoiseAssets {
       // Preparation survives a cancelled join so the next attempt can reuse it.
       const timeout = AbortSignal.timeout(30_000);
       loading = Promise.all([
-        download(engine === "rnnoise" ? "/audio/rnnoise-v1/rnnoise.wasm" : "/audio/deepfilter-v1/df_bg.wasm", timeout)
-          .then((bytes) => WebAssembly.compile(bytes)),
+        download(
+          engine === "rnnoise" ? "/audio/rnnoise-v1/rnnoise.wasm" : "/audio/deepfilter-v1/df_bg.wasm",
+          timeout,
+        ).then((bytes) => WebAssembly.compile(bytes)),
         engine === "deepfilter" ? download("/audio/deepfilter-v1/DeepFilterNet3.bin", timeout) : undefined,
-      ]).then(([module, model]) => ({ module, model })).catch((error) => {
-        this.loading.delete(engine);
-        throw error;
-      });
+      ])
+        .then(([module, model]) => ({ module, model }))
+        .catch((error) => {
+          this.loading.delete(engine);
+          throw error;
+        });
       this.loading.set(engine, loading);
     }
     if (!signal) return loading;
     return new Promise<Assets>((resolve, reject) => {
-      const abort = () => { signal.removeEventListener("abort", abort); reject(signal.reason); };
+      const abort = () => {
+        signal.removeEventListener("abort", abort);
+        reject(signal.reason);
+      };
       signal.addEventListener("abort", abort, { once: true });
       if (signal.aborted) abort();
       void loading.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));

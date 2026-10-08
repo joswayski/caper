@@ -7,7 +7,9 @@ export const DailyIconContext = createContext<number | null>(null);
 export default function RotatingFavicon({ children }: { children: ReactNode }) {
   const [index, setIndex] = useState<number | null>(null);
   useEffect(() => {
-    const standalone = window.matchMedia("(display-mode: standalone)").matches || (navigator as Navigator & { standalone?: boolean }).standalone;
+    const standalone =
+      window.matchMedia("(display-mode: standalone)").matches ||
+      (navigator as Navigator & { standalone?: boolean }).standalone;
     let alive = true;
     let saved: DailyIcon | null = null;
     let renderedIndex: number | undefined;
@@ -16,9 +18,15 @@ export default function RotatingFavicon({ children }: { children: ReactNode }) {
       try {
         const stored = localStorage.getItem("caper.daily-icon.v1");
         if (stored) saved = JSON.parse(stored);
-      } catch { /* Storage may be unavailable; retain this tab's choice. */ }
+      } catch {
+        /* Storage may be unavailable; retain this tab's choice. */
+      }
       saved = dailyIcon(saved, Date.now());
-      try { localStorage.setItem("caper.daily-icon.v1", JSON.stringify(saved)); } catch { /* Rotation still works in this tab. */ }
+      try {
+        localStorage.setItem("caper.daily-icon.v1", JSON.stringify(saved));
+      } catch {
+        /* Rotation still works in this tab. */
+      }
       setIndex(saved.index);
       if (standalone) return;
       const url = dailyIconUrl(saved.index);
@@ -30,7 +38,8 @@ export default function RotatingFavicon({ children }: { children: ReactNode }) {
       image.onload = () => {
         if (!alive || saved?.index !== index) return;
         for (const size of [32, 192]) {
-          const canvas = document.createElement("canvas"); canvas.width = canvas.height = size;
+          const canvas = document.createElement("canvas");
+          canvas.width = canvas.height = size;
           canvas.getContext("2d")!.drawImage(image, 0, 0, size, size);
           const link = document.querySelector<HTMLLinkElement>(`#caper-favicon-${size}`);
           if (link) link.href = canvas.toDataURL("image/png");

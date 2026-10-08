@@ -1,0 +1,21 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "categories": { "correctness": "error" },
+  "rules": {
+    "no-unused-expressions": ["error", { "allowTernary": true }],
+    "no-unused-vars": ["error", { "ignoreRestSiblings": true, "argsIgnorePattern": "^_" }]
+  },
+  "overrides": [
+    {
+      "files": ["**/*.test.ts"],
+      "rules": { "typescript/no-this-alias": "off" }
+    }
+  ],
+  "ignorePatterns": [
+    "apps/web/src/routeTree.gen.ts",
+    "apps/web/public/audio/**/ort*.mjs",
+    "apps/web/public/audio/deepfilter-v1/df.js",
+    "apps/web/public/audio/rnnoise-v1/rnnoise.js",
+    "**/vendor/**"
+  ]
+}

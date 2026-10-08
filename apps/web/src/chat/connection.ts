@@ -1,5 +1,20 @@
 import { appGateway, type AppGateway, type GatewaySubscription } from "../gateway/client.ts";
-import { isChatAuthor, isChatEditEvent, isChatForwardEvent, isChatMessage, isChatPinEvent, isChatReactionEvent, sequence, type ChatEditEvent, type ChatEvent, type ChatForwardEvent, type ChatMessage, type ChatPinEvent, type ChatReactionEvent, type ChatTypingEvent } from "./types.ts";
+import {
+  isChatAuthor,
+  isChatEditEvent,
+  isChatForwardEvent,
+  isChatMessage,
+  isChatPinEvent,
+  isChatReactionEvent,
+  sequence,
+  type ChatEditEvent,
+  type ChatEvent,
+  type ChatForwardEvent,
+  type ChatMessage,
+  type ChatPinEvent,
+  type ChatReactionEvent,
+  type ChatTypingEvent,
+} from "./types.ts";
 
 export interface ChatConnectionCallbacks {
   message: (message: ChatMessage) => "applied" | "buffered" | "duplicate" | "overflow";
@@ -25,14 +40,25 @@ function parseEvent(value: unknown): ChatEvent {
   if (isChatPinEvent(event)) return event;
   if (isChatForwardEvent(event)) return event;
   if (isChatEditEvent(event)) return event;
-  if (event.type === "typing.updated" && typeof event.channelId === "string" && isChatAuthor(event.author)
-    && typeof event.typing === "boolean" && typeof event.revision === "string") {
+  if (
+    event.type === "typing.updated" &&
+    typeof event.channelId === "string" &&
+    isChatAuthor(event.author) &&
+    typeof event.typing === "boolean" &&
+    typeof event.revision === "string"
+  ) {
     sequence(event.revision);
     return event as ChatTypingEvent;
   }
-  if (event.type === "message.created" && typeof event.channelId === "string" && typeof event.seq === "string" && isChatMessage(event.message)) {
+  if (
+    event.type === "message.created" &&
+    typeof event.channelId === "string" &&
+    typeof event.seq === "string" &&
+    isChatMessage(event.message)
+  ) {
     sequence(event.seq);
-    if (event.message.seq !== event.seq || event.message.channelId !== event.channelId) throw new Error("Invalid chat event.");
+    if (event.message.seq !== event.seq || event.message.channelId !== event.channelId)
+      throw new Error("Invalid chat event.");
     return event as ChatEvent;
   }
   throw new Error("Invalid chat event.");
@@ -46,11 +72,7 @@ export class ChatConnection {
   private readonly callbacks: ChatConnectionCallbacks;
   private readonly gateway: AppGateway;
 
-  constructor(
-    channelId: string,
-    callbacks: ChatConnectionCallbacks,
-    gateway: AppGateway = appGateway(),
-  ) {
+  constructor(channelId: string, callbacks: ChatConnectionCallbacks, gateway: AppGateway = appGateway()) {
     this.channelId = channelId;
     this.callbacks = callbacks;
     this.gateway = gateway;
@@ -58,45 +80,57 @@ export class ChatConnection {
 
   start() {
     if (this.subscription || this.stopped) return;
-    this.subscription = this.gateway.subscribe({
-      kind: "chat", channelId: this.channelId, after: this.callbacks.cursor(),
-    }, {
-      cursor: this.callbacks.cursor,
-      status: this.callbacks.status,
-      error: () => this.callbacks.resync(),
-      event: (value) => {
-        let event: ChatEvent;
-        try { event = parseEvent(value); }
-        catch { this.callbacks.resync(); return; }
-        if (event.type === "resync_required") { this.callbacks.resync(); return; }
-        if (event.type === "ready") return;
-        if (event.type === "typing.updated") {
-          if (event.channelId === this.channelId) this.callbacks.typing?.(event);
-          return;
-        }
-        if (event.type === "message.reactions" && event.channelId === this.channelId && this.callbacks.reactions) {
-          if (this.callbacks.reactions(event) === "overflow") this.callbacks.resync();
-          return;
-        }
-        if (event.type === "message.pin" && event.channelId === this.channelId && this.callbacks.pin) {
-          if (this.callbacks.pin(event) === "overflow") this.callbacks.resync();
-          return;
-        }
-        if (event.type === "message.forward" && event.channelId === this.channelId && this.callbacks.forward) {
-          if (this.callbacks.forward(event) === "overflow") this.callbacks.resync();
-          return;
-        }
-        if (event.type === "message.edited" && event.channelId === this.channelId && this.callbacks.edit) {
-          if (this.callbacks.edit(event) === "overflow") this.callbacks.resync();
-          return;
-        }
-        if (event.type !== "message.created" || event.channelId !== this.channelId) {
-          this.callbacks.resync();
-          return;
-        }
-        if (this.callbacks.message(event.message) === "overflow") this.callbacks.resync();
+    this.subscription = this.gateway.subscribe(
+      {
+        kind: "chat",
+        channelId: this.channelId,
+        after: this.callbacks.cursor(),
       },
-    });
+      {
+        cursor: this.callbacks.cursor,
+        status: this.callbacks.status,
+        error: () => this.callbacks.resync(),
+        event: (value) => {
+          let event: ChatEvent;
+          try {
+            event = parseEvent(value);
+          } catch {
+            this.callbacks.resync();
+            return;
+          }
+          if (event.type === "resync_required") {
+            this.callbacks.resync();
+            return;
+          }
+          if (event.type === "ready") return;
+          if (event.type === "typing.updated") {
+            if (event.channelId === this.channelId) this.callbacks.typing?.(event);
+            return;
+          }
+          if (event.type === "message.reactions" && event.channelId === this.channelId && this.callbacks.reactions) {
+            if (this.callbacks.reactions(event) === "overflow") this.callbacks.resync();
+            return;
+          }
+          if (event.type === "message.pin" && event.channelId === this.channelId && this.callbacks.pin) {
+            if (this.callbacks.pin(event) === "overflow") this.callbacks.resync();
+            return;
+          }
+          if (event.type === "message.forward" && event.channelId === this.channelId && this.callbacks.forward) {
+            if (this.callbacks.forward(event) === "overflow") this.callbacks.resync();
+            return;
+          }
+          if (event.type === "message.edited" && event.channelId === this.channelId && this.callbacks.edit) {
+            if (this.callbacks.edit(event) === "overflow") this.callbacks.resync();
+            return;
+          }
+          if (event.type !== "message.created" || event.channelId !== this.channelId) {
+            this.callbacks.resync();
+            return;
+          }
+          if (this.callbacks.message(event.message) === "overflow") this.callbacks.resync();
+        },
+      },
+    );
     void this.subscription.ready.catch(() => undefined);
   }
 

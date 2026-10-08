@@ -60,8 +60,11 @@ function channelFromRoot(apiRoot: string) {
 }
 
 function healthy(warm: WarmVoice) {
-  return warm.main.connectionState === "connected" && warm.receive.connectionState === "connected"
-    && performance.now() - warm.connectedAt < REPLACE_AFTER_MS;
+  return (
+    warm.main.connectionState === "connected" &&
+    warm.receive.connectionState === "connected" &&
+    performance.now() - warm.connectedAt < REPLACE_AFTER_MS
+  );
 }
 
 export function closeWarmVoice(warm: WarmVoice) {
@@ -91,7 +94,9 @@ export function keepVoiceWarm(apiRoot: string) {
   if (!visibilityListening && typeof document !== "undefined") {
     visibilityListening = true;
     // A backgrounded phone suspends the page and its connections; rebuild on return.
-    document.addEventListener("visibilitychange", () => { if (root && document.visibilityState === "visible") void refresh(); });
+    document.addEventListener("visibilitychange", () => {
+      if (root && document.visibilityState === "visible") void refresh();
+    });
   }
   void refresh();
 }
@@ -128,7 +133,10 @@ async function refresh() {
   creating = true;
   try {
     const warm = await create(apiRoot);
-    if (root !== apiRoot) { closeWarmVoice(warm); return; }
+    if (root !== apiRoot) {
+      closeWarmVoice(warm);
+      return;
+    }
     discard();
     current = warm;
     detach = watch(warm);
@@ -137,7 +145,10 @@ async function refresh() {
   } catch (error) {
     const status = (error as { status?: number })?.status;
     // An API without warm sessions answers 404 (or rejects the operation): stop asking.
-    if (status === 404 || status === 400) { unsupported = true; return; }
+    if (status === 404 || status === 400) {
+      unsupported = true;
+      return;
+    }
     schedule(RETRY_DELAYS_MS[Math.min(failures++, RETRY_DELAYS_MS.length - 1)]);
   } finally {
     creating = false;
@@ -149,9 +160,22 @@ function watch(warm: WarmVoice) {
   const changed = () => {
     if (current !== warm) return;
     const states = [warm.main.connectionState, warm.receive.connectionState];
-    if (states.every((state) => state === "connected")) { clearTimeout(grace); grace = undefined; return; }
-    if (states.some((state) => state === "failed" || state === "closed")) { discard(); schedule(0); return; }
-    grace ??= setTimeout(() => { if (current === warm && !healthy(warm)) { discard(); schedule(0); } }, DISCONNECT_GRACE_MS);
+    if (states.every((state) => state === "connected")) {
+      clearTimeout(grace);
+      grace = undefined;
+      return;
+    }
+    if (states.some((state) => state === "failed" || state === "closed")) {
+      discard();
+      schedule(0);
+      return;
+    }
+    grace ??= setTimeout(() => {
+      if (current === warm && !healthy(warm)) {
+        discard();
+        schedule(0);
+      }
+    }, DISCONNECT_GRACE_MS);
   };
   warm.main.addEventListener("connectionstatechange", changed);
   warm.receive.addEventListener("connectionstatechange", changed);
@@ -171,10 +195,15 @@ async function create(apiRoot: string): Promise<WarmVoice> {
     for (const pc of [main, receive]) pc.createDataChannel("warm", { negotiated: true, id: 0 });
     const [mainOffer, receiveOffer] = await Promise.all([main.createOffer(), receive.createOffer()]);
     const response = await request(channelFromRoot(apiRoot), {
-      main: { type: "offer", sdp: mainOffer.sdp }, receive: { type: "offer", sdp: receiveOffer.sdp },
+      main: { type: "offer", sdp: mainOffer.sdp },
+      receive: { type: "offer", sdp: receiveOffer.sdp },
     });
     // TURN before gathering starts, as Join does.
-    const connect = async (pc: RTCPeerConnection, offer: RTCSessionDescriptionInit, answer: RTCSessionDescriptionInit) => {
+    const connect = async (
+      pc: RTCPeerConnection,
+      offer: RTCSessionDescriptionInit,
+      answer: RTCSessionDescriptionInit,
+    ) => {
       pc.setConfiguration({ ...pc.getConfiguration(), iceServers: response.iceServers });
       await pc.setLocalDescription(offer);
       await pc.setRemoteDescription(answer);
@@ -195,11 +224,13 @@ function connected(pc: RTCPeerConnection) {
     const done = (error?: Error) => {
       clearTimeout(deadline);
       pc.removeEventListener("connectionstatechange", changed);
-      if (error) reject(error); else resolve();
+      if (error) reject(error);
+      else resolve();
     };
     const changed = () => {
       if (pc.connectionState === "connected") done();
-      else if (pc.connectionState === "failed" || pc.connectionState === "closed") done(new Error("Warm connection failed."));
+      else if (pc.connectionState === "failed" || pc.connectionState === "closed")
+        done(new Error("Warm connection failed."));
     };
     const deadline = setTimeout(() => done(new Error("Warm connection timed out.")), CONNECT_TIMEOUT_MS);
     pc.addEventListener("connectionstatechange", changed);

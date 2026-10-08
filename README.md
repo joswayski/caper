@@ -69,6 +69,28 @@ and local Valkey. Configuration comes from AWS Secrets Manager (`staging/apps/ca
 with `.env` and Compose defaults as fallbacks. See [.env.example](.env.example)
 for available settings. Stop the stack with Ctrl-C.
 
+JavaScript/TypeScript tooling uses Vite 8 (Rolldown/Oxc), Vitest 5, the native
+TypeScript 7 compiler (`tsc`), Oxlint, and Oxfmt. Node/npm remain the runtime and
+package manager; Rust keeps rustfmt/Clippy, and native clients keep their platform
+build/test tools. Run these commands from the repository root:
+
+```bash
+npm test                 # Web unit tests and shared native fixture/icon tests
+npm run test:watch       # Vitest watch mode; add -- --project web to filter
+npm run test:native      # Shared JavaScript tests, not native device acceptance
+npm run typecheck        # Native TypeScript compiler; no production bundle
+npm run lint            # Oxlint correctness checks, warnings fail the command
+npm run fmt             # Oxfmt for first-party JS/TS/CSS and tooling JSON
+npm run check           # Lint, formatting check, production build + typecheck
+```
+
+Unit tests use separate Vitest configs so they do not start app build plugins or
+fetch GitHub history. Test files remain isolated; cleanup restores mocks, globals,
+and timers. Generated routes and vendored audio runtimes are excluded from lint;
+formatting also leaves versioned public assets untouched to preserve immutable
+cache URLs. Lint permits side-effect ternaries and object-rest omission;
+test mocks may retain their constructed instances via `this` aliases.
+
 ## Repository
 
 - [apps/web](apps/web) — TanStack Start web app

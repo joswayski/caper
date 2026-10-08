@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import Slider from "../components/Slider";
-import { createVoiceComparison, MAX_RECORDING_SECONDS, recordReceivedAudio, type ReceivedRecording } from "../media/recording";
+import {
+  createVoiceComparison,
+  MAX_RECORDING_SECONDS,
+  recordReceivedAudio,
+  type ReceivedRecording,
+} from "../media/recording";
 
 const INPUT_METER_SEGMENTS = 40;
 
@@ -8,7 +13,10 @@ function InputMeter({ active, stream }: { active: boolean; stream: MediaStream }
   const [levels, setLevels] = useState<number[]>(() => Array(INPUT_METER_SEGMENTS).fill(0));
 
   useEffect(() => {
-    if (!active || typeof AudioContext === "undefined") { setLevels(Array(INPUT_METER_SEGMENTS).fill(0)); return; }
+    if (!active || typeof AudioContext === "undefined") {
+      setLevels(Array(INPUT_METER_SEGMENTS).fill(0));
+      return;
+    }
     const context = new AudioContext();
     const source = context.createMediaStreamSource(stream);
     const analyser = context.createAnalyser();
@@ -38,9 +46,18 @@ function InputMeter({ active, stream }: { active: boolean; stream: MediaStream }
     };
   }, [active, stream]);
 
-  return <div className="mic-meter" aria-label={active ? "Received microphone level" : "Microphone level inactive"}>
-    {levels.map((level, index) => <i key={index} aria-hidden="true" className={active ? "lit" : ""} style={{ height: `${3 + Math.round(level * 8) * 4}px` }} />)}
-  </div>;
+  return (
+    <div className="mic-meter" aria-label={active ? "Received microphone level" : "Microphone level inactive"}>
+      {levels.map((level, index) => (
+        <i
+          key={index}
+          aria-hidden="true"
+          className={active ? "lit" : ""}
+          style={{ height: `${3 + Math.round(level * 8) * 4}px` }}
+        />
+      ))}
+    </div>
+  );
 }
 
 interface Clip {
@@ -48,7 +65,18 @@ interface Clip {
   silent: boolean;
 }
 
-function RecordingPlayback({ clip, label, output, volume, autoPlay, loop = false, onEnded, onPlay, onAudioElement, onDeviceError }: {
+function RecordingPlayback({
+  clip,
+  label,
+  output,
+  volume,
+  autoPlay,
+  loop = false,
+  onEnded,
+  onPlay,
+  onAudioElement,
+  onDeviceError,
+}: {
   clip: Clip;
   label: string;
   output: string;
@@ -65,7 +93,9 @@ function RecordingPlayback({ clip, label, output, volume, autoPlay, loop = false
   const gainRef = useRef<GainNode | null>(null);
   useEffect(() => {
     const element = ref.current;
-    return () => { element?.pause(); };
+    return () => {
+      element?.pause();
+    };
   }, []);
   useEffect(() => {
     const element = ref.current;
@@ -95,7 +125,9 @@ function RecordingPlayback({ clip, label, output, volume, autoPlay, loop = false
     if (!element) return;
     let current = true;
     const prepare = async () => {
-      const setSinkId = (element as HTMLMediaElement & { setSinkId?: (id: string) => Promise<void> }).setSinkId?.bind(element);
+      const setSinkId = (element as HTMLMediaElement & { setSinkId?: (id: string) => Promise<void> }).setSinkId?.bind(
+        element,
+      );
       try {
         if (contextRef.current) await contextRef.current.setSinkId(output);
         else if (setSinkId) await setSinkId(output);
@@ -103,25 +135,84 @@ function RecordingPlayback({ clip, label, output, volume, autoPlay, loop = false
         if (current) onDeviceError();
         return;
       }
-      if (current && autoPlay) void element.play().catch(() => { if (current) onDeviceError(); });
+      if (current && autoPlay)
+        void element.play().catch(() => {
+          if (current) onDeviceError();
+        });
     };
     void prepare();
-    return () => { current = false; };
+    return () => {
+      current = false;
+    };
   }, [autoPlay, clip.url, output]);
-  return <audio ref={(element) => { ref.current = element; onAudioElement?.(element); }} aria-label={`${label} audio sample`} controls loop={loop} src={clip.url} onEnded={onEnded} onError={onDeviceError} onPlay={() => { void contextRef.current?.resume(); onPlay?.(); }} />;
+  return (
+    <audio
+      ref={(element) => {
+        ref.current = element;
+        onAudioElement?.(element);
+      }}
+      aria-label={`${label} audio sample`}
+      controls
+      loop={loop}
+      src={clip.url}
+      onEnded={onEnded}
+      onError={onDeviceError}
+      onPlay={() => {
+        void contextRef.current?.resume();
+        onPlay?.();
+      }}
+    />
+  );
 }
 
 export function SpeakerTest({ output, volume }: { output: string; volume: number }) {
   const [playing, setPlaying] = useState(false);
   const [error, setError] = useState(false);
-  return <div className="speaker-test">
-    <button type="button" className="voice-button" aria-pressed={playing} onClick={() => { setError(false); setPlaying(!playing); }}>{playing ? "Stop speaker test" : "Test speakers"}</button>
-    {playing && <span hidden><RecordingPlayback clip={{ url: "/audio/effects/channel-join.wav", silent: false }} label="Speaker test" output={output} volume={volume} autoPlay loop onDeviceError={() => { setPlaying(false); setError(true); }} /></span>}
-    {error && <p className="call-error" role="alert">Couldn’t play audio. Check your output and try again.</p>}
-  </div>;
+  return (
+    <div className="speaker-test">
+      <button
+        type="button"
+        className="voice-button"
+        aria-pressed={playing}
+        onClick={() => {
+          setError(false);
+          setPlaying(!playing);
+        }}
+      >
+        {playing ? "Stop speaker test" : "Test speakers"}
+      </button>
+      {playing && (
+        <span hidden>
+          <RecordingPlayback
+            clip={{ url: "/audio/effects/channel-join.wav", silent: false }}
+            label="Speaker test"
+            output={output}
+            volume={volume}
+            autoPlay
+            loop
+            onDeviceError={() => {
+              setPlaying(false);
+              setError(true);
+            }}
+          />
+        </span>
+      )}
+      {error && (
+        <p className="call-error" role="alert">
+          Couldn’t play audio. Check your output and try again.
+        </p>
+      )}
+    </div>
+  );
 }
 
-export default function MicPlayback({ stream, output, volume = 100, processingStrength, onProcessingStrengthChange }: {
+export default function MicPlayback({
+  stream,
+  output,
+  volume = 100,
+  processingStrength,
+  onProcessingStrengthChange,
+}: {
   stream: MediaStream;
   output: string;
   volume?: number;
@@ -147,7 +238,9 @@ export default function MicPlayback({ stream, output, volume = 100, processingSt
     generation.current++;
     sessionRef.current?.cancel();
     sessionRef.current = undefined;
-    Object.values(urlsRef.current).forEach((url) => { if (url) URL.revokeObjectURL(url); });
+    Object.values(urlsRef.current).forEach((url) => {
+      if (url) URL.revokeObjectURL(url);
+    });
     urlsRef.current = {};
     setRecording(false);
     setProcessing(false);
@@ -162,7 +255,9 @@ export default function MicPlayback({ stream, output, volume = 100, processingSt
     generation.current++;
     sessionRef.current?.cancel();
     sessionRef.current = undefined;
-    Object.values(urlsRef.current).forEach((url) => { if (url) URL.revokeObjectURL(url); });
+    Object.values(urlsRef.current).forEach((url) => {
+      if (url) URL.revokeObjectURL(url);
+    });
     urlsRef.current = {};
     setRecordedBlob(undefined);
     setClips({});
@@ -175,20 +270,22 @@ export default function MicPlayback({ stream, output, volume = 100, processingSt
       const session = recordReceivedAudio(stream);
       sessionRef.current = session;
       setRecording(true);
-      void session.result.then(async (blob) => {
-        if (generation.current !== current) return;
-        sessionRef.current = undefined;
-        setRecording(false);
-        const url = URL.createObjectURL(blob);
-        urlsRef.current.natural = url;
-        setClips({ natural: { url, silent: false } });
-        setRecordedBlob(blob);
-      }).catch((reason) => {
-        if (generation.current !== current) return;
-        sessionRef.current = undefined;
-        setRecording(false);
-        setError(reason instanceof Error ? reason.message : "Audio recording failed.");
-      });
+      void session.result
+        .then(async (blob) => {
+          if (generation.current !== current) return;
+          sessionRef.current = undefined;
+          setRecording(false);
+          const url = URL.createObjectURL(blob);
+          urlsRef.current.natural = url;
+          setClips({ natural: { url, silent: false } });
+          setRecordedBlob(blob);
+        })
+        .catch((reason) => {
+          if (generation.current !== current) return;
+          sessionRef.current = undefined;
+          setRecording(false);
+          setError(reason instanceof Error ? reason.message : "Audio recording failed.");
+        });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Audio recording failed.");
     }
@@ -208,67 +305,147 @@ export default function MicPlayback({ stream, output, volume = 100, processingSt
     setProcessing(true);
     setError(undefined);
     const timer = window.setTimeout(() => {
-      void createVoiceComparison(recordedBlob, processingStrength).then(({ processed, hasSignal }) => {
-        if (generation.current !== current) return;
-        const url = URL.createObjectURL(processed);
-        urlsRef.current.processed = url;
-        setClips((existing) => ({
-          natural: existing.natural && { ...existing.natural, silent: !hasSignal },
-          processed: { url, silent: !hasSignal },
-        }));
-        setProcessing(false);
-      }).catch((reason) => {
-        if (generation.current !== current) return;
-        setProcessing(false);
-        setError(reason instanceof Error ? reason.message : "Voice comparison could not be prepared.");
-      });
+      void createVoiceComparison(recordedBlob, processingStrength)
+        .then(({ processed, hasSignal }) => {
+          if (generation.current !== current) return;
+          const url = URL.createObjectURL(processed);
+          urlsRef.current.processed = url;
+          setClips((existing) => ({
+            natural: existing.natural && { ...existing.natural, silent: !hasSignal },
+            processed: { url, silent: !hasSignal },
+          }));
+          setProcessing(false);
+        })
+        .catch((reason) => {
+          if (generation.current !== current) return;
+          setProcessing(false);
+          setError(reason instanceof Error ? reason.message : "Voice comparison could not be prepared.");
+        });
     }, 120);
     return () => window.clearTimeout(timer);
   }, [processingStrength, recordedBlob]);
   useEffect(() => {
     if (!recording) return;
     const started = performance.now();
-    const timer = window.setInterval(() => setElapsed(Math.min(MAX_RECORDING_SECONDS, (performance.now() - started) / 1_000)), 100);
+    const timer = window.setInterval(
+      () => setElapsed(Math.min(MAX_RECORDING_SECONDS, (performance.now() - started) / 1_000)),
+      100,
+    );
     return () => window.clearInterval(timer);
   }, [recording]);
-  return <section className="mic-test-card" aria-labelledby="mic-test-heading">
-    <div className="mic-test-heading">
-      <div>
-        <h3 id="mic-test-heading">{recording ? "Recording…" : "Try your microphone"}</h3>
+  return (
+    <section className="mic-test-card" aria-labelledby="mic-test-heading">
+      <div className="mic-test-heading">
+        <div>
+          <h3 id="mic-test-heading">{recording ? "Recording…" : "Try your microphone"}</h3>
+        </div>
+        {recording && (
+          <p className="recording-clock">
+            <i aria-hidden="true" />
+            {elapsed.toFixed(1)}s
+          </p>
+        )}
       </div>
-      {recording && <p className="recording-clock"><i aria-hidden="true" />{elapsed.toFixed(1)}s</p>}
-    </div>
-    <p className="mic-test-copy">Less noise. Clearer voice.</p>
-    <div className="voice-processing-control">
-      <div className="voice-processing-heading"><span>Voice enhancement</span><output>{processingStrength}%</output></div>
-      <Slider label="Voice processing" value={processingStrength} disabled={recording} onChange={onProcessingStrengthChange} />
-      <div><small>Natural</small><small>Enhanced</small></div>
-    </div>
-    <div className="mic-test-action-row">
-      {!recording && <button type="button" className="mic-test-button" disabled={processing} onClick={startRecording}>{processing ? "Preparing…" : "Test microphone"}</button>}
-      {recording && <button type="button" className="mic-test-button" onClick={() => sessionRef.current?.finish()}>Stop recording</button>}
-      <div className="mic-level">
-        <div className="mic-meter-label"><span>Input level</span></div>
-        <InputMeter active={recording} stream={stream} />
+      <p className="mic-test-copy">Less noise. Clearer voice.</p>
+      <div className="voice-processing-control">
+        <div className="voice-processing-heading">
+          <span>Voice enhancement</span>
+          <output>{processingStrength}%</output>
+        </div>
+        <Slider
+          label="Voice processing"
+          value={processingStrength}
+          disabled={recording}
+          onChange={onProcessingStrengthChange}
+        />
+        <div>
+          <small>Natural</small>
+          <small>Enhanced</small>
+        </div>
       </div>
-    </div>
-    {error && <p className="call-error" role="alert">{error}</p>}
-    {deviceError && <p className="call-error" role="alert">Audio output unavailable; choose another device.</p>}
-    {(clips.natural || clips.processed) && <div className="mic-comparison" aria-label="Recorded samples">
-      <article>
-        <div><strong>Natural</strong></div>
-        {clips.natural
-          ? <><RecordingPlayback clip={clips.natural} label="Natural" output={output} volume={volume} autoPlay onEnded={() => setNaturalPlaybackEnded(true)} onPlay={() => pauseSample("processed")} onAudioElement={(element) => { playbackRefs.current.natural = element ?? undefined; }} onDeviceError={() => setDeviceError(true)} />
-            {clips.natural.silent && <p role="alert">No audible signal detected. Check your mic and try again.</p>}</>
-          : <p>Record to listen back.</p>}
-      </article>
-      <article className={clips.processed ? "latest" : undefined}>
-        <div><strong>Enhanced</strong></div>
-        {clips.processed
-          ? <><RecordingPlayback clip={clips.processed} label="Enhanced" output={output} volume={volume} autoPlay={naturalPlaybackEnded} onPlay={() => pauseSample("natural")} onAudioElement={(element) => { playbackRefs.current.processed = element ?? undefined; }} onDeviceError={() => setDeviceError(true)} />
-            {clips.processed.silent && <p role="alert">No audible signal detected. Check your mic and try again.</p>}</>
-          : <p>{processing ? "Preparing…" : "Record to compare."}</p>}
-      </article>
-    </div>}
-  </section>;
+      <div className="mic-test-action-row">
+        {!recording && (
+          <button type="button" className="mic-test-button" disabled={processing} onClick={startRecording}>
+            {processing ? "Preparing…" : "Test microphone"}
+          </button>
+        )}
+        {recording && (
+          <button type="button" className="mic-test-button" onClick={() => sessionRef.current?.finish()}>
+            Stop recording
+          </button>
+        )}
+        <div className="mic-level">
+          <div className="mic-meter-label">
+            <span>Input level</span>
+          </div>
+          <InputMeter active={recording} stream={stream} />
+        </div>
+      </div>
+      {error && (
+        <p className="call-error" role="alert">
+          {error}
+        </p>
+      )}
+      {deviceError && (
+        <p className="call-error" role="alert">
+          Audio output unavailable; choose another device.
+        </p>
+      )}
+      {(clips.natural || clips.processed) && (
+        <div className="mic-comparison" aria-label="Recorded samples">
+          <article>
+            <div>
+              <strong>Natural</strong>
+            </div>
+            {clips.natural ? (
+              <>
+                <RecordingPlayback
+                  clip={clips.natural}
+                  label="Natural"
+                  output={output}
+                  volume={volume}
+                  autoPlay
+                  onEnded={() => setNaturalPlaybackEnded(true)}
+                  onPlay={() => pauseSample("processed")}
+                  onAudioElement={(element) => {
+                    playbackRefs.current.natural = element ?? undefined;
+                  }}
+                  onDeviceError={() => setDeviceError(true)}
+                />
+                {clips.natural.silent && <p role="alert">No audible signal detected. Check your mic and try again.</p>}
+              </>
+            ) : (
+              <p>Record to listen back.</p>
+            )}
+          </article>
+          <article className={clips.processed ? "latest" : undefined}>
+            <div>
+              <strong>Enhanced</strong>
+            </div>
+            {clips.processed ? (
+              <>
+                <RecordingPlayback
+                  clip={clips.processed}
+                  label="Enhanced"
+                  output={output}
+                  volume={volume}
+                  autoPlay={naturalPlaybackEnded}
+                  onPlay={() => pauseSample("natural")}
+                  onAudioElement={(element) => {
+                    playbackRefs.current.processed = element ?? undefined;
+                  }}
+                  onDeviceError={() => setDeviceError(true)}
+                />
+                {clips.processed.silent && (
+                  <p role="alert">No audible signal detected. Check your mic and try again.</p>
+                )}
+              </>
+            ) : (
+              <p>{processing ? "Preparing…" : "Record to compare."}</p>
+            )}
+          </article>
+        </div>
+      )}
+    </section>
+  );
 }

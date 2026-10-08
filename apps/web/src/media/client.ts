@@ -44,7 +44,11 @@ const PULL_RETRY_DELAYS_MS = [250, 250, 500, 500, 1_000, 2_000, 4_000, 8_000];
 class CallApiError extends Error {
   readonly status: number;
   readonly code?: string;
-  constructor(message: string, status: number, code?: string) { super(message); this.status = status; this.code = code; }
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
 }
 
 function message(error: unknown) {
@@ -62,7 +66,8 @@ function message(error: unknown) {
 
 /** A short, secret-free cause for diagnostics: an API status or an error name. */
 function reconnectReason(context: string, error: unknown) {
-  if (error instanceof CallApiError) return `${context} failed: HTTP ${error.status}${error.code ? ` ${error.code}` : ""}`;
+  if (error instanceof CallApiError)
+    return `${context} failed: HTTP ${error.status}${error.code ? ` ${error.code}` : ""}`;
   return `${context} failed: ${error instanceof Error ? error.name : "error"}`;
 }
 
@@ -79,8 +84,20 @@ function transientControlError(error: unknown) {
 }
 
 const MEDIA_OPERATIONS = new Set([
-  "join", "prepare", "warm", "state", "leave", "snapshot", "publish", "subscribe", "negotiate", "close",
-  "turn", "restart-ice", "restart-ice-ack", "status",
+  "join",
+  "prepare",
+  "warm",
+  "state",
+  "leave",
+  "snapshot",
+  "publish",
+  "subscribe",
+  "negotiate",
+  "close",
+  "turn",
+  "restart-ice",
+  "restart-ice-ack",
+  "status",
 ]);
 
 const PREPARE_INTERVAL_MS = 4_000;
@@ -99,7 +116,9 @@ export function prepareVoiceJoin(apiRoot: string) {
   const now = Date.now();
   if (now - (prepared.get(apiRoot) ?? -Infinity) < PREPARE_INTERVAL_MS) return;
   prepared.set(apiRoot, now);
-  void appGateway().command({ method: "media.prepare", channelId, body: {}, timeoutMs: 5_000 }).catch(() => undefined);
+  void appGateway()
+    .command({ method: "media.prepare", channelId, body: {}, timeoutMs: 5_000 })
+    .catch(() => undefined);
 }
 
 function channelFromRoot(apiRoot: string) {
@@ -145,7 +164,15 @@ export class PublicCallClient {
   private snapshotPromise?: Promise<boolean>;
   private generation = 0;
   private reconnects = 0;
-  private lastReconnect?: { reason: string; at: string; phase: string; peer?: string; receivePeer?: string; participants: number; subscriptions: number };
+  private lastReconnect?: {
+    reason: string;
+    at: string;
+    phase: string;
+    peer?: string;
+    receivePeer?: string;
+    participants: number;
+    subscriptions: number;
+  };
   private muted = false;
   private deafened = false;
   private mutedBeforeDeafen?: boolean;
@@ -178,7 +205,17 @@ export class PublicCallClient {
   private captureError?: string;
   private captures = new Map<MediaStreamTrack, Microphone>();
   private captureController = new AbortController();
-  private joinTiming?: Omit<ConnectionDiagnostics, "receivedBytes" | "sentBytes" | "receiveBitrate" | "sendBitrate" | "packetsLost" | "maxJitterMs" | "roundTripMs" | "route">;
+  private joinTiming?: Omit<
+    ConnectionDiagnostics,
+    | "receivedBytes"
+    | "sentBytes"
+    | "receiveBitrate"
+    | "sendBitrate"
+    | "packetsLost"
+    | "maxJitterMs"
+    | "roundTripMs"
+    | "route"
+  >;
   private readonly noiseAssets = new NoiseAssets();
   private readonly dpdfnet = new DpdfnetPreparation();
   private readonly apiRoot: string;
@@ -212,10 +249,13 @@ export class PublicCallClient {
     }
     this.dpdfnet.stop();
     if (this.noiseSuppression === "rnnoise") void this.noiseAssets.load("rnnoise").catch(() => undefined);
-    else if (this.noiseSuppression.startsWith("deepfilter")) void this.noiseAssets.load("deepfilter").catch(() => undefined);
+    else if (this.noiseSuppression.startsWith("deepfilter"))
+      void this.noiseAssets.load("deepfilter").catch(() => undefined);
   }
 
   private emit(error?: string) {
+    const microphoneTrack = this.senders.get("microphone")?.track;
+    const capture = microphoneTrack ? this.captures.get(microphoneTrack) : undefined;
     this.changed({
       phase: this.phase,
       muted: this.muted,
@@ -228,7 +268,8 @@ export class PublicCallClient {
       selfId: this.selfId,
       localMedia: this.localMedia,
       participants: this.participants,
-      sessionStartedAt: this.phase === "joining" ? this.sessionStartedAt ?? this.joinStartedAt : this.sessionStartedAt,
+      sessionStartedAt:
+        this.phase === "joining" ? (this.sessionStartedAt ?? this.joinStartedAt) : this.sessionStartedAt,
       // Subscriptions are negotiated while joining, but nobody may hear the room
       // until the join has actually completed and the microphone is live.
       remoteMedia: this.phase === "connected" ? [...this.remoteMedia.values()] : [],
@@ -236,7 +277,7 @@ export class PublicCallClient {
       noiseSuppression: this.noiseSuppression,
       audioSetup: this.audioSetup,
       voiceProcessingStrength: this.voiceProcessingStrength,
-      noiseSuppressionStatus: this.captures.get(this.senders.get("microphone")?.track!)?.status ?? this.microphoneStatus,
+      noiseSuppressionStatus: capture?.status ?? this.microphoneStatus,
       error,
     });
   }
@@ -265,20 +306,33 @@ export class PublicCallClient {
     return result;
   }
 
-  private async api<T = void>(operation: string, body: object = {}, token = this.token, timeout = FETCH_TIMEOUT_MS, ownerSignal?: AbortSignal): Promise<T> {
+  private async api<T = void>(
+    operation: string,
+    body: object = {},
+    token = this.token,
+    timeout = FETCH_TIMEOUT_MS,
+    ownerSignal?: AbortSignal,
+  ): Promise<T> {
     if (!MEDIA_OPERATIONS.has(operation)) throw new Error(`Unsupported media operation: ${operation}.`);
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), timeout);
-    const owned = operation === "join" || operation === "leave" ? [controller.signal] : [controller.signal, this.captureController.signal];
+    const owned =
+      operation === "join" || operation === "leave"
+        ? [controller.signal]
+        : [controller.signal, this.captureController.signal];
     if (ownerSignal) owned.push(ownerSignal);
     const signal = owned.length === 1 ? owned[0] : AbortSignal.any(owned);
     try {
       if (!this.fetchTransport) {
         try {
-          return await appGateway().command({
-            method: `media.${operation}`, channelId: channelFromRoot(this.apiRoot), token,
-            body, timeoutMs: timeout, signal,
-          }) as T;
+          return (await appGateway().command({
+            method: `media.${operation}`,
+            channelId: channelFromRoot(this.apiRoot),
+            token,
+            body,
+            timeoutMs: timeout,
+            signal,
+          })) as T;
         } catch (error) {
           if (error instanceof GatewayError) throw new CallApiError(error.message, error.status, error.code);
           throw error;
@@ -297,7 +351,7 @@ export class PublicCallClient {
           signal,
         });
         if (!response.ok) {
-          const detail = await response.json().catch(() => ({})) as { error?: string; code?: string };
+          const detail = (await response.json().catch(() => ({}))) as { error?: string; code?: string };
           // Only this admission rejection guarantees the operation never started.
           // Never replay an ambiguous provider mutation after a generic 5xx/timeout.
           if (response.status === 503 && detail.code === "api_draining" && attempt < 3) {
@@ -314,13 +368,19 @@ export class PublicCallClient {
             });
             continue;
           }
-          throw new CallApiError(detail.error || `Call service returned ${response.status}.`, response.status, detail.code);
+          throw new CallApiError(
+            detail.error || `Call service returned ${response.status}.`,
+            response.status,
+            detail.code,
+          );
         }
         if (response.status === 204 || response.headers.get("content-length") === "0") return undefined as T;
         const text = await response.text();
         return (text ? JSON.parse(text) : undefined) as T;
       }
-    } finally { window.clearTimeout(timer); }
+    } finally {
+      window.clearTimeout(timer);
+    }
   }
 
   private async prepareJoin(started: number, joinStartedAt = Date.now()) {
@@ -335,16 +395,26 @@ export class PublicCallClient {
     const warm = takeWarmVoice();
     const offering = (async () => {
       if (warm) {
-        try { return { ...await this.offerAndJoin(this.makePeerConnection(warm.iceServers, false, warm.main), started, joinStartedAt, warm.ticket), warm }; }
-        catch (error) {
+        try {
+          return {
+            ...(await this.offerAndJoin(
+              this.makePeerConnection(warm.iceServers, false, warm.main),
+              started,
+              joinStartedAt,
+              warm.ticket,
+            )),
+            warm,
+          };
+        } catch (error) {
           closeWarmVoice(warm);
-          if (!(error instanceof CallApiError && (error.code === "warm_unavailable" || error.status === 422))) throw error;
+          if (!(error instanceof CallApiError && (error.code === "warm_unavailable" || error.status === 422)))
+            throw error;
         }
       }
       // An offer needs a transceiver, not audio. Create it while the microphone
       // opens so session creation and publication share one request. TURN servers
       // arrive with that response and are configured before the offer is applied.
-      return { ...await this.offerAndJoin(this.makePeerConnection([]), started, joinStartedAt), warm: undefined };
+      return { ...(await this.offerAndJoin(this.makePeerConnection([]), started, joinStartedAt)), warm: undefined };
     })();
     const [captureResult, joinResult] = await Promise.allSettled([capture, offering]);
     if (captureResult.status === "rejected" || joinResult.status === "rejected") {
@@ -354,7 +424,11 @@ export class PublicCallClient {
         if (joinResult.value.warm) closeWarmVoice(joinResult.value.warm);
         void this.api("leave", {}, joinResult.value.joined.token).catch(() => undefined);
       }
-      throw captureResult.status === "rejected" ? captureResult.reason : joinResult.status === "rejected" ? joinResult.reason : new Error("Join preparation failed.");
+      throw captureResult.status === "rejected"
+        ? captureResult.reason
+        : joinResult.status === "rejected"
+          ? joinResult.reason
+          : new Error("Join preparation failed.");
     }
     return { microphone: captureResult.value, ...joinResult.value, microphoneMs, issuedAt };
   }
@@ -369,14 +443,25 @@ export class PublicCallClient {
       if (!mid) throw new Error("The browser did not assign a media identifier.");
       const initialState = { muted: this.muted, deafened: this.deafened };
       const joined = await this.joinWithOffer(offer, mid, initialState, joinStartedAt, warmTicket);
-      return { joined, initialState, publication: { pc, transceiver, offer, mid }, sessionMs: performance.now() - started };
+      return {
+        joined,
+        initialState,
+        publication: { pc, transceiver, offer, mid },
+        sessionMs: performance.now() - started,
+      };
     } catch (error) {
       pc.close();
       throw error;
     }
   }
 
-  private async joinWithOffer(offer: RTCSessionDescriptionInit, mid: string, initialState: { muted: boolean; deafened: boolean }, joinStartedAt: number, warm?: string) {
+  private async joinWithOffer(
+    offer: RTCSessionDescriptionInit,
+    mid: string,
+    initialState: { muted: boolean; deafened: boolean },
+    joinStartedAt: number,
+    warm?: string,
+  ) {
     const legacyBody = { name: this.name, ...initialState };
     const body = { ...legacyBody, joinStartedAt };
     const publish = { mid, sessionDescription: { type: "offer", sdp: offer.sdp } };
@@ -387,7 +472,9 @@ export class PublicCallClient {
     const attempts: object[] = [{ ...body, publish }, legacyBody];
     if (!this.receiveUnsupported) attempts.unshift({ ...body, publish, receive: true });
     for (const [index, request] of attempts.entries()) {
-      try { return await this.api<JoinResponse>("join", request, undefined); } catch (error) {
+      try {
+        return await this.api<JoinResponse>("join", request, undefined);
+      } catch (error) {
         if (!(error instanceof CallApiError && error.status === 422) || index === attempts.length - 1) throw error;
         if ("receive" in request) this.receiveUnsupported = true;
       }
@@ -397,7 +484,7 @@ export class PublicCallClient {
 
   async join(name = "Guest", microphoneDeviceId?: string, sessionStartedAt?: number | null) {
     if (this.phase !== "idle" && this.phase !== "failed") return;
-    const joinStartedAt = this.joinStartedAt = Date.now();
+    const joinStartedAt = (this.joinStartedAt = Date.now());
     this.sessionStartedAt = sessionStartedAt;
     this.stopLocalMicTest();
     const started = performance.now();
@@ -432,17 +519,32 @@ export class PublicCallClient {
   }
 
   private async connectPrepared(
-    { microphone, joined, initialState, publication, issuedAt, microphoneMs, sessionMs, warm }: Awaited<ReturnType<PublicCallClient["prepareJoin"]>>,
-    generation: number, started: number, label: string,
+    {
+      microphone,
+      joined,
+      initialState,
+      publication,
+      issuedAt,
+      microphoneMs,
+      sessionMs,
+      warm,
+    }: Awaited<ReturnType<PublicCallClient["prepareJoin"]>>,
+    generation: number,
+    started: number,
+    label: string,
   ) {
     const prepared = performance.now();
     const signal = this.captureController.signal;
     this.token = joined.token;
     this.selfId = joined.id;
-    const pc = this.pc = publication.pc;
+    const pc = (this.pc = publication.pc);
     let iceConnected: number | undefined;
     const iceChanged = () => {
-      if (iceConnected === undefined && (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed")) iceConnected = performance.now();
+      if (
+        iceConnected === undefined &&
+        (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed")
+      )
+        iceConnected = performance.now();
     };
     pc.addEventListener("iceconnectionstatechange", iceChanged);
     pc.setConfiguration({ ...pc.getConfiguration(), iceServers: joined.iceServers });
@@ -461,7 +563,7 @@ export class PublicCallClient {
     // Once live updates are ready, fetch the roster alongside publication/state.
     // Opening the stream invalidates older snapshots on legacy APIs without
     // revisions. Reconcile only after publication; audio still waits for both.
-    const renewal = opening.then(() => generation === this.generation && !signal.aborted ? this.renewLease() : false);
+    const renewal = opening.then(() => (generation === this.generation && !signal.aborted ? this.renewLease() : false));
     renewal.catch(() => undefined);
     const [events] = await Promise.all([
       opening,
@@ -469,12 +571,13 @@ export class PublicCallClient {
       // Join already committed this state. Only repair intent changed while
       // waiting for its response/capture; later changes use the normal writer.
       initialState.muted !== this.muted || initialState.deafened !== this.deafened || this.stateDirty
-        ? this.setState() : this.statePromise,
+        ? this.setState()
+        : this.statePromise,
     ]);
     signal.throwIfAborted();
     const signaled = performance.now();
     // Further pulls wait for their connection (see pullConnection).
-    const reconciled = renewal.then((renewed) => renewed ? this.poll() : undefined);
+    const reconciled = renewal.then((renewed) => (renewed ? this.poll() : undefined));
     reconciled.catch(() => undefined);
     await waitFor(pc, "connectionstatechange", CONNECT_TIMEOUT_MS, () => pc.connectionState === "connected", signal);
     const connected = performance.now();
@@ -492,7 +595,12 @@ export class PublicCallClient {
     // a changed session.
     await waitFor(pc, "connectionstatechange", CONNECT_TIMEOUT_MS, () => pc.connectionState === "connected", signal);
     signal.throwIfAborted();
-    if (generation !== this.generation || !events.connected || pc.connectionState !== "connected" || microphone.readyState !== "live") {
+    if (
+      generation !== this.generation ||
+      !events.connected ||
+      pc.connectionState !== "connected" ||
+      microphone.readyState !== "live"
+    ) {
       throw new Error("Voice setup changed before it was ready. Please join again.");
     }
     this.phase = "connected";
@@ -512,34 +620,54 @@ export class PublicCallClient {
     this.watchJoinPulls(pulls, generation, started);
     this.startPolling();
     if (joined.turn) {
-      this.turnRenewal = new TurnRenewal(pc, joined.token, joined.turn,
+      this.turnRenewal = new TurnRenewal(
+        pc,
+        joined.token,
+        joined.turn,
         (operation, body, token, owner) => this.api(operation, body, token, FETCH_TIMEOUT_MS, owner),
         (operation) => this.serialize(operation, generation),
         () => generation === this.generation && pc === this.pc,
-        () => { if (generation === this.generation) this.scheduleReconnect("TURN renewal failed"); }, issuedAt);
+        () => {
+          if (generation === this.generation) this.scheduleReconnect("TURN renewal failed");
+        },
+        issuedAt,
+      );
     }
   }
 
   private async openEvents(generation: number) {
     this.events?.stop();
-    const events = this.events = new EventConnection(() => {
-      if (generation !== this.generation) return;
-      ++this.snapshotInvalidation;
-      if (this.phase === "connected") void this.poll().catch((error) => { if (generation === this.generation) this.scheduleReconnect(reconnectReason("roster sync", error)); });
-      else this.pollAgain = true;
-    }, (error, draining) => {
-      if (generation !== this.generation) return;
-      if (this.phase === "connected") this.scheduleEventRecovery(generation, draining);
-      else this.captureController.abort(error); // Startup still fails closed.
-    }, (snapshot) => {
-      if (generation !== this.generation) return;
-      this.queueSnapshot(snapshot);
-      if (this.phase === "connected") void this.poll().catch((error) => { if (generation === this.generation) this.scheduleReconnect(reconnectReason("roster sync", error)); });
-    }, () => {
-      if (generation === this.generation && this.phase === "connected") this.scheduleEventRecovery(generation, true);
-    }, this.apiRoot, () => {
-      if (generation === this.generation && this.phase === "connected") this.emit();
-    });
+    const events = (this.events = new EventConnection(
+      () => {
+        if (generation !== this.generation) return;
+        ++this.snapshotInvalidation;
+        if (this.phase === "connected")
+          void this.poll().catch((error) => {
+            if (generation === this.generation) this.scheduleReconnect(reconnectReason("roster sync", error));
+          });
+        else this.pollAgain = true;
+      },
+      (error, draining) => {
+        if (generation !== this.generation) return;
+        if (this.phase === "connected") this.scheduleEventRecovery(generation, draining);
+        else this.captureController.abort(error); // Startup still fails closed.
+      },
+      (snapshot) => {
+        if (generation !== this.generation) return;
+        this.queueSnapshot(snapshot);
+        if (this.phase === "connected")
+          void this.poll().catch((error) => {
+            if (generation === this.generation) this.scheduleReconnect(reconnectReason("roster sync", error));
+          });
+      },
+      () => {
+        if (generation === this.generation && this.phase === "connected") this.scheduleEventRecovery(generation, true);
+      },
+      this.apiRoot,
+      () => {
+        if (generation === this.generation && this.phase === "connected") this.emit();
+      },
+    ));
     await events.open(this.token!, this.captureController.signal);
     if (generation === this.generation && events === this.events && events.connected) {
       this.eventRetryAttempts = 0;
@@ -557,17 +685,26 @@ export class PublicCallClient {
     window.clearTimeout(this.eventRetryTimer);
     // Keep explicit routing rejections fast, but do not hammer an unavailable
     // deployment indefinitely. Ordinary failures still use exponential backoff.
-    const delay = draining && this.eventDrainRetries++ < 10 ? 50 : Math.min(250 * 2 ** this.eventRetryAttempts++, 3_000);
+    const delay =
+      draining && this.eventDrainRetries++ < 10 ? 50 : Math.min(250 * 2 ** this.eventRetryAttempts++, 3_000);
     this.eventRetryTimer = window.setTimeout(() => {
       if (generation !== this.generation || this.phase !== "connected") return;
-      void this.openEvents(generation).then(() => {
-        if (generation === this.generation) return this.poll().catch((error) => { if (generation === this.generation) this.scheduleReconnect(reconnectReason("roster sync", error)); });
-      }).catch(() => { /* Stream failures schedule their own retry; heartbeat validates the session. */ });
+      void this.openEvents(generation)
+        .then(() => {
+          if (generation === this.generation)
+            return this.poll().catch((error) => {
+              if (generation === this.generation) this.scheduleReconnect(reconnectReason("roster sync", error));
+            });
+        })
+        .catch(() => {
+          /* Stream failures schedule their own retry; heartbeat validates the session. */
+        });
     }, delay);
   }
 
   private queueSnapshot(snapshot: CallSnapshot & { revision?: number }) {
-    if (snapshot.revision !== undefined && this.latestRevision !== undefined && snapshot.revision < this.latestRevision) return;
+    if (snapshot.revision !== undefined && this.latestRevision !== undefined && snapshot.revision < this.latestRevision)
+      return;
     if (snapshot.revision !== undefined) this.latestRevision = snapshot.revision;
     this.pendingSnapshot = snapshot;
     this.pushedSnapshotVersion++;
@@ -615,14 +752,21 @@ export class PublicCallClient {
   private makePeerConnection(iceServers: RTCIceServer[], receiving = false, existing?: RTCPeerConnection) {
     const pc = existing ?? new RTCPeerConnection({ iceServers, bundlePolicy: "max-bundle" });
     pc.ontrack = (event) => {
-      if (!this.owns(pc)) { event.track.stop(); return; }
+      if (!this.owns(pc)) {
+        event.track.stop();
+        return;
+      }
       const transceiver = event.transceiver;
       const found = [...this.subscriptions].find(([, mid]) => mid === transceiver.mid);
       if (!found) return;
       const [trackId] = found;
       const stream = event.streams[0] ?? new MediaStream([event.track]);
       event.track.onended = () => {
-        if (this.owns(pc)) { this.remoteMedia.delete(trackId); this.unassignedMedia.delete(trackId); this.emit(); }
+        if (this.owns(pc)) {
+          this.remoteMedia.delete(trackId);
+          this.unassignedMedia.delete(trackId);
+          this.emit();
+        }
       };
       if (!this.assignRemoteMedia(trackId, stream)) this.unassignedMedia.set(trackId, stream);
       this.emit();
@@ -638,7 +782,8 @@ export class PublicCallClient {
         } else if (pc.connectionState === "failed") this.scheduleReconnect("receive connection failed");
         else if (this.receiveDisconnectTimer === undefined) {
           this.receiveDisconnectTimer = window.setTimeout(() => {
-            if (pc === this.receivePc && pc.connectionState !== "connected") this.scheduleReconnect("receive connection lost");
+            if (pc === this.receivePc && pc.connectionState !== "connected")
+              this.scheduleReconnect("receive connection lost");
           }, DISCONNECT_GRACE_MS);
         }
         return;
@@ -676,23 +821,40 @@ export class PublicCallClient {
       await pc.setLocalDescription(offer);
       if (generation !== this.generation) throw new Error("Call session changed.");
       this.senders.set(kind, { sender: transceiver.sender, mid, track });
-      const response = published ?? await this.api<SessionDescriptionResponse>("publish", {
-        kind, mid, sessionDescription: await localDescription(pc, this.captureController.signal),
-      }, token);
+      const response =
+        published ??
+        (await this.api<SessionDescriptionResponse>(
+          "publish",
+          {
+            kind,
+            mid,
+            sessionDescription: await localDescription(pc, this.captureController.signal),
+          },
+          token,
+        ));
       if (generation !== this.generation || pc !== this.pc) throw new Error("Call session changed.");
       if (!response.sessionDescription) throw new Error("The media service did not answer publication.");
       await pc.setRemoteDescription(withOpusDtx(response.sessionDescription));
       if (generation !== this.generation) throw new Error("Call session changed.");
       this.localMedia = new MediaStream([track]);
-      track.addEventListener("ended", () => {
-        if (generation === this.generation && this.senders.get(kind)?.track === track) {
-          void this.unpublish(kind).catch((error) => { if (generation === this.generation) this.scheduleReconnect(reconnectReason("microphone ended", error)); });
-        }
-      }, { once: true });
+      track.addEventListener(
+        "ended",
+        () => {
+          if (generation === this.generation && this.senders.get(kind)?.track === track) {
+            void this.unpublish(kind).catch((error) => {
+              if (generation === this.generation) this.scheduleReconnect(reconnectReason("microphone ended", error));
+            });
+          }
+        },
+        { once: true },
+      );
       if (this.muted || this.monitoring) track.enabled = this.readyToTalk && this.monitoring;
     }, generation).catch((error) => {
       track.stop();
-      if (generation === this.generation && this.phase === "connected") { this.pc?.close(); this.scheduleReconnect(reconnectReason("microphone publish", error)); }
+      if (generation === this.generation && this.phase === "connected") {
+        this.pc?.close();
+        this.scheduleReconnect(reconnectReason("microphone publish", error));
+      }
       throw error;
     });
   }
@@ -713,7 +875,9 @@ export class PublicCallClient {
       if (!current) return;
       current.track.enabled = this.readyToTalk && !this.muted;
       await current.sender.replaceTrack(this.muted || !this.readyToTalk ? null : current.track);
-    }).catch((error) => { if (generation === this.generation) throw error; });
+    }).catch((error) => {
+      if (generation === this.generation) throw error;
+    });
     if (generation === this.generation && this.token) await this.setState();
   }
 
@@ -735,13 +899,16 @@ export class PublicCallClient {
       if (!current) return;
       current.track.enabled = this.readyToTalk && !this.muted;
       await current.sender.replaceTrack(this.muted || !this.readyToTalk ? null : current.track);
-    }).catch((error) => { if (generation === this.generation) throw error; });
+    }).catch((error) => {
+      if (generation === this.generation) throw error;
+    });
     if (generation === this.generation && this.token) await this.setState();
   }
 
   async setMonitoring(monitoring: boolean) {
     if (monitoring === this.monitoring) return;
-    if (monitoring && (this.phase !== "connected" || !this.token)) throw new Error("Join voice before testing your microphone.");
+    if (monitoring && (this.phase !== "connected" || !this.token))
+      throw new Error("Join voice before testing your microphone.");
     if (monitoring) {
       this.stateBeforeMonitoring = { muted: this.muted, deafened: this.deafened };
       this.monitoring = true;
@@ -788,7 +955,12 @@ export class PublicCallClient {
       while (this.stateDirty && token && generation === this.generation) {
         const revision = this.stateRevision;
         try {
-          await this.api("state", { muted: this.muted, deafened: this.deafened, sequence: revision }, token, SNAPSHOT_TIMEOUT_MS);
+          await this.api(
+            "state",
+            { muted: this.muted, deafened: this.deafened, sequence: revision },
+            token,
+            SNAPSHOT_TIMEOUT_MS,
+          );
         } catch (error) {
           if (generation !== this.generation) return;
           if (this.phase !== "connected" || !transientControlError(error)) throw error;
@@ -816,7 +988,9 @@ export class PublicCallClient {
     const startup = this.captures.get(track)?.startup;
     if (!startup) return undefined;
     const device = `device ${Math.round(startup.deviceMs)} ms`;
-    return startup.interim ? `${device} · noise model still loading` : `${device} · processing ${Math.round(startup.processingMs)} ms`;
+    return startup.interim
+      ? `${device} · noise model still loading`
+      : `${device} · processing ${Math.round(startup.processingMs)} ms`;
   }
 
   private async openMicrophone(deviceId?: string, signal = this.captureController.signal) {
@@ -824,10 +998,20 @@ export class PublicCallClient {
     this.captureError = undefined;
     let microphone: Microphone;
     try {
-      microphone = await captureMicrophone(deviceId, this.noiseSuppression, signal, () => {
-        this.microphoneStatus = microphone.status;
-        this.emit();
-      }, this.audioSetup, this.noiseAssets, this.dpdfnet, this.inputVolume, this.voiceProcessingStrength);
+      microphone = await captureMicrophone(
+        deviceId,
+        this.noiseSuppression,
+        signal,
+        () => {
+          this.microphoneStatus = microphone.status;
+          this.emit();
+        },
+        this.audioSetup,
+        this.noiseAssets,
+        this.dpdfnet,
+        this.inputVolume,
+        this.voiceProcessingStrength,
+      );
       this.captureAttempt = "opened";
     } catch (error) {
       this.captureAttempt = "failed";
@@ -841,7 +1025,8 @@ export class PublicCallClient {
 
   getAudioDiagnostics() {
     return {
-      captureAttempt: this.captureAttempt, captureError: this.captureError,
+      captureAttempt: this.captureAttempt,
+      captureError: this.captureError,
       captures: [...this.captures.values()].map((capture) => capture.diagnostics()),
       connection: this.diagnostics,
       voice: this.voiceDiagnostics(),
@@ -852,24 +1037,39 @@ export class PublicCallClient {
     const sender = this.senders.get("microphone");
     const others = this.participants.filter((participant) => participant.id !== this.selfId);
     return {
-      phase: this.phase, muted: this.muted, deafened: this.deafened, monitoring: this.monitoring,
+      phase: this.phase,
+      muted: this.muted,
+      deafened: this.deafened,
+      monitoring: this.monitoring,
       liveUpdates: !!this.events?.connected,
       peer: this.pc && {
-        connection: this.pc.connectionState, ice: this.pc.iceConnectionState, signaling: this.pc.signalingState,
+        connection: this.pc.connectionState,
+        ice: this.pc.iceConnectionState,
+        signaling: this.pc.signalingState,
       },
       receivePeer: this.receivePc && {
-        connection: this.receivePc.connectionState, ice: this.receivePc.iceConnectionState, signaling: this.receivePc.signalingState,
+        connection: this.receivePc.connectionState,
+        ice: this.receivePc.iceConnectionState,
+        signaling: this.receivePc.signalingState,
       },
       microphoneSender: sender && {
-        attached: !!sender.sender.track, enabled: sender.track.enabled,
-        readyState: sender.track.readyState, muted: sender.track.muted,
+        attached: !!sender.sender.track,
+        enabled: sender.track.enabled,
+        readyState: sender.track.readyState,
+        muted: sender.track.muted,
       },
       participants: this.participants.length,
       otherTracks: others.reduce((count, participant) => count + participant.tracks.length, 0),
       subscriptions: this.subscriptions.size,
-      remoteStreams: [...this.remoteMedia.values()].map(({ stream }) => stream.getAudioTracks().map((track) => ({
-        readyState: track.readyState, muted: track.muted, enabled: track.enabled,
-      }))).flat(),
+      remoteStreams: [...this.remoteMedia.values()]
+        .map(({ stream }) =>
+          stream.getAudioTracks().map((track) => ({
+            readyState: track.readyState,
+            muted: track.muted,
+            enabled: track.enabled,
+          })),
+        )
+        .flat(),
       media: this.mediaDetail,
       lastReconnect: this.lastReconnect,
     };
@@ -877,19 +1077,23 @@ export class PublicCallClient {
 
   private stopMicrophone(track: MediaStreamTrack) {
     const capture = this.captures.get(track);
-    if (capture) { capture.stop(); this.captures.delete(track); }
-    else track.stop();
+    if (capture) {
+      capture.stop();
+      this.captures.delete(track);
+    } else track.stop();
   }
 
   setInputVolume(volume: number) {
     this.inputVolume = Math.max(0, Math.min(volume, 200));
-    this.captures.get(this.localTestTrack ?? this.senders.get("microphone")?.track!)?.setInputVolume(this.inputVolume);
+    const track = this.localTestTrack ?? this.senders.get("microphone")?.track;
+    if (track) this.captures.get(track)?.setInputVolume(this.inputVolume);
     this.emit();
   }
 
   setVoiceProcessingStrength(strength: number) {
     this.voiceProcessingStrength = clampVoiceProcessingStrength(strength);
-    this.captures.get(this.localTestTrack ?? this.senders.get("microphone")?.track!)?.setVoiceProcessingStrength(this.voiceProcessingStrength);
+    const track = this.localTestTrack ?? this.senders.get("microphone")?.track;
+    if (track) this.captures.get(track)?.setVoiceProcessingStrength(this.voiceProcessingStrength);
     this.emit();
   }
 
@@ -901,7 +1105,15 @@ export class PublicCallClient {
     const controller = new AbortController();
     this.localTestController = controller;
     const signal = AbortSignal.any([controller.signal, this.captureController.signal]);
-    const timer = window.setTimeout(() => controller.abort(new Error("Microphone setup timed out. Check your browser’s microphone permission and selected input, then try again.")), 30_000);
+    const timer = window.setTimeout(
+      () =>
+        controller.abort(
+          new Error(
+            "Microphone setup timed out. Check your browser’s microphone permission and selected input, then try again.",
+          ),
+        ),
+      30_000,
+    );
     let abort = () => {};
     try {
       const cancelled = new Promise<never>((_, reject) => {
@@ -947,7 +1159,9 @@ export class PublicCallClient {
     } catch (error) {
       this.noiseSuppression = previous;
       throw error;
-    } finally { this.emit(); }
+    } finally {
+      this.emit();
+    }
   }
 
   async setAudioSetup(setup: AudioSetup) {
@@ -958,7 +1172,9 @@ export class PublicCallClient {
     } catch (error) {
       this.audioSetup = previous;
       throw error;
-    } finally { this.emit(); }
+    } finally {
+      this.emit();
+    }
   }
 
   async changeMicrophone(deviceId: string) {
@@ -980,7 +1196,8 @@ export class PublicCallClient {
       await oldCapture?.pause();
       try {
         track = await this.openMicrophone(deviceId || undefined);
-        if (generation !== this.generation || this.senders.get("microphone") !== microphone) throw new Error("Call session changed.");
+        if (generation !== this.generation || this.senders.get("microphone") !== microphone)
+          throw new Error("Call session changed.");
         track.enabled = !this.muted;
         await microphone.sender.replaceTrack(this.muted || this.monitoring ? null : track);
         senderReplaced = true;
@@ -999,12 +1216,18 @@ export class PublicCallClient {
           throw error;
         }
         let rollbackFailed = false;
-        try { await oldCapture?.resume(); } catch { rollbackFailed = true; }
+        try {
+          await oldCapture?.resume();
+        } catch {
+          rollbackFailed = true;
+        }
         if (senderReplaced && generation === this.generation && this.senders.get("microphone") === microphone) {
           try {
             await microphone.sender.replaceTrack(this.muted || this.monitoring ? null : old);
             if (this.monitoring) this.monitorStream = new MediaStream([oldCapture?.naturalTrack ?? old]);
-          } catch { rollbackFailed = true; }
+          } catch {
+            rollbackFailed = true;
+          }
         }
         if (track) this.stopMicrophone(track);
         if (rollbackFailed && generation === this.generation) this.scheduleReconnect("microphone change failed");
@@ -1025,13 +1248,17 @@ export class PublicCallClient {
     if (!pulled?.sessionDescription) return Promise.resolve();
     const offer = pulled.sessionDescription;
     return this.serialize(async () => {
-      const pc = this.receivePc ??= this.makePeerConnection(joined.iceServers, true);
+      const pc = (this.receivePc ??= this.makePeerConnection(joined.iceServers, true));
       // Map every allocated MID before applying the offer; ontrack uses it.
       for (const { trackId, mid } of pulled.tracks ?? []) this.subscriptions.set(trackId, mid);
       await pc.setRemoteDescription(withOpusDtx(offer));
       await pc.setLocalDescription(await pc.createAnswer());
       if (generation !== this.generation) throw new Error("Call session changed.");
-      await this.api("negotiate", { sessionDescription: await localDescription(pc, this.captureController.signal) }, this.token);
+      await this.api(
+        "negotiate",
+        { sessionDescription: await localDescription(pc, this.captureController.signal) },
+        this.token,
+      );
     }, generation);
   }
 
@@ -1041,18 +1268,26 @@ export class PublicCallClient {
    * when Join waited for it.
    */
   private watchJoinPulls(pulls: Promise<void>, generation: number, started: number) {
-    void pulls.then(async () => {
-      const receiver = this.receivePc;
-      if (!receiver || generation !== this.generation) return;
-      await waitFor(receiver, "connectionstatechange", CONNECT_TIMEOUT_MS, () => receiver.connectionState === "connected", this.captureController.signal);
-      if (generation !== this.generation || receiver !== this.receivePc || !this.joinTiming) return;
-      this.joinTiming.hearingMs = performance.now() - started;
-      // Shown now, not only at the next stats sample.
-      if (this.diagnostics) this.diagnostics = { ...this.diagnostics, hearingMs: this.joinTiming.hearingMs };
-      this.emit();
-    }).catch((error) => {
-      if (generation === this.generation) this.scheduleReconnect(reconnectReason("hearing others", error));
-    });
+    void pulls
+      .then(async () => {
+        const receiver = this.receivePc;
+        if (!receiver || generation !== this.generation) return;
+        await waitFor(
+          receiver,
+          "connectionstatechange",
+          CONNECT_TIMEOUT_MS,
+          () => receiver.connectionState === "connected",
+          this.captureController.signal,
+        );
+        if (generation !== this.generation || receiver !== this.receivePc || !this.joinTiming) return;
+        this.joinTiming.hearingMs = performance.now() - started;
+        // Shown now, not only at the next stats sample.
+        if (this.diagnostics) this.diagnostics = { ...this.diagnostics, hearingMs: this.joinTiming.hearingMs };
+        this.emit();
+      })
+      .catch((error) => {
+        if (generation === this.generation) this.scheduleReconnect(reconnectReason("hearing others", error));
+      });
   }
 
   /**
@@ -1062,7 +1297,13 @@ export class PublicCallClient {
    */
   private async pullConnection() {
     const pc = this.receivePc ?? this.requirePc();
-    await waitFor(pc, "connectionstatechange", CONNECT_TIMEOUT_MS, () => pc.connectionState === "connected", this.captureController.signal);
+    await waitFor(
+      pc,
+      "connectionstatechange",
+      CONNECT_TIMEOUT_MS,
+      () => pc.connectionState === "connected",
+      this.captureController.signal,
+    );
     return pc;
   }
 
@@ -1074,8 +1315,9 @@ export class PublicCallClient {
       const pc = await this.pullConnection();
       const token = this.token;
       let response: SessionDescriptionResponse;
-      try { response = await this.api<SessionDescriptionResponse>("subscribe", { trackId }, token); }
-      catch (error) {
+      try {
+        response = await this.api<SessionDescriptionResponse>("subscribe", { trackId }, token);
+      } catch (error) {
         // Ordinary departure between roster delivery and subscription. The API
         // authenticated us and rejected before touching the provider/SDP.
         if (error instanceof CallApiError && error.status === 404 && error.code === "track_gone") return false;
@@ -1088,7 +1330,11 @@ export class PublicCallClient {
       if (response.sessionDescription) {
         await pc.setRemoteDescription(withOpusDtx(response.sessionDescription));
         await pc.setLocalDescription(await pc.createAnswer());
-        await this.api("negotiate", { sessionDescription: await localDescription(pc, this.captureController.signal) }, token);
+        await this.api(
+          "negotiate",
+          { sessionDescription: await localDescription(pc, this.captureController.signal) },
+          token,
+        );
       } else if (response.requiresImmediateRenegotiation) {
         throw new Error("The media service requested negotiation without an offer.");
       }
@@ -1105,8 +1351,9 @@ export class PublicCallClient {
       const token = this.token;
       const pc = await this.pullConnection();
       let response: BatchSubscribeResponse;
-      try { response = await this.api<BatchSubscribeResponse>("subscribe", { trackIds: wanted }, token); }
-      catch (error) {
+      try {
+        response = await this.api<BatchSubscribeResponse>("subscribe", { trackIds: wanted }, token);
+      } catch (error) {
         if (error instanceof CallApiError && error.status === 404 && error.code === "track_gone") return false;
         // An API without batches rejects the field during deserialization, before any mutation.
         if (error instanceof CallApiError && error.status === 422) {
@@ -1121,7 +1368,11 @@ export class PublicCallClient {
       if (response.sessionDescription) {
         await pc.setRemoteDescription(withOpusDtx(response.sessionDescription));
         await pc.setLocalDescription(await pc.createAnswer());
-        await this.api("negotiate", { sessionDescription: await localDescription(pc, this.captureController.signal) }, token);
+        await this.api(
+          "negotiate",
+          { sessionDescription: await localDescription(pc, this.captureController.signal) },
+          token,
+        );
       } else if (response.requiresImmediateRenegotiation) {
         throw new Error("The media service requested negotiation without an offer.");
       }
@@ -1139,7 +1390,10 @@ export class PublicCallClient {
       if (!departed.length) return;
       // A departed source is no longer playable, regardless of cleanup latency.
       for (const { trackId } of departed) {
-        this.remoteMedia.get(trackId)?.stream.getTracks().forEach((track) => track.stop());
+        this.remoteMedia
+          .get(trackId)
+          ?.stream.getTracks()
+          .forEach((track) => track.stop());
         this.remoteMedia.delete(trackId);
         this.unassignedMedia.delete(trackId);
       }
@@ -1147,7 +1401,9 @@ export class PublicCallClient {
       // Force-close negotiates no SDP and each close is one atomic server update,
       // so several departures cost one round trip rather than one each.
       // With a receive session, subscription and publication MIDs may be equal.
-      const results = await Promise.allSettled(departed.map(({ mid }) => this.closeMid(mid, this.token, !!this.receivePc)));
+      const results = await Promise.allSettled(
+        departed.map(({ mid }) => this.closeMid(mid, this.token, !!this.receivePc)),
+      );
       if (generation !== this.generation) return;
       let failure: unknown;
       results.forEach((result, index) => {
@@ -1179,7 +1435,9 @@ export class PublicCallClient {
 
   private async closeMid(mid: string, token = this.token, subscription = false) {
     // With a receive session, publication and subscription MIDs may be equal.
-    try { await this.api("close", subscription ? { mid, subscription } : { mid }, token, SNAPSHOT_TIMEOUT_MS); } catch (error) {
+    try {
+      await this.api("close", subscription ? { mid, subscription } : { mid }, token, SNAPSHOT_TIMEOUT_MS);
+    } catch (error) {
       if (error instanceof CallApiError && error.status === 404) return;
       throw error;
     }
@@ -1190,8 +1448,17 @@ export class PublicCallClient {
     window.clearInterval(this.statsTimer);
     // Gateway snapshots handle discovery; command snapshots still renew the lease and repair missed state.
     const generation = this.generation;
-    if (this.pollAgain) void this.poll().catch((error) => { if (generation === this.generation) this.scheduleReconnect(reconnectReason("roster sync", error)); });
-    this.pollTimer = window.setInterval(() => void this.poll(true).catch((error) => { if (generation === this.generation) this.scheduleReconnect(reconnectReason("heartbeat", error)); }), 15_000);
+    if (this.pollAgain)
+      void this.poll().catch((error) => {
+        if (generation === this.generation) this.scheduleReconnect(reconnectReason("roster sync", error));
+      });
+    this.pollTimer = window.setInterval(
+      () =>
+        void this.poll(true).catch((error) => {
+          if (generation === this.generation) this.scheduleReconnect(reconnectReason("heartbeat", error));
+        }),
+      15_000,
+    );
     void this.readStats();
     this.statsTimer = window.setInterval(() => void this.readStats(), 1_000);
   }
@@ -1203,41 +1470,59 @@ export class PublicCallClient {
       const peers = [pc, this.receivePc].filter((peer): peer is RTCPeerConnection => !!peer);
       const reports = await Promise.all(peers.map((peer) => peer.getStats()));
       if (pc !== this.pc) return;
-      let received = 0, sent = 0, lost = 0, jitter = 0, rtt = 0, relay = false;
+      let received = 0,
+        sent = 0,
+        lost = 0,
+        jitter = 0,
+        rtt = 0,
+        relay = false;
       // Per-stream counters separate "nothing arrives" from "arrives but is silent".
-      const outbound: object[] = [], inbound: object[] = [], sources: object[] = [];
-      const level = (value: unknown) => typeof value === "number" ? Number(value.toFixed(4)) : undefined;
-      for (const report of reports) report.forEach((stat) => {
-        if (stat.type === "outbound-rtp") {
-          sent += stat.bytesSent ?? 0;
-          outbound.push({ mid: stat.mid, packetsSent: stat.packetsSent, bytesSent: stat.bytesSent, active: stat.active });
-        }
-        if (stat.type === "media-source" && stat.kind === "audio") {
-          sources.push({ audioLevel: level(stat.audioLevel), totalAudioEnergy: level(stat.totalAudioEnergy) });
-        }
-        if (stat.type === "inbound-rtp") {
-          received += stat.bytesReceived ?? 0;
-          lost += stat.packetsLost ?? 0;
-          jitter = Math.max(jitter, stat.jitter ?? 0);
-          inbound.push({
-            mid: stat.mid, packetsReceived: stat.packetsReceived, bytesReceived: stat.bytesReceived,
-            audioLevel: level(stat.audioLevel), totalSamplesReceived: stat.totalSamplesReceived,
-            concealedSamples: stat.concealedSamples,
-          });
-        }
-        if (stat.type === "candidate-pair" && stat.state === "succeeded" && stat.nominated) {
-          rtt = Math.max(rtt, stat.currentRoundTripTime ?? 0);
-          // Unanswered checks before connecting show retransmission delay in setup.
-          if (this.joinTiming && this.joinTiming.checks === undefined && typeof stat.requestsSent === "number") {
-            this.joinTiming.checks = `${stat.requestsSent} sent · ${stat.responsesReceived ?? 0} answered`;
+      const outbound: object[] = [],
+        inbound: object[] = [],
+        sources: object[] = [];
+      const level = (value: unknown) => (typeof value === "number" ? Number(value.toFixed(4)) : undefined);
+      for (const report of reports)
+        report.forEach((stat) => {
+          if (stat.type === "outbound-rtp") {
+            sent += stat.bytesSent ?? 0;
+            outbound.push({
+              mid: stat.mid,
+              packetsSent: stat.packetsSent,
+              bytesSent: stat.bytesSent,
+              active: stat.active,
+            });
           }
-          relay ||= report.get(stat.localCandidateId)?.candidateType === "relay";
-        }
-      });
+          if (stat.type === "media-source" && stat.kind === "audio") {
+            sources.push({ audioLevel: level(stat.audioLevel), totalAudioEnergy: level(stat.totalAudioEnergy) });
+          }
+          if (stat.type === "inbound-rtp") {
+            received += stat.bytesReceived ?? 0;
+            lost += stat.packetsLost ?? 0;
+            jitter = Math.max(jitter, stat.jitter ?? 0);
+            inbound.push({
+              mid: stat.mid,
+              packetsReceived: stat.packetsReceived,
+              bytesReceived: stat.bytesReceived,
+              audioLevel: level(stat.audioLevel),
+              totalSamplesReceived: stat.totalSamplesReceived,
+              concealedSamples: stat.concealedSamples,
+            });
+          }
+          if (stat.type === "candidate-pair" && stat.state === "succeeded" && stat.nominated) {
+            rtt = Math.max(rtt, stat.currentRoundTripTime ?? 0);
+            // Unanswered checks before connecting show retransmission delay in setup.
+            if (this.joinTiming && this.joinTiming.checks === undefined && typeof stat.requestsSent === "number") {
+              this.joinTiming.checks = `${stat.requestsSent} sent · ${stat.responsesReceived ?? 0} answered`;
+            }
+            relay ||= report.get(stat.localCandidateId)?.candidateType === "relay";
+          }
+        });
       const sampledAt = performance.now();
       const elapsed = sampledAt - (this.previousStats?.sampledAt ?? sampledAt);
-      const receiveBitrate = elapsed > 0 ? Math.max(0, (received - (this.previousStats?.received ?? received)) * 8_000 / elapsed) : 0;
-      const sendBitrate = elapsed > 0 ? Math.max(0, (sent - (this.previousStats?.sent ?? sent)) * 8_000 / elapsed) : 0;
+      const receiveBitrate =
+        elapsed > 0 ? Math.max(0, ((received - (this.previousStats?.received ?? received)) * 8_000) / elapsed) : 0;
+      const sendBitrate =
+        elapsed > 0 ? Math.max(0, ((sent - (this.previousStats?.sent ?? sent)) * 8_000) / elapsed) : 0;
       this.previousStats = { received, sent, sampledAt };
       this.mediaDetail = { outbound, sources, inbound };
       if (!this.joinTiming) return;
@@ -1253,7 +1538,9 @@ export class PublicCallClient {
         route: relay ? "relay" : rtt > 0 ? "direct" : "unknown",
       };
       this.emit();
-    } catch { /* Stats support varies; diagnostics must never interrupt media. */ }
+    } catch {
+      /* Stats support varies; diagnostics must never interrupt media. */
+    }
   }
 
   private renewLease(): Promise<boolean> {
@@ -1262,29 +1549,36 @@ export class PublicCallClient {
     const started = performance.now();
     const invalidation = this.snapshotInvalidation;
     const pushedVersion = this.pushedSnapshotVersion;
-    const pending = this.api<CallSnapshot & { revision?: number }>("snapshot", {}, this.token, SNAPSHOT_TIMEOUT_MS).then((snapshot) => {
-      if (generation !== this.generation) return false;
-      window.clearTimeout(this.pollRetryTimer);
-      this.controlFailedSince = undefined;
-      if (invalidation !== this.snapshotInvalidation) this.pollAgain = true;
-      else if (pushedVersion === this.pushedSnapshotVersion || snapshot.revision !== undefined) this.queueSnapshot(snapshot);
-      return true;
-    }).catch((error) => {
-      if (generation !== this.generation) return false;
-      if (this.phase !== "connected") throw error;
-      this.controlFailedSince ??= started;
-      if (!transientControlError(error) || performance.now() - this.controlFailedSince >= CONTROL_RECOVERY_MS) {
-        this.scheduleReconnect(reconnectReason("lease renewal", error));
-      } else {
+    const pending = this.api<CallSnapshot & { revision?: number }>("snapshot", {}, this.token, SNAPSHOT_TIMEOUT_MS)
+      .then((snapshot) => {
+        if (generation !== this.generation) return false;
         window.clearTimeout(this.pollRetryTimer);
-        this.pollRetryTimer = window.setTimeout(() => {
-          if (generation === this.generation) void this.poll(true).catch((error) => { if (generation === this.generation) this.scheduleReconnect(reconnectReason("heartbeat", error)); });
-        }, 3_000);
-      }
-      return false;
-    }).finally(() => {
-      if (this.snapshotPromise === pending) this.snapshotPromise = undefined;
-    });
+        this.controlFailedSince = undefined;
+        if (invalidation !== this.snapshotInvalidation) this.pollAgain = true;
+        else if (pushedVersion === this.pushedSnapshotVersion || snapshot.revision !== undefined)
+          this.queueSnapshot(snapshot);
+        return true;
+      })
+      .catch((error) => {
+        if (generation !== this.generation) return false;
+        if (this.phase !== "connected") throw error;
+        this.controlFailedSince ??= started;
+        if (!transientControlError(error) || performance.now() - this.controlFailedSince >= CONTROL_RECOVERY_MS) {
+          this.scheduleReconnect(reconnectReason("lease renewal", error));
+        } else {
+          window.clearTimeout(this.pollRetryTimer);
+          this.pollRetryTimer = window.setTimeout(() => {
+            if (generation === this.generation)
+              void this.poll(true).catch((error) => {
+                if (generation === this.generation) this.scheduleReconnect(reconnectReason("heartbeat", error));
+              });
+          }, 3_000);
+        }
+        return false;
+      })
+      .finally(() => {
+        if (this.snapshotPromise === pending) this.snapshotPromise = undefined;
+      });
     this.snapshotPromise = pending;
     return pending;
   }
@@ -1295,9 +1589,11 @@ export class PublicCallClient {
     if (heartbeat) {
       const generation = this.generation;
       const renewal = this.snapshotPromise
-        ? this.snapshotPromise.then((renewed) => renewed && generation === this.generation ? this.renewLease() : false)
+        ? this.snapshotPromise.then((renewed) =>
+            renewed && generation === this.generation ? this.renewLease() : false,
+          )
         : this.renewLease();
-      return renewal.then((renewed) => renewed && generation === this.generation ? this.poll() : undefined);
+      return renewal.then((renewed) => (renewed && generation === this.generation ? this.poll() : undefined));
     }
     this.pollAgain = true;
     if (this.pollPromise) return this.pollPromise;
@@ -1308,18 +1604,25 @@ export class PublicCallClient {
         const snapshot = this.pendingSnapshot;
         this.pendingSnapshot = undefined;
         if (!snapshot) {
-          if (!await this.renewLease()) return;
+          if (!(await this.renewLease())) return;
           continue;
         }
         const pushedVersion = this.pushedSnapshotVersion;
         if (generation !== this.generation) return;
-        if (snapshot.revision !== undefined && this.latestRevision !== undefined && snapshot.revision < this.latestRevision) continue;
+        if (
+          snapshot.revision !== undefined &&
+          this.latestRevision !== undefined &&
+          snapshot.revision < this.latestRevision
+        )
+          continue;
         if (snapshot.revision !== undefined) this.latestRevision = snapshot.revision;
         if (pushedVersion !== this.pushedSnapshotVersion) continue;
         // ontrack uses the roster to associate arriving media with its owner.
         this.sessionStartedAt = snapshot.sessionStartedAt;
         this.setParticipants(snapshot.participants);
-        const available = new Set(snapshot.participants.flatMap((participant) => participant.tracks.map((track) => track.id)));
+        const available = new Set(
+          snapshot.participants.flatMap((participant) => participant.tracks.map((track) => track.id)),
+        );
         const departed = [...this.subscriptions.keys()].filter((id) => !available.has(id));
         if (departed.length) await this.unsubscribe(departed);
         if (generation !== this.generation) return;
@@ -1329,14 +1632,15 @@ export class PublicCallClient {
           .flatMap((participant) => participant.tracks.map((track) => track.id))
           .filter((id) => !this.subscriptions.has(id));
         // Several sources share one provider request and one SDP exchange.
-        const batched = missing.length > 1 && !this.batchUnsupported ? await this.subscribeMany(missing) : "unsupported";
+        const batched =
+          missing.length > 1 && !this.batchUnsupported ? await this.subscribeMany(missing) : "unsupported";
         if (batched === "unsupported") {
           for (const participant of snapshot.participants) {
             if (participant.id === this.selfId) continue;
             for (const track of participant.tracks) {
               if (generation !== this.generation) return;
               if (pushedVersion !== this.pushedSnapshotVersion) break;
-              if (!this.subscriptions.has(track.id) && !await this.subscribe(track.id)) unavailable = true;
+              if (!this.subscriptions.has(track.id) && !(await this.subscribe(track.id))) unavailable = true;
             }
           }
         } else if (!batched) unavailable = true;
@@ -1366,7 +1670,9 @@ export class PublicCallClient {
     const delay = PULL_RETRY_DELAYS_MS[this.unavailableRetries++];
     this.unavailableRetryTimer = window.setTimeout(() => {
       if (generation !== this.generation) return;
-      void this.poll().catch((error) => { if (generation === this.generation) this.scheduleReconnect(reconnectReason("roster sync", error)); });
+      void this.poll().catch((error) => {
+        if (generation === this.generation) this.scheduleReconnect(reconnectReason("roster sync", error));
+      });
     }, delay);
   }
 
@@ -1374,9 +1680,13 @@ export class PublicCallClient {
     if (this.phase !== "connected" && this.phase !== "joining") return;
     // Kept across the rejoin, so a report taken afterwards still says why.
     this.lastReconnect = {
-      reason, at: new Date().toISOString(), phase: this.phase,
-      peer: this.pc?.connectionState, receivePeer: this.receivePc?.connectionState,
-      participants: this.participants.length, subscriptions: this.subscriptions.size,
+      reason,
+      at: new Date().toISOString(),
+      phase: this.phase,
+      peer: this.pc?.connectionState,
+      receivePeer: this.receivePc?.connectionState,
+      participants: this.participants.length,
+      subscriptions: this.subscriptions.size,
     };
     this.phase = "reconnecting";
     ++this.generation;
@@ -1417,7 +1727,8 @@ export class PublicCallClient {
       this.reconnects = 0;
       if (this.monitoring) {
         const microphone = this.senders.get("microphone");
-        if (microphone) this.monitorStream = new MediaStream([this.captures.get(microphone.track)?.naturalTrack ?? microphone.track]);
+        if (microphone)
+          this.monitorStream = new MediaStream([this.captures.get(microphone.track)?.naturalTrack ?? microphone.track]);
         this.emit();
       }
     } catch {
@@ -1491,16 +1802,28 @@ export class PublicCallClient {
     this.monitorStream = undefined;
     this.localTestTrack = undefined;
     this.pc?.getReceivers().forEach((receiver) => receiver.track.stop());
-    this.pc?.getSenders().forEach((sender) => { if (sender.track !== preserve) sender.track?.stop(); });
+    this.pc?.getSenders().forEach((sender) => {
+      if (sender.track !== preserve) sender.track?.stop();
+    });
     for (const publication of this.senders.values()) if (publication.track !== preserve) publication.track.stop();
     this.pc?.close();
     this.receivePc?.getReceivers().forEach((receiver) => receiver.track.stop());
     this.receivePc?.close();
     window.clearTimeout(this.receiveDisconnectTimer);
     this.receiveDisconnectTimer = undefined;
-    this.pc = undefined; this.receivePc = undefined; this.token = undefined;
-    this.senders.clear(); this.subscriptions.clear(); this.remoteMedia.clear(); this.unassignedMedia.clear(); this.localMedia = undefined; this.pollPromise = undefined; this.pollAgain = false;
-    this.pendingSnapshot = undefined; this.pushedSnapshotVersion = 0; this.latestRevision = undefined;
+    this.pc = undefined;
+    this.receivePc = undefined;
+    this.token = undefined;
+    this.senders.clear();
+    this.subscriptions.clear();
+    this.remoteMedia.clear();
+    this.unassignedMedia.clear();
+    this.localMedia = undefined;
+    this.pollPromise = undefined;
+    this.pollAgain = false;
+    this.pendingSnapshot = undefined;
+    this.pushedSnapshotVersion = 0;
+    this.latestRevision = undefined;
     this.sessionStartedAt = undefined;
     this.joinStartedAt = undefined;
   }

@@ -5,9 +5,12 @@ import { emojiAsset, emojiNames, preloadEmojiImages } from "./emoji.ts";
 
 const emojiData = {
   categories: english.categories,
-  emojis: Object.fromEntries(Object.entries(english.emojis).map(([category, entries]) => [
-    category, entries.map((entry) => ({ ...entry, n: emojiNames(entry.n) })),
-  ])),
+  emojis: Object.fromEntries(
+    Object.entries(english.emojis).map(([category, entries]) => [
+      category,
+      entries.map((entry) => ({ ...entry, n: emojiNames(entry.n) })),
+    ]),
+  ),
 };
 
 const categories = [
@@ -32,12 +35,24 @@ function preloadCategory(event: SyntheticEvent<HTMLDivElement>) {
 export default function ReactionPicker({ onSelect }: { onSelect: (emoji: string) => void }) {
   // The picker already virtualizes the grid. Load its mounted window eagerly
   // so category jumps do not add a second, browser-controlled loading delay.
-  return <div style={{ height: "100%" }} onPointerOverCapture={preloadCategory} onFocusCapture={preloadCategory}>
-    <EmojiPicker emojiData={emojiData} theme={Theme.DARK} emojiStyle={EmojiStyle.TWITTER}
-      emojiVersion="15.0" getEmojiUrl={emojiAsset} width="100%" height="100%"
-      searchPlaceholder="Search emoji" autoFocusSearch lazyLoadEmojis={false} skinTonesDisabled
-      previewConfig={{ showPreview: false }}
-      categories={categories}
-      onEmojiClick={(data) => onSelect(data.emoji)} />
-  </div>;
+  return (
+    <div style={{ height: "100%" }} onPointerOverCapture={preloadCategory} onFocusCapture={preloadCategory}>
+      <EmojiPicker
+        emojiData={emojiData}
+        theme={Theme.DARK}
+        emojiStyle={EmojiStyle.TWITTER}
+        emojiVersion="15.0"
+        getEmojiUrl={emojiAsset}
+        width="100%"
+        height="100%"
+        searchPlaceholder="Search emoji"
+        autoFocusSearch
+        lazyLoadEmojis={false}
+        skinTonesDisabled
+        previewConfig={{ showPreview: false }}
+        categories={categories}
+        onEmojiClick={(data) => onSelect(data.emoji)}
+      />
+    </div>
+  );
 }

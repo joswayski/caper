@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test, type TestContext } from "node:test";
+import { test, type TestContext, vi } from "vitest";
 import { TurnRenewal } from "../media/turn-renewal.ts";
 import type { TurnGeneration, TurnResponse } from "../media/types.ts";
 
@@ -11,12 +11,18 @@ const renewed: TurnResponse = {
   turn: { generation: "new", refreshAfterMs: 60_000, expiresInMs: 120_000 },
 };
 const offer = { type: "offer" as const, sdp: "v=0\r\na=ice-ufrag:one\r\n" };
-const answer = { type: "answer" as const, sdp: "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\n" };
+const answer = {
+  type: "answer" as const,
+  sdp: "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\n",
+};
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
   return { promise, resolve, reject };
 }
 
@@ -31,9 +37,16 @@ class Peer {
   locals: RTCSessionDescriptionInit[] = [];
   remotes: RTCSessionDescriptionInit[] = [];
   remoteHook?: (description: RTCSessionDescriptionInit) => Promise<void>;
-  getConfiguration() { return this.configuration; }
-  setConfiguration(value: RTCConfiguration) { this.configuration = value; }
-  async createOffer(options: RTCOfferOptions) { this.offers.push(options); return offer; }
+  getConfiguration() {
+    return this.configuration;
+  }
+  setConfiguration(value: RTCConfiguration) {
+    this.configuration = value;
+  }
+  async createOffer(options: RTCOfferOptions) {
+    this.offers.push(options);
+    return offer;
+  }
   async setLocalDescription(value: RTCSessionDescriptionInit) {
     this.locals.push(value);
     this.localDescription = { toJSON: () => value };
@@ -45,20 +58,36 @@ class Peer {
 }
 
 function setup(t: TestContext) {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const oldWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
   Object.defineProperty(globalThis, "window", { value: globalThis, configurable: true });
-  t.after(() => {
+  t.onTestFinished(() => {
     if (oldWindow) Object.defineProperty(globalThis, "window", oldWindow);
     else Reflect.deleteProperty(globalThis, "window");
   });
-  const start = async () => { t.mock.timers.tick(1_000); await flush(); };
+  const start = async () => {
+    vi.advanceTimersByTime(1_000);
+    await flush();
+  };
   return { start };
 }
 
-function make(pc: Peer, request: Request, serialize: <T>(operation: () => Promise<T>) => Promise<T>, invalid: () => void = () => {}) {
-  return new TurnRenewal(pc as unknown as RTCPeerConnection, "token", initial, request, serialize,
-    () => true, invalid, performance.now());
+function make(
+  pc: Peer,
+  request: Request,
+  serialize: <T>(operation: () => Promise<T>) => Promise<T>,
+  invalid: () => void = () => {},
+) {
+  return new TurnRenewal(
+    pc as unknown as RTCPeerConnection,
+    "token",
+    initial,
+    request,
+    serialize,
+    () => true,
+    invalid,
+    performance.now(),
+  );
 }
 
 test("replays the exact restart offer after a lost answer or 503", async (t) => {
@@ -79,7 +108,7 @@ test("replays the exact restart offer after a lost answer or 503", async (t) => 
   await start();
   assert.equal(restartBodies.length, 1);
   assert.equal(pc.offers.length, 1);
-  t.mock.timers.tick(1_000);
+  vi.advanceTimersByTime(1_000);
   await flush();
   assert.equal(restartBodies.length, 2);
   assert.strictEqual(restartBodies[1], restartBodies[0], "retry must replay the same body object");
@@ -107,7 +136,11 @@ test("holds the signaling queue through ACK and retries ACK without renegotiatin
   let released = false;
   const serialize = async <T>(operation: () => Promise<T>) => {
     await admitted.promise;
-    try { return await operation(); } finally { released = true; }
+    try {
+      return await operation();
+    } finally {
+      released = true;
+    }
   };
   const renewal = make(pc, request, serialize);
   await start();
@@ -117,7 +150,7 @@ test("holds the signaling queue through ACK and retries ACK without renegotiatin
   assert.equal(pc.offers.length, 1);
   assert.equal(pc.remotes.length, 1);
   assert.equal(released, false);
-  t.mock.timers.tick(1_000);
+  vi.advanceTimersByTime(1_000);
   await flush();
   assert.equal(operations.filter(({ operation }) => operation === "restart-ice-ack").length, 2);
   assert.equal(operations.filter(({ operation }) => operation === "restart-ice").length, 1);
@@ -135,11 +168,18 @@ test("same-generation credentials are a cache hit without an ICE restart", async
   const pc = new Peer();
   const calls: string[] = [];
   let serialized = 0;
-  const renewal = make(pc, async <T>(operation: string, body: object) => {
-    calls.push(operation);
-    assert.deepEqual(body, { generation: "old" });
-    return { ...renewed, turn: { ...renewed.turn, generation: "old" } } as T;
-  }, async (operation) => { serialized++; return operation(); });
+  const renewal = make(
+    pc,
+    async <T>(operation: string, body: object) => {
+      calls.push(operation);
+      assert.deepEqual(body, { generation: "old" });
+      return { ...renewed, turn: { ...renewed.turn, generation: "old" } } as T;
+    },
+    async (operation) => {
+      serialized++;
+      return operation();
+    },
+  );
   await start();
   assert.deepEqual(calls, ["turn"]);
   assert.equal(serialized, 0);
@@ -153,8 +193,17 @@ test("cancellation while queued and while applying the answer has no stale failu
   const queuedPc = new Peer();
   const gate = deferred<void>();
   let invalids = 0;
-  const request: Request = async <T>(operation: string) => operation === "turn" ? renewed as T : { sessionDescription: answer } as T;
-  const queued = make(queuedPc, request, async (operation) => { await gate.promise; return operation(); }, () => invalids++);
+  const request: Request = async <T>(operation: string) =>
+    operation === "turn" ? (renewed as T) : ({ sessionDescription: answer } as T);
+  const queued = make(
+    queuedPc,
+    request,
+    async (operation) => {
+      await gate.promise;
+      return operation();
+    },
+    () => invalids++,
+  );
   await start();
   queued.stop();
   gate.resolve();
@@ -165,9 +214,14 @@ test("cancellation while queued and while applying the answer has no stale failu
   const applyingPc = new Peer();
   const remote = deferred<void>();
   applyingPc.remoteHook = () => remote.promise;
-  const applying = make(applyingPc, request, (operation) => operation(), () => invalids++);
+  const applying = make(
+    applyingPc,
+    request,
+    (operation) => operation(),
+    () => invalids++,
+  );
   // A fresh helper has its own initial timer.
-  t.mock.timers.tick(1_000);
+  vi.advanceTimersByTime(1_000);
   await flush();
   assert.equal(applyingPc.remotes.length, 1);
   applying.stop();
@@ -182,19 +236,25 @@ for (const scenario of ["mismatch", "invalid answer"] as const) {
     const pc = new Peer();
     let invalids = 0;
     let restarts = 0;
-    const renewal = make(pc, async <T>(operation: string) => {
-      if (operation === "turn") return renewed as T;
-      if (operation === "restart-ice") {
-        restarts++;
-        if (scenario === "mismatch") throw Object.assign(new Error("generation mismatch"), { status: 409, code: "ice_restart_mismatch" });
-        return {} as T;
-      }
-      throw new Error("unexpected ACK");
-    }, (operation) => operation(), () => invalids++);
+    const renewal = make(
+      pc,
+      async <T>(operation: string) => {
+        if (operation === "turn") return renewed as T;
+        if (operation === "restart-ice") {
+          restarts++;
+          if (scenario === "mismatch")
+            throw Object.assign(new Error("generation mismatch"), { status: 409, code: "ice_restart_mismatch" });
+          return {} as T;
+        }
+        throw new Error("unexpected ACK");
+      },
+      (operation) => operation(),
+      () => invalids++,
+    );
     await start();
     assert.equal(invalids, 1);
     assert.equal(restarts, 1);
-    t.mock.timers.tick(120_000);
+    vi.advanceTimersByTime(120_000);
     await flush();
     assert.equal(invalids, 1);
     assert.equal(restarts, 1);
@@ -209,19 +269,26 @@ test("independent monitor sender and receiver renewal queues do not block each o
   const receiver = new Peer();
   const senderGate = deferred<void>();
   const calls: string[] = [];
-  const request = (role: string): Request => async <T>(operation: string) => {
-    calls.push(`${role}:${operation}`);
-    if (operation === "turn") return renewed as T;
-    if (operation === "restart-ice") return { sessionDescription: answer } as T;
-    return undefined as T;
-  };
-  const senderRenewal = make(sender, request("sender"), async (operation) => { await senderGate.promise; return operation(); });
+  const request =
+    (role: string): Request =>
+    async <T>(operation: string) => {
+      calls.push(`${role}:${operation}`);
+      if (operation === "turn") return renewed as T;
+      if (operation === "restart-ice") return { sessionDescription: answer } as T;
+      return undefined as T;
+    };
+  const senderRenewal = make(sender, request("sender"), async (operation) => {
+    await senderGate.promise;
+    return operation();
+  });
   const receiverRenewal = make(receiver, request("receiver"), (operation) => operation());
   await start();
   assert.equal(sender.offers.length, 0);
   assert.equal(receiver.offers.length, 1);
-  assert.deepEqual(calls.filter((call) => call.startsWith("receiver:")),
-    ["receiver:turn", "receiver:restart-ice", "receiver:restart-ice-ack"]);
+  assert.deepEqual(
+    calls.filter((call) => call.startsWith("receiver:")),
+    ["receiver:turn", "receiver:restart-ice", "receiver:restart-ice-ack"],
+  );
   senderGate.resolve();
   await flush();
   assert.equal(sender.offers.length, 1);

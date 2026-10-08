@@ -74,7 +74,8 @@ export async function createVoiceComparison(blob: Blob, strength: number) {
 /** Records the timestamped, received WebRTC audio in memory without owning its tracks. */
 export function recordReceivedAudio(stream: MediaStream): ReceivedRecording {
   if (typeof MediaRecorder === "undefined") throw new Error("Audio recording is not supported by this browser.");
-  if (!stream.getAudioTracks().some((track) => track.readyState === "live")) throw new Error("No received audio is available.");
+  if (!stream.getAudioTracks().some((track) => track.readyState === "live"))
+    throw new Error("No received audio is available.");
 
   const mimeType = preferredAudioType();
   const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
@@ -90,7 +91,10 @@ export function recordReceivedAudio(stream: MediaStream): ReceivedRecording {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let resolve!: (blob: Blob) => void;
   let reject!: (error: Error) => void;
-  const result = new Promise<Blob>((yes, no) => { resolve = yes; reject = no; });
+  const result = new Promise<Blob>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
 
   const cleanup = () => {
     clearTimeout(timer);

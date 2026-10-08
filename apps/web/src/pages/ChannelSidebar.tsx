@@ -25,8 +25,7 @@ export default function ChannelSidebar({ children }: { children: ReactNode }) {
     const room = panel.current!.parentElement!;
     const measure = () => {
       if (window.innerWidth <= 760) return;
-      const rail =
-        room.querySelector(".space-rail")?.getBoundingClientRect().width ?? 0;
+      const rail = room.querySelector(".space-rail")?.getBoundingClientRect().width ?? 0;
       const max = Math.max(
         MIN_WIDTH,
         Math.min(room.closest(".live-app") ? DEFAULT_WIDTH : MAX_WIDTH, room.clientWidth - rail - 320),
@@ -52,7 +51,11 @@ export default function ChannelSidebar({ children }: { children: ReactNode }) {
   };
 
   return (
-    <aside ref={panel} className="people-panel" style={{ width: width ?? `var(--channel-sidebar-width, ${DEFAULT_WIDTH}px)` }}>
+    <aside
+      ref={panel}
+      className="people-panel"
+      style={{ width: width ?? `var(--channel-sidebar-width, ${DEFAULT_WIDTH}px)` }}
+    >
       {children}
       <div
         className="channel-sidebar-resize"
@@ -75,8 +78,7 @@ export default function ChannelSidebar({ children }: { children: ReactNode }) {
           event.currentTarget.setPointerCapture(event.pointerId);
         }}
         onPointerMove={(event) => {
-          if (drag.current)
-            resize(drag.current.width + event.clientX - drag.current.x);
+          if (drag.current) resize(drag.current.width + event.clientX - drag.current.x);
         }}
         onPointerUp={(event) => {
           drag.current = undefined;

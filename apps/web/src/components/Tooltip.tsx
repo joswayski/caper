@@ -1,4 +1,14 @@
-import { cloneElement, useEffect, useId, useRef, type FocusEvent, type KeyboardEvent, type MouseEvent, type ReactElement, type ReactNode } from "react";
+import {
+  cloneElement,
+  useEffect,
+  useId,
+  useRef,
+  type FocusEvent,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import "./tooltip.css";
 
 type TriggerProps = {
@@ -11,7 +21,13 @@ type TriggerProps = {
   onMouseLeave?: (event: MouseEvent<HTMLElement>) => void;
 };
 
-export default function Tooltip({ children, content, id, placement = "top", touch = false }: {
+export default function Tooltip({
+  children,
+  content,
+  id,
+  placement = "top",
+  touch = false,
+}: {
   children: ReactElement<TriggerProps>;
   content?: ReactNode;
   id?: string;
@@ -47,11 +63,18 @@ export default function Tooltip({ children, content, id, placement = "top", touc
     tooltip.style.maxHeight = `${height - edge * 2}px`;
     const anchorBounds = anchor.getBoundingClientRect();
     const tooltipBounds = tooltip.getBoundingClientRect();
-    const left = Math.max(x + edge, Math.min(anchorBounds.left + (anchorBounds.width - tooltipBounds.width) / 2, x + width - tooltipBounds.width - edge));
+    const left = Math.max(
+      x + edge,
+      Math.min(
+        anchorBounds.left + (anchorBounds.width - tooltipBounds.width) / 2,
+        x + width - tooltipBounds.width - edge,
+      ),
+    );
     const fitsAbove = anchorBounds.top - y >= tooltipBounds.height + gap + edge;
-    const top = placement === "bottom" || !fitsAbove
-      ? Math.min(anchorBounds.bottom + gap, y + height - tooltipBounds.height - edge)
-      : anchorBounds.top - tooltipBounds.height - gap;
+    const top =
+      placement === "bottom" || !fitsAbove
+        ? Math.min(anchorBounds.bottom + gap, y + height - tooltipBounds.height - edge)
+        : anchorBounds.top - tooltipBounds.height - gap;
     tooltip.style.left = `${left}px`;
     tooltip.style.top = `${Math.max(y + edge, top)}px`;
   };
@@ -70,7 +93,8 @@ export default function Tooltip({ children, content, id, placement = "top", touc
     const onScroll = () => hide();
     const onPointerDown = (event: PointerEvent) => {
       touchPointerRef.current = event.pointerType === "touch";
-      if (!anchorRef.current?.contains(event.target as Node) && !tooltipRef.current?.contains(event.target as Node)) hide();
+      if (!anchorRef.current?.contains(event.target as Node) && !tooltipRef.current?.contains(event.target as Node))
+        hide();
     };
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       touchPointerRef.current = false;
@@ -102,7 +126,10 @@ export default function Tooltip({ children, content, id, placement = "top", touc
     "aria-describedby": content == null ? children.props["aria-describedby"] : tooltipId,
     onClick: (event) => {
       children.props.onClick?.(event);
-      if (!touch) { hide(); return; }
+      if (!touch) {
+        hide();
+        return;
+      }
       if (touchPointerRef.current && tooltipRef.current?.matches(":popover-open")) hide();
       else show(event.currentTarget);
     },
@@ -115,7 +142,10 @@ export default function Tooltip({ children, content, id, placement = "top", touc
     onMouseLeave: (event) => {
       children.props.onMouseLeave?.(event);
       hoveredRef.current = false;
-      if (!focusedRef.current) hideTimer.current = setTimeout(() => { if (!hoveredRef.current && !focusedRef.current) hide(); }, 100);
+      if (!focusedRef.current)
+        hideTimer.current = setTimeout(() => {
+          if (!hoveredRef.current && !focusedRef.current) hide();
+        }, 100);
     },
     onFocus: (event) => {
       children.props.onFocus?.(event);
@@ -138,5 +168,28 @@ export default function Tooltip({ children, content, id, placement = "top", touc
     },
   });
 
-  return <>{trigger}{content != null && <span ref={tooltipRef} className="top-layer-tooltip" id={tooltipId} role="tooltip" popover="manual" onMouseEnter={() => { clearTimeout(hideTimer.current); hoveredRef.current = true; }} onMouseLeave={() => { hoveredRef.current = false; if (!focusedRef.current) hide(); }}>{content}</span>}</>;
+  return (
+    <>
+      {trigger}
+      {content != null && (
+        <span
+          ref={tooltipRef}
+          className="top-layer-tooltip"
+          id={tooltipId}
+          role="tooltip"
+          popover="manual"
+          onMouseEnter={() => {
+            clearTimeout(hideTimer.current);
+            hoveredRef.current = true;
+          }}
+          onMouseLeave={() => {
+            hoveredRef.current = false;
+            if (!focusedRef.current) hide();
+          }}
+        >
+          {content}
+        </span>
+      )}
+    </>
+  );
 }

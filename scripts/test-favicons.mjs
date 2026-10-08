@@ -1,58 +1,75 @@
 // Clock-controlled real browser checks; inspection captures are not browser/OS chrome.
 // node scripts/test-favicons.mjs http://localhost:31095 [screenshot-directory]
-import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 const origin = new URL(process.argv[2]);
-assert.ok(['localhost', '127.0.0.1'].includes(origin.hostname));
+assert.ok(["localhost", "127.0.0.1"].includes(origin.hostname));
 const artifacts = process.argv[3] && resolve(process.argv[3]);
 if (artifacts) mkdirSync(artifacts, { recursive: true });
 const expected = [
-  { rel: 'icon', type: 'image/png', sizes: '32x32', href: '/icons/caper-main-v3-32.png' },
-  { rel: 'icon', type: 'image/png', sizes: '192x192', href: '/icons/caper-main-v3-192.png' },
-  { rel: 'icon', type: 'image/svg+xml', sizes: 'any', href: '/caper-face.svg?v=3' },
-  { rel: 'apple-touch-icon', type: null, sizes: '180x180', href: '/icons/caper-main-v3-180.png' },
+  { rel: "icon", type: "image/png", sizes: "32x32", href: "/icons/caper-main-v3-32.png" },
+  { rel: "icon", type: "image/png", sizes: "192x192", href: "/icons/caper-main-v3-192.png" },
+  { rel: "icon", type: "image/svg+xml", sizes: "any", href: "/caper-face.svg?v=3" },
+  { rel: "apple-touch-icon", type: null, sizes: "180x180", href: "/icons/caper-main-v3-180.png" },
 ];
-for (const route of ['/', '/login']) {
+for (const route of ["/", "/login"]) {
   const response = await fetch(new URL(route, origin));
   assert.equal(response.status, 200);
   const html = await response.text();
-  const links = [...html.matchAll(/<link\b[^>]*>/g)].map(([tag]) => Object.fromEntries(
-    ['rel', 'type', 'sizes', 'href'].map(key => [key, tag.match(new RegExp(`${key}="([^"]*)"`))?.[1] ?? null]),
-  )).filter(link => ['icon', 'apple-touch-icon'].includes(link.rel));
+  const links = [...html.matchAll(/<link\b[^>]*>/g)]
+    .map(([tag]) =>
+      Object.fromEntries(
+        ["rel", "type", "sizes", "href"].map((key) => [key, tag.match(new RegExp(`${key}="([^"]*)"`))?.[1] ?? null]),
+      ),
+    )
+    .filter((link) => ["icon", "apple-touch-icon"].includes(link.rel));
   assert.deepEqual(links, expected, `Original mascot in server HTML on ${route}`);
 }
-const manifestResponse = await fetch(new URL('/site.webmanifest', origin));
+const manifestResponse = await fetch(new URL("/site.webmanifest", origin));
 assert.equal(manifestResponse.status, 200);
 const manifest = await manifestResponse.json();
-assert.equal(manifest.display, 'browser');
-assert.deepEqual(manifest.icons, [192, 512].map(size => ({ src: `/icons/caper-main-v3-${size}.png`, sizes: `${size}x${size}`, type: 'image/png' })));
-for (const { href, type, sizes } of [...expected, { href: '/icons/caper-main-v3-512.png', type: 'image/png', sizes: '512x512' }]) {
+assert.equal(manifest.display, "browser");
+assert.deepEqual(
+  manifest.icons,
+  [192, 512].map((size) => ({ src: `/icons/caper-main-v3-${size}.png`, sizes: `${size}x${size}`, type: "image/png" })),
+);
+for (const { href, type, sizes } of [
+  ...expected,
+  { href: "/icons/caper-main-v3-512.png", type: "image/png", sizes: "512x512" },
+]) {
   const response = await fetch(new URL(href, origin));
   assert.equal(response.status, 200, href);
-  assert.match(response.headers.get('content-type'), new RegExp(`^${(type ?? 'image/png').replace('+', '\\+')}`));
-  if (sizes === 'any') continue;
+  assert.match(response.headers.get("content-type"), new RegExp(`^${(type ?? "image/png").replace("+", "\\+")}`));
+  if (sizes === "any") continue;
   const png = Buffer.from(await response.arrayBuffer());
-  assert.equal(png.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
-  assert.equal(png.readUInt32BE(16), Number(sizes.split('x')[0]));
-  assert.equal(png.readUInt32BE(20), Number(sizes.split('x')[1]));
+  assert.equal(png.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+  assert.equal(png.readUInt32BE(16), Number(sizes.split("x")[0]));
+  assert.equal(png.readUInt32BE(20), Number(sizes.split("x")[1]));
 }
 
-const scratch = mkdtempSync(join(tmpdir(), 'caper-icons-'));
-const init = join(scratch, 'clock.js');
+const scratch = mkdtempSync(join(tmpdir(), "caper-icons-"));
+const init = join(scratch, "clock.js");
 function fixture() {
-  if (location.protocol === 'about:') return;
-  window.__iconNow = Number(new URL(location.href).searchParams.get('icon-now') || Date.UTC(2026, 9, 3, 23, 59, 59, 999));
+  if (location.protocol === "about:") return;
+  window.__iconNow = Number(
+    new URL(location.href).searchParams.get("icon-now") || Date.UTC(2026, 9, 3, 23, 59, 59, 999),
+  );
   Date.now = () => window.__iconNow;
   Math.random = () => 0;
-  if (location.search.includes('blocked-storage-test')) {
-    Storage.prototype.getItem = Storage.prototype.setItem = () => { throw new DOMException('Test: storage blocked', 'SecurityError'); };
+  if (location.search.includes("blocked-storage-test")) {
+    Storage.prototype.getItem = Storage.prototype.setItem = () => {
+      throw new DOMException("Test: storage blocked", "SecurityError");
+    };
     Math.random = () => 0.2;
-  } else if (!localStorage.getItem('caper.daily-icon.v1')) {
-    localStorage.setItem('caper.daily-icon.v1', JSON.stringify({ day: Math.floor(window.__iconNow / 86400000), index: 799 }));
+  } else if (!localStorage.getItem("caper.daily-icon.v1")) {
+    localStorage.setItem(
+      "caper.daily-icon.v1",
+      JSON.stringify({ day: Math.floor(window.__iconNow / 86400000), index: 799 }),
+    );
   }
   const interval = window.setInterval.bind(window);
   window.__iconTimers = [];
@@ -60,23 +77,40 @@ function fixture() {
     if (ms === 60000) window.__iconTimers.push(() => callback(...args));
     return interval(callback, ms, ...args);
   };
-  if (location.search.includes('installed-icon-test')) Object.defineProperty(navigator, 'standalone', { value: true });
+  if (location.search.includes("installed-icon-test")) Object.defineProperty(navigator, "standalone", { value: true });
 }
 writeFileSync(init, `(${fixture.toString()})();`);
 const session = `favicons-${process.pid}`;
-const browser = (...args) => execFileSync('agent-browser', ['--session', session, '--init-script', init, ...args], { encoding: 'utf8', timeout: 40000 });
-const evaluate = code => JSON.parse(browser('eval', code));
-const waitForWordmark = index => browser('wait', '--fn', `[...document.querySelectorAll('.wordmark-character')].length > 0 && [...document.querySelectorAll('.wordmark-character')].every(image => image.getAttribute('src') === (location.pathname === '/' ? '/caper-face.svg?v=3' : '/images/branding/v1/${index}.svg') && image.complete && (location.pathname === '/' ? image.naturalWidth > 0 : image.naturalWidth === 256))`);
-const waitForIcon = (index, previousPNG = '') => {
-  browser('wait', '--fn', `document.querySelector('#caper-favicon-svg')?.getAttribute('href') === '/images/branding/v1/${index}.svg' && document.querySelector('#caper-favicon-32')?.href.startsWith('data:image/png') && document.querySelector('#caper-favicon-32')?.href !== ${JSON.stringify(previousPNG)}`);
+const browser = (...args) =>
+  execFileSync("agent-browser", ["--session", session, "--init-script", init, ...args], {
+    encoding: "utf8",
+    timeout: 40000,
+  });
+const evaluate = (code) => JSON.parse(browser("eval", code));
+const waitForWordmark = (index) =>
+  browser(
+    "wait",
+    "--fn",
+    `[...document.querySelectorAll('.wordmark-character')].length > 0 && [...document.querySelectorAll('.wordmark-character')].every(image => image.getAttribute('src') === (location.pathname === '/' ? '/caper-face.svg?v=3' : '/images/branding/v1/${index}.svg') && image.complete && (location.pathname === '/' ? image.naturalWidth > 0 : image.naturalWidth === 256))`,
+  );
+const waitForIcon = (index, previousPNG = "") => {
+  browser(
+    "wait",
+    "--fn",
+    `document.querySelector('#caper-favicon-svg')?.getAttribute('href') === '/images/branding/v1/${index}.svg' && document.querySelector('#caper-favicon-32')?.href.startsWith('data:image/png') && document.querySelector('#caper-favicon-32')?.href !== ${JSON.stringify(previousPNG)}`,
+  );
   waitForWordmark(index);
 };
-const record = () => evaluate(`Object.fromEntries(['svg','32','192'].map(key => [key,document.querySelector('#caper-favicon-'+key).getAttribute('href')]))`);
+const record = () =>
+  evaluate(
+    `Object.fromEntries(['svg','32','192'].map(key => [key,document.querySelector('#caper-favicon-'+key).getAttribute('href')]))`,
+  );
 try {
-  browser('open', `${origin}`);
-  browser('set', 'viewport', '1280', '844', '2');
+  browser("open", `${origin}`);
+  browser("set", "viewport", "1280", "844", "2");
   waitForIcon(799);
-  assert.equal(evaluate(`(() => {
+  assert.equal(
+    evaluate(`(() => {
     const mark = document.querySelector('.wordmark');
     const image = mark.querySelector('.wordmark-character');
     const rect = mark.getBoundingClientRect(); const dot = image.getBoundingClientRect();
@@ -84,30 +118,33 @@ try {
     if (mark.querySelector('img').getAttribute('src') !== '/caper-wordmark-letters.svg') throw Error('Original dot still baked in');
     if (Math.abs(dot.width - rect.width * 132/1042) > 0.1 || Math.abs(dot.width - dot.height) > 0.1 || dot.right > rect.right + 0.1 || dot.bottom > rect.bottom) throw Error('Character is distorted or outside the logo');
     return true;
-  })()`), true);
-  if (artifacts) browser('screenshot', '.site-header', join(artifacts, 'wordmark-home-desktop.png'));
-  browser('set', 'viewport', '390', '844', '2');
+  })()`),
+    true,
+  );
+  if (artifacts) browser("screenshot", ".site-header", join(artifacts, "wordmark-home-desktop.png"));
+  browser("set", "viewport", "390", "844", "2");
   waitForIcon(799);
   if (artifacts) {
-    browser('eval', 'new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
-    browser('screenshot', join(artifacts, 'wordmark-home-narrow.png'));
+    browser("eval", "new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))");
+    browser("screenshot", join(artifacts, "wordmark-home-narrow.png"));
   }
-  browser('set', 'viewport', '1280', '844', '2');
+  browser("set", "viewport", "1280", "844", "2");
   const today = record();
-  browser('reload');
+  browser("reload");
   waitForIcon(799);
-  assert.equal(record().svg, today.svg, 'Same-day reload keeps the random avatar');
-  browser('snapshot', '-i');
-  browser('find', 'first', 'a[href="/login"]', 'click');
-  browser('wait', '--url', '**/login');
+  assert.equal(record().svg, today.svg, "Same-day reload keeps the random avatar");
+  browser("snapshot", "-i");
+  browser("find", "first", 'a[href="/login"]', "click");
+  browser("wait", "--url", "**/login");
   waitForIcon(799);
-  browser('eval', `window.__iconNow += 1; window.dispatchEvent(new Event('focus'));`);
-  waitForIcon(0, today['32']);
+  browser("eval", `window.__iconNow += 1; window.dispatchEvent(new Event('focus'));`);
+  waitForIcon(0, today["32"]);
   const tomorrow = record();
   assert.equal(evaluate(`JSON.parse(localStorage.getItem('caper.daily-icon.v1')).index`), 0);
-  browser('eval', `window.__iconNow += 86400000; window.__iconTimers.forEach(tick => tick());`);
-  waitForIcon(1, tomorrow['32']);
-  assert.equal(evaluate(`(async () => {
+  browser("eval", `window.__iconNow += 86400000; window.__iconTimers.forEach(tick => tick());`);
+  waitForIcon(1, tomorrow["32"]);
+  assert.equal(
+    evaluate(`(async () => {
     const source = new Image(); source.src = document.querySelector('#caper-favicon-svg').href; await source.decode();
     for (const size of [32,192]) {
       const image = new Image(); image.src = document.querySelector('#caper-favicon-'+size).href; await image.decode();
@@ -127,8 +164,11 @@ try {
     const ctx = canvas.getContext('2d'); ctx.drawImage(image,0,0,32,32);
     if ([...ctx.getImageData(0,0,1,1).data].join() !== '12,13,15,255') throw Error('Touch icon must be opaque');
     return true;
-  })()`), true);
-  assert.equal(evaluate(`(async () => {
+  })()`),
+    true,
+  );
+  assert.equal(
+    evaluate(`(async () => {
     const canvas = document.createElement('canvas'); canvas.width = canvas.height = 256;
     const ctx = canvas.getContext('2d', {willReadFrequently:true});
     for (let id = 0; id < 800; id++) {
@@ -139,16 +179,20 @@ try {
       if (!ctx.getImageData(0,0,256,256).data.some((value,at) => at % 4 === 3 && value === 255)) throw Error('Missing character artwork for '+id);
     }
     return true;
-  })()`), true);
-  browser('set', 'viewport', '390', '844', '2');
-  assert.equal(record().svg, '/images/branding/v1/1.svg');
+  })()`),
+    true,
+  );
+  browser("set", "viewport", "390", "844", "2");
+  assert.equal(record().svg, "/images/branding/v1/1.svg");
   waitForWordmark(1);
   if (artifacts) {
-    browser('eval', 'new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
-    browser('screenshot', join(artifacts, 'wordmark-login-narrow.png'));
+    browser("eval", "new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))");
+    browser("screenshot", join(artifacts, "wordmark-login-narrow.png"));
   }
   if (artifacts) {
-    browser('eval', `(() => {
+    browser(
+      "eval",
+      `(() => {
       const stage = document.createElement('section'); stage.id = 'favicon-review';
       stage.innerHTML = '<style>#favicon-review{position:fixed;inset:0;z-index:99999;overflow:auto;background:#0c0d0f;color:#f3f4f5;padding:24px;font:14px Satoshi,sans-serif}#favicon-review h1{font-size:22px;margin:0 0 8px}#favicon-review p{margin:0 0 20px;color:#adb2b5}.icon-panels{display:grid;grid-template-columns:1fr 1fr;gap:16px}.icon-panel{padding:16px;border:1px solid #34383b;border-radius:8px}.icon-panel h2{font-size:14px;margin:0 0 16px}.icon-row{display:flex;align-items:center;gap:16px;margin:16px 0;padding:12px}.icon-label{width:32px}.light{background:#f3f4f5;color:#151719}.fixed-icon{margin-top:24px}.fixed-icon img{width:90px;height:90px;box-sizing:content-box;border:12px solid #f3f4f5}@media(max-width:600px){.icon-panels{grid-template-columns:1fr}}</style><h1>Caper · daily rotating avatars</h1><p>Clock-controlled browser test · rendered assets, not OS chrome</p><div class="icon-panels"></div><div class="fixed-icon"><p>Unsupported / installed surfaces · original mascot stays fixed</p><img src="/icons/caper-main-v3-180.png" alt="Original green Caper icon"></div>';
       for (const [i,sample] of ${JSON.stringify([today, tomorrow])}.entries()) {
@@ -161,45 +205,62 @@ try {
       }
       document.body.append(stage);
       return Promise.all([...stage.querySelectorAll('img')].map(image=>image.decode()));
-    })()`);
-    for (const [width,height,name] of [[880,840,'favicons-rotating-desktop.png'],[390,1480,'favicons-rotating-narrow.png']]) {
-      browser('set', 'viewport', String(width), String(height), '2');
-      browser('eval', 'new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
-      browser('screenshot', join(artifacts, name));
+    })()`,
+    );
+    for (const [width, height, name] of [
+      [880, 840, "favicons-rotating-desktop.png"],
+      [390, 1480, "favicons-rotating-narrow.png"],
+    ]) {
+      browser("set", "viewport", String(width), String(height), "2");
+      browser("eval", "new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))");
+      browser("screenshot", join(artifacts, name));
     }
   }
-  const clock = evaluate('window.__iconNow');
-  browser('tab', 'new', `${origin}?icon-now=${clock}`);
+  const clock = evaluate("window.__iconNow");
+  browser("tab", "new", `${origin}?icon-now=${clock}`);
   waitForIcon(1);
-  browser('tab', 't1');
-  browser('eval', 'Math.random = () => 0.5;');
-  browser('tab', 't2');
+  browser("tab", "t1");
+  browser("eval", "Math.random = () => 0.5;");
+  browser("tab", "t2");
   // Mock another tab's saved assignment; this exercises real cross-tab storage events.
-  browser('eval', 'localStorage.setItem("caper.daily-icon.v1", JSON.stringify({day:Math.floor(Date.now()/86400000),index:77})); window.dispatchEvent(new Event("focus"));');
+  browser(
+    "eval",
+    'localStorage.setItem("caper.daily-icon.v1", JSON.stringify({day:Math.floor(Date.now()/86400000),index:77})); window.dispatchEvent(new Event("focus"));',
+  );
   waitForIcon(77);
-  browser('tab', 't1');
-  browser('eval', 'window.dispatchEvent(new Event("focus"));');
+  browser("tab", "t1");
+  browser("eval", 'window.dispatchEvent(new Event("focus"));');
   waitForIcon(77);
-  assert.equal(record().svg, '/images/branding/v1/77.svg', 'Other tabs adopt the saved daily icon instead of rerolling');
+  assert.equal(
+    record().svg,
+    "/images/branding/v1/77.svg",
+    "Other tabs adopt the saved daily icon instead of rerolling",
+  );
   // Keep one clock active when advancing days; the other tab still has the old mocked date.
-  browser('tab', 'close', 't2');
-  browser('open', `${origin}?icon-now=${clock}`);
+  browser("tab", "close", "t2");
+  browser("open", `${origin}?icon-now=${clock}`);
   waitForIcon(77);
-  browser('eval', 'window.__iconNow += 86400000; window.dispatchEvent(new Event("focus"));');
+  browser("eval", 'window.__iconNow += 86400000; window.dispatchEvent(new Event("focus"));');
   waitForIcon(0);
-  browser('eval', 'window.__iconNow += 86400000; window.__iconTimers.forEach(tick => tick());');
+  browser("eval", "window.__iconNow += 86400000; window.__iconTimers.forEach(tick => tick());");
   waitForIcon(1);
-  browser('open', `${origin}?installed-icon-test=1&icon-now=${evaluate('window.__iconNow')}`);
+  browser("open", `${origin}?installed-icon-test=1&icon-now=${evaluate("window.__iconNow")}`);
   waitForWordmark(1);
-  assert.equal(evaluate(`document.querySelector('#caper-favicon-svg').getAttribute('href')`), '/caper-face.svg?v=3', 'Explicitly mocked standalone launch keeps original identity');
-  browser('open', `${origin}login?blocked-storage-test=1`);
+  assert.equal(
+    evaluate(`document.querySelector('#caper-favicon-svg').getAttribute('href')`),
+    "/caper-face.svg?v=3",
+    "Explicitly mocked standalone launch keeps original identity",
+  );
+  browser("open", `${origin}login?blocked-storage-test=1`);
   waitForIcon(160);
-  browser('eval', 'Math.random = () => 0.7; window.dispatchEvent(new Event("focus"));');
+  browser("eval", 'Math.random = () => 0.7; window.dispatchEvent(new Event("focus"));');
   waitForIcon(160);
-  browser('eval', 'window.__iconNow += 1; window.dispatchEvent(new Event("focus"));');
+  browser("eval", 'window.__iconNow += 1; window.dispatchEvent(new Event("focus"));');
   waitForIcon(560);
-  console.log('Favicon + wordmark checks passed: fixed plain homepage character across reloads, navigation, shared tabs and UTC focus/timer rotation; other pages retain daily branding; all 800 characters decode without backgrounds; same-day favicon stability; cross-tab persistence; blocked-storage stability; SVG/PNG agreement; fixed installed icons; accessible home link; desktop/narrow layouts.');
+  console.log(
+    "Favicon + wordmark checks passed: fixed plain homepage character across reloads, navigation, shared tabs and UTC focus/timer rotation; other pages retain daily branding; all 800 characters decode without backgrounds; same-day favicon stability; cross-tab persistence; blocked-storage stability; SVG/PNG agreement; fixed installed icons; accessible home link; desktop/narrow layouts.",
+  );
 } finally {
-  browser('close');
+  browser("close");
   rmSync(scratch, { recursive: true, force: true });
 }

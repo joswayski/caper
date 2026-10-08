@@ -23,7 +23,11 @@ function capturing() {
 export function mixWithOtherAudio() {
   const current = session();
   if (!current || current.type === "ambient" || capturing()) return;
-  try { current.type = "ambient"; } catch { /* Unsupported value: keep the default. */ }
+  try {
+    current.type = "ambient";
+  } catch {
+    /* Unsupported value: keep the default. */
+  }
 }
 
 /**
@@ -35,11 +39,19 @@ export function beginCapture() {
   captures.add(capture);
   const current = session();
   if (current && current.type !== "auto") {
-    try { current.type = "auto"; } catch { /* Keep whatever the browser chose. */ }
+    try {
+      current.type = "auto";
+    } catch {
+      /* Keep whatever the browser chose. */
+    }
   }
   return {
-    track(track: Capture) { capture.track = track; },
-    end() { captures.delete(capture); },
+    track(track: Capture) {
+      capture.track = track;
+    },
+    end() {
+      captures.delete(capture);
+    },
   };
 }
 

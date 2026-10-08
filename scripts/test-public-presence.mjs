@@ -10,15 +10,22 @@ const component = process.argv.includes("--before") ? "CallPresenceBefore" : "Ca
 const session = `presence-${process.pid}`;
 const artifacts = process.argv.includes("--screenshots");
 function browser(...args) {
-  return execFileSync("agent-browser", ["--session", session, "--args", "--autoplay-policy=no-user-gesture-required", ...args], {encoding:"utf8", timeout:35_000});
+  return execFileSync(
+    "agent-browser",
+    ["--session", session, "--args", "--autoplay-policy=no-user-gesture-required", ...args],
+    { encoding: "utf8", timeout: 35_000 },
+  );
 }
-function evaluate(code) { return browser("eval", `(async()=>{${code}})()`); }
+function evaluate(code) {
+  return browser("eval", `(async()=>{${code}})()`);
+}
 
 try {
   browser("open", new URL("/spaces", origin).href);
   browser("set", "viewport", "1280", "900", "2");
   browser("wait", ".chat-panel, .spaces-state, .spaces-empty");
-  console.log(evaluate(`
+  console.log(
+    evaluate(`
     const {default: React} = await import('/node_modules/.vite/deps/react.js');
     const {default: {createRoot}} = await import('/node_modules/.vite/deps/react-dom_client.js');
     const {PublicCallClient} = await import('/src/media/client.ts');
@@ -91,8 +98,10 @@ try {
     window.cleanup=async()=>{root.unmount();await ac.close();};
     await until(()=>button('Join voice')&&!button('Join voice').disabled);
     return 'Fixture mounted';
-  `));
-  console.log(evaluate(`
+  `),
+  );
+  console.log(
+    evaluate(`
     for(let cycle=0;cycle<3;cycle++){
       button('Join voice').click();await until(()=>mount.textContent.includes('You’re in General.'));
       assert(roster().some(n=>n.includes('Grok')),'joined roster missing self');
@@ -140,12 +149,14 @@ try {
     assert(mount.querySelector('.participant-name').textContent.includes('Muted'),'spectator mute update missing');
     pushRoster([]);await until(()=>roster().length===0);
     return {result:'PASS local leave races, remote departure with failed cleanup preserves connected UI/diagnostics/peer, initial rejoin mute/deafen, spectator changes',presenceJsonRequests:fixture.presenceReads,streamConnections:fixture.connections};
-  `));
+  `),
+  );
   if (artifacts) {
-    mkdirSync('.amp/in/artifacts', {recursive:true});
+    mkdirSync(".amp/in/artifacts", { recursive: true });
     browser("screenshot", `${process.cwd()}/.amp/in/artifacts/live-presence-after-leave.png`);
   }
-  console.log(evaluate(`
+  console.log(
+    evaluate(`
     // Pause reconnection after EOF, then verify a fresh snapshot replaces stale data.
     pushRoster([{id:'other',name:'Other guest',muted:false,deafened:false,tracks:[]}]);
     await until(()=>roster().includes('Other guest'));
@@ -155,14 +166,18 @@ try {
     await until(()=>release);
     window.restorePresence=async()=>{fixture.people=[];release();await until(()=>roster().length===0);};
     return 'PASS disconnected stream reconnects';
-  `));
+  `),
+  );
   if (artifacts) {
     browser("set", "viewport", "390", "844", "2");
     browser("screenshot", `${process.cwd()}/.amp/in/artifacts/live-presence-reconnecting-mobile.png`);
   }
-  console.log(evaluate(`await restorePresence();return 'PASS reconnection replaces stale roster with current snapshot';`));
+  console.log(
+    evaluate(`await restorePresence();return 'PASS reconnection replaces stale roster with current snapshot';`),
+  );
   browser("set", "viewport", "1280", "900", "2");
-  console.log(evaluate(`
+  console.log(
+    evaluate(`
     button('Join voice').click();await until(()=>mount.textContent.includes('You’re in General.'));
     await until(()=>mount.querySelector('.call-diagnostics'));
     const peer=fixture.peers.at(-1),count=fixture.peers.length;
@@ -188,15 +203,21 @@ try {
       assert(peer.connectionState==='connected'&&fixture.peers.length===count,'SSE recovery replaced peer');
     };
     return 'PASS live-update outage keeps connected layout stable without the removed banner';
-  `));
+  `),
+  );
   if (artifacts) {
     browser("screenshot", `${process.cwd()}/.amp/in/artifacts/voice-sync-recovery-desktop.png`);
     browser("set", "viewport", "390", "844", "2");
     browser("eval", "new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))");
     browser("screenshot", `${process.cwd()}/.amp/in/artifacts/voice-sync-recovery-mobile.png`, "--full");
   }
-  console.log(evaluate(`await restoreConnectedEvents();return 'PASS mute/deafen pushes after stream recovery without replacing voice peer';`));
-  console.log(evaluate(`
+  console.log(
+    evaluate(
+      `await restoreConnectedEvents();return 'PASS mute/deafen pushes after stream recovery without replacing voice peer';`,
+    ),
+  );
+  console.log(
+    evaluate(`
     const peer=fixture.peers.at(-1),count=fixture.peers.length,original=window.fetch;
     let rejected=0;
     window.fetch=(url,init)=>{
@@ -221,8 +242,10 @@ try {
     assert(mount.textContent.includes('You’re in General.'),'handoff changed connected phase');
     window.fetch=original;
     return 'PASS three draining-route rejections recover current mute/deafen within the fixture deadline, preserving voice peer';
-  `));
-  console.log(evaluate(`
+  `),
+  );
+  console.log(
+    evaluate(`
     const peer=fixture.peers.at(-1),count=fixture.peers.length,latencies=[];
     for(let cycle=0;cycle<3;cycle++){
       const old=[...fixture.streams].find(s=>!s.pub);
@@ -250,7 +273,8 @@ try {
     assert(Math.max(...latencies)<250,'local mocked updates paused during planned handoff');
     await cleanup();
     return {result:'PASS continuous status delivery during three overlapping handoffs (mocked API/WebRTC)',updates:latencies.length,maxLocalPushToDomMs:Math.round(Math.max(...latencies))};
-  `));
+  `),
+  );
 } catch (error) {
   console.error(evaluate(`return {page:document.body.innerText,presenceJsonRequests:window.fixture?.presenceReads};`));
   throw error;
