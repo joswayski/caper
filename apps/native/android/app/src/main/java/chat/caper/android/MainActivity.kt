@@ -1078,7 +1078,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 Text("Also send to #${state.selectedChannel?.name}", Modifier.weight(1f), fontSize = 12.sp)
                 TextButton(::send, enabled = !thread.loading && state.chatAuthorId != null && state.pendingMessage == null && draft.isNotBlank()) { Text("Send reply") }
             }
-            if (state.pendingMessage != null && pending == null) Text("Confirm or dismiss the pending channel message first.", color = TextMuted)
+            if (state.pendingMessage?.error != null && pending == null) Text("Confirm or dismiss the pending message first.", color = TextMuted)
         } else Text(if (state.selectedDirect?.incoming == true) "Accept the request to reply." else "Join the channel to reply.", Modifier.padding(18.dp), color = TextMuted)
     }
 }
@@ -1186,7 +1186,14 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         else if (joined && direct?.blocked == true) BlockedDirectNotice(direct, viewModel)
         else if (joined) Column(Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
             if (direct?.outgoing == true) OutgoingRequestNotice(direct)
-            state.pendingMessage?.threadRootId?.let { root -> TextButton({ viewModel.openThread(root) }) { Text("Pending reply · Open thread") } }
+            state.pendingMessage?.takeIf { it.error != null && it.threadRootId != state.thread?.rootId }?.let { pending ->
+                pending.threadRootId?.let { root ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(if (pending.rejected) "A thread reply wasn’t sent." else "A thread reply couldn’t be confirmed.", Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
+                        TextButton({ viewModel.openThread(root) }) { Text("Review reply") }
+                    }
+                }
+            }
             state.sessionError?.let { error ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(error, Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)

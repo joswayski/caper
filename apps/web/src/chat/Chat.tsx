@@ -1217,14 +1217,16 @@ export default function Chat({
         ) : (
           <div className="chat-composer">
             {composerBanner}
-            {state.pendingSend?.threadRootId && (
-              <p className="chat-inline-error">
-                A thread reply is awaiting confirmation.{" "}
-                <button type="button" onClick={() => openThread(state.pendingSend!.threadRootId!)}>
-                  Open thread
-                </button>
-              </p>
-            )}
+            {state.pendingSend?.threadRootId &&
+              state.sendError &&
+              state.thread?.rootId !== state.pendingSend.threadRootId && (
+                <p className="chat-inline-error" role="alert">
+                  {state.sendRejected ? "A thread reply wasn’t sent." : "A thread reply couldn’t be confirmed."}{" "}
+                  <button type="button" onClick={() => openThread(state.pendingSend!.threadRootId!)}>
+                    Review reply
+                  </button>
+                </p>
+              )}
             {state.sessionError && (
               <p className="chat-inline-error" role="alert">
                 {state.sessionError}{" "}

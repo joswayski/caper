@@ -52,7 +52,7 @@ const headers = { authorization: "Bearer fixture-owner-token", connection: "clos
 const history = async () => (await fetch(`${api}/api/chat/channels/chan00000001/messages`, { headers })).json();
 const close = () => {
   browser("press", "Escape");
-  wait('!document.querySelector(".chat-thread-panel")');
+  wait('!document.querySelector(".chat-thread-panel") && !history.state?.caperThread');
 };
 const open = (id) => {
   browser("focus", `${channel(id)} .chat-reply-thread`);
@@ -67,6 +67,112 @@ const reply = (text) => {
   wait(
     '!document.querySelector(".chat-thread-panel .chat-message-pending") && document.querySelector("#chat-thread-reply").value === ""',
   );
+};
+
+const checkReplyDelivery = async (root, other, layout) => {
+  // Hold before fixture delivery so neither HTTP nor gateway can confirm the reply.
+  evaluate(`(() => {
+    const original = window.fetch.bind(window);
+    window.replyRequests = [];
+    window.restoreReplyFetch = () => { window.fetch = original; };
+    window.fetch = async (input, init) => {
+      if (init?.method !== 'POST' || !String(input).endsWith('/messages')) return original(input, init);
+      window.replyRequests.push(JSON.parse(init.body));
+      const status = await new Promise(resolve => { window.releaseReply = resolve; });
+      return status === 200 ? original(input, init) : Response.json({ error: 'TEST FIXTURE: reply delivery problem' }, { status });
+    };
+  })()`);
+  for (const status of [503, 422]) {
+    open(root.clientMessageId);
+    browser("fill", "#chat-thread-reply", `TEST FIXTURE — ${layout} reply ${status}`);
+    browser(layout === "desktop" ? "check" : "uncheck", ".chat-thread-send-row input");
+    browser("click", ".chat-thread-send-row button");
+    wait('!!document.querySelector(".chat-thread-panel .chat-message-pending")');
+    assert.equal(evaluate('document.querySelector(".chat-panel .chat-inline-error")'), null, "Normal sends are quiet");
+    if (status === 503) screenshot(`threads-${layout}-sending`);
+    close();
+    assert.equal(
+      evaluate('document.querySelector(".chat-panel .chat-inline-error")'),
+      null,
+      "Closing while sending is quiet",
+    );
+    evaluate(`window.releaseReply(${status})`);
+    const notice = status === 422 ? "A thread reply wasn’t sent." : "A thread reply couldn’t be confirmed.";
+    wait(`document.querySelector('.chat-panel .chat-inline-error')?.textContent.includes(${JSON.stringify(notice)})`);
+    if (status === 503) screenshot(`threads-${layout}-reply-problem`);
+    open(other.clientMessageId);
+    assert.ok(
+      evaluate('document.querySelector(".chat-panel .chat-inline-error")?.textContent.includes("Review reply")'),
+      "Another thread must not hide recovery",
+    );
+    close();
+    browser("find", "role", "button", "click", "--name", "Review reply", "--exact");
+    wait(
+      `!!document.querySelector('${thread(root.clientMessageId)}') && !document.querySelector('.chat-thread-messages[aria-busy=true]')`,
+    );
+    assert.equal(
+      evaluate('document.querySelector(".chat-panel .chat-inline-error")'),
+      null,
+      "An open reply owns its error",
+    );
+    assert.ok(
+      evaluate(
+        'document.querySelector(".chat-thread-panel [role=alert]")?.textContent.includes("TEST FIXTURE: reply delivery problem")',
+      ),
+    );
+    if (status === 422) {
+      browser("find", "role", "button", "click", "--name", "Edit", "--exact");
+      wait('!document.querySelector(".chat-thread-panel .chat-message-pending")');
+      assert.equal(
+        evaluate('document.querySelector("#chat-thread-reply").value'),
+        `TEST FIXTURE — ${layout} reply ${status}`,
+      );
+      browser("click", ".chat-thread-send-row button");
+      wait('!!document.querySelector(".chat-thread-panel .chat-message-pending")');
+      evaluate("window.releaseReply(422)");
+      wait('!!document.querySelector(".chat-thread-panel [role=alert]")');
+      browser("find", "role", "button", "click", "--name", "Dismiss", "--exact");
+      wait('!document.querySelector(".chat-thread-panel .chat-message-pending")');
+      close();
+    } else {
+      const command = evaluate("window.replyRequests.at(-1)");
+      assert.equal(command.threadRootId, root.id);
+      assert.equal(command.broadcast, layout === "desktop");
+      assert.equal(command.text, `TEST FIXTURE — ${layout} reply ${status}`);
+      browser("find", "role", "button", "click", "--name", "Retry send", "--exact");
+      wait('!document.querySelector(".chat-thread-panel [role=alert]")');
+      assert.deepEqual(evaluate("window.replyRequests.at(-1)"), command, "Retry freezes ID, text, root and broadcast");
+      close();
+      open(other.clientMessageId);
+      assert.equal(evaluate('document.querySelector(".chat-panel .chat-inline-error")'), null);
+      assert.equal(
+        evaluate('document.querySelector(".chat-thread-panel .chat-inline-error")'),
+        null,
+        "A send in another thread is not an error",
+      );
+      close();
+      evaluate("window.releaseReply(200)");
+      open(root.clientMessageId);
+      wait(
+        `!document.querySelector('.chat-thread-panel .chat-message-pending') && !!document.querySelector('${thread(command.clientMessageId)}')`,
+      );
+      const page = await (
+        await fetch(`${api}/api/chat/channels/chan00000001/messages/${root.id}/thread`, { headers })
+      ).json();
+      assert.equal(page.messages.filter((message) => message.clientMessageId === command.clientMessageId).length, 1);
+      assert.equal(
+        (await history()).messages.filter((message) => message.clientMessageId === command.clientMessageId).length,
+        layout === "desktop" ? 1 : 0,
+      );
+      close();
+    }
+    assert.equal(
+      evaluate('document.querySelector(".chat-panel .chat-inline-error")'),
+      null,
+      "Recovery clears the notice",
+    );
+  }
+  evaluate("window.restoreReplyFetch()");
 };
 
 let socket;
@@ -195,6 +301,7 @@ try {
     "A broadcast opens its original root, never a nested thread",
   );
   close();
+  await checkReplyDelivery(root, other, "desktop");
 
   // Explicitly labelled response mock exercises loading/error/retry without an external outage.
   evaluate(`(() => {
@@ -284,8 +391,9 @@ try {
   browser("click", ".chat-thread-back");
   wait('!document.querySelector(".chat-thread-panel")');
   assert.equal(evaluate('document.querySelector(".chat-panel").inert'), false);
+  await checkReplyDelivery(root, other, "mobile");
   console.log(
-    "PASS: reply actions hidden on thread roots/replies and retained in the channel (desktop, narrow and touch long-press); isolated replies, root highlight/count/avatars, shared broadcast/reaction identity, per-root drafts, loading/error/retry, focus restoration, touch target separation, full-screen dialog, inert background and mobile Back.",
+    "PASS: reply actions hidden on thread roots/replies and retained in the channel (desktop, narrow and touch long-press); isolated replies, root highlight/count/avatars, shared broadcast/reaction identity, per-root drafts, loading/error/retry, quiet in-flight replies, scoped failure recovery, idempotent retry, rejected edit/dismiss, focus restoration, touch target separation, full-screen dialog, inert background and mobile Back.",
   );
 } finally {
   socket?.close();
