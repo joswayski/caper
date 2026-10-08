@@ -1,4 +1,5 @@
 .chat-layout {
+  --chat-header-height: 54px;
   display: flex;
   flex: 1;
   min-width: 0;
@@ -20,6 +21,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  height: var(--chat-header-height);
   padding: 8px 18px;
   border-bottom: 1px solid var(--border);
 }
@@ -537,12 +539,10 @@
     height: 44px;
   }
   .chat-reply-thread {
-    right: 62px;
-    width: 44px;
-    height: 44px;
+    display: none;
   }
   .chat-message:not(.chat-message-pending) > .chat-avatar + div {
-    padding-right: 96px;
+    padding-right: 44px;
   }
   .chat-thread-panel .chat-message:not(.chat-message-pending) > .chat-avatar + div {
     padding-right: 44px;
@@ -1268,9 +1268,11 @@
 }
 .chat-thread-panel {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr) auto;
   flex: 0 0 clamp(300px, 38%, 400px);
   max-width: 48%;
+  min-width: 0;
   min-height: 0;
   border-left: 1px solid var(--border);
   background: var(--surface-conversation);
@@ -1279,23 +1281,32 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 12px 18px;
+  height: var(--chat-header-height);
+  padding: 8px 18px;
   border-bottom: 1px solid var(--border);
 }
 .chat-thread-heading > div {
   flex: 1;
+  min-width: 0;
 }
 .chat-thread-heading h2 {
   margin: 0;
   font-size: 0.95rem;
+  line-height: 1.2;
 }
 .chat-thread-heading span {
+  display: block;
+  overflow: hidden;
   color: var(--text-muted);
   font-size: 0.7rem;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .chat-thread-heading button {
   display: grid;
   place-items: center;
+  flex-shrink: 0;
   width: 36px;
   height: 36px;
   padding: 0;
@@ -1403,6 +1414,13 @@
     border: 0;
     padding-top: env(safe-area-inset-top);
     padding-bottom: env(safe-area-inset-bottom);
+  }
+  .chat-thread-heading {
+    padding: 4px 12px;
+  }
+  .chat-thread-heading button {
+    width: 44px;
+    height: 44px;
   }
   .chat-thread-back {
     display: grid !important;
