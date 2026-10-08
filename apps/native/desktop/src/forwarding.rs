@@ -99,6 +99,7 @@ impl Operation {
         run().map_err(|error| SendFailure {
             status: error.status.map(|status| status.as_u16()),
             message: error.message,
+            code: error.code,
         })
     }
 }
@@ -108,6 +109,7 @@ fn invalid() -> ApiError {
         status: Some(reqwest::StatusCode::BAD_GATEWAY),
         message: "Caper returned an invalid forward.".into(),
         attempts_remaining: None,
+        code: None,
     }
 }
 fn validate(page: &ForwardConversation) -> Result<(), ApiError> {
@@ -398,6 +400,7 @@ mod tests {
             Err(SendFailure {
                 status: None,
                 message: "Not confirmed".into(),
+                code: None,
             }),
         );
         let Some(View::Picker {
@@ -419,6 +422,7 @@ mod tests {
             Err(SendFailure {
                 status: Some(400),
                 message: "stale failure".into(),
+                code: None,
             }),
         );
         assert!(matches!(
@@ -430,6 +434,7 @@ mod tests {
             Err(SendFailure {
                 status: Some(400),
                 message: "Not sent".into(),
+                code: None,
             }),
         );
         assert!(matches!(

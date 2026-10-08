@@ -83,7 +83,8 @@ class CaperMessagingService : FirebaseMessagingService() {
         CoroutineScope(Dispatchers.IO).launch {
             // Provider queues can outlive logout. Check the current account's
             // access before displaying an alert for a previous account's DM.
-            val accessible = runCatching { CaperApi().directConversations(accountToken).conversations.any { it.id == conversation } }.getOrDefault(false)
+            // Message requests and conversations with someone you blocked never alert.
+            val accessible = runCatching { CaperApi().directConversations(accountToken).conversations.any { it.id == conversation && !it.incoming && !it.blocked } }.getOrDefault(false)
             if (!accessible || !PushRegistration.enabled(applicationContext) || TokenStore(applicationContext).read() != accountToken) return@launch
             if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this@CaperMessagingService, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return@launch
             val manager = getSystemService(NotificationManager::class.java)

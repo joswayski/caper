@@ -462,6 +462,9 @@ jobs:
       contents: write
       id-token: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           pattern: release-*
@@ -507,9 +510,21 @@ jobs:
         run: |
           set -euo pipefail
           cd release
-          # Shown in the apps' update prompt: the release commit's PR title.
-          notes="$(gh api "repos/$GH_REPO/commits/$RELEASE_SHA/pulls" --jq '.[0].title // empty' 2>/dev/null || true)"
-          [[ -n "$notes" ]] || notes="$(gh api "repos/$GH_REPO/commits/$RELEASE_SHA" --jq '.commit.message | split("\n")[0]')"
+          # Preserve history before replacing the rolling release. Fail on network
+          # or signature errors rather than signing a feed with silently lost notes.
+          { printf '%s' "$UPDATE_PUBLIC_KEY" | base64 -d | cat <(printf '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00') -; } >"$RUNNER_TEMP/update-public.der"
+          previous_args=()
+          previous_release="$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
+            --jq '.[] | select(.tag_name == "native-latest") | .id')"
+          if [[ -n "$previous_release" ]]; then
+            previous_dir="$RUNNER_TEMP/previous-update"
+            mkdir -p "$previous_dir"
+            gh release download "$RELEASE_TAG" --pattern latest.json --pattern latest.json.sig --dir "$previous_dir"
+            base64 -d "$previous_dir/latest.json.sig" >"$RUNNER_TEMP/previous.sig.bin"
+            openssl pkeyutl -verify -rawin -pubin -keyform DER -inkey "$RUNNER_TEMP/update-public.der" \
+              -in "$previous_dir/latest.json" -sigfile "$RUNNER_TEMP/previous.sig.bin"
+            previous_args=(--previous "$previous_dir/latest.json")
+          fi
           base="https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG"
           artifact() {
             jq -n --arg url "$base/$1" --arg sha256 "$(sha256sum "$1" | cut -d' ' -f1)" \
@@ -519,14 +534,14 @@ jobs:
             --argjson build "$CAPER_BUILD_NUMBER" \
             --arg version "0.1.$CAPER_BUILD_NUMBER" \
             --arg commit "$RELEASE_SHA" \
-            --arg notes "${notes:0:500}" \
             --argjson macos_arm64 "$(artifact Caper-macOS-Apple-Silicon.zip)" \
             --argjson macos_x64 "$(artifact Caper-macOS-Intel.zip)" \
             --argjson windows_x64 "$(artifact Caper-Windows-x64.zip)" \
             --argjson linux_x64 "$(artifact Caper-Linux-x64.tar.gz)" \
-            '{schema: 1, build: $build, version: $version, commit: $commit, notes: $notes,
+            '{schema: 1, build: $build, version: $version, commit: $commit,
               platforms: {"macos-arm64": $macos_arm64, "macos-x64": $macos_x64,
                 "windows-x64": $windows_x64, "linux-x64": $linux_x64}}' >latest.json
+          python3 "$GITHUB_WORKSPACE/scripts/native_changelog.py" latest.json "${previous_args[@]}"
           key="$RUNNER_TEMP/update-key.pem"
           umask 077
           aws secretsmanager get-secret-value --secret-id production/signing/release \
@@ -535,7 +550,6 @@ jobs:
           openssl pkeyutl -sign -rawin -inkey "$key" -in latest.json | base64 -w0 >latest.json.sig
           rm -f "$key"
           # The embedded public key must accept what was just signed.
-          { printf '%s' "$UPDATE_PUBLIC_KEY" | base64 -d | cat <(printf '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00') -; } >"$RUNNER_TEMP/update-public.der"
           base64 -d latest.json.sig >"$RUNNER_TEMP/latest.sig.bin"
           openssl pkeyutl -verify -rawin -pubin -keyform DER -inkey "$RUNNER_TEMP/update-public.der" \
             -in latest.json -sigfile "$RUNNER_TEMP/latest.sig.bin"

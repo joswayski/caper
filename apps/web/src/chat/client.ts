@@ -1,5 +1,6 @@
 import { ChatConnection } from "./connection.ts";
 import { playSound } from "../audio/effects.ts";
+import { directMessageErrors } from "../spaces/direct-errors.ts";
 import { appGateway } from "../gateway/client.ts";
 import { ChatTimeline, type ChatTimelineEvent } from "./timeline.ts";
 import { attachmentsOf, isChannelMessage, isChatMessage, isChatPinEvent, isChatReactionEvent, sequence, type ChatAttachment, type ChatAttachmentProgressEvent, type ChatAuthor, type ChatHistory, type ChatMessage, type ChatSession, type ChatThreadHistory, type ChatTypingEvent, type GeneralChatHistory, type MessageVersion } from "./types.ts";
@@ -72,8 +73,9 @@ export function initialChatView(history?: GeneralChatHistory, error?: string): C
 }
 
 export function apiError(response: Response, fallback: string) {
-  return response.json().catch(() => undefined).then((body: { error?: unknown } | undefined) =>
-    new Error(typeof body?.error === "string" ? body.error : fallback));
+  return response.json().catch(() => undefined).then((body: { error?: unknown; code?: unknown } | undefined) =>
+    new Error(typeof body?.code === "string" && directMessageErrors[body.code] ? directMessageErrors[body.code]
+      : typeof body?.error === "string" ? body.error : fallback));
 }
 
 function validHistory(value: unknown, general: true): value is GeneralChatHistory;
@@ -172,6 +174,9 @@ export class ChatClient {
 
   /** New-message sounds can be enabled once a visitor engages with an embedded chat. */
   setSounds(enabled: boolean) { this.sounds = enabled; }
+  private silenced: ReadonlySet<string> = new Set();
+  /** Accounts you blocked: their messages never play a sound. */
+  setSilencedAuthors(ids: ReadonlySet<string>) { this.silenced = ids; }
 
   snapshotHistory(): GeneralChatHistory | undefined {
     if (this.state.phase !== "ready" || this.spaceId === undefined || !this.channel) return;
@@ -560,7 +565,7 @@ export class ChatClient {
       const messages = this.timeline.messages;
       this.update({ messages, pinnedMessages: this.timeline.pinnedMessages });
       const ownAuthorId = this.session?.author.id ?? this.state.author?.id;
-      if (this.sounds && (!("type" in event) || event.type !== "message.edited") && result === "applied" && messages.some((item) => !visible.has(item.id) && item.author.id !== ownAuthorId)) playSound("new-message");
+      if (this.sounds && (!("type" in event) || event.type !== "message.edited") && result === "applied" && messages.some((item) => !visible.has(item.id) && item.author.id !== ownAuthorId && !this.silenced.has(item.author.id))) playSound("new-message");
     }
     return result;
   }

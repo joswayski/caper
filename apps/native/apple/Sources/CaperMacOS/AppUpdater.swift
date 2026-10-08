@@ -12,7 +12,14 @@ import Foundation
     struct Update: Equatable {
         let version: String
         let notes: String
+        let changelog: [ChangelogEntry]
+        let historyComplete: Bool
         let canApply: Bool
+    }
+
+    struct ChangelogEntry: Decodable, Equatable {
+        let version: String
+        let notes: String
     }
 
     private let updater: URL?
@@ -154,9 +161,16 @@ import Foundation
         let detail = update.canApply
             ? "Caper restarts to install it and leaves any voice call."
             : "Caper can't update this copy in place. Download the installer and drag Caper into a writable Applications folder."
-        alert.informativeText = update.notes.isEmpty ? detail : "\(update.notes)\n\n\(detail)"
+        alert.informativeText = detail
         alert.addButton(withTitle: update.canApply ? "Restart to Update" : "Download")
         alert.addButton(withTitle: "Later")
+        // Measure the warning/buttons first. Only the accessory notes scroll.
+        alert.layout()
+        let screen = NSApp.mainWindow?.screen ?? NSScreen.main
+        let visibleSize = screen?.visibleFrame.size ?? NSSize(width: 800, height: 600)
+        alert.accessoryView = Self.notesView(update, size: Self.notesSize(
+            screen: visibleSize, chromeHeight: alert.window.frame.height
+        ))
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else {
             declined.insert(update.version)
@@ -167,6 +181,52 @@ import Foundation
         } else {
             NSWorkspace.shared.open(Self.downloadURL)
         }
+    }
+
+    nonisolated static func notesSize(screen: NSSize, chromeHeight: CGFloat) -> NSSize {
+        NSSize(width: min(420, max(160, screen.width - 160)),
+               height: min(340, max(60, screen.height - chromeHeight - 80)))
+    }
+
+    static func notesView(_ update: Update, size: NSSize) -> NSScrollView {
+        let scroll = NSScrollView(frame: NSRect(origin: .zero, size: size))
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.borderType = .bezelBorder
+        let contentSize = scroll.contentSize
+        let text = NSTextView(frame: NSRect(origin: .zero, size: contentSize))
+        text.isEditable = false
+        text.isSelectable = true
+        text.isVerticallyResizable = true
+        text.isHorizontallyResizable = false
+        text.autoresizingMask = [.width]
+        text.minSize = NSSize(width: 0, height: contentSize.height)
+        text.maxSize = NSSize(width: .greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
+        text.textContainerInset = NSSize(width: 8, height: 8)
+        text.textContainer?.containerSize = NSSize(width: contentSize.width, height: .greatestFiniteMagnitude)
+        text.textContainer?.widthTracksTextView = true
+        let content = NSMutableAttributedString(string: "")
+        func append(_ string: String, heading: Bool = false) {
+            content.append(NSAttributedString(string: string, attributes: [
+                .font: heading ? NSFont.boldSystemFont(ofSize: 13) : NSFont.systemFont(ofSize: 13),
+                .foregroundColor: heading ? NSColor.labelColor : NSColor.secondaryLabelColor,
+            ]))
+        }
+        append("WHAT’S NEW\n\n", heading: true)
+        append(update.historyComplete
+            ? "This update includes all of the following changes:\n\n"
+            : "Recorded changes are shown below. Earlier release notes aren’t available.\n\n")
+        let entries = update.changelog.isEmpty
+            ? [ChangelogEntry(version: update.version, notes: update.notes)] : update.changelog
+        for entry in entries {
+            append("\(entry.version)\n", heading: true)
+            append(entry.notes.isEmpty ? "Release notes aren’t available for this version.\n\n"
+                                      : "\(entry.notes)\n\n")
+        }
+        text.textStorage?.setAttributedString(content)
+        scroll.documentView = text
+        text.sizeToFit()
+        return scroll
     }
 
     private func inform(_ title: String, _ detail: String) {
@@ -199,10 +259,14 @@ import Foundation
             let update: Bool
             let version: String?
             let notes: String?
+            let changelog: [ChangelogEntry]?
+            let history_complete: Bool?
             let can_apply: Bool?
         }
         guard let output = try? JSONDecoder().decode(Output.self, from: data), output.update else { return nil }
-        return Update(version: output.version ?? "", notes: output.notes ?? "", canApply: output.can_apply ?? false)
+        return Update(version: output.version ?? "", notes: output.notes ?? "",
+                      changelog: output.changelog ?? [], historyComplete: output.history_complete ?? false,
+                      canApply: output.can_apply ?? false)
     }
 
     private nonisolated static func run(_ executable: URL, _ arguments: [String]) -> Result<Data, Error> {

@@ -80,6 +80,16 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
 - Global two-person direct messages, including exact-username conversation
   creation, unread state, account-wide read cursors, paging, typing, retry, and gateway
   replay. Desktop does not provide OS push notifications in this stage.
+- Message requests: a DM from someone you share no space with waits under
+  "Message requests" (with a count, never unread dots or sounds) and opens
+  read-only with Accept, Decline or Block; your own pending requests say
+  "Waiting for @name to accept". Blocking (confirmed first) from a DM header,
+  a request or a message's actions hides that account's messages everywhere as
+  collapsed "⊘ N blocked messages — Show" runs, including thread panels; a
+  blocked DM replaces the composer with Unblock. Settings lists blocked
+  accounts and "Who can start a DM with you" (Anyone, People in my spaces, No
+  one new), saved on change and reverted if saving fails. Pinned-message lists
+  still show blocked authors' pins.
 - Message reactions. Hovering or keyboard-focusing a reaction chip shows who
   reacted (large emoji plus the shared summary wording); names load on demand
   with history's read access and are cached per message reaction revision.
@@ -295,6 +305,10 @@ and the global list without any space membership.
 without a preview), failed, animated ("GIF") and removed files, file/audio
 cards and upload chips from synthetic local images; it never fetches media or
 uploads.
+`parity-requests` previews an open incoming request and the requests list;
+`parity-requests-outgoing` an unaccepted request you sent; `parity-blocked`
+Maya's #general messages collapsed after blocking her; `parity-blocked-dm` the
+blocked-DM composer.
 `parity-reactions` adds reaction chips whose hover cards name the labelled
 fixture members locally instead of requesting who reacted.
 `parity-opening`, `parity-opening-narrow`, and `parity-opening-error` preview
@@ -304,6 +318,11 @@ These previews do not start a navigation request or a media transport.
 `parity-settings`, `parity-settings-checking`, `parity-settings-current`, and
 `parity-settings-offline` preview the update control and check feedback. These
 are static states: their check buttons are disabled and no updater process runs.
+`parity-update` and `parity-update-narrow` preview long, version-grouped release
+notes with a fixed restart/Later footer. `parity-update-download` shows the
+manual installer fallback; `parity-update-error` and `parity-update-incomplete`
+show launch failure and unavailable older history. These fixtures never install
+updates or start update checks.
 
 After `npm ci`, run `node scripts/native-icons.mjs --check` to verify the bundled
 vectors match the web client's pinned Lucide package. Omit `--check` to regenerate.

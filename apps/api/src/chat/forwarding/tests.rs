@@ -310,9 +310,12 @@ async fn live_forwards_are_destination_authorized_flattened_and_replayable(pool:
     let reaction_seq = reaction["seq"].as_str().unwrap().parse().unwrap();
     let event = reaction;
     let mut tx = pool.begin().await.unwrap();
-    project_events(&mut tx, &[(channels[0], reaction_seq, event.clone(), None)])
-        .await
-        .unwrap();
+    project_events(
+        &mut tx,
+        &[(channels[0], reaction_seq, event.clone(), None, None)],
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
     let history = history_page(&pool, "destination", None, Some(users[2]))
         .await
@@ -345,7 +348,7 @@ async fn live_forwards_are_destination_authorized_flattened_and_replayable(pool:
     );
     // Replayed outbox work emits no duplicate destination revision.
     let mut tx = pool.begin().await.unwrap();
-    project_events(&mut tx, &[(channels[0], reaction_seq, event, None)])
+    project_events(&mut tx, &[(channels[0], reaction_seq, event, None, None)])
         .await
         .unwrap();
     tx.commit().await.unwrap();

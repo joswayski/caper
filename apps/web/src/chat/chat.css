@@ -319,3 +319,14 @@ a.chat-file:hover { border-color: var(--text-muted); }
 .chat-version-older { padding-top: 20px; border-top: 1px solid var(--border); }
 .chat-code-diff { --diffs-font-family: ui-monospace, monospace; --diffs-font-size: 13px; --diffs-line-height: 1.6; --diffs-deletion-color-override: #B64D32; --diffs-addition-color-override: #637A43; }
 @media (max-width: 760px) { .chat-edit-dialog { padding: 20px; } .chat-edit-dialog button { min-height: 44px; } }
+
+/* Messages from accounts you blocked collapse into one row per run. */
+.chat-blocked-run { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 6px 18px 6px 27px; color: var(--text-muted); font-size: .78rem; }
+.chat-blocked-run > svg { flex: 0 0 auto; }
+.chat-blocked-run > span:first-of-type { color: var(--text); font-weight: 650; }
+.chat-blocked-run button { min-height: 28px; padding: 0 2px; border: 0; background: transparent; color: var(--text-muted); font: inherit; cursor: pointer; }
+.chat-blocked-run button:hover { color: var(--text); text-decoration: underline; }
+.chat-blocked-run button:focus-visible { outline: 2px solid var(--terracotta); outline-offset: 2px; border-radius: 4px; }
+/* One pixel, not zero: the virtual list needs every item to have a size. */
+.chat-blocked-hidden { height: 1px; }
+.chat-message-actions .message-action-danger { color: #ff8c9a; }

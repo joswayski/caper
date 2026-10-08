@@ -222,7 +222,7 @@ pub(crate) async fn history_with(
 }
 
 /// Attachment state and fresh delivery URLs for messages leaving the server:
-/// history pages, thread roots and replies, and pins.
+/// history pages, thread roots and replies, pins and single messages.
 async fn deliver(
     pool: &PgPool,
     cdn: Option<&CdnSigner>,
@@ -288,27 +288,27 @@ async fn page(
     .await
     .map_err(database_error)?
     .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
-    let thread_root: Option<(i64, Value, Option<i16>)> = if let Some(root) = root {
-        Some(sqlx::query_as("SELECT m.id,m.payload,u.avatar_id FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.channel_id=$1 AND m.external_id=$2 AND m.thread_root_id IS NULL")
+    let thread_root: Option<(i64, Value, Option<i16>, Option<String>)> = if let Some(root) = root {
+        Some(sqlx::query_as("SELECT m.id,m.payload,u.avatar_id,u.display_name FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.channel_id=$1 AND m.external_id=$2 AND m.thread_root_id IS NULL")
             .bind(channel_id).bind(root).fetch_optional(&mut *tx).await.map_err(database_error)?
             .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "thread not found"))?)
     } else {
         None
     };
     // Bound by the captured committed head. Later commits are replayed by WS.
-    let mut rows: Vec<(Value, Option<i16>)> = sqlx::query_as("SELECT m.payload,u.avatar_id FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.channel_id = $1 AND m.channel_seq <= $2 AND ($3::bigint IS NULL OR m.channel_seq < $3) AND (($5::bigint IS NULL AND (m.thread_root_id IS NULL OR m.broadcast)) OR m.thread_root_id=$5) ORDER BY m.channel_seq DESC LIMIT $4")
+    let mut rows: Vec<(Value, Option<i16>, Option<String>)> = sqlx::query_as("SELECT m.payload,u.avatar_id,u.display_name FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.channel_id = $1 AND m.channel_seq <= $2 AND ($3::bigint IS NULL OR m.channel_seq < $3) AND (($5::bigint IS NULL AND (m.thread_root_id IS NULL OR m.broadcast)) OR m.thread_root_id=$5) ORDER BY m.channel_seq DESC LIMIT $4")
         .bind(channel_id).bind(head).bind(before).bind(PAGE + 1).bind(thread_root.as_ref().map(|row| row.0)).fetch_all(&mut *tx).await.map_err(database_error)?;
     let more = rows.len() > PAGE as usize;
     rows.truncate(PAGE as usize);
     rows.reverse();
     let mut rows: Vec<Value> = rows
         .into_iter()
-        .map(|(payload, avatar)| enrich_author(payload, avatar))
+        .map(|(payload, avatar, name)| enrich_author(payload, avatar, name.as_deref()))
         .collect();
     forwarding::hydrate(&mut tx, &mut rows).await?;
     deliver(pool, cdn, &mut rows).await?;
-    if let Some((_, root, avatar)) = thread_root {
-        let mut roots = vec![enrich_author(root, avatar)];
+    if let Some((_, root, avatar, name)) = thread_root {
+        let mut roots = vec![enrich_author(root, avatar, name.as_deref())];
         forwarding::hydrate(&mut tx, &mut roots).await?;
         deliver(pool, cdn, &mut roots).await?;
         return Ok(
@@ -317,11 +317,11 @@ async fn page(
     }
     // All pins are returned independently of the history page. The shared
     // channel lock also makes their revisions consistent with this cursor.
-    let pins: Vec<(Value, Option<i16>)> = sqlx::query_as("SELECT m.payload,u.avatar_id FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.channel_id=$1 AND jsonb_typeof(m.payload->'pin')='object' ORDER BY (m.payload->>'pinSeq')::bigint DESC LIMIT 100")
+    let pins: Vec<(Value, Option<i16>, Option<String>)> = sqlx::query_as("SELECT m.payload,u.avatar_id,u.display_name FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.channel_id=$1 AND jsonb_typeof(m.payload->'pin')='object' ORDER BY (m.payload->>'pinSeq')::bigint DESC LIMIT 100")
         .bind(channel_id).fetch_all(&mut *tx).await.map_err(database_error)?;
     let mut pins: Vec<Value> = pins
         .into_iter()
-        .map(|(payload, avatar)| enrich_author(payload, avatar))
+        .map(|(payload, avatar, name)| enrich_author(payload, avatar, name.as_deref()))
         .collect();
     forwarding::hydrate(&mut tx, &mut pins).await?;
     deliver(pool, cdn, &mut pins).await?;
@@ -756,6 +756,9 @@ pub(crate) async fn send_message(
     .map_err(database_error)?;
     let (channel_id, head) =
         row.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
+    if let (None, Some(user_id)) = (space_id, user_id) {
+        crate::direct::authorize_send(&mut tx, channel_id, user_id).await?;
+    }
     // Preserve existing text-only retry hashes; replies are also bound to their
     // destination and broadcast choice below, and files to their ids.
     let hash = if attachment_ids.is_empty() {
@@ -771,7 +774,11 @@ pub(crate) async fn send_message(
             && payload.get("threadRootId").and_then(Value::as_str) == root
             && payload["broadcast"].as_bool().unwrap_or(false) == broadcast
         {
-            Ok(enrich_author(payload, avatar_id))
+            Ok(enrich_author(
+                payload,
+                avatar_id,
+                user_id.map(|_| name.as_str()),
+            ))
         } else {
             Err(ApiError::new(
                 StatusCode::CONFLICT,
@@ -1037,10 +1044,10 @@ async fn persist_pin(
         .bind(channel).bind(user_id).fetch_optional(&mut *tx).await.map_err(database_error)?;
     let (channel_id, head) =
         access.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
-    let row: Option<(i64, Value, Option<i16>)> = sqlx::query_as(
-        "SELECT m.id,m.payload,u.avatar_id FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.channel_id=$1 AND m.external_id=$2 FOR UPDATE OF m")
+    let row: Option<(i64, Value, Option<i16>, Option<String>)> = sqlx::query_as(
+        "SELECT m.id,m.payload,u.avatar_id,u.display_name FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.channel_id=$1 AND m.external_id=$2 FOR UPDATE OF m")
         .bind(channel_id).bind(message).fetch_optional(&mut *tx).await.map_err(database_error)?;
-    let (message_id, mut payload, message_avatar) =
+    let (message_id, mut payload, message_avatar, message_name) =
         row.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "message not found"))?;
     let pinned = payload.get("pin").is_some_and(Value::is_object);
     let changed = pinned != active;
@@ -1087,7 +1094,7 @@ async fn persist_pin(
             .map_err(database_error)?;
     }
     payload["pinSeq"] = json!(seq.to_string());
-    let event = json!({"type":"message.pin","schemaVersion":1,"channelId":channel,"seq":seq.to_string(),"message":enrich_author(payload.clone(),message_avatar)});
+    let event = json!({"type":"message.pin","schemaVersion":1,"channelId":channel,"seq":seq.to_string(),"message":enrich_author(payload.clone(),message_avatar,message_name.as_deref())});
     if changed {
         sqlx::query("UPDATE public.messages SET payload=$2 WHERE id=$1")
             .bind(message_id)
@@ -1132,7 +1139,7 @@ pub(crate) fn spawn_publisher(chat: Chat) {
 }
 async fn publish_pending(chat: &Chat) -> Result<bool, ()> {
     let mut tx = chat.pool.begin().await.map_err(|_| ())?;
-    let rows: Vec<(i64, i64, Value, Option<i16>)> = sqlx::query_as("SELECT e.channel_id,e.seq,e.payload,u.avatar_id FROM public.channel_events e LEFT JOIN public.messages m ON m.channel_id=e.channel_id AND m.external_id=e.payload->'message'->>'id' LEFT JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE e.published_at IS NULL ORDER BY e.channel_id,e.seq LIMIT 64 FOR UPDATE OF e SKIP LOCKED")
+    let rows: Vec<PendingEvent> = sqlx::query_as("SELECT e.channel_id,e.seq,e.payload,u.avatar_id,u.display_name FROM public.channel_events e LEFT JOIN public.messages m ON m.channel_id=e.channel_id AND m.external_id=e.payload->'message'->>'id' LEFT JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE e.published_at IS NULL ORDER BY e.channel_id,e.seq LIMIT 64 FOR UPDATE OF e SKIP LOCKED")
         .fetch_all(&mut *tx).await.map_err(|_| ())?;
     if rows.is_empty() {
         return Ok(false);
@@ -1147,8 +1154,8 @@ async fn publish_pending(chat: &Chat) -> Result<bool, ()> {
     .await
     .map_err(|_| ())?
     .map_err(|_| ())?;
-    for (channel, seq, event, avatar_id) in &rows {
-        let event = enrich_author(event.clone(), *avatar_id);
+    for (channel, seq, event, avatar_id, name) in &rows {
+        let event = enrich_author(event.clone(), *avatar_id, name.as_deref());
         tokio::time::timeout(
             Duration::from_secs(2),
             redis::cmd("PUBLISH")
@@ -1174,7 +1181,17 @@ async fn publish_pending(chat: &Chat) -> Result<bool, ()> {
     Ok(true)
 }
 
-pub(crate) fn enrich_author(mut payload: Value, avatar_id: Option<i16>) -> Value {
+/// Outbox row: channel, sequence, payload, and the author's current avatar and
+/// display name (absent for reactions, guests and deleted accounts).
+type PendingEvent = (i64, i64, Value, Option<i16>, Option<String>);
+
+/// Serves stored messages with the author's current avatar and, for accounts
+/// that still exist, current display name; the stored name is the fallback.
+pub(crate) fn enrich_author(
+    mut payload: Value,
+    avatar_id: Option<i16>,
+    display_name: Option<&str>,
+) -> Value {
     let author = if payload.get("message").is_some() {
         payload.pointer_mut("/message/author")
     } else {
@@ -1182,6 +1199,9 @@ pub(crate) fn enrich_author(mut payload: Value, avatar_id: Option<i16>) -> Value
     };
     if let Some(author) = author.and_then(Value::as_object_mut) {
         author.insert("avatarId".into(), json!(avatar_id));
+        if let Some(name) = display_name {
+            author.insert("name".into(), json!(name));
+        }
     }
     payload
 }

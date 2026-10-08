@@ -30,8 +30,27 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val direct: Boolean = false,
     val joined: Boolean = true,
 )
-@Serializable data class DirectPeer(val id: String, val username: String, val displayName: String)
-@Serializable data class DirectConversation(val id: String, val peer: DirectPeer, val lastSeq: String, val readSeq: String)
+@Serializable data class DirectPeer(val id: String, val username: String, val displayName: String, val avatarId: Int? = null)
+/**
+ * A DM. [status] is `accepted`, `outgoing` (you asked, they haven't accepted) or
+ * `incoming` (a message request to you); old servers omit it, which means
+ * accepted. [blocked] is true when you blocked the peer.
+ */
+@Serializable data class DirectConversation(
+    val id: String,
+    val peer: DirectPeer,
+    val lastSeq: String,
+    val readSeq: String,
+    val status: String? = null,
+    val blocked: Boolean = false,
+) {
+    val incoming: Boolean get() = status == "incoming"
+    val outgoing: Boolean get() = status == "outgoing"
+}
+@Serializable data class BlockedAccount(val id: String, val username: String, val displayName: String, val avatarId: Int? = null)
+@Serializable data class BlockList(val blocks: List<BlockedAccount>)
+/** `GET/PUT /api/account/privacy`: `anyone`, `spaces` or `nobody`. */
+@Serializable data class DirectPrivacy(val directMessages: String)
 @Serializable data class DirectConversationList(val conversations: List<DirectConversation>)
 @Serializable data class PushConfig(val platforms: List<String>)
 @Serializable data class ChannelInvitation(val channel: Channel, val inviter: Inviter)
@@ -299,6 +318,11 @@ data class AppUiState(
     val selectedSpace: SpaceDetail? = null,
     val selectedChannel: Channel? = null,
     val directConversations: List<DirectConversation> = emptyList(),
+    /** Accounts you blocked, newest first; their messages collapse everywhere. */
+    val blocks: List<BlockedAccount> = emptyList(),
+    val blocksError: String? = null,
+    /** The sidebar's "Message requests" list is expanded. */
+    val requestsOpen: Boolean = false,
     val selectedDirectId: String? = null,
     val messages: List<ChatMessage> = emptyList(),
     val thread: ThreadUi? = null,
@@ -350,6 +374,14 @@ data class AppUiState(
         voiceAvailability[voiceRootKey(selectedSpace?.space?.demo == true, channel.id)]
 
     val voiceAvailable: Boolean? get() = selectedChannel?.let(::voiceAvailable)
+
+    val blockedIds: Set<String> get() = blocks.mapTo(HashSet()) { it.id }
+
+    /** You can write here: a joined channel, and not a message request still waiting for your answer. */
+    val canParticipate: Boolean get() = selectedChannel?.joined == true && selectedDirect?.incoming != true
+
+    /** The open DM, when one is selected. */
+    val selectedDirect: DirectConversation? get() = selectedDirectId?.let { id -> directConversations.firstOrNull { it.id == id } }
 }
 
 data class PendingMessageUi(
