@@ -438,6 +438,13 @@
 .spaces-room .channel-navigation ul[data-collapsed] {
   display: none;
 }
+/* Collapsing navigation must not hide the active call's only Leave action. */
+.spaces-room #space-channel-list[data-collapsed]:has(.channel-voice[data-active]) {
+  display: grid;
+}
+.spaces-room #space-channel-list[data-collapsed] > li:not(:has(.channel-voice[data-active])) {
+  display: none;
+}
 .spaces-room .channel-navigation[data-demo] > ul {
   min-height: 54px;
   align-content: center;
@@ -1893,6 +1900,11 @@
   /* A collapsed channel section still shows the channel being viewed. */
   .spaces-room:not(.navigation-open) .channel-navigation > ul[data-collapsed] {
     display: grid;
+  }
+  .spaces-room:not(.navigation-open)
+    #space-channel-list[data-collapsed]
+    > li:has(.channel-select[aria-current="page"]) {
+    display: flex;
   }
   .navigation-toggle {
     display: inline-flex;

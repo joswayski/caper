@@ -3,6 +3,20 @@ import { expect, test, vi } from "vitest";
 import type { GeneralChatHistory } from "../chat/types";
 import Call from "./Call";
 
+test("audio controls remain available before joining, with a text-only Join action", () => {
+  const markup = renderToStaticMarkup(<Call />);
+  for (const label of ["Mute microphone", "Deafen audio", "Input Options", "Output Options"]) {
+    const button = markup.match(new RegExp(`<button[^>]*aria-label="${label}"[^>]*>`))?.[0];
+    expect(button).toBeDefined();
+    expect(button).not.toContain('disabled=""');
+    expect(button).not.toContain('aria-disabled="true"');
+  }
+  const join = markup.match(/<button[^>]*aria-label="Join voice"[^>]*>(.*?)<\/button>/)?.[1];
+  expect(join).toContain("Join voice");
+  expect(join).not.toContain("<svg");
+  expect(markup).not.toContain('aria-label="Leave voice"');
+});
+
 test("members start closed in the initial markup, before responsive hydration", () => {
   const membersPanel = vi.fn(() => <aside id="space-member-list">Members</aside>);
   const markup = renderToStaticMarkup(<Call membersPanel={membersPanel} />);
