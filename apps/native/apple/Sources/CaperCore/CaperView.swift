@@ -586,6 +586,7 @@ private struct ChannelSidebar: View {
                             }.contentShape(Rectangle())
                         }.menuStyle(.borderlessButton).menuIndicator(.hidden).disabled(model.detail?.space.demo == true)
                             .foregroundStyle(CaperTheme.text)
+                            .modifier(ControlPointer())
                             .accessibilityLabel(model.detail?.space.demo == true ? "Caper" : model.detail?.space.name ?? "Caper")
                             .accessibilityIdentifier("selected-space-name")
                         if narrow { Button(action: close) { CaperIcon(name: "x") }.buttonStyle(SidebarIconButton()).accessibilityLabel("Close navigation") }
@@ -1357,6 +1358,7 @@ private struct AccountBar: View {
                 .frame(width: 28, height: 28)
                 #endif
                 .fixedSize()
+                .modifier(ControlPointer())
                 .accessibilityLabel("Account settings").accessibilityIdentifier("account-settings-menu")
             }.padding(4)
                 #if os(iOS)
@@ -1547,7 +1549,7 @@ private struct ChatView: View {
         model.selectedDirectMessage.flatMap { $0.peer.id == model.account?.id ? nil : $0 }
     }
     private var timelineEntries: [TimelineEntry] {
-        BlockedMessages.entries(chat.channelMessages, blocked: chat.blockedAuthorIDs, viewerID: viewerID, revealed: revealedBlocked)
+        BlockedMessages.entries(chat.displayedChannelMessages, blocked: chat.blockedAuthorIDs, viewerID: viewerID, revealed: revealedBlocked)
     }
     private func channelRow(_ message: ChatMessage) -> some View {
         MessageRow(message: message, chat: chat, currentUserID: viewerID, reactors: reactorContext, mentionCards: mentionCards,
@@ -1624,7 +1626,7 @@ private struct ChatView: View {
                 }
                 if narrow {
                     Menu {
-                        Button(chat.pinnedMessages.isEmpty ? "Pins" : "Pins \(chat.pinnedMessages.count)") { showingPins = true }
+                        Button(chat.displayedPins.isEmpty ? "Pins" : "Pins \(chat.displayedPins.count)") { showingPins = true }
                             .accessibilityIdentifier("channel-pins")
                         if model.selectedDirectMessageID == nil && !model.previewingChannel {
                             Button(membersVisible ? "Hide member list" : "Members", action: toggleMembers)
@@ -1647,9 +1649,9 @@ private struct ChatView: View {
                 Spacer()
                 if !narrow {
                     Button { showingPins = true } label: {
-                        Label(chat.pinnedMessages.isEmpty ? "Pins" : "Pins \(chat.pinnedMessages.count)", systemImage: "pin").font(CaperTheme.font(11, weight: .bold))
+                        Label(chat.displayedPins.isEmpty ? "Pins" : "Pins \(chat.displayedPins.count)", systemImage: "pin").font(CaperTheme.font(11, weight: .bold))
                     }
-                    .buttonStyle(.plain).foregroundStyle(CaperTheme.muted).frame(minHeight: 44)
+                    .buttonStyle(.plain).foregroundStyle(CaperTheme.muted).frame(minHeight: 44).modifier(ControlHover())
                     .accessibilityIdentifier("channel-pins")
                 }
                 if chat.liveState != .connected && showConnectionStatus {
@@ -2008,7 +2010,7 @@ private struct NativeThreadView: View {
             }
         }
     }
-    private var replies: [ChatMessage] { chat.messages.filter { $0.threadRootId == chat.threadRootID && $0.threadRootId != nil } }
+    private var replies: [ChatMessage] { chat.displayedMessages.filter { $0.threadRootId == chat.threadRootID && $0.threadRootId != nil } }
     private var reactors: ReactorContext {
         ReactorContext(viewerID: chat.currentAuthor?.id, sheetOpen: reactorsTarget != nil) { messageID, emoji in
             reactorsTarget = ReactorsTarget(messageID: messageID, emoji: emoji)
@@ -2019,13 +2021,13 @@ private struct NativeThreadView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 3) { Text("Thread").font(CaperTheme.font(15, weight: .bold)); Text("in #\(chat.channelName)").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted) }
                 Spacer()
-                Button("Back to channel") { chat.closeThread() }.buttonStyle(.plain).font(CaperTheme.font(12))
+                Button("Back to channel") { chat.closeThread() }.buttonStyle(.plain).font(CaperTheme.font(12)).modifier(ControlHover())
             }.padding(18)
             Divider()
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        if let root = chat.messages.first(where: { $0.id == chat.threadRootID }) {
+                        if let root = chat.displayedMessages.first(where: { $0.id == chat.threadRootID }) {
                             threadEntries([root])
                             Text("\(root.thread?.replyCount ?? 0) replies").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).padding(12)
                         }
@@ -2210,7 +2212,7 @@ private struct MessageRow: View {
                     Text(message.author.name).font(CaperTheme.font(13, weight: .bold))
                     if message.author.isGuest { Text("GUEST").font(CaperTheme.font(9, weight: .bold)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 5).overlay(RoundedRectangle(cornerRadius: 4).stroke(CaperTheme.border)) }
                     Text(timeLabel(message.createdAt)).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
-                    if message.forward == nil && (message.revision ?? 1) > 1 { Button("(edited)") { history = true }.buttonStyle(.plain).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).accessibilityLabel("View edit history") }
+                    if message.forward == nil && (message.revision ?? 1) > 1 { Button("(edited)") { history = true }.buttonStyle(.plain).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).modifier(ControlHover()).accessibilityLabel("View edit history") }
                 }
                 #if os(macOS)
                 .padding(.trailing, 56)
@@ -2237,7 +2239,7 @@ private struct MessageRow: View {
                                 Text("\(summary.replyCount) \(summary.replyCount == 1 ? "reply" : "replies") · View thread")
                             } else { Image(systemName: "bubble.right"); Text(message.threadRootId == nil ? "Reply in thread" : "Replied to a thread · View thread") }
                         }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.terracottaBright)
-                    }.buttonStyle(.plain).frame(minHeight: 32).accessibilityLabel("Reply in thread")
+                    }.buttonStyle(.plain).frame(minHeight: 32).modifier(ControlHover()).accessibilityLabel("Reply in thread")
                 }
                 if let error = chat.reactionErrors[message.id] {
                     HStack(spacing: 8) {
@@ -2305,6 +2307,7 @@ private struct MessageRow: View {
                         // Native Menu otherwise expands the overlay to the row's
                         // width, moving Add reaction away from the trailing edge.
                         .frame(width: 24, height: 24).focused($actionsFocused)
+                        .modifier(ControlHover(isFocused: actionsFocused))
                         .accessibilityLabel("Message options")
                 }.opacity(controlsHovered || replyFocused || reactionFocused || actionsFocused ? 1 : 0)
                     .allowsHitTesting(controlsHovered || replyFocused || reactionFocused || actionsFocused)
@@ -3006,19 +3009,19 @@ private struct PinnedMessagesView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Button("Messages", systemImage: "chevron.left", action: close).buttonStyle(.plain)
+                Button("Messages", systemImage: "chevron.left", action: close).buttonStyle(.plain).modifier(ControlHover())
                 Spacer()
                 Text("Pins").font(CaperTheme.font(15, weight: .bold))
                 Spacer()
                 Button("Close", action: close).buttonStyle(.plain).opacity(0)
             }.padding(.horizontal, 18).frame(height: 50)
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
-            if chat.pinnedMessages.isEmpty {
+            if chat.displayedPins.isEmpty {
                 ContentUnavailableView("No pinned messages", systemImage: "pin", description: Text("Pinned messages in this channel will appear here."))
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(chat.pinnedMessages) { message in
+                        ForEach(chat.displayedPins) { message in
                             VStack(alignment: .leading, spacing: 5) {
                                 if let pin = message.pin {
                                     Label("Pinned by \(pin.author.name)", systemImage: "pin.fill")
@@ -3034,10 +3037,10 @@ private struct PinnedMessagesView: View {
                                             Text(date.formatted(date: .abbreviated, time: .shortened))
                                                 .font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
                                         }
-                                        if message.forward == nil && (message.revision ?? 1) > 1 { Button("(edited)") { historyTarget = message }.buttonStyle(.plain).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).accessibilityLabel("View edit history") }
+                                        if message.forward == nil && (message.revision ?? 1) > 1 { Button("(edited)") { historyTarget = message }.buttonStyle(.plain).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).modifier(ControlHover()).accessibilityLabel("View edit history") }
                                         Text(message.content.text).font(CaperTheme.font(14))
                                         ForwardCardView(message: message) { chat.forwardConversationTarget = message }
-                                        if chat.canEdit(message) { Button("Edit message") { editTarget = message }.buttonStyle(.plain).font(CaperTheme.font(11)) }
+                                        if chat.canEdit(message) { Button("Edit message") { editTarget = message }.buttonStyle(.plain).font(CaperTheme.font(11)).modifier(ControlHover()) }
                                         if let error = chat.pinErrors[message.id] {
                                             HStack {
                                                 Text(error)
@@ -3050,6 +3053,7 @@ private struct PinnedMessagesView: View {
                                         Button(chat.pendingPins.contains(message.id) ? "Unpinning…" : "Unpin") {
                                             Task { await chat.setPin(messageID: message.id, active: false) }
                                         }.buttonStyle(.plain).font(CaperTheme.font(11, weight: .medium))
+                                            .modifier(ControlHover())
                                             .disabled(chat.pendingPins.contains(message.id))
                                             .frame(minHeight: 44)
                                     }
@@ -3463,6 +3467,7 @@ private struct BlockedRunRow: View {
             Button(run.revealed ? "Hide" : "Show", action: toggle).buttonStyle(.plain)
                 .font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.terracottaBright)
                 .frame(minHeight: 32).contentShape(Rectangle())
+                .modifier(ControlPointer())
                 .accessibilityLabel("\(run.revealed ? "Hide" : "Show") \(run.label)")
                 .accessibilityIdentifier("blocked-run-toggle")
             Spacer(minLength: 0)
@@ -3519,6 +3524,7 @@ private struct PrivacySheet: View {
                                     Spacer(minLength: 0)
                                 }.padding(.vertical, 8).frame(minHeight: 44).contentShape(Rectangle())
                             }.buttonStyle(.plain).disabled(model.directMessagePrivacy == nil)
+                                .modifier(ControlPointer())
                                 .accessibilityAddTraits(selected ? .isSelected : [])
                                 .accessibilityIdentifier("dm-privacy-\(option.rawValue)")
                         }
@@ -3721,7 +3727,7 @@ private struct LoginActionButton: ButtonStyle {
             .padding(.horizontal, 20).frame(maxWidth: fullWidth ? .infinity : nil).frame(height: 58)
             .background(configuration.isPressed ? CaperTheme.terracottaBright : CaperTheme.terracotta)
             .clipShape(RoundedRectangle(cornerRadius: 6))
-            .opacity(isEnabled ? 1 : 0.45)
+            .opacity(isEnabled ? 1 : 0.45).modifier(ControlHover())
     }
 }
 
@@ -4070,14 +4076,45 @@ private struct ControlHover: ViewModifier {
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.terracottaBright.opacity((isFocused ?? focused) && enabled ? 0.9 : 0), lineWidth: 2))
                 .allowsHitTesting(false)
         }
-        .onHover { inside in
-            hovered = inside
-            #if os(macOS)
-            if inside && enabled { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
-            #endif
+        .onHover { hovered = $0 }
+        .modifier(ControlPointer())
+    }
+}
+
+/// AppKit owns the cursor throughout the control's rect, including after SwiftUI redraws.
+struct ControlPointer: ViewModifier {
+    @Environment(\.isEnabled) private var enabled
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        content.background(PointerRegion(enabled: enabled).allowsHitTesting(false))
+        #else
+        content
+        #endif
+    }
+}
+
+#if os(macOS)
+private struct PointerRegion: NSViewRepresentable {
+    let enabled: Bool
+    func makeNSView(context: Context) -> PointerView { PointerView() }
+    func updateNSView(_ view: PointerView, context: Context) {
+        view.enabled = enabled
+        view.window?.invalidateCursorRects(for: view)
+    }
+    final class PointerView: NSView {
+        var enabled = true
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func resetCursorRects() {
+            super.resetCursorRects()
+            if enabled { addCursorRect(visibleRect, cursor: .pointingHand) }
+        }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            window?.invalidateCursorRects(for: self)
         }
     }
 }
+#endif
 
 struct CaperSecondaryButton: ButtonStyle {
     @Environment(\.isEnabled) private var enabled

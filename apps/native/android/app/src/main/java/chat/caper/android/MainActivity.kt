@@ -1052,7 +1052,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     Icon(painterResource(R.drawable.lucide_chevron_down), null, Modifier.size(16.dp), tint = TextMuted)
                 }
                 DropdownMenu(channelMenuOpen, { channelMenuOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
-                    DropdownMenuItem(text = { Text(if (showingPins) "Messages" else "Pins (${state.pinnedMessages.size})") },
+                    DropdownMenuItem(text = { Text(if (showingPins) "Messages" else "Pins (${state.displayedPins.size})") },
                         onClick = { channelMenuOpen = false; showingPins = !showingPins })
                     if (!channel.direct && joined) DropdownMenuItem(text = { Text(if (membersVisible) "Hide member list" else "Members") },
                         leadingIcon = { Icon(painterResource(R.drawable.lucide_users), null) },
@@ -1062,7 +1062,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 }
             } else Text(if (channel.direct) channel.name else "# ${channel.name}", Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (!narrow) TextButton({ showingPins = !showingPins }, Modifier.heightIn(min = 48.dp)) {
-                Text(if (showingPins) "Messages" else "Pins (${state.pinnedMessages.size})", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Text(if (showingPins) "Messages" else "Pins (${state.displayedPins.size})", fontSize = 11.sp, fontWeight = FontWeight.Bold)
             }
             if (!narrow && direct != null) TextButton(::toggleBlock, Modifier.heightIn(min = 48.dp)) {
                 Text(if (direct.blocked) "Unblock" else "Block", color = if (direct.blocked) TextMuted else ErrorText, fontSize = 11.sp, fontWeight = FontWeight.Bold)
@@ -1290,7 +1290,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     var reactorsTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
     // The tapped person's `user` mention entry; another pill replaces it.
     var mentionTarget by remember { mutableStateOf<MessageMention?>(null) }
-    val messages = if (inThread) state.messages else state.messages.filter { (it.threadRootId == null || it.broadcast) && it.id !in state.threadOnlyRows }
+    val messages = if (inThread) state.displayedMessages else state.displayedMessages.filter { (it.threadRootId == null || it.broadcast) && it.id !in state.threadOnlyRows }
     // Runs of blocked authors' messages collapse; Show reveals one run, in memory only.
     var revealedRuns by remember { mutableStateOf(emptySet<String>()) }
     var blockTarget by remember { mutableStateOf<BlockedAccount?>(null) }
@@ -1379,7 +1379,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         } }
     }
     actionTarget?.let { target ->
-        val presented = state.messages.firstOrNull { it.id == target.id } ?: target
+        val presented = state.displayedMessages.firstOrNull { it.id == target.id } ?: target
         MessageActionsSheet(
             presented, state,
             onDismiss = { actionTarget = null },
@@ -1625,10 +1625,10 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
         item {
             Text("Pinned messages", Modifier.padding(horizontal = 18.dp, vertical = 8.dp), fontWeight = FontWeight.Bold, fontSize = 15.sp)
         }
-        if (state.pinnedMessages.isEmpty()) item {
+        if (state.displayedPins.isEmpty()) item {
             Text("No pinned messages.", Modifier.fillMaxWidth().padding(24.dp), color = TextMuted, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
         }
-        items(state.pinnedMessages, key = { "pin:${it.id}" }) { message ->
+        items(state.displayedPins, key = { "pin:${it.id}" }) { message ->
             Column(Modifier.background(PinGoldWash)) {
                 message.pin?.let { Text("Pinned by ${it.author.name}", Modifier.padding(start = 62.dp, end = 18.dp, top = 4.dp), color = PinGold, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
                 Text(fullDateLabel(message.createdAt), Modifier.padding(start = 62.dp, end = 18.dp), color = TextMuted, fontSize = 10.sp)
@@ -1652,7 +1652,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
         }
     }
     conversationTarget?.let { target ->
-        state.pinnedMessages.firstOrNull { it.id == target.id }?.let { current ->
+        state.displayedPins.firstOrNull { it.id == target.id }?.let { current ->
             key(target.id) { ForwardConversationSheet(current, viewModel) { conversationTarget = null } }
         }
     }

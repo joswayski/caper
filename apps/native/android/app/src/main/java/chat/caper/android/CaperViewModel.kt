@@ -622,8 +622,13 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun setPin(messageId: String, active: Boolean) {
         val channel = mutable.value.selectedChannel?.takeIf { it.joined } ?: return
         if (pinWorkers[messageId]?.isActive == true) return
+        val target = (mutable.value.messages + mutable.value.pinnedMessages).firstOrNull { it.id == messageId } ?: return
+        val own = chatAuthor ?: mutable.value.account?.let { ChatAuthor(it.id, it.displayName ?: it.username ?: "You", false, it.avatarId) } ?: return
         val request = generation
-        mutable.value = mutable.value.copy(pinSaves = mutable.value.pinSaves + (messageId to PinSaveUi(active)))
+        mutable.value = mutable.value.copy(
+            pinSaves = mutable.value.pinSaves + (messageId to PinSaveUi(active)),
+            pinIntents = mutable.value.pinIntents + (messageId to PinIntentUi(target, if (active) MessagePin(own, Instant.now().toString()) else null)),
+        )
         pinWorkers[messageId] = viewModelScope.launch {
             try {
                 val capability = chatToken ?: createChatSession(accountGeneration) ?: error("Chat session is unavailable.")
@@ -639,7 +644,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     if (error is ApiException && error.status in listOf(401, 403, 404)) revokeChannel()
                     else mutable.value = mutable.value.copy(pinSaves = mutable.value.pinSaves + (messageId to PinSaveUi(active, false, message(error))))
                 }
-            } finally { pinWorkers.remove(messageId) }
+            } finally {
+                if (request == generation) {
+                    pinWorkers.remove(messageId)
+                    mutable.value = mutable.value.copy(pinIntents = mutable.value.pinIntents - messageId)
+                }
+            }
         }
     }
 
@@ -1008,12 +1018,18 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     suspend fun editMessage(message: ChatMessage, text: String): Unit {
         check(canEdit(message)) { "Only the author can edit while participating." }
+        check(message.id !in mutable.value.editIntents) { "This message is already being saved." }
         val request = generation
         val authorId = requireNotNull(chatAuthor).id
-        val result = api.editMessage(accountToken, requireNotNull(chatToken), message.channelId, message.id, text, message.revision)
-        if (request != generation || !canEdit(message)) throw kotlinx.coroutines.CancellationException()
-        require(result.author.id == authorId) { "Message author mismatch." }
-        applyEditSnapshot(result)
+        mutable.value = mutable.value.copy(editIntents = mutable.value.editIntents + (message.id to EditIntentUi(text, message.revision)))
+        try {
+            val result = api.editMessage(accountToken, requireNotNull(chatToken), message.channelId, message.id, text, message.revision)
+            if (request != generation || !canEdit(message)) throw kotlinx.coroutines.CancellationException()
+            require(result.author.id == authorId) { "Message author mismatch." }
+            applyEditSnapshot(result)
+        } finally {
+            if (request == generation) mutable.value = mutable.value.copy(editIntents = mutable.value.editIntents - message.id)
+        }
     }
 
     suspend fun reloadMessage(message: ChatMessage): ChatMessage {
@@ -1365,6 +1381,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             gateway = GatewayStatus.DISCONNECTED, pendingMessage = if (clearPending) null else mutable.value.pendingMessage,
             reactionSaves = emptyMap(),
             pinnedMessages = emptyList(), pinSaves = emptyMap(),
+            pinIntents = emptyMap(), editIntents = emptyMap(),
         )
     }
 
