@@ -481,11 +481,7 @@ async fn pins_are_shared_idempotent_authorized_and_transactional() {
         broker_url.starts_with("redis://127.0.0.1:")
             || broker_url.starts_with("redis://localhost:")
     );
-    let chat = Chat {
-        pool: pool.clone(),
-        broker: redis::Client::open(broker_url).unwrap(),
-        wake: Arc::new(Notify::new()),
-    };
+    let chat = Chat::new(pool.clone(), redis::Client::open(broker_url).unwrap());
     let mut state = AppState::new(
         crate::Config::test(false),
         Arc::new(crate::Cloudflare::new()),
@@ -674,6 +670,12 @@ async fn pins_are_shared_idempotent_authorized_and_transactional() {
     assert_eq!(page["pinnedMessages"][0]["id"], message);
     assert_eq!(page["pinnedMessages"][0]["pinSeq"], "107");
     assert_eq!(page["cursor"], "107");
+    // Older pages only extend the timeline; pins come from the first page.
+    let older = history_page(&pool, channel, Some(58), Some(owner))
+        .await
+        .unwrap();
+    assert!(!older["messages"].as_array().unwrap().is_empty());
+    assert_eq!(older["pinnedMessages"], json!([]));
     sqlx::query("UPDATE public.messages SET payload=payload || jsonb_build_object('pin',$1::jsonb,'pinSeq',channel_seq::text) WHERE channel_seq BETWEEN 5 AND 103")
         .bind(&repin["message"]["pin"]).execute(&pool).await.unwrap();
     assert_eq!(
@@ -1822,11 +1824,7 @@ async fn durable_account_delivery_replay_handoff_and_demo_retirement() {
 
     let broker_url = std::env::var("CHAT_TEST_VALKEY_URL").expect("disposable broker required");
     let broker = redis::Client::open(broker_url).unwrap();
-    let chat = Chat {
-        pool: pool.clone(),
-        broker,
-        wake: Arc::new(Notify::new()),
-    };
+    let chat = Chat::new(pool.clone(), broker);
     let mut state = AppState::new(
         crate::Config::test(false),
         Arc::new(crate::Cloudflare::new()),
@@ -1852,10 +1850,10 @@ async fn durable_account_delivery_replay_handoff_and_demo_retirement() {
         StatusCode::UNPROCESSABLE_ENTITY
     );
     // Simulate broker outage: durable send already succeeded; outbox remains pending.
-    let down = Chat {
-        broker: redis::Client::open("redis://127.0.0.1:1").unwrap(),
-        ..chat.clone()
-    };
+    let down = Chat::new(
+        pool.clone(),
+        redis::Client::open("redis://127.0.0.1:1").unwrap(),
+    );
     assert!(publish_pending(&down).await.is_err());
     let pending: i64 =
         sqlx::query_scalar("SELECT count(*) FROM public.channel_events WHERE published_at IS NULL")
@@ -2526,11 +2524,7 @@ async fn account_channels_isolate_sequences_and_gateway_revokes_live_access() {
         .unwrap();
 
     let broker = redis::Client::open(std::env::var("CHAT_TEST_VALKEY_URL").unwrap()).unwrap();
-    let chat = Chat {
-        pool: pool.clone(),
-        broker,
-        wake: Arc::new(Notify::new()),
-    };
+    let chat = Chat::new(pool.clone(), broker);
     let gateway = crate::gateway::Gateway::new(chat);
     gateway.start();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2813,4 +2807,118 @@ async fn history_shows_current_display_names_but_stores_the_original(pool: PgPoo
         .await
         .unwrap();
     assert_eq!(history["messages"][0]["author"]["name"], "alice");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL"]
+async fn chat_session_limit_is_per_account(pool: PgPool) {
+    for name in ["busy", "calm"] {
+        let user: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name) VALUES($1||'-id',$1,$1) RETURNING id")
+            .bind(name).fetch_one(&pool).await.unwrap();
+        sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 day')")
+            .bind(Sha256::digest(name.as_bytes()).as_slice()).bind(user).execute(&pool).await.unwrap();
+    }
+    let mut config = crate::Config::test(false);
+    config.auth_fixture = false;
+    let mut state = AppState::with_database(
+        config,
+        Arc::new(crate::Cloudflare::new()),
+        Some(pool.clone()),
+    );
+    // Session creation never touches the broker.
+    state.chat = Some(Chat::new(
+        pool.clone(),
+        redis::Client::open("redis://127.0.0.1:1").unwrap(),
+    ));
+    let app = crate::app(state);
+    let create = |account: &'static str| {
+        let app = app.clone();
+        async move {
+            let request = axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/chat/session")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {account}"))
+                .body(axum::body::Body::from(r#"{"name":"Ignored"}"#))
+                .unwrap();
+            app.oneshot(request).await.unwrap().status()
+        }
+    };
+    for _ in 0..60 {
+        assert_eq!(create("busy").await, StatusCode::OK);
+    }
+    assert_eq!(create("busy").await, StatusCode::TOO_MANY_REQUESTS);
+    // One account at its limit must not make chat unavailable to everyone.
+    assert_eq!(create("calm").await, StatusCode::OK);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL"]
+async fn writes_in_one_channel_do_not_block_other_channels_of_the_space(pool: PgPool) {
+    let user: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name) VALUES('writer-id','writer','Writer') RETURNING id")
+        .fetch_one(&pool).await.unwrap();
+    let hash = Sha256::digest(b"writer").to_vec();
+    sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 day')")
+        .bind(&hash).bind(user).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO public.chat_sessions(external_id,token_hash,name,user_id,account_session_hash) VALUES('writer',$1,'writer',$2,$1)")
+        .bind(&hash).bind(user).execute(&pool).await.unwrap();
+    let space: i64 = sqlx::query_scalar("INSERT INTO public.spaces(external_id,name,owner_id) VALUES('lock-space','Locks',$1) RETURNING id")
+        .bind(user).fetch_one(&pool).await.unwrap();
+    sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+        .bind(space)
+        .bind(user)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut channels = Vec::new();
+    for name in ["busy", "quiet"] {
+        let channel: i64 = sqlx::query_scalar(
+            "INSERT INTO public.channels(external_id,space_id,name) VALUES($1,$2,$1) RETURNING id",
+        )
+        .bind(name)
+        .bind(space)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) VALUES($1,$2)")
+            .bind(channel)
+            .bind(user)
+            .execute(&pool)
+            .await
+            .unwrap();
+        channels.push(channel);
+    }
+    // Hold the locks an in-flight write in #busy takes.
+    let mut in_flight = pool.begin().await.unwrap();
+    sqlx::query("SELECT id FROM public.spaces WHERE id=$1 FOR SHARE")
+        .bind(space)
+        .fetch_one(&mut *in_flight)
+        .await
+        .unwrap();
+    sqlx::query("SELECT id FROM public.channels WHERE id=$1 FOR UPDATE")
+        .bind(channels[0])
+        .fetch_one(&mut *in_flight)
+        .await
+        .unwrap();
+    let sent = tokio::time::timeout(
+        Duration::from_secs(3),
+        persist(&pool, "quiet", "writer", Uuid::new_v4(), "not queued"),
+    )
+    .await
+    .expect("a send in another channel waited for the space lock");
+    assert_eq!(sent.unwrap()["content"]["text"], "not queued");
+    // Membership changes still wait for every in-flight write in the space.
+    let mut membership = pool.begin().await.unwrap();
+    sqlx::query("SET LOCAL lock_timeout = '200ms'")
+        .execute(&mut *membership)
+        .await
+        .unwrap();
+    assert!(
+        sqlx::query("SELECT id FROM public.spaces WHERE id=$1 FOR UPDATE")
+            .bind(space)
+            .fetch_one(&mut *membership)
+            .await
+            .is_err()
+    );
+    in_flight.rollback().await.unwrap();
 }

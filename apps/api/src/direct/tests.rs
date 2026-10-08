@@ -7,7 +7,6 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use sha2::{Digest, Sha256};
 use std::{future::IntoFuture, sync::Arc, time::Duration};
-use tokio::sync::Notify;
 use tokio_tungstenite::{
     connect_async,
     tungstenite::{Message, client::IntoClientRequest},
@@ -63,11 +62,10 @@ async fn two_person_privacy_durability_read_cursors_and_gateway_replay(pool: PgP
             .bind(random_id(12)).bind(Sha256::digest(format!("chat-{name}").as_bytes()).to_vec()).bind(user).bind(account).bind(name).execute(&pool).await.unwrap();
         users.push(user);
     }
-    let chat = chat::Chat {
-        pool: pool.clone(),
-        broker: redis::Client::open(std::env::var("CHAT_TEST_VALKEY_URL").unwrap()).unwrap(),
-        wake: Arc::new(Notify::new()),
-    };
+    let chat = chat::Chat::new(
+        pool.clone(),
+        redis::Client::open(std::env::var("CHAT_TEST_VALKEY_URL").unwrap()).unwrap(),
+    );
     let mut config = Config::test(false);
     config.auth_fixture = false;
     let mut state =
@@ -476,11 +474,10 @@ async fn message_requests_blocks_and_privacy(pool: PgPool) {
     config.auth_fixture = false;
     let mut state =
         AppState::with_database(config, Arc::new(Cloudflare::new()), Some(pool.clone()));
-    state.chat = Some(chat::Chat {
-        pool: pool.clone(),
-        broker: redis::Client::open(std::env::var("CHAT_TEST_VALKEY_URL").unwrap()).unwrap(),
-        wake: Arc::new(Notify::new()),
-    });
+    state.chat = Some(chat::Chat::new(
+        pool.clone(),
+        redis::Client::open(std::env::var("CHAT_TEST_VALKEY_URL").unwrap()).unwrap(),
+    ));
     let app = crate::app(state);
     let open = |from: &'static str, to: &'static str| {
         let app = app.clone();

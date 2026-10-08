@@ -79,7 +79,7 @@ fn database_error(_: sqlx::Error) -> ApiError {
     ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "spaces unavailable")
 }
 
-fn not_found() -> ApiError {
+pub(crate) fn not_found() -> ApiError {
     ApiError::new(StatusCode::NOT_FOUND, "resource not found")
 }
 
@@ -116,13 +116,10 @@ pub(crate) async fn channel_access<'e>(
     check_channel_access(pool, channel, user, false).await
 }
 
-async fn check_channel_access<'e>(
-    pool: impl sqlx::Executor<'e, Database = Postgres>,
-    channel: &str,
-    user: Option<i64>,
-    require_join: bool,
-) -> Result<ChannelAccess, ApiError> {
-    sqlx::query_as::<_, (i64, i64, Option<i64>)>(
+// $1 channel, $2 user, $3 require join. A macro so the gateway can embed the
+// same predicate in its combined session and channel check.
+macro_rules! channel_access_sql {
+    () => {
         "SELECT c.id, c.last_seq, s.id
          FROM public.channels c JOIN public.spaces s ON s.id = c.space_id
          WHERE c.external_id = $1 AND c.deleted_at IS NULL AND s.deleted_at IS NULL
@@ -136,16 +133,56 @@ async fn check_channel_access<'e>(
          JOIN public.direct_conversations d ON d.channel_id=c.id
          JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
          WHERE c.external_id=$1 AND c.space_id IS NULL AND c.deleted_at IS NULL
-           AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL",
-    )
+           AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL"
+    };
+}
+
+async fn check_channel_access<'e>(
+    pool: impl sqlx::Executor<'e, Database = Postgres>,
+    channel: &str,
+    user: Option<i64>,
+    require_join: bool,
+) -> Result<ChannelAccess, ApiError> {
+    sqlx::query_as::<_, (i64, i64, Option<i64>)>(channel_access_sql!())
+        .bind(channel)
+        .bind(user)
+        .bind(require_join)
+        .fetch_optional(pool)
+        .await
+        .map_err(database_error)?
+        .map(|(id, last_seq, space_id)| ChannelAccess {
+            id,
+            last_seq,
+            space_id,
+        })
+        .ok_or_else(not_found)
+}
+
+/// For live subscribers: whether the account session (if any) still belongs to
+/// `user`, and whether `user` can read `channel`, in one round trip. Equivalent
+/// to `session_user` followed by `channel_access`, for every delivered event.
+pub(crate) async fn session_channel_access(
+    pool: &PgPool,
+    session: Option<&[u8]>,
+    user: Option<i64>,
+    channel: &str,
+) -> Result<(bool, bool), ApiError> {
+    sqlx::query_as(concat!(
+        "SELECT $4::bytea IS NULL OR EXISTS (
+             SELECT 1 FROM public.account_sessions a JOIN public.users u ON u.id = a.user_id
+             WHERE a.token_hash = $4 AND a.user_id = $2 AND a.revoked_at IS NULL AND a.expires_at > now()
+               AND u.deleted_at IS NULL AND u.username IS NOT NULL AND u.display_name IS NOT NULL),
+         EXISTS (",
+        channel_access_sql!(),
+        ")"
+    ))
     .bind(channel)
     .bind(user)
-    .bind(require_join)
-    .fetch_optional(pool)
+    .bind(false)
+    .bind(session)
+    .fetch_one(pool)
     .await
-    .map_err(database_error)?
-    .map(|(id, last_seq, space_id)| ChannelAccess { id, last_seq, space_id })
-    .ok_or_else(not_found)
+    .map_err(database_error)
 }
 
 #[derive(Serialize)]
@@ -667,8 +704,11 @@ async fn list_invitations(
     Extension(principal): Extension<Principal>,
     Path(space): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let mut tx = pool(&state)?.begin().await.map_err(database_error)?;
-    let id = owner_space(&mut tx, &space, principal.user.id).await?;
+    // A read: check ownership without the exclusive space lock that writers
+    // take, which would stall every send in the space behind this request.
+    let pool = pool(&state)?;
+    let id: i64 = sqlx::query_scalar("SELECT id FROM public.spaces WHERE external_id=$1 AND owner_id=$2 AND deleted_at IS NULL AND NOT demo")
+        .bind(&space).bind(principal.user.id).fetch_optional(pool).await.map_err(database_error)?.ok_or_else(not_found)?;
     let rows: Vec<Member> = sqlx::query_as::<_, (String, i16, String, String)>(
         "SELECT u.external_id,u.avatar_id,u.username,u.display_name FROM public.space_invitations i
          JOIN public.users u ON u.id=i.user_id WHERE i.space_id=$1 AND i.status='pending'
@@ -676,7 +716,7 @@ async fn list_invitations(
          ORDER BY i.updated_at,u.id",
     )
     .bind(id)
-    .fetch_all(&mut *tx)
+    .fetch_all(pool)
     .await
     .map_err(database_error)?
     .into_iter()

@@ -17,12 +17,16 @@ use axum::{
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::Utc;
 use rand::Rng;
+use redis::aio::MultiplexedConnection;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
-use std::{sync::Arc, time::Duration};
-use tokio::sync::Notify;
+use std::{
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
+use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
 
 mod editing;
@@ -32,12 +36,17 @@ pub(crate) const TOPIC: &str = "caper:chat:v1:events";
 // Separate from durable events: older gateways require a sequence on that topic.
 pub(crate) const TYPING_TOPIC: &str = "caper:chat:v1:typing";
 const PAGE: i64 = 50;
+const BROKER_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone)]
 pub(crate) struct Chat {
     pub pool: PgPool,
     pub broker: redis::Client,
     pub wake: Arc<Notify>,
+    /// One multiplexed broker connection shared by outbox publishes and typing
+    /// updates, instead of a new TCP/TLS handshake per message. A failed call
+    /// drops it so the next caller reconnects.
+    connection: Arc<Mutex<Option<MultiplexedConnection>>>,
 }
 
 pub(crate) fn unavailable() -> ApiError {
@@ -66,11 +75,38 @@ impl Chat {
             std::env::var("VALKEY_ALLOW_INSECURE").is_ok_and(|v| v == "true" || v == "1");
         crate::media_store::validate_url(&url, insecure).map_err(|_| "invalid chat VALKEY_URL")?;
         let broker = redis::Client::open(url).map_err(|_| "invalid chat VALKEY_URL")?;
-        Ok(Some(Self {
+        Ok(Some(Self::new(pool, broker)))
+    }
+
+    pub(crate) fn new(pool: PgPool, broker: redis::Client) -> Self {
+        Self {
             pool,
             broker,
             wake: Arc::new(Notify::new()),
-        }))
+            connection: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    async fn broker_connection(&self) -> redis::RedisResult<MultiplexedConnection> {
+        let mut cached = self.connection.lock().await;
+        if let Some(connection) = cached.as_ref() {
+            return Ok(connection.clone());
+        }
+        let connection = self
+            .broker
+            .get_multiplexed_async_connection_with_config(
+                &redis::AsyncConnectionConfig::new()
+                    .set_connection_timeout(BROKER_TIMEOUT)
+                    .set_response_timeout(BROKER_TIMEOUT),
+            )
+            .await?;
+        *cached = Some(connection.clone());
+        Ok(connection)
+    }
+
+    /// Never replays the failed command; only the next caller reconnects.
+    async fn discard_broker_connection(&self) {
+        *self.connection.lock().await = None;
     }
 }
 
@@ -258,13 +294,18 @@ async fn conversation_page(
     }
     // All pins are returned independently of the history page. The shared
     // channel lock also makes their revisions consistent with this cursor.
-    let pins: Vec<(Value, Option<i16>, Option<String>)> = sqlx::query_as("SELECT m.payload,u.avatar_id,u.display_name FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.channel_id=$1 AND jsonb_typeof(m.payload->'pin')='object' ORDER BY (m.payload->>'pinSeq')::bigint DESC LIMIT 100")
-        .bind(channel_id).fetch_all(&mut *tx).await.map_err(database_error)?;
-    let mut pins: Vec<Value> = pins
-        .into_iter()
-        .map(|(payload, avatar, name)| enrich_author(payload, avatar, name.as_deref()))
-        .collect();
-    forwarding::hydrate(&mut tx, &mut pins).await?;
+    // Older pages only extend the timeline; every client keeps the pins from
+    // the first page and live events, so skip rebuilding them per scroll.
+    let mut pins: Vec<Value> = Vec::new();
+    if before.is_none() {
+        let rows: Vec<(Value, Option<i16>, Option<String>)> = sqlx::query_as("SELECT m.payload,u.avatar_id,u.display_name FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.channel_id=$1 AND jsonb_typeof(m.payload->'pin')='object' ORDER BY (m.payload->>'pinSeq')::bigint DESC LIMIT 100")
+            .bind(channel_id).fetch_all(&mut *tx).await.map_err(database_error)?;
+        pins = rows
+            .into_iter()
+            .map(|(payload, avatar, name)| enrich_author(payload, avatar, name.as_deref()))
+            .collect();
+        forwarding::hydrate(&mut tx, &mut pins).await?;
+    }
     let mut channel_identity = json!({"id":channel,"name":channel_name});
     if space_id.is_none() {
         channel_identity["direct"] = json!(true);
@@ -299,20 +340,25 @@ async fn session(
     let token = URL_SAFE_NO_PAD.encode(rand::rng().random::<[u8; 32]>());
     let id = random_id(12);
     let mut tx = chat.pool.begin().await.map_err(database_error)?;
-    sqlx::query("SELECT pg_advisory_xact_lock(731902, 2)")
+    // Sessions require an account, so limit each account rather than the whole
+    // service: clients mint one per conversation they open, and a site-wide
+    // budget let a few busy (or retrying) accounts lock everyone out of chat.
+    sqlx::query("SELECT pg_advisory_xact_lock(731905, hashtext($1::bigint::text))")
+        .bind(account.id)
         .execute(&mut *tx)
         .await
         .map_err(database_error)?;
     let recent: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM public.chat_sessions WHERE created_at > now() - interval '1 minute'",
+        "SELECT count(*) FROM public.chat_sessions WHERE user_id = $1 AND created_at > now() - interval '1 minute'",
     )
+    .bind(account.id)
     .fetch_one(&mut *tx)
     .await
     .map_err(database_error)?;
     if recent >= 60 {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
-            "guest creation busy; try again shortly",
+            "opening conversations too quickly; try again shortly",
         ));
     }
     sqlx::query("INSERT INTO public.chat_sessions (external_id, token_hash, user_id, name, account_session_hash) VALUES ($1, $2, $3, $4, $5)")
@@ -539,6 +585,24 @@ async fn typing(
     Ok(StatusCode::NO_CONTENT)
 }
 
+static TYPING_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r#"
+        local personal = redis.call('INCR', KEYS[1])
+        if personal == 1 then redis.call('EXPIRE', KEYS[1], 1) end
+        if personal > 4 then return 0 end
+        local global = redis.call('INCR', KEYS[2])
+        if global == 1 then redis.call('EXPIRE', KEYS[2], 1) end
+        if global > 120 then return 0 end
+        local event = cjson.decode(ARGV[2])
+        local clock = redis.call('TIME')
+        event.revision = clock[1] .. string.format('%06d', tonumber(clock[2]))
+        redis.call('PUBLISH', ARGV[1], cjson.encode(event))
+        return 1
+    "#,
+    )
+});
+
 async fn publish_typing(
     chat: &Chat,
     channel: &str,
@@ -554,26 +618,11 @@ async fn publish_typing(
     // Atomic shared limits and publication. No draft text, DB write, outbox, or
     // sequence allocation. Broker time orders duplicate/overlapping streams;
     // keep microseconds as a string rather than rounding through Lua/JS numbers.
-    let script = redis::Script::new(
-        r#"
-        local personal = redis.call('INCR', KEYS[1])
-        if personal == 1 then redis.call('EXPIRE', KEYS[1], 1) end
-        if personal > 4 then return 0 end
-        local global = redis.call('INCR', KEYS[2])
-        if global == 1 then redis.call('EXPIRE', KEYS[2], 1) end
-        if global > 120 then return 0 end
-        local event = cjson.decode(ARGV[2])
-        local clock = redis.call('TIME')
-        event.revision = clock[1] .. string.format('%06d', tonumber(clock[2]))
-        redis.call('PUBLISH', ARGV[1], cjson.encode(event))
-        return 1
-    "#,
-    );
-    let published = tokio::time::timeout(Duration::from_secs(2), async {
-        let mut connection = chat.broker.get_multiplexed_async_connection().await?;
+    let published = tokio::time::timeout(BROKER_TIMEOUT, async {
+        let mut connection = chat.broker_connection().await?;
         // Channel-local counters share a hash slot. Unrelated spaces do not
         // compete for one global typing budget or receive each other's traffic.
-        script
+        TYPING_SCRIPT
             .key(format!("{{{TYPING_TOPIC}:{channel}}}:rate:{author_id}"))
             .key(format!("{{{TYPING_TOPIC}:{channel}}}:rate:channel"))
             .arg(format!("{TYPING_TOPIC}:{channel}"))
@@ -581,9 +630,11 @@ async fn publish_typing(
             .invoke_async::<i64>(&mut connection)
             .await
     })
-    .await
-    .map_err(|_| unavailable())?
-    .map_err(|_| unavailable())?;
+    .await;
+    let Ok(Ok(published)) = published else {
+        chat.discard_broker_connection().await;
+        return Err(unavailable());
+    };
     if published == 0 {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
@@ -633,8 +684,10 @@ async fn persist_message(
     // Membership mutations lock the space first. Take that lock in a separate
     // statement so the access query gets a fresh READ COMMITTED snapshot after
     // waiting; a predicate in the locking query can see pre-removal grants.
+    // Shared, so writes in other channels of the space are not serialized
+    // behind this one; the channel row lock below orders this channel.
     if let Some(space_id) = space_id {
-        sqlx::query("SELECT id FROM public.spaces WHERE id=$1 FOR UPDATE")
+        sqlx::query("SELECT id FROM public.spaces WHERE id=$1 FOR SHARE")
             .bind(space_id)
             .fetch_optional(&mut *tx)
             .await
@@ -827,7 +880,7 @@ async fn persist_reaction(
             .map_err(database_error)?
             .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
     if let Some(space_id) = space_id {
-        sqlx::query("SELECT id FROM public.spaces WHERE id=$1 FOR UPDATE")
+        sqlx::query("SELECT id FROM public.spaces WHERE id=$1 FOR SHARE")
             .bind(space_id)
             .fetch_optional(&mut *tx)
             .await
@@ -968,7 +1021,7 @@ async fn persist_pin(
             .map_err(database_error)?
             .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
     if let Some(space_id) = space_id {
-        sqlx::query("SELECT id FROM public.spaces WHERE id=$1 FOR UPDATE")
+        sqlx::query("SELECT id FROM public.spaces WHERE id=$1 FOR SHARE")
             .bind(space_id)
             .fetch_optional(&mut *tx)
             .await
@@ -1092,35 +1145,42 @@ async fn publish_pending(chat: &Chat) -> Result<bool, ()> {
     forwarding::project_events(&mut tx, &rows)
         .await
         .map_err(|_| ())?;
-    let mut connection = tokio::time::timeout(
-        Duration::from_secs(2),
-        chat.broker.get_multiplexed_async_connection(),
-    )
-    .await
-    .map_err(|_| ())?
-    .map_err(|_| ())?;
-    for (channel, seq, event, avatar_id, name) in &rows {
-        let event = enrich_author(event.clone(), *avatar_id, name.as_deref());
-        tokio::time::timeout(
-            Duration::from_secs(2),
-            redis::cmd("PUBLISH")
-                .arg(format!(
-                    "{TOPIC}:{}",
-                    event["channelId"].as_str().ok_or(())?
-                ))
-                .arg(event.to_string())
-                .query_async::<i64>(&mut connection),
-        )
-        .await
-        .map_err(|_| ())?
-        .map_err(|_| ())?;
-        sqlx::query("UPDATE public.channel_events SET published_at = now() WHERE channel_id = $1 AND seq = $2").bind(channel).bind(seq).execute(&mut *tx).await.map_err(|_| ())?;
+    let count = rows.len();
+    let mut publishes = redis::pipe();
+    let (mut channels, mut seqs) = (Vec::with_capacity(count), Vec::with_capacity(count));
+    for (channel, seq, event, avatar_id, name) in rows {
+        let event = enrich_author(event, avatar_id, name.as_deref());
+        let topic = format!("{TOPIC}:{}", event["channelId"].as_str().ok_or(())?);
+        publishes
+            .cmd("PUBLISH")
+            .arg(topic)
+            .arg(event.to_string())
+            .ignore();
+        channels.push(channel);
+        seqs.push(seq);
     }
+    // One pipelined round trip in claim order, then one UPDATE. Any failure
+    // rolls the whole claim back, exactly as a failure mid-loop did before.
+    let published = tokio::time::timeout(BROKER_TIMEOUT, async {
+        let mut connection = chat.broker_connection().await?;
+        publishes.query_async::<()>(&mut connection).await
+    })
+    .await;
+    if !matches!(published, Ok(Ok(()))) {
+        chat.discard_broker_connection().await;
+        return Err(());
+    }
+    sqlx::query("UPDATE public.channel_events e SET published_at = now() FROM unnest($1::bigint[], $2::bigint[]) AS p(channel_id, seq) WHERE e.channel_id = p.channel_id AND e.seq = p.seq")
+        .bind(&channels)
+        .bind(&seqs)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ())?;
     // A crash here re-publishes, deliberately. Receivers deduplicate by sequence.
     tx.commit().await.map_err(|_| ())?;
     tracing::info!(
         event_name = "chat_published",
-        count = rows.len(),
+        count,
         "outbox batch published"
     );
     Ok(true)

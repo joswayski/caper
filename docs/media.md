@@ -639,7 +639,8 @@ Delivery and recovery:
    checked per subscription; this is not a claim of zero per-recipient SQL work.
 
 Limits: 30 new messages/guest/minute, 120/channel/minute, and 60 new sender
-sessions/minute globally for this demo. `GATEWAY_MAX_CONNECTIONS` defaults to 4096
+sessions/minute per account (clients mint one per opened conversation, so a
+site-wide budget let a few accounts block everyone). `GATEWAY_MAX_CONNECTIONS` defaults to 4096
 per pod (an admission limit, **not measured capacity**). Each channel has a bounded
 256-event ring. A lagging receiver replays from Postgres in batches of 128.
 Application sockets use 4 KiB read buffers, a 256-frame outgoing queue, and a
@@ -1422,8 +1423,9 @@ model. Android helper and Apple model tests are included but were not run in the
 Linux orb (no Android SDK or Swift/Xcode); full native builds/device checks remain
 release validation. This client-only correction needs no server or schema change.
 
-Every history page includes complete `pinnedMessages`, newest pin first, captured
-under the same channel lock as its cursor. The pins collection is separate from
+Every first history page includes complete `pinnedMessages`, newest pin first, captured
+under the same channel lock as its cursor. Older pages (`before=`) return an empty
+`pinnedMessages`: every client keeps the first page's pins and live pin events. The pins collection is separate from
 the 50-message timeline page: an old pin must not enter that page or skip the
 intervening history. There are at most 100 active pins per channel and 60 actual
 mutations per actor/channel/minute. Idempotent retries preserve the original

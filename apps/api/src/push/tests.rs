@@ -631,11 +631,7 @@ async fn harness(pool: &PgPool) -> Harness {
     config.auth_fixture = false;
     let mut state =
         AppState::with_database(config, Arc::new(Cloudflare::new()), Some(pool.clone()));
-    state.chat = Some(Chat {
-        pool: pool.clone(),
-        broker: broker.clone(),
-        wake: Arc::new(Notify::new()),
-    });
+    state.chat = Some(Chat::new(pool.clone(), broker.clone()));
     state.push = push.clone();
     Harness {
         app: crate::app(state),

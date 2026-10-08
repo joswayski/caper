@@ -45,16 +45,14 @@ async fn locked_channel(
             .await
             .map_err(database_error)?
             .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
+    // Shared for writers too: the channel lock below orders this channel, and
+    // membership changes still wait for (and block) every holder.
     if let Some(space) = space {
-        sqlx::query(if writing {
-            "SELECT id FROM public.spaces WHERE id=$1 FOR UPDATE"
-        } else {
-            "SELECT id FROM public.spaces WHERE id=$1 FOR SHARE"
-        })
-        .bind(space)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(database_error)?;
+        sqlx::query("SELECT id FROM public.spaces WHERE id=$1 FOR SHARE")
+            .bind(space)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(database_error)?;
     }
     // Lock first; a subsequent statement gets the post-wait permissions snapshot.
     let row: Option<(i64, i64)> = sqlx::query_as(if writing {
