@@ -98,6 +98,18 @@ with Xcode before release and inspect the composer attachments. These new iPhone
 checks and native rendering were not executed in the Linux orb; passing web and
 fixture tests do not validate SwiftUI/UIKit/AppKit sizing.
 
+Apple pending sends use the confirmed row's full-width, leading-aligned layout.
+The channel requests scrolling on the pending-state update and on content-size
+changes without yielding another task first. The parity send regression holds
+the fixture before persistence/gateway fanout, checks short and wrapping pending
+text in the viewport with an empty composer, then checks unchanged horizontal
+alignment and one row after confirmation. `npm test -- --maxWorkers=2` passes
+450 web/shared tests and `npm run check` passes; the Apple regression and rendered
+frame timing were not run in this Linux orb (no Xcode or connected Apple runner).
+Run both Apple parity scripts above and inspect the pending-send captures and
+iPhone send transition before release. No API/configuration/migration change is
+needed; only updated Apple binaries receive this fix.
+
 Web channel names and `⋯` actions have a separate row above voice
 activity. Join, Joining and Switch here use one fixed-width action slot;
 connected channels reserve that space without an inline Leave action.

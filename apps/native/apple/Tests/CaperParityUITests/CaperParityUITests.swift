@@ -1207,6 +1207,74 @@ final class CaperParityUITests: XCTestCase {
         assertStaticText("Delete this channel for everyone in the space.", in: app)
     }
 
+    func testPendingSendIsVisibleAndLeftAlignedBeforeConfirmation() async throws {
+        let app = launch()
+        let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 30,
+                                   "Missing message composer")
+        let timeline = app.scrollViews["chat-timeline"]
+        let send = app.buttons["send-message-button"]
+        let path = "http://127.0.0.1:3001/api/chat/channels/chan00000001/messages"
+        func holdSends(_ hold: Bool) async throws {
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:3001/__fixture/control")!)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: ["holdSends": hold])
+            let (_, response) = try await URLSession.shared.data(for: request)
+            XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        }
+        // The short row catches intrinsic-width centering; the long row catches
+        // wrapping/height changes with the keyboard reducing the viewport.
+        let suffix = String(UUID().uuidString.prefix(4))
+        for message in ["Hi \(suffix)", String(repeating: "A wrapping pending message. ", count: 8) + suffix] {
+            XCTAssertTrue(focus(composer))
+            composer.typeText(message)
+            // Sending must reveal the row even from older history.
+            #if os(macOS)
+            timeline.scroll(byDeltaX: 0, deltaY: 600)
+            #else
+            timeline.swipeDown()
+            #endif
+            try await holdSends(true)
+            do {
+                send.tap()
+                let cleared = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == ''"), object: composer)
+                XCTAssertEqual(XCTWaiter.wait(for: [cleared], timeout: 3), .completed)
+                // Do not wait for confirmation: the server has neither stored
+                // nor broadcast this send. Inspect the local pending row now.
+                let pending = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "pending-message-")).firstMatch
+                XCTAssertTrue(pending.exists, "Clearing the composer must leave a visible pending message")
+                let text = pending.staticTexts[message].firstMatch
+                XCTAssertTrue(text.exists)
+                XCTAssertTrue(timeline.frame.contains(text.frame), "Pending text must be in the visible timeline")
+                XCTAssertEqual(pending.frame.minX, timeline.frame.minX, accuracy: 2)
+                XCTAssertEqual(pending.frame.width, timeline.frame.width, accuracy: 2)
+                XCTAssertEqual(text.frame.minX, timeline.frame.minX + 62, accuracy: 2,
+                               "Pending text must share confirmed messages' 18 + 34 + 10 point inset")
+                #if os(iOS)
+                XCTAssertTrue(app.keyboards.firstMatch.exists, "Sending must retain the software keyboard")
+                #endif
+                let pendingX = text.frame.minX
+                let clientID = String(pending.identifier.dropFirst("pending-message-".count))
+                var history = URLRequest(url: URL(string: path)!)
+                history.setValue("Bearer fixture-owner-token", forHTTPHeaderField: "authorization")
+                let (before, _) = try await URLSession.shared.data(for: history)
+                let stored = try XCTUnwrap(JSONSerialization.jsonObject(with: before) as? [String: Any])
+                XCTAssertFalse((stored["messages"] as? [[String: Any]] ?? []).contains { $0["clientMessageId"] as? String == clientID })
+                capture(message.count < 20 ? "send-pending-short" : "send-pending-wrapped", app: app)
+                try await holdSends(false)
+                let confirmed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: pending)
+                XCTAssertEqual(XCTWaiter.wait(for: [confirmed], timeout: 10), .completed)
+                let delivered = staticTexts(message, in: app)
+                XCTAssertEqual(delivered.count, 1)
+                XCTAssertEqual(delivered.firstMatch.frame.minX, pendingX, accuracy: 2,
+                               "Confirmation must not shift text horizontally")
+            } catch {
+                try await holdSends(false)
+                throw error
+            }
+        }
+    }
+
     func testAccountCanSendExactlyOneMessageAndComposerClears() async throws {
         let app = launch()
         // The first cold Intel launch can still be opening its account space

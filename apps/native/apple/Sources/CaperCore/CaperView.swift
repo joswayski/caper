@@ -1689,16 +1689,11 @@ private struct ChatView: View {
         })
     }
 
-    /// Defer the scroll request; content geometry repeats it when the timeline
-    /// finishes measuring, including history above the unsent message.
+    /// Reveal in the same update that clears the composer. Content geometry
+    /// repeats this after lazy history resolves, without an extra task/frame.
     private func revealPending(_ proxy: ScrollViewProxy) {
         guard let pending = chat.pendingMessage, pending.threadRootId == nil else { return }
-        let pendingID = pending.id
-        Task { @MainActor in
-            await Task.yield()
-            guard chat.pendingMessage?.id == pendingID else { return }
-            proxy.scrollTo("pending-\(pendingID)", anchor: .bottom)
-        }
+        proxy.scrollTo("pending-\(pending.id)", anchor: .bottom)
     }
     init(model: AppModel, narrow: Bool, browse: @escaping () -> Void, membersVisible: Bool, toggleMembers: @escaping () -> Void) {
         self.model = model; chat = model.chat; voice = model.voice; self.narrow = narrow; self.browse = browse
@@ -1836,6 +1831,7 @@ private struct ChatView: View {
                                                   edit: { _ = chat.discardRejected(edit: true) },
                                                   dismiss: { _ = chat.discardRejected() })
                             }.id("pending-\(pending.id)")
+                                .onAppear { revealPending(proxy) }
                         }
                         if chat.loadFailed, let error = chat.error {
                             // Web's failed first load: the error with Try again, in place of the conversation.
@@ -3297,6 +3293,7 @@ private struct PendingMessageRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(author?.name ?? "Guest").font(CaperTheme.font(13, weight: .bold))
                 Text(pending.text).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 if let error {
                     VStack(alignment: .leading, spacing: 5) {
                         Text("\(rejected ? "Not sent." : "Not confirmed yet.") \(error)")
@@ -3311,7 +3308,10 @@ private struct PendingMessageRow: View {
                     .font(CaperTheme.font(11, weight: .medium)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51))
                 }
             }
-        }.padding(.horizontal, 18).padding(.vertical, 10)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 18).padding(.vertical, 10)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("pending-message-\(pending.id)")
     }
 }
 
