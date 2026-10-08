@@ -14,20 +14,8 @@ import { dateDivider } from "./dates.ts";
 import { isChannelMessage, type ChatAuthor, type GeneralChatHistory } from "./types.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
 import Avatar from "../components/Avatar";
-import { emojiAsset } from "./emoji.ts";
-import { emojiToken, emojiSuggestions, insertEmoji, loadEmojiChoices, type EmojiChoice } from "./emoji-autocomplete.ts";
-import {
-  insertMention,
-  mentionCardPerson,
-  mentionName,
-  mentionSegments,
-  mentionSuggestions,
-  mentionToken,
-  mentionsAccount,
-  specialMentionLabels,
-  type MentionCandidate,
-  type MentionSuggestion,
-} from "./mentions.ts";
+import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
+import { mentionCardPerson, mentionSegments, mentionsAccount, type MentionCandidate } from "./mentions.ts";
 import MentionCard, { type MentionCardTarget } from "./MentionCard.tsx";
 import { blockedLabel, blockedRuns, type BlockedRun } from "./blocked.ts";
 import { unblock, useBlockedIds } from "../spaces/blocks.ts";
@@ -333,79 +321,23 @@ export default function Chat({
     return () => clearTimeout(timer);
   }, [state.author?.id, readOnly]);
   const composerRef = useRef<HTMLTextAreaElement>(null);
-  const [selection, setSelection] = useState({ start: 0, end: 0 });
-  const [composerFocused, setComposerFocused] = useState(false);
-  const [composing, setComposing] = useState(false);
-  const [emojiChoices, setEmojiChoices] = useState<EmojiChoice[]>();
-  const [emojiError, setEmojiError] = useState(false);
-  const [dismissedSuggestions, setDismissedSuggestions] = useState<string>();
-  const [selectedSuggestion, setSelectedSuggestion] = useState(0);
-  const selectionKey = `${draft}:${selection.start}:${selection.end}`;
-  const suggesting = composerFocused && !composing && dismissedSuggestions !== selectionKey;
-  const token = suggesting ? emojiToken(draft, selection.start, selection.end) : undefined;
-  const emojiOpen = !!token;
-  const suggestions = token && emojiChoices ? emojiSuggestions(emojiChoices, token.query) : [];
-  // `:` and `@` tokens never overlap; only one popup can be open.
-  const mention = suggesting && !token ? mentionToken(draft, selection.start, selection.end) : undefined;
-  const mentionOptions = mention
-    ? mentionSuggestions(
-        (mentionMembers ?? []).filter((member) => member.id !== state.author?.id),
-        mention.query,
-        !direct,
-      )
-    : [];
-  const mentionOpen = mentionOptions.length > 0;
-  const optionCount = token ? suggestions.length : mentionOptions.length;
-  const activeOption = Math.min(selectedSuggestion, Math.max(0, optionCount - 1));
-  const activeOptionId = token
-    ? suggestions[activeOption] && `chat-emoji-${suggestions[activeOption].id}`
-    : mentionOptions[activeOption] && `chat-mention-${mentionName(mentionOptions[activeOption])}`;
-  useLayoutEffect(() => {
-    if (activeOptionId) document.getElementById(activeOptionId)?.scrollIntoView({ block: "nearest" });
-  }, [activeOptionId]);
-  useEffect(() => {
-    setSelectedSuggestion(0);
-  }, [selectionKey]);
-  useEffect(() => {
-    if (!emojiOpen || emojiChoices) return;
-    let active = true;
-    setEmojiError(false);
-    void loadEmojiChoices()
-      .then((choices) => {
-        if (active) setEmojiChoices(choices);
-      })
-      .catch(() => {
-        if (active) setEmojiError(true);
-      });
-    return () => {
-      active = false;
-    };
-  }, [emojiOpen, emojiChoices]);
-  const updateSelection = (input: HTMLTextAreaElement) => {
-    setSelection({ start: input.selectionStart, end: input.selectionEnd });
-    const nextKey = `${input.value}:${input.selectionStart}:${input.selectionEnd}`;
-    setDismissedSuggestions((current) => (current === nextKey ? current : undefined));
-  };
-  const chooseEmoji = (entry: EmojiChoice) => {
-    if (token) applyInsertion(insertEmoji(draft, token, entry.emoji));
-  };
-  const chooseMention = (option: MentionSuggestion) => {
-    if (mention) applyInsertion(insertMention(draft, mention, mentionName(option)));
-  };
-  const applyInsertion = (result: { value: string; caret: number } | undefined) => {
-    if (!result) {
-      setValidationError("Messages must be 4,000 characters or fewer.");
-      return;
-    }
-    setDraft(result.value);
-    setSelection({ start: result.caret, end: result.caret });
-    setValidationError(undefined);
-    clientRef.current?.setTyping(!!result.value.trim());
-    requestAnimationFrame(() => {
-      composerRef.current?.focus();
-      composerRef.current?.setSelectionRange(result.caret, result.caret);
-    });
-  };
+  const mentionPeople = useMemo(
+    () => mentionMembers?.filter((member) => member.id !== state.author?.id),
+    [mentionMembers, state.author?.id],
+  );
+  const composerSuggestions = useComposerSuggestions({
+    id: "chat",
+    draft,
+    input: composerRef,
+    people: mentionPeople,
+    specialMentions: !direct,
+    onInsert: (value) => {
+      setDraft(value);
+      setValidationError(undefined);
+      clientRef.current?.setTyping(!!value.trim());
+    },
+    onTooLong: () => setValidationError("Messages must be 4,000 characters or fewer."),
+  });
   const followLatest = useRef(true);
   const latestMessage = state.messages.at(-1);
   const [announcement, setAnnouncement] = useState("");
@@ -1266,82 +1198,7 @@ export default function Chat({
               <label className="sr-only" htmlFor="chat-message">
                 Message {channelName}
               </label>
-              {emojiOpen && (
-                <div className="chat-emoji-suggestions">
-                  {suggestions.length > 0 ? (
-                    <div id="chat-emoji-options" role="listbox" aria-label="Emoji suggestions">
-                      {suggestions.map((entry, index) => (
-                        <button
-                          type="button"
-                          role="option"
-                          id={`chat-emoji-${entry.id}`}
-                          key={entry.id}
-                          tabIndex={-1}
-                          aria-selected={index === activeOption}
-                          aria-label={`Insert ${entry.name} emoji`}
-                          onPointerDown={(event) => event.preventDefault()}
-                          onClick={() => chooseEmoji(entry)}
-                        >
-                          <img src={emojiAsset(entry.id)} alt="" width="24" height="24" />
-                          <span>:{entry.name.replaceAll(" ", "_")}:</span>
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <p role="status">
-                      {emojiError
-                        ? "Emoji suggestions unavailable. You can still send text."
-                        : emojiChoices
-                          ? "No emoji found."
-                          : "Loading emoji…"}
-                    </p>
-                  )}
-                </div>
-              )}
-              {mentionOpen && (
-                <div className="chat-emoji-suggestions chat-mention-suggestions">
-                  <div id="chat-mention-options" role="listbox" aria-label="People to mention">
-                    {mentionOptions.map((option, index) => {
-                      const name = mentionName(option);
-                      return (
-                        <button
-                          type="button"
-                          role="option"
-                          id={`chat-mention-${name}`}
-                          key={`${option.kind}:${name}`}
-                          tabIndex={-1}
-                          aria-selected={index === activeOption}
-                          aria-label={
-                            option.kind === "member"
-                              ? `Mention ${option.member.displayName}, @${name}`
-                              : `Mention @${name}, ${specialMentionLabels[option.kind].toLowerCase()}`
-                          }
-                          onPointerDown={(event) => event.preventDefault()}
-                          onClick={() => chooseMention(option)}
-                        >
-                          {option.kind === "member" ? (
-                            <>
-                              <i className="chat-mention-avatar">
-                                <Avatar avatarId={option.member.avatarId} name={option.member.displayName} />
-                              </i>
-                              <span>{option.member.displayName}</span>
-                              <small>@{name}</small>
-                            </>
-                          ) : (
-                            <>
-                              <i className="chat-mention-avatar chat-mention-special" aria-hidden="true">
-                                @
-                              </i>
-                              <span>@{name}</span>
-                              <small>{specialMentionLabels[option.kind]}</small>
-                            </>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
+              {composerSuggestions.popup}
               <textarea
                 ref={composerRef}
                 id="chat-message"
@@ -1350,57 +1207,20 @@ export default function Chat({
                 disabled={state.phase !== "ready"}
                 enterKeyHint="send"
                 aria-describedby="chat-composer-hint"
-                aria-autocomplete="list"
-                aria-controls={
-                  suggestions.length ? "chat-emoji-options" : mentionOpen ? "chat-mention-options" : undefined
-                }
-                aria-activedescendant={activeOptionId || undefined}
+                {...composerSuggestions.textarea}
                 placeholder={`Message ${direct ? "" : "#"}${channelName}`}
-                onFocus={(event) => {
-                  setComposerFocused(true);
-                  updateSelection(event.currentTarget);
-                }}
-                onSelect={(event) => updateSelection(event.currentTarget)}
-                onCompositionStart={() => setComposing(true)}
-                onCompositionEnd={(event) => {
-                  setComposing(false);
-                  updateSelection(event.currentTarget);
-                }}
                 onChange={(event) => {
                   setDraft(event.target.value);
-                  setDismissedSuggestions(undefined);
-                  updateSelection(event.target);
+                  composerSuggestions.change(event.target);
                   setValidationError(undefined);
                   clientRef.current?.setTyping(!!event.target.value.trim());
                 }}
                 onBlur={() => {
-                  setComposerFocused(false);
+                  composerSuggestions.blur();
                   clientRef.current?.setTyping(false);
                 }}
                 onKeyDown={(event) => {
-                  if (event.nativeEvent.isComposing || composing) return;
-                  if ((emojiOpen || mentionOpen) && event.key === "Escape") {
-                    event.preventDefault();
-                    setDismissedSuggestions(selectionKey);
-                    return;
-                  }
-                  if (optionCount && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
-                    event.preventDefault();
-                    setSelectedSuggestion(
-                      (activeOption + (event.key === "ArrowDown" ? 1 : optionCount - 1)) % optionCount,
-                    );
-                    return;
-                  }
-                  if (optionCount && !event.shiftKey && (event.key === "Enter" || event.key === "Tab")) {
-                    event.preventDefault();
-                    if (token) chooseEmoji(suggestions[activeOption]);
-                    else chooseMention(mentionOptions[activeOption]);
-                    return;
-                  }
-                  if (emojiOpen && !emojiChoices && !emojiError && event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    return;
-                  }
+                  if (composerSuggestions.keyDown(event)) return;
                   if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                     event.preventDefault();
                     if (!sending) void submit();
@@ -1425,6 +1245,8 @@ export default function Chat({
         client={clientRef.current}
         channelName={channelName}
         readOnly={readOnly}
+        mentionPeople={mentionPeople}
+        specialMentions={!direct}
         renderMessage={renderMessage}
         onClose={closeThread}
       />
