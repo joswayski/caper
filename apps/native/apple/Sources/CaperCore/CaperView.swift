@@ -852,6 +852,10 @@ private struct ChannelSidebarItem: View {
     @Binding var sheet: WorkspaceSheet?
     let channel: Channel
     @State private var confirmLeave = false
+    #if os(macOS)
+    @State private var hovered = false
+    @FocusState private var optionsFocused: Bool
+    #endif
 
     private var sessionStartedAt: Double? {
         let shared = model.voicePresence.sessionStartedAt(for: channel.id)
@@ -887,7 +891,7 @@ private struct ChannelSidebarItem: View {
         VStack(spacing: 0) {
             HStack(spacing: 2) {
                 Button { Task { await model.select(channel: channel) } } label: {
-                    HStack(spacing: 9) {
+                    HStack(spacing: 6) {
                         CaperIcon(name: channel.private ? "lock" : "hash", size: 18)
                             .foregroundStyle(model.selectedChannelID == channel.id ? CaperTheme.terracottaBright : CaperTheme.muted)
                             .opacity(nameOpacity)
@@ -932,6 +936,9 @@ private struct ChannelSidebarItem: View {
                         .frame(width: 44, height: 44)
                         #else
                         .frame(width: 32, height: 32)
+                        .focused($optionsFocused)
+                        .opacity(hovered || optionsFocused ? 1 : 0)
+                        .allowsHitTesting(hovered || optionsFocused)
                         #endif
                         .contentShape(Rectangle()).modifier(ControlHover())
                         .help("Channel options for \(channel.name)")
@@ -941,6 +948,9 @@ private struct ChannelSidebarItem: View {
             }
             ChannelVoiceSlot(model: model, channel: channel)
         }
+        #if os(macOS)
+        .onHover { hovered = $0 }
+        #endif
         .sheet(isPresented: $confirmLeave) {
             ConfirmationSheet(title: "Leave #\(channel.name)?", detail: channel.private && !model.isOwner ? "You’ll lose access and need another invitation to return. You’ll disconnect from this channel’s voice call." : "It will leave your sidebar. You can preview and rejoin from Browse channels. You’ll disconnect from this channel’s voice call.", action: "Leave channel", close: { confirmLeave = false }) { try await model.leaveChannel(channel) }
         }
@@ -4327,10 +4337,10 @@ private struct ControlHover: ViewModifier {
     func body(content: Content) -> some View {
         content.overlay {
             RoundedRectangle(cornerRadius: 8)
-                .fill(Color.white.opacity(hovered && enabled ? 0.06 : 0))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.terracottaBright.opacity((isFocused ?? focused) && enabled ? 0.9 : 0), lineWidth: 2))
+                .fill(Color.white.opacity((isFocused ?? focused) && enabled ? 0.12 : hovered && enabled ? 0.06 : 0))
                 .allowsHitTesting(false)
         }
+        .focusEffectDisabled()
         .onHover { hovered = $0 }
         .modifier(ControlPointer())
     }

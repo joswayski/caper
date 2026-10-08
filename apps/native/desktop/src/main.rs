@@ -5321,7 +5321,7 @@ impl CaperApp {
                                 if let Some(space) = &space {
                                     menu = Some(RowMenu {
                                         label: format!("Channel options for {name}"),
-                                        on_hover: false,
+                                        on_hover: true,
                                         content: Box::new(|ui: &mut egui::Ui| {
                                             self.channel_menu(ui, space, &id, &name, private)
                                         }),
@@ -5899,14 +5899,6 @@ impl CaperApp {
                 });
                 if stack.hovered() || stack.has_focus() {
                     ui.painter().rect_filled(rect, 8.0, RAISED);
-                }
-                if stack.has_focus() {
-                    ui.painter().rect_stroke(
-                        rect,
-                        8.0,
-                        Stroke::new(1.0, TERRACOTTA_BRIGHT),
-                        egui::StrokeKind::Inside,
-                    );
                 }
                 let font = egui::FontId::new(11.0, egui::FontFamily::Name("Satoshi Medium".into()));
                 let mut count = format!("{} in voice", people.len());
@@ -10419,14 +10411,6 @@ fn voice_join_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     if hover {
         ui.painter().rect_filled(rect, 8.0, RAISED);
     }
-    if response.has_focus() {
-        ui.painter().rect_stroke(
-            rect,
-            8.0,
-            Stroke::new(1.0, TERRACOTTA_BRIGHT),
-            egui::StrokeKind::Inside,
-        );
-    }
     paint_icon(
         ui.painter(),
         egui::Rect::from_center_size(
@@ -10552,19 +10536,13 @@ fn channel_button(
         ui.painter().rect_filled(
             rect,
             6.0,
-            if active {
+            if response.has_focus() {
+                BORDER
+            } else if active {
                 Color32::from_rgba_unmultiplied(182, 77, 50, 40)
             } else {
                 RAISED
             },
-        );
-    }
-    if response.has_focus() {
-        ui.painter().rect_stroke(
-            rect,
-            6.0,
-            Stroke::new(1.0, TERRACOTTA_BRIGHT),
-            egui::StrokeKind::Inside,
         );
     }
     let dim = |color| {
@@ -10629,11 +10607,11 @@ fn channel_button(
     }
     ui.painter()
         .with_clip_rect(egui::Rect::from_min_max(
-            egui::pos2(rect.left() + 34.0, rect.top()),
+            egui::pos2(rect.left() + 31.0, rect.top()),
             egui::pos2(name_right, rect.bottom()),
         ))
         .text(
-            egui::pos2(rect.left() + 35.0, rect.center().y - 1.0),
+            egui::pos2(rect.left() + 32.0, rect.center().y - 1.0),
             egui::Align2::LEFT_CENTER,
             name,
             egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into())),
@@ -10650,17 +10628,9 @@ fn channel_button(
         let popup = egui::Popup::menu(&settings);
         let open = popup.is_open();
         opened = settings.clicked() && !open;
-        if !menu.on_hover || row_hovered || open || settings.has_focus() {
+        if !menu.on_hover || row_hovered || response.has_focus() || open || settings.has_focus() {
             if settings.hovered() || settings.has_focus() {
                 ui.painter().rect_filled(rect, 8.0, SURFACE);
-            }
-            if settings.has_focus() {
-                ui.painter().rect_stroke(
-                    rect,
-                    8.0,
-                    Stroke::new(1.0, TERRACOTTA_BRIGHT),
-                    egui::StrokeKind::Inside,
-                );
             }
             paint_icon(
                 ui.painter(),
@@ -15673,7 +15643,7 @@ mod tests {
         for label in ["general", "design", "planning"] {
             assert_eq!(
                 text(label).pos.x,
-                106.0,
+                103.0,
                 "public/private labels must share one offset"
             );
         }
@@ -17362,6 +17332,77 @@ mod tests {
                 && (rect.center().y as f64 - (microphone.y0 + microphone.y1) / 2.0).abs() < 0.5),
             "the account dock keeps its larger avatar"
         );
+    }
+
+    #[test]
+    fn channel_menu_reveals_on_hover_or_focus_without_rings_or_layout_shift() {
+        let context = egui::Context::default();
+        let _app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        let frame = |events| {
+            let mut row = None;
+            let output = context.run(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |context| {
+                    egui::CentralPanel::default().show(context, |ui| {
+                        row = Some(
+                            super::channel_button(
+                                ui,
+                                egui::vec2(280.0, 32.0),
+                                "general",
+                                Some(super::NavIcon::Hash),
+                                true,
+                                super::RowExtras {
+                                    menu: Some(super::RowMenu {
+                                        label: "Channel options for general".into(),
+                                        on_hover: true,
+                                        content: Box::new(|ui| {
+                                            ui.label("Options");
+                                        }),
+                                    }),
+                                    ..Default::default()
+                                },
+                            )
+                            .0,
+                        );
+                    });
+                },
+            );
+            (output, row.unwrap())
+        };
+        let (_, row) = frame(vec![]);
+        let menu_id = row.id.with("settings");
+        let menu = context.read_response(menu_id).unwrap().rect;
+        let painted = |output: &egui::FullOutput| {
+            output.shapes.iter().any(|shape|
+            matches!(&shape.shape, egui::Shape::Mesh(mesh) if menu.contains_rect(mesh.calc_bounds())))
+        };
+        frame(vec![egui::Event::PointerMoved(row.rect.left_center())]);
+        assert!(painted(&frame(vec![]).0), "hover reveals the menu icon");
+        let (resting, unchanged) = frame(vec![egui::Event::PointerMoved(egui::pos2(700.0, 400.0))]);
+        assert!(
+            !painted(&resting),
+            "the menu icon hides when the pointer leaves"
+        );
+        assert_eq!(
+            unchanged.rect, row.rect,
+            "the hidden menu reserves its space"
+        );
+        for id in [row.id, menu_id] {
+            context.memory_mut(|memory| memory.request_focus(id));
+            let (focused, unchanged) = frame(vec![]);
+            assert!(painted(&focused), "keyboard focus reveals channel options");
+            assert_eq!(unchanged.rect, row.rect);
+            assert!(!focused.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Rect(rect) if rect.stroke.color == super::TERRACOTTA_BRIGHT && rect.stroke.width > 0.0
+            )), "keyboard focus must not paint an orange ring");
+        }
     }
 
     #[test]
