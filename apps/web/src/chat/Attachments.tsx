@@ -17,41 +17,98 @@ function frame(attachment: ChatAttachment) {
 }
 
 /** The sender's own copy of a just-sent file, shown until the result arrives. */
-export interface LocalPreview { url: string; video: boolean }
+export interface LocalPreview {
+  url: string;
+  video: boolean;
+}
 
 function FileCard({ attachment }: { attachment: ChatAttachment }) {
-  const body = <><FileText aria-hidden="true" size={18} /><span><strong>{attachment.name}</strong><small>{attachment.unavailable ? "File removed" : formatBytes(attachment.size)}</small></span></>;
-  return attachment.url && !attachment.unavailable
-    ? <a className="chat-file" href={attachment.url} target="_blank" rel="noopener noreferrer">{body}</a>
-    : <div className="chat-file" data-unavailable={attachment.unavailable || undefined}>{body}</div>;
+  const body = (
+    <>
+      <FileText aria-hidden="true" size={18} />
+      <span>
+        <strong>{attachment.name}</strong>
+        <small>{attachment.unavailable ? "File removed" : formatBytes(attachment.size)}</small>
+      </span>
+    </>
+  );
+  return attachment.url && !attachment.unavailable ? (
+    <a className="chat-file" href={attachment.url} target="_blank" rel="noopener noreferrer">
+      {body}
+    </a>
+  ) : (
+    <div className="chat-file" data-unavailable={attachment.unavailable || undefined}>
+      {body}
+    </div>
+  );
 }
 
 function processingLabel(percent: number | undefined) {
   return percent === undefined ? "Processing…" : `Processing… ${percent}%`;
 }
 
-function Processing({ attachment, percent, local }: { attachment: ChatAttachment; percent?: number; local?: LocalPreview }) {
+function Processing({
+  attachment,
+  percent,
+  local,
+}: {
+  attachment: ChatAttachment;
+  percent?: number;
+  local?: LocalPreview;
+}) {
   const visual = attachment.kind === "image" || attachment.kind === "video" || !!attachment.previewUrl || !!local;
   if (!visual) {
-    return <div className="chat-file" data-processing role="status" aria-label={`${attachment.name}: ${processingLabel(percent)}`}>
-      <span className="chat-spinner" aria-hidden="true" />
-      <span><strong>{attachment.name}</strong><small>{processingLabel(percent)}</small></span>
-    </div>;
+    return (
+      <div
+        className="chat-file"
+        data-processing
+        role="status"
+        aria-label={`${attachment.name}: ${processingLabel(percent)}`}
+      >
+        <span className="chat-spinner" aria-hidden="true" />
+        <span>
+          <strong>{attachment.name}</strong>
+          <small>{processingLabel(percent)}</small>
+        </span>
+      </div>
+    );
   }
   const size = frame(attachment) ?? DEFAULT_FRAME;
-  return <div className="chat-media chat-processing" role="status" aria-label={`${attachment.name}: ${processingLabel(percent)}`}
-    style={{ width: size.width, aspectRatio: `${size.width} / ${size.height}` }}>
-    {local ? local.video
-      ? <video src={local.url} muted playsInline preload="metadata" aria-hidden="true" />
-      : <img src={local.url} alt="" decoding="async" />
-      : attachment.previewUrl && <img src={attachment.previewUrl} alt="" decoding="async" />}
-    <span className="chat-processing-status"><span className="chat-spinner" aria-hidden="true" />{processingLabel(percent)}</span>
-  </div>;
+  return (
+    <div
+      className="chat-media chat-processing"
+      role="status"
+      aria-label={`${attachment.name}: ${processingLabel(percent)}`}
+      style={{ width: size.width, aspectRatio: `${size.width} / ${size.height}` }}
+    >
+      {local ? (
+        local.video ? (
+          <video src={local.url} muted playsInline preload="metadata" aria-hidden="true" />
+        ) : (
+          <img src={local.url} alt="" decoding="async" />
+        )
+      ) : (
+        attachment.previewUrl && <img src={attachment.previewUrl} alt="" decoding="async" />
+      )}
+      <span className="chat-processing-status">
+        <span className="chat-spinner" aria-hidden="true" />
+        {processingLabel(percent)}
+      </span>
+    </div>
+  );
 }
 
 /** GIF-like playback for animated files: muted, looping, no controls. With
  * reduced motion it stays paused until clicked. */
-function AnimatedVideo({ attachment, size, onError }: { attachment: ChatAttachment; size?: { width: number; height: number }; onError: () => void }) {
+function AnimatedVideo({
+  attachment,
+  size,
+  onError,
+}: {
+  attachment: ChatAttachment;
+  size?: { width: number; height: number };
+  onError: () => void;
+}) {
   const ref = useRef<HTMLVideoElement>(null);
   const [paused, setPaused] = useState(true);
   useEffect(() => {
@@ -73,14 +130,37 @@ function AnimatedVideo({ attachment, size, onError }: { attachment: ChatAttachme
     if (video.paused) void video.play().catch(() => undefined);
     else video.pause();
   };
-  return <div className="chat-media chat-animated" style={size}>
-    <video ref={ref} src={attachment.url} poster={attachment.previewUrl} muted loop playsInline preload="auto"
-      aria-label={attachment.name} onClick={toggle} onPlay={() => setPaused(false)} onPause={() => setPaused(true)} onError={onError} />
-    {paused && <button type="button" className="chat-animated-play" aria-label={`Play ${attachment.name}`} onClick={toggle}><Play size={18} aria-hidden="true" /></button>}
-  </div>;
+  return (
+    <div className="chat-media chat-animated" style={size}>
+      <video
+        ref={ref}
+        src={attachment.url}
+        poster={attachment.previewUrl}
+        muted
+        loop
+        playsInline
+        preload="auto"
+        aria-label={attachment.name}
+        onClick={toggle}
+        onPlay={() => setPaused(false)}
+        onPause={() => setPaused(true)}
+        onError={onError}
+      />
+      {paused && (
+        <button type="button" className="chat-animated-play" aria-label={`Play ${attachment.name}`} onClick={toggle}>
+          <Play size={18} aria-hidden="true" />
+        </button>
+      )}
+    </div>
+  );
 }
 
-export function MessageAttachments({ attachments, progress = {}, localPreviews = {}, onExpired }: {
+export function MessageAttachments({
+  attachments,
+  progress = {},
+  localPreviews = {},
+  onExpired,
+}: {
   attachments: ChatAttachment[];
   progress?: Record<string, number>;
   localPreviews?: Record<string, LocalPreview>;
@@ -94,34 +174,90 @@ export function MessageAttachments({ attachments, progress = {}, localPreviews =
     reported.current.add(attachment.id);
     onExpired?.([attachment.id]);
   };
-  return <div className="chat-attachments">
-    {attachments.map((attachment) => {
-      const size = frame(attachment);
-      const view = attachmentView(attachment);
-      if (view === "processing") return <Processing key={attachment.id} attachment={attachment} percent={progress[attachment.id]} local={localPreviews[attachment.id]} />;
-      if (view === "failed") {
-        return <div key={attachment.id} className="chat-file" data-failed>
-          <FileWarning aria-hidden="true" size={18} /><span><strong>{attachment.name}</strong><small>Couldn’t process this file</small></span>
-        </div>;
-      }
-      if (view === "image") {
-        return <a key={attachment.id} className="chat-media" href={attachment.url} target="_blank" rel="noopener noreferrer" style={size}>
-          <img src={attachment.previewUrl ?? attachment.url} alt={attachment.name} loading="lazy" decoding="async" width={size?.width} height={size?.height} onError={() => expired(attachment)} />
-        </a>;
-      }
-      if (view === "animated") return <AnimatedVideo key={attachment.id} attachment={attachment} size={size} onError={() => expired(attachment)} />;
-      if (view === "video") {
-        return <video key={attachment.id} className="chat-media" controls playsInline preload="metadata" poster={attachment.previewUrl} src={attachment.url} style={size} aria-label={attachment.name} onError={() => expired(attachment)} />;
-      }
-      if (view === "audio") {
-        return <figure key={attachment.id} className="chat-audio">
-          <figcaption>{attachment.name}</figcaption>
-          <audio controls preload="metadata" src={attachment.url} onError={() => expired(attachment)} />
-        </figure>;
-      }
-      return <FileCard key={attachment.id} attachment={attachment} />;
-    })}
-  </div>;
+  return (
+    <div className="chat-attachments">
+      {attachments.map((attachment) => {
+        const size = frame(attachment);
+        const view = attachmentView(attachment);
+        if (view === "processing")
+          return (
+            <Processing
+              key={attachment.id}
+              attachment={attachment}
+              percent={progress[attachment.id]}
+              local={localPreviews[attachment.id]}
+            />
+          );
+        if (view === "failed") {
+          return (
+            <div key={attachment.id} className="chat-file" data-failed>
+              <FileWarning aria-hidden="true" size={18} />
+              <span>
+                <strong>{attachment.name}</strong>
+                <small>Couldn’t process this file</small>
+              </span>
+            </div>
+          );
+        }
+        if (view === "image") {
+          return (
+            <a
+              key={attachment.id}
+              className="chat-media"
+              href={attachment.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={size}
+            >
+              <img
+                src={attachment.previewUrl ?? attachment.url}
+                alt={attachment.name}
+                loading="lazy"
+                decoding="async"
+                width={size?.width}
+                height={size?.height}
+                onError={() => expired(attachment)}
+              />
+            </a>
+          );
+        }
+        if (view === "animated")
+          return (
+            <AnimatedVideo
+              key={attachment.id}
+              attachment={attachment}
+              size={size}
+              onError={() => expired(attachment)}
+            />
+          );
+        if (view === "video") {
+          return (
+            <video
+              key={attachment.id}
+              className="chat-media"
+              controls
+              playsInline
+              preload="metadata"
+              poster={attachment.previewUrl}
+              src={attachment.url}
+              style={size}
+              aria-label={attachment.name}
+              onError={() => expired(attachment)}
+            />
+          );
+        }
+        if (view === "audio") {
+          return (
+            <figure key={attachment.id} className="chat-audio">
+              <figcaption>{attachment.name}</figcaption>
+              <audio controls preload="metadata" src={attachment.url} onError={() => expired(attachment)} />
+            </figure>
+          );
+        }
+        return <FileCard key={attachment.id} attachment={attachment} />;
+      })}
+    </div>
+  );
 }
 
 export interface DraftAttachment {
@@ -142,18 +278,38 @@ export interface DraftAttachment {
 
 export function DraftAttachments({ drafts, onRemove }: { drafts: DraftAttachment[]; onRemove: (key: string) => void }) {
   if (!drafts.length) return null;
-  return <ul className="chat-drafts" aria-label="Files to send">
-    {drafts.map((draft) => <li key={draft.key} data-error={draft.error ? true : undefined}>
-      {draft.localUrl && draft.localKind === "image" ? <img src={draft.localUrl} alt="" /> : <FileText aria-hidden="true" size={18} />}
-      <span>
-        <strong title={draft.name}>{draft.name}</strong>
-        <small>{draft.error ?? (draft.attachment
-          ? draft.storedSize !== undefined && draft.storedSize < draft.sourceSize ? `${formatBytes(draft.sourceSize)} → ${formatBytes(draft.storedSize)}` : formatBytes(draft.storedSize ?? draft.sourceSize)
-          : draft.storedSize === undefined ? draft.compressing !== undefined ? `Compressing… ${Math.round(draft.compressing * 100)}%` : "Preparing…"
-          : `Uploading… ${Math.round(draft.progress * 100)}%`)}</small>
-      </span>
-      {!draft.attachment && !draft.error && <progress max={1} value={draft.progress} aria-label={`Uploading ${draft.name}`} />}
-      <button type="button" aria-label={`Remove ${draft.name}`} onClick={() => onRemove(draft.key)}><X size={14} aria-hidden="true" /></button>
-    </li>)}
-  </ul>;
+  return (
+    <ul className="chat-drafts" aria-label="Files to send">
+      {drafts.map((draft) => (
+        <li key={draft.key} data-error={draft.error ? true : undefined}>
+          {draft.localUrl && draft.localKind === "image" ? (
+            <img src={draft.localUrl} alt="" />
+          ) : (
+            <FileText aria-hidden="true" size={18} />
+          )}
+          <span>
+            <strong title={draft.name}>{draft.name}</strong>
+            <small>
+              {draft.error ??
+                (draft.attachment
+                  ? draft.storedSize !== undefined && draft.storedSize < draft.sourceSize
+                    ? `${formatBytes(draft.sourceSize)} → ${formatBytes(draft.storedSize)}`
+                    : formatBytes(draft.storedSize ?? draft.sourceSize)
+                  : draft.storedSize === undefined
+                    ? draft.compressing !== undefined
+                      ? `Compressing… ${Math.round(draft.compressing * 100)}%`
+                      : "Preparing…"
+                    : `Uploading… ${Math.round(draft.progress * 100)}%`)}
+            </small>
+          </span>
+          {!draft.attachment && !draft.error && (
+            <progress max={1} value={draft.progress} aria-label={`Uploading ${draft.name}`} />
+          )}
+          <button type="button" aria-label={`Remove ${draft.name}`} onClick={() => onRemove(draft.key)}>
+            <X size={14} aria-hidden="true" />
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
 }

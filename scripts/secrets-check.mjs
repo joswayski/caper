@@ -79,15 +79,23 @@ const profile = option("profile", process.env.AWS_PROFILE?.trim() || environment
 const region = option("region", process.env.AWS_REGION?.trim() || "us-east-1");
 const secretId = option("secret-id", `${environment}/apps/caper`);
 const result = run("aws", [
-  "secretsmanager", "get-secret-value",
-  "--secret-id", secretId,
-  "--query", "SecretString",
-  "--output", "text",
-  "--profile", profile,
-  "--region", region,
+  "secretsmanager",
+  "get-secret-value",
+  "--secret-id",
+  secretId,
+  "--query",
+  "SecretString",
+  "--output",
+  "text",
+  "--profile",
+  profile,
+  "--region",
+  region,
 ]);
 if (result.status !== 0) {
-  throw new Error(`Could not read ${secretId} with AWS profile ${profile}. Authenticate with: aws sso login --profile ${profile}`);
+  throw new Error(
+    `Could not read ${secretId} with AWS profile ${profile}. Authenticate with: aws sso login --profile ${profile}`,
+  );
 }
 
 let remote;
@@ -120,8 +128,13 @@ if (process.argv.includes("--cluster")) {
   console.log("\nExternalSecret status (values are not read):");
   for (const name of ["caper-api", "caper-api-account", "caper-api-database", "caper-api-axiom"]) {
     const status = run("kubectl", [
-      "--namespace", "default", "get", "externalsecret", name,
-      "--output", "jsonpath={.status.conditions[?(@.type=='Ready')].status}",
+      "--namespace",
+      "default",
+      "get",
+      "externalsecret",
+      name,
+      "--output",
+      "jsonpath={.status.conditions[?(@.type=='Ready')].status}",
     ]);
     if (status.status === 0) console.log(`${name.padEnd(28)} ${status.stdout || "not ready"}`);
     else if (/not found/i.test(status.stderr)) console.log(`${name.padEnd(28)} not installed`);

@@ -3,7 +3,14 @@ import { ArrowLeft, Send, X } from "lucide-react";
 import type { ChatClient, ChatViewState } from "./client.ts";
 import type { ChatMessage } from "./types.ts";
 
-export default function ThreadPanel({ state, client, channelName, readOnly, renderMessage, onClose }: {
+export default function ThreadPanel({
+  state,
+  client,
+  channelName,
+  readOnly,
+  renderMessage,
+  onClose,
+}: {
   state: ChatViewState;
   client?: ChatClient;
   channelName: string;
@@ -23,16 +30,19 @@ export default function ThreadPanel({ state, client, channelName, readOnly, rend
   const rootId = state.thread?.rootId;
   const pending = rootId && state.pendingSend?.threadRootId === rootId ? state.pendingSend : undefined;
   const replies = rootId ? state.messages.filter((message) => message.threadRootId === rootId) : [];
-  const draft = rootId ? drafts[rootId] ?? { text: "", broadcast: false } : { text: "", broadcast: false };
+  const draft = rootId ? (drafts[rootId] ?? { text: "", broadcast: false }) : { text: "", broadcast: false };
   const update = (change: Partial<typeof draft>) => {
     if (rootId) setDrafts((current) => ({ ...current, [rootId]: { ...draft, ...change } }));
     setValidation(undefined);
   };
-  useEffect(() => { setDrafts({}); }, [state.channelId]);
+  useEffect(() => {
+    setDrafts({});
+  }, [state.channelId]);
   useEffect(() => {
     const query = window.matchMedia("(max-width: 760px)");
     const change = () => setMobile(query.matches);
-    change(); query.addEventListener("change", change);
+    change();
+    query.addEventListener("change", change);
     return () => query.removeEventListener("change", change);
   }, []);
   useEffect(() => {
@@ -42,19 +52,24 @@ export default function ThreadPanel({ state, client, channelName, readOnly, rend
     while (child.parentElement && child.parentElement !== document.body) {
       for (const sibling of child.parentElement.children) {
         if (sibling !== child && sibling instanceof HTMLElement) {
-          backgrounds.set(sibling, sibling.inert); sibling.inert = true;
+          backgrounds.set(sibling, sibling.inert);
+          sibling.inert = true;
         }
       }
       child = child.parentElement;
     }
-    return () => { for (const [element, inert] of backgrounds) element.inert = inert; };
+    return () => {
+      for (const [element, inert] of backgrounds) element.inert = inert;
+    };
   }, [rootId, mobile]);
   const open = !!rootId;
   useEffect(() => {
     if (!open || !mobile) return;
     const key = crypto.randomUUID();
     window.history.pushState({ ...window.history.state, caperThread: key }, "");
-    const back = () => { if (window.history.state?.caperThread !== key) onClose(); };
+    const back = () => {
+      if (window.history.state?.caperThread !== key) onClose();
+    };
     window.addEventListener("popstate", back);
     return () => {
       window.removeEventListener("popstate", back);
@@ -69,7 +84,12 @@ export default function ThreadPanel({ state, client, channelName, readOnly, rend
     follow.current = true;
     composer.current?.focus();
     const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !event.defaultPrevented && !document.querySelector(".chat-reaction-picker, .chat-message-actions, .chat-reactors, .chat-edit-dialog[open]")) onClose();
+      if (
+        event.key === "Escape" &&
+        !event.defaultPrevented &&
+        !document.querySelector(".chat-reaction-picker, .chat-message-actions, .chat-reactors, .chat-edit-dialog[open]")
+      )
+        onClose();
     };
     document.addEventListener("keydown", escape);
     return () => {
@@ -77,7 +97,10 @@ export default function ThreadPanel({ state, client, channelName, readOnly, rend
       if (returnFocus.current?.isConnected) returnFocus.current.focus();
     };
   }, [rootId, onClose]);
-  useEffect(() => { if (rootId && !state.thread?.loading && !document.querySelector(".chat-edit-dialog[open]")) composer.current?.focus(); }, [rootId, state.thread?.loading]);
+  useEffect(() => {
+    if (rootId && !state.thread?.loading && !document.querySelector(".chat-edit-dialog[open]"))
+      composer.current?.focus();
+  }, [rootId, state.thread?.loading]);
   useEffect(() => {
     if (!pending) return;
     setDrafts((current) => {
@@ -102,49 +125,191 @@ export default function ThreadPanel({ state, client, channelName, readOnly, rend
     try {
       await client.send(pending?.text ?? draft.text, { threadRootId: rootId, broadcast: draft.broadcast });
       follow.current = true;
-    } catch (error) { setValidation(error instanceof Error ? error.message : "Reply could not be sent."); }
+    } catch (error) {
+      setValidation(error instanceof Error ? error.message : "Reply could not be sent.");
+    }
   };
-  return <aside ref={panel} className="chat-thread-panel" aria-labelledby="chat-thread-heading" role={mobile ? "dialog" : undefined} aria-modal={mobile || undefined}>
-    <header className="chat-thread-heading">
-      <button type="button" className="chat-thread-back" onClick={onClose} aria-label="Back to channel"><ArrowLeft size={20} /></button>
-      <div><h2 id="chat-thread-heading">Thread</h2><span>in #{channelName}</span></div>
-      <button type="button" className="chat-thread-close" onClick={onClose} aria-label="Close thread"><X size={20} /></button>
-    </header>
-    <div className="chat-thread-messages" ref={scroll} role="region" aria-label="Thread replies" aria-busy={state.thread.loading}
-      onScroll={(event) => { const element = event.currentTarget; follow.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80; }}>
-      {root && <div className="chat-thread-parent">{renderMessage(0, root, true)}</div>}
-      <div className="chat-thread-divider">{root?.thread?.replyCount ?? 0} {root?.thread?.replyCount === 1 ? "reply" : "replies"}</div>
-      {state.thread.loading && <p className="chat-thread-status" role="status">Loading thread…</p>}
-      {state.thread.error && <p className="chat-thread-status chat-inline-error" role="alert">{state.thread.error} <button type="button" onClick={() => void (state.thread?.hasMore ? client?.loadOlderThread() : client?.openThread(rootId!))}>Retry</button></p>}
-      {state.thread.hasMore && <button type="button" className="chat-thread-older" disabled={state.thread.loadingOlder} onClick={() => {
-        follow.current = false;
-        if (scroll.current) olderAnchor.current = { height: scroll.current.scrollHeight, top: scroll.current.scrollTop };
-        void client?.loadOlderThread();
-      }}>{state.thread.loadingOlder ? "Loading…" : "Load older replies"}</button>}
-      {!state.thread.loading && !state.thread.error && !replies.length && <p className="chat-thread-status">No replies yet. Start the thread.</p>}
-      {replies.map((message, index) => renderMessage(index + 1, message, true))}
-      {pending && <article className="chat-message chat-message-pending"><div /><div><header><strong>{pending.author?.name}</strong></header><p>{pending.text}</p></div></article>}
-    </div>
-    <div className="chat-composer chat-thread-composer">
-      {readOnly ? <p>Join the channel to reply.</p> : <>
-        {state.sessionError && <p className="chat-inline-error" role="alert">{state.sessionError} <button type="button" onClick={() => client?.retrySession()}>Retry session</button></p>}
-        {validation && <p className="chat-inline-error" role="alert">{validation}</p>}
-        {pending && state.sendError && <p className="chat-inline-error" role="alert">{state.sendRejected ? "Not sent." : "Not confirmed yet."} {state.sendError} {state.sendRejected
-          ? <><button type="button" disabled={!!draft.text} onClick={() => { const text = client?.discardRejected(); if (text !== undefined) update({ text }); }}>Edit</button><button type="button" onClick={() => client?.discardRejected()}>Dismiss</button></>
-          : <button type="button" onClick={() => void submit()}>Retry send</button>}</p>}
-        {blocked && <p className="chat-inline-error">Confirm or dismiss the pending message before sending a reply.</p>}
-        <form onSubmit={(event) => { event.preventDefault(); void submit(); }}>
-          <label className="sr-only" htmlFor="chat-thread-reply">Reply to thread</label>
-          <textarea ref={composer} id="chat-thread-reply" rows={3} value={draft.text} placeholder="Reply to thread…" enterKeyHint="send"
-            disabled={state.phase !== "ready" || state.thread.loading} onChange={(event) => update({ text: event.target.value })}
-            onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void submit(); } }} />
-          <div className="chat-thread-send-row">
-            <label><input type="checkbox" checked={pending?.broadcast ?? draft.broadcast} disabled={!!pending} onChange={(event) => update({ broadcast: event.target.checked })} />Also send to #{channelName}</label>
-            <button type="submit" disabled={sending || blocked || state.sendRejected || state.thread.loading || (!pending && !draft.text.trim())} aria-label="Send reply"><Send size={18} /></button>
-          </div>
-          {Array.from(draft.text).length >= 3000 && <small>{Array.from(draft.text).length.toLocaleString()} / 4,000</small>}
-        </form>
-      </>}
-    </div>
-  </aside>;
+  return (
+    <aside
+      ref={panel}
+      className="chat-thread-panel"
+      aria-labelledby="chat-thread-heading"
+      role={mobile ? "dialog" : undefined}
+      aria-modal={mobile || undefined}
+    >
+      <header className="chat-thread-heading">
+        <button type="button" className="chat-thread-back" onClick={onClose} aria-label="Back to channel">
+          <ArrowLeft size={20} />
+        </button>
+        <div>
+          <h2 id="chat-thread-heading">Thread</h2>
+          <span>in #{channelName}</span>
+        </div>
+        <button type="button" className="chat-thread-close" onClick={onClose} aria-label="Close thread">
+          <X size={20} />
+        </button>
+      </header>
+      <div
+        className="chat-thread-messages"
+        ref={scroll}
+        role="region"
+        aria-label="Thread replies"
+        aria-busy={state.thread.loading}
+        onScroll={(event) => {
+          const element = event.currentTarget;
+          follow.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+        }}
+      >
+        {root && <div className="chat-thread-parent">{renderMessage(0, root, true)}</div>}
+        <div className="chat-thread-divider">
+          {root?.thread?.replyCount ?? 0} {root?.thread?.replyCount === 1 ? "reply" : "replies"}
+        </div>
+        {state.thread.loading && (
+          <p className="chat-thread-status" role="status">
+            Loading thread…
+          </p>
+        )}
+        {state.thread.error && (
+          <p className="chat-thread-status chat-inline-error" role="alert">
+            {state.thread.error}{" "}
+            <button
+              type="button"
+              onClick={() => void (state.thread?.hasMore ? client?.loadOlderThread() : client?.openThread(rootId!))}
+            >
+              Retry
+            </button>
+          </p>
+        )}
+        {state.thread.hasMore && (
+          <button
+            type="button"
+            className="chat-thread-older"
+            disabled={state.thread.loadingOlder}
+            onClick={() => {
+              follow.current = false;
+              if (scroll.current)
+                olderAnchor.current = { height: scroll.current.scrollHeight, top: scroll.current.scrollTop };
+              void client?.loadOlderThread();
+            }}
+          >
+            {state.thread.loadingOlder ? "Loading…" : "Load older replies"}
+          </button>
+        )}
+        {!state.thread.loading && !state.thread.error && !replies.length && (
+          <p className="chat-thread-status">No replies yet. Start the thread.</p>
+        )}
+        {replies.map((message, index) => renderMessage(index + 1, message, true))}
+        {pending && (
+          <article className="chat-message chat-message-pending">
+            <div />
+            <div>
+              <header>
+                <strong>{pending.author?.name}</strong>
+              </header>
+              <p>{pending.text}</p>
+            </div>
+          </article>
+        )}
+      </div>
+      <div className="chat-composer chat-thread-composer">
+        {readOnly ? (
+          <p>Join the channel to reply.</p>
+        ) : (
+          <>
+            {state.sessionError && (
+              <p className="chat-inline-error" role="alert">
+                {state.sessionError}{" "}
+                <button type="button" onClick={() => client?.retrySession()}>
+                  Retry session
+                </button>
+              </p>
+            )}
+            {validation && (
+              <p className="chat-inline-error" role="alert">
+                {validation}
+              </p>
+            )}
+            {pending && state.sendError && (
+              <p className="chat-inline-error" role="alert">
+                {state.sendRejected ? "Not sent." : "Not confirmed yet."} {state.sendError}{" "}
+                {state.sendRejected ? (
+                  <>
+                    <button
+                      type="button"
+                      disabled={!!draft.text}
+                      onClick={() => {
+                        const text = client?.discardRejected();
+                        if (text !== undefined) update({ text });
+                      }}
+                    >
+                      Edit
+                    </button>
+                    <button type="button" onClick={() => client?.discardRejected()}>
+                      Dismiss
+                    </button>
+                  </>
+                ) : (
+                  <button type="button" onClick={() => void submit()}>
+                    Retry send
+                  </button>
+                )}
+              </p>
+            )}
+            {blocked && (
+              <p className="chat-inline-error">Confirm or dismiss the pending message before sending a reply.</p>
+            )}
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                void submit();
+              }}
+            >
+              <label className="sr-only" htmlFor="chat-thread-reply">
+                Reply to thread
+              </label>
+              <textarea
+                ref={composer}
+                id="chat-thread-reply"
+                rows={3}
+                value={draft.text}
+                placeholder="Reply to thread…"
+                enterKeyHint="send"
+                disabled={state.phase !== "ready" || state.thread.loading}
+                onChange={(event) => update({ text: event.target.value })}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                    event.preventDefault();
+                    void submit();
+                  }
+                }}
+              />
+              <div className="chat-thread-send-row">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={pending?.broadcast ?? draft.broadcast}
+                    disabled={!!pending}
+                    onChange={(event) => update({ broadcast: event.target.checked })}
+                  />
+                  Also send to #{channelName}
+                </label>
+                <button
+                  type="submit"
+                  disabled={
+                    sending || blocked || state.sendRejected || state.thread.loading || (!pending && !draft.text.trim())
+                  }
+                  aria-label="Send reply"
+                >
+                  <Send size={18} />
+                </button>
+              </div>
+              {Array.from(draft.text).length >= 3000 && (
+                <small>{Array.from(draft.text).length.toLocaleString()} / 4,000</small>
+              )}
+            </form>
+          </>
+        )}
+      </div>
+    </aside>
+  );
 }

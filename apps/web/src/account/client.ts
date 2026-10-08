@@ -7,7 +7,10 @@ export interface Account {
 }
 
 export function normalizeUsername(value: string) {
-  return value.toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 32);
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, "")
+    .slice(0, 32);
 }
 
 export function usernameError(value: string) {
@@ -43,10 +46,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers: init?.body ? { "content-type": "application/json", ...init.headers } : init?.headers,
   });
   if (!response.ok) {
-    const body = await response.json().catch(() => null) as { error?: string; attemptsRemaining?: number } | null;
+    const body = (await response.json().catch(() => null)) as { error?: string; attemptsRemaining?: number } | null;
     throw new AccountApiError(response.status, body?.error ?? "Account request failed", body?.attemptsRemaining);
   }
-  return response.status === 204 ? undefined as T : response.json() as Promise<T>;
+  return response.status === 204 ? (undefined as T) : (response.json() as Promise<T>);
 }
 
 export async function getAccount(): Promise<Account | null> {
@@ -74,10 +77,12 @@ export async function verifyEmailCode(challengeId: string, code: string) {
 }
 
 export async function updateProfile(username: string, displayName: string) {
-  return rememberAccount(await request<Account>("/api/account/profile", {
-    method: "POST",
-    body: JSON.stringify({ username, displayName }),
-  }));
+  return rememberAccount(
+    await request<Account>("/api/account/profile", {
+      method: "POST",
+      body: JSON.stringify({ username, displayName }),
+    }),
+  );
 }
 
 export async function logout() {

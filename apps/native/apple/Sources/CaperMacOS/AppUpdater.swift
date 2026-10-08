@@ -201,7 +201,7 @@ import Foundation
         text.isHorizontallyResizable = false
         text.autoresizingMask = [.width]
         text.minSize = NSSize(width: 0, height: contentSize.height)
-        text.maxSize = NSSize(width: .greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
+        text.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         text.textContainerInset = NSSize(width: 8, height: 8)
         text.textContainer?.containerSize = NSSize(width: contentSize.width, height: .greatestFiniteMagnitude)
         text.textContainer?.widthTracksTextView = true

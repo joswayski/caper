@@ -78,7 +78,7 @@ async function latestChanges(): Promise<LatestChange[]> {
   });
   if (!response.ok) throw new Error(`GitHub history request failed with ${response.status}`);
 
-  const entries = await response.json() as GitHubCommit[];
+  const entries = (await response.json()) as GitHubCommit[];
   if (!Array.isArray(entries) || entries.length === 0) {
     throw new Error("GitHub returned no commits for main");
   }
@@ -104,71 +104,73 @@ export default defineConfig(async () => {
   }
 
   return {
-  define: {
-    __LATEST_CHANGES__: JSON.stringify(changes),
-  },
-  // Module workers may code-split (libwebp loads its SIMD or plain WASM build on demand).
-  worker: { format: "es" as const },
-  // Pre-bundling would move libwebp and libavif away from the .wasm files they locate via import.meta.url.
-  optimizeDeps: { exclude: ["@jsquash/webp", "@jsquash/avif"] },
-  plugins: [
-    tailwindcss(),
-    tanstackStart({
-      prerender: { enabled: false },
-      server: { build: { inlineCss: true } },
-    }),
-    react(),
-    nitro({
-      devProxy: {
-        "/api/**": { target: "http://127.0.0.1:3001" },
-      },
-      routeRules: {
-        "/audio/deepfilter-v1/**": {
-          headers: { "cache-control": "public, max-age=31536000, immutable" },
-        },
-        "/audio/noise-v1/**": {
-          headers: { "cache-control": "public, max-age=31536000, immutable" },
-        },
-        "/audio/rnnoise-v1/**": {
-          headers: { "cache-control": "public, max-age=31536000, immutable" },
-        },
-        "/audio/dpdfnet8-v2/**": {
-          headers: { "cache-control": "public, max-age=31536000, immutable" },
-        },
-        "/audio/resampler-v1/**": {
-          headers: { "cache-control": "public, max-age=31536000, immutable" },
-        },
-        "/emoji/twemoji-15/**": {
-          headers: { "cache-control": "public, max-age=31536000, immutable" },
-        },
-        "/assets/**": {
-          headers: { "cache-control": "public, max-age=31536000, immutable" },
-        },
-        "/images/avatars/v2/**": {
-          headers: { "cache-control": "public, max-age=31536000, immutable" },
-        },
-        "/images/avatars/v3/**": {
-          headers: { "cache-control": "public, max-age=31536000, immutable" },
-        },
-        "/images/branding/v1/**": {
-          headers: { "cache-control": "public, max-age=31536000, immutable" },
-        },
-        "/images/**": {
-          headers: { "cache-control": "public, max-age=86400" },
-        },
-        "/brand/**": {
-          headers: { "cache-control": "public, max-age=86400" },
-        },
-      },
-    }),
-  ],
-  server: {
-    port: Number(process.env.PORT ?? 5174),
-    allowedHosts: [".onamp.dev"],
-    proxy: {
-      "/api/chat/events": { target: "http://127.0.0.1:3002", ws: true },
+    define: {
+      __LATEST_CHANGES__: JSON.stringify(changes),
     },
-    fs: { allow: [searchForWorkspaceRoot(import.meta.dirname)] },
-  },
+    // Preserve Vite 7's browser floor instead of silently raising it with Vite 8.
+    build: { target: ["chrome107", "edge107", "firefox104", "safari16"] },
+    // Module workers may code-split (libwebp loads its SIMD or plain WASM build on demand).
+    worker: { format: "es" as const },
+    // Pre-bundling would move libwebp and libavif away from the .wasm files they locate via import.meta.url.
+    optimizeDeps: { exclude: ["@jsquash/webp", "@jsquash/avif"] },
+    plugins: [
+      tailwindcss(),
+      tanstackStart({
+        prerender: { enabled: false },
+        server: { build: { inlineCss: true } },
+      }),
+      react(),
+      nitro({
+        devProxy: {
+          "/api/**": { target: "http://127.0.0.1:3001" },
+        },
+        routeRules: {
+          "/audio/deepfilter-v1/**": {
+            headers: { "cache-control": "public, max-age=31536000, immutable" },
+          },
+          "/audio/noise-v1/**": {
+            headers: { "cache-control": "public, max-age=31536000, immutable" },
+          },
+          "/audio/rnnoise-v1/**": {
+            headers: { "cache-control": "public, max-age=31536000, immutable" },
+          },
+          "/audio/dpdfnet8-v2/**": {
+            headers: { "cache-control": "public, max-age=31536000, immutable" },
+          },
+          "/audio/resampler-v1/**": {
+            headers: { "cache-control": "public, max-age=31536000, immutable" },
+          },
+          "/emoji/twemoji-15/**": {
+            headers: { "cache-control": "public, max-age=31536000, immutable" },
+          },
+          "/assets/**": {
+            headers: { "cache-control": "public, max-age=31536000, immutable" },
+          },
+          "/images/avatars/v2/**": {
+            headers: { "cache-control": "public, max-age=31536000, immutable" },
+          },
+          "/images/avatars/v3/**": {
+            headers: { "cache-control": "public, max-age=31536000, immutable" },
+          },
+          "/images/branding/v1/**": {
+            headers: { "cache-control": "public, max-age=31536000, immutable" },
+          },
+          "/images/**": {
+            headers: { "cache-control": "public, max-age=86400" },
+          },
+          "/brand/**": {
+            headers: { "cache-control": "public, max-age=86400" },
+          },
+        },
+      }),
+    ],
+    server: {
+      port: Number(process.env.PORT ?? 5174),
+      allowedHosts: [".onamp.dev"],
+      proxy: {
+        "/api/chat/events": { target: "http://127.0.0.1:3002", ws: true },
+      },
+      fs: { allow: [searchForWorkspaceRoot(import.meta.dirname)] },
+    },
   };
 });

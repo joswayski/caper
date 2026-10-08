@@ -53,7 +53,13 @@ export function exactPalette(rgba: Uint8ClampedArray | Uint8Array, max: number):
 
 /** Encodes RGBA as an indexed PNG when it has at most `maxColors` colours.
  * `iccp` is a source iCCP chunk's data, copied so the colour space survives. */
-export async function encodeIndexedPng(rgba: Uint8ClampedArray | Uint8Array, width: number, height: number, maxColors: number, iccp?: Uint8Array): Promise<Uint8Array | undefined> {
+export async function encodeIndexedPng(
+  rgba: Uint8ClampedArray | Uint8Array,
+  width: number,
+  height: number,
+  maxColors: number,
+  iccp?: Uint8Array,
+): Promise<Uint8Array | undefined> {
   const palette = exactPalette(rgba, Math.min(256, maxColors));
   if (!palette) return;
   const depth = palette.size <= 2 ? 1 : palette.size <= 4 ? 2 : palette.size <= 16 ? 4 : 8;
@@ -97,6 +103,9 @@ export async function encodeIndexedPng(rgba: Uint8ClampedArray | Uint8Array, wid
   ];
   const out = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
   let offset = 0;
-  for (const part of parts) { out.set(part, offset); offset += part.length; }
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
   return out;
 }

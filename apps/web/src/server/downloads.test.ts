@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { detectDownloadPlatform, downloads, intelMacDownload } from "../downloads.ts";
 
 test("desktop hints select current platform packages", () => {
@@ -22,7 +22,8 @@ test("mobile, tablets and ChromeOS never receive a desktop installer", () => {
     "Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X)",
     "Mozilla/5.0 (Linux; Android 15; Pixel 9)",
     "Mozilla/5.0 (X11; CrOS x86_64 16093.0.0)",
-  ]) assert.equal(detectDownloadPlatform({ userAgent }), null, userAgent);
+  ])
+    assert.equal(detectDownloadPlatform({ userAgent }), null, userAgent);
   assert.equal(detectDownloadPlatform({ userAgent: "Linux", mobile: true }), null);
   assert.equal(detectDownloadPlatform({ userAgent: "Macintosh", maxTouchPoints: 5 }), null);
   assert.equal(detectDownloadPlatform({ userAgent: "Macintosh", maxTouchPoints: 0 }), "macos");

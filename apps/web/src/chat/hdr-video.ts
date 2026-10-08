@@ -24,7 +24,11 @@ const BT709 = { primaries: "bt709", transfer: "bt709", matrix: "bt709", fullRang
 
 /** MP4 bytes, or undefined when this browser cannot read the frames (the
  * caller then keeps the original). Throws on cancellation or encoder errors. */
-export async function transcodeHdrVideo(media: typeof Mediabunny, input: Mediabunny.Input, options: HdrTranscodeOptions): Promise<ArrayBuffer | undefined> {
+export async function transcodeHdrVideo(
+  media: typeof Mediabunny,
+  input: Mediabunny.Input,
+  options: HdrTranscodeOptions,
+): Promise<ArrayBuffer | undefined> {
   const track = await input.getPrimaryVideoTrack();
   if (!track) return;
   const audio = options.audioCodec ? await input.getPrimaryAudioTrack() : null;
@@ -48,14 +52,20 @@ export async function transcodeHdrVideo(media: typeof Mediabunny, input: Mediabu
     return;
   }
 
-  const output = new media.Output({ format: new media.Mp4OutputFormat({ fastStart: "in-memory" }), target: new media.BufferTarget() });
+  const output = new media.Output({
+    format: new media.Mp4OutputFormat({ fastStart: "in-memory" }),
+    target: new media.BufferTarget(),
+  });
   const video = new media.VideoSampleSource({ codec: options.codec, bitrate: options.bitrate });
   output.addVideoTrack(video, { rotation });
   let audioPump: (() => Promise<void>) | undefined;
   if (audio && options.audioCodec === "copy") {
     const codec = await audio.getCodec();
     const decoderConfig = await audio.getDecoderConfig();
-    if (!codec || !decoderConfig) { mapper.dispose(); return; }
+    if (!codec || !decoderConfig) {
+      mapper.dispose();
+      return;
+    }
     const source = new media.EncodedAudioPacketSource(codec);
     output.addAudioTrack(source);
     audioPump = async () => {
@@ -89,8 +99,13 @@ export async function transcodeHdrVideo(media: typeof Mediabunny, input: Mediabu
         if (options.signal?.aborted) break;
         const frame = await mapper.map(sample);
         const mapped = new media.VideoSample(frame.data, {
-          format: "I420", codedWidth: frame.width, codedHeight: frame.height, layout: frame.layout,
-          timestamp: sample.timestamp, duration: sample.duration, colorSpace: BT709,
+          format: "I420",
+          codedWidth: frame.width,
+          codedHeight: frame.height,
+          layout: frame.layout,
+          timestamp: sample.timestamp,
+          duration: sample.duration,
+          colorSpace: BT709,
         });
         try {
           await video.add(mapped);

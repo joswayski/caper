@@ -1,13 +1,20 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { deflateSync, inflateSync } from "node:zlib";
-import { exifOrientation, stripJpegMetadata, stripMetadata, stripMp4Metadata, stripPngMetadata } from "../chat/metadata.ts";
+import {
+  exifOrientation,
+  stripJpegMetadata,
+  stripMetadata,
+  stripMp4Metadata,
+  stripPngMetadata,
+} from "../chat/metadata.ts";
 
 const ascii = (s: string) => [...s].map((c) => c.charCodeAt(0));
 const be16 = (n: number) => [(n >> 8) & 0xff, n & 0xff];
 const be32 = (n: number) => [(n >>> 24) & 0xff, (n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
 const bytesOf = async (blob: Blob) => new Uint8Array(await blob.arrayBuffer());
-const contains = (haystack: Uint8Array, needle: string) => Buffer.from(haystack).includes(Buffer.from(needle, "latin1"));
+const contains = (haystack: Uint8Array, needle: string) =>
+  Buffer.from(haystack).includes(Buffer.from(needle, "latin1"));
 
 // ---- MP4 ------------------------------------------------------------------------
 
@@ -21,10 +28,37 @@ const samples = Array.from({ length: 4096 }, (_, i) => (i * 31 + 7) & 0xff);
 function iphoneLike(moovFirst: boolean, largeMdat = false) {
   const keys = box("keys", [0, 0, 0, 0, 0, 0, 0, 1], box("mdta", ascii("com.apple.quicktime.location.ISO6709")));
   const ilst = box("ilst", box("\x00\x00\x00\x01", box("data", [0, 0, 0, 1, 0, 0, 0, 0], ascii(LOCATION))));
-  const moov = box("moov",
-    box("mvhd", new Array(100).fill(0)),
-    box("meta", [0, 0, 0, 0], box("hdlr", new Array(25).fill(0)), keys, ilst),
-    box("trak", box("tkhd", new Array(84).fill(0)), box("mdia", box("mdhd", new Array(24).fill(0))), box("udta", box("name", ascii("Back Camera")))),
+  const moov = box(
+    "moov",
+    box(
+      "mvhd",
+      Array.from({ length: 100 }, () => 0),
+    ),
+    box(
+      "meta",
+      [0, 0, 0, 0],
+      box(
+        "hdlr",
+        Array.from({ length: 25 }, () => 0),
+      ),
+      keys,
+      ilst,
+    ),
+    box(
+      "trak",
+      box(
+        "tkhd",
+        Array.from({ length: 84 }, () => 0),
+      ),
+      box(
+        "mdia",
+        box(
+          "mdhd",
+          Array.from({ length: 24 }, () => 0),
+        ),
+      ),
+      box("udta", box("name", ascii("Back Camera"))),
+    ),
     box("udta", box("\xa9xyz", [0, 26, 0x15, 0xc7], ascii(LOCATION))),
   );
   const mdat = largeMdat
@@ -35,7 +69,11 @@ function iphoneLike(moovFirst: boolean, largeMdat = false) {
 }
 
 test("MP4/MOV: location boxes become zero-filled free boxes; size, offsets and samples are unchanged", async () => {
-  for (const [moovFirst, large] of [[true, false], [false, false], [false, true]]) {
+  for (const [moovFirst, large] of [
+    [true, false],
+    [false, false],
+    [false, true],
+  ]) {
     const input = iphoneLike(moovFirst, large);
     assert.ok(contains(input, LOCATION));
     const output = await bytesOf(await stripMp4Metadata(new Blob([input], { type: "video/quicktime" })));
@@ -46,14 +84,25 @@ test("MP4/MOV: location boxes become zero-filled free boxes; size, offsets and s
     assert.ok(!contains(output, "udta") && !contains(output, "meta"));
     const at = Buffer.from(input).indexOf(Buffer.from(samples));
     assert.ok(at > 0);
-    assert.deepEqual(output.subarray(at, at + samples.length), new Uint8Array(samples), "sample data identical, same offset");
+    assert.deepEqual(
+      output.subarray(at, at + samples.length),
+      new Uint8Array(samples),
+      "sample data identical, same offset",
+    );
     // Everything outside the cleared boxes is byte-identical (mvhd, tkhd, mdia).
-    for (const keep of ["mvhd", "tkhd", "mdhd", "mdia", "trak", "moov", "ftyp"]) assert.equal(Buffer.from(output).indexOf(keep), Buffer.from(input).indexOf(keep), keep);
+    for (const keep of ["mvhd", "tkhd", "mdhd", "mdia", "trak", "moov", "ftyp"])
+      assert.equal(Buffer.from(output).indexOf(keep), Buffer.from(input).indexOf(keep), keep);
   }
 });
 
 test("MP4: files without metadata, or that do not parse, are returned untouched", async () => {
-  const clean = new Blob([new Uint8Array([...box("ftyp", ascii("isom"), [0, 0, 0, 0]), ...box("moov", box("mvhd", [0, 0])), ...box("mdat", [1, 2, 3])])]);
+  const clean = new Blob([
+    new Uint8Array([
+      ...box("ftyp", ascii("isom"), [0, 0, 0, 0]),
+      ...box("moov", box("mvhd", [0, 0])),
+      ...box("mdat", [1, 2, 3]),
+    ]),
+  ]);
   assert.equal(await stripMp4Metadata(clean), clean);
   const truncated = new Blob([iphoneLike(true).subarray(0, 200)]);
   assert.equal(await stripMp4Metadata(truncated), truncated);
@@ -66,24 +115,40 @@ test("MP4: files without metadata, or that do not parse, are returned untouched"
 const segment = (marker: number, payload: number[]) => [0xff, marker, ...be16(payload.length + 2), ...payload];
 function exif(orientation: number) {
   // Little-endian TIFF with Orientation and a GPS IFD pointer (GPS data inline).
-  const entries = [[0x0112, 3, 1, orientation], [0x8825, 4, 1, 38]];
+  const entries = [
+    [0x0112, 3, 1, orientation],
+    [0x8825, 4, 1, 38],
+  ];
   const le16 = (n: number) => [n & 0xff, n >> 8];
   const le32 = (n: number) => [n & 0xff, (n >> 8) & 0xff, (n >> 16) & 0xff, n >>> 24];
-  const tiff = [...ascii("II"), 42, 0, ...le32(8), ...le16(entries.length), ...entries.flatMap(([tag, type, count, value]) => [...le16(tag), ...le16(type), ...le32(count), ...le32(value)]), ...le32(0), ...ascii("GPS 40N 74W")];
+  const tiff = [
+    ...ascii("II"),
+    42,
+    0,
+    ...le32(8),
+    ...le16(entries.length),
+    ...entries.flatMap(([tag, type, count, value]) => [...le16(tag), ...le16(type), ...le32(count), ...le32(value)]),
+    ...le32(0),
+    ...ascii("GPS 40N 74W"),
+  ];
   return [...ascii("Exif\0\0"), ...tiff];
 }
 const scan = [0xff, 0xda, 0, 8, 1, 1, 0, 0, 0x3f, 0, 0x12, 0x34, 0xff, 0x00, 0x56, 0xff, 0xd9];
 
 function jpeg(orientation: number) {
   return new Uint8Array([
-    0xff, 0xd8,
+    0xff,
+    0xd8,
     ...segment(0xe0, [...ascii("JFIF\0"), 1, 1, 0, 0, 1, 0, 1, 0, 0]),
     ...segment(0xe1, exif(orientation)),
     ...segment(0xe1, ascii("http://ns.adobe.com/xap/1.0/\0<x:xmpmeta>GPSLatitude 40N</x:xmpmeta>")),
     ...segment(0xe2, [...ascii("ICC_PROFILE\0"), 1, 1, 9, 9, 9]),
     ...segment(0xed, ascii("Photoshop 3.0\0 IPTC city")),
     ...segment(0xee, [...ascii("Adobe"), 0, 100, 0, 0, 0, 0, 1]),
-    ...segment(0xdb, new Array(65).fill(1)),
+    ...segment(
+      0xdb,
+      Array.from({ length: 65 }, () => 1),
+    ),
     ...segment(0xc0, [8, 0, 1, 0, 1, 1, 1, 0x11, 0]),
     ...scan,
   ]);
@@ -125,22 +190,39 @@ test("JPEG: a file with nothing to remove, or not a JPEG, is returned untouched"
 
 const CRC = (() => {
   const table = new Uint32Array(256);
-  for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; table[n] = c >>> 0; }
-  return (bytes: number[]) => { let c = 0xffffffff; for (const b of bytes) c = table[(c ^ b) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[n] = c >>> 0;
+  }
+  return (bytes: number[]) => {
+    let c = 0xffffffff;
+    for (const b of bytes) c = table[(c ^ b) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
 })();
-const chunk = (type: string, data: number[]) => [...be32(data.length), ...ascii(type), ...data, ...be32(CRC([...ascii(type), ...data]))];
+const chunk = (type: string, data: number[]) => [
+  ...be32(data.length),
+  ...ascii(type),
+  ...data,
+  ...be32(CRC([...ascii(type), ...data])),
+];
 
 test("PNG: eXIf and text chunks are dropped; every other chunk, and so every pixel, is byte-identical", async () => {
   const raw = [0, 255, 0, 0, 0, 0, 255, 0]; // one row: filter 0, red, green
   const idat = chunk("IDAT", [...deflateSync(Buffer.from(raw))]);
   const ihdr = chunk("IHDR", [...be32(2), ...be32(1), 8, 2, 0, 0, 0]);
-  const input = new Uint8Array([0x89, ...ascii("PNG\r\n\x1a\n"), ...ihdr,
+  const input = new Uint8Array([
+    0x89,
+    ...ascii("PNG\r\n\x1a\n"),
+    ...ihdr,
     ...chunk("eXIf", [...ascii("MM"), 0, 42, ...ascii("GPS")]),
     ...chunk("iTXt", [...ascii("XML:com.adobe.xmp\0\0\0\0\0<GPSLatitude/>")]),
     ...idat,
     ...chunk("tEXt", [...ascii("Comment\0taken at home")]),
     ...chunk("zTXt", [...ascii("Raw profile type exif\0"), 0, ...deflateSync(Buffer.from("GPS"))]),
-    ...chunk("IEND", [])]);
+    ...chunk("IEND", []),
+  ]);
   const output = await bytesOf(await stripPngMetadata(new Blob([input], { type: "image/png" })));
   assert.deepEqual(output, new Uint8Array([0x89, ...ascii("PNG\r\n\x1a\n"), ...ihdr, ...idat, ...chunk("IEND", [])]));
   const at = Buffer.from(output).indexOf("IDAT") + 4;

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { inflateSync } from "node:zlib";
 import { encodeIndexedPng, exactPalette } from "../chat/png.ts";
 
@@ -31,7 +31,10 @@ function decode(png: Uint8Array) {
     for (let x = 0; x < width; x++) {
       const byte = raw[y * (stride + 1) + 1 + Math.floor((x * depth) / 8)];
       const index = (byte >> (8 - depth * ((x % (8 / depth)) + 1))) & ((1 << depth) - 1);
-      rgba.set([palette[index * 3], palette[index * 3 + 1], palette[index * 3 + 2], alpha[index] ?? 255], (y * width + x) * 4);
+      rgba.set(
+        [palette[index * 3], palette[index * 3 + 1], palette[index * 3 + 2], alpha[index] ?? 255],
+        (y * width + x) * 4,
+      );
     }
   }
   return { width, height, depth, rgba };
@@ -44,8 +47,18 @@ function image(width: number, height: number, colors: number[][]) {
 }
 
 test("flat images round-trip pixel-exactly at the smallest bit depth", async () => {
-  for (const [count, depth] of [[2, 1], [4, 2], [9, 4], [200, 8]]) {
-    const colors = Array.from({ length: count }, (_, i) => [i * 37 % 256, i * 11 % 256, i * 5 % 256, i === 0 ? 0 : 255]);
+  for (const [count, depth] of [
+    [2, 1],
+    [4, 2],
+    [9, 4],
+    [200, 8],
+  ]) {
+    const colors = Array.from({ length: count }, (_, i) => [
+      (i * 37) % 256,
+      (i * 11) % 256,
+      (i * 5) % 256,
+      i === 0 ? 0 : 255,
+    ]);
     colors[0] = [0, 0, 0, 0];
     const rgba = image(37, 23, colors);
     const png = await encodeIndexedPng(rgba, 37, 23, 256);

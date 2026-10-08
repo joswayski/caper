@@ -1,14 +1,28 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import test from "node:test";
+import { test, vi } from "vitest";
 import { ChatTimeline } from "../chat/timeline.ts";
-import { isChatMessage, isChannelMessage, isChatPinEvent, isChatReactionEvent, type ChatAttachmentsEvent, type ChatMessage, type ChatPinEvent, type ChatReactionEvent } from "../chat/types.ts";
+import {
+  isChatMessage,
+  isChannelMessage,
+  isChatPinEvent,
+  isChatReactionEvent,
+  type ChatAttachmentsEvent,
+  type ChatMessage,
+  type ChatPinEvent,
+  type ChatReactionEvent,
+} from "../chat/types.ts";
 import { emojiAsset, emojiCode, emojiNames, preloadEmojiImages } from "../chat/emoji.ts";
 
 function message(seq: string, id = `message-${seq}`): ChatMessage {
   return {
-    id, channelId: "general", seq, author: { id: "guest", name: "Guest", isGuest: true },
-    content: { version: 1, type: "text", text: `<b>safe ${seq}</b>` }, createdAt: "2026-09-21T12:00:00Z", clientMessageId: `client-${seq}`,
+    id,
+    channelId: "general",
+    seq,
+    author: { id: "guest", name: "Guest", isGuest: true },
+    content: { version: 1, type: "text", text: `<b>safe ${seq}</b>` },
+    createdAt: "2026-09-21T12:00:00Z",
+    clientMessageId: `client-${seq}`,
   };
 }
 
@@ -21,7 +35,10 @@ test("overlap is deduplicated and gaps do not advance the durable BigInt cursor"
   assert.equal(timeline.applyEvent(message("9007199254740993")), "applied");
   assert.equal(timeline.cursor, "9007199254740994");
   assert.equal(timeline.applyEvent(message("9007199254740993")), "duplicate");
-  assert.deepEqual(timeline.messages.map((value) => value.seq), ["9007199254740992", "9007199254740993", "9007199254740994"]);
+  assert.deepEqual(
+    timeline.messages.map((value) => value.seq),
+    ["9007199254740992", "9007199254740993", "9007199254740994"],
+  );
 });
 
 test("an HTTP send merges immediately but only its matching event advances replay", () => {
@@ -31,7 +48,10 @@ test("an HTTP send merges immediately but only its matching event advances repla
 
   timeline.mergeSent(sent);
   assert.equal(timeline.cursor, "5");
-  assert.deepEqual(timeline.messages.map((value) => value.id), ["durable-send"]);
+  assert.deepEqual(
+    timeline.messages.map((value) => value.id),
+    ["durable-send"],
+  );
 
   assert.equal(timeline.applyEvent(sent), "applied");
   assert.equal(timeline.cursor, "6");
@@ -39,12 +59,24 @@ test("an HTTP send merges immediately but only its matching event advances repla
 });
 
 function reaction(seq: string, authorIds = ["other"], messageId = "message-1"): ChatReactionEvent {
-  return { type: "message.reactions", schemaVersion: 1, channelId: "general", messageId, seq,
-    reactions: authorIds.length ? [{ emoji: "👍🏽", authorIds }] : [] };
+  return {
+    type: "message.reactions",
+    schemaVersion: 1,
+    channelId: "general",
+    messageId,
+    seq,
+    reactions: authorIds.length ? [{ emoji: "👍🏽", authorIds }] : [],
+  };
 }
 
 function pin(seq: string, active = true, target = message("1")): ChatPinEvent {
-  const pinned = { ...target, pinSeq: seq, pin: active ? { author: { id: "moderator", name: "Mod", isGuest: false }, createdAt: "2026-09-21T13:00:00Z" } : null };
+  const pinned = {
+    ...target,
+    pinSeq: seq,
+    pin: active
+      ? { author: { id: "moderator", name: "Mod", isGuest: false }, createdAt: "2026-09-21T13:00:00Z" }
+      : null,
+  };
   return { type: "message.pin", schemaVersion: 1, channelId: "general", seq, message: pinned };
 }
 
@@ -55,8 +87,14 @@ test("pins interleave with messages and reactions without changing creation orde
   assert.equal(timeline.applyEvent(reaction("3")), "applied");
   assert.equal(timeline.applyEvent(message("4")), "applied");
   assert.equal(timeline.cursor, "4");
-  assert.deepEqual(timeline.messages.map((item) => item.seq), ["1", "4"]);
-  assert.deepEqual(timeline.pinnedMessages.map((item) => item.id), ["message-1"]);
+  assert.deepEqual(
+    timeline.messages.map((item) => item.seq),
+    ["1", "4"],
+  );
+  assert.deepEqual(
+    timeline.pinnedMessages.map((item) => item.id),
+    ["message-1"],
+  );
   assert.ok(isChatPinEvent(pin("9007199254740993")));
 });
 
@@ -64,7 +102,11 @@ test("an old pin outside the loaded page updates live and stale snapshots cannot
   const timeline = new ChatTimeline();
   const old = message("1", "old-pin");
   timeline.reset([message("10")], "10", [{ ...old, ...pin("8", true, old).message }]);
-  assert.deepEqual(timeline.messages.map((item) => item.id), ["message-10"], "pins do not enter timeline pagination");
+  assert.deepEqual(
+    timeline.messages.map((item) => item.id),
+    ["message-10"],
+    "pins do not enter timeline pagination",
+  );
   timeline.applyEvent(pin("11", false, old));
   assert.equal(timeline.pinnedMessages.length, 0);
   timeline.prepend([{ ...old, ...pin("8", true, old).message }]);
@@ -79,7 +121,11 @@ test("authoritative reconnect removes offline unpins and independent pin revisio
   timeline.reset([message("10")], "10", [old]);
   timeline.applyEvent(pin("11"));
   timeline.reset([message("14")], "14", []);
-  assert.equal(timeline.pinnedMessages.length, 0, "absence at a newer history cursor removes a pin changed while offline");
+  assert.equal(
+    timeline.pinnedMessages.length,
+    0,
+    "absence at a newer history cursor removes a pin changed while offline",
+  );
   timeline.reset([old], "8", [old]);
   timeline.prepend([{ ...pin("12", false).message, reactionSeq: "5", reactions: [] }]);
   timeline.prepend([{ ...old, reactionSeq: "13", reactions: reaction("13").reactions }]);
@@ -96,13 +142,21 @@ test("complete pin history rejects old acknowledgements and pages but preserves 
   timeline.reset([message("50")], "60", []);
   timeline.mergePin(pin("4", true, old));
   timeline.mergePin(pin("60", true, old));
-  assert.equal(timeline.pinnedMessages.length, 0, "absence from complete history supersedes acknowledgements through its cursor");
+  assert.equal(
+    timeline.pinnedMessages.length,
+    0,
+    "absence from complete history supersedes acknowledgements through its cursor",
+  );
   timeline.prepend([pin("4", true, old).message]);
   assert.equal(timeline.messages[0].pin, null, "a stale page must not restore the inline marker either");
   timeline.mergePin(pin("61", true, old));
   assert.equal(timeline.cursor, "60", "HTTP must not advance replay");
   timeline.reset([message("50")], "60", []);
-  assert.deepEqual(timeline.pinnedMessages.map(item => item.id), [old.id], "a newer acknowledgement survives a concurrently captured history");
+  assert.deepEqual(
+    timeline.pinnedMessages.map((item) => item.id),
+    [old.id],
+    "a newer acknowledgement survives a concurrently captured history",
+  );
   assert.equal(timeline.applyEvent(pin("61", true, old)), "applied");
   assert.equal(timeline.cursor, "61");
 });
@@ -115,13 +169,20 @@ test("reactions fill sequence gaps without becoming messages or accepting stale 
   assert.equal(timeline.cursor, "1", "HTTP reactions cannot skip missing events");
   assert.equal(timeline.applyEvent(reaction("2")), "applied");
   assert.equal(timeline.cursor, "3");
-  assert.deepEqual(timeline.messages.map((m) => m.seq), ["1", "3"]);
+  assert.deepEqual(
+    timeline.messages.map((m) => m.seq),
+    ["1", "3"],
+  );
   assert.deepEqual(timeline.messages[0].reactions, reaction("4", ["other", "guest"]).reactions);
   timeline.applyEvent(reaction("4", ["other", "guest"]));
   timeline.applyEvent(reaction("5", []));
   timeline.mergeReactions(reaction("4", ["other", "guest"]));
   timeline.prepend([{ ...message("1"), reactions: reaction("2").reactions, reactionSeq: "2" }]);
-  assert.deepEqual(timeline.messages[0].reactions, [], "late HTTP and paginated snapshots cannot resurrect a removed reaction");
+  assert.deepEqual(
+    timeline.messages[0].reactions,
+    [],
+    "late HTTP and paginated snapshots cannot resurrect a removed reaction",
+  );
   assert.equal(timeline.cursor, "5");
 });
 
@@ -141,14 +202,23 @@ test("reactions to unloaded history survive a stale in-flight page without manuf
 test("reaction validators reject malformed revisions and duplicate actor counts", () => {
   assert.ok(isChatReactionEvent(reaction("9007199254740993")));
   for (const invalid of [
-    { ...reaction("1"), seq: 1 }, { ...reaction("1"), schemaVersion: 2 },
-    reaction("-1"), reaction("1", ["guest", "guest"]),
+    { ...reaction("1"), seq: 1 },
+    { ...reaction("1"), schemaVersion: 2 },
+    reaction("-1"),
+    reaction("1", ["guest", "guest"]),
     { ...reaction("1"), reactions: [{ emoji: "👍", authorIds: [] }] },
-  ]) assert.equal(isChatReactionEvent(invalid), false);
+  ])
+    assert.equal(isChatReactionEvent(invalid), false);
 });
 
 test("Twemoji filenames handle selectors, keycaps, flags, skin tones and ZWJ sequences", () => {
-  for (const [emoji, filename] of [["❤️", "2764"], ["1️⃣", "31-20e3"], ["🇩🇴", "1f1e9-1f1f4"], ["👍🏽", "1f44d-1f3fd"], ["👩‍⚕️", "1f469-200d-2695-fe0f"]]) {
+  for (const [emoji, filename] of [
+    ["❤️", "2764"],
+    ["1️⃣", "31-20e3"],
+    ["🇩🇴", "1f1e9-1f1f4"],
+    ["👍🏽", "1f44d-1f3fd"],
+    ["👩‍⚕️", "1f469-200d-2695-fe0f"],
+  ]) {
     assert.equal(emojiAsset(emojiCode(emoji)), `/emoji/twemoji-15/${filename}.svg`);
   }
   assert.equal(emojiAsset("0031-fe0f-20e3"), "/emoji/twemoji-15/31-20e3.svg");
@@ -157,7 +227,12 @@ test("Twemoji filenames handle selectors, keycaps, flags, skin tones and ZWJ seq
 test("emoji names prefer dashes while retaining spaced and underscore search aliases", () => {
   const original = ["happy_face", "grinning face"];
   assert.deepEqual(emojiNames(original), [
-    "happy_face", "happy face", "happy-face", "grinning face", "grinning_face", "grinning-face",
+    "happy_face",
+    "happy face",
+    "happy-face",
+    "grinning face",
+    "grinning_face",
+    "grinning-face",
   ]);
   assert.deepEqual(original, ["happy_face", "grinning face"], "the package catalog must stay unchanged");
   assert.deepEqual(emojiNames(["thumbs-up", "+1", "thumbs up"]), ["thumbs up", "thumbs_up", "+1", "thumbs-up"]);
@@ -178,7 +253,13 @@ test("country flags prefer typeable country names and retain their original alia
     const original = [code, "flag", `flag: ${label}`];
     const aliases = emojiNames(original);
     assert.equal(aliases.at(-1), expected);
-    for (const alias of [code, "flag", `flag: ${label}`, expected.replaceAll("-", "_"), expected.replaceAll("-", " ")]) {
+    for (const alias of [
+      code,
+      "flag",
+      `flag: ${label}`,
+      expected.replaceAll("-", "_"),
+      expected.replaceAll("-", " "),
+    ]) {
       assert.ok(aliases.includes(alias), alias);
     }
     assert.deepEqual(original, [code, "flag", `flag: ${label}`]);
@@ -190,9 +271,13 @@ test("country flags prefer typeable country names and retain their original alia
 
 test("bundled native emoji names and aliases match on Android, Apple and desktop", () => {
   const shared = readFileSync(new URL("../../../../shared/emoji/catalog.json", import.meta.url), "utf8");
-  const apple = readFileSync(new URL("../../../native/apple/Sources/CaperCore/EmojiAssets/catalog.json", import.meta.url), "utf8");
+  const apple = readFileSync(
+    new URL("../../../native/apple/Sources/CaperCore/EmojiAssets/catalog.json", import.meta.url),
+    "utf8",
+  );
   assert.equal(apple, shared);
-  const entries: { id: string; name: string; keywords: string; selectable: boolean; emoji: string }[] = JSON.parse(shared);
+  const entries: { id: string; name: string; keywords: string; selectable: boolean; emoji: string }[] =
+    JSON.parse(shared);
   assert.ok(entries.filter((entry) => entry.selectable).every((entry) => !/[\s_]/.test(entry.name)));
   const grinning = entries.find((entry) => entry.id === "1f600")!;
   assert.equal(grinning.name, "grinning-face");
@@ -200,8 +285,15 @@ test("bundled native emoji names and aliases match on Android, Apple and desktop
   for (const query of ["grinning-face", "grinning_face", "grinning face"]) assert.ok(grinning.keywords.includes(query));
   const flags = entries.filter((entry) => entry.selectable && entry.keywords.includes("flag:"));
   assert.ok(flags.length > 250, "country and regional flags must be covered");
-  assert.ok(flags.every((entry) => /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(entry.name)), "every country name must be typeable in colon autocomplete");
-  for (const [id, emoji, name] of [["1f1ee-1f1f1", "🇮🇱", "israel"], ["1f1fa-1f1f8", "🇺🇸", "united-states"], ["1f1e8-1f1ee", "🇨🇮", "cote-divoire"]]) {
+  assert.ok(
+    flags.every((entry) => /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(entry.name)),
+    "every country name must be typeable in colon autocomplete",
+  );
+  for (const [id, emoji, name] of [
+    ["1f1ee-1f1f1", "🇮🇱", "israel"],
+    ["1f1fa-1f1f8", "🇺🇸", "united-states"],
+    ["1f1e8-1f1ee", "🇨🇮", "cote-divoire"],
+  ]) {
     const flag = flags.find((entry) => entry.id === id)!;
     assert.equal(flag.name, name);
     assert.equal(flag.emoji, emoji);
@@ -211,22 +303,28 @@ test("bundled native emoji names and aliases match on Android, Apple and desktop
 
 test("emoji preload shares decoding per category, retries failures, and stays warm across messages", async (t) => {
   const manifest = ["1f600", "0031-fe0f-20e3", "1f469-200d-2695-fe0f"];
-  const fetchMock = t.mock.method(globalThis, "fetch", async (url: string) => Response.json(
-    String(url).endsWith("preload-flags.json") ? ["1f3c1", "1f1e9-1f1f4"] : manifest,
-  ));
-  fetchMock.mock.mockImplementationOnce(async () => new Response(null, { status: 503 }));
+  const fetchMock = vi
+    .spyOn(globalThis, "fetch")
+    .mockImplementation(async (url) =>
+      Response.json(String(url).endsWith("preload-flags.json") ? ["1f3c1", "1f1e9-1f1f4"] : manifest),
+    );
+  fetchMock.mockImplementationOnce(async () => new Response(null, { status: 503 }));
   const images: { src: string }[] = [];
   const decoded: (() => void)[] = [];
   let failImage = true;
   const originalImage = globalThis.Image;
   globalThis.Image = class {
     src = "";
-    constructor() { images.push(this); }
+    constructor() {
+      images.push(this);
+    }
     decode() {
-      return failImage ? Promise.reject(new Error("Artwork unavailable")) : new Promise<void>((resolve) => decoded.push(resolve));
+      return failImage
+        ? Promise.reject(new Error("Artwork unavailable"))
+        : new Promise<void>((resolve) => decoded.push(resolve));
     }
   } as unknown as typeof Image;
-  t.after(() => {
+  t.onTestFinished(() => {
     if (originalImage) globalThis.Image = originalImage;
     else Reflect.deleteProperty(globalThis, "Image");
   });
@@ -239,16 +337,17 @@ test("emoji preload shares decoding per category, retries failures, and stays wa
   const first = preloadEmojiImages();
   assert.strictEqual(preloadEmojiImages(), first, "simultaneous hovers must share the preload");
   await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(fetchMock.mock.callCount(), 3, "manifest and image failures must both allow retry");
-  assert.deepEqual(images.slice(3).map((image) => image.src), [
-    "/emoji/twemoji-15/1f600.svg", "/emoji/twemoji-15/31-20e3.svg", "/emoji/twemoji-15/1f469-200d-2695-fe0f.svg",
-  ]);
+  assert.equal(fetchMock.mock.calls.length, 3, "manifest and image failures must both allow retry");
+  assert.deepEqual(
+    images.slice(3).map((image) => image.src),
+    ["/emoji/twemoji-15/1f600.svg", "/emoji/twemoji-15/31-20e3.svg", "/emoji/twemoji-15/1f469-200d-2695-fe0f.svg"],
+  );
   assert.equal(decoded.length, 3);
   decoded.forEach((finish) => finish());
   await first;
   assert.strictEqual(preloadEmojiImages(), first, "a later message must reuse completed preload work");
-  assert.equal(fetchMock.mock.callCount(), 3);
-  assert.ok(fetchMock.mock.calls.every(({ arguments: args }) => args[0] === "/emoji/twemoji-15/preload.json"));
+  assert.equal(fetchMock.mock.calls.length, 3);
+  assert.ok(fetchMock.mock.calls.every(([url]) => url === "/emoji/twemoji-15/preload.json"));
 
   failImage = true;
   await preloadEmojiImages("flags");
@@ -259,17 +358,23 @@ test("emoji preload shares decoding per category, retries failures, and stays wa
   assert.strictEqual(preloadEmojiImages("flags"), flags, "concurrent intent must share only its category");
   assert.notStrictEqual(food, flags, "different categories must preload independently");
   await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.deepEqual(fetchMock.mock.calls.slice(3).map(({ arguments: args }) => args[0]), [
-    "/emoji/twemoji-15/preload-flags.json", "/emoji/twemoji-15/preload-flags.json", "/emoji/twemoji-15/preload-food_drink.json",
-  ]);
-  assert.deepEqual(images.slice(8, 10).map((image) => image.src), [
-    "/emoji/twemoji-15/1f3c1.svg", "/emoji/twemoji-15/1f1e9-1f1f4.svg",
-  ]);
+  assert.deepEqual(
+    fetchMock.mock.calls.slice(3).map(([url]) => url),
+    [
+      "/emoji/twemoji-15/preload-flags.json",
+      "/emoji/twemoji-15/preload-flags.json",
+      "/emoji/twemoji-15/preload-food_drink.json",
+    ],
+  );
+  assert.deepEqual(
+    images.slice(8, 10).map((image) => image.src),
+    ["/emoji/twemoji-15/1f3c1.svg", "/emoji/twemoji-15/1f1e9-1f1f4.svg"],
+  );
   decoded.slice(3).forEach((finish) => finish());
   await Promise.all([flags, food]);
   assert.strictEqual(preloadEmojiImages("flags"), flags);
   assert.strictEqual(preloadEmojiImages("food_drink"), food);
-  assert.equal(fetchMock.mock.callCount(), 6, "completed categories must stay warm when the picker reopens");
+  assert.equal(fetchMock.mock.calls.length, 6, "completed categories must stay warm when the picker reopens");
 });
 
 test("message snapshots retain identity until visible contents change", () => {
@@ -302,7 +407,10 @@ test("prepend, send, gap draining, and reset invalidate message snapshots", () =
   assert.equal(timeline.applyEvent(message("3")), "applied");
   const drained = timeline.messages;
   assert.notStrictEqual(drained, sent);
-  assert.deepEqual(drained.map(({ seq }) => seq), ["1", "2", "3", "4", "5"]);
+  assert.deepEqual(
+    drained.map(({ seq }) => seq),
+    ["1", "2", "3", "4", "5"],
+  );
 
   timeline.reset([], "9");
   assert.notStrictEqual(timeline.messages, drained);
@@ -311,37 +419,64 @@ test("prepend, send, gap draining, and reset invalidate message snapshots", () =
 
 test("cached snapshots preserve BigInt ordering, id tie breaks, and immutability", () => {
   const timeline = new ChatTimeline();
-  timeline.reset([
-    message("9007199254740993", "z"),
-    message("9007199254740992", "middle"),
-    message("9007199254740993", "a"),
-  ], "9007199254740993");
+  timeline.reset(
+    [message("9007199254740993", "z"), message("9007199254740992", "middle"), message("9007199254740993", "a")],
+    "9007199254740993",
+  );
   const snapshot = timeline.messages;
 
-  assert.deepEqual(snapshot.map(({ id }) => id), ["middle", "a", "z"]);
+  assert.deepEqual(
+    snapshot.map(({ id }) => id),
+    ["middle", "a", "z"],
+  );
   timeline.mergeSent(message("9007199254740994", "later"));
-  assert.deepEqual(snapshot.map(({ id }) => id), ["middle", "a", "z"], "previous snapshots must not mutate");
-  assert.deepEqual(timeline.messages.map(({ id }) => id), ["middle", "a", "z", "later"]);
+  assert.deepEqual(
+    snapshot.map(({ id }) => id),
+    ["middle", "a", "z"],
+    "previous snapshots must not mutate",
+  );
+  assert.deepEqual(
+    timeline.messages.map(({ id }) => id),
+    ["middle", "a", "z", "later"],
+  );
 });
 
 test("sorted snapshots are reused until visible messages change and never mutate previous snapshots", () => {
   const timeline = new ChatTimeline();
   timeline.reset([message("12"), message("10")], "12");
   const initial = timeline.messages;
-  assert.deepEqual(initial.map((value) => value.seq), ["10", "12"]);
+  assert.deepEqual(
+    initial.map((value) => value.seq),
+    ["10", "12"],
+  );
   assert.equal(timeline.messages, initial, "reading must not repeatedly allocate and sort history");
   timeline.applyEvent(message("12"));
   timeline.applyEvent(message("14"));
   assert.equal(timeline.messages, initial, "duplicates and buffered events leave the visible snapshot intact");
   timeline.prepend([message("9")]);
   const paginated = timeline.messages;
-  assert.deepEqual(paginated.map((value) => value.seq), ["9", "10", "12"]);
+  assert.deepEqual(
+    paginated.map((value) => value.seq),
+    ["9", "10", "12"],
+  );
   timeline.mergeSent(message("15"));
-  assert.deepEqual(timeline.messages.map((value) => value.seq), ["9", "10", "12", "15"]);
+  assert.deepEqual(
+    timeline.messages.map((value) => value.seq),
+    ["9", "10", "12", "15"],
+  );
   timeline.applyEvent(message("13"));
-  assert.deepEqual(timeline.messages.map((value) => value.seq), ["9", "10", "12", "13", "14", "15"]);
-  assert.deepEqual(initial.map((value) => value.seq), ["10", "12"]);
-  assert.deepEqual(paginated.map((value) => value.seq), ["9", "10", "12"]);
+  assert.deepEqual(
+    timeline.messages.map((value) => value.seq),
+    ["9", "10", "12", "13", "14", "15"],
+  );
+  assert.deepEqual(
+    initial.map((value) => value.seq),
+    ["10", "12"],
+  );
+  assert.deepEqual(
+    paginated.map((value) => value.seq),
+    ["9", "10", "12"],
+  );
   timeline.reset([], "0");
   assert.deepEqual(timeline.messages, [], "reset must invalidate even when no messages are merged");
 });
@@ -364,7 +499,12 @@ test("reaction snapshots invalidate cached visible arrays without mutating old s
 
 test("fresh author metadata coexists with newer cached reaction revisions", () => {
   const timeline = new ChatTimeline();
-  const fresh = { ...message("1"), author: { ...message("1").author, name: "Fresh name" }, reactions: [], reactionSeq: "2" };
+  const fresh = {
+    ...message("1"),
+    author: { ...message("1").author, name: "Fresh name" },
+    reactions: [],
+    reactionSeq: "2",
+  };
   const cached = { ...message("1"), reactions: reaction("3").reactions, reactionSeq: "3" };
   timeline.reset([fresh, cached], "2");
   assert.equal(timeline.messages[0].author.name, "Fresh name");
@@ -372,16 +512,41 @@ test("fresh author metadata coexists with newer cached reaction revisions", () =
   assert.equal(timeline.cursor, "2");
 });
 
-function attachmentsEvent(seq: string, status: "processing" | "ready" | "failed", messageId = "message-1"): ChatAttachmentsEvent {
+function attachmentsEvent(
+  seq: string,
+  status: "processing" | "ready" | "failed",
+  messageId = "message-1",
+): ChatAttachmentsEvent {
   return {
-    type: "message.attachments", schemaVersion: 1, channelId: "general", seq, messageId,
-    attachments: [{ id: "f1", kind: "image", contentType: "image/avif", name: "a.avif", size: 1, status,
-      ...(status === "ready" ? { url: "https://cdn.test/original/f1" } : {}) }],
+    type: "message.attachments",
+    schemaVersion: 1,
+    channelId: "general",
+    seq,
+    messageId,
+    attachments: [
+      {
+        id: "f1",
+        kind: "image",
+        contentType: "image/avif",
+        name: "a.avif",
+        size: 1,
+        status,
+        ...(status === "ready" ? { url: "https://cdn.test/original/f1" } : {}),
+      },
+    ],
   };
 }
 
-function withFiles(value: ChatMessage, status: "processing" | "ready" | "failed", attachmentsSeq?: string): ChatMessage {
-  return { ...value, content: { ...value.content, attachments: attachmentsEvent("1", status).attachments }, ...(attachmentsSeq ? { attachmentsSeq } : {}) };
+function withFiles(
+  value: ChatMessage,
+  status: "processing" | "ready" | "failed",
+  attachmentsSeq?: string,
+): ChatMessage {
+  return {
+    ...value,
+    content: { ...value.content, attachments: attachmentsEvent("1", status).attachments },
+    ...(attachmentsSeq ? { attachmentsSeq } : {}),
+  };
 }
 
 const statusOf = (value: ChatMessage) => value.content.attachments?.[0]?.status;
@@ -392,12 +557,20 @@ test("attachment updates replace content in sequence and fill gaps like reaction
   assert.equal(timeline.applyEvent(message("3")), "buffered");
   assert.equal(timeline.applyEvent(attachmentsEvent("2", "ready")), "applied");
   assert.equal(timeline.cursor, "3");
-  assert.deepEqual(timeline.messages.map((m) => m.seq), ["1", "3"], "updates never become messages");
+  assert.deepEqual(
+    timeline.messages.map((m) => m.seq),
+    ["1", "3"],
+    "updates never become messages",
+  );
   assert.equal(statusOf(timeline.messages[0]), "ready");
   assert.equal(timeline.messages[0].attachmentsSeq, "2");
   assert.equal(timeline.messages[0].content.text, "<b>safe 1</b>", "text is kept");
   assert.equal(timeline.applyEvent(attachmentsEvent("2", "processing")), "duplicate");
-  assert.equal(statusOf(timeline.messages[0]), "ready", "a replayed older processing event cannot regress a ready file");
+  assert.equal(
+    statusOf(timeline.messages[0]),
+    "ready",
+    "a replayed older processing event cannot regress a ready file",
+  );
 });
 
 test("history snapshots with a newer attachmentsSeq win over replayed events and stale pages", () => {
@@ -447,11 +620,13 @@ test("thread metadata validators reject invalid roots, broadcasts and summary re
   const root = message("1");
   assert.ok(isChatMessage({ ...root, threadRootId: "root", broadcast: false }));
   for (const invalid of [
-    { ...root, broadcast: true }, { ...root, threadRootId: "" },
+    { ...root, broadcast: true },
+    { ...root, threadRootId: "" },
     { ...root, thread: { replyCount: 1, participants: [root.author], seq: "-1" } },
     { ...root, thread: { replyCount: 0, participants: [root.author], seq: "2" } },
     { ...root, thread: { replyCount: 2, participants: [root.author, root.author], seq: "2" } },
-  ]) assert.equal(isChatMessage(invalid), false);
+  ])
+    assert.equal(isChatMessage(invalid), false);
 });
 
 test("attachment updates reach pinned copies, thread replies and survive pin snapshots", () => {
@@ -477,13 +652,27 @@ test("content edits never regress a newer attachment processing result", () => {
   timeline.reset([root], "1");
   timeline.applyEvent(attachmentsEvent("2", "ready"));
   // The edit committed before processing finished, so it still carries "processing".
-  const edited = { ...root, revision: 2, editSeq: "3", editedAt: "2026-10-06T13:00:00Z", content: { ...root.content, text: "edited" } };
-  assert.equal(timeline.applyEvent({ type: "message.edited", schemaVersion: 1, channelId: "general", seq: "3", message: edited }), "applied");
+  const edited = {
+    ...root,
+    revision: 2,
+    editSeq: "3",
+    editedAt: "2026-10-06T13:00:00Z",
+    content: { ...root.content, text: "edited" },
+  };
+  assert.equal(
+    timeline.applyEvent({ type: "message.edited", schemaVersion: 1, channelId: "general", seq: "3", message: edited }),
+    "applied",
+  );
   assert.equal(timeline.messages[0].content.text, "edited");
   assert.equal(statusOf(timeline.messages[0]), "ready");
   assert.equal(timeline.messages[0].attachmentsSeq, "2");
   // A later edit snapshot that already reflects a newer result is taken whole.
-  timeline.mergeEdit({ ...withFiles(edited, "failed", "4"), revision: 3, editSeq: "5", content: { ...withFiles(edited, "failed").content, text: "again" } });
+  timeline.mergeEdit({
+    ...withFiles(edited, "failed", "4"),
+    revision: 3,
+    editSeq: "5",
+    content: { ...withFiles(edited, "failed").content, text: "again" },
+  });
   assert.equal(timeline.messages[0].content.text, "again");
   assert.equal(statusOf(timeline.messages[0]), "failed");
   assert.equal(timeline.messages[0].attachmentsSeq, "4");

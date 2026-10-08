@@ -8,7 +8,12 @@ const text = (value: string) => new Uint8Array([...value].map((char) => char.cha
 
 // ---- MP4 / QuickTime ----------------------------------------------------------
 
-interface Box { type: string; start: number; header: number; end: number }
+interface Box {
+  type: string;
+  start: number;
+  header: number;
+  end: number;
+}
 
 async function readBox(file: Blob, start: number, limit: number): Promise<Box | undefined> {
   if (start + 8 > limit) return;
@@ -16,7 +21,8 @@ async function readBox(file: Blob, start: number, limit: number): Promise<Box | 
   const view = new DataView(head.buffer);
   const size32 = view.getUint32(0);
   const type = String.fromCharCode(...head.subarray(4, 8));
-  let size = size32, header = 8;
+  let size = size32,
+    header = 8;
   if (size32 === 1) {
     if (head.length < 16) return;
     size = Number(view.getBigUint64(8));
@@ -106,10 +112,32 @@ export function exifOrientation(app1: Uint8Array): number | undefined {
 export function orientationSegment(orientation: number) {
   const payload = new Uint8Array([
     ...text("Exif\0\0"),
-    0x4d, 0x4d, 0x00, 0x2a, 0x00, 0x00, 0x00, 0x08, // big-endian TIFF, IFD0 at 8
-    0x00, 0x01, // one entry
-    0x01, 0x12, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0x00, orientation, 0x00, 0x00, // Orientation SHORT
-    0x00, 0x00, 0x00, 0x00, // no next IFD
+    0x4d,
+    0x4d,
+    0x00,
+    0x2a,
+    0x00,
+    0x00,
+    0x00,
+    0x08, // big-endian TIFF, IFD0 at 8
+    0x00,
+    0x01, // one entry
+    0x01,
+    0x12,
+    0x00,
+    0x03,
+    0x00,
+    0x00,
+    0x00,
+    0x01,
+    0x00,
+    orientation,
+    0x00,
+    0x00, // Orientation SHORT
+    0x00,
+    0x00,
+    0x00,
+    0x00, // no next IFD
   ]);
   const length = payload.length + 2;
   return new Uint8Array([0xff, 0xe1, length >> 8, length & 0xff, ...payload]);
@@ -132,7 +160,10 @@ export async function stripJpegMetadata(file: Blob): Promise<Blob> {
     for (;;) {
       if (offset + 4 > head.length || head[offset] !== 0xff) return file;
       const marker = head[offset + 1];
-      if (marker === 0xff) { offset++; continue; } // fill byte
+      if (marker === 0xff) {
+        offset++;
+        continue;
+      } // fill byte
       if (marker === 0xda) break; // start of scan: the rest is image data
       if (marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7) || marker === 0x01) return file;
       const length = (head[offset + 2] << 8) | head[offset + 3];
@@ -141,9 +172,11 @@ export async function stripJpegMetadata(file: Blob): Promise<Blob> {
       const segment = head.subarray(offset, end);
       const payload = segment.subarray(4);
       const app = marker >= 0xe0 && marker <= 0xef;
-      const keep = !app && marker !== 0xfe
-        || marker === 0xe0 || marker === 0xee
-        || (marker === 0xe2 && ascii(payload, 0, "ICC_PROFILE\0"));
+      const keep =
+        (!app && marker !== 0xfe) ||
+        marker === 0xe0 ||
+        marker === 0xee ||
+        (marker === 0xe2 && ascii(payload, 0, "ICC_PROFILE\0"));
       if (marker === 0xe1) orientation ??= exifOrientation(payload);
       if (keep) {
         kept.push(segment);
@@ -155,7 +188,7 @@ export async function stripJpegMetadata(file: Blob): Promise<Blob> {
     }
     if (!removed) return file;
     if (orientation && orientation !== 1) kept.splice(insertAt, 0, orientationSegment(orientation));
-    return new Blob([...kept as BlobPart[], file.slice(offset)], { type: file.type });
+    return new Blob([...(kept as BlobPart[]), file.slice(offset)], { type: file.type });
   } catch {
     return file;
   }
@@ -194,9 +227,17 @@ export async function stripPngMetadata(file: Blob): Promise<Blob> {
 /** Strips what the container allows for an original upload of `contentType`. */
 export function stripMetadata(file: Blob, contentType: string): Promise<Blob> {
   switch (contentType) {
-    case "image/jpeg": return stripJpegMetadata(file);
-    case "image/png": return stripPngMetadata(file);
-    case "video/mp4": case "video/quicktime": case "video/3gpp": case "audio/mp4": case "audio/x-m4a": return stripMp4Metadata(file);
-    default: return Promise.resolve(file);
+    case "image/jpeg":
+      return stripJpegMetadata(file);
+    case "image/png":
+      return stripPngMetadata(file);
+    case "video/mp4":
+    case "video/quicktime":
+    case "video/3gpp":
+    case "audio/mp4":
+    case "audio/x-m4a":
+      return stripMp4Metadata(file);
+    default:
+      return Promise.resolve(file);
   }
 }

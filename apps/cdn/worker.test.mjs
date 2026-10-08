@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
-import { test } from "node:test";
+import { test } from "vitest";
 import worker, { sign } from "./worker.mjs";
 
 const SECRET = "0123456789abcdef0123456789abcdef";
@@ -36,8 +36,14 @@ function bucket(objects) {
 const env = {
   ASSET_CDN_SIGNING_SECRET: SECRET,
   MEDIA: bucket({
-    "original/abc": { body: new TextEncoder().encode("0123456789"), headers: { "content-type": "image/png", "content-disposition": "attachment; filename=\"a.png\"" } },
-    "original/doc": { body: new TextEncoder().encode("<html>"), headers: { "content-type": "text/html", "content-disposition": "attachment; filename=\"page.html\"" } },
+    "original/abc": {
+      body: new TextEncoder().encode("0123456789"),
+      headers: { "content-type": "image/png", "content-disposition": 'attachment; filename="a.png"' },
+    },
+    "original/doc": {
+      body: new TextEncoder().encode("<html>"),
+      headers: { "content-type": "text/html", "content-disposition": 'attachment; filename="page.html"' },
+    },
   }),
 };
 
@@ -65,11 +71,14 @@ test("valid URLs stream allowlisted media inline", async () => {
 test("other types download as opaque bytes with their name", async () => {
   const response = await worker.fetch(new Request(await signed("original/doc")), env);
   assert.equal(response.headers.get("content-type"), "application/octet-stream");
-  assert.equal(response.headers.get("content-disposition"), "attachment; filename=\"page.html\"");
+  assert.equal(response.headers.get("content-disposition"), 'attachment; filename="page.html"');
 });
 
 test("ranges return partial content for video seeking", async () => {
-  const response = await worker.fetch(new Request(await signed("original/abc"), { headers: { range: "bytes=2-5" } }), env);
+  const response = await worker.fetch(
+    new Request(await signed("original/abc"), { headers: { range: "bytes=2-5" } }),
+    env,
+  );
   assert.equal(response.status, 206);
   assert.equal(response.headers.get("content-range"), "bytes 2-5/10");
   assert.equal(await response.text(), "2345");

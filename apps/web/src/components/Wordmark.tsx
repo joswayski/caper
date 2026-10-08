@@ -4,8 +4,10 @@ import { dailyIconUrl } from "./daily-icon";
 
 export default function Wordmark({ rotating = true }: { rotating?: boolean }) {
   const index = useContext(DailyIconContext);
-  return <a className="wordmark" href="/" aria-label="Caper home">
-    <img src="/caper-wordmark-letters.svg" alt="" width="1042" height="276" />
-    <img className="wordmark-character" src={dailyIconUrl(rotating ? index : null)} alt="" width="256" height="256" />
-  </a>;
+  return (
+    <a className="wordmark" href="/" aria-label="Caper home">
+      <img src="/caper-wordmark-letters.svg" alt="" width="1042" height="276" />
+      <img className="wordmark-character" src={dailyIconUrl(rotating ? index : null)} alt="" width="256" height="256" />
+    </a>
+  );
 }

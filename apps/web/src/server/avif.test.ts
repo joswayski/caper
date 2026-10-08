@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { AVIF_OPTIONS, encodeAvif, isAvif, tagSrgb } from "../chat/avif.ts";
 
 // The single-threaded libavif build the worker uses, handed its compiled WASM
@@ -16,14 +16,15 @@ await decoder.init(await WebAssembly.compile(await readFile(join(root, "codec/de
 /** A photo-like image: smooth gradients with some fine texture, opaque. */
 function photo(width: number, height: number) {
   const rgba = new Uint8ClampedArray(width * height * 4);
-  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
-    const i = (y * width + x) * 4;
-    const grain = ((x * 31 + y * 17) % 7) - 3;
-    rgba[i] = 40 + (x * 160) / width + grain;
-    rgba[i + 1] = 60 + (y * 140) / height + grain;
-    rgba[i + 2] = 128 + 80 * Math.sin((x + y) / 23) + grain;
-    rgba[i + 3] = 255;
-  }
+  for (let y = 0; y < height; y++)
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      const grain = ((x * 31 + y * 17) % 7) - 3;
+      rgba[i] = 40 + (x * 160) / width + grain;
+      rgba[i + 1] = 60 + (y * 140) / height + grain;
+      rgba[i + 2] = 128 + 80 * Math.sin((x + y) / 23) + grain;
+      rgba[i + 3] = 255;
+    }
   return rgba;
 }
 
@@ -57,7 +58,10 @@ test("photos encode as 8-bit 4:2:0 AVIF the API accepts, without metadata, close
   assert.equal(av1C[2] & 0x60, 0, "8-bit");
   assert.equal(av1C[2] & 0x1c, 0x0c, "4:2:0, not monochrome");
   const ispe = box(avif, "ispe")!;
-  assert.deepEqual([new DataView(ispe.buffer, ispe.byteOffset).getUint32(4), new DataView(ispe.buffer, ispe.byteOffset).getUint32(8)], [width, height]);
+  assert.deepEqual(
+    [new DataView(ispe.buffer, ispe.byteOffset).getUint32(4), new DataView(ispe.buffer, ispe.byteOffset).getUint32(8)],
+    [width, height],
+  );
   for (const meta of ["Exif", "mime"]) assert.equal(box(avif, meta), undefined, `no ${meta}`);
   assert.equal(box(avif, "auxC"), undefined, "an opaque photo has no alpha plane");
 
@@ -65,10 +69,11 @@ test("photos encode as 8-bit 4:2:0 AVIF the API accepts, without metadata, close
   assert.deepEqual(decoded.data, (await decoder.default(raw)).data, "tagging changes no pixels");
   assert.deepEqual([decoded.width, decoded.height], [width, height]);
   let squared = 0;
-  for (let i = 0; i < rgba.length; i += 4) for (let c = 0; c < 3; c++) squared += (rgba[i + c] - decoded.data[i + c]) ** 2;
+  for (let i = 0; i < rgba.length; i += 4)
+    for (let c = 0; c < 3; c++) squared += (rgba[i + c] - decoded.data[i + c]) ** 2;
   const psnr = 10 * Math.log10(255 ** 2 / (squared / (width * height * 3)));
   assert.ok(psnr > 38, `PSNR ${psnr.toFixed(1)} dB`);
-  assert.ok(avif.length < width * height * 3 / 8, `${avif.length} bytes`);
+  assert.ok(avif.length < (width * height * 3) / 8, `${avif.length} bytes`);
 
   // A lower quality is smaller: the server's avifQuality reaches libavif.
   assert.ok((codec.encode(rgba, width, height, { ...AVIF_OPTIONS, quality: 40 }) as Uint8Array).length < avif.length);

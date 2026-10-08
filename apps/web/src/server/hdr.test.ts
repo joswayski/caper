@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { BT2020_TO_BT709, HDR_PEAK_NITS, SDR_REFERENCE_NITS, bt709Oetf, hable, hlgOotf, hlgToScene, pqToNits, supportedHdrFrameFormat, toneMapPixel } from "../chat/hdr.ts";
+import { test } from "vitest";
+import {
+  BT2020_TO_BT709,
+  HDR_PEAK_NITS,
+  SDR_REFERENCE_NITS,
+  bt709Oetf,
+  hable,
+  hlgOotf,
+  hlgToScene,
+  pqToNits,
+  supportedHdrFrameFormat,
+  toneMapPixel,
+} from "../chat/hdr.ts";
 
 const near = (actual: number, expected: number, tolerance: number, message?: string) =>
   assert.ok(Math.abs(actual - expected) <= tolerance, `${message ?? ""} ${actual} ≉ ${expected}`);
@@ -28,11 +39,15 @@ test("Hable reaches 1 at the peak, is monotonic, and BT.709 OETF matches the spe
   near(hable(peak), 1, 1e-9);
   assert.equal(hable(peak * 4), 1);
   let last = -1;
-  for (let x = 0; x <= peak; x += 0.25) { assert.ok(hable(x) > last); last = hable(x); }
+  for (let x = 0; x <= peak; x += 0.25) {
+    assert.ok(hable(x) > last);
+    last = hable(x);
+  }
   near(bt709Oetf(0.01), 0.045, 1e-9);
   near(bt709Oetf(1), 1, 1e-9);
   // Each row of the primaries matrix sums to 1: white stays white.
-  for (let row = 0; row < 3; row++) near(BT2020_TO_BT709[row * 3] + BT2020_TO_BT709[row * 3 + 1] + BT2020_TO_BT709[row * 3 + 2], 1, 2e-3);
+  for (let row = 0; row < 3; row++)
+    near(BT2020_TO_BT709[row * 3] + BT2020_TO_BT709[row * 3 + 1] + BT2020_TO_BT709[row * 3 + 2], 1, 2e-3);
 });
 
 test("tone mapped pixels: neutral stays neutral, black stays black, reference white is bright, primaries stay saturated", () => {

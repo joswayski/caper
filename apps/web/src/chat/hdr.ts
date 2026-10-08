@@ -22,7 +22,13 @@ export const SDR_REFERENCE_NITS = 100;
 export const HDR_PEAK_NITS = 1000;
 const HLG_GAMMA = 1.2; // BT.2100 system gamma at a 1000-nit nominal peak
 
-const PQ = { m1: 2610 / 16384, m2: 2523 / 4096 * 128, c1: 3424 / 4096, c2: 2413 / 4096 * 32, c3: 2392 / 4096 * 32 };
+const PQ = {
+  m1: 2610 / 16384,
+  m2: (2523 / 4096) * 128,
+  c1: 3424 / 4096,
+  c2: (2413 / 4096) * 32,
+  c3: (2392 / 4096) * 32,
+};
 const HLG = { a: 0.17883277, b: 0.28466892, c: 0.55991073 };
 const HABLE = { A: 0.15, B: 0.5, C: 0.1, D: 0.2, E: 0.02, F: 0.3 };
 
@@ -35,7 +41,7 @@ export function pqToNits(signal: number) {
 /** ARIB STD-B67 inverse OETF: signal [0, 1] to normalized scene light [0, 1]. */
 export function hlgToScene(signal: number) {
   const e = Math.max(signal, 0);
-  return e <= 0.5 ? e * e / 3 : (Math.exp((e - HLG.c) / HLG.a) + HLG.b) / 12;
+  return e <= 0.5 ? (e * e) / 3 : (Math.exp((e - HLG.c) / HLG.a) + HLG.b) / 12;
 }
 
 /** BT.2100 HLG OOTF: scene-light RGB (BT.2020) to display nits. */
@@ -62,36 +68,58 @@ export function bt709Oetf(linear: number) {
 }
 
 /** Linear BT.2020 RGB to linear BT.709 RGB (ITU-R BT.2087). Row-major. */
-export const BT2020_TO_BT709 = [
-  1.6605, -0.5876, -0.0728,
-  -0.1246, 1.1329, -0.0083,
-  -0.0182, -0.1006, 1.1187,
-] as const;
+export const BT2020_TO_BT709 = [1.6605, -0.5876, -0.0728, -0.1246, 1.1329, -0.0083, -0.0182, -0.1006, 1.1187] as const;
 
 /** Full CPU reference of the shader for one limited-range 10-bit BT.2020 pixel;
  * returns limited-range 8-bit BT.709 Y'CbCr. */
-export function toneMapPixel(y: number, cb: number, cr: number, transfer: HdrTransfer, bitDepth = 10, referenceNits = SDR_REFERENCE_NITS): [number, number, number] {
+export function toneMapPixel(
+  y: number,
+  cb: number,
+  cr: number,
+  transfer: HdrTransfer,
+  bitDepth = 10,
+  referenceNits = SDR_REFERENCE_NITS,
+): [number, number, number] {
   const scale = 2 ** (bitDepth - 8);
-  const Y = (y - 16 * scale) / (219 * scale), U = (cb - 128 * scale) / (224 * scale), V = (cr - 128 * scale) / (224 * scale);
-  const signal = [Y + 1.4746 * V, Y - 0.16455 * U - 0.57135 * V, Y + 1.8814 * U].map((v) => Math.min(Math.max(v, 0), 1)) as [number, number, number];
-  const nits = transfer === "pq" ? signal.map(pqToNits) as [number, number, number] : hlgOotf(signal.map(hlgToScene) as [number, number, number]);
+  const Y = (y - 16 * scale) / (219 * scale),
+    U = (cb - 128 * scale) / (224 * scale),
+    V = (cr - 128 * scale) / (224 * scale);
+  const signal = [Y + 1.4746 * V, Y - 0.16455 * U - 0.57135 * V, Y + 1.8814 * U].map((v) =>
+    Math.min(Math.max(v, 0), 1),
+  ) as [number, number, number];
+  const nits =
+    transfer === "pq"
+      ? (signal.map(pqToNits) as [number, number, number])
+      : hlgOotf(signal.map(hlgToScene) as [number, number, number]);
   const m = BT2020_TO_BT709;
   const rel = nits.map((n) => n / referenceNits);
-  const rgb = [0, 1, 2].map((row) => Math.max(0, m[row * 3] * rel[0] + m[row * 3 + 1] * rel[1] + m[row * 3 + 2] * rel[2]));
+  const rgb = [0, 1, 2].map((row) =>
+    Math.max(0, m[row * 3] * rel[0] + m[row * 3 + 1] * rel[1] + m[row * 3 + 2] * rel[2]),
+  );
   const peak = Math.max(...rgb);
   const gain = peak > 0 ? hable(peak, HDR_PEAK_NITS / referenceNits) / peak : 0;
   const [r, g, b] = rgb.map((v) => bt709Oetf(v * gain));
   const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-  return [Math.round(16 + 219 * luma), Math.round(128 + 224 * (b - luma) / 1.8556), Math.round(128 + 224 * (r - luma) / 1.5748)];
+  return [
+    Math.round(16 + 219 * luma),
+    Math.round(128 + (224 * (b - luma)) / 1.8556),
+    Math.round(128 + (224 * (r - luma)) / 1.5748),
+  ];
 }
 
 // ---- WebGL2 ---------------------------------------------------------------
 
 /** Pixel formats whose planes the mapper can read. */
 const FORMATS: Record<string, { depth: number; chroma: [number, number]; nv12?: boolean }> = {
-  I420: { depth: 8, chroma: [1, 1] }, I420P10: { depth: 10, chroma: [1, 1] }, I420P12: { depth: 12, chroma: [1, 1] },
-  I422: { depth: 8, chroma: [1, 0] }, I422P10: { depth: 10, chroma: [1, 0] }, I422P12: { depth: 12, chroma: [1, 0] },
-  I444: { depth: 8, chroma: [0, 0] }, I444P10: { depth: 10, chroma: [0, 0] }, I444P12: { depth: 12, chroma: [0, 0] },
+  I420: { depth: 8, chroma: [1, 1] },
+  I420P10: { depth: 10, chroma: [1, 1] },
+  I420P12: { depth: 12, chroma: [1, 1] },
+  I422: { depth: 8, chroma: [1, 0] },
+  I422P10: { depth: 10, chroma: [1, 0] },
+  I422P12: { depth: 12, chroma: [1, 0] },
+  I444: { depth: 8, chroma: [0, 0] },
+  I444P10: { depth: 10, chroma: [0, 0] },
+  I444P12: { depth: 12, chroma: [0, 0] },
   NV12: { depth: 8, chroma: [1, 1], nv12: true },
 };
 
@@ -185,7 +213,12 @@ export interface HdrFrameSource {
   codedWidth: number;
   codedHeight: number;
   visibleRect: { left: number; top: number; width: number; height: number } | null;
-  colorSpace: { fullRange?: boolean | null; matrix?: string | null; primaries?: string | null; transfer?: string | null };
+  colorSpace: {
+    fullRange?: boolean | null;
+    matrix?: string | null;
+    primaries?: string | null;
+    transfer?: string | null;
+  };
   allocationSize(): number;
   copyTo(destination: Uint8Array): Promise<Array<{ offset: number; stride: number }>>;
 }
@@ -199,7 +232,10 @@ export interface I420Frame {
 
 function compile(gl: WebGL2RenderingContext, vertex: string, fragment: string) {
   const program = gl.createProgram()!;
-  for (const [type, source] of [[gl.VERTEX_SHADER, vertex], [gl.FRAGMENT_SHADER, fragment]] as const) {
+  for (const [type, source] of [
+    [gl.VERTEX_SHADER, vertex],
+    [gl.FRAGMENT_SHADER, fragment],
+  ] as const) {
     const shader = gl.createShader(type)!;
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
@@ -218,7 +254,12 @@ const columnMajor = (m: readonly number[]) => [m[0], m[3], m[6], m[1], m[4], m[7
 function yuvMatrix(matrix: string | null | undefined) {
   const [kr, kb] = matrix === "bt709" ? [0.2126, 0.0722] : [0.2627, 0.0593];
   const kg = 1 - kr - kb;
-  return { kr, kg, kb, rows: [1, 0, 2 * (1 - kr), 1, -2 * kb * (1 - kb) / kg, -2 * kr * (1 - kr) / kg, 1, 2 * (1 - kb), 0] };
+  return {
+    kr,
+    kg,
+    kb,
+    rows: [1, 0, 2 * (1 - kr), 1, (-2 * kb * (1 - kb)) / kg, (-2 * kr * (1 - kr)) / kg, 1, 2 * (1 - kb), 0],
+  };
 }
 
 /** Converts decoded HDR frames to SDR BT.709 I420 at `width`×`height`. Throws
@@ -231,7 +272,13 @@ export class HdrToneMapper {
   private readonly planes: WebGLTexture[];
   private readonly linear: WebGLTexture;
   private readonly linearFramebuffer: WebGLFramebuffer;
-  private readonly outputs: Array<{ texture: WebGLTexture; framebuffer: WebGLFramebuffer; texels: number; rows: number; size: [number, number] }>;
+  private readonly outputs: Array<{
+    texture: WebGLTexture;
+    framebuffer: WebGLFramebuffer;
+    texels: number;
+    rows: number;
+    size: [number, number];
+  }>;
   private linearSize: [number, number] = [0, 0];
   private staging = new Uint8Array(0);
   readonly layout: Array<{ offset: number; stride: number }>;
@@ -247,8 +294,14 @@ export class HdrToneMapper {
     this.transfer = transfer;
     if (width % 2 || height % 2) throw new Error("I420 output needs even dimensions");
     const canvas = new OffscreenCanvas(1, 1);
-    const gl = canvas.getContext("webgl2", { antialias: false, depth: false, stencil: false, premultipliedAlpha: false });
-    if (!gl || !gl.getExtension("EXT_color_buffer_float")) throw new Error("WebGL2 with float render targets is unavailable");
+    const gl = canvas.getContext("webgl2", {
+      antialias: false,
+      depth: false,
+      stencil: false,
+      premultipliedAlpha: false,
+    });
+    if (!gl || !gl.getExtension("EXT_color_buffer_float"))
+      throw new Error("WebGL2 with float render targets is unavailable");
     this.gl = gl;
     this.decode = compile(gl, VERTEX, DECODE);
     this.encode = compile(gl, VERTEX, ENCODE);
@@ -295,25 +348,48 @@ export class HdrToneMapper {
     const levels = Math.floor(Math.log2(Math.max(width, height))) + 1;
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, width, height, 0, gl.RGBA, gl.HALF_FLOAT, null);
     for (let level = 1, w = width, h = height; level < levels; level++) {
-      w = Math.max(1, w >> 1); h = Math.max(1, h >> 1);
+      w = Math.max(1, w >> 1);
+      h = Math.max(1, h >> 1);
       gl.texImage2D(gl.TEXTURE_2D, level, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.linearFramebuffer);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.linear, 0);
-    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error("RGBA16F is not renderable");
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE)
+      throw new Error("RGBA16F is not renderable");
     this.linearSize = [width, height];
   }
 
-  private upload(index: number, bytes: Uint8Array, offset: number, stride: number, width: number, height: number, depth: number, channels: 1 | 2) {
+  private upload(
+    index: number,
+    bytes: Uint8Array,
+    offset: number,
+    stride: number,
+    width: number,
+    height: number,
+    depth: number,
+    channels: 1 | 2,
+  ) {
     const gl = this.gl;
     gl.activeTexture(gl.TEXTURE0 + index);
     gl.bindTexture(gl.TEXTURE_2D, this.planes[index]);
     const wide = depth > 8;
-    const data = wide ? new Uint16Array(bytes.buffer, bytes.byteOffset + offset, (stride * (height - 1)) / 2 + width * channels) : bytes.subarray(offset, offset + stride * (height - 1) + width * channels);
+    const data = wide
+      ? new Uint16Array(bytes.buffer, bytes.byteOffset + offset, (stride * (height - 1)) / 2 + width * channels)
+      : bytes.subarray(offset, offset + stride * (height - 1) + width * channels);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.pixelStorei(gl.UNPACK_ROW_LENGTH, wide ? stride / 2 / channels : stride / channels);
-    const internal = channels === 2 ? (wide ? gl.RG16UI : gl.RG8UI) : (wide ? gl.R16UI : gl.R8UI);
-    gl.texImage2D(gl.TEXTURE_2D, 0, internal, width, height, 0, channels === 2 ? gl.RG_INTEGER : gl.RED_INTEGER, wide ? gl.UNSIGNED_SHORT : gl.UNSIGNED_BYTE, data);
+    const internal = channels === 2 ? (wide ? gl.RG16UI : gl.RG8UI) : wide ? gl.R16UI : gl.R8UI;
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      internal,
+      width,
+      height,
+      0,
+      channels === 2 ? gl.RG_INTEGER : gl.RED_INTEGER,
+      wide ? gl.UNSIGNED_SHORT : gl.UNSIGNED_BYTE,
+      data,
+    );
     gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
   }
 
@@ -328,7 +404,8 @@ export class HdrToneMapper {
     const { codedWidth: w, codedHeight: h } = frame;
     const rect = frame.visibleRect ?? { left: 0, top: 0, width: w, height: h };
     this.ensureLinear(rect.width, rect.height);
-    const cw = info.chroma[0] ? Math.ceil(w / 2) : w, ch = info.chroma[1] ? Math.ceil(h / 2) : h;
+    const cw = info.chroma[0] ? Math.ceil(w / 2) : w,
+      ch = info.chroma[1] ? Math.ceil(h / 2) : h;
     this.upload(0, this.staging, layout[0].offset, layout[0].stride, w, h, info.depth, 1);
     if (info.nv12) this.upload(1, this.staging, layout[1].offset, layout[1].stride, cw, ch, 8, 2);
     else {
@@ -338,18 +415,28 @@ export class HdrToneMapper {
 
     gl.useProgram(this.decode);
     const u = (name: string) => gl.getUniformLocation(this.decode, name);
-    gl.uniform1i(u("planeY"), 0); gl.uniform1i(u("planeU"), 1); gl.uniform1i(u("planeV"), 2);
+    gl.uniform1i(u("planeY"), 0);
+    gl.uniform1i(u("planeU"), 1);
+    gl.uniform1i(u("planeV"), 2);
     gl.uniform1i(u("nv12"), info.nv12 ? 1 : 0);
     gl.uniform2i(u("chromaShift"), info.chroma[0], info.chroma[1]);
     gl.uniform2i(u("origin"), rect.left, rect.top);
-    const scale = 2 ** (info.depth - 8), max = 2 ** info.depth - 1;
-    gl.uniform4fv(u("range"), frame.colorSpace.fullRange ? [0, max, 2 ** (info.depth - 1), max] : [16 * scale, 219 * scale, 128 * scale, 224 * scale]);
+    const scale = 2 ** (info.depth - 8),
+      max = 2 ** info.depth - 1;
+    gl.uniform4fv(
+      u("range"),
+      frame.colorSpace.fullRange
+        ? [0, max, 2 ** (info.depth - 1), max]
+        : [16 * scale, 219 * scale, 128 * scale, 224 * scale],
+    );
     const yuv = yuvMatrix(frame.colorSpace.matrix);
     gl.uniformMatrix3fv(u("yuvToRgb"), false, columnMajor(yuv.rows));
     gl.uniformMatrix3fv(u("primaries"), false, columnMajor(BT2020_TO_BT709));
     gl.uniform1i(u("convertPrimaries"), frame.colorSpace.primaries === "bt709" ? 0 : 1);
     gl.uniform1i(u("hlg"), this.transfer === "hlg" ? 1 : 0);
-    gl.uniform1f(u("lumaR"), yuv.kr); gl.uniform1f(u("lumaG"), yuv.kg); gl.uniform1f(u("lumaB"), yuv.kb);
+    gl.uniform1f(u("lumaR"), yuv.kr);
+    gl.uniform1f(u("lumaG"), yuv.kg);
+    gl.uniform1f(u("lumaB"), yuv.kb);
     gl.uniform1f(u("referenceNits"), SDR_REFERENCE_NITS);
     gl.uniform1f(u("peakNits"), HDR_PEAK_NITS);
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.linearFramebuffer);

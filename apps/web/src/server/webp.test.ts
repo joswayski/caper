@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { deflateSync } from "node:zlib";
 import { LOSSLESS_WEBP_OPTIONS, iccProfile, pngBitDepth, webpWithIcc } from "../chat/webp.ts";
 
@@ -17,13 +17,14 @@ await decoder.init(await WebAssembly.compile(await readFile(join(root, "codec/de
 /** A screenshot-like image: gradients, anti-aliased edges, transparent holes. */
 function sample(width: number, height: number) {
   const rgba = new Uint8ClampedArray(width * height * 4);
-  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
-    const i = (y * width + x) * 4;
-    rgba[i] = (x * 7 + y) & 0xff;
-    rgba[i + 1] = (y * 3) & 0xff;
-    rgba[i + 2] = (x ^ y) & 0xff;
-    rgba[i + 3] = (x + y) % 17 === 0 ? 0 : 255;
-  }
+  for (let y = 0; y < height; y++)
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      rgba[i] = (x * 7 + y) & 0xff;
+      rgba[i + 1] = (y * 3) & 0xff;
+      rgba[i + 2] = (x ^ y) & 0xff;
+      rgba[i + 3] = (x + y) % 17 === 0 ? 0 : 255;
+    }
   return rgba;
 }
 
@@ -53,7 +54,13 @@ test("ICC profiles are read from PNG iCCP chunks and bit depth from IHDR", async
   const profile = new Uint8Array(64).map((_, i) => 255 - i);
   const iccp = [...ascii("Display P3"), 0, 0, ...deflateSync(profile)];
   const chunk = (type: string, data: number[]) => [...be32(data.length), ...ascii(type), ...data, 0, 0, 0, 0];
-  const png = new Uint8Array([0x89, ...ascii("PNG\r\n\x1a\n"), ...chunk("IHDR", [...be32(1), ...be32(1), 8, 6, 0, 0, 0]), ...chunk("iCCP", iccp), ...chunk("IEND", [])]);
+  const png = new Uint8Array([
+    0x89,
+    ...ascii("PNG\r\n\x1a\n"),
+    ...chunk("IHDR", [...be32(1), ...be32(1), 8, 6, 0, 0, 0]),
+    ...chunk("iCCP", iccp),
+    ...chunk("IEND", []),
+  ]);
   assert.deepEqual(await iccProfile(png), profile);
   assert.equal(pngBitDepth(png), 8);
 });

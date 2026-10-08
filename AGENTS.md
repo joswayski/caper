@@ -30,7 +30,7 @@ Adapted from the conventions in `joswayski/captures`.
 ## Documentation and validation
 
 - Leave README accurate and concise. Put operational detail in `docs/media.md`; maintain an honest platform/test matrix.
-- Run `npm run check` and `npm test --workspace @caper/web`; for Rust, `cargo fmt --all -- --check`, `cargo test --workspace`, and `cargo clippy --workspace --all-targets -- -D warnings`.
+- Run `npm run check` (Oxlint, Oxfmt, Vite build and native TypeScript 7 typecheck) and `npm test` (Vitest web and shared native-support tests); use `npm run fmt` to format first-party JS/TS/CSS. For Rust, run `cargo fmt --all -- --check`, `cargo test --workspace`, and `cargo clippy --workspace --all-targets -- -D warnings`.
 - Build changed Docker images when a daemon is available; otherwise validate build stages directly and report the limitation.
 - Never equate mocks with live SFU validation. Record multi-network/TURN, sustained voice, and physical device checks separately.
 - Use focused, ready-for-review GitHub PRs, not direct default-branch pushes. Include exact post-merge operator commands for deployment/configuration changes.

@@ -12,7 +12,11 @@ const ascii = (bytes: Uint8Array, offset: number, text: string) =>
   offset + text.length <= bytes.length && [...text].every((char, i) => bytes[offset + i] === char.charCodeAt(0));
 
 /** Encodes RGBA losslessly in a worker; undefined when unavailable or failed. */
-export function encodeLosslessWebp(rgba: Uint8ClampedArray, width: number, height: number): Promise<Uint8Array | undefined> {
+export function encodeLosslessWebp(
+  rgba: Uint8ClampedArray,
+  width: number,
+  height: number,
+): Promise<Uint8Array | undefined> {
   if (typeof Worker === "undefined" || typeof WebAssembly === "undefined") return Promise.resolve(undefined);
   return new Promise((resolve) => {
     let worker: Worker;
@@ -22,8 +26,12 @@ export function encodeLosslessWebp(rgba: Uint8ClampedArray, width: number, heigh
       resolve(undefined);
       return;
     }
-    const done = (value?: Uint8Array) => { worker.terminate(); resolve(value); };
-    worker.onmessage = (event: MessageEvent<{ output?: ArrayBuffer }>) => done(event.data.output ? new Uint8Array(event.data.output) : undefined);
+    const done = (value?: Uint8Array) => {
+      worker.terminate();
+      resolve(value);
+    };
+    worker.onmessage = (event: MessageEvent<{ output?: ArrayBuffer }>) =>
+      done(event.data.output ? new Uint8Array(event.data.output) : undefined);
     worker.onerror = () => done();
     // Copy rather than transfer: the caller still needs the pixels.
     worker.postMessage({ rgba, width, height, options: LOSSLESS_WEBP_OPTIONS });
@@ -69,7 +77,8 @@ export async function iccProfile(bytes: Uint8Array): Promise<Uint8Array | undefi
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   for (let offset = 12; offset + 8 <= bytes.length;) {
     const size = view.getUint32(offset + 4, true);
-    if (ascii(bytes, offset, "ICCP")) return offset + 8 + size <= bytes.length ? bytes.slice(offset + 8, offset + 8 + size) : undefined;
+    if (ascii(bytes, offset, "ICCP"))
+      return offset + 8 + size <= bytes.length ? bytes.slice(offset + 8, offset + 8 + size) : undefined;
     offset += 8 + size + (size & 1);
   }
 }
@@ -85,18 +94,26 @@ export function webpWithIcc(webp: Uint8Array, icc: Uint8Array, width: number, he
   const image = webp.subarray(12);
   // VP8L header: signature byte, 14+14 bits of size, then the alpha_is_used bit.
   const alpha = image.length > 12 && (image[8 + 4] & 0x10) !== 0;
-  const vp8x = [..."VP8X"].map((c) => c.charCodeAt(0)).concat(le32(10), [0x20 | (alpha ? 0x10 : 0), 0, 0, 0], le24(width - 1), le24(height - 1));
+  const vp8x = [..."VP8X"]
+    .map((c) => c.charCodeAt(0))
+    .concat(le32(10), [0x20 | (alpha ? 0x10 : 0), 0, 0, 0], le24(width - 1), le24(height - 1));
   const iccHeader = [..."ICCP"].map((c) => c.charCodeAt(0)).concat(le32(icc.length));
   const pad = icc.length & 1;
   const body = vp8x.length + iccHeader.length + icc.length + pad + image.length;
   const out = new Uint8Array(12 + body);
   out.set([..."RIFF"].map((c) => c.charCodeAt(0)));
   out.set(le32(4 + body), 4);
-  out.set([..."WEBP"].map((c) => c.charCodeAt(0)), 8);
+  out.set(
+    [..."WEBP"].map((c) => c.charCodeAt(0)),
+    8,
+  );
   let offset = 12;
-  out.set(vp8x, offset); offset += vp8x.length;
-  out.set(iccHeader, offset); offset += iccHeader.length;
-  out.set(icc, offset); offset += icc.length + pad;
+  out.set(vp8x, offset);
+  offset += vp8x.length;
+  out.set(iccHeader, offset);
+  offset += iccHeader.length;
+  out.set(icc, offset);
+  offset += icc.length + pad;
   out.set(image, offset);
   return out;
 }

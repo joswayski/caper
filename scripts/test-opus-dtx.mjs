@@ -12,14 +12,20 @@ const session = `opus-dtx-${process.pid}`;
 function browser(...args) {
   const input = args[0] === "eval" ? args.pop() : undefined;
   if (input) args.push("--stdin");
-  return execFileSync("agent-browser", ["--session", session,
-    "--args", "--autoplay-policy=no-user-gesture-required", ...args], { input, encoding: "utf8", timeout: 60_000 });
+  return execFileSync(
+    "agent-browser",
+    ["--session", session, "--args", "--autoplay-policy=no-user-gesture-required", ...args],
+    { input, encoding: "utf8", timeout: 60_000 },
+  );
 }
 
 try {
   // A plain source document avoids running the app's animations or account flows.
   browser("open", new URL("/src/media/rtc.ts", origin).href);
-  console.log(browser("eval", `(async () => {
+  console.log(
+    browser(
+      "eval",
+      `(async () => {
     const { withOpusDtx, preferOpus } = await import('/src/media/rtc.ts');
     const assert = (condition, message) => { if (!condition) throw new Error(message); };
     const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -116,7 +122,9 @@ try {
       sinks.forEach(element => { element.pause(); element.srcObject = null; });
       peers.forEach(peer => peer.close()); tracks.forEach(track => track.stop()); await context.close();
     }
-  })()`));
+  })()`,
+    ),
+  );
 } finally {
   browser("close");
 }

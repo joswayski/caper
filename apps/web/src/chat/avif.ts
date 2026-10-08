@@ -25,8 +25,17 @@
  * profile); `tagSrgb` says so in the AVIF's colour box.
  */
 export const AVIF_OPTIONS = {
-  qualityAlpha: -1, denoiseLevel: 0, tileColsLog2: 0, tileRowsLog2: 0, speed: 9, subsample: 1,
-  chromaDeltaQ: false, sharpness: 0, tune: 1, enableSharpYUV: false, bitDepth: 8,
+  qualityAlpha: -1,
+  denoiseLevel: 0,
+  tileColsLog2: 0,
+  tileRowsLog2: 0,
+  speed: 9,
+  subsample: 1,
+  chromaDeltaQ: false,
+  sharpness: 0,
+  tune: 1,
+  enableSharpYUV: false,
+  bitDepth: 8,
 } as const;
 
 const ascii = (bytes: Uint8Array, offset: number, text: string) =>
@@ -65,7 +74,12 @@ export function tagSrgb(avif: Uint8Array) {
 
 /** Encodes opaque or transparent RGBA as AVIF in a worker, taking ownership of
  * `rgba`'s buffer; undefined when unavailable or failed. */
-export function encodeAvif(rgba: Uint8ClampedArray, width: number, height: number, quality: number): Promise<Uint8Array | undefined> {
+export function encodeAvif(
+  rgba: Uint8ClampedArray,
+  width: number,
+  height: number,
+  quality: number,
+): Promise<Uint8Array | undefined> {
   if (typeof Worker === "undefined" || typeof WebAssembly === "undefined") return Promise.resolve(undefined);
   return new Promise((resolve) => {
     let worker: Worker;
@@ -75,8 +89,12 @@ export function encodeAvif(rgba: Uint8ClampedArray, width: number, height: numbe
       resolve(undefined);
       return;
     }
-    const done = (value?: Uint8Array) => { worker.terminate(); resolve(value && isAvif(value) ? tagSrgb(value) : undefined); };
-    worker.onmessage = (event: MessageEvent<{ output?: ArrayBuffer }>) => done(event.data.output ? new Uint8Array(event.data.output) : undefined);
+    const done = (value?: Uint8Array) => {
+      worker.terminate();
+      resolve(value && isAvif(value) ? tagSrgb(value) : undefined);
+    };
+    worker.onmessage = (event: MessageEvent<{ output?: ArrayBuffer }>) =>
+      done(event.data.output ? new Uint8Array(event.data.output) : undefined);
     worker.onerror = () => done();
     worker.postMessage({ rgba, width, height, options: { ...AVIF_OPTIONS, quality } }, [rgba.buffer]);
   });

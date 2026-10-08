@@ -6,10 +6,23 @@
 const KEY = /^\/(original|preview)\/([A-Za-z0-9]{1,64})$/;
 // Same allowlist as `assets::kind`. Anything else downloads, never renders.
 const INLINE = new Set([
-  "image/png", "image/jpeg", "image/gif", "image/webp", "image/avif",
-  "video/mp4", "video/webm", "video/quicktime",
-  "audio/mpeg", "audio/mp4", "audio/x-m4a", "audio/aac", "audio/ogg", "audio/wav",
-  "audio/x-wav", "audio/webm", "audio/flac",
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "image/avif",
+  "video/mp4",
+  "video/webm",
+  "video/quicktime",
+  "audio/mpeg",
+  "audio/mp4",
+  "audio/x-m4a",
+  "audio/aac",
+  "audio/ogg",
+  "audio/wav",
+  "audio/x-wav",
+  "audio/webm",
+  "audio/flac",
 ]);
 // API URLs live 24–48 hours; refuse anything signed further out.
 const MAX_LIFETIME = 3 * 24 * 60 * 60;
@@ -29,7 +42,10 @@ function decodeBase64url(value) {
 }
 
 async function signingKey(secret) {
-  return crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+  return crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, [
+    "sign",
+    "verify",
+  ]);
 }
 
 export async function sign(secret, key, expires) {
@@ -95,9 +111,10 @@ export default {
       }
     }
 
-    const object = request.method === "HEAD"
-      ? await env.MEDIA.head(key)
-      : await env.MEDIA.get(key, { range: request.headers, onlyIf: request.headers });
+    const object =
+      request.method === "HEAD"
+        ? await env.MEDIA.head(key)
+        : await env.MEDIA.get(key, { range: request.headers, onlyIf: request.headers });
     if (!object) return deny(404);
     const headers = headersFor(object);
     if (!("body" in object) || object.body == null) {
