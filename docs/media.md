@@ -1672,6 +1672,15 @@ their retained history. Individual message deletion is not implemented.
 
 - `GET /api/chat/forward-destinations` returns writable joined channels and existing
   DMs for the signed-in account.
+- Web, Android, Apple and Rust desktop pickers support selecting multiple
+  destinations. Search matches case-insensitive words across space and channel/DM
+  names in either order (including `#channel`); filtering keeps hidden selections.
+  Each row keeps the space subtitle directly below its channel/DM name.
+  Clients send sequentially with a separate UUID per destination. Confirmed
+  destinations leave the selection; an ambiguous failure freezes the remaining
+  keys and note for retry. A definitive rejection unlocks only the remaining
+  selection/note. This is not an atomic batch: earlier confirmed forwards remain
+  delivered if a later destination fails or the picker is closed.
 - `POST /api/chat/channels/{destination}/forwards` uses `X-Caper-Chat-Token` and
   `{sourceChannelId,sourceMessageId,clientMessageId,text?}`. The source must be
   readable and the destination writable. Same-session retries reuse the exact
