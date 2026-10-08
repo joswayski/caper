@@ -2307,6 +2307,7 @@ private struct MessageRow: View {
     @FocusState private var replyFocused: Bool
     @FocusState private var reactionFocused: Bool
     @FocusState private var actionsFocused: Bool
+    @FocusState private var threadLinkFocused: Bool
     #endif
     var body: some View {
         let mentionsMe = MentionAutocomplete.mentionsCurrentUser(message, currentUserID: currentUserID)
@@ -2355,7 +2356,13 @@ private struct MessageRow: View {
                                 Text("\(summary.replyCount) \(summary.replyCount == 1 ? "reply" : "replies") · View thread")
                             } else { Image(systemName: "bubble.right"); Text("Replied to a thread · View thread") }
                         }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.terracottaBright)
-                    }.buttonStyle(.plain).frame(minHeight: 32).modifier(ControlHover()).accessibilityLabel("View thread")
+                    }.buttonStyle(.plain).frame(minHeight: 32)
+                        #if os(macOS)
+                        .focused($threadLinkFocused).modifier(ControlHover(isFocused: threadLinkFocused))
+                        #else
+                        .modifier(ControlHover())
+                        #endif
+                        .accessibilityLabel("View thread")
                 }
                 if let error = chat.reactionErrors[message.id] {
                     HStack(spacing: 8) {
