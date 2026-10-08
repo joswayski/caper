@@ -1325,14 +1325,10 @@ final class CaperParityUITests: XCTestCase {
                 let text = pending.staticTexts[message].firstMatch
                 XCTAssertTrue(text.exists)
                 XCTAssertTrue(timeline.frame.contains(text.frame), "Pending text must be in the visible timeline")
-                #if os(iOS)
-                // macOS reports a `.contain` container's frame as the union of
-                // its children (CI: x 358, 130 wide), not the row's full width,
-                // so only iPhone can check the row itself. The text inset below
-                // checks the left alignment on both.
-                XCTAssertEqual(pending.frame.minX, timeline.frame.minX, accuracy: 2)
-                XCTAssertEqual(pending.frame.width, timeline.frame.width, accuracy: 2)
-                #endif
+                // The row's own frame can't be checked: accessibility reports a
+                // `.contain` container as the union of its children (in CI 130
+                // points wide from the avatar, on iPhone and macOS alike), not
+                // the full-width row. The text inset below checks the alignment.
                 XCTAssertEqual(text.frame.minX, timeline.frame.minX + 62, accuracy: 2,
                                "Pending text must share confirmed messages' 18 + 34 + 10 point inset")
                 #if os(iOS)
