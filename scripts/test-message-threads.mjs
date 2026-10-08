@@ -61,6 +61,7 @@ const assertReplyAction = (expected) => {
   assert.equal(evaluate('!!document.querySelector(".chat-quick-reactions")'), true);
 };
 const actions = (selector, expected) => {
+  browser("scrollintoview", selector);
   browser("click", `${selector} .chat-message-actions-trigger`);
   assertReplyAction(expected);
 };
@@ -75,8 +76,16 @@ const close = () => {
   wait('!document.querySelector(".chat-thread-panel") && !history.state?.caperThread');
 };
 const open = (id) => {
-  browser("focus", `${channel(id)} .chat-reply-thread`);
-  browser("click", `${channel(id)} .chat-reply-thread`);
+  const trigger = evaluate(
+    `${JSON.stringify([`${channel(id)} .chat-reply-thread`, `${channel(id)} .chat-thread-summary`])}.find(selector => document.querySelector(selector)?.checkVisibility({ visibilityProperty: true }))`,
+  );
+  if (trigger) {
+    browser("focus", trigger);
+    browser("click", trigger);
+  } else {
+    actions(channel(id), true);
+    browser("find", "role", "button", "click", "--name", "Reply in thread", "--exact");
+  }
   wait(
     '!!document.querySelector(".chat-thread-panel") && !document.querySelector(".chat-thread-messages[aria-busy=true]")',
   );
@@ -214,6 +223,14 @@ try {
   wait(
     `!!document.querySelector('${channel(root.clientMessageId)}') && !document.querySelector('.chat-initial-messages')`,
   );
+  evaluate(`(() => {
+    const original = window.fetch.bind(window);
+    window.threadRequests = [];
+    window.fetch = (input, init) => {
+      if (String(input).includes('/thread')) window.threadRequests.push(String(input));
+      return original(input, init);
+    };
+  })()`);
   if (process.env.MESSAGE_TEST_CHROME) {
     assert.equal(evaluate('matchMedia("(hover: hover) and (pointer: fine)").matches'), true);
     browser("hover", "#chat-heading");
@@ -311,17 +328,41 @@ try {
   );
   screenshot("threads-desktop");
   browser("fill", "#chat-thread-reply", "Saved draft for Alex");
+  const requestCount = evaluate("window.threadRequests.length");
+  const positions = () =>
+    evaluate(
+      `Array.from(document.querySelectorAll('.chat-thread-panel .chat-message')).map(row => row.getBoundingClientRect().top)`,
+    );
+  const before = positions();
+  browser("click", `${channel(root.clientMessageId)} .chat-thread-summary`);
+  browser("click", `${channel(root.clientMessageId)} .chat-thread-summary`);
+  assert.equal(evaluate("window.threadRequests.length"), requestCount, "repeated clicks cannot fetch again");
+  assert.deepEqual(positions(), before, "repeated clicks cannot shift the displayed replies");
+  assert.equal(
+    evaluate('!!document.querySelector(".chat-thread-skeleton, .chat-thread-messages[aria-busy=true]")'),
+    false,
+  );
+  assert.equal(evaluate('document.querySelector("#chat-thread-reply").value'), "Saved draft for Alex");
+  if (process.env.MESSAGE_TEST_CHROME) {
+    browser("hover", `${channel(other.clientMessageId)} .chat-reply-thread`);
+    wait(`window.threadRequests.some(url => url.includes('/${other.id}/thread'))`);
+    assert.equal(
+      evaluate(`!!document.querySelector('${thread(root.clientMessageId)}')`),
+      true,
+      "hover does not change the open thread",
+    );
+  }
   evaluate(`(() => {
     window.pinsChannel = document.querySelector('.chat-scroller');
     window.pinsThread = document.querySelector('.chat-thread-panel');
     window.pinsScrollTop = pinsChannel.scrollTop;
   })()`);
   browser("click", ".chat-pins-toggle");
-  wait('!!document.querySelector(".chat-pins")');
+  wait('!!document.querySelector(".chat-pins-dialog")');
   evaluate(`(() => {
     window.threadPinFrames = [];
     const sample = () => {
-      if (!document.querySelector('.chat-pins')) {
+      if (!document.querySelector('.chat-pins-dialog')) {
         const scroller = document.querySelector('.chat-scroller');
         const bounds = scroller.getBoundingClientRect();
         threadPinFrames.push(scroller === pinsChannel && document.querySelector('.chat-thread-panel') === pinsThread
@@ -333,7 +374,7 @@ try {
     };
     requestAnimationFrame(sample);
   })()`);
-  browser("click", ".chat-pins-toggle");
+  browser("find", "role", "button", "click", "--name", "Close pins", "--exact");
   wait("threadPinFrames.length === 30");
   assert.equal(
     evaluate("threadPinFrames.every(Boolean)"),
@@ -358,6 +399,11 @@ try {
   browser("click", `${channel(broadcast.clientMessageId)} .chat-thread-context`);
   wait(`!!document.querySelector('${thread(root.clientMessageId)}')`);
   assert.equal(
+    evaluate(`window.threadRequests.filter(url => url.includes('/${root.id}/thread')).length`),
+    1,
+    "closing and reopening uses the loaded thread",
+  );
+  assert.equal(
     evaluate('document.querySelectorAll(".chat-thread-panel .chat-message").length'),
     3,
     "A broadcast opens its original root, never a nested thread",
@@ -371,8 +417,13 @@ try {
     window.threadFetch = original;
     window.fetch = (input, init) => String(input).includes('/thread') ? new Promise(resolve => { window.releaseThread = () => resolve(Response.json({ error: 'TEST FIXTURE: thread unavailable' }, { status: 503 })); }) : original(input, init);
   })()`);
-  browser("click", `${channel(other.clientMessageId)} .chat-reply-thread`);
+  browser("click", `${channel(initial.messages[0].clientMessageId)} .chat-reply-thread`);
   wait('document.querySelector(".chat-thread-messages").getAttribute("aria-busy") === "true"');
+  assert.equal(
+    evaluate('document.querySelector(".chat-thread-skeleton").getAttribute("aria-label")'),
+    "Loading thread replies",
+  );
+  assert.equal(evaluate('document.querySelector(".chat-thread-status")'), null, "no text loading row");
   alignedHeaders(1440);
   screenshot("threads-desktop-loading");
   evaluate("window.releaseThread()");
@@ -418,12 +469,24 @@ try {
   assert.equal(evaluate('matchMedia("(pointer: coarse)").matches'), true);
   assert.equal(
     evaluate(
-      `(() => { const reply = document.querySelector('${channel(root.clientMessageId)} .chat-reply-thread').getBoundingClientRect(); const more = document.querySelector('${channel(root.clientMessageId)} .chat-message-actions-trigger').getBoundingClientRect(); return reply.right <= more.left && reply.width >= 44 && more.width >= 44; })()`,
+      `(() => { const row = document.querySelector('${channel(root.clientMessageId)}'); const reply = row.querySelector('.chat-reply-thread'); const summary = row.querySelector('.chat-thread-summary').getBoundingClientRect(); const more = row.querySelector('.chat-message-actions-trigger').getBoundingClientRect(); return !reply.checkVisibility({ visibilityProperty: true }) && summary.width > 0 && summary.height > 0 && more.width >= 44 && more.height >= 44 && (summary.right <= more.left || summary.top >= more.bottom); })()`,
     ),
     true,
-    "Touch controls must not overlap",
+    "Touch layout hides inline replies and keeps thread links separate from 44px message actions",
   );
   screenshot("threads-mobile-channel");
+  evaluate(`(() => {
+    const original = window.fetch.bind(window);
+    window.threadFetch = original;
+    window.fetch = (input, init) => String(input).includes('/thread') ? new Promise((resolve, reject) => { window.releaseThread = () => original(input, init).then(resolve, reject); }) : original(input, init);
+  })()`);
+  actions(channel(initial.messages[2].clientMessageId), true);
+  browser("find", "role", "button", "click", "--name", "Reply in thread", "--exact");
+  wait('!!document.querySelector(".chat-thread-skeleton")');
+  screenshot("threads-mobile-loading");
+  evaluate("window.fetch = window.threadFetch; window.releaseThread()");
+  wait('!document.querySelector(".chat-thread-messages[aria-busy=true]")');
+  close();
   actions(channel(root.clientMessageId), true);
   dismissActions();
   open(root.clientMessageId);
@@ -464,7 +527,7 @@ try {
   assert.equal(evaluate('document.querySelector(".chat-panel").inert'), false);
   await checkReplyDelivery(root, other, "mobile");
   console.log(
-    "PASS: aligned 54px headers at 1440/1024/761/390/320px, long-name containment, reply actions hidden on thread roots/replies and retained in the channel (desktop, narrow and touch long-press); isolated replies, root highlight/count/avatars, shared broadcast/reaction identity, per-root drafts, loading/error/retry, quiet in-flight replies, scoped failure recovery, idempotent retry, rejected edit/dismiss, focus restoration, touch target separation, full-screen dialog, inert background and mobile Back.",
+    "PASS: repeated clicks make zero requests and zero reply-position changes; hover/focus prefetch, cached reopening, cold-load skeletons; aligned 54px headers at 1440/1024/761/390/320px, long-name containment, reply actions hidden on thread roots/replies and retained in the channel (desktop, narrow and touch long-press); isolated replies, root highlight/count/avatars, shared broadcast/reaction identity, per-root drafts, Pins-return stability, loading/error/retry, quiet in-flight replies, scoped failure recovery, idempotent retry, rejected edit/dismiss, focus restoration, touch target separation, full-screen dialog, inert background and mobile Back.",
   );
 } finally {
   socket?.close();

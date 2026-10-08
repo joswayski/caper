@@ -302,6 +302,7 @@ export default function Chat({
     clientRef.current?.setTyping(false);
     void clientRef.current?.openThread(rootId);
   };
+  const prefetchThread = (rootId: string) => void clientRef.current?.prefetchThread(rootId);
   const closeThread = useCallback(() => clientRef.current?.closeThread(), []);
   const showReactors = (messageId: string, emoji: string, anchor: HTMLElement) => {
     const drawer = isTouchLayout();
@@ -832,7 +833,13 @@ export default function Chat({
               )}
             </header>
             {!inThread && message.threadRootId && (
-              <button type="button" className="chat-thread-context" onClick={() => openThread(message.threadRootId!)}>
+              <button
+                type="button"
+                className="chat-thread-context"
+                onMouseEnter={() => prefetchThread(message.threadRootId!)}
+                onFocus={() => prefetchThread(message.threadRootId!)}
+                onClick={() => openThread(message.threadRootId!)}
+              >
                 Replied to a thread · View thread
               </button>
             )}
@@ -895,6 +902,8 @@ export default function Chat({
                     className="chat-reply-thread"
                     aria-label={`Reply in thread to ${message.author.name}`}
                     title="Reply in thread"
+                    onMouseEnter={() => prefetchThread(message.threadRootId ?? message.id)}
+                    onFocus={() => prefetchThread(message.threadRootId ?? message.id)}
                     onClick={() => openThread(message.threadRootId ?? message.id)}
                   >
                     <MessageSquare size={14} aria-hidden="true" />
@@ -925,6 +934,8 @@ export default function Chat({
                   <button
                     type="button"
                     className="chat-thread-summary"
+                    onMouseEnter={() => prefetchThread(message.id)}
+                    onFocus={() => prefetchThread(message.id)}
                     onClick={() => openThread(message.id)}
                     aria-label={`View thread with ${message.thread.replyCount} ${message.thread.replyCount === 1 ? "reply" : "replies"}`}
                   >

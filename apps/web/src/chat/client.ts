@@ -265,9 +265,10 @@ export class ChatClient {
   private readonly reactionRequests = new Map<string, Promise<void>>();
   private readonly pinIntents = new Map<string, { pin: ChatMessage["pin"]; message?: ChatMessage }>();
   private readonly editIntents = new Map<string, { text: string; expectedRevision: number }>();
-  private threadRequest?: AbortController;
   private historyAnchorGeneration = 0;
   private contextWindow?: { start: bigint; end?: bigint };
+  private readonly threadPages = new Map<string, ThreadViewState>();
+  private readonly threadRequests = new Map<string, { promise: Promise<void>; controller: AbortController }>();
   // Fetching a thread's older rows must not insert them into the channel page
   // or move the channel's exclusive pagination boundary past a history gap.
   private readonly threadOnlyRows = new Set<string>();
@@ -407,113 +408,143 @@ export class ChatClient {
   }
 
   closeThread() {
-    this.threadRequest?.abort();
     this.update({ thread: undefined });
   }
 
   async openThread(rootId: string, around?: string) {
-    this.threadRequest?.abort();
-    this.update({ thread: { rootId, loading: true, loadingOlder: false, hasMore: false } });
-    await this.loadThreadPage(false, around);
+    if (around) {
+      this.update({ thread: { rootId, loading: true, loadingOlder: false, hasMore: false } });
+      await this.retryThread(around);
+      return;
+    }
+    if (this.state.thread?.rootId === rootId) {
+      await this.threadRequests.get(rootId)?.promise;
+      return;
+    }
+    const cached = this.threadPages.get(rootId);
+    this.update({ thread: cached ?? { rootId, loading: true, loadingOlder: false, hasMore: false } });
+    if (!cached) await this.loadThreadPage(rootId);
+  }
+
+  async prefetchThread(rootId: string) {
+    if (!this.threadPages.has(rootId)) await this.loadThreadPage(rootId);
+  }
+
+  async retryThread(around?: string) {
+    const rootId = this.state.thread?.rootId;
+    if (!rootId) return;
+    this.threadRequests.get(rootId)?.controller.abort();
+    this.threadRequests.delete(rootId);
+    this.threadPages.delete(rootId);
+    await this.loadThreadPage(rootId, false, around);
   }
 
   async loadOlderThread() {
     if (this.state.thread?.hasMore && !this.state.thread.loading && !this.state.thread.loadingOlder)
-      await this.loadThreadPage(true);
+      await this.loadThreadPage(this.state.thread.rootId, true);
   }
 
   async loadNewerThread() {
     if (this.state.thread?.hasNewer && !this.state.thread.loading && !this.state.thread.loadingNewer)
-      await this.loadThreadPage(false, undefined, true);
+      await this.loadThreadPage(this.state.thread.rootId, false, undefined, true);
   }
 
-  private async loadThreadPage(older = false, around?: string, newer = false) {
-    const thread = this.state.thread;
+  private loadThreadPage(rootId: string, older = false, around?: string, newer = false): Promise<void> {
+    const pending = this.threadRequests.get(rootId);
+    if (pending) return pending.promise;
     const channelId = this.state.channelId;
-    if (!thread || !channelId || this.controller.signal.aborted) return;
+    if (!channelId || this.controller.signal.aborted || this.loadingHistory) return Promise.resolve();
+    const thread = this.threadPages.get(rootId) ?? { rootId, loading: false, loadingOlder: false, hasMore: false };
     const controller = new AbortController();
     const generation = this.generation;
     const current = () =>
-      !controller.signal.aborted &&
-      !this.controller.signal.aborted &&
-      generation === this.generation &&
-      this.state.thread?.rootId === thread.rootId;
-    this.threadRequest?.abort();
-    this.threadRequest = controller;
-    this.update({
-      thread: { ...thread, error: undefined, loading: !older && !newer, loadingOlder: older, loadingNewer: newer },
-    });
-    try {
-      const query = around
-        ? `?around=${encodeURIComponent(around)}`
-        : newer && thread.after
-          ? `?after=${thread.after}`
-          : older && thread.before
-            ? `?before=${thread.before}`
-            : "";
-      const response = await fetch(
-        `/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(thread.rootId)}/thread${query}`,
-        {
-          cache: "no-store",
-          signal: AbortSignal.any([controller.signal, this.controller.signal, AbortSignal.timeout(10_000)]),
-        },
-      );
-      if (!response.ok) {
-        const error = await apiError(response, "Thread could not be loaded.");
-        if (current() && [401, 403, 404].includes(response.status)) {
-          this.closeThread();
-          this.retryLoad();
-          return;
-        }
-        throw error;
-      }
-      const page: unknown = await response.json();
-      if (!current()) return;
-      const history = page as ChatThreadHistory;
-      if (
-        !validHistory(page, false) ||
-        !isChatMessage(history.root) ||
-        history.root.id !== thread.rootId ||
-        history.root.channelId !== channelId ||
-        history.root.threadRootId ||
-        history.messages.some((message) => message.channelId !== channelId || message.threadRootId !== thread.rootId) ||
-        (around && !history.messages.some((message) => message.id === around))
-      )
-        throw new Error("The chat service returned an invalid thread.");
-      // Merge instead of replacing: live replies/reactions may arrive during GET.
-      const loaded = new Set(this.timeline.messages.map((message) => message.id));
-      const rows = [history.root, ...history.messages];
-      for (const message of rows)
-        if (isChannelMessage(message) && !loaded.has(message.id)) this.threadOnlyRows.add(message.id);
-      this.timeline.prepend(rows);
+      !controller.signal.aborted && !this.controller.signal.aborted && generation === this.generation;
+    const visible = () => current() && this.state.thread?.rootId === rootId;
+    if (visible())
       this.update({
-        messages: this.timeline.messages,
-        thread: {
-          rootId: thread.rootId,
+        thread: { ...thread, error: undefined, loading: !older && !newer, loadingOlder: older, loadingNewer: newer },
+      });
+    const promise = (async () => {
+      try {
+        const query = around
+          ? `?around=${encodeURIComponent(around)}`
+          : newer && thread.after
+            ? `?after=${thread.after}`
+            : older && thread.before
+              ? `?before=${thread.before}`
+              : "";
+        const response = await fetch(
+          `/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(rootId)}/thread${query}`,
+          {
+            cache: "no-store",
+            signal: AbortSignal.any([controller.signal, this.controller.signal, AbortSignal.timeout(10_000)]),
+          },
+        );
+        if (!response.ok) {
+          const error = await apiError(response, "Thread could not be loaded.");
+          if (visible() && [401, 403, 404].includes(response.status)) {
+            this.closeThread();
+            this.retryLoad();
+            return;
+          }
+          throw error;
+        }
+        const page: unknown = await response.json();
+        if (!current()) return;
+        const history = page as ChatThreadHistory;
+        if (
+          !validHistory(page, false) ||
+          !isChatMessage(history.root) ||
+          history.root.id !== rootId ||
+          history.root.channelId !== channelId ||
+          history.root.threadRootId ||
+          history.messages.some((message) => message.channelId !== channelId || message.threadRootId !== rootId) ||
+          (around && !history.messages.some((message) => message.id === around))
+        )
+          throw new Error("The chat service returned an invalid thread.");
+        // Merge instead of replacing: live replies/reactions may arrive during GET.
+        const loaded = new Set(this.timeline.messages.map((message) => message.id));
+        const rows = [history.root, ...history.messages];
+        for (const message of rows)
+          if (isChannelMessage(message) && !loaded.has(message.id)) this.threadOnlyRows.add(message.id);
+        this.timeline.prepend(rows);
+        const pageState: ThreadViewState = {
+          rootId,
           loading: false,
           loadingOlder: false,
           loadingNewer: false,
           hasMore: newer ? thread.hasMore : history.hasMore,
           hasNewer: older ? thread.hasNewer : history.hasNewer,
-          before: newer ? thread.before : (history.messages[0]?.seq ?? thread.before),
-          after: older ? thread.after : (history.messages.at(-1)?.seq ?? thread.after),
-          windowStart: newer ? thread.windowStart : history.messages[0]?.seq,
+          before: newer ? thread.before : (history.messages[0]?.seq ?? (older ? thread.before : undefined)),
+          after: older ? thread.after : (history.messages.at(-1)?.seq ?? (newer ? thread.after : undefined)),
+          windowStart: newer
+            ? thread.windowStart
+            : (history.messages[0]?.seq ?? (older ? thread.windowStart : undefined)),
           windowEnd: older ? thread.windowEnd : history.hasNewer ? history.messages.at(-1)?.seq : undefined,
-          focusMessageId: around ?? thread.focusMessageId,
-        },
-      });
-    } catch (error) {
-      if (current())
+          focusMessageId: around ?? (older || newer ? thread.focusMessageId : undefined),
+        };
+        this.threadPages.set(rootId, pageState);
         this.update({
-          thread: {
-            ...this.state.thread!,
-            loading: false,
-            loadingOlder: false,
-            loadingNewer: false,
-            error: error instanceof Error ? error.message : "Thread could not be loaded.",
-          },
+          messages: this.timeline.messages,
+          ...(visible() ? { thread: pageState } : {}),
         });
-    }
+      } catch (error) {
+        if (visible())
+          this.update({
+            thread: {
+              ...this.state.thread!,
+              loading: false,
+              loadingOlder: false,
+              loadingNewer: false,
+              error: error instanceof Error ? error.message : "Thread could not be loaded.",
+            },
+          });
+      }
+    })().finally(() => {
+      if (this.threadRequests.get(rootId)?.controller === controller) this.threadRequests.delete(rootId);
+    });
+    this.threadRequests.set(rootId, { promise, controller });
+    return promise;
   }
 
   discardRejected(): string | undefined {
@@ -758,7 +789,7 @@ export class ChatClient {
         sendRejected: undefined,
       });
       if (message.threadRootId && this.state.thread?.rootId === message.threadRootId && this.state.thread.hasNewer)
-        void this.openThread(message.threadRootId);
+        void this.retryThread();
       else if (!message.threadRootId && this.state.hasNewer) void this.loadInitial();
       return true;
     } catch (error) {
@@ -1007,6 +1038,9 @@ export class ChatClient {
     if (this.controller.signal.aborted) return;
     const generation = ++this.generation;
     ++this.historyAnchorGeneration;
+    for (const request of this.threadRequests.values()) request.controller.abort();
+    this.threadRequests.clear();
+    this.threadPages.clear();
     const hadMutations = this.pinIntents.size || this.editIntents.size;
     this.pinIntents.clear();
     this.editIntents.clear();
@@ -1104,7 +1138,8 @@ export class ChatClient {
         },
       });
       this.connection.start();
-      if (this.state.thread) void this.openThread(this.state.thread.rootId);
+      this.loadingHistory = false;
+      if (this.state.thread) void this.retryThread();
     } catch (error) {
       if (!this.controller.signal.aborted && generation === this.generation) {
         const denied = error instanceof ChatHistoryError && [401, 403, 404].includes(error.status);

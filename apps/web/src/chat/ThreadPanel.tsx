@@ -185,17 +185,25 @@ export default function ThreadPanel({
             {root.thread.replyCount} {root.thread.replyCount === 1 ? "reply" : "replies"}
           </div>
         )}
-        {state.thread.loading && (
-          <p className="chat-thread-status" role="status">
-            Loading thread…
-          </p>
+        {state.thread.loading && !replies.length && (
+          <div className="chat-thread-skeleton" role="status" aria-label="Loading thread replies">
+            {Array.from({ length: Math.min(3, Math.max(1, root?.thread?.replyCount ?? 2)) }, (_, index) => (
+              <div className="chat-thread-skeleton-row" key={index} aria-hidden="true">
+                <span className="chat-thread-skeleton-avatar" />
+                <div>
+                  <span className="chat-thread-skeleton-name" />
+                  <span className="chat-thread-skeleton-text" />
+                </div>
+              </div>
+            ))}
+          </div>
         )}
         {state.thread.error && (
           <p className="chat-thread-status chat-inline-error" role="alert">
             {state.thread.error}{" "}
             <button
               type="button"
-              onClick={() => void (state.thread?.hasMore ? client?.loadOlderThread() : client?.openThread(rootId!))}
+              onClick={() => void (state.thread?.hasMore ? client?.loadOlderThread() : client?.retryThread())}
             >
               Retry
             </button>

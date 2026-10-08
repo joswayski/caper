@@ -1868,6 +1868,211 @@ test("late thread responses cannot reopen a closed or different thread", async (
   assert.equal(f.client.snapshotHistory()?.cursor, f.history.cursor);
 });
 
+test("repeated thread clicks share the pending request and leave a loaded view untouched", async (t) => {
+  const f = await paginationFixture(t);
+  const root = f.message(4);
+  const first = f.client.openThread(root.id);
+  const loadingState = f.state;
+  const second = f.client.openThread(root.id);
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.state, loadingState, "a repeated click must not publish a new loading state");
+  f.requests[0].resolve(Response.json({ root, messages: [], cursor: f.history.cursor, hasMore: false }));
+  await Promise.all([first, second]);
+  const loadedState = f.state;
+  await f.client.openThread(root.id);
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.state, loadedState);
+});
+
+test("cached thread reopening preserves older-page boundaries and receives live replies", async (t) => {
+  const f = await paginationFixture(t);
+  const root = f.message(1);
+  const reply = (offset: number) => ({ ...f.message(offset), threadRootId: root.id, broadcast: false });
+  const open = f.client.openThread(root.id);
+  f.requests[0].resolve(Response.json({ root, messages: [reply(3)], cursor: f.history.cursor, hasMore: true }));
+  await open;
+  const older = f.client.loadOlderThread();
+  const repeated = f.client.openThread(root.id);
+  assert.equal(f.state.thread?.loadingOlder, true, "reopening cannot reset a pending older page");
+  f.requests[1].resolve(Response.json({ root, messages: [reply(2)], cursor: f.history.cursor, hasMore: true }));
+  await Promise.all([older, repeated]);
+  f.client.closeThread();
+  f.sockets[0].message(reply(6));
+  await f.client.openThread(root.id);
+  assert.equal(f.requests.length, 2, "reopening uses loaded data, including live updates");
+  assert.equal(f.state.thread?.loading, false);
+  assert.deepEqual(
+    f.state.messages.filter((message) => message.threadRootId === root.id),
+    [2, 3, 6].map(reply),
+  );
+  const next = f.client.loadOlderThread();
+  assert.equal(f.requests[2].url, `/api/chat/channels/general/messages/${root.id}/thread?before=${reply(2).seq}`);
+  f.requests[2].resolve(Response.json({ root, messages: [], cursor: f.history.cursor, hasMore: false }));
+  await next;
+});
+
+test("pin jumps supersede a pending prefetch and cache both context paging boundaries", async (t) => {
+  const f = await paginationFixture(t);
+  const root = f.message(-200);
+  const reply = (offset: number) => ({ ...f.message(offset), threadRootId: root.id, broadcast: false });
+  const prefetch = f.client.prefetchThread(root.id);
+  const jump = f.client.loadMessageContext(reply(-99));
+  assert.equal(f.requests[1].url, `/api/chat/channels/general/messages/${root.id}/thread?around=${reply(-99).id}`);
+  f.requests[1].resolve(
+    Response.json({
+      root,
+      messages: [-100, -99, -98].map(reply),
+      cursor: f.history.cursor,
+      hasMore: true,
+      hasNewer: true,
+    }),
+  );
+  assert.equal(await jump, true);
+  f.requests[0].resolve(Response.json({ root, messages: [reply(3)], cursor: f.history.cursor, hasMore: true }));
+  await prefetch;
+  assert.equal(f.state.thread?.focusMessageId, reply(-99).id);
+  assert.equal(f.state.thread?.windowStart, reply(-100).seq);
+  assert.equal(f.state.thread?.windowEnd, reply(-98).seq);
+  assert.equal(
+    f.state.messages.some((message) => message.id === reply(3).id),
+    false,
+    "superseded prefetch cannot merge or overwrite the context",
+  );
+
+  const older = f.client.loadOlderThread();
+  assert.equal(f.requests[2].url, `/api/chat/channels/general/messages/${root.id}/thread?before=${reply(-100).seq}`);
+  f.requests[2].resolve(
+    Response.json({
+      root,
+      messages: [-102, -101].map(reply),
+      cursor: f.history.cursor,
+      hasMore: false,
+      hasNewer: false,
+    }),
+  );
+  await older;
+  assert.equal(f.state.thread?.hasNewer, true, "older paging must retain the newer boundary");
+  assert.equal(f.state.thread?.windowEnd, reply(-98).seq);
+
+  const newer = f.client.loadNewerThread();
+  assert.equal(f.requests[3].url, `/api/chat/channels/general/messages/${root.id}/thread?after=${reply(-98).seq}`);
+  f.requests[3].resolve(
+    Response.json({ root, messages: [reply(-97)], cursor: f.history.cursor, hasMore: true, hasNewer: true }),
+  );
+  await newer;
+  f.client.closeThread();
+  await f.client.openThread(root.id);
+  assert.equal(f.requests.length, 4, "reopening retains the cached contiguous context");
+  assert.equal(f.state.thread?.before, reply(-102).seq);
+  assert.equal(f.state.thread?.after, reply(-97).seq);
+  assert.equal(f.state.thread?.windowStart, reply(-102).seq);
+  assert.equal(f.state.thread?.windowEnd, reply(-97).seq);
+  assert.equal(f.state.thread?.hasMore, false, "newer paging must retain the older boundary");
+  assert.equal(f.state.thread?.hasNewer, true);
+  assert.equal(f.state.thread?.focusMessageId, reply(-99).id);
+  assert.equal(f.client.snapshotHistory()?.cursor, f.history.cursor);
+});
+
+test("cached and already open threads do not short-circuit newer pin jumps", async (t) => {
+  const f = await paginationFixture(t);
+  const root = f.message(-200);
+  const reply = (offset: number) => ({ ...f.message(offset), threadRootId: root.id, broadcast: false });
+  const open = f.client.openThread(root.id);
+  f.requests[0].resolve(Response.json({ root, messages: [reply(3)], cursor: f.history.cursor, hasMore: true }));
+  await open;
+  const first = f.client.loadMessageContext(reply(-50));
+  const second = f.client.loadMessageContext(reply(-20));
+  assert.equal(f.requests.length, 3, "explicit anchors bypass the same-root guard and cache");
+  f.requests[2].resolve(
+    Response.json({
+      root,
+      messages: [-21, -20, -19].map(reply),
+      cursor: f.history.cursor,
+      hasMore: true,
+      hasNewer: true,
+    }),
+  );
+  assert.equal(await second, true);
+  f.requests[1].resolve(
+    Response.json({
+      root,
+      messages: [-51, -50, -49].map(reply),
+      cursor: f.history.cursor,
+      hasMore: false,
+      hasNewer: false,
+    }),
+  );
+  assert.equal(await first, false);
+  assert.equal(f.state.thread?.focusMessageId, reply(-20).id);
+  f.client.closeThread();
+  await f.client.openThread(root.id);
+  assert.equal(f.requests.length, 3);
+  assert.equal(f.state.thread?.windowStart, reply(-21).seq);
+  assert.equal(f.state.thread?.windowEnd, reply(-19).seq);
+  assert.equal(f.state.thread?.hasNewer, true);
+});
+
+test("hover prefetch and click share a request without opening or replacing another thread", async (t) => {
+  const f = await paginationFixture(t);
+  const first = f.message(4);
+  const second = f.message(5);
+  const prefetch = f.client.prefetchThread(first.id);
+  const duplicate = f.client.prefetchThread(first.id);
+  assert.equal(Boolean(f.state.thread), false);
+  const click = f.client.openThread(first.id);
+  assert.equal(f.requests.length, 1);
+  const other = f.client.openThread(second.id);
+  f.requests[0].resolve(Response.json({ root: first, messages: [], cursor: f.history.cursor, hasMore: false }));
+  await Promise.all([prefetch, duplicate, click]);
+  assert.equal(f.state.thread?.rootId, second.id);
+  assert.equal(f.state.thread?.loading, true);
+  f.requests[1].resolve(Response.json({ root: second, messages: [], cursor: f.history.cursor, hasMore: false }));
+  await other;
+  await f.client.openThread(first.id);
+  assert.equal(f.requests.length, 2, "completed background fetch is cached for an instant open");
+  assert.equal(f.state.thread?.loading, false);
+});
+
+test("failed prefetch is silent and does not prevent explicit load and retry", async (t) => {
+  const f = await paginationFixture(t);
+  const root = f.message(4);
+  const prefetch = f.client.prefetchThread(root.id);
+  f.requests[0].resolve(Response.json({ error: "temporary" }, { status: 503 }));
+  await prefetch;
+  assert.equal(Boolean(f.state.thread), false);
+  assert.equal(f.state.error, undefined);
+  const open = f.client.openThread(root.id);
+  f.requests[1].resolve(Response.json({ error: "try again" }, { status: 503 }));
+  await open;
+  assert.equal(f.state.thread?.error, "try again");
+  const retry = f.client.retryThread();
+  f.requests[2].resolve(Response.json({ root, messages: [], cursor: f.history.cursor, hasMore: false }));
+  await retry;
+  assert.equal(f.state.thread?.error, undefined);
+  assert.equal(f.state.thread?.loading, false);
+});
+
+test("resync invalidates thread pages and discards prefetches from the previous generation", async (t) => {
+  const f = await paginationFixture(t);
+  const root = f.message(4);
+  const oldPrefetch = f.client.prefetchThread(root.id);
+  f.client.retryLoad();
+  await tick();
+  f.requests[0].resolve(Response.json({ root, messages: [], cursor: f.history.cursor, hasMore: false }));
+  await oldPrefetch;
+  const open = f.client.openThread(root.id);
+  assert.equal(f.requests.length, 2, "a stale response cannot restore the invalidated cache");
+  f.requests[1].resolve(Response.json({ root, messages: [], cursor: f.history.cursor, hasMore: false }));
+  await open;
+  f.client.closeThread();
+  f.client.retryLoad();
+  await tick();
+  const reopened = f.client.openThread(root.id);
+  assert.equal(f.requests.length, 3, "completed pages are also invalidated on resync");
+  f.requests[2].resolve(Response.json({ root, messages: [], cursor: f.history.cursor, hasMore: false }));
+  await reopened;
+});
+
 test("thread send retry freezes root and broadcast and confirms one shared reply", async (t) => {
   const f = await sendingFixture(t);
   const bodies: Array<{ clientMessageId: string; text: string; threadRootId: string; broadcast: boolean }> = [];

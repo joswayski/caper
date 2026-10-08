@@ -70,6 +70,67 @@ final class APIClientTests: XCTestCase {
         return APIClient(baseURL: URL(string: "https://caper.invalid")!, session: URLSession(configuration: configuration), tokenStore: MemoryTokenStore(token))
     }
 
+    @MainActor
+    func testRepeatThreadOpenKeepsPendingLoadAndReusesPaginationUntilHistoryReset() async throws {
+        let channel = "chan00000001"
+        let author = ChatAuthor(id: "other", name: "Other", isGuest: false)
+        let root = ChatMessage(id: "Message00000001", channelId: channel, seq: "1", author: author,
+                               content: ChatContent(version: 1, type: "text", text: "Parent"), createdAt: "now", clientMessageId: "root")
+        let latest = ChatMessage(id: "Message00000003", channelId: channel, seq: "3", author: author,
+                                 content: ChatContent(version: 1, type: "text", text: "Latest reply"), createdAt: "now", clientMessageId: "latest", threadRootId: root.id)
+        let older = ChatMessage(id: "Message00000002", channelId: channel, seq: "2", author: author,
+                                content: ChatContent(version: 1, type: "text", text: "Older reply"), createdAt: "now", clientMessageId: "older", threadRootId: root.id)
+        let history = ChatHistory(space: HistoryIdentity(id: "space0000001", name: "Space"),
+                                  channel: HistoryIdentity(id: channel, name: "general"), messages: [root], cursor: "3", hasMore: false)
+        let started = expectation(description: "initial thread request started")
+        var held: MockURLProtocol?
+        var threadRequests = 0
+        MockURLProtocol.deferred = { request, urlRequest in
+            guard urlRequest.url?.path.hasSuffix("/thread") == true, held == nil else { return false }
+            threadRequests += 1; held = request; started.fulfill(); return true
+        }
+        MockURLProtocol.handler = { request in
+            if request.url?.path == "/api/chat/session" {
+                return (200, Data(#"{"token":"chat-secret","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+            }
+            guard request.url?.path.hasSuffix("/thread") == true else { throw URLError(.badURL) }
+            threadRequests += 1
+            XCTAssertEqual(request.url?.query, "before=3")
+            return (200, try JSONEncoder().encode(ThreadHistory(root: root, messages: [older], cursor: "3", hasMore: false)))
+        }
+        let chat = ChatModel(api: client())
+        await chat.open(history: history, displayName: "Me")
+        let opening = Task { await chat.openThread(root.id) }
+        await fulfillment(of: [started], timeout: 2)
+        await chat.openThread(root.id)
+        XCTAssertEqual(threadRequests, 1)
+        XCTAssertTrue(chat.threadLoading)
+        held?.respond(status: 200, data: try JSONEncoder().encode(ThreadHistory(root: root, messages: [latest], cursor: "3", hasMore: true)))
+        await opening.value
+        chat.threadDraft = "Keep this draft"
+        await chat.openThread(root.id)
+        XCTAssertEqual(threadRequests, 1)
+        await chat.loadThread(older: true)
+        XCTAssertEqual(threadRequests, 2)
+        chat.closeThread()
+        await chat.openThread(root.id)
+        XCTAssertEqual(threadRequests, 2)
+        XCTAssertFalse(chat.threadLoading)
+        XCTAssertFalse(chat.threadHasMore)
+        XCTAssertEqual(chat.threadDraft, "Keep this draft")
+        XCTAssertEqual(chat.messages.filter { $0.threadRootId == root.id }.map(\.id), [older.id, latest.id])
+        // A new authorized history replaces reply rows and must discard their cache.
+        await chat.preview(history: history)
+        MockURLProtocol.handler = { _ in
+            threadRequests += 1
+            return (200, try JSONEncoder().encode(ThreadHistory(root: root, messages: [], cursor: "3", hasMore: false)))
+        }
+        await chat.openThread(root.id)
+        XCTAssertEqual(threadRequests, 3)
+        XCTAssertTrue(chat.messages.allSatisfy { $0.threadRootId == nil })
+        await chat.stop()
+    }
+
     func testReactionPUTUsesChatTokenBodyAndFifteenCharacterMessageID() async throws {
         let channel = "Channel12345"
         let message = "Message00000001"

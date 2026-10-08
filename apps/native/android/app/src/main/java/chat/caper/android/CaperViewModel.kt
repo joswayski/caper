@@ -70,6 +70,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var notificationEdits: NotificationEdits? = null
     private var foreground = false
     private var threadRequest = 0L
+    private val threadPages = mutableMapOf<String, ThreadUi>()
 
     init {
         loadHome()
@@ -708,6 +709,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     focusedMessageId = target.id, focusRevision = mutable.value.focusRevision + 1,
                     loadingMessageContext = false, loadingOlder = false, loadingNewer = false,
                 )
+                mutable.value.thread?.let { threadPages[it.rootId] = it }
                 onLoaded()
             } catch (error: Throwable) {
                 if (request == generation && anchor == historyAnchorRequest) mutable.value = mutable.value.copy(loadingMessageContext = false, messageContextError = message(error))
@@ -982,8 +984,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun closeThread() { ++threadRequest; mutable.value = mutable.value.copy(thread = null) }
 
     fun openThread(root: String) {
-        mutable.value = mutable.value.copy(thread = ThreadUi(root))
-        loadThread()
+        if (mutable.value.thread?.rootId == root) return
+        ++threadRequest
+        val cached = threadPages[root]
+        mutable.value = mutable.value.copy(thread = cached ?: ThreadUi(root))
+        if (cached == null) loadThread()
     }
 
     fun loadThread(older: Boolean = false, newer: Boolean = false) {
@@ -998,15 +1003,18 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 if (request != threadRequest || channelRequest != generation || mutable.value.thread?.rootId != thread.rootId) return@launch
                 val rows = listOf(page.root) + page.messages
                 val loaded = mutable.value.messages.map { it.id }.toSet()
+                val pageState = thread.copy(loading = false, error = null,
+                    hasMore = if (newer) thread.hasMore else page.hasMore,
+                    before = if (newer) thread.before else page.messages.firstOrNull()?.seq ?: if (older) thread.before else null,
+                    hasNewer = if (older) thread.hasNewer else page.hasNewer,
+                    after = if (older) thread.after else page.messages.lastOrNull()?.seq ?: if (newer) thread.after else null,
+                    windowStart = if (newer) thread.windowStart else page.messages.firstOrNull()?.seq ?: if (older) thread.windowStart else null,
+                    windowEnd = if (older) thread.windowEnd else if (page.hasNewer) page.messages.lastOrNull()?.seq else null)
+                threadPages[thread.rootId] = pageState
                 mutable.value = mutable.value.copy(
                     messages = projectMessages(mergeTimelinePins(mergeMessages(authoritativeMessages(), rows, unloadedReactions))),
                     threadOnlyRows = mutable.value.threadOnlyRows + rows.filter { it.id !in loaded && (it.threadRootId == null || it.broadcast) }.map { it.id },
-                    thread = thread.copy(loading = false, hasMore = if (newer) thread.hasMore else page.hasMore,
-                        before = if (newer) thread.before else page.messages.firstOrNull()?.seq ?: thread.before,
-                        hasNewer = if (older) thread.hasNewer else page.hasNewer,
-                        after = if (older) thread.after else page.messages.lastOrNull()?.seq ?: thread.after,
-                        windowStart = if (newer) thread.windowStart else page.messages.firstOrNull()?.seq,
-                        windowEnd = if (older) thread.windowEnd else if (page.hasNewer) page.messages.lastOrNull()?.seq else null),
+                    thread = pageState,
                 )
             } catch (error: Throwable) {
                 if (request != threadRequest || channelRequest != generation) return@launch
@@ -1362,7 +1370,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             mutable.value = mutable.value.copy(pendingMessage = null, focusedMessageId = null)
             it.confirmed.invoke()
             if (!refreshingHistory) {
-                if (message.threadRootId != null && mutable.value.thread?.rootId == message.threadRootId && mutable.value.thread?.hasNewer == true) openThread(message.threadRootId)
+                if (message.threadRootId != null && mutable.value.thread?.rootId == message.threadRootId && mutable.value.thread?.hasNewer == true) loadThread()
                 else if (message.threadRootId == null && mutable.value.hasNewerMessages) resyncChannel(message.channelId)
             }
         }
@@ -1615,6 +1623,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun closeChannel(clearPending: Boolean) {
         ++historyAnchorRequest
         gateway?.close(); gateway = null
+        ++threadRequest
+        threadPages.clear()
         durableReplayCursor = null
         refreshingHistory = false
         gatewayStatus?.cancel(); gatewayStatus = null

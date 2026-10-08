@@ -1388,6 +1388,7 @@ public final class ChatModel {
     public var threadError: String?
     private var threadBefore: String?
     private var threadRequest = 0
+    private var threadPages: [String: (hasMore: Bool, before: String?, hasNewer: Bool, after: String?, windowStart: String?, windowEnd: String?)] = [:]
     private var threadOnlyRows: Set<String> = []
     private var threadDrafts: [String: String] = [:]
     private var threadBroadcasts: [String: Bool] = [:]
@@ -1609,6 +1610,7 @@ public final class ChatModel {
         isPreview = false
         let preservingTimeline = preservingPending && self.channelID == channelID
         generation += 1
+        threadPages = [:]
         mutations = MessageMutations(); pendingPins = []
         let requestGeneration = generation
         let oldSubscription = subscriptionID
@@ -1861,15 +1863,25 @@ public final class ChatModel {
     }
 
     public func openThread(_ rootID: String, around: String? = nil) async {
-        threadRootID = rootID; threadBefore = nil; threadHasMore = false
-        threadAfter = nil; threadWindowStart = nil; threadWindowEnd = nil; threadHasNewer = false
-        await loadThread(around: around)
+        guard around != nil || threadRootID != rootID else { return }
+        threadRequest += 1
+        threadRootID = rootID; threadError = nil
+        let cached = around == nil ? threadPages[rootID] : nil
+        threadBefore = cached?.before; threadHasMore = cached?.hasMore ?? false
+        threadAfter = cached?.after; threadHasNewer = cached?.hasNewer ?? false
+        threadWindowStart = cached?.windowStart; threadWindowEnd = cached?.windowEnd
+        threadLoading = false
+        if cached == nil { await loadThread(around: around) }
     }
 
     public func loadThread(older: Bool = false, newer: Bool = false, around: String? = nil) async {
         guard let rootID = threadRootID, let channelID else { return }
         threadRequest += 1
         let request = threadRequest; let channelGeneration = generation
+        if !older && !newer {
+            threadBefore = nil; threadAfter = nil; threadHasNewer = false
+            threadWindowStart = nil; threadWindowEnd = nil
+        }
         threadLoading = true; threadError = nil
         do {
             let page = try await api.thread(channelID: channelID, rootID: rootID, before: older ? threadBefore : nil, after: newer ? threadAfter : nil, around: around)
@@ -1880,6 +1892,7 @@ public final class ChatModel {
             merge(rows)
             if !newer { threadHasMore = page.hasMore; threadBefore = page.messages.first?.seq ?? threadBefore; threadWindowStart = threadBefore }
             if !older { threadHasNewer = page.hasNewer ?? false; threadAfter = page.messages.last?.seq ?? threadAfter; threadWindowEnd = threadHasNewer ? threadAfter : nil }
+            threadPages[rootID] = (threadHasMore, threadBefore, threadHasNewer, threadAfter, threadWindowStart, threadWindowEnd)
         } catch {
             guard request == threadRequest, generation == channelGeneration else { return }
             if let denied = error as? APIError, [401, 403, 404].contains(denied.status) {
@@ -1908,7 +1921,7 @@ public final class ChatModel {
             if delivery.pending == nil, self.channelID == channelID, generation == requestGeneration {
                 if inThread, let rootID, threadHasNewer {
                     focusedMessageID = nil
-                    Task { if self.channelID == channelID, generation == requestGeneration { await openThread(rootID) } }
+                    Task { if self.channelID == channelID, generation == requestGeneration, threadRootID == rootID { await loadThread() } }
                 } else if !inThread, hasNewer {
                     Task { if self.channelID == channelID, generation == requestGeneration { await retryLoad() } }
                 }
@@ -2275,7 +2288,7 @@ public final class ChatModel {
         canForward = false; forwardTarget = nil; forwardConversationTarget = nil
         editSnapshots.reset()
         failedPinActions = [:]
-        closeThread(); threadOnlyRows = []; threadDrafts = [:]; threadBroadcasts = [:]
+        closeThread(); threadPages = [:]; threadOnlyRows = []; threadDrafts = [:]; threadBroadcasts = [:]
         isPreview = false
         session = nil; channelID = nil; spaceID = nil; messages = []; draft = ""; hasMore = false
         hasNewer = false; loadingNewer = false; windowStart = nil; windowEnd = nil

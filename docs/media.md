@@ -1453,8 +1453,8 @@ are pruned. Pins do not send system messages, play message sounds, or create pus
 | Platform | Evidence and remaining gap |
 | --- | --- |
 | API/gateway | Disposable Postgres tests additionally cover channel/thread context, exact 30-before/30-after limits despite edit-sequence gaps, forward paging, boundary flags, mutually exclusive anchors and access isolation. Existing pin coverage includes shared delivery/replay and persistence. No production write or deployment |
-| Web | 459 web/shared-native-support tests, build/typecheck/lint and `scripts/test-message-pins.mjs` pass: hover-menu optimistic unpin before server echo, outside/Escape dismissal, pinner profile by account ID, nested-menu layering, failed-jump retry, old context with 30 rows either side, centered highlight, Back to newest message, sends from channel/thread context, narrow layout and pinned thread navigation. Latest `scripts/test-chat-history.mjs` passes desktop/latest/live/history and narrow-history Pins round trips, checking 30 painted return frames and stable scrollbars, then fails its narrow live-arrival check with a 3px bottom gap (2px allowed); reproduced on a clean main checkout too. Desktop/narrow screenshots inspected. Browser fixture only, not Safari or a physical phone |
-| Rust desktop | Linux build, Clippy, 282 tests passed (9 ignored), including retained Pins viewport/paging anchors, pending-unpin projection, resize/clip bounds and fixture pin counts. Inspected labeled static `parity-pins`, `parity-pins-empty`, and `parity-pins-long` renders: populated/empty cards, hover actions, long/multiple-pin scrolling, and a 390px window. Actual Linux menu/outside/Escape dismissal exercised; not live account acceptance. Windows build/runtime and production cross-client checks remain release validation |
+| Web | 466 web/shared-native-support tests, build/typecheck/lint and `scripts/test-message-pins.mjs` pass: hover-menu optimistic unpin before server echo, outside/Escape dismissal, pinner profile by account ID, nested-menu layering, failed-jump retry, old context with 30 rows either side, centered highlight, Back to newest message, sends from channel/thread context, narrow layout and pinned thread navigation. Unit regressions cover pin jumps superseding same-root prefetches, out-of-order context responses and cached older/newer boundaries. `scripts/test-message-threads.mjs` passes cached reopening, stable repeated clicks, hover prefetch and 30-frame Pins return with an open thread/draft. Latest `scripts/test-chat-history.mjs` passes desktop/latest/live/history and narrow-history Pins round trips, checking 30 painted return frames and stable scrollbars, then fails its narrow live-arrival check with a 3px bottom gap (2px allowed); reproduced on a clean main checkout too. Desktop/narrow screenshots inspected. Browser fixture only, not Safari or a physical phone |
+| Rust desktop | Linux build, Clippy, 285 tests passed (9 ignored), including retained Pins viewport/paging anchors, pending-unpin projection, resize/clip bounds, fixture pin counts and cached bounded thread context after forward paging. Inspected labeled static `parity-pins`, `parity-pins-empty`, and `parity-pins-long` renders: populated/empty cards, hover actions, long/multiple-pin scrolling, and a 390px window. Actual Linux menu/outside/Escape dismissal exercised; not live account acceptance. Windows build/runtime and production cross-client checks remain release validation |
 | Android | Context/paging models, API, request fencing, Compose dialog/actions/navigation implemented. JDK present; `compileDebugKotlin` blocked by missing Android SDK. Compilation, rendered states and physical-device checks require CI/a native runner |
 | Apple | Models, gateway, SwiftUI actions/list and protocol regressions implemented. Swift/Xcode unavailable in this Linux orb; macOS/iOS builds, rendered states and devices require CI/a native runner |
 | Containers/live | Docker has no running daemon. Validate web/API build stages directly; no container-image, live account/SFU or physical-device acceptance is inferred from fixtures |
@@ -5035,10 +5035,42 @@ controls do not register a pointing-hand region.
 | iOS/macOS | Projection/rollback coverage added. No Swift/Xcode build, device run or AppKit cursor runtime check in this Linux orb; native build and enabled/disabled hover acceptance remain required. |
 | Containers/services | Web build stage passes directly; Docker daemon unavailable. No API/gateway change, infrastructure/configuration change, migration, deployment or live SFU validation. Clients can release independently. |
 
+### Thread loading stability (October 8, 2026)
+
+Selecting the already open thread does not reset its state or start another
+request, including during pagination. Successful thread pages retain only their
+pagination metadata; message content stays in the live channel timeline. Closing
+and reopening a loaded thread, or switching back to it, reuses those rows and
+preserves older-page boundaries. Channel/history resets and access loss discard
+the metadata cache. This is not persistent/offline storage.
+
+Web thread controls prefetch on hover and keyboard focus. Clicks share an
+in-flight prefetch; a background response cannot open a closed panel or replace
+the selected thread. Speculative failures stay silent and do not prevent a later
+load. Cold loads show neutral message-shaped skeletons. No loading paragraph or
+skeleton is inserted above existing replies on any client. Retry remains an
+explicit action.
+
+| Platform | Validation boundary for this change |
+| --- | --- |
+| Web desktop/narrow | `npm run check` and `npm test` pass: 461 tests across 40 web/shared-native-support files. `scripts/test-message-threads.mjs` checks zero additional requests and unchanged reply coordinates on repeat clicks, hover/focus prefetch, cached reopening, cold-load skeletons, error/retry, drafts and mobile Back/inert background. Inspected 2x Chromium desktop and 390px touch-emulated captures; `(pointer:coarse)` verified. Not Safari or physical-device acceptance. |
+| Rust desktop | 279 tests pass, 9 existing tests ignored, including loopback request/pagination/cache-reset and wide/narrow egui skeleton/unchanged-reply-position regressions. Fmt, application-package Clippy (`--no-deps`) and executable build pass. Inspected 2x Linux Xvfb wide/narrow loaded/cold-thread fixtures. Dependency-inclusive Clippy is blocked by 34 existing vendored `webrtc-sys` missing-safety-doc errors. Not macOS/Windows or live-account acceptance. |
+| Android | Equivalent repeat-open/cache and cold-load skeleton behavior implemented. `./gradlew testDebugUnitTest --no-daemon` reaches configuration but is blocked by the missing Android SDK. No Android compilation, rendering or physical-device run in this orb. |
+| iOS/macOS | Equivalent behavior and a deferred-request/cache/pagination/reset regression implemented. Swift/Xcode unavailable in this Linux orb; test execution, compilation and native rendering remain required. |
+| Containers/services | Web build stage passes directly; Docker daemon unavailable. No API/gateway, infrastructure, secrets/configuration, database migration, deployment or live SFU change. |
+
+Web and native clients can release independently; merging does not deploy.
+Before distribution, check repeated thread selection with a scrolled history and
+an unsent draft, reopening after live replies/edits/reactions, loading older
+replies, retry after failure, and reconnect/access-loss recovery on real native
+clients. Roll back web using the previous known-good web image; stop native
+distribution and ship a corrected higher-build-number client if needed. No data
+rollback is required.
+
 ### Returning from Pins (October 8, 2026)
 
 Web keeps the virtualized conversation mounted and measurable behind Pins, but
-invisible and inert to pointer, keyboard and accessibility navigation. Returning
+visibly dimmed and inert to pointer, keyboard and accessibility navigation. Returning
 reveals the existing viewport without repeating initial measurement or showing
 an empty history. Live arrivals follow the bottom only for readers already there;
 readers in older history retain their position. Android retains its channel's
@@ -5048,7 +5080,7 @@ presents Pins as a sheet over the mounted conversation and is unchanged.
 
 | Platform | Validation boundary |
 | --- | --- |
-| Web | Build/typecheck/lint/format and 449 web/shared-native-support tests pass. Disposable Chromium regressions sample every return frame for desktop/narrow, latest/older history, live arrivals, short/empty conversations and an open thread with a draft. The timeline is invisible and unfocusable behind Pins; screenshots inspected. Narrow viewport checks are not physical-device or Safari acceptance. |
+| Web | See the Pin validation boundary above for current combined results and the known narrow live-arrival failure. The timeline remains visibly dimmed and unfocusable behind the modal; screenshots inspected. Earlier return-frame coverage included short/empty conversations. Narrow viewport checks are not physical-device or Safari acceptance. |
 | Rust desktop | 276 tests pass, 9 existing tests ignored, including rendered scroll-anchor/paging preservation across empty Pins. No macOS/Windows or physical-device acceptance. |
 | Android | Scroll state is hoisted above Pins navigation. Gradle compile attempt is blocked by the missing Android SDK; no native build or device verification. |
 | Deployment | Web, Android and Rust desktop can release independently. No API/gateway, infrastructure, secret/configuration, database or Apple release is required. Docker daemon unavailable; web build stages validated directly. No deployment performed. |
