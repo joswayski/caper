@@ -1750,6 +1750,9 @@ private struct ChatView: View {
                                               controller: emojiComposer, submit: { Task { await chat.send() } })
                     }
                     .frame(minHeight: 42, maxHeight: 174)
+                    // The flexible frame otherwise fills its proposal up to 174,
+                    // centering a one-line text view inside an oversized background.
+                    .fixedSize(horizontal: false, vertical: true)
                     .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 6))
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(CaperTheme.border))
                     .onChange(of: chat.draft) { _, value in chat.setTyping(!value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
@@ -1907,7 +1910,9 @@ private struct NativeThreadView: View {
                 if let error = chat.sessionError { Text(error); Button("Retry session") { Task { await chat.retrySession() } } }
                 EmojiSuggestionsView(controller: emojiComposer)
                 NativeMessageComposer(text: $chat.threadDraft, placeholder: "Reply to thread…", controller: emojiComposer, submit: { Task { await chat.send(inThread: true) } })
-                    .frame(minHeight: 72, maxHeight: 174).background(CaperTheme.composer)
+                    .frame(minHeight: 72, maxHeight: 174)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .background(CaperTheme.composer)
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
                 HStack {
                     Toggle("Also send to #\(chat.channelName)", isOn: $chat.threadBroadcast).font(CaperTheme.font(11)).disabled(chat.pendingMessage != nil)
