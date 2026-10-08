@@ -70,6 +70,7 @@ export default function ReactorsPanel({
 
   useEffect(() => {
     let active = true;
+    setList(cachedReactors(channelId, message.id, message.reactionSeq));
     setError(undefined);
     loadReactors(channelId, message.id, message.reactionSeq).then(
       (loaded) => {

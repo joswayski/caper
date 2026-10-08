@@ -144,9 +144,13 @@ export function loadReactors(channelId: string, messageId: string, reactionSeq =
     const list: unknown = await response.json();
     if (!isReactionList(list) || list.messageId !== messageId)
       throw new Error("The chat service returned invalid reactions.");
-    cache.delete(key);
-    cache.set(key, list);
-    if (cache.size > 200) cache.delete(cache.keys().next().value!);
+    const previous = cache.get(key);
+    // Different revisions may load concurrently; completion order is not freshness.
+    if (!previous || BigInt(list.reactionSeq) >= BigInt(previous.reactionSeq)) {
+      cache.delete(key);
+      cache.set(key, list);
+      if (cache.size > 200) cache.delete(cache.keys().next().value!);
+    }
     return list;
   })().finally(() => inflight.delete(`${key}\n${reactionSeq}`));
   inflight.set(`${key}\n${reactionSeq}`, request);
