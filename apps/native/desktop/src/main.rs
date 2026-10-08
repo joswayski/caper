@@ -2,6 +2,7 @@
 
 mod api;
 mod avatar_images;
+mod blocking;
 mod credentials;
 mod daily_icon;
 mod edits;
@@ -33,7 +34,9 @@ use state::{CallContext, Phase};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 use voice::{MicrophoneState, Recorded, Voice, VoiceOperation};
-use worker::{AdminOperation, AdminResult, Command, Event, Worker, current};
+use worker::{
+    AccountOperation, AccountResult, AdminOperation, AdminResult, Command, Event, Worker, current,
+};
 
 const BLACKOUT: Color32 = Color32::from_rgb(12, 13, 15);
 const SURFACE: Color32 = Color32::from_rgb(21, 23, 25);
@@ -156,6 +159,11 @@ enum Dialog {
     CreateChannel,
     ManageChannel(String),
     StartDirect,
+    /// Confirm blocking; `request` is an incoming DM request to drop with it.
+    Block {
+        account: model::BlockedAccount,
+        request: Option<String>,
+    },
 }
 
 #[derive(Clone)]
@@ -281,6 +289,23 @@ struct CaperApp {
     account: Option<Account>,
     spaces: Vec<model::Space>,
     directs: Vec<model::DirectConversation>,
+    /// Bumps on sign-in and sign-out; fences request, block and privacy results.
+    account_epoch: u64,
+    /// `GET /api/blocks`, newest first; `None` until loaded.
+    blocks: Option<Vec<model::BlockedAccount>>,
+    /// Blocked-message runs shown in place, by first message id (memory only).
+    revealed_blocked: BTreeSet<String>,
+    requests_open: bool,
+    /// The open request bar's Accept/Decline/Block in flight, and its error.
+    request_busy: bool,
+    request_error: Option<String>,
+    /// Block, unblock, or confirmation in flight, and the last failure.
+    block_busy: bool,
+    block_error: Option<String>,
+    /// Who can start a DM with you: `anyone`, `spaces` or `nobody`.
+    privacy: Option<String>,
+    privacy_saving: bool,
+    privacy_error: Option<String>,
     selected_direct: Option<String>,
     directs_refreshed: Instant,
     foreground: bool,
@@ -404,6 +429,17 @@ impl CaperApp {
             account: None,
             spaces: Vec::new(),
             directs: Vec::new(),
+            account_epoch: 0,
+            blocks: None,
+            revealed_blocked: BTreeSet::new(),
+            requests_open: false,
+            request_busy: false,
+            request_error: None,
+            block_busy: false,
+            block_error: None,
+            privacy: None,
+            privacy_saving: false,
+            privacy_error: None,
             selected_direct: None,
             directs_refreshed: now - Duration::from_secs(15),
             foreground: false,
@@ -606,6 +642,94 @@ impl CaperApp {
                         });
                         app.open_editor(&message);
                     }
+                } else if name.starts_with("parity-requests") || name.starts_with("parity-blocked")
+                {
+                    // Labelled previews of message requests and blocking.
+                    let peer =
+                        |id: &str, username: &str, name: &str, avatar: i32| model::DirectPeer {
+                            id: id.into(),
+                            username: username.into(),
+                            display_name: format!("TEST FIXTURE {name}"),
+                            avatar_id: Some(avatar),
+                        };
+                    let direct =
+                        |id: &str, peer: model::DirectPeer, status| model::DirectConversation {
+                            id: id.into(),
+                            peer,
+                            last_seq: "1".into(),
+                            read_seq: "1".into(),
+                            status,
+                            blocked: false,
+                        };
+                    let maya = model::BlockedAccount {
+                        id: "fixture-maya".into(),
+                        username: "maya".into(),
+                        display_name: "Maya".into(),
+                        avatar_id: Some(15),
+                    };
+                    app.directs = vec![
+                        direct(
+                            "dm0000000001",
+                            peer("fixture-maya", "maya", "Maya", 15),
+                            model::DirectStatus::Accepted,
+                        ),
+                        direct(
+                            "dm0000000003",
+                            peer("stranger0001", "jordan", "Jordan", 412),
+                            model::DirectStatus::Incoming,
+                        ),
+                        direct(
+                            "dm0000000004",
+                            peer("stranger0002", "sam", "Sam", 300),
+                            model::DirectStatus::Outgoing,
+                        ),
+                    ];
+                    let open = match name {
+                        "parity-requests" => Some((
+                            "dm0000000003",
+                            "stranger0001",
+                            "TEST FIXTURE Jordan",
+                            412,
+                            "TEST FIXTURE — Hi! Could we talk about the mural?",
+                        )),
+                        "parity-requests-outgoing" => Some((
+                            "dm0000000004",
+                            "fixture-owner",
+                            "Fixture Owner",
+                            0,
+                            "TEST FIXTURE — Hi Sam, are you joining Saturday?",
+                        )),
+                        "parity-blocked-dm" => Some((
+                            "dm0000000001",
+                            "fixture-maya",
+                            "Maya",
+                            15,
+                            "TEST FIXTURE — A message from Maya.",
+                        )),
+                        _ => None,
+                    };
+                    if name.starts_with("parity-blocked") {
+                        app.blocks = Some(vec![maya]);
+                        app.directs[0].blocked = true;
+                    }
+                    app.requests_open = name == "parity-requests";
+                    if let Some((id, author, author_name, avatar, text)) = open {
+                        let mut message = app.timeline.messages().next().unwrap().clone();
+                        message.channel_id = id.into();
+                        message.author = Author {
+                            id: author.into(),
+                            avatar_id: Some(avatar),
+                            name: author_name.into(),
+                            is_guest: false,
+                        };
+                        message.content.text = text.into();
+                        message.seq = "1".into();
+                        app.timeline
+                            .reset(vec![message], "1")
+                            .expect("valid DM fixture");
+                        app.selected_channel = Some(id.into());
+                        app.selected_direct = Some(id.into());
+                    }
                 } else if matches!(
                     name,
                     "parity-direct" | "parity-direct-new" | "parity-direct-no-spaces"
@@ -617,9 +741,12 @@ impl CaperApp {
                             id: "fixture-maya".into(),
                             username: "maya".into(),
                             display_name: "TEST FIXTURE Maya".into(),
+                            avatar_id: None,
                         },
                         last_seq: "2".into(),
                         read_seq: "2".into(),
+                        status: model::DirectStatus::Accepted,
+                        blocked: false,
                     }];
                     let mut messages: Vec<_> = app.timeline.messages().take(2).cloned().collect();
                     for message in &mut messages {
@@ -1070,6 +1197,9 @@ impl CaperApp {
             })
             .collect();
         self.timeline.reset(messages, "4").expect("valid fixture");
+        // Static previews never load account state over the network.
+        self.privacy = Some("anyone".into());
+        self.blocks = Some(Vec::new());
         self.live = "Live".into();
         // Fixtures never contact a media service; voice reads as enabled.
         for root in ["general", "chan00000001", "chan00000002", "chan00000003"] {
@@ -1584,6 +1714,9 @@ impl CaperApp {
                     ))
                 }
                 Event::Gateway(event) => self.gateway(event),
+                Event::Account { epoch, result } if epoch == self.account_epoch => {
+                    self.account_result(result);
+                }
                 _ => {}
             }
         }
@@ -1591,6 +1724,7 @@ impl CaperApp {
 
     fn establish(&mut self, token: String, account: Account, spaces: Spaces) {
         self.invalidate_navigation_cache();
+        self.reset_account_state();
         self.detail = None;
         self.selected_space = None;
         self.clear_channel_state();
@@ -1601,6 +1735,7 @@ impl CaperApp {
         self.account = Some(account);
         self.set_spaces(spaces);
         self.refresh_directs();
+        self.account_op(AccountOperation::LoadBlocks);
         self.error = None;
         self.dialog = None;
         if needs_profile {
@@ -1645,7 +1780,247 @@ impl CaperApp {
         }
     }
 
+    /// Sends a request, block or privacy operation for the signed-in account.
+    fn account_op(&mut self, operation: AccountOperation) {
+        if let Some(token) = self.token.clone() {
+            self.worker.send(Command::Account {
+                epoch: self.account_epoch,
+                token,
+                operation,
+            });
+        }
+    }
+
+    fn reset_account_state(&mut self) {
+        self.account_epoch += 1;
+        self.blocks = None;
+        self.revealed_blocked.clear();
+        self.requests_open = false;
+        self.request_busy = false;
+        self.request_error = None;
+        self.block_busy = false;
+        self.block_error = None;
+        self.privacy = None;
+        self.privacy_saving = false;
+        self.privacy_error = None;
+    }
+
+    fn is_blocked(&self, account: &str) -> bool {
+        self.blocks
+            .as_ref()
+            .is_some_and(|blocks| blocks.iter().any(|blocked| blocked.id == account))
+    }
+
+    fn blocked_ids(&self) -> BTreeSet<String> {
+        self.blocks
+            .iter()
+            .flatten()
+            .map(|blocked| blocked.id.clone())
+            .collect()
+    }
+
+    fn selected_direct_conversation(&self) -> Option<&model::DirectConversation> {
+        let id = self.selected_direct.as_ref()?;
+        self.directs.iter().find(|direct| &direct.id == id)
+    }
+
+    /// The open conversation when it is an incoming message request.
+    fn selected_request(&self) -> Option<&model::DirectConversation> {
+        self.selected_direct_conversation()
+            .filter(|direct| direct.status == model::DirectStatus::Incoming)
+    }
+
+    fn incoming_requests(&self) -> Vec<model::DirectConversation> {
+        self.directs
+            .iter()
+            .filter(|direct| direct.status == model::DirectStatus::Incoming)
+            .cloned()
+            .collect()
+    }
+
+    /// Someone else's signed-in account behind a message, for Block/Unblock.
+    fn blockable_author(&self, author: &Author) -> Option<model::BlockedAccount> {
+        let me = self.account.as_ref().map(|account| account.id.as_str());
+        if author.is_guest || Some(author.id.as_str()) == me {
+            return None;
+        }
+        let username = self
+            .detail
+            .iter()
+            .flat_map(|detail| &detail.members)
+            .find(|member| member.id == author.id)
+            .map(|member| member.username.clone())
+            .or_else(|| {
+                self.directs
+                    .iter()
+                    .find(|direct| direct.peer.id == author.id)
+                    .map(|direct| direct.peer.username.clone())
+            })
+            .unwrap_or_default();
+        Some(model::BlockedAccount {
+            id: author.id.clone(),
+            username,
+            display_name: author.name.clone(),
+            avatar_id: author.avatar_id,
+        })
+    }
+
+    fn peer_account(peer: &model::DirectPeer) -> model::BlockedAccount {
+        model::BlockedAccount {
+            id: peer.id.clone(),
+            username: peer.username.clone(),
+            display_name: peer.display_name.clone(),
+            avatar_id: peer.avatar_id,
+        }
+    }
+
+    /// Blocking always confirms first; unblocking does not.
+    fn confirm_block(&mut self, account: model::BlockedAccount, request: Option<String>) {
+        self.block_error = None;
+        self.dialog = Some(Dialog::Block { account, request });
+    }
+
+    fn unblock(&mut self, account: model::BlockedAccount) {
+        self.block_busy = true;
+        self.block_error = None;
+        self.account_op(AccountOperation::SetBlock {
+            account,
+            blocked: false,
+            request: None,
+        });
+    }
+
+    /// Drops a declined or blocked request. If it was open, show the next
+    /// request, else the first space (or nothing).
+    fn leave_request(&mut self, id: &str) {
+        self.directs.retain(|direct| direct.id != id);
+        if self.selected_direct.as_deref() != Some(id) {
+            return;
+        }
+        if let Some(next) = self.incoming_requests().into_iter().next() {
+            self.requests_open = true;
+            self.select_direct(next);
+        } else if let Some(space) = self.spaces.first().map(|space| space.id.clone()) {
+            self.selected_direct = None;
+            self.select_space(space);
+        } else {
+            self.selected_direct = None;
+            self.clear_channel_state();
+        }
+    }
+
+    fn account_result(&mut self, result: AccountResult) {
+        match result {
+            AccountResult::Blocks(Ok(blocks)) => self.blocks = Some(blocks),
+            AccountResult::Blocks(Err(error)) => self.block_error = Some(error),
+            AccountResult::Block {
+                account,
+                blocked,
+                request,
+                result,
+            } => {
+                self.block_busy = false;
+                self.request_busy = false;
+                if let Err(error) = result {
+                    self.block_error = Some(error);
+                    return;
+                }
+                self.block_error = None;
+                let blocks = self.blocks.get_or_insert_with(Vec::new);
+                blocks.retain(|entry| entry.id != account.id);
+                if blocked {
+                    blocks.insert(0, account.clone());
+                }
+                for direct in &mut self.directs {
+                    if direct.peer.id == account.id {
+                        direct.blocked = blocked;
+                    }
+                }
+                if matches!(self.dialog, Some(Dialog::Block { .. })) {
+                    self.dialog = None;
+                }
+                if blocked {
+                    self.typers.remove(&account.id);
+                    // Blocking also declines their pending request.
+                    let requests: Vec<_> = self
+                        .directs
+                        .iter()
+                        .filter(|direct| {
+                            direct.peer.id == account.id
+                                && direct.status == model::DirectStatus::Incoming
+                        })
+                        .map(|direct| direct.id.clone())
+                        .chain(request)
+                        .collect();
+                    for id in requests {
+                        self.leave_request(&id);
+                    }
+                }
+            }
+            AccountResult::Accepted { id, result } => {
+                self.request_busy = false;
+                match result {
+                    Ok(direct) => {
+                        self.request_error = None;
+                        match self.directs.iter_mut().find(|item| item.id == id) {
+                            Some(existing) => *existing = direct,
+                            None => self.directs.push(direct),
+                        }
+                        if self.incoming_requests().is_empty() {
+                            self.requests_open = false;
+                        }
+                    }
+                    Err(error) => self.request_error = Some(error),
+                }
+            }
+            AccountResult::Declined { id, result } => {
+                self.request_busy = false;
+                match result {
+                    Ok(()) => {
+                        self.request_error = None;
+                        self.leave_request(&id);
+                    }
+                    Err(error) => self.request_error = Some(error),
+                }
+            }
+            AccountResult::Privacy(result) => match result {
+                // A save in flight owns the displayed value.
+                Ok(value) if !self.privacy_saving => self.privacy = Some(value),
+                Ok(_) => {}
+                Err(error) => self.privacy_error = Some(error),
+            },
+            AccountResult::PrivacySaved { previous, result } => {
+                self.privacy_saving = false;
+                match result {
+                    Ok(value) => {
+                        self.privacy = Some(value);
+                        self.privacy_error = None;
+                    }
+                    Err(error) => {
+                        self.privacy = previous;
+                        self.privacy_error = Some(format!("Could not save: {error}"));
+                    }
+                }
+            }
+        }
+    }
+
+    fn save_privacy(&mut self, value: &str) {
+        if self.privacy_saving || self.privacy.as_deref() == Some(value) {
+            return;
+        }
+        let previous = self.privacy.replace(value.to_owned());
+        self.privacy_saving = true;
+        self.privacy_error = None;
+        self.account_op(AccountOperation::SavePrivacy {
+            value: value.to_owned(),
+            previous,
+        });
+    }
+
     fn select_direct(&mut self, direct: model::DirectConversation) {
+        self.request_busy = false;
+        self.request_error = None;
         self.remember_conversation();
         self.selected_direct = Some(direct.id.clone());
         self.reload_selected_channel(direct.id, false);
@@ -1853,6 +2228,10 @@ impl CaperApp {
         if !self.foreground || self.selected_channel != self.selected_direct {
             return;
         }
+        // Reading a request must not look like engaging with it.
+        if self.selected_request().is_some() {
+            return;
+        }
         if let (Some(id), Some(token)) = (self.selected_direct.clone(), self.token.clone()) {
             let seq = self.timeline.cursor();
             if let Some(direct) = self.directs.iter_mut().find(|item| item.id == id) {
@@ -1869,7 +2248,8 @@ impl CaperApp {
 
     fn selected_is_joined(&self) -> bool {
         if self.selected_direct.is_some() && self.selected_direct == self.selected_channel {
-            return true;
+            // An incoming request stays read-only until it is accepted.
+            return self.selected_request().is_none();
         }
         self.selected_channel.as_ref().is_some_and(|id| {
             self.detail.as_ref().is_some_and(|detail| {
@@ -2443,10 +2823,13 @@ impl CaperApp {
                     self.pending = None;
                     self.error = None;
                 }
+                // Requests and blocked authors never play message sounds.
                 let remote = self
                     .session
                     .as_ref()
-                    .is_some_and(|session| session.author.id != message.author.id);
+                    .is_some_and(|session| session.author.id != message.author.id)
+                    && !self.is_blocked(&message.author.id)
+                    && self.selected_request().is_none();
                 let author_id = message.author.id.clone();
                 match self.timeline.apply(*message) {
                     Ok(model::Apply::Applied) if remote => {
@@ -2554,6 +2937,7 @@ impl CaperApp {
                         .session
                         .as_ref()
                         .map_or("", |session| session.author.id.as_str())
+                    && !self.is_blocked(&author.id)
                 {
                     let replace = self
                         .typers
@@ -2628,6 +3012,23 @@ impl CaperApp {
                         pending.sending = false;
                     }
                     self.error = Some("Caper returned an invalid send confirmation. Retry keeps the same message ID.".into());
+                }
+            }
+            // A block (either way) is a definitive rejection, not an expired session.
+            Err(error)
+                if matches!(
+                    error.code.as_deref(),
+                    Some("dm_blocked" | "dm_not_accepted")
+                ) =>
+            {
+                if let Some(pending) = &mut self.pending {
+                    pending.sending = false;
+                    pending.rejection = Some(error.message);
+                }
+                self.error = None;
+                if error.code.as_deref() == Some("dm_blocked") {
+                    self.account_op(AccountOperation::LoadBlocks);
+                    self.refresh_directs();
                 }
             }
             Err(error) if matches!(error.status, Some(401 | 403)) => self
@@ -2776,6 +3177,7 @@ impl CaperApp {
             });
         }
         self.account = None;
+        self.reset_account_state();
         self.invalidate_navigation_cache();
         self.spaces.clear();
         self.directs.clear();
@@ -4519,6 +4921,7 @@ impl CaperApp {
                     }
                 });
             });
+            self.request_navigation(ui);
             let self_direct = self
                 .directs
                 .iter()
@@ -4622,7 +5025,8 @@ impl CaperApp {
             ui.add_space(2.0);
             let directs = self.directs.clone();
             for direct in directs {
-                if direct.peer.id == account.id {
+                // Requests live under "Message requests" and never show unread.
+                if direct.peer.id == account.id || direct.status == model::DirectStatus::Incoming {
                     continue;
                 }
                 let active = self.selected_direct.as_deref() == Some(&direct.id);
@@ -4665,6 +5069,245 @@ impl CaperApp {
                 self.open_direct_action();
             }
         });
+    }
+
+    /// "⊘ N blocked messages — Show/Hide" for a run by blocked accounts. Returns
+    /// whether the run is shown; the choice lives in memory only.
+    fn blocked_row(&mut self, ui: &mut egui::Ui, key: &str, count: usize) -> bool {
+        let shown = self.revealed_blocked.contains(key);
+        egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(18, 6))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    // ⊘, painted: the bundled fonts have no glyph for it.
+                    let (icon, _) =
+                        ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                    let stroke = Stroke::new(1.2, MUTED);
+                    ui.painter().circle_stroke(icon.center(), 5.0, stroke);
+                    ui.painter().line_segment(
+                        [
+                            icon.center() + egui::vec2(-3.5, 3.5),
+                            icon.center() + egui::vec2(3.5, -3.5),
+                        ],
+                        stroke,
+                    );
+                    ui.label(
+                        RichText::new(format!("{} —", blocking::label(count)))
+                            .size(12.0)
+                            .color(MUTED),
+                    );
+                    let toggle = ui.add(
+                        egui::Button::new(
+                            RichText::new(if shown { "Hide" } else { "Show" })
+                                .size(12.0)
+                                .color(TEXT),
+                        )
+                        .frame(false),
+                    );
+                    if toggle.clicked() {
+                        if shown {
+                            self.revealed_blocked.remove(key);
+                        } else {
+                            self.revealed_blocked.insert(key.to_owned());
+                        }
+                    }
+                });
+            });
+        self.revealed_blocked.contains(key)
+    }
+
+    /// Thread rows (root or replies), collapsing blocked authors' runs.
+    fn messages_or_blocked(&mut self, ui: &mut egui::Ui, messages: &[&model::Message]) {
+        let me = self.account.as_ref().map(|account| account.id.clone());
+        for row in blocking::rows(messages, &self.blocked_ids(), me.as_deref()) {
+            let range = match row {
+                blocking::Row::Message(index) => index..index + 1,
+                blocking::Row::Blocked { range, key } => {
+                    if !self.blocked_row(ui, &key, range.len()) {
+                        continue;
+                    }
+                    range
+                }
+            };
+            for message in &messages[range] {
+                self.message(ui, message, true);
+            }
+        }
+    }
+
+    /// Replaces the composer for an incoming request: who it is, then Accept,
+    /// Decline or Block. Errors stay in the bar.
+    fn request_bar(&mut self, ui: &mut egui::Ui, direct: &model::DirectConversation) {
+        let plain = egui::TextFormat::simple(egui::FontId::proportional(13.0), MUTED);
+        let mut copy = egui::text::LayoutJob::default();
+        copy.append(
+            &direct.peer.display_name,
+            0.0,
+            egui::TextFormat {
+                font_id: egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Bold".into())),
+                color: TEXT,
+                ..Default::default()
+            },
+        );
+        copy.append(
+            &format!(
+                " (@{}) wants to message you. You don't share a space.",
+                direct.peer.username
+            ),
+            0.0,
+            plain,
+        );
+        ui.label(copy);
+        ui.add_space(8.0);
+        let busy = self.request_busy;
+        ui.horizontal(|ui| {
+            if primary_button(ui, if busy { "Working…" } else { "Accept" }, !busy).clicked() {
+                self.request_busy = true;
+                self.request_error = None;
+                self.account_op(AccountOperation::Accept(direct.id.clone()));
+            }
+            if secondary_button(ui, "Decline", !busy).clicked() {
+                self.request_busy = true;
+                self.request_error = None;
+                self.account_op(AccountOperation::Decline(direct.id.clone()));
+            }
+            if secondary_button(ui, "Block", !busy).clicked() {
+                self.confirm_block(Self::peer_account(&direct.peer), Some(direct.id.clone()));
+            }
+        });
+        if let Some(error) = &self.request_error {
+            ui.colored_label(ERROR, error);
+        }
+    }
+
+    fn blocked_composer(&mut self, ui: &mut egui::Ui, direct: &model::DirectConversation) {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(format!("You blocked @{}.", direct.peer.username))
+                    .size(13.0)
+                    .color(MUTED),
+            );
+            if secondary_button(
+                ui,
+                if self.block_busy {
+                    "Unblocking…"
+                } else {
+                    "Unblock"
+                },
+                !self.block_busy,
+            )
+            .clicked()
+            {
+                self.unblock(Self::peer_account(&direct.peer));
+            }
+        });
+        if let Some(error) = &self.block_error {
+            ui.colored_label(ERROR, error);
+        }
+    }
+
+    /// "Message requests" with a count of incoming requests, expanding to the
+    /// requests themselves. Opening one only reads it.
+    fn request_navigation(&mut self, ui: &mut egui::Ui) {
+        let requests = self.incoming_requests();
+        if requests.is_empty() {
+            return;
+        }
+        let open = self.requests_open
+            || self
+                .selected_request()
+                .is_some_and(|request| requests.iter().any(|item| item.id == request.id));
+        ui.horizontal(|ui| {
+            let (response, _, _) = channel_button(
+                ui,
+                egui::vec2(ui.available_width() - 18.0, 28.0),
+                "Message requests",
+                if open {
+                    NavIcon::Chevron
+                } else {
+                    NavIcon::ChevronRight
+                },
+                false,
+                None,
+                None,
+            );
+            ui.label(
+                RichText::new(requests.len().to_string())
+                    .size(11.0)
+                    .color(MUTED),
+            );
+            if response.clicked() {
+                self.requests_open = !open;
+            }
+        });
+        ui.add_space(2.0);
+        if !open {
+            return;
+        }
+        for request in requests {
+            let active = self.selected_direct.as_deref() == Some(&request.id);
+            let name = format!("{} @{}", request.peer.display_name, request.peer.username);
+            let (rect, response) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width() - 18.0, 28.0),
+                egui::Sense::click(),
+            );
+            response.widget_info(|| {
+                egui::WidgetInfo::selected(
+                    egui::WidgetType::SelectableLabel,
+                    ui.is_enabled(),
+                    active,
+                    format!("Message request from {name}"),
+                )
+            });
+            if active || response.hovered() || response.has_focus() {
+                ui.painter().rect_filled(
+                    rect,
+                    6.0,
+                    if active {
+                        Color32::from_rgba_unmultiplied(182, 77, 50, 40)
+                    } else {
+                        RAISED
+                    },
+                );
+            }
+            paint_avatar(
+                ui,
+                egui::Rect::from_center_size(
+                    egui::pos2(rect.left() + 29.5, rect.center().y),
+                    egui::vec2(20.0, 20.0),
+                ),
+                &request.peer.display_name,
+                request.peer.avatar_id,
+            );
+            let mut label = egui::text::LayoutJob::default();
+            label.append(
+                &request.peer.display_name,
+                0.0,
+                egui::TextFormat {
+                    font_id: egui::FontId::new(
+                        13.0,
+                        egui::FontFamily::Name("Satoshi Medium".into()),
+                    ),
+                    color: if active { TEXT } else { MUTED },
+                    ..Default::default()
+                },
+            );
+            label.append(
+                &format!(" @{}", request.peer.username),
+                0.0,
+                egui::TextFormat::simple(egui::FontId::proportional(12.0), MUTED),
+            );
+            let galley = ui.painter().layout_job(label);
+            ui.painter().with_clip_rect(rect).galley(
+                egui::pos2(rect.left() + 47.0, rect.center().y - galley.size().y / 2.0),
+                galley,
+                TEXT,
+            );
+            if response.clicked() {
+                self.select_direct(request);
+            }
+            ui.add_space(2.0);
+        }
     }
 
     fn roster_for_active_call(&self) -> Vec<model::VoiceOccupant> {
@@ -5296,6 +5939,11 @@ impl CaperApp {
                                 }
                             }
                             self.dialog = Some(Dialog::Settings);
+                            if !self.privacy_saving {
+                                self.privacy_error = None;
+                                self.account_op(AccountOperation::LoadPrivacy);
+                            }
+                            self.account_op(AccountOperation::LoadBlocks);
                             ui.close();
                         }
                         ui.separator();
@@ -6103,7 +6751,7 @@ impl CaperApp {
                     .cloned()
                     .collect();
                 if let Some(parent) = rows.iter().find(|message| message.id == root) {
-                    self.message(ui, parent, true);
+                    self.messages_or_blocked(ui, &[parent]);
                 }
                 if loading {
                     ui.label("Loading thread…");
@@ -6128,9 +6776,7 @@ impl CaperApp {
                 if replies.is_empty() && !loading {
                     ui.label("No replies yet. Start the thread.");
                 }
-                for message in replies {
-                    self.message(ui, message, true);
-                }
+                self.messages_or_blocked(ui, &replies);
             });
         self.emoji_picker(ui.ctx());
     }
@@ -6209,6 +6855,20 @@ impl CaperApp {
                                             if narrow { self.narrow_members_visible = !self.narrow_members_visible; }
                                             else { self.members_visible = !self.members_visible; }
                                         }
+                                    } else if let Some(direct) = self.selected_direct_conversation().cloned()
+                                        && self.account.as_ref().is_some_and(|account| account.id != direct.peer.id)
+                                    {
+                                        // 1:1 DMs only; personal notes have no peer to block.
+                                        let blocked = direct.blocked || self.is_blocked(&direct.peer.id);
+                                        let account = Self::peer_account(&direct.peer);
+                                        if ui.add_enabled(!self.block_busy, egui::Button::new(if blocked { "Unblock" } else { "Block" })).clicked() {
+                                            if blocked {
+                                                self.unblock(account);
+                                            } else {
+                                                let request = (direct.status == model::DirectStatus::Incoming).then(|| direct.id.clone());
+                                                self.confirm_block(account, request);
+                                            }
+                                        }
                                     }
                                 },
                             );
@@ -6246,6 +6906,24 @@ impl CaperApp {
                     ui.visuals_mut().widgets.active.corner_radius = CornerRadius::same(6);
                     if let Some(error) = &self.error {
                         ui.colored_label(ERROR, error);
+                    }
+                    let me = self.account.as_ref().map(|account| account.id.clone());
+                    if let Some(direct) = self.selected_direct_conversation().cloned()
+                        && Some(&direct.peer.id) != me.as_ref()
+                    {
+                        // A request is read-only until accepted; a block replaces the composer.
+                        if direct.status == model::DirectStatus::Incoming {
+                            self.request_bar(ui, &direct);
+                            return;
+                        }
+                        if direct.blocked || self.is_blocked(&direct.peer.id) {
+                            self.blocked_composer(ui, &direct);
+                            return;
+                        }
+                        if direct.status == model::DirectStatus::Outgoing {
+                            ui.label(RichText::new(format!("Waiting for @{} to accept. They'll see your messages when they do.", direct.peer.username)).size(12.0).color(MUTED));
+                            ui.add_space(6.0);
+                        }
                     }
                     // Web: the conversation stays; only sending waits on a new session.
                     if let Some(root) = self.pending.as_ref().and_then(|pending| pending.thread_root_id.clone())
@@ -6516,13 +7194,31 @@ impl CaperApp {
                     // pending/empty state and paging can inspect the timeline.
                     let timeline = std::mem::take(&mut self.timeline);
                     let mut last_date = None;
-                    for message in timeline.messages().filter(|message| message.is_channel_message() && !self.thread_only_rows.contains(&message.id)).collect::<Vec<_>>() {
-                        if let Some(date) = display_date(&message.created_at)
-                            && take_date_divider(&mut last_date, &date.key)
-                        {
-                            date_divider(ui, &date.label);
+                    let messages: Vec<_> = timeline.messages().filter(|message| message.is_channel_message() && !self.thread_only_rows.contains(&message.id)).collect();
+                    let me = self.account.as_ref().map(|account| account.id.clone());
+                    for row in blocking::rows(&messages, &self.blocked_ids(), me.as_deref()) {
+                        let (range, blocked) = match row {
+                            blocking::Row::Message(index) => (index..index + 1, None),
+                            blocking::Row::Blocked { range, key } => (range, Some(key)),
+                        };
+                        if let Some(key) = blocked {
+                            if let Some(date) = display_date(&messages[range.start].created_at)
+                                && take_date_divider(&mut last_date, &date.key)
+                            {
+                                date_divider(ui, &date.label);
+                            }
+                            if !self.blocked_row(ui, &key, range.len()) {
+                                continue;
+                            }
                         }
-                        self.message(ui, message, false);
+                        for message in &messages[range] {
+                            if let Some(date) = display_date(&message.created_at)
+                                && take_date_divider(&mut last_date, &date.key)
+                            {
+                                date_divider(ui, &date.label);
+                            }
+                            self.message(ui, message, false);
+                        }
                     }
                     self.timeline = timeline;
                     if let Some(pending) = self.pending.clone().filter(|pending| pending.thread_root_id.is_none()) {
@@ -6996,6 +7692,22 @@ impl CaperApp {
                         self.set_pin(&message.id, !active);
                         ui.close();
                     }
+                    if let Some(account) = self.blockable_author(&message.author) {
+                        let name = if account.username.is_empty() {
+                            account.display_name.clone()
+                        } else {
+                            format!("@{}", account.username)
+                        };
+                        if self.is_blocked(&account.id) {
+                            if ui.button(format!("Unblock {name}")).clicked() {
+                                self.unblock(account);
+                                ui.close();
+                            }
+                        } else if ui.button(format!("Block {name}")).clicked() {
+                            self.confirm_block(account, None);
+                            ui.close();
+                        }
+                    }
                 });
             });
         }
@@ -7067,7 +7779,10 @@ impl CaperApp {
                     {
                         self.set_pin(&message.id, false);
                     }
-                    if !in_thread && ui.small_button("Reply in thread").clicked() {
+                    if !in_thread
+                        && self.selected_request().is_none()
+                        && ui.small_button("Reply in thread").clicked()
+                    {
                         self.open_thread(
                             message
                                 .thread_root_id
@@ -7562,6 +8277,9 @@ impl CaperApp {
             Dialog::CreateChannel => "Create a channel",
             Dialog::ManageChannel(_) => "Overview",
             Dialog::StartDirect => "Start a direct message",
+            Dialog::Block { account, .. } => {
+                leave_title.get_or_insert(format!("Block {}?", account.display_name))
+            }
         };
         context
             .layer_painter(egui::LayerId::new(
@@ -7594,7 +8312,7 @@ impl CaperApp {
             560.0
         } else if matches!(
             dialog,
-            Dialog::ConfirmDelete { .. } | Dialog::LeaveSpace { .. }
+            Dialog::ConfirmDelete { .. } | Dialog::LeaveSpace { .. } | Dialog::Block { .. }
         ) {
             300.0
         } else {
@@ -7744,6 +8462,22 @@ impl CaperApp {
                                             }
                                             Dialog::CreateChannel => self.channel_dialog(ui, None),
                                             Dialog::ManageChannel(id) => self.channel_dialog(ui, Some(id)),
+                                            Dialog::Block { account, request } => {
+                                                ui.label("You won't see their messages unless you choose to, and they can't send you DMs or requests.");
+                                                ui.add_space(16.0);
+                                                ui.horizontal(|ui| {
+                                                    if ui.add_enabled(!self.block_busy, egui::Button::new("Cancel")).clicked() { close = true; }
+                                                    let block = ui.add_enabled(!self.block_busy, egui::Button::new(RichText::new(if self.block_busy { "Blocking…" } else { "Block" }).color(ERROR)));
+                                                    if block.clicked() {
+                                                        self.block_busy = true;
+                                                        self.block_error = None;
+                                                        self.account_op(AccountOperation::SetBlock { account, blocked: true, request });
+                                                    }
+                                                });
+                                                if let Some(error) = &self.block_error {
+                                                    ui.colored_label(ERROR, error);
+                                                }
+                                            }
                                             Dialog::StartDirect => {
                                                 ui.label("Enter an exact username.");
                                                 ui.add_space(12.0);
@@ -7893,6 +8627,106 @@ impl CaperApp {
             .size(12.0)
             .color(MUTED),
         );
+        if self.account.is_some() {
+            ui.add_space(18.0);
+            ui.separator();
+            ui.add_space(18.0);
+            self.privacy_settings(ui);
+            ui.add_space(18.0);
+            ui.separator();
+            ui.add_space(18.0);
+            self.blocked_settings(ui);
+        }
+    }
+
+    /// "Who can start a DM with you", saved as soon as it changes and reverted
+    /// with an inline error if the save fails.
+    fn privacy_settings(&mut self, ui: &mut egui::Ui) {
+        ui.label(bold("Who can start a DM with you").size(12.0).color(MUTED));
+        ui.add_space(6.0);
+        let options = [
+            (
+                "anyone",
+                "Anyone",
+                Some("People outside your spaces send a message request first."),
+            ),
+            ("spaces", "People in my spaces", None),
+            (
+                "nobody",
+                "No one new",
+                Some("Conversations you already have stay open."),
+            ),
+        ];
+        let loaded = self.privacy.is_some();
+        let mut chosen = None;
+        ui.add_enabled_ui(loaded && !self.privacy_saving, |ui| {
+            for (value, label, detail) in options {
+                if ui
+                    .radio(self.privacy.as_deref() == Some(value), label)
+                    .clicked()
+                {
+                    chosen = Some(value);
+                }
+                if let Some(detail) = detail {
+                    ui.label(RichText::new(detail).size(12.0).color(MUTED));
+                }
+            }
+        });
+        if let Some(value) = chosen {
+            self.save_privacy(value);
+        }
+        if !loaded && self.privacy_error.is_none() {
+            ui.label(RichText::new("Loading…").size(12.0).color(MUTED));
+        }
+        if let Some(error) = self.privacy_error.clone() {
+            ui.horizontal(|ui| {
+                ui.colored_label(ERROR, error);
+                if !loaded && ui.small_button("Retry").clicked() {
+                    self.privacy_error = None;
+                    self.account_op(AccountOperation::LoadPrivacy);
+                }
+            });
+        }
+    }
+
+    fn blocked_settings(&mut self, ui: &mut egui::Ui) {
+        ui.label(bold("Blocked accounts").size(12.0).color(MUTED));
+        ui.add_space(6.0);
+        match self.blocks.clone() {
+            None => {
+                ui.label(RichText::new("Loading…").size(12.0).color(MUTED));
+            }
+            Some(blocks) if blocks.is_empty() => {
+                ui.label(
+                    RichText::new("You haven't blocked anyone.")
+                        .size(12.0)
+                        .color(MUTED),
+                );
+            }
+            Some(blocks) => {
+                for account in blocks {
+                    ui.horizontal(|ui| {
+                        avatar(ui, &account.display_name, account.avatar_id, 24.0, false);
+                        ui.label(&account.display_name);
+                        if !account.username.is_empty() {
+                            ui.label(
+                                RichText::new(format!("@{}", account.username))
+                                    .size(12.0)
+                                    .color(MUTED),
+                            );
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if secondary_button(ui, "Unblock", !self.block_busy).clicked() {
+                                self.unblock(account.clone());
+                            }
+                        });
+                    });
+                }
+            }
+        }
+        if let Some(error) = &self.block_error {
+            ui.colored_label(ERROR, error);
+        }
     }
 
     fn profile_dialog(&mut self, ui: &mut egui::Ui) {
@@ -9668,9 +10502,10 @@ fn main() -> eframe::Result {
 #[cfg(test)]
 mod tests {
     use super::{
-        CaperApp, ConnectionReport, Dialog, GatewayEvent, NavigationTarget, PendingReaction,
-        PendingSend, Phase, SelfDirectTarget, endpoint, media, member_page_ids, normalize_channel,
-        permanent_send_rejection, projected_reactions, take_date_divider, timestamp_parts, voice,
+        AccountOperation, CaperApp, ConnectionReport, Dialog, GatewayEvent, NavigationTarget,
+        PendingReaction, PendingSend, Phase, SelfDirectTarget, endpoint, media, member_page_ids,
+        normalize_channel, permanent_send_rejection, projected_reactions, take_date_divider,
+        timestamp_parts, voice,
     };
     use crate::navigation;
     use std::time::{Duration, Instant};
@@ -9794,6 +10629,7 @@ mod tests {
             result: Err(crate::worker::SendFailure {
                 status: Some(503),
                 message: "failed".into(),
+                code: None,
             }),
         };
         events.send(fail()).unwrap();
@@ -9817,6 +10653,7 @@ mod tests {
                 result: Err(crate::worker::SendFailure {
                     status: Some(503),
                     message: "failed".into(),
+                    code: None,
                 }),
             })
             .unwrap();
@@ -10239,6 +11076,370 @@ mod tests {
                 ],
             );
         }
+    }
+
+    /// A loopback API answering `"METHOD /path"` routes (anything else is a
+    /// 404) that records each request line and body.
+    fn account_server(
+        routes: Vec<(&'static str, u16, &'static str)>,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", server.local_addr().unwrap());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for stream in server.incoming() {
+                let Ok(stream) = stream else { break };
+                stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
+                let mut reader = BufReader::new(stream);
+                let mut request = String::new();
+                if reader.read_line(&mut request).is_err() {
+                    continue;
+                }
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).is_err() || line == "\r\n" || line.is_empty() {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0; length];
+                let _ = reader.read_exact(&mut body);
+                let line = request.trim_end().trim_end_matches(" HTTP/1.1").to_owned();
+                log.lock().unwrap().push(
+                    format!("{line} {}", String::from_utf8_lossy(&body))
+                        .trim_end()
+                        .to_owned(),
+                );
+                let (status, reply) = routes
+                    .iter()
+                    .find(|(route, _, _)| *route == line)
+                    .map_or((404, r#"{"error":"Not found"}"#), |(_, status, body)| {
+                        (*status, *body)
+                    });
+                let _ = write!(
+                    reader.get_mut(),
+                    "HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                    reply.len()
+                );
+            }
+        });
+        (base, seen)
+    }
+
+    fn receive_until(app: &mut CaperApp, done: impl Fn(&CaperApp) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done(app) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+            app.receive();
+        }
+        assert!(done(app), "timed out waiting for the worker");
+    }
+
+    fn last_text_position(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
+        output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == label => {
+                    Some(text.pos + egui::vec2(4.0, 4.0))
+                }
+                _ => None,
+            })
+            .next_back()
+            .unwrap_or_else(|| panic!("missing {label}"))
+    }
+
+    const REQUEST_BAR: &str =
+        "TEST FIXTURE Jordan (@jordan) wants to message you. You don't share a space.";
+
+    #[test]
+    fn message_requests_are_read_only_uncounted_and_accept_by_id() {
+        let (base, seen) = account_server(vec![(
+            "POST /api/dms/dm0000000003/accept",
+            200,
+            r#"{"id":"dm0000000003","peer":{"id":"stranger0001","username":"jordan","displayName":"TEST FIXTURE Jordan","avatarId":412},"lastSeq":"1","readSeq":"0","status":"accepted","blocked":false}"#,
+        )]);
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new(&base).unwrap(),
+            Some("parity-requests"),
+        );
+        app.token = Some("account-token".into());
+        app.directs[1].last_seq = "9".into();
+        app.directs[1].read_seq = "0".into();
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let labels = texts(&output);
+        assert!(labels.contains(&"Message requests"), "{labels:?}");
+        assert!(
+            labels.contains(&"TEST FIXTURE Jordan @jordan"),
+            "{labels:?}"
+        );
+        assert!(labels.contains(&REQUEST_BAR), "{labels:?}");
+        for hidden in ["●", "Message TEST FIXTURE Jordan", "Reply in thread"] {
+            assert!(!labels.contains(&hidden), "{hidden}: {labels:?}");
+        }
+        assert!(!app.selected_is_joined(), "a request stays read-only");
+
+        click(&mut app, &context, text_position(&output, "Accept"));
+        receive_until(&mut app, |app| {
+            app.directs.iter().any(|direct| {
+                direct.id == "dm0000000003" && direct.status == model::DirectStatus::Accepted
+            })
+        });
+        let output = render(&mut app, &context, vec![]);
+        let labels = texts(&output);
+        assert!(
+            labels.contains(&"Message TEST FIXTURE Jordan"),
+            "{labels:?}"
+        );
+        assert!(!labels.contains(&REQUEST_BAR) && !labels.contains(&"Message requests"));
+        let seen = seen.lock().unwrap().clone();
+        assert!(
+            seen.contains(&"POST /api/dms/dm0000000003/accept".to_owned()),
+            "{seen:?}"
+        );
+        assert!(
+            !seen.iter().any(|line| line.starts_with("POST /api/dms ")),
+            "opening a request never creates or accepts it by username: {seen:?}"
+        );
+    }
+
+    #[test]
+    fn declining_or_blocking_a_request_drops_it_and_moves_on() {
+        let (base, seen) = account_server(vec![
+            ("POST /api/dms/dm0000000003/decline", 204, ""),
+            ("PUT /api/blocks/stranger0003", 204, ""),
+        ]);
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new(&base).unwrap(),
+            Some("parity-requests"),
+        );
+        app.token = Some("account-token".into());
+        app.directs.push(model::DirectConversation {
+            id: "dm0000000005".into(),
+            peer: model::DirectPeer {
+                id: "stranger0003".into(),
+                username: "kim".into(),
+                display_name: "TEST FIXTURE Kim".into(),
+                avatar_id: None,
+            },
+            last_seq: "1".into(),
+            read_seq: "0".into(),
+            status: model::DirectStatus::Incoming,
+            blocked: false,
+        });
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        click(&mut app, &context, text_position(&output, "Decline"));
+        receive_until(&mut app, |app| {
+            !app.directs.iter().any(|direct| direct.id == "dm0000000003")
+        });
+        assert_eq!(
+            app.selected_direct.as_deref(),
+            Some("dm0000000005"),
+            "the next request opens"
+        );
+
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        click(&mut app, &context, text_position(&output, "Block"));
+        assert!(matches!(app.dialog, Some(Dialog::Block { .. })));
+        let output = render(&mut app, &context, vec![]);
+        assert!(texts(&output).contains(&"Block TEST FIXTURE Kim?"));
+        click(&mut app, &context, last_text_position(&output, "Block"));
+        receive_until(&mut app, |app| app.is_blocked("stranger0003"));
+        assert!(app.dialog.is_none());
+        assert!(app.incoming_requests().is_empty());
+        assert!(app.selected_direct.is_none(), "no requests left");
+        let seen = seen.lock().unwrap().clone();
+        assert!(seen.contains(&"POST /api/dms/dm0000000003/decline".to_owned()));
+        assert!(seen.contains(&"PUT /api/blocks/stranger0003".to_owned()));
+    }
+
+    #[test]
+    fn blocked_authors_collapse_into_runs_that_show_and_hide_everywhere() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-blocked"),
+        );
+        let maya = "The same conversation should feel familiar on every platform.";
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let labels = texts(&output);
+        assert!(labels.contains(&"2 blocked messages —"), "{labels:?}");
+        assert!(!labels.contains(&maya));
+        click(&mut app, &context, text_position(&output, "Show"));
+        let output = render(&mut app, &context, vec![]);
+        assert!(texts(&output).contains(&maya) && texts(&output).contains(&"Hide"));
+        click(&mut app, &context, text_position(&output, "Hide"));
+        let output = render(&mut app, &context, vec![]);
+        assert!(!texts(&output).contains(&maya));
+
+        // The thread panel's root collapses too.
+        let root = app.timeline.messages().nth(1).unwrap().id.clone();
+        app.open_thread(root);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            texts(&output).contains(&"1 blocked message —"),
+            "{:?}",
+            texts(&output)
+        );
+
+        // Typing from a blocked account never shows.
+        let channel = app.selected_channel.clone().unwrap();
+        app.gateway(GatewayEvent::Typing {
+            generation: app.generation,
+            channel,
+            author: crate::model::Author {
+                id: "fixture-maya".into(),
+                avatar_id: None,
+                name: "Maya".into(),
+                is_guest: false,
+            },
+            typing: true,
+            revision: "1".into(),
+        });
+        assert!(app.typers.is_empty());
+
+        // Message actions offer Block/Unblock only for other signed-in accounts.
+        let messages: Vec<_> = app.timeline.messages().cloned().collect();
+        assert!(
+            app.blockable_author(&messages[0].author).is_none(),
+            "yourself"
+        );
+        let blocked = app.blockable_author(&messages[1].author).unwrap();
+        assert_eq!(
+            (blocked.id.as_str(), blocked.username.as_str()),
+            ("fixture-maya", "maya")
+        );
+        let mut guest = messages[3].author.clone();
+        guest.is_guest = true;
+        assert!(app.blockable_author(&guest).is_none(), "guests");
+    }
+
+    #[test]
+    fn blocked_dms_replace_the_composer_and_unblock_updates_everywhere() {
+        let (base, seen) = account_server(vec![("DELETE /api/blocks/fixture-maya", 204, "")]);
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new(&base).unwrap(),
+            Some("parity-blocked-dm"),
+        );
+        app.token = Some("account-token".into());
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let labels = texts(&output);
+        assert!(labels.contains(&"You blocked @maya."), "{labels:?}");
+        assert!(!labels.contains(&"Message TEST FIXTURE Maya"));
+        click(&mut app, &context, last_text_position(&output, "Unblock"));
+        receive_until(&mut app, |app| !app.is_blocked("fixture-maya"));
+        assert!(!app.directs[0].blocked);
+        let output = render(&mut app, &context, vec![]);
+        assert!(texts(&output).contains(&"Message TEST FIXTURE Maya"));
+        assert!(
+            seen.lock()
+                .unwrap()
+                .contains(&"DELETE /api/blocks/fixture-maya".to_owned())
+        );
+
+        // A send refused because of a block is a rejection, not an expired session.
+        app.pending = Some(PendingSend::prepare(None, "hello"));
+        app.sent(Err(crate::worker::SendFailure {
+            status: Some(403),
+            message: "You blocked this person. Unblock them to message them.".into(),
+            code: Some("dm_blocked".into()),
+        }));
+        assert!(app.selected_channel.is_some());
+        assert_eq!(
+            app.pending.as_ref().unwrap().rejection.as_deref(),
+            Some("You blocked this person. Unblock them to message them.")
+        );
+    }
+
+    #[test]
+    fn dm_privacy_saves_on_change_and_reverts_on_failure() {
+        let (base, seen) = account_server(vec![
+            (
+                "GET /api/account/privacy",
+                200,
+                r#"{"directMessages":"anyone"}"#,
+            ),
+            (
+                "PUT /api/account/privacy",
+                200,
+                r#"{"directMessages":"spaces"}"#,
+            ),
+            ("GET /api/blocks", 200, r#"{"blocks":[]}"#),
+        ]);
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new(&base).unwrap(),
+            Some("parity-settings"),
+        );
+        app.token = Some("account-token".into());
+        app.privacy = None;
+        app.account_op(AccountOperation::LoadPrivacy);
+        receive_until(&mut app, |app| app.privacy.is_some());
+        assert_eq!(app.privacy.as_deref(), Some("anyone"));
+        render(&mut app, &context, vec![]);
+        let output = scroll_modal_to_bottom(&mut app, &context);
+        let labels = texts(&output);
+        assert!(
+            labels.contains(&"Who can start a DM with you"),
+            "{labels:?}"
+        );
+        assert!(
+            labels.contains(&"You haven't blocked anyone."),
+            "{labels:?}"
+        );
+        click(
+            &mut app,
+            &context,
+            text_position(&output, "People in my spaces"),
+        );
+        assert_eq!(
+            app.privacy.as_deref(),
+            Some("spaces"),
+            "applied immediately"
+        );
+        receive_until(&mut app, |app| !app.privacy_saving);
+        assert_eq!(app.privacy.as_deref(), Some("spaces"));
+        assert!(
+            seen.lock()
+                .unwrap()
+                .contains(&r#"PUT /api/account/privacy {"directMessages":"spaces"}"#.to_owned())
+        );
+
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-settings"),
+        );
+        app.token = Some("account-token".into());
+        render(&mut app, &context, vec![]);
+        let output = scroll_modal_to_bottom(&mut app, &context);
+        click(&mut app, &context, text_position(&output, "No one new"));
+        assert_eq!(app.privacy.as_deref(), Some("nobody"));
+        receive_until(&mut app, |app| !app.privacy_saving);
+        assert_eq!(app.privacy.as_deref(), Some("anyone"), "reverted");
+        let error = app.privacy_error.clone().unwrap();
+        assert!(error.starts_with("Could not save:"), "{error}");
+        let output = render(&mut app, &context, vec![]);
+        assert!(texts(&output).contains(&error.as_str()));
     }
 
     fn scroll_modal_to_bottom(app: &mut CaperApp, context: &egui::Context) -> egui::FullOutput {
@@ -13267,9 +14468,12 @@ mod tests {
                 id: account.id,
                 username: account.username.unwrap(),
                 display_name: account.display_name.unwrap(),
+                avatar_id: None,
             },
             last_seq: "3".into(),
             read_seq: "2".into(),
+            status: model::DirectStatus::Accepted,
+            blocked: false,
         };
         app.directs = vec![self_direct.clone()];
         assert_eq!(
@@ -13306,9 +14510,12 @@ mod tests {
                 id: account.id.clone(),
                 username: account.username.clone().unwrap(),
                 display_name: account.display_name.clone().unwrap(),
+                avatar_id: None,
             },
             last_seq: "0".into(),
             read_seq: "0".into(),
+            status: model::DirectStatus::Accepted,
+            blocked: false,
         };
         events
             .send(crate::worker::Event::DirectCreated {
@@ -13486,6 +14693,7 @@ mod tests {
         app.sent(Err(crate::worker::SendFailure {
             status: Some(422),
             message: "Rejected fixture".into(),
+            code: None,
         }));
         app.draft = "next unsent draft".into();
         app.send_message();
@@ -13512,6 +14720,7 @@ mod tests {
         app.sent(Err(crate::worker::SendFailure {
             status: Some(400),
             message: "Rejected again".into(),
+            code: None,
         }));
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
@@ -14660,9 +15869,12 @@ mod tests {
                 id: "peer".into(),
                 username: "peer".into(),
                 display_name: "TEST FIXTURE peer".into(),
+                avatar_id: None,
             },
             last_seq: "9".into(),
             read_seq: "1".into(),
+            status: model::DirectStatus::Accepted,
+            blocked: false,
         }];
         app.mark_selected_direct_read();
         assert_eq!(

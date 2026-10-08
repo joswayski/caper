@@ -14,6 +14,24 @@ public final class AppModel {
     public var selectedChannelID: String?
     public var directMessages: [DirectMessageConversation] = []
     public var selectedDirectMessageID: String?
+    /// The main "Direct messages" list: accepted and outgoing conversations.
+    public var visibleDirectMessages: [DirectMessageConversation] { MessageRequests.visible(directMessages) }
+    /// Incoming message requests. They never count as unread or chime.
+    public var messageRequests: [DirectMessageConversation] { MessageRequests.incoming(directMessages) }
+    public var selectedDirectMessage: DirectMessageConversation? {
+        selectedDirectMessageID.flatMap { id in directMessages.first { $0.id == id } }
+    }
+    /// The requests list is open: a pushed page on narrow layouts, an expanded
+    /// sidebar section otherwise.
+    public var showingMessageRequests = false
+    /// Accounts you blocked, newest first, and their ids for every timeline.
+    public private(set) var blockedAccounts: [BlockedAccount] = []
+    public private(set) var blockedIDs: Set<String> = []
+    public private(set) var blocksLoaded = false
+    public var blocksError: String?
+    /// "Who can start a DM with you"; nil until loaded.
+    public private(set) var directMessagePrivacy: DirectMessagePrivacy?
+    public var privacyError: String?
     public var pushAvailable = false
     public var pushEnabled = false
     @ObservationIgnored public var setPushEnabled: ((Bool) async -> Void)?
@@ -78,6 +96,12 @@ public final class AppModel {
         presence = PresenceModel(api: api)
         voicePresence = VoicePresenceModel(api: api)
         chatModel.onReadCursor = { [weak self] in self?.markSelectedDirectRead() }
+        chatModel.viewerAccountID = { [weak self] in self?.account?.id }
+        chatModel.blockAccount = { [weak self] target in try await self?.block(target) }
+        chatModel.onDirectMessageBlocked = { [weak self] in
+            let refresh = Task { await self?.refreshBlocks(); await self?.refreshDirectMessages() }
+            _ = refresh
+        }
         chatModel.onAccessRevoked = { [weak self, weak voiceClient] channelID in
             if let channelID, voiceClient?.isActive(channelID: channelID) == true { voiceClient?.leaveImmediately() }
             if let channelID { self?.voicePresence.revoke(channelID: channelID) }
@@ -185,7 +209,9 @@ public final class AppModel {
         voice.leaveImmediately()
         directMessageRefreshTask?.cancel(); directMessageRefreshTask = nil
         account = nil; spaces = []; invitations = []; pendingMembers = []; detail = nil
-        directMessages = []; selectedDirectMessageID = nil
+        directMessages = []; selectedDirectMessageID = nil; showingMessageRequests = false
+        blockedAccounts = []; blockedIDs = []; blocksLoaded = false; blocksError = nil
+        directMessagePrivacy = nil; privacyError = nil; chat.setBlockedAuthors([])
         spacesLoaded = false; spacesError = nil
         selectedSpaceID = nil; selectedChannelID = nil; challengeID = nil
         navigationGeneration += 1
@@ -254,7 +280,13 @@ public final class AppModel {
         do {
             let conversations = try await api.directMessages()
             guard generation == attempt, account != nil else { return }
+            let wasRequest = selectedDirectMessage?.status == .incoming
             directMessages = conversations
+            // Accepted elsewhere (or by sending from an older client): reopen it
+            // with a chat session so the composer works.
+            if wasRequest, let selected = selectedDirectMessage, selected.status != .incoming {
+                await select(directMessage: selected)
+            }
         } catch is CancellationError {} catch {
             guard generation == attempt else { return }
             self.error = error.localizedDescription
@@ -306,7 +338,11 @@ public final class AppModel {
             selectedDirectMessageID = conversation.id; selectedChannelID = nil
             navigationOpen = false
             await presence.stop(); await voicePresence.stop()
-            await chat.open(history: history, displayName: account?.displayName ?? "")
+            // An incoming request opens read-only: no chat session, no composer,
+            // no read cursor and no chimes. Opening it never accepts it.
+            let current = directMessages.first { $0.id == conversation.id } ?? conversation
+            if current.status == .incoming { await chat.preview(history: history) }
+            else { await chat.open(history: history, displayName: account?.displayName ?? "") }
             guard generation == attempt, navigationGeneration == navigation else { return }
             markSelectedDirectRead()
         } catch { if generation == attempt, navigationGeneration == navigation { navigationError = error.localizedDescription } }
@@ -318,6 +354,116 @@ public final class AppModel {
         await select(directMessage: conversation)
     }
 
+    // MARK: Message requests, blocking and DM privacy
+
+    /// Accepts the request: it joins the main list and, when open, gains a composer.
+    public func acceptRequest(_ conversation: DirectMessageConversation) async throws {
+        let attempt = generation
+        let accepted = try await api.acceptDirectMessage(id: conversation.id)
+        guard generation == attempt else { return }
+        replaceDirectMessage(accepted)
+        if messageRequests.isEmpty { showingMessageRequests = false }
+        if selectedDirectMessageID == conversation.id { await select(directMessage: accepted) }
+    }
+
+    /// Declines the request for you only, then returns to the requests (or DM) list.
+    public func declineRequest(_ conversation: DirectMessageConversation) async throws {
+        let attempt = generation
+        try await api.declineDirectMessage(id: conversation.id)
+        guard generation == attempt else { return }
+        directMessages.removeAll { $0.id == conversation.id }
+        if selectedDirectMessageID == conversation.id { await leaveRequest() }
+    }
+
+    /// Blocks an account everywhere you share. A pending request from them is
+    /// declined server-side, so it leaves the requests list too.
+    public func block(_ target: BlockTarget) async throws {
+        guard let account else { return }
+        guard target.id != account.id else { throw UserFacingError(message: "You can't block yourself.") }
+        let attempt = generation
+        try await api.block(accountID: target.id)
+        guard generation == attempt else { return }
+        let leavingRequest = selectedDirectMessage.map { $0.peer.id == target.id && $0.status == .incoming } ?? false
+        if !blockedIDs.contains(target.id) {
+            blockedAccounts.insert(BlockedAccount(id: target.id, username: target.username ?? "", displayName: target.displayName,
+                                                  avatarId: target.avatarId), at: 0)
+        }
+        blockedIDs.insert(target.id); chat.setBlockedAuthors(blockedIDs)
+        directMessages = MessageRequests.applying(blocked: true, peerID: target.id, to: directMessages)
+        if leavingRequest { await leaveRequest() }
+        // The server's list carries the username a message author lacks.
+        Task { [weak self] in await self?.refreshBlocks() }
+    }
+
+    public func unblock(accountID: String) async throws {
+        guard account != nil else { return }
+        let attempt = generation
+        try await api.unblock(accountID: accountID)
+        guard generation == attempt else { return }
+        blockedAccounts.removeAll { $0.id == accountID }
+        blockedIDs.remove(accountID); chat.setBlockedAuthors(blockedIDs)
+        directMessages = MessageRequests.applying(blocked: false, peerID: accountID, to: directMessages)
+    }
+
+    public func refreshBlocks() async {
+        guard account != nil else { return }
+        let attempt = generation
+        do {
+            let blocks = try await api.blocks()
+            guard generation == attempt, account != nil else { return }
+            blockedAccounts = blocks; blockedIDs = Set(blocks.map(\.id)); blocksLoaded = true; blocksError = nil
+            chat.setBlockedAuthors(blockedIDs)
+        } catch is CancellationError {} catch {
+            if generation == attempt { blocksError = error.localizedDescription }
+        }
+    }
+
+    public func loadPrivacy() async {
+        guard account != nil else { return }
+        let attempt = generation
+        do {
+            let settings = try await api.privacy()
+            guard generation == attempt else { return }
+            directMessagePrivacy = settings.directMessages; privacyError = nil
+        } catch is CancellationError {} catch {
+            if generation == attempt { privacyError = error.localizedDescription }
+        }
+    }
+
+    /// Saves immediately; a failed save reverts the choice and shows why.
+    public func setDirectMessagePrivacy(_ value: DirectMessagePrivacy) async {
+        guard account != nil, value != directMessagePrivacy else { return }
+        let attempt = generation
+        let previous = directMessagePrivacy
+        directMessagePrivacy = value; privacyError = nil
+        do {
+            let settings = try await api.updatePrivacy(value)
+            guard generation == attempt else { return }
+            directMessagePrivacy = settings.directMessages
+        } catch {
+            guard generation == attempt else { return }
+            directMessagePrivacy = previous; privacyError = error.localizedDescription
+        }
+    }
+
+    private func replaceDirectMessage(_ conversation: DirectMessageConversation) {
+        if let index = directMessages.firstIndex(where: { $0.id == conversation.id }) { directMessages[index] = conversation }
+        else { directMessages.append(conversation) }
+    }
+
+    /// After declining or blocking the open request: back to the remaining
+    /// requests, or to the DM list when none are left.
+    private func leaveRequest() async {
+        selectedDirectMessageID = nil
+        showingMessageRequests = !messageRequests.isEmpty
+        if let space = detail?.space, detail?.channels.contains(where: \.joined) == true {
+            await navigate(space: space, channelID: nil)
+        } else {
+            await chat.stop()
+        }
+        navigationOpen = true
+    }
+
     public func applicationActivityChanged(active: Bool) {
         foreground = active
         if active, account != nil {
@@ -327,7 +473,7 @@ public final class AppModel {
     }
 
     private func markSelectedDirectRead() {
-        guard foreground, account != nil, let id = selectedDirectMessageID,
+        guard foreground, account != nil, let id = selectedDirectMessageID, selectedDirectMessage?.status != .incoming,
               let history = chat.currentSnapshot(), history.channel?.id == id,
               let index = directMessages.firstIndex(where: { $0.id == id }),
               (try? Sequence.compare(history.cursor, directMessages[index].readSeq)) == .orderedDescending else { return }
@@ -338,7 +484,7 @@ public final class AppModel {
                 guard generation == attempt, let current = directMessages.firstIndex(where: { $0.id == id }) else { return }
                 let old = directMessages[current]
                 let seq = (try? Sequence.compare(history.cursor, old.readSeq)) == .orderedDescending ? history.cursor : old.readSeq
-                directMessages[current] = DirectMessageConversation(id: old.id, peer: old.peer, lastSeq: old.lastSeq, readSeq: seq)
+                directMessages[current] = old.with(readSeq: seq)
             } catch { /* A later foreground refresh retries the read cursor. */ }
         }
     }
@@ -355,6 +501,7 @@ public final class AppModel {
     private func startDirectMessageRefresh() {
         directMessageRefreshTask?.cancel()
         let attempt = generation
+        Task { [weak self] in await self?.refreshBlocks() }
         directMessageRefreshTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refreshDirectMessages()
@@ -1015,6 +1162,16 @@ public final class ChatModel {
     public var sendRejected: Bool { delivery.rejected }
     @ObservationIgnored public var onAccessRevoked: ((String?) -> Void)?
     @ObservationIgnored public var onReadCursor: (() -> Void)?
+    /// Accounts you blocked: their messages collapse in every timeline, and
+    /// they never chime or show as typing. Kept in step by `AppModel`.
+    public private(set) var blockedAuthorIDs: Set<String> = []
+    /// The signed-in account, also while previewing without a chat session.
+    @ObservationIgnored public var viewerAccountID: () -> String? = { nil }
+    /// Blocks from message actions in panels that only hold the chat model.
+    @ObservationIgnored public var blockAccount: ((BlockTarget) async throws -> Void)?
+    /// A DM send refused with `dm_blocked`: the block list needs a refresh.
+    @ObservationIgnored public var onDirectMessageBlocked: (() -> Void)?
+    public var viewerID: String? { session?.author.id ?? viewerAccountID() }
     private let api: APIClient
     private var channelID: String?
     private var spaceID: String?
@@ -1053,6 +1210,17 @@ public final class ChatModel {
     }
 
     public init(api: APIClient) { self.api = api }
+
+    func setBlockedAuthors(_ ids: Set<String>) {
+        guard ids != blockedAuthorIDs else { return }
+        blockedAuthorIDs = ids
+        refreshTypers()
+    }
+
+    /// Blocks from a message action; a failure shows as the conversation error.
+    public func block(_ target: BlockTarget) async {
+        do { try await blockAccount?(target) } catch { self.error = error.localizedDescription }
+    }
 
     func canEdit(_ message: ChatMessage) -> Bool {
         message.forward == nil && !isPreview && channelID == message.channelId && currentAuthor?.isGuest == false && currentAuthor?.id == message.author.id
@@ -1431,9 +1599,11 @@ public final class ChatModel {
                 sending = false
                 return
             }
-            if let apiError = error as? APIError, [400, 404, 409, 413, 422].contains(apiError.status) {
+            if let apiError = error as? APIError, [400, 404, 409, 413, 422].contains(apiError.status)
+                || DirectMessageErrors.isRefusal(status: apiError.status, code: apiError.code) {
                 delivery.reject(id: command.id)
                 self.error = apiError.localizedDescription
+                if apiError.code == "dm_blocked" { onDirectMessageBlocked?() }
             } else {
                 self.error = "Send outcome is unknown. Retry to safely resend the same message. \(error.localizedDescription)"
             }
@@ -1722,7 +1892,8 @@ public final class ChatModel {
             if delivery.receive(seq: message.seq) {
                 merge([message])
                 onReadCursor?()
-                if newMessage, let author = session?.author, author.id != message.author.id { CaperEffects.shared.play(.message) }
+                if newMessage, let author = session?.author, author.id != message.author.id,
+                   !BlockedMessages.isHidden(message, blocked: blockedAuthorIDs, viewerID: author.id) { CaperEffects.shared.play(.message) }
                 if message.threadRootId == delivery.pending?.threadRootId,
                    (message.broadcast ?? false) == (delivery.pending?.broadcast ?? false),
                    delivery.confirmGateway(clientMessageID: message.clientMessageId, authorID: message.author.id, ownAuthorID: session?.author.id) {
@@ -1904,7 +2075,8 @@ public final class ChatModel {
         typers = typers.filter { $0.value.expires > now }
         typingNames = typers.values.compactMap { entry in
             // Stop tombstones remain to reject delayed frames but are not shown.
-            entry.typing && entry.expires > now && entry.author.id != session?.author.id ? entry.author.name : nil
+            entry.typing && entry.expires > now && entry.author.id != session?.author.id
+                && !blockedAuthorIDs.contains(entry.author.id) ? entry.author.name : nil
         }
         typingExpiryTask?.cancel()
         guard let expiry = typers.values.map(\.expires).min() else { return }

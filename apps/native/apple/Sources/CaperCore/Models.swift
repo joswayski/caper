@@ -56,6 +56,7 @@ public struct DirectMessagePeer: Codable, Equatable, Sendable {
     public let id: String
     public let username: String
     public let displayName: String
+    public var avatarId: Int? = nil
 }
 
 public struct DirectMessageConversation: Codable, Equatable, Identifiable, Sendable {
@@ -63,8 +64,37 @@ public struct DirectMessageConversation: Codable, Equatable, Identifiable, Senda
     public let peer: DirectMessagePeer
     public let lastSeq: String
     public let readSeq: String
+    /// Missing on older servers: `accepted`.
+    public let status: DirectMessageStatus
+    /// You blocked the peer (they are never told). Missing means false.
+    public let blocked: Bool
 
-    public var unread: Bool { (try? Sequence.compare(lastSeq, readSeq)) == .orderedDescending }
+    /// Incoming requests never count as unread.
+    public var unread: Bool { status != .incoming && (try? Sequence.compare(lastSeq, readSeq)) == .orderedDescending }
+
+    private enum CodingKeys: String, CodingKey { case id, peer, lastSeq, readSeq, status, blocked }
+    public init(id: String, peer: DirectMessagePeer, lastSeq: String, readSeq: String,
+                status: DirectMessageStatus = .accepted, blocked: Bool = false) {
+        self.id = id; self.peer = peer; self.lastSeq = lastSeq; self.readSeq = readSeq
+        self.status = status; self.blocked = blocked
+    }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        peer = try values.decode(DirectMessagePeer.self, forKey: .peer)
+        lastSeq = try values.decode(String.self, forKey: .lastSeq)
+        readSeq = try values.decode(String.self, forKey: .readSeq)
+        // An unknown future status is treated like an older server's omission.
+        status = (try? values.decodeIfPresent(DirectMessageStatus.self, forKey: .status)) ?? .accepted
+        blocked = (try? values.decodeIfPresent(Bool.self, forKey: .blocked)) ?? false
+    }
+
+    func with(readSeq: String) -> DirectMessageConversation {
+        DirectMessageConversation(id: id, peer: peer, lastSeq: lastSeq, readSeq: readSeq, status: status, blocked: blocked)
+    }
+    func with(blocked: Bool) -> DirectMessageConversation {
+        DirectMessageConversation(id: id, peer: peer, lastSeq: lastSeq, readSeq: readSeq, status: status, blocked: blocked)
+    }
 }
 
 public struct DirectMessagesResponse: Codable, Sendable {

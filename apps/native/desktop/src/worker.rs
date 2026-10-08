@@ -1,8 +1,8 @@
 use crate::api::Api;
 use crate::gateway::{self, GatewayEvent};
 use crate::model::{
-    Account, Channel, ChatSession, DirectConversation, History, Member, Message, Space,
-    SpaceDetail, Spaces,
+    Account, BlockedAccount, Channel, ChatSession, DirectConversation, History, Member, Message,
+    Space, SpaceDetail, Spaces,
 };
 use eframe::egui;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -17,6 +17,13 @@ pub enum Command {
     LoadDirects {
         generation: u64,
         token: String,
+    },
+    /// Message requests, blocks and DM privacy, fenced by the account epoch
+    /// rather than the conversation generation.
+    Account {
+        epoch: u64,
+        token: String,
+        operation: AccountOperation,
     },
     CreateDirect {
         generation: u64,
@@ -200,6 +207,48 @@ pub enum Command {
     StopGateway,
 }
 
+#[derive(Clone, Debug)]
+pub enum AccountOperation {
+    LoadBlocks,
+    /// `PUT` or `DELETE /api/blocks/{id}`; `request` is a DM request to drop.
+    SetBlock {
+        account: BlockedAccount,
+        blocked: bool,
+        request: Option<String>,
+    },
+    Accept(String),
+    Decline(String),
+    LoadPrivacy,
+    SavePrivacy {
+        value: String,
+        previous: Option<String>,
+    },
+}
+
+#[derive(Debug)]
+pub enum AccountResult {
+    Blocks(Result<Vec<BlockedAccount>, String>),
+    Block {
+        account: BlockedAccount,
+        blocked: bool,
+        request: Option<String>,
+        result: Result<(), String>,
+    },
+    Accepted {
+        id: String,
+        result: Result<DirectConversation, String>,
+    },
+    Declined {
+        id: String,
+        result: Result<(), String>,
+    },
+    Privacy(Result<String, String>),
+    PrivacySaved {
+        previous: Option<String>,
+        result: Result<String, String>,
+    },
+}
+
 #[derive(Clone)]
 pub enum AdminOperation {
     CreateSpace {
@@ -320,6 +369,10 @@ pub enum Event {
     DirectsLoaded {
         generation: u64,
         result: Result<Vec<DirectConversation>, String>,
+    },
+    Account {
+        epoch: u64,
+        result: AccountResult,
     },
     DirectCreated {
         generation: u64,
@@ -451,6 +504,8 @@ pub enum Event {
 pub struct SendFailure {
     pub status: Option<u16>,
     pub message: String,
+    /// The server's `code`, such as `dm_blocked`.
+    pub code: Option<String>,
 }
 
 #[derive(Debug)]
@@ -523,6 +578,7 @@ fn prepare_navigation(
             status: None,
             message: "Caper returned another space.".into(),
             attempts_remaining: None,
+            code: None,
         }
         .into());
     }
@@ -537,6 +593,7 @@ fn prepare_navigation(
                         status: Some(reqwest::StatusCode::NOT_FOUND),
                         message: "This channel is no longer accessible.".into(),
                         attempts_remaining: None,
+                        code: None,
                     })?,
             )
         } else {
@@ -564,6 +621,7 @@ fn prepare_navigation(
             status: None,
             message: "Caper returned another conversation.".into(),
             attempts_remaining: None,
+            code: None,
         }
         .into());
     }
@@ -577,6 +635,7 @@ fn prepare_navigation(
                 status: None,
                 message: "Caper returned messages from another channel.".into(),
                 attempts_remaining: None,
+                code: None,
             }
             .into());
         }
@@ -586,6 +645,7 @@ fn prepare_navigation(
                 status: None,
                 message,
                 attempts_remaining: None,
+                code: None,
             })?;
     }
     let joined = selected.is_some_and(|channel| channel.joined);
@@ -761,6 +821,14 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                 .direct_conversations(&token)
                 .map(|value| value.conversations)
                 .map_err(|error| error.to_string()),
+        },
+        Command::Account {
+            epoch,
+            token,
+            operation,
+        } => Event::Account {
+            epoch,
+            result: execute_account(api, &token, operation),
         },
         Command::CreateDirect {
             generation,
@@ -1017,6 +1085,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                 .map_err(|error| SendFailure {
                     status: error.status.map(|status| status.as_u16()),
                     message: error.to_string(),
+                    code: error.code,
                 }),
         },
         Command::Typing {
@@ -1054,6 +1123,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                 .map_err(|error| SendFailure {
                     status: error.status.map(|status| status.as_u16()),
                     message: error.to_string(),
+                    code: error.code,
                 }),
         },
         Command::LoadReactors {
@@ -1088,6 +1158,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                 .map_err(|error| SendFailure {
                     status: error.status.map(|status| status.as_u16()),
                     message: error.to_string(),
+                    code: error.code,
                 }),
         },
         Command::EditMessage {
@@ -1160,6 +1231,45 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
         | Command::ClearCredential { .. } => return,
     };
     send(events, context, event);
+}
+
+fn execute_account(api: &Api, token: &str, operation: AccountOperation) -> AccountResult {
+    let text = |error: crate::api::ApiError| error.to_string();
+    match operation {
+        AccountOperation::LoadBlocks => {
+            AccountResult::Blocks(api.blocks(token).map(|value| value.blocks).map_err(text))
+        }
+        AccountOperation::SetBlock {
+            account,
+            blocked,
+            request,
+        } => AccountResult::Block {
+            result: api.set_block(token, &account.id, blocked).map_err(text),
+            account,
+            blocked,
+            request,
+        },
+        AccountOperation::Accept(id) => AccountResult::Accepted {
+            result: api.accept_direct(token, &id).map_err(text),
+            id,
+        },
+        AccountOperation::Decline(id) => AccountResult::Declined {
+            result: api.decline_direct(token, &id).map_err(text),
+            id,
+        },
+        AccountOperation::LoadPrivacy => AccountResult::Privacy(
+            api.privacy(token)
+                .map(|value| value.direct_messages)
+                .map_err(text),
+        ),
+        AccountOperation::SavePrivacy { value, previous } => AccountResult::PrivacySaved {
+            previous,
+            result: api
+                .save_privacy(token, &value)
+                .map(|value| value.direct_messages)
+                .map_err(text),
+        },
+    }
 }
 
 fn execute_admin(
@@ -1672,6 +1782,7 @@ mod login_copy_tests {
             status: Some(status),
             message: "raw server text".into(),
             attempts_remaining,
+            code: None,
         }
     }
 

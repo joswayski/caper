@@ -40,7 +40,8 @@ async fn destinations(
          SELECT jsonb_build_object('id',c.external_id,'name',u.display_name,'spaceName','Direct messages','direct',true)
          FROM public.direct_conversations d JOIN public.channels c ON c.id=d.channel_id
          JOIN public.users u ON u.id=CASE WHEN d.low_user_id=$1 THEN d.high_user_id ELSE d.low_user_id END
-         WHERE $1 IN(d.low_user_id,d.high_user_id) AND c.deleted_at IS NULL AND u.deleted_at IS NULL",
+         WHERE $1 IN(d.low_user_id,d.high_user_id) AND c.deleted_at IS NULL AND u.deleted_at IS NULL
+           AND (d.accepted_at IS NOT NULL OR d.requested_by=$1 OR d.declined_at IS NULL)",
     ).bind(user).fetch_all(&chat.pool).await.map_err(database_error)?;
     Ok(Json(json!({"destinations":rows})))
 }
@@ -110,6 +111,10 @@ async fn persist_forward(
     // exhaust the pool when concurrent forwards each hold a transaction.
     channel_access(&mut *tx, &input.source_channel_id, user).await?;
     let destination = channel_participation(&mut *tx, channel, user).await?;
+    // Forwards are sends: blocks and message requests gate them the same way.
+    if let (None, Some(user)) = (destination.space_id, user) {
+        crate::direct::authorize_send(&mut tx, destination.id, user).await?;
+    }
     // Reading a forward is also permission to forward its original again.
     // No client-provided source payload or source-access bypass is accepted.
     let source = source.0;

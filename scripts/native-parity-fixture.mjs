@@ -8,7 +8,8 @@ export const fixtureIDs = {
   invitee: 'invitee00001',
   space: 'space0000001', general: 'chan00000001', design: 'chan00000002', private: 'chan00000003',
   demoSpace: 'demo00000001', demo: 'demo00000002',
-  direct: 'dm0000000001', selfDirect: 'dm0000000002',
+  direct: 'dm0000000001', selfDirect: 'dm0000000002', request: 'dm0000000003',
+  stranger: 'stranger0001',
 };
 const ids = fixtureIDs;
 const limits = { ownedSpaces: 20, totalSpaces: 100, channelsPerSpace: 100 };
@@ -21,6 +22,8 @@ const members = [
 const accounts = [...members,
   { id: ids.invitee, username: 'sam', displayName: 'Sam', owner: false, avatarId: 719 },
 ];
+// Shares no space with the owner, so a DM with Jordan is a message request.
+const stranger = { id: ids.stranger, username: 'jordan', displayName: 'Jordan', avatarId: 412 };
 const author = (member) => ({ id: member.id, name: member.displayName, isGuest: false, avatarId: member.avatarId });
 const demoSpace = { id: ids.demoSpace, name: 'Caper', ownerId: ids.owner, demo: true };
 const demoChannel = { id: ids.demo, spaceId: ids.demoSpace, name: 'general', private: false };
@@ -47,6 +50,7 @@ function initialState() {
   }))]));
   return {
     spaces: [{ space, channels, members: clone(members) }], messages, directs: [],
+    blocks: [], dmPolicy: 'anyone',
     createdEvents: new Map([...messages].map(([channelId, rows]) => [channelId, rows.map(message => ({ type: 'message.created', channelId, seq: message.seq, message: clone(message) }))])),
     reactionEvents: new Map(),
     pinEvents: new Map(),
@@ -106,6 +110,9 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
     ...(state.editEvents.get(channelId) ?? []),
   ].sort((a, b) => BigInt(a.seq) < BigInt(b.seq) ? -1 : 1);
   const channelHead = (channelId) => channelEvents(channelId).at(-1)?.seq ?? '0';
+  const directDTO = ({ declined: _declined, ...conversation }) => ({
+    ...conversation, status: conversation.status ?? 'accepted', blocked: state.blocks.includes(conversation.peer.id), lastSeq: channelHead(conversation.id),
+  });
   const messageFor = id => [...state.messages.values()].flat().find(message => message.id === id);
   const sharedMessage = message => {
     const shared = clone(message);
@@ -213,6 +220,21 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           messages.push(message); state.messages.set(channelId, messages);
           created(message);
         }
+        if (body.messageRequest) {
+          // Jordan, who shares no space with the owner, sends a request.
+          if (!state.directs.some(conversation => conversation.id === ids.request)) {
+            state.directs.push({ id: ids.request, peer: clone(stranger), lastSeq: '0', readSeq: '0', status: 'incoming' });
+            state.messages.set(ids.request, []);
+          }
+          const messages = state.messages.get(ids.request);
+          const message = {
+            id: `${ids.request}m${String(messages.length + 1).padStart(2, '0')}`, channelId: ids.request, seq: String(BigInt(channelHead(ids.request)) + 1n),
+            author: author(stranger), content: { version: 1, type: 'text', text: body.messageRequest.text ?? 'TEST FIXTURE — Hi! Could I ask you about the design review?' },
+            clientMessageId: randomUUID(), createdAt: new Date().toISOString(),
+          };
+          messages.push(message);
+          created(message);
+        }
         if (body.incomingEdit) {
           const { channelId, messageId, text } = body.incomingEdit;
           const message = channelId ? state.messages.get(channelId)?.find(message => message.id === messageId) : messageFor(messageId);
@@ -283,17 +305,65 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         if (method === 'POST') {
           const username = String(body.username).trim().replace(/^@/, '').toLowerCase();
           const self = username === state.account.username;
-          if (!self && !['fixture_alex', 'alex'].includes(username)) return reject(response, 404, 'Account not found.');
-          const id = self ? ids.selfDirect : ids.direct;
-          if (!state.directs.some(conversation => conversation.id === id)) {
-            const peer = self ? { id: state.account.id, username: state.account.username, displayName: state.account.displayName }
-              : { id: ids.other, username: 'fixture_alex', displayName: 'TEST FIXTURE Alex' };
-            state.directs.push({ id, peer, lastSeq: '0', readSeq: '0' });
-            state.messages.set(id, []);
+          const jordan = username === stranger.username;
+          if (!self && !jordan && !['fixture_alex', 'alex'].includes(username)) return reject(response, 404, 'Account not found.');
+          const id = self ? ids.selfDirect : jordan ? ids.request : ids.direct;
+          const existing = state.directs.find(conversation => conversation.id === id);
+          if (existing) {
+            // Choosing to message someone who sent you a request accepts it.
+            if (existing.status === 'incoming') Object.assign(existing, { status: 'accepted', declined: false });
+            return json(response, 200, directDTO(existing));
           }
-          return json(response, 200, state.directs.find(conversation => conversation.id === id));
+          const peer = self ? { id: state.account.id, username: state.account.username, displayName: state.account.displayName, avatarId: state.account.avatarId }
+            : jordan ? clone(stranger) : { id: ids.other, username: 'fixture_alex', displayName: 'TEST FIXTURE Alex', avatarId: 799 };
+          if (state.blocks.includes(peer.id)) return json(response, 403, { error: 'Unblock this person to message them.', code: 'dm_blocked' });
+          state.directs.push({ id, peer, lastSeq: '0', readSeq: '0', status: jordan ? 'outgoing' : 'accepted' });
+          state.messages.set(id, []);
+          return json(response, 200, directDTO(state.directs.find(conversation => conversation.id === id)));
         }
-        return json(response, 200, { conversations: user.id === state.account.id ? state.directs.map((conversation) => ({ ...conversation, lastSeq: channelHead(conversation.id) })) : [] });
+        return json(response, 200, { conversations: user.id === state.account.id ? state.directs.filter(conversation => !conversation.declined).map(directDTO) : [] });
+      }
+      const directAnswer = /^\/api\/dms\/([^/]+)\/(accept|decline)$/.exec(path);
+      if (directAnswer && method === 'POST') {
+        if (!user) return reject(response, 401, 'Sign in required.');
+        const conversation = state.directs.find((item) => item.id === directAnswer[1] && !item.declined);
+        if (directAnswer[2] === 'accept') {
+          if (!conversation) return reject(response, 404, 'Conversation not found.');
+          if (conversation.status === 'incoming') conversation.status = 'accepted';
+          return json(response, 200, directDTO(conversation));
+        }
+        const declined = state.directs.find((item) => item.id === directAnswer[1] && item.status === 'incoming');
+        if (!declined) return reject(response, 404, 'Request not found.');
+        declined.declined = true;
+        return json(response, 204);
+      }
+      if (path === '/api/blocks' && method === 'GET') {
+        if (!user) return reject(response, 401, 'Sign in required.');
+        return json(response, 200, { blocks: state.blocks.map(id => [...accounts, stranger].find(account => account.id === id))
+          .map(({ id, username, displayName, avatarId }) => ({ id, username, displayName, avatarId })) });
+      }
+      const blockPath = /^\/api\/blocks\/([^/]+)$/.exec(path);
+      if (blockPath && (method === 'PUT' || method === 'DELETE')) {
+        if (!user) return reject(response, 401, 'Sign in required.');
+        const target = [...accounts, stranger].find(account => account.id === blockPath[1]);
+        if (!target) return reject(response, 404, 'Account not found.');
+        if (target.id === user.id) return reject(response, 400, "You can't block yourself.");
+        state.blocks = state.blocks.filter(id => id !== target.id);
+        if (method === 'PUT') {
+          state.blocks.unshift(target.id);
+          // Blocking a requester declines their request.
+          for (const conversation of state.directs) if (conversation.peer.id === target.id && conversation.status === 'incoming') conversation.declined = true;
+        }
+        return json(response, 204);
+      }
+      if (path === '/api/account/privacy') {
+        if (!user) return reject(response, 401, 'Sign in required.');
+        if (method === 'PUT') {
+          if (!['anyone', 'spaces', 'nobody'].includes(body.directMessages) || Object.keys(body).length !== 1)
+            return reject(response, 400, 'directMessages must be anyone, spaces or nobody');
+          state.dmPolicy = body.directMessages;
+        }
+        return json(response, 200, { directMessages: state.dmPolicy });
       }
       const directRead = /^\/api\/dms\/([^/]+)\/read$/.exec(path);
       if (directRead && method === 'POST') {
@@ -351,7 +421,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       if (/^\/api\/(?:channels\/[^/]+\/)?media\//.test(path)) return reject(response, 503, 'TEST FIXTURE: no real media engine or SFU is connected.');
       if (path === '/api/chat/forward-destinations' && method === 'GET') {
         if (!user) return reject(response, 401, 'Sign in required.');
-        const channels = [...state.spaces.flatMap(detail => detail.channels), ...state.directs.map(direct => channelFor(direct.id))];
+        const channels = [...state.spaces.flatMap(detail => detail.channels), ...state.directs.filter(direct => !direct.declined).map(direct => channelFor(direct.id))];
         return json(response, 200, { destinations: channels.filter(channel => canParticipate(channel, user)).map(channel => ({
           id: channel.id, name: channel.name, spaceName: spaceFor(channel.spaceId).name, direct: !!channel.direct,
         })) });
@@ -377,6 +447,11 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           const source = selected && messageFor(state.forwardSources.get(selected.id) ?? selected.id);
           if (!source) return reject(response, 404, 'Original not found.');
           if (typeof body.clientMessageId !== 'string' || typeof (body.text ?? '') !== 'string' || [...(body.text ?? '')].length > 4000) return reject(response, 400, 'Invalid forward.');
+          // Forwards are sends: blocks and message requests gate them the same way.
+          const conversation = channel.direct ? state.directs.find(item => item.id === channel.id) : undefined;
+          if (conversation && state.blocks.includes(conversation.peer.id))
+            return json(response, 403, { error: 'Unblock this person to message them.', code: 'dm_blocked' });
+          if (conversation?.status === 'incoming') Object.assign(conversation, { status: 'accepted', declined: false });
           const key = `${channel.id}:${body.clientMessageId}`;
           const previous = state.sendKeys.get(key);
           if (previous) return previous.token === request.headers['x-caper-chat-token'] && previous.text === (body.text ?? '') && previous.source === source.id
@@ -482,6 +557,10 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         if (method === 'POST') {
           const who = state.chatSessions.get(request.headers['x-caper-chat-token']);
           if (!who) return reject(response, 401, 'Messaging session required.');
+          const conversation = channel.direct ? state.directs.find(item => item.id === channel.id) : undefined;
+          if (conversation && state.blocks.includes(conversation.peer.id))
+            return json(response, 403, { error: 'Unblock this person to message them.', code: 'dm_blocked' });
+          if (conversation?.status === 'incoming') Object.assign(conversation, { status: 'accepted', declined: false });
           if (typeof body.clientMessageId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.clientMessageId)
             || typeof body.text !== 'string' || !body.text.trim() || [...body.text].length > 4000 || /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/u.test(body.text))
             return reject(response, 400, 'Enter a message of at most 4,000 characters.');

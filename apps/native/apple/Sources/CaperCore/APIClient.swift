@@ -127,6 +127,31 @@ public actor APIClient {
     public func createDirectMessage(username: String) async throws -> DirectMessageConversation {
         try await request("api/dms", method: "POST", body: UsernameInput(username: username))
     }
+    /// Accepts an incoming request (idempotent); the conversation comes back `accepted`.
+    public func acceptDirectMessage(id: String) async throws -> DirectMessageConversation {
+        let conversation: DirectMessageConversation = try await request("api/dms/\(try pathID(id))/accept", method: "POST")
+        guard conversation.id == id else { throw APIError(status: 502, message: "Caper returned another conversation.") }
+        return conversation
+    }
+    /// Hides an incoming request from you only; the sender is not told.
+    public func declineDirectMessage(id: String) async throws {
+        let _: Empty = try await request("api/dms/\(try pathID(id))/decline", method: "POST")
+    }
+    public func blocks() async throws -> [BlockedAccount] {
+        let response: BlocksResponse = try await request("api/blocks")
+        return response.blocks
+    }
+    /// Idempotent. Also declines any pending request from them.
+    public func block(accountID: String) async throws {
+        let _: Empty = try await request("api/blocks/\(try pathID(accountID))", method: "PUT")
+    }
+    public func unblock(accountID: String) async throws {
+        let _: Empty = try await request("api/blocks/\(try pathID(accountID))", method: "DELETE")
+    }
+    public func privacy() async throws -> PrivacySettings { try await request("api/account/privacy") }
+    public func updatePrivacy(_ directMessages: DirectMessagePrivacy) async throws -> PrivacySettings {
+        try await request("api/account/privacy", method: "PUT", body: PrivacySettings(directMessages: directMessages))
+    }
     public func markDirectMessageRead(id: String, seq: String) async throws {
         let _: Empty = try await request("api/dms/\(try pathID(id))/read", method: "POST", body: ReadInput(seq: seq))
     }
@@ -412,8 +437,10 @@ public actor APIClient {
         guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
         guard (200..<300).contains(http.statusCode) else {
             let detail = try? decoder.decode(ErrorBody.self, from: data)
-            throw APIError(status: http.statusCode, message: detail?.error ?? "That request did not work.", code: detail?.code,
-                           attemptsRemaining: detail?.attemptsRemaining)
+            // DM privacy and block refusals use the client's own wording.
+            throw APIError(status: http.statusCode,
+                           message: DirectMessageErrors.message(code: detail?.code) ?? detail?.error ?? "That request did not work.",
+                           code: detail?.code, attemptsRemaining: detail?.attemptsRemaining)
         }
         if T.self == Empty.self { return Empty() as! T }
         do { return try decoder.decode(T.self, from: data) }

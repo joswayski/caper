@@ -437,3 +437,45 @@ test('edit history is paginated and replay keeps the immutable original content'
   assert.equal(events.at(-1).message.seq, '1');
   assert.equal(events.at(-1).message.editSeq, '56');
 });
+
+test('message requests, blocks and DM privacy follow the API contract', async (t) => {
+  const { request } = await setup(t);
+  assert.deepEqual((await request('/api/dms', { auth: true })).value, { conversations: [] }, 'requests are opt-in fixture state');
+  await request('/__fixture/control', { method: 'POST', body: { messageRequest: {} } });
+  let [incoming] = (await request('/api/dms', { auth: true })).value.conversations;
+  assert.deepEqual([incoming.id, incoming.status, incoming.blocked, incoming.peer.username, incoming.lastSeq], [ids.request, 'incoming', false, 'jordan', '1']);
+  assert.equal((await request(`/api/chat/channels/${ids.request}/messages`, { auth: true })).value.messages[0].author.id, ids.stranger);
+  assert.equal((await request(`/api/dms/${ids.request}/decline`, { auth: true, method: 'POST' })).response.status, 204);
+  assert.deepEqual((await request('/api/dms', { auth: true })).value.conversations, [], 'declined requests are hidden');
+  assert.ok(!(await request('/api/chat/forward-destinations', { auth: true })).value.destinations.some(({ id }) => id === ids.request), 'and not offered for forwarding');
+  assert.equal((await request(`/api/dms/${ids.request}/accept`, { auth: true, method: 'POST' })).response.status, 404);
+  const reopened = await request('/api/dms', { auth: true, method: 'POST', body: { username: 'jordan' } });
+  assert.equal(reopened.value.status, 'accepted', 'messaging the sender accepts the request');
+
+  const alex = await request('/api/dms', { auth: true, method: 'POST', body: { username: 'fixture_alex' } });
+  assert.equal(alex.value.status, 'accepted');
+  assert.equal((await request(`/api/blocks/${ids.owner}`, { auth: true, method: 'PUT' })).response.status, 400);
+  assert.equal((await request('/api/blocks/missing', { auth: true, method: 'PUT' })).response.status, 404);
+  for (let attempt = 0; attempt < 2; attempt++) assert.equal((await request(`/api/blocks/${ids.other}`, { auth: true, method: 'PUT' })).response.status, 204);
+  assert.deepEqual((await request('/api/blocks', { auth: true })).value, { blocks: [{ id: ids.other, username: 'alex', displayName: 'Alex', avatarId: 799 }] });
+  assert.equal((await request('/api/dms', { auth: true })).value.conversations.find(({ id }) => id === ids.direct).blocked, true);
+  const session = await request('/api/chat/session', { auth: true, method: 'POST', body: { name: 'Fixture Owner' } });
+  const blockedSend = await request(`/api/chat/channels/${ids.direct}/messages`, { auth: true, method: 'POST', headers: { 'x-caper-chat-token': session.value.token }, body: { clientMessageId: randomUUID(), text: 'hello' } });
+  assert.deepEqual([blockedSend.response.status, blockedSend.value.code], [403, 'dm_blocked']);
+  const [source] = (await request(`/api/chat/channels/${ids.request}/messages`, { auth: true })).value.messages;
+  const blockedForward = await request(`/api/chat/channels/${ids.direct}/forwards`, { auth: true, method: 'POST', headers: { 'x-caper-chat-token': session.value.token }, body: { sourceChannelId: ids.request, sourceMessageId: source.id, clientMessageId: randomUUID() } });
+  assert.deepEqual([blockedForward.response.status, blockedForward.value.code], [403, 'dm_blocked'], 'forwards are sends');
+  assert.equal((await request(`/api/blocks/${ids.other}`, { auth: true, method: 'DELETE' })).response.status, 204);
+  assert.deepEqual((await request('/api/blocks', { auth: true })).value, { blocks: [] });
+
+  // Blocking a requester declines the request.
+  await request('/__fixture/control', { method: 'POST', body: { reset: true } });
+  await request('/__fixture/control', { method: 'POST', body: { messageRequest: { text: 'TEST FIXTURE — second request' } } });
+  await request(`/api/blocks/${ids.stranger}`, { auth: true, method: 'PUT' });
+  assert.deepEqual((await request('/api/dms', { auth: true })).value.conversations, []);
+
+  assert.deepEqual((await request('/api/account/privacy', { auth: true })).value, { directMessages: 'anyone' });
+  assert.equal((await request('/api/account/privacy', { auth: true, method: 'PUT', body: { directMessages: 'friends' } })).response.status, 400);
+  assert.deepEqual((await request('/api/account/privacy', { auth: true, method: 'PUT', body: { directMessages: 'spaces' } })).value, { directMessages: 'spaces' });
+  assert.deepEqual((await request('/api/account/privacy', { auth: true })).value, { directMessages: 'spaces' });
+});
