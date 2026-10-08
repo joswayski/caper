@@ -4944,3 +4944,27 @@ CSS pixels/native points of mostly horizontal travel and reject vertical drags.
    command with the previous known-good web image SHA; stop native distribution
    and release a corrected higher-build-number client if needed. No data rollback
    or migration reversal is required.
+
+### Optimistic message feedback (October 8, 2026)
+
+Pin/unpin actions update the initiating client's attribution, count and Pins
+collection before HTTP confirmation. Edits preview their text immediately while
+the editor retains the draft until confirmation or conflict/error recovery.
+Sends and reactions retain their existing optimistic behavior. Other readers
+receive server-confirmed events; no speculative revision, pin sequence or replay
+cursor enters history. Failed or abandoned pin/edit intents reveal the latest
+confirmed state, including updates that arrived while the request was pending.
+Pending edit previews leave mentions as plain text until the server resolves
+their metadata for the new text; confirmed mention metadata remains in history.
+
+macOS custom buttons and menu triggers register AppKit pointing-hand cursor
+rectangles instead of setting the cursor only when the pointer enters. Disabled
+controls do not register a pointing-hand region.
+
+| Platform | Validation boundary for this change |
+| --- | --- |
+| Web desktop/narrow | `npm test`: 420 tests across 37 web/shared-native-support files; `npm run check` passes. Disposable Chromium pin/edit regressions hold requests before the server receives them, then cover acknowledgement, two-tab pin fanout, rollback/retry, revision conflicts, thread/pin projections and touch actions. Desktop and 390px touch-emulated captures inspected; not physical-device or Safari acceptance. |
+| Rust desktop | 256 tests pass, 9 existing tests ignored; fmt, full native Clippy and executable build pass. Linux 2x Xvfb renders with a labelled static fixture and delayed rejection stub show local pin attribution/count/list, retry and rollback. Not macOS/Windows or live-server/SFU acceptance. |
+| Android | Projection/rollback coverage added. Gradle unit-test invocation blocked by missing Android SDK; no Android build or device test in this orb. |
+| iOS/macOS | Projection/rollback coverage added. No Swift/Xcode build, device run or AppKit cursor runtime check in this Linux orb; native build and enabled/disabled hover acceptance remain required. |
+| Containers/services | Web build stage passes directly; Docker daemon unavailable. No API/gateway change, infrastructure/configuration change, migration, deployment or live SFU validation. Clients can release independently. |

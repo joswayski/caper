@@ -204,19 +204,42 @@ async fn source_snapshot(
     Ok(row.map(|(message, head, avatar, name)| json!({"message":shared_message(enrich_author(message,avatar,name.as_deref())),"seq":head.to_string()})))
 }
 
+/// One forward and its source: forward id, source payload (absent when the
+/// source's conversation is gone), source channel head, author avatar and name.
+type ForwardSourceRow = (String, Option<Value>, i64, Option<i16>, Option<String>);
+
 pub(super) async fn hydrate(
     tx: &mut Transaction<'_, Postgres>,
     messages: &mut [Value],
 ) -> Result<(), ApiError> {
-    let ids: Vec<&str> = messages.iter().filter_map(|m| m["id"].as_str()).collect();
-    let rows: Vec<(String, i64)> = sqlx::query_as("SELECT external_id,forward_source_id FROM public.messages WHERE external_id=ANY($1) AND forward_source_id IS NOT NULL")
+    let ids: Vec<&str> = messages
+        .iter()
+        .filter(|message| message.get("forward").is_some())
+        .filter_map(|message| message["id"].as_str())
+        .collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    // Hydrate the whole page in one round trip, including repeated sources.
+    // Keep unavailable sources in the result so cached content is cleared.
+    let rows: Vec<ForwardSourceRow> = sqlx::query_as(
+        "SELECT f.external_id,
+                CASE WHEN c.deleted_at IS NULL AND (c.space_id IS NULL OR s.deleted_at IS NULL) THEN m.payload END,
+                c.last_seq,u.avatar_id,u.display_name
+         FROM public.messages f JOIN public.messages m ON m.id=f.forward_source_id
+         JOIN public.channels c ON c.id=m.channel_id LEFT JOIN public.spaces s ON s.id=c.space_id
+         JOIN public.chat_sessions cs ON cs.id=m.session_id
+         LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL
+         WHERE f.external_id=ANY($1)")
         .bind(ids).fetch_all(&mut **tx).await.map_err(database_error)?;
-    for (id, source) in rows {
-        let snapshot = source_snapshot(tx, source)
-            .await?
+    let snapshots: std::collections::HashMap<_, _> = rows.into_iter().map(|(id, payload, head, avatar, name)| {
+        let snapshot = payload.map(|payload| json!({"message":shared_message(enrich_author(payload, avatar, name.as_deref())),"seq":head.to_string()}))
             .unwrap_or_else(|| json!({"message":null,"seq":"0"}));
-        if let Some(message) = messages.iter_mut().find(|m| m["id"].as_str() == Some(&id)) {
-            message["forward"] = snapshot;
+        (id, snapshot)
+    }).collect();
+    for message in messages {
+        if let Some(snapshot) = message["id"].as_str().and_then(|id| snapshots.get(id)) {
+            message["forward"] = snapshot.clone();
         }
     }
     Ok(())

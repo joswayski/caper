@@ -1572,7 +1572,8 @@ export default function Spaces({
           if (current) setDirectError(errorMessage(reason));
         });
     };
-    refresh();
+    // Account initialization below owns the first read. Start only the poll
+    // here, otherwise mounting the page fetches the same DM list twice.
     const timer = setInterval(refresh, 15_000);
     document.addEventListener("visibilitychange", refresh);
     // Blocked accounts' messages collapse in every chat.
@@ -2002,7 +2003,7 @@ export default function Spaces({
                     onClick={() => openDirect(conversation)}
                   >
                     <span className="direct-avatar" aria-hidden="true">
-                      {conversation.peer.displayName.slice(0, 1).toUpperCase()}
+                      <Avatar avatarId={conversation.peer.avatarId} name={conversation.peer.displayName} />
                     </span>
                     <span>{conversation.peer.displayName}</span>
                     {blockedIds.has(conversation.peer.id) ? (

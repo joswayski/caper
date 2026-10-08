@@ -376,6 +376,10 @@ test("pin PUTs share live state without advancing HTTP replay or restoring a lat
     });
   });
   const saving = f.client.setPin(original.id, true);
+  assert.equal(f.state.messages[0].pin?.author.id, "guest", "pin appears before the request resolves");
+  assert.equal(f.state.pinnedMessages[0].id, original.id);
+  assert.equal(f.client.snapshotHistory()?.messages[0].pin, undefined, "history never caches a speculative pin");
+  assert.equal(f.client.snapshotHistory()?.cursor, "1");
   f.sockets[0].message(committed({ clientMessageId: "between", text: "Between pin updates" }, "2"));
   f.sockets[0].frame(event);
   assert.equal(f.state.pinnedMessages[0].id, original.id);
@@ -390,6 +394,103 @@ test("pin PUTs share live state without advancing HTTP replay or restoring a lat
   );
   await assert.rejects(f.client.setPin(original.id, true), /Pins temporarily unavailable/);
   assert.equal(f.state.pinnedMessages.length, 0);
+});
+
+test("optimistic unpin rolls back to the latest shared pin and content, not the pre-click row", async (t) => {
+  const f = await sendingFixture(t);
+  const original = committed({ clientMessageId: "pin-target", text: "Before" }, "1");
+  const pin = { author: original.author, createdAt: original.createdAt };
+  f.sockets[0].message({ ...original, pin, pinSeq: "1" });
+  let finish!: (response: Response) => void;
+  let requests = 0;
+  vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+    requests++;
+    return new Promise<Response>((resolve) => {
+      finish = resolve;
+    });
+  });
+  const saving = f.client.setPin(original.id, false);
+  assert.equal(f.state.messages[0].pin, null);
+  assert.equal(f.state.pinnedMessages.length, 0);
+  assert.equal(f.client.snapshotHistory()?.pinnedMessages?.[0].id, original.id);
+  await f.client.setPin(original.id, true);
+  assert.equal(requests, 1, "a duplicate pin cannot race the pending write");
+  f.sockets[0].frame({
+    type: "message.reactions",
+    schemaVersion: 1,
+    channelId: "general",
+    seq: "2",
+    messageId: original.id,
+    reactions: [{ emoji: "🚀", authorIds: ["peer"] }],
+  });
+  const corrected = {
+    ...original,
+    revision: 2,
+    editSeq: "3",
+    editedAt: original.createdAt,
+    content: { ...original.content, text: "Remote correction" },
+  };
+  f.sockets[0].frame({ type: "message.edited", schemaVersion: 1, channelId: "general", seq: "3", message: corrected });
+  const remotePin = { author: { id: "peer", name: "Peer", isGuest: false }, createdAt: "2026-10-08T12:00:00Z" };
+  f.sockets[0].frame({
+    type: "message.pin",
+    schemaVersion: 1,
+    channelId: "general",
+    seq: "4",
+    message: { ...corrected, pin: remotePin, pinSeq: "4" },
+  });
+  assert.equal(f.state.pinnedMessages.length, 0, "local intent survives shared updates until confirmation");
+  finish(Response.json({ error: "Try again" }, { status: 503 }));
+  await assert.rejects(saving, /Try again/);
+  assert.deepEqual(f.state.messages[0].pin, remotePin);
+  assert.equal(f.state.messages[0].content.text, "Remote correction");
+  assert.deepEqual(f.state.messages[0].reactions, [{ emoji: "🚀", authorIds: ["peer"] }]);
+  assert.equal(f.state.pinnedMessages[0].content.text, "Remote correction");
+  assert.equal(f.client.snapshotHistory()?.cursor, "4");
+});
+
+test("a failed refresh clears abandoned pin and edit overlays and ignores their late acknowledgements", async (t) => {
+  const f = await sendingFixture(t);
+  const original = committed({ clientMessageId: "mutation-target", text: "Confirmed" }, "1");
+  f.sockets[0].message(original);
+  const responses: ((response: Response) => void)[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) =>
+    init?.method === "PUT"
+      ? new Promise<Response>((resolve) => responses.push(resolve))
+      : Promise.resolve(Response.json({ error: "Temporary outage" }, { status: 503 })),
+  );
+  const pinning = f.client.setPin(original.id, true);
+  const editing = f.client.editMessage(original.id, "Unconfirmed", 1);
+  assert.equal(f.state.pinnedMessages[0].content.text, "Unconfirmed");
+  f.client.retryLoad();
+  await tick();
+  assert.equal(f.state.phase, "ready");
+  assert.equal(f.state.messages[0].content.text, "Confirmed");
+  assert.equal(f.state.messages[0].pin, undefined);
+  assert.equal(f.state.pinnedMessages.length, 0);
+  const refreshed = f.state;
+  responses[0](
+    Response.json({
+      type: "message.pin",
+      schemaVersion: 1,
+      channelId: "general",
+      seq: "2",
+      message: { ...original, pinSeq: "2", pin: { author: original.author, createdAt: original.createdAt } },
+    }),
+  );
+  responses[1](
+    Response.json({
+      ...original,
+      revision: 2,
+      editSeq: "3",
+      editedAt: original.createdAt,
+      content: { ...original.content, text: "Unconfirmed" },
+    }),
+  );
+  await pinning;
+  await assert.rejects(editing, /conversation changed/);
+  assert.equal(f.state, refreshed, "abandoned acknowledgements cannot restore a local overlay");
+  assert.equal(f.client.snapshotHistory()?.cursor, "1");
 });
 
 test("HTTP-only pin acknowledgement updates the collection but not its durable cursor", async (t) => {
@@ -1666,6 +1767,9 @@ test("edit PUTs keep expected revision, merge live updates and reject late aband
     return new Promise<Response>((resolve) => responses.push(resolve));
   });
   const save = f.client.editMessage(original.id, "Saturday", 1);
+  assert.equal(f.state.messages[0].content.text, "Saturday", "edit text projects before HTTP resolves");
+  assert.equal(f.state.messages[0].revision, undefined, "pending edits do not invent a confirmed revision");
+  assert.equal(f.client.snapshotHistory()?.messages[0].content.text, "Friday");
   responses[0](Response.json(version2));
   await save;
   assert.equal(f.state.messages[0].content.text, "Saturday");
@@ -1685,4 +1789,39 @@ test("edit PUTs keep expected revision, merge live updates and reject late aband
   );
   await assert.rejects(late, /conversation changed/);
   assert.equal(f.state, before);
+});
+
+test("failed optimistic edit reveals a newer remote revision while keeping independent pins", async (t) => {
+  const f = await sendingFixture(t);
+  const original = committed({ clientMessageId: "edit-target", text: "@peer Original" }, "1");
+  original.content.mentions = [{ type: "user", id: "peer", username: "peer" }];
+  const pinned = { ...original, pin: { author: original.author, createdAt: original.createdAt }, pinSeq: "1" };
+  f.sockets[0].message(pinned);
+  let finish!: (response: Response) => void;
+  vi.spyOn(globalThis, "fetch").mockImplementation(
+    () =>
+      new Promise<Response>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const saving = f.client.editMessage(original.id, "Local draft", 1);
+  assert.equal(f.state.messages[0].content.text, "Local draft");
+  assert.equal(f.state.pinnedMessages[0].content.text, "Local draft");
+  assert.deepEqual(f.state.messages[0].content.mentions, [], "only the server resolves mentions for the new text");
+  assert.deepEqual(f.client.snapshotHistory()?.messages[0].content.mentions, original.content.mentions);
+  const remote = {
+    ...original,
+    revision: 2,
+    editSeq: "2",
+    editedAt: original.createdAt,
+    content: { ...original.content, text: "Other tab" },
+  };
+  f.sockets[0].frame({ type: "message.edited", schemaVersion: 1, channelId: "general", seq: "2", message: remote });
+  assert.equal(f.state.messages[0].content.text, "Other tab", "a confirmed newer revision supersedes a stale draft");
+  finish(Response.json({ error: "message changed" }, { status: 409 }));
+  await assert.rejects(saving, /message changed/);
+  assert.equal(f.state.messages[0].content.text, "Other tab");
+  assert.equal(f.state.pinnedMessages[0].content.text, "Other tab");
+  assert.deepEqual(f.state.pinnedMessages[0].pin, pinned.pin);
+  assert.equal(f.client.snapshotHistory()?.cursor, "2");
 });

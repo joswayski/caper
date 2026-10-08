@@ -417,6 +417,7 @@ struct CaperApp {
     /// Who reacted, by message ID, for reaction chip hover cards.
     reactors: BTreeMap<String, ReactorCache>,
     pending_pins: BTreeSet<String>,
+    mutations: model::MessageMutations,
     pin_errors: BTreeMap<String, (bool, String)>,
     showing_pins: bool,
     message_editor: Option<edits::Editor>,
@@ -553,6 +554,7 @@ impl CaperApp {
             reaction_errors: BTreeMap::new(),
             reactors: BTreeMap::new(),
             pending_pins: BTreeSet::new(),
+            mutations: model::MessageMutations::default(),
             pin_errors: BTreeMap::new(),
             showing_pins: false,
             message_editor: None,
@@ -1863,6 +1865,7 @@ impl CaperApp {
                 ) =>
                 {
                     self.pending_pins.remove(&message);
+                    self.mutations.pins.remove(&message);
                     match result {
                         Ok(update)
                             if update.channel_id == channel && update.message.id == message =>
@@ -2964,6 +2967,8 @@ impl CaperApp {
         self.pending_reactions.clear();
         self.reaction_errors.clear();
         self.reactors.clear();
+        self.pending_pins.clear();
+        self.mutations = model::MessageMutations::default();
         self.draft.clear();
         self.typers.clear();
         self.error = None;
@@ -3243,7 +3248,6 @@ impl CaperApp {
                 self.selected_channel.as_deref(),
             ) =>
             {
-                self.pending_pins.remove(&update.message.id);
                 self.pin_errors.remove(&update.message.id);
                 match self.timeline.apply_pin(*update) {
                     Ok(model::Apply::Applied) => self.mark_selected_direct_read(),
@@ -3521,6 +3525,7 @@ impl CaperApp {
         self.reaction_errors.clear();
         self.reactors.clear();
         self.pending_pins.clear();
+        self.mutations = model::MessageMutations::default();
         self.pin_errors.clear();
         self.showing_pins = false;
         self.message_editor = None;
@@ -5270,7 +5275,7 @@ impl CaperApp {
                                     ui,
                                     egui::vec2(ui.available_width(), 32.0),
                                     &name,
-                                    if private { NavIcon::Lock } else { NavIcon::Hash },
+                                    Some(if private { NavIcon::Lock } else { NavIcon::Hash }),
                                     active,
                                     RowExtras {
                                         muted,
@@ -5479,7 +5484,7 @@ impl CaperApp {
                         ui,
                         egui::vec2(ui.available_width() - 18.0, 28.0),
                         &direct.peer.display_name,
-                        NavIcon::Speech,
+                        None,
                         active,
                         RowExtras {
                             muted,
@@ -5495,6 +5500,15 @@ impl CaperApp {
                                 }),
                             }),
                         },
+                    );
+                    paint_avatar(
+                        ui,
+                        egui::Rect::from_center_size(
+                            egui::pos2(response.rect.left() + 17.5, response.rect.center().y),
+                            egui::vec2(20.0, 20.0),
+                        ),
+                        &direct.peer.display_name,
+                        direct.peer.avatar_id,
                     );
                     if unread {
                         ui.label(RichText::new("●").size(9.0).color(TERRACOTTA_BRIGHT));
@@ -5517,7 +5531,7 @@ impl CaperApp {
                 ui,
                 egui::vec2(ui.available_width(), 28.0),
                 action,
-                NavIcon::Plus,
+                Some(NavIcon::Plus),
                 false,
                 RowExtras::default(),
             );
@@ -5678,11 +5692,11 @@ impl CaperApp {
                 ui,
                 egui::vec2(ui.available_width() - 18.0, 28.0),
                 "Message requests",
-                if open {
+                Some(if open {
                     NavIcon::Chevron
                 } else {
                     NavIcon::ChevronRight
-                },
+                }),
                 false,
                 RowExtras::default(),
             );
@@ -7290,7 +7304,7 @@ impl CaperApp {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    let pin_count = self.timeline.pinned_messages().count();
+                                    let pin_count = self.mutations.pinned(&self.timeline).len();
                                     if self.showing_pins {
                                         if ui.button("Messages").clicked() { self.showing_pins = false; }
                                     } else if ui.button(format!("Pins ({pin_count})")).clicked() {
@@ -7621,7 +7635,7 @@ impl CaperApp {
             }
             let history = history.show(ui, |ui| {
                     if self.showing_pins {
-                        let pins: Vec<_> = self.timeline.pinned_messages().cloned().collect();
+                        let pins = self.mutations.pinned(&self.timeline);
                         if pins.is_empty() {
                             chat_state(ui, 2, |ui| { ui.label(RichText::new("No pinned messages.").color(MUTED)); });
                         } else {
@@ -7883,6 +7897,8 @@ impl CaperApp {
     }
 
     fn message(&mut self, ui: &mut egui::Ui, message: &model::Message, in_thread: bool) {
+        let projected = self.mutations.project(message);
+        let message = projected.as_ref();
         let time = if self.showing_pins {
             DateTime::parse_from_rfc3339(&message.created_at).map_or_else(
                 |_| message.created_at.clone(),
@@ -8189,7 +8205,7 @@ impl CaperApp {
                         )
                         .clicked()
                     {
-                        self.set_pin(&message.id, !active);
+                        self.set_pin(message, !active);
                         ui.close();
                     }
                     if let Some(account) = self.blockable_author(&message.author) {
@@ -8277,7 +8293,7 @@ impl CaperApp {
                             )
                             .clicked()
                     {
-                        self.set_pin(&message.id, false);
+                        self.set_pin(message, false);
                     }
                     if !in_thread
                         && self.selected_request().is_none()
@@ -8295,7 +8311,7 @@ impl CaperApp {
                     ui.horizontal(|ui| {
                         ui.colored_label(ERROR, error);
                         if can_react && ui.small_button("Retry").clicked() {
-                            self.set_pin(&message.id, active);
+                            self.set_pin(message, active);
                         }
                         if ui.small_button("Dismiss").clicked() {
                             self.pin_errors.remove(&message.id);
@@ -8535,13 +8551,24 @@ impl CaperApp {
         self.send_next_reaction(message);
     }
 
-    fn set_pin(&mut self, message: &str, active: bool) {
+    fn set_pin(&mut self, target: &model::Message, active: bool) {
+        let message = target.id.as_str();
         if !self.selected_is_joined() || self.pending_pins.contains(message) {
             return;
         }
         let (Some(session), Some(channel)) = (&self.session, &self.selected_channel) else {
             return;
         };
+        if target.channel_id != *channel {
+            return;
+        }
+        let pin = active.then(|| model::Pin {
+            author: session.author.clone(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        });
+        self.mutations
+            .pins
+            .insert(message.to_owned(), (target.clone(), pin));
         self.pin_errors.remove(message);
         self.pending_pins.insert(message.to_owned());
         self.worker.send(Command::Pin {
@@ -10386,7 +10413,7 @@ fn channel_button(
     ui: &mut egui::Ui,
     size: egui::Vec2,
     name: &str,
-    icon: NavIcon,
+    icon: Option<NavIcon>,
     active: bool,
     extras: RowExtras<'_>,
 ) -> (egui::Response, bool) {
@@ -10426,19 +10453,21 @@ fn channel_button(
         }
     };
     let color = dim(if active { TEXT } else { MUTED });
-    paint_icon(
-        ui.painter(),
-        egui::Rect::from_center_size(
-            egui::pos2(rect.left() + 17.5, rect.center().y),
-            egui::vec2(17.0, 17.0),
-        ),
-        icon,
-        if active {
-            dim(TERRACOTTA_BRIGHT)
-        } else {
-            color
-        },
-    );
+    if let Some(icon) = icon {
+        paint_icon(
+            ui.painter(),
+            egui::Rect::from_center_size(
+                egui::pos2(rect.left() + 17.5, rect.center().y),
+                egui::vec2(17.0, 17.0),
+            ),
+            icon,
+            if active {
+                dim(TERRACOTTA_BRIGHT)
+            } else {
+                color
+            },
+        );
+    }
     let timer_font = egui::FontId::monospace(11.0);
     let timer_right = rect.right() - if extras.menu.is_some() { 34.0 } else { 6.0 };
     let timer_width = extras.duration.map_or(0.0, |text| {
@@ -16800,10 +16829,12 @@ mod tests {
             crate::api::Api::new("http://127.0.0.1:9").unwrap(),
             Some("parity-direct"),
         );
+        app.directs[0].peer.avatar_id = Some(31);
         let mut second = app.directs[0].clone();
         second.id = "second-direct".into();
         second.peer.id = "second-peer".into();
         second.peer.display_name = "Second fixture peer".into();
+        second.peer.avatar_id = Some(799);
         second.last_seq = "7".into();
         app.directs.push(second);
         render(&mut app, &context, vec![]);
@@ -16849,12 +16880,17 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert!(
-            images.iter().any(|rect| (rect.width() - 20.0).abs() < 0.01
-                && (rect.height() - 20.0).abs() < 0.01
-                && (rect.center().y as f64 - (self_row.y0 + self_row.y1) / 2.0).abs() < 0.5),
-            "DM artwork stays small and vertically centered in {self_row:?}: {images:?}"
-        );
+        for row in [self_row, peer, second_peer] {
+            assert!(
+                images.iter().any(|rect| (rect.width() - 20.0).abs() < 0.01
+                    && (rect.height() - 20.0).abs() < 0.01
+                    // Images snap to whole pixels, so a centre drawn at
+                    // +17.5 lands up to half a pixel away.
+                    && (rect.center().x as f64 - (row.x0 + 17.5)).abs() <= 0.5
+                    && (rect.center().y as f64 - (row.y0 + row.y1) / 2.0).abs() <= 0.5),
+                "Each DM uses saved avatar artwork, aligned with self-notes in {row:?}: {images:?}"
+            );
+        }
         let microphone = bounds("Mute microphone");
         assert!(
             images.iter().any(|rect| (rect.width() - 30.0).abs() < 0.01
