@@ -140,7 +140,7 @@ private struct FirstSpaceView: View {
         pending = true; error = nil
         Task {
             // The name stays in the field when creation fails, like web.
-            do { try await model.createSpace(name: name) } catch { self.error = error.localizedDescription }
+            do { try await model.createSpace(name: name) } catch { self.error = FriendlyError.message(for: error) }
             pending = false
         }
     }
@@ -942,7 +942,7 @@ private struct ChannelSidebarItem: View {
             ChannelVoiceSlot(model: model, channel: channel)
         }
         .sheet(isPresented: $confirmLeave) {
-            ConfirmationSheet(title: "Leave #\(channel.name)?", detail: channel.private && !model.isOwner ? "You’ll lose access and need another invitation to return. You’ll disconnect from this channel’s voice call." : "It will leave your sidebar. You can preview and rejoin from Browse channels. You’ll disconnect from this channel’s voice call.", action: "Leave channel", close: { confirmLeave = false }) { try await model.leaveChannel(channel) }
+            ConfirmationSheet(title: "Leave #\(channel.name)?", detail: channel.private && !model.isOwner ? "You’ll lose access and need another invitation to return. You’ll disconnect from this channel’s voice call." : "It will leave your sidebar. You can preview and rejoin from Browse channels. You’ll disconnect from this channel’s voice call.", action: "Leave channel", pendingLabel: "Leaving…", close: { confirmLeave = false }) { try await model.leaveChannel(channel) }
         }
     }
 }
@@ -1678,7 +1678,7 @@ private struct ChatView: View {
     private func unblock(_ accountID: String) {
         Task {
             do { try await model.unblock(accountID: accountID) }
-            catch { chat.error = error.localizedDescription }
+            catch { chat.error = FriendlyError.message(for: error) }
         }
     }
 
@@ -1908,7 +1908,7 @@ private struct ChatView: View {
                     Button(joining ? "Joining…" : "Join channel") {
                         guard !joining, let channel = model.selectedChannel else { return }
                         joining = true; joinError = nil
-                        Task { do { try await model.joinChannel(channel) } catch { joinError = error.localizedDescription }; joining = false }
+                        Task { do { try await model.joinChannel(channel) } catch { joinError = FriendlyError.message(for: error) }; joining = false }
                     }.buttonStyle(CaperPrimaryButton()).disabled(joining)
                 }
                 if let joinError { Text(joinError).font(CaperTheme.font(11)).foregroundStyle(.red) }
@@ -2030,7 +2030,7 @@ private struct ChatView: View {
                 PinnedMessagesView(chat: chat, close: { showingPins = false })
             }
             .modifier(BlockConfirmation(target: $blockTarget) { target in
-                do { try await model.block(target) } catch { chat.error = error.localizedDescription }
+                do { try await model.block(target) } catch { chat.error = FriendlyError.message(for: error) }
             })
             .onChange(of: chat.isPreview) { _, preview in
                 if preview { reactionMessage = nil; showingEmojiPicker = false }
@@ -2118,6 +2118,9 @@ private struct NativeThreadView: View {
         }
     }
     private var replies: [ChatMessage] { chat.displayedMessages.filter { $0.threadRootId == chat.threadRootID && $0.threadRootId != nil } }
+    /// DMs are named after the other person, without a channel `#`.
+    private var direct: Bool { model.selectedDirectMessageID != nil }
+    private var conversation: String { direct ? chat.channelName : "#\(chat.channelName)" }
     private var reactors: ReactorContext {
         ReactorContext(viewerID: chat.currentAuthor?.id, sheetOpen: reactorsTarget != nil) { messageID, emoji in
             reactorsTarget = ReactorsTarget(messageID: messageID, emoji: emoji)
@@ -2126,7 +2129,7 @@ private struct NativeThreadView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                VStack(alignment: .leading, spacing: 3) { Text("Thread").font(CaperTheme.font(15, weight: .bold)); Text("in #\(chat.channelName)").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1) }
+                VStack(alignment: .leading, spacing: 3) { Text("Thread").font(CaperTheme.font(15, weight: .bold)); Text("in \(conversation)").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1) }
                 Spacer()
                 Button("Back to channel") { chat.closeThread() }.buttonStyle(.plain).font(CaperTheme.font(12)).modifier(ControlHover())
             }.padding(.horizontal, 18).frame(height: 50)
@@ -2157,7 +2160,7 @@ private struct NativeThreadView: View {
                         if let error = chat.threadError { Text(error).padding(12); Button("Retry") { Task { await chat.loadThread() } } }
                         if chat.threadHasMore { Button("Load older replies") { Task { await chat.loadThread(older: true) } }.disabled(chat.threadLoading).padding(12) }
                         threadEntries(replies)
-                        if replies.isEmpty && !chat.threadLoading && chat.threadError == nil { Text("No replies yet. Start the thread.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).padding(18) }
+                        if replies.isEmpty && !chat.threadLoading && chat.threadError == nil { Text(chat.isPreview ? "No replies yet." : "No replies yet. Start the thread.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).padding(18) }
                         if let pending = chat.pendingMessage, pending.threadRootId == chat.threadRootID {
                             PendingMessageRow(pending: pending, author: chat.currentAuthor, error: chat.error, rejected: chat.sendRejected, canEdit: chat.threadDraft.isEmpty,
                                 retry: { Task { await chat.send(inThread: true) } },
@@ -2169,7 +2172,7 @@ private struct NativeThreadView: View {
                 .modifier(MentionCardHost(target: $mentionCard, model: model, viewerID: viewerID))
                 .onChange(of: replies.last?.id) { _, id in if let id { proxy.scrollTo(id, anchor: .bottom) } }
             }
-            if chat.isPreview { Text("Join the channel to reply.").font(CaperTheme.font(12)).padding(18) }
+            if chat.isPreview { Text(direct ? "You can’t reply in this conversation." : "Join the channel to reply.").font(CaperTheme.font(12)).padding(18) }
             else { VStack(alignment: .leading, spacing: 8) {
                 if let error = chat.error, chat.pendingMessage == nil { Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.terracottaBright) }
                 if let error = chat.sessionError { Text(error); Button("Retry session") { Task { await chat.retrySession() } } }
@@ -2181,7 +2184,7 @@ private struct NativeThreadView: View {
                     .background(CaperTheme.composer)
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
                 HStack {
-                    Toggle("Also send to #\(chat.channelName)", isOn: $chat.threadBroadcast).font(CaperTheme.font(11)).disabled(chat.pendingMessage != nil)
+                    Toggle("Also send to \(conversation)", isOn: $chat.threadBroadcast).font(CaperTheme.font(11)).disabled(chat.pendingMessage != nil)
                     Button("Send reply") { Task { await chat.send(inThread: true) } }.buttonStyle(CaperPrimaryButton())
                         .disabled(chat.sending || chat.sendRejected || chat.threadLoading || chat.pendingMessage != nil || MessageValidation.error(for: chat.threadDraft) != nil)
                 }
@@ -3450,7 +3453,7 @@ private struct WorkspaceSheetView: View {
             case .manageChannel(let channel): ChannelEditor(model: model, channel: channel, close: close)
             case .invitation(let space): InvitationSheet(model: model, invitation: space, close: close)
             case .channelInvitation(let invitation): ChannelInvitationSheet(model: model, invitation: invitation, close: close)
-            case .leaveSpace: ConfirmationSheet(title: "Leave \(model.detail?.space.name ?? "space")?", detail: "You will lose access to its channels and conversations. An owner can add you again later.", action: "Leave space", close: close) { try await model.leaveCurrentSpace() }
+            case .leaveSpace: ConfirmationSheet(title: "Leave \(model.detail?.space.name ?? "space")?", detail: "You will lose access to its channels and conversations. An owner can add you again later.", action: "Leave space", pendingLabel: "Leaving…", close: close) { try await model.leaveCurrentSpace() }
             case .audio: AudioPreferencesView(voice: model.voice, debugEnabled: model.account?.debugEnabled == true, close: close)
             case .connection: ScrollView { ConnectionDetailsView(voice: model.voice, close: close) }
             case .privacy: PrivacySheet(model: model, close: close)
@@ -3592,7 +3595,7 @@ private struct MessageRequestBar: View {
     private func run(_ action: String, _ operation: @escaping @MainActor () async throws -> Void) {
         pending = action; error = nil
         Task { @MainActor in
-            do { try await operation() } catch { self.error = error.localizedDescription }
+            do { try await operation() } catch { self.error = FriendlyError.message(for: error) }
             pending = nil
         }
     }
@@ -3739,7 +3742,7 @@ private struct PrivacySheet: View {
     private func unblock(_ id: String) {
         unblocking.insert(id); unblockError = nil
         Task { @MainActor in
-            do { try await model.unblock(accountID: id) } catch { unblockError = error.localizedDescription }
+            do { try await model.unblock(accountID: id) } catch { unblockError = FriendlyError.message(for: error) }
             unblocking.remove(id)
         }
     }
@@ -3839,19 +3842,38 @@ private struct NewDirectMessageSheet: View {
     @Bindable var model: AppModel
     let close: () -> Void
     @State private var username = ""
+    @State private var pending = false
+    @State private var error: String?
+    @FocusState private var usernameFocused: Bool
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            SheetHeader(title: "New direct message", detail: "Enter an account’s exact username.", close: close)
+            SheetHeader(title: "New direct message", detail: "Enter an account’s exact username.", closeDisabled: pending, close: close)
             TextField("Exact username", text: $username).textFieldStyle(.roundedBorder)
                 #if os(iOS)
                 .textInputAutocapitalization(.never)
                 #endif
                 .autocorrectionDisabled()
+                .focused($usernameFocused)
+                .onChange(of: username) { _, _ in error = nil }
                 .accessibilityIdentifier("dm-username")
-            HStack { Spacer(); Button("Start conversation") {
-                Task { if await model.createDirectMessage(username: username) { close() } }
-            }.buttonStyle(VoiceJoinButton()).disabled(username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
-        }.padding(22)
+            // In the sheet, not only in the sidebar behind it.
+            if let error { Text(error).font(CaperTheme.font(12)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)) }
+            HStack { Spacer(); Button(pending ? "Opening…" : "Start conversation", action: start)
+                .buttonStyle(VoiceJoinButton()).disabled(pending || username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+        }.padding(22).onAppear { usernameFocused = true }
+            .interactiveDismissDisabled(pending).preference(key: DialogDismissDisabled.self, value: pending)
+    }
+    private func start() {
+        guard !pending else { return }
+        let submitted = username
+        pending = true; error = nil
+        Task {
+            let opened = await model.createDirectMessage(username: submitted)
+            pending = false
+            guard !opened else { close(); return }
+            // Shown here; the sidebar behind the sheet would repeat it after closing.
+            if let failure = model.error { error = failure; model.error = nil }
+        }
     }
 }
 
@@ -3875,12 +3897,15 @@ private struct ChannelInvitationSheet: View {
     }
     private func run(_ action: @escaping () async throws -> Void) {
         guard !pending else { return }; pending = true; error = nil
-        Task { do { try await action(); close() } catch { self.error = error.localizedDescription }; pending = false }
+        Task { do { try await action(); close() } catch { self.error = FriendlyError.message(for: error) }; pending = false }
     }
 }
 
 private struct SheetHeader: View {
-    let title: String; var detail: String?; var closeLabel = "Close"; var titleIcon: Image? = nil; let close: () -> Void
+    let title: String; var detail: String?; var closeLabel = "Close"; var titleIcon: Image? = nil
+    /// A request is running: closing now could still navigate when it completes.
+    var closeDisabled = false
+    let close: () -> Void
     var body: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 6) {
@@ -3890,7 +3915,7 @@ private struct SheetHeader: View {
                 }
                 if let detail { Text(detail).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted) }
             }
-            Spacer(); Button(action: close) { CaperIcon(name: "x") }.buttonStyle(SidebarIconButton()).accessibilityLabel(closeLabel)
+            Spacer(); Button(action: close) { CaperIcon(name: "x") }.buttonStyle(SidebarIconButton()).disabled(closeDisabled).accessibilityLabel(closeLabel)
         }.padding(22).overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
     }
 }
@@ -3900,6 +3925,8 @@ private struct LoginPage: View {
     let close: () -> Void
     @State private var email = ""
     @State private var code = ""
+    @FocusState private var emailFocused: Bool
+    @FocusState private var codeFocused: Bool
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
@@ -3909,17 +3936,19 @@ private struct LoginPage: View {
                 Text(model.challengeID == nil ? "Use your email to create an account or return to one. We’ll send a code to your email." : "Enter the six-character code sent to \(email.trimmingCharacters(in: .whitespacesAndNewlines)). It expires in 10 minutes.")
                     .font(CaperTheme.font(16)).foregroundStyle(CaperTheme.muted).lineSpacing(7).padding(.bottom, 20)
                 if model.challengeID == nil {
-                    CaperField(title: "Email address", text: $email, placeholder: "you@example.com")
-                        .disabled(model.busy)
+                    CaperField(title: "Email address", text: input($email, clearsError: true), placeholder: "you@example.com", focus: $emailFocused)
                     if let error = model.error { LoginError(message: error).padding(.top, 18) }
                     Button { Task { await model.requestCode(email: email) } } label: {
                         HStack(spacing: 12) { Text(model.busy ? "Sending…" : "Email me a code"); Image(systemName: "arrow.right") }
                     }.buttonStyle(LoginActionButton(fullWidth: false)).disabled(model.busy || email.isEmpty)
                         .frame(maxWidth: .infinity, alignment: .trailing).padding(.top, 12)
                 } else {
-                    CaperField(title: "Sign-in code", text: $code)
-                        .disabled(model.busy || model.loginAttemptsRemaining == 0)
+                    // An exhausted code keeps its error; a new code re-enables the field.
+                    CaperField(title: "Sign-in code", text: input($code, clearsError: model.loginAttemptsRemaining != 0), focus: $codeFocused)
+                        .disabled(model.loginAttemptsRemaining == 0)
                         .onChange(of: code) { _, value in
+                            // A keystroke during a request is put back by `input`, not filtered into the code.
+                            guard !model.busy else { return }
                             // Web accepts the unambiguous code alphabet only, uppercased, six characters.
                             let allowed = Set("ABCDEFGHJKMNPQRSTWXYZ23456789")
                             let filtered = String(value.uppercased().filter { allowed.contains($0) }.prefix(6))
@@ -3956,6 +3985,28 @@ private struct LoginPage: View {
             #endif
             .frame(maxWidth: .infinity, alignment: .center)
         }.background(CaperTheme.blackout.ignoresSafeArea())
+            // As on web, the current field is focused on each step and when a request ends.
+            .onChange(of: model.busy) { _, busy in if !busy { focusField() } }
+            .onChange(of: model.challengeID) { _, _ in if !model.busy { focusField() } }
+    }
+
+    private func focusField() {
+        if model.challengeID == nil { emailFocused = true }
+        else if model.loginAttemptsRemaining != 0 { codeFocused = true }
+    }
+
+    /// While a request runs, a field keeps focus but takes no edits, like web's
+    /// read-only input: disabling it dropped focus, so a retry needed another
+    /// click or tap. A rejected keystroke is written and put back next turn so
+    /// the field redraws with the kept text. Other edits clear the last error.
+    private func input(_ text: Binding<String>, clearsError: Bool) -> Binding<String> {
+        Binding(get: { text.wrappedValue }, set: { value in
+            guard value != text.wrappedValue else { return }
+            let kept = text.wrappedValue
+            text.wrappedValue = value
+            if model.busy { DispatchQueue.main.async { text.wrappedValue = kept } }
+            else if clearsError, model.error != nil { model.error = nil }
+        })
     }
 }
 
@@ -4034,12 +4085,13 @@ private struct InvitationSheet: View {
     @Bindable var model: AppModel
     let invitation: Space
     let close: () -> Void
-    @State private var pending = false
+    /// The answer being sent ("accept" or "decline"); only that button shows progress.
+    @State private var pending: String?
     @State private var error: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            SheetHeader(title: "You’re invited!", detail: nil, titleIcon: Image("IncomingEnvelope", bundle: artworkBundle), close: close)
+            SheetHeader(title: "You’re invited!", detail: nil, titleIcon: Image("IncomingEnvelope", bundle: artworkBundle), closeDisabled: pending != nil, close: close)
             Text("Join \(invitation.name)?").font(CaperTheme.font(20, weight: .bold)).padding(.horizontal, 22)
             if let inviter = invitation.inviter {
                 Text("\(inviter.displayName) (@\(inviter.username)) invited you.").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 22)
@@ -4047,10 +4099,11 @@ private struct InvitationSheet: View {
             if let error { Text(error).font(CaperTheme.font(12)).foregroundStyle(.red).padding(.horizontal, 22) }
             HStack {
                 Spacer()
-                Button("Decline") { perform { try await model.declineInvitation(invitation); close() } }.buttonStyle(CaperSecondaryButton())
-                Button("Accept") { perform { try await model.acceptInvitation(invitation); close() } }.buttonStyle(CaperPrimaryButton())
-            }.disabled(pending).padding(22)
+                Button(pending == "decline" ? "Declining…" : "Decline") { perform("decline") { try await model.declineInvitation(invitation); close() } }.buttonStyle(CaperSecondaryButton())
+                Button(pending == "accept" ? "Accepting…" : "Accept") { perform("accept") { try await model.acceptInvitation(invitation); close() } }.buttonStyle(CaperPrimaryButton())
+            }.disabled(pending != nil).padding(22)
         }.background(CaperTheme.surface)
+            .interactiveDismissDisabled(pending != nil).preference(key: DialogDismissDisabled.self, value: pending != nil)
     }
 
     private var artworkBundle: Bundle {
@@ -4061,9 +4114,10 @@ private struct InvitationSheet: View {
         #endif
     }
 
-    private func perform(_ action: @escaping () async throws -> Void) {
-        pending = true; error = nil
-        Task { do { try await action() } catch { self.error = error.localizedDescription }; pending = false }
+    private func perform(_ answer: String, _ action: @escaping () async throws -> Void) {
+        guard pending == nil else { return }
+        pending = answer; error = nil
+        Task { do { try await action() } catch { self.error = FriendlyError.message(for: error) }; pending = nil }
     }
 }
 
@@ -4071,35 +4125,44 @@ private struct SpaceEditor: View {
     @Bindable var model: AppModel; let close: () -> Void; let managing: Bool
     @State private var name = ""; @State private var username = ""; @State private var error: String?; @State private var pending = false
     @State private var confirmDelete = false
+    @FocusState private var nameFocused: Bool
+    @FocusState private var memberFocused: Bool
+    /// An invite finished: return focus to the field so several people can be invited in a row.
+    @State private var refocusMember = false
+    /// Creating can still navigate when it completes, so the sheet stays until then.
+    private var creating: Bool { !managing && pending }
     var body: some View {
         VStack(spacing: 0) {
-            SheetHeader(title: managing ? "Manage space" : "Create a space", detail: managing ? "Only the owner can change this space and its membership." : nil, close: close)
+            SheetHeader(title: managing ? "Manage space" : "Create a space", detail: managing ? "Only the owner can change this space and its membership." : nil, closeDisabled: creating, close: close)
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    CaperField(title: "Space name", text: $name)
-                    Button(pending ? "Saving…" : managing ? "Save name" : "Create space") { run { if managing { try await model.renameSpace(name) } else { try await model.createSpace(name: name); close() } } }.buttonStyle(CaperPrimaryButton()).disabled(pending)
+                    CaperField(title: "Space name", text: $name, focus: $nameFocused)
+                        .onChange(of: name) { _, _ in error = nil }
+                    Button(pending ? (managing ? "Saving…" : "Creating…") : managing ? "Save name" : "Create space") { run { if managing { try await model.renameSpace(name) } else { try await model.createSpace(name: name); close() } } }.buttonStyle(CaperPrimaryButton()).disabled(pending)
                     if managing {
                         Divider().overlay(CaperTheme.border)
                         Text("Members  \(model.detail?.members.count ?? 0)").font(CaperTheme.font(14, weight: .bold))
                             .accessibilityLabel("Members \(model.detail?.members.count ?? 0)")
                             .accessibilityIdentifier("space-members-heading")
+                        // The field stays enabled during a request so it keeps focus; addMember ignores it until then.
                         HStack {
                             TextField("Exact username", text: Binding(get: { username }, set: { username = WorkspaceValidation.normalizeUsername($0) })).textFieldStyle(CaperTextFieldStyle())
                                 .autocorrectionDisabled()
                                 #if os(iOS)
                                 .textInputAutocapitalization(.never)
                                 #endif
+                                .focused($memberFocused)
                                 .submitLabel(.done).onSubmit(addMember)
                                 .accessibilityLabel("Exact username")
                             Button("Invite", action: addMember).buttonStyle(CaperSecondaryButton())
-                                .disabled(WorkspaceValidation.usernameError(username) != nil)
-                        }.disabled(pending)
+                                .disabled(pending || WorkspaceValidation.usernameError(username) != nil)
+                        }
                         ForEach(model.detail?.members ?? []) { member in
                             HStack { Avatar(name: member.displayName, size: 30, avatarID: member.avatarId); VStack(alignment: .leading) { Text(member.displayName); Text("@\(member.username)\(member.owner ? " · Owner" : "")").foregroundStyle(CaperTheme.muted) }; Spacer(); if !member.owner { Button("Remove") { run { try await model.removeSpaceMember(member) } } } }.font(CaperTheme.font(12))
                         }
                         Text("Pending invitations  \(model.pendingMembers.count)").font(CaperTheme.font(14, weight: .bold))
                         ForEach(model.pendingMembers) { member in
-                            HStack { Avatar(name: member.displayName, size: 30); VStack(alignment: .leading) { Text(member.displayName); Text("@\(member.username)").foregroundStyle(CaperTheme.muted) }; Spacer(); Button("Cancel") { run { try await model.cancelSpaceInvitation(member) } } }.font(CaperTheme.font(12))
+                            HStack { Avatar(name: member.displayName, size: 30, avatarID: member.avatarId); VStack(alignment: .leading) { Text(member.displayName); Text("@\(member.username)").foregroundStyle(CaperTheme.muted) }; Spacer(); Button("Cancel") { run { try await model.cancelSpaceInvitation(member) } } }.font(CaperTheme.font(12))
                         }
                         Divider().overlay(CaperTheme.border)
                         Text("Delete space").font(CaperTheme.font(14, weight: .bold))
@@ -4109,8 +4172,10 @@ private struct SpaceEditor: View {
                     if let error { Text(error).font(CaperTheme.font(12)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)) }
                 }.padding(22)
             }.scrollDismissesKeyboard(.interactively).accessibilityIdentifier("space-settings-scroll")
-        }.background(CaperTheme.surface).onAppear { name = managing ? model.detail?.space.name ?? "" : "" }
-        .task(id: model.detail?.space.id) { if managing { do { try await model.loadSpaceInvitations() } catch { self.error = error.localizedDescription } } }
+        }.background(CaperTheme.surface).onAppear { name = managing ? model.detail?.space.name ?? "" : ""; if !managing { nameFocused = true } }
+        .onChange(of: pending) { _, running in if !running && refocusMember { refocusMember = false; memberFocused = true } }
+        .interactiveDismissDisabled(creating).preference(key: DialogDismissDisabled.self, value: creating)
+        .task(id: model.detail?.space.id) { if managing { do { try await model.loadSpaceInvitations() } catch { self.error = FriendlyError.message(for: error) } } }
         .sheet(isPresented: $confirmDelete) {
             ConfirmationSheet(title: "Delete space", detail: "Delete \(model.detail?.space.name ?? name) for everyone? All its channels and their messages will disappear from the space. This cannot be undone.", action: "Delete space", close: { confirmDelete = false }) {
                 try await model.deleteCurrentSpace()
@@ -4123,9 +4188,11 @@ private struct SpaceEditor: View {
     private func addMember() {
         guard !pending, WorkspaceValidation.usernameError(username) == nil else { return }
         let submitted = username
-        run { try await model.addSpaceMember(username: submitted); username = "" }
+        refocusMember = true
+        // Keep anything typed while the invite was sent.
+        run { try await model.addSpaceMember(username: submitted); if username == submitted { username = "" } }
     }
-    private func run(_ action: @escaping () async throws -> Void) { guard !pending else { return }; pending = true; error = nil; Task { do { try await action() } catch { self.error = error.localizedDescription }; pending = false } }
+    private func run(_ action: @escaping () async throws -> Void) { guard !pending else { return }; pending = true; error = nil; Task { do { try await action() } catch { self.error = FriendlyError.message(for: error) }; pending = false } }
 }
 
 private struct ChannelEditor: View {
@@ -4137,10 +4204,15 @@ private struct ChannelEditor: View {
     @State private var memberError: String?
     @State private var loadingMembers = false
     @FocusState private var nameFocused: Bool
+    @FocusState private var memberFocused: Bool
+    /// An invite finished: return focus to the field so several people can be invited in a row.
+    @State private var refocusMember = false
     private var dirty: Bool { channel.map { name != $0.name || privateChannel != $0.private } ?? false }
+    /// Creating can still navigate when it completes, so the sheet stays until then.
+    private var creating: Bool { channel == nil && pending }
     var body: some View {
         VStack(spacing: 0) {
-            SheetHeader(title: channel == nil ? "Create a channel" : "Overview", close: close)
+            SheetHeader(title: channel == nil ? "Create a channel" : "Overview", closeDisabled: creating, close: close)
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     VStack(alignment: .leading, spacing: 7) {
@@ -4149,6 +4221,7 @@ private struct ChannelEditor: View {
                             if channel == nil { CaperIcon(name: privateChannel ? "lock" : "hash", size: 16).foregroundStyle(CaperTheme.muted) }
                             TextField("project-updates", text: Binding(get: { name }, set: { name = WorkspaceValidation.normalizeChannelName($0) }))
                                 .focused($nameFocused).onSubmit(submit)
+                                .onChange(of: name) { _, _ in error = nil }
                         }.textFieldStyle(CaperTextFieldStyle())
                     }
                     if channel == nil {
@@ -4160,9 +4233,9 @@ private struct ChannelEditor: View {
                     if channel == nil {
                         HStack {
                             Spacer()
-                            Button("Cancel", action: close).buttonStyle(CaperSecondaryButton()).keyboardShortcut(.cancelAction)
-                            Button(pending ? "Saving…" : "Create channel", action: submit).buttonStyle(CaperPrimaryButton()).frame(width: 160)
-                                .disabled(pending).keyboardShortcut(.defaultAction)
+                            Button("Cancel", action: close).buttonStyle(CaperSecondaryButton()).disabled(pending).keyboardShortcut(.cancelAction)
+                            Button(pending ? "Creating…" : "Create channel", action: submit).buttonStyle(CaperPrimaryButton()).frame(width: 160)
+                                .disabled(pending || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).keyboardShortcut(.defaultAction)
                         }
                     }
                     if let channel, channel.private {
@@ -4173,18 +4246,20 @@ private struct ChannelEditor: View {
                             Text(membersError).foregroundStyle(.red)
                             Button("Retry loading members") { Task { await loadMembers(channel) } }.disabled(loadingMembers)
                         }
+                        // Not disabled while an invite is sent, so the field keeps focus; addMember ignores it until then.
                         HStack {
                             TextField("Exact username", text: Binding(get: { username }, set: { username = WorkspaceValidation.normalizeUsername($0) })).textFieldStyle(CaperTextFieldStyle())
                                 .autocorrectionDisabled()
                                 #if os(iOS)
                                 .textInputAutocapitalization(.never)
                                 #endif
+                                .focused($memberFocused)
                                 .submitLabel(.done).onSubmit { addMember(channel) }
                                 .accessibilityLabel("Exact username")
                             Button("Invite") { addMember(channel) }.buttonStyle(CaperSecondaryButton())
-                                .disabled(WorkspaceValidation.usernameError(username) != nil)
+                                .disabled(pending || WorkspaceValidation.usernameError(username) != nil)
                         }
-                            .disabled(pending || loadingMembers || membersError != nil)
+                            .disabled(loadingMembers || membersError != nil)
                         if let memberError { Text(memberError).font(CaperTheme.font(12)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)) }
                         ForEach(members) { member in
                             HStack {
@@ -4199,8 +4274,15 @@ private struct ChannelEditor: View {
                         }.disabled(pending || loadingMembers || membersError != nil)
                         Text("Pending invitations  \(invitations.count)").font(CaperTheme.font(14, weight: .bold))
                         ForEach(invitations) { member in
-                            HStack { Text("\(member.displayName) (@\(member.username))"); Spacer(); Button("Cancel") { run { try await model.removeChannelMember(channel, member: member); invitations.removeAll { $0.id == member.id } } } }
-                                .font(CaperTheme.font(12))
+                            HStack {
+                                Avatar(name: member.displayName, size: 30, avatarID: member.avatarId)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(member.displayName).font(CaperTheme.font(12, weight: .bold))
+                                    Text("@\(member.username)").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                                }
+                                Spacer()
+                                Button("Cancel") { run { try await model.removeChannelMember(channel, member: member); invitations.removeAll { $0.id == member.id } } }
+                            }.font(CaperTheme.font(12))
                         }.disabled(pending || loadingMembers || membersError != nil)
                     }
                     if channel != nil {
@@ -4225,6 +4307,8 @@ private struct ChannelEditor: View {
                 if dirty { saveBar } else { saveBar.hidden().allowsHitTesting(false) }
             }
         }.background(CaperTheme.surface).onAppear { name = channel?.name ?? ""; privateChannel = channel?.private ?? false; if channel == nil { nameFocused = true } }
+        .onChange(of: pending) { _, running in if !running && refocusMember { refocusMember = false; memberFocused = true } }
+        .interactiveDismissDisabled(creating).preference(key: DialogDismissDisabled.self, value: creating)
         .task(id: channel?.private) { if let channel, channel.private { await loadMembers(channel) } }
         .sheet(isPresented: $confirmDelete) {
             if let channel {
@@ -4243,6 +4327,8 @@ private struct ChannelEditor: View {
             guard dirty else { return }
             run { let updated = try await model.updateChannel(existing, name: name, privateChannel: privateChannel); channel = updated; name = updated.name; privateChannel = updated.private }
         } else {
+            // Return does nothing until there is a name, as the disabled Create channel button.
+            guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             run {
                 let created = try await model.createChannel(name: name, privateChannel: privateChannel)
                 // Web opens a new private channel's overview so people can be added.
@@ -4254,16 +4340,19 @@ private struct ChannelEditor: View {
         guard !pending, !loadingMembers, membersError == nil else { return }
         guard !username.isEmpty else { memberError = "Enter an exact username."; return }
         memberError = nil
-        run { let member = try await model.addChannelMember(channel, username: username); invitations.removeAll { $0.id == member.id }; invitations.append(member); username = "" }
+        let submitted = username
+        refocusMember = true
+        // Keep anything typed while the invite was sent.
+        run { let member = try await model.addChannelMember(channel, username: submitted); invitations.removeAll { $0.id == member.id }; invitations.append(member); if username == submitted { username = "" } }
     }
     private func loadMembers(_ channel: Channel) async {
         guard !loadingMembers else { return }
         loadingMembers = true; membersError = nil
         defer { loadingMembers = false }
         do { members = try await model.channelMembers(channel); invitations = try await model.channelInvitations(channel) }
-        catch { membersError = error.localizedDescription }
+        catch { membersError = FriendlyError.message(for: error) }
     }
-    private func run(_ action: @escaping () async throws -> Void) { pending = true; error = nil; Task { do { try await action() } catch { self.error = error.localizedDescription }; pending = false } }
+    private func run(_ action: @escaping () async throws -> Void) { pending = true; error = nil; Task { do { try await action() } catch { self.error = FriendlyError.message(for: error) }; pending = false } }
 }
 
 private struct DialogDismissDisabled: PreferenceKey {
@@ -4272,9 +4361,12 @@ private struct DialogDismissDisabled: PreferenceKey {
 }
 
 private struct ConfirmationSheet: View {
-    let title: String; let detail: String; let action: String; let close: () -> Void; let perform: () async throws -> Void
+    let title: String; let detail: String; let action: String
+    /// The action's label while it runs, e.g. "Leaving…"; deletes default to "Deleting…".
+    var pendingLabel: String? = nil
+    let close: () -> Void; let perform: () async throws -> Void
     @State private var pending = false; @State private var error: String?
-    var body: some View { VStack(spacing: 0) { SheetHeader(title: title, detail: detail, close: { if !pending { close() } }); ScrollView { VStack(spacing: 16) { if let error { Text(error).foregroundStyle(.red) }; HStack { Button("Cancel", action: close).disabled(pending).keyboardShortcut(.cancelAction); Button(pending ? (action.hasPrefix("Delete") ? "Deleting…" : "Saving…") : action, role: .destructive) { guard !pending else { return }; pending = true; error = nil; Task { do { try await perform(); close() } catch { self.error = error.localizedDescription }; pending = false } }.disabled(pending).accessibilityIdentifier("confirm-destructive-action") } }.padding(22) } }.background(CaperTheme.surface).interactiveDismissDisabled(pending).preference(key: DialogDismissDisabled.self, value: pending) }
+    var body: some View { VStack(spacing: 0) { SheetHeader(title: title, detail: detail, closeDisabled: pending, close: { if !pending { close() } }); ScrollView { VStack(spacing: 16) { if let error { Text(error).foregroundStyle(.red) }; HStack { Button("Cancel", action: close).disabled(pending).keyboardShortcut(.cancelAction); Button(pending ? (pendingLabel ?? (action.hasPrefix("Delete") ? "Deleting…" : "Saving…")) : action, role: .destructive) { guard !pending else { return }; pending = true; error = nil; Task { do { try await perform(); close() } catch { self.error = FriendlyError.message(for: error) }; pending = false } }.disabled(pending).accessibilityIdentifier("confirm-destructive-action") } }.padding(22) } }.background(CaperTheme.surface).interactiveDismissDisabled(pending).preference(key: DialogDismissDisabled.self, value: pending) }
 }
 
 private struct ConfirmationPresentation: ViewModifier {

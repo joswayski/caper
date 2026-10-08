@@ -297,6 +297,7 @@ targets:
       - Tests/CaperCoreTests/MentionCardTests.swift
       - Tests/CaperCoreTests/MessageRequestsTests.swift
       - Tests/CaperCoreTests/NotificationSettingsTests.swift
+      - Tests/CaperCoreTests/FriendlyErrorTests.swift
     dependencies:
       - target: CaperCoreIOS
       - target: CaperRTCBridgeIOS

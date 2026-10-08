@@ -25,9 +25,16 @@ public final class AppModel {
     public var selectedDirectMessage: DirectMessageConversation? {
         selectedDirectMessageID.flatMap { id in directMessages.first { $0.id == id } }
     }
+    /// The person's own open/closed choice for the requests list; nil until they
+    /// toggle it. Web's `requestsOpen`.
+    public var messageRequestsOpen: Bool?
     /// The requests list is open: a pushed page on narrow layouts, an expanded
-    /// sidebar section otherwise.
-    public var showingMessageRequests = false
+    /// sidebar section otherwise. As on web, it follows the view (open while an
+    /// incoming request is shown) until the person toggles it; their choice wins.
+    public var showingMessageRequests: Bool {
+        get { messageRequestsOpen ?? (selectedDirectMessage?.status == .incoming) }
+        set { messageRequestsOpen = newValue }
+    }
     /// Accounts you blocked, newest first, and their ids for every timeline.
     public private(set) var blockedAccounts: [BlockedAccount] = []
     public private(set) var blockedIDs: Set<String> = []
@@ -150,7 +157,7 @@ public final class AppModel {
             if phase == .ready { await loadSpaces(); startDirectMessageRefresh() }
         } catch {
             guard generation == attempt else { return }
-            self.error = error.localizedDescription; phase = .signedOut
+            self.error = FriendlyError.message(for: error); phase = .signedOut
         }
     }
 
@@ -233,7 +240,7 @@ public final class AppModel {
         voice.leaveImmediately()
         directMessageRefreshTask?.cancel(); directMessageRefreshTask = nil
         account = nil; spaces = []; invitations = []; pendingMembers = []; detail = nil
-        directMessages = []; directMessagesError = nil; selectedDirectMessageID = nil; people = nil; showingMessageRequests = false
+        directMessages = []; directMessagesError = nil; selectedDirectMessageID = nil; people = nil; messageRequestsOpen = nil
         blockedAccounts = []; blockedIDs = []; blocksLoaded = false; blocksError = nil
         directMessagePrivacy = nil; privacyError = nil; chat.setBlockedAuthors([])
         clearNotificationState()
@@ -248,7 +255,7 @@ public final class AppModel {
         await chat.stop()
         await presence.stop()
         await voicePresence.stop()
-        do { try await revoke } catch { self.error = error.localizedDescription }
+        do { try await revoke } catch { self.error = FriendlyError.message(for: error) }
     }
 
     public func loadSpaces() async {
@@ -259,7 +266,7 @@ public final class AppModel {
             let response: SpacesResponse
             do { response = try await self.api.spaces() }
             catch {
-                if self.generation == attempt { self.spacesError = error.localizedDescription }
+                if self.generation == attempt { self.spacesError = FriendlyError.message(for: error) }
                 throw error
             }
             guard self.generation == attempt else { return }
@@ -326,7 +333,7 @@ public final class AppModel {
             }
         } catch is CancellationError {} catch {
             guard generation == attempt else { return }
-            directMessagesError = error.localizedDescription
+            directMessagesError = FriendlyError.message(for: error)
         }
     }
 
@@ -359,7 +366,7 @@ public final class AppModel {
             else { directMessages.append(conversation) }
             if navigationGeneration == navigation { await select(directMessage: conversation) }
             return generation == attempt
-        } catch { if generation == attempt { self.error = error.localizedDescription }; return false }
+        } catch { if generation == attempt { self.error = FriendlyError.message(for: error) }; return false }
     }
 
     /// Opens the account's notes conversation, creating it through the normal DM
@@ -397,7 +404,7 @@ public final class AppModel {
             else { await chat.open(history: history, displayName: account?.displayName ?? "") }
             guard generation == attempt, navigationGeneration == navigation else { return }
             markSelectedDirectRead()
-        } catch { if generation == attempt, navigationGeneration == navigation { navigationError = error.localizedDescription } }
+        } catch { if generation == attempt, navigationGeneration == navigation { navigationError = FriendlyError.message(for: error) } }
     }
 
     public func openDirectMessage(id: String) async {
@@ -426,7 +433,8 @@ public final class AppModel {
         let accepted = try await api.acceptDirectMessage(id: conversation.id)
         guard generation == attempt else { return }
         replaceDirectMessage(accepted)
-        if messageRequests.isEmpty { showingMessageRequests = false }
+        // Closed with none left; the next request opened follows the view again.
+        if messageRequests.isEmpty { messageRequestsOpen = nil }
         if selectedDirectMessageID == conversation.id { await select(directMessage: accepted) }
     }
 
@@ -478,7 +486,7 @@ public final class AppModel {
             blockedAccounts = blocks; blockedIDs = Set(blocks.map(\.id)); blocksLoaded = true; blocksError = nil
             chat.setBlockedAuthors(blockedIDs)
         } catch is CancellationError {} catch {
-            if generation == attempt { blocksError = error.localizedDescription }
+            if generation == attempt { blocksError = FriendlyError.message(for: error) }
         }
     }
 
@@ -490,7 +498,7 @@ public final class AppModel {
             guard generation == attempt else { return }
             directMessagePrivacy = settings.directMessages; privacyError = nil
         } catch is CancellationError {} catch {
-            if generation == attempt { privacyError = error.localizedDescription }
+            if generation == attempt { privacyError = FriendlyError.message(for: error) }
         }
     }
 
@@ -506,7 +514,7 @@ public final class AppModel {
             directMessagePrivacy = settings.directMessages
         } catch {
             guard generation == attempt else { return }
-            directMessagePrivacy = previous; privacyError = error.localizedDescription
+            directMessagePrivacy = previous; privacyError = FriendlyError.message(for: error)
         }
     }
 
@@ -519,7 +527,7 @@ public final class AppModel {
     /// requests, or to the DM list when none are left.
     private func leaveRequest() async {
         selectedDirectMessageID = nil
-        showingMessageRequests = !messageRequests.isEmpty
+        messageRequestsOpen = messageRequests.isEmpty ? nil : true
         if let space = detail?.space, detail?.channels.contains(where: \.joined) == true {
             await navigate(space: space, channelID: nil)
         } else {
@@ -709,7 +717,7 @@ public final class AppModel {
         } catch {
             guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
             let missingSpace = (error as? APIError)?.status == 404 && !spaceVerified
-            navigationError = missingSpace ? "This space is no longer available." : error.localizedDescription
+            navigationError = missingSpace ? "This space is no longer available." : FriendlyError.message(for: error)
             if missingSpace {
                 spaces.removeAll { $0.id == space.id }
                 invitations.removeAll { $0.id == space.id }
@@ -1137,7 +1145,7 @@ public final class AppModel {
         } catch {
             guard voiceJoinGeneration == joinAttempt, generation == accountGeneration else { return }
             voicePresence.revoke(channelID: channel.id)
-            navigationError = error.localizedDescription
+            navigationError = FriendlyError.message(for: error)
         }
     }
 
@@ -1159,7 +1167,7 @@ public final class AppModel {
         do { try await operation() }
         catch {
             guard expectedGeneration == nil || generation == expectedGeneration else { return }
-            self.error = error.localizedDescription
+            self.error = FriendlyError.message(for: error)
         }
         if expectedGeneration == nil || generation == expectedGeneration { busy = false }
     }
@@ -1461,7 +1469,7 @@ public final class ChatModel {
 
     /// Blocks from a message action; a failure shows as the conversation error.
     public func block(_ target: BlockTarget) async {
-        do { try await blockAccount?(target) } catch { self.error = error.localizedDescription }
+        do { try await blockAccount?(target) } catch { self.error = FriendlyError.message(for: error) }
     }
 
     func canEdit(_ message: ChatMessage) -> Bool {

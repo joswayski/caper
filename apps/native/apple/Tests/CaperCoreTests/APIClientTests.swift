@@ -1886,7 +1886,7 @@ final class APIClientTests: XCTestCase {
 
         await model.refreshDirectMessages()
         XCTAssertEqual(model.directMessages, [previous], "a failed refresh keeps the last list")
-        XCTAssertEqual(model.directMessagesError, URLError(.cannotFindHost).localizedDescription)
+        XCTAssertEqual(model.directMessagesError, "Couldn’t reach Caper. Check your connection.", "network failures read as web's sentence")
         XCTAssertEqual(model.error, "Your profile could not be saved.", "DM failures must not replace operation errors")
 
         failure = false
@@ -1905,6 +1905,29 @@ final class APIClientTests: XCTestCase {
         XCTAssertTrue(model.directMessages.isEmpty)
         XCTAssertNil(model.directMessagesError, "an empty successful list also clears the error")
         XCTAssertEqual(model.error, "Your profile could not be saved.")
+    }
+
+    /// Web's `requestsOpen ?? viewingRequest`: the section follows the open
+    /// request until the person toggles it, and their choice wins.
+    @MainActor
+    func testMessageRequestsFollowTheOpenRequestUntilToggled() {
+        let model = AppModel(api: client())
+        let request = DirectMessageConversation(id: "dm0000000003", peer: DirectMessagePeer(id: "peer", username: "jordan", displayName: "Jordan"),
+                                                lastSeq: "1", readSeq: "0", status: .incoming)
+        let accepted = DirectMessageConversation(id: "dm0000000001", peer: DirectMessagePeer(id: "maya", username: "maya", displayName: "Maya"),
+                                                 lastSeq: "1", readSeq: "0")
+        model.directMessages = [request, accepted]
+        XCTAssertFalse(model.showingMessageRequests, "closed by default")
+        model.selectedDirectMessageID = accepted.id
+        XCTAssertFalse(model.showingMessageRequests, "an accepted conversation leaves it closed")
+        model.selectedDirectMessageID = request.id
+        XCTAssertTrue(model.showingMessageRequests, "viewing a request opens it")
+        model.showingMessageRequests.toggle()
+        XCTAssertFalse(model.showingMessageRequests, "the toggle closes it while the request stays open")
+        XCTAssertEqual(model.selectedDirectMessageID, request.id)
+        model.selectedDirectMessageID = nil
+        model.showingMessageRequests.toggle()
+        XCTAssertTrue(model.showingMessageRequests, "an explicit choice wins over the view")
     }
 
     @MainActor
