@@ -476,6 +476,7 @@ async fn message_requests_blocks_and_privacy(pool: PgPool) {
         pool: pool.clone(),
         broker: redis::Client::open(std::env::var("CHAT_TEST_VALKEY_URL").unwrap()).unwrap(),
         wake: Arc::new(Notify::new()),
+        cdn: None,
     });
     let app = crate::app(state);
     let open = |from: &'static str, to: &'static str| {

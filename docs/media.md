@@ -860,7 +860,7 @@ from its own domain after checking a signature the API issued.
 
 ### Data model
 
-One `assets` row per logical file (`202610070001_assets.sql`), shared by future
+One `assets` row per logical file (`202610080001_assets.sql`), shared by future
 purposes such as avatars (`purpose`, today only `attachment`). An optional
 preview is a fixed derived object beside the original, not another row:
 
