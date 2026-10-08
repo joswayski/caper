@@ -647,7 +647,7 @@ private struct ChannelSidebar: View {
                         }
                     }
 
-                    if let error = model.error {
+                    if let error = model.error ?? model.directMessagesError {
                         Text(error).font(CaperTheme.font(11)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)).padding(8)
                     }
                     if (model.voice.phase == .connected || model.voice.phase == .reconnecting || !model.voice.participants.isEmpty),
