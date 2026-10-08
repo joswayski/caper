@@ -1543,6 +1543,50 @@ final class APIClientTests: XCTestCase {
     }
 
     @MainActor
+    func testPinnedReactionsStayCurrentOutsideHistoryAndAcrossDelayedPinSnapshots() async throws {
+        let channel = "Channel12345"
+        let messageID = "Message00000001"
+        MockURLProtocol.handler = { request in
+            guard request.url?.path == "/api/chat/session" else { throw URLError(.badURL) }
+            return (200, Data(#"{"token":"chat-secret","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+        }
+        for loaded in [false, true] {
+            let author = ChatAuthor(id: "other", name: "Other", isGuest: false)
+            var original = ChatMessage(id: messageID, channelId: channel, seq: "1", author: author,
+                                       content: ChatContent(version: 1, type: "text", text: "Pinned"), createdAt: "now",
+                                       clientMessageId: "client", reactions: [], reactionSeq: "1",
+                                       pin: MessagePin(author: author, createdAt: "now"), pinSeq: "2")
+            let chat = ChatModel(api: client())
+            await chat.open(history: ChatHistory(space: HistoryIdentity(id: "Space1234567", name: "Space"),
+                                                channel: HistoryIdentity(id: channel, name: "general"),
+                                                messages: loaded ? [original] : [], pinnedMessages: [original],
+                                                cursor: "10", hasMore: false), displayName: "Me")
+            chat.receive(["type": "message.reactions", "schemaVersion": 1, "channelId": channel, "seq": "11",
+                          "messageId": messageID, "reactions": [["emoji": "👍", "authorIds": ["alice", "bob"]]]],
+                         generation: 1, channelID: channel)
+            XCTAssertEqual(chat.pinnedMessages.first?.reactions, [MessageReaction(emoji: "👍", authorIds: ["alice", "bob"])])
+            original.pinSeq = "12"
+            chat.receive(["type": "message.pin", "schemaVersion": 1, "channelId": channel, "seq": "12",
+                          "message": try JSONSerialization.jsonObject(with: JSONEncoder().encode(original))],
+                         generation: 1, channelID: channel)
+            XCTAssertEqual(chat.pinnedMessages.first?.reactionSeq, "11")
+            chat.receive(["type": "message.reactions", "schemaVersion": 1, "channelId": channel, "seq": "13",
+                          "messageId": messageID, "reactions": []], generation: 1, channelID: channel)
+            original.pinSeq = "14"
+            original.reactionSeq = "11"
+            original.reactions = [MessageReaction(emoji: "👍", authorIds: ["alice", "bob"])]
+            chat.receive(["type": "message.pin", "schemaVersion": 1, "channelId": channel, "seq": "14",
+                          "message": try JSONSerialization.jsonObject(with: JSONEncoder().encode(original))],
+                         generation: 1, channelID: channel)
+            XCTAssertEqual(chat.pinnedMessages.first?.reactions, [])
+            XCTAssertEqual(chat.currentSnapshot()?.pinnedMessages.first?.reactionSeq, "13")
+            XCTAssertEqual(chat.messages.count, loaded ? 1 : 0, "pins must not create timeline rows")
+            XCTAssertEqual(chat.currentSnapshot()?.cursor, "14")
+            await chat.stop()
+        }
+    }
+
+    @MainActor
     func testReactionIsOptimisticAndGatewaySnapshotsPreservePendingOwnIntent() async throws {
         let channel = "chan00000001"
         let messageID = "Message00000001"

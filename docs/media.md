@@ -1381,6 +1381,14 @@ HTTP acknowledgements do not advance replay/read cursors. Reconnect replays
 mutations, and authoritative history clears pins removed while offline; stale
 acknowledgements/pages must not restore an unpin.
 
+The clients also merge reaction revisions into their separate pinned-message
+snapshots, including pins outside loaded history. A newer pin revision must not
+restore older reactions, and a no-op pin response can still carry newer reactions.
+October 8 regression checks cover these orderings in web and the Rust desktop
+model. Android helper and Apple model tests are included but were not run in the
+Linux orb (no Android SDK or Swift/Xcode); full native builds/device checks remain
+release validation. This client-only correction needs no server or schema change.
+
 Every history page includes complete `pinnedMessages`, newest pin first, captured
 under the same channel lock as its cursor. The pins collection is separate from
 the 50-message timeline page: an old pin must not enter that page or skip the

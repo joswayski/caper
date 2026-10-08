@@ -1100,6 +1100,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (update.channelId != mutable.value.selectedChannel?.id) return
         durableReplayCursor = replayCursorAfterReaction(durableReplayCursor, update, sequenced)
         if (sequenced && mutable.value.selectedDirectId == update.channelId) markDirectRead(update.channelId, update.seq)
+        pinSnapshots[update.messageId]?.let { pinSnapshots[update.messageId] = mergeReaction(it, update) }
+        mutable.value = mutable.value.copy(pinnedMessages = mutable.value.pinnedMessages.map { mergeReaction(it, update) })
         val index = mutable.value.messages.indexOfFirst { it.id == update.messageId }
         if (index < 0) {
             if (!cacheUnseenReaction(unloadedReactions, update)) {
@@ -1179,14 +1181,17 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (update.channelId != mutable.value.selectedChannel?.id) return
         durableReplayCursor = replayCursorAfterPin(durableReplayCursor, update, sequenced)
         if (sequenced && mutable.value.selectedDirectId == update.channelId) markDirectRead(update.channelId, update.seq)
+        update.message.reactionSeq?.let { seq ->
+            receiveReaction(ReactionUpdate("message.reactions", 1, update.channelId, seq, update.message.id, update.message.reactions), sequenced = false)
+        }
         if (pinSnapshotCursor?.let { update.seq.toBigInteger() <= it.toBigInteger() } == true) return
         val old = pinSnapshots[update.message.id]
-        val candidate = overlayEdit(update.message)
-        val merged = if (old == null) candidate else mergeEdit(mergePin(old, candidate), candidate)
+        val candidate = overlayReactions(overlayEdit(update.message))
+        val merged = if (old == null) candidate else mergeReaction(mergeEdit(mergePin(old, candidate), candidate), candidate)
         pinSnapshots[update.message.id] = merged
-        authoritativeReactionMessages[merged.id]?.let { authoritativeReactionMessages[merged.id] = mergeEdit(mergePin(it, merged), merged) }
+        authoritativeReactionMessages[merged.id]?.let { authoritativeReactionMessages[merged.id] = mergeReaction(mergeEdit(mergePin(it, merged), merged), merged) }
         mutable.value = mutable.value.copy(
-            messages = mutable.value.messages.map { if (it.id == merged.id) mergeEdit(mergePin(it, merged), merged) else it },
+            messages = mutable.value.messages.map { if (it.id == merged.id) mergeReaction(mergeEdit(mergePin(it, merged), merged), merged) else it },
             pinnedMessages = pinSnapshots.values.filter { it.pin != null }.sortedByDescending { it.pinSeq?.toBigIntegerOrNull() },
         )
     }
@@ -1220,10 +1225,17 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         listed.forEach { (id, message) ->
-            val candidate = overlayEdit(message)
-            pinSnapshots[id] = pinSnapshots[id]?.let { mergeEdit(mergePin(it, candidate), candidate) } ?: candidate
+            val candidate = overlayReactions(overlayEdit(message))
+            pinSnapshots[id] = pinSnapshots[id]?.let { mergeReaction(mergeEdit(mergePin(it, candidate), candidate), candidate) } ?: candidate
         }
         mutable.value = mutable.value.copy(pinnedMessages = pinSnapshots.values.filter { it.pin != null }.sortedByDescending { it.pinSeq?.toBigIntegerOrNull() })
+    }
+
+    private fun overlayReactions(message: ChatMessage): ChatMessage {
+        var current = message
+        val loaded = authoritativeReactionMessages[message.id] ?: mutable.value.messages.find { it.id == message.id }
+        for (snapshot in listOfNotNull(loaded, pinSnapshots[message.id])) current = mergeReaction(current, snapshot)
+        return unloadedReactions[message.id]?.let { mergeReaction(current, it) } ?: current
     }
 
     private fun overlayEdit(message: ChatMessage): ChatMessage {
@@ -1233,7 +1245,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun mergeTimelinePins(messages: List<ChatMessage>) = messages.map { message ->
-        val pinned = overlayEdit(overlayPin(message, pinSnapshots[message.id], pinSnapshotCursor))
+        val snapshot = pinSnapshots[message.id]
+        val reactions = snapshot?.let { mergeReaction(message, it) } ?: message
+        val pinned = overlayEdit(overlayPin(reactions, snapshot, pinSnapshotCursor))
         forwardSnapshots[message.id]?.let { mergeForward(pinned, it) } ?: pinned
     }
 

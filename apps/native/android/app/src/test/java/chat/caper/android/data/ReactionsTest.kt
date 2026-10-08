@@ -15,6 +15,22 @@ class ReactionsTest {
         assertSame(newest, mergeReaction(newest, update("8", listOf("b"))))
     }
 
+    @Test fun `pin payloads preserve independent newer reaction revisions`() {
+        val original = message.copy(pin = MessagePin(message.author, "now"), pinSeq = "4")
+        val reacted = mergeReaction(original, update("12", listOf("alice", "bob")))
+        val laterPin = original.copy(pinSeq = "13")
+        val merged = mergeReaction(mergePin(reacted, laterPin), laterPin)
+        assertEquals("13", merged.pinSeq)
+        assertEquals("12", merged.reactionSeq)
+        assertEquals(listOf("alice", "bob"), merged.reactions.single().authorIds)
+        assertEquals("12", mergeReaction(message, merged).reactionSeq)
+        val removed = reacted.copy(reactionSeq = "14", reactions = emptyList())
+        assertTrue(mergeReaction(laterPin, removed).reactions.isEmpty())
+        assertEquals("14", mergeReaction(laterPin, removed).reactionSeq)
+        assertSame(laterPin, mergeReaction(laterPin, removed.copy(id = "another")))
+        assertSame(laterPin, mergeReaction(laterPin, removed.copy(channelId = "another")))
+    }
+
     @Test fun `only sequenced reactions advance durable recovery cursor`() {
         assertEquals("7", replayCursorAfterReaction("5", update("7", listOf("a")), sequenced = true))
         assertEquals("5", replayCursorAfterReaction("5", update("9", listOf("a")), sequenced = false))
