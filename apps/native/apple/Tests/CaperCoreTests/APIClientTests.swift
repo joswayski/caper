@@ -357,6 +357,26 @@ final class APIClientTests: XCTestCase {
         XCTAssertNotNil(WorkspaceValidation.usernameError("ab"))
     }
 
+    func testInviteChecksAndWordingMatchWeb() {
+        let sam = Member(id: "member000003", username: "sam", displayName: "Sam", owner: false)
+        let kai = Member(id: "member000004", username: "kai", displayName: "Kai", owner: false)
+        XCTAssertEqual(WorkspaceValidation.invitationSent, "Invitation sent. They must accept before joining.")
+        XCTAssertEqual(WorkspaceValidation.inviteError(username: "sam", members: [sam], invited: [kai], channel: false),
+                       "This person is already in the space.")
+        XCTAssertEqual(WorkspaceValidation.inviteError(username: "sam", members: [sam], invited: [], channel: true),
+                       "This person already has access to this channel.")
+        XCTAssertEqual(WorkspaceValidation.inviteError(username: "kai", members: [sam], invited: [kai], channel: false),
+                       "This person already has a pending invitation.")
+        XCTAssertNil(WorkspaceValidation.inviteError(username: "alex", members: [sam], invited: [kai], channel: false))
+        XCTAssertEqual(WorkspaceValidation.memberMessage(APIError(status: 404, message: "user not found")),
+                       "User not found. Check the username and try again.")
+        XCTAssertEqual(WorkspaceValidation.memberMessage(APIError(status: 409, message: "user already invited")),
+                       "This person already has a pending invitation.")
+        XCTAssertEqual(WorkspaceValidation.memberMessage(APIError(status: 409, message: "user already in channel")),
+                       "This person already has access to this channel.")
+        XCTAssertEqual(WorkspaceValidation.memberMessage(APIError(status: 500, message: "Something else.")), "Something else.")
+    }
+
     @MainActor
     func testProfileEditPreservesConversationDraftAndRejectedSend() async throws {
         var historyRequests = 0
