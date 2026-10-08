@@ -7842,17 +7842,24 @@ impl CaperApp {
                         && self.pending.is_none()
                         && !self.loading
                     {
+                        let self_direct = self.selected_direct_conversation().is_some_and(|direct| {
+                            self.account.as_ref().is_some_and(|account| account.id == direct.peer.id)
+                        });
                         ui.centered_and_justified(|ui| {
                             ui.vertical_centered(|ui| {
-                                ui.label("No messages yet.");
-                                ui.label(
-                                    RichText::new(if self.selected_direct.is_some() {
-                                        "Only you and this person can read this conversation.".to_owned()
-                                    } else {
-                                        format!("Start the conversation in #{}.", self.channel_name())
-                                    })
-                                    .color(MUTED),
-                                );
+                                if self_direct {
+                                    ui.label(RichText::new("You can message yourself here to keep notes, reminders, and ideas.").color(MUTED));
+                                } else {
+                                    ui.label("No messages yet.");
+                                    ui.label(
+                                        RichText::new(if self.selected_direct.is_some() {
+                                            "Only you and this person can read this conversation.".to_owned()
+                                        } else {
+                                            format!("Start the conversation in #{}.", self.channel_name())
+                                        })
+                                        .color(MUTED),
+                                    );
+                                }
                             });
                         });
                     }
@@ -14597,8 +14604,26 @@ mod tests {
             .collect();
         assert!(texts.contains(&"Message TEST FIXTURE Maya"));
         assert!(texts.contains(&"Only you and this person can read this conversation."));
+        assert!(texts.contains(&"No messages yet."));
         assert!(!texts.contains(&"Message #general"));
         assert!(!texts.contains(&"Members"));
+
+        // The same display name is not enough: only the peer's account ID changes.
+        app.directs[0].peer.id = app.account.as_ref().unwrap().id.clone();
+        let output = render(&mut app, &context, vec![]);
+        let texts: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts.contains(&"You can message yourself here to keep notes, reminders, and ideas.")
+        );
+        assert!(!texts.contains(&"No messages yet."));
+        assert!(!texts.contains(&"Only you and this person can read this conversation."));
     }
 
     #[test]
