@@ -1628,6 +1628,49 @@ final class APIClientTests: XCTestCase {
     }
 
     @MainActor
+    func testPinnedReactionsProjectAndRollbackWithoutInsertingUnloadedHistory() async throws {
+        for loaded in [false, true] {
+            let channel = "chan00000001", messageID = "Message00000001"
+            let started = expectation(description: "pinned reaction started")
+            var held: MockURLProtocol?
+            MockURLProtocol.deferred = { request, urlRequest in
+                guard urlRequest.url?.path.hasSuffix("/reactions") == true else { return false }
+                held = request; started.fulfill(); return true
+            }
+            MockURLProtocol.handler = { request in
+                guard request.url?.path == "/api/chat/session" else { throw URLError(.badURL) }
+                return (200, Data(#"{"token":"chat-secret","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+            }
+            let author = ChatAuthor(id: "other", name: "Other", isGuest: false)
+            var pinned = ChatMessage(id: messageID, channelId: channel, seq: "1", author: author,
+                content: ChatContent(version: 1, type: "text", text: "Pinned"), createdAt: "now",
+                clientMessageId: "client", reactions: [], reactionSeq: "1")
+            pinned.pin = MessagePin(author: author, createdAt: "now"); pinned.pinSeq = "2"
+            let history = ChatHistory(space: HistoryIdentity(id: "space0000001", name: "Space"),
+                channel: HistoryIdentity(id: channel, name: "general"), messages: loaded ? [pinned] : [],
+                pinnedMessages: [pinned], cursor: "2", hasMore: true)
+            let chat = ChatModel(api: client())
+            await chat.open(history: history, displayName: "Me")
+            let saving = Task { await chat.setReaction(messageID: messageID, emoji: "👍", active: true) }
+            await fulfillment(of: [started], timeout: 2)
+            XCTAssertEqual(chat.pinnedMessages[0].reactions, [MessageReaction(emoji: "👍", authorIds: ["self"])])
+            XCTAssertEqual(chat.currentSnapshot()?.pinnedMessages[0].reactions, [], "cached pins exclude pending intents")
+            chat.receive(["type": "message.reactions", "schemaVersion": 1, "channelId": channel, "seq": "3",
+                "messageId": messageID, "reactions": [["emoji": "🎉", "authorIds": ["other"]]]],
+                generation: 1, channelID: channel)
+            XCTAssertEqual(chat.pinnedMessages[0].reactions, [MessageReaction(emoji: "🎉", authorIds: ["other"]),
+                MessageReaction(emoji: "👍", authorIds: ["self"])])
+            held?.respond(status: 503)
+            await saving.value
+            XCTAssertEqual(chat.pinnedMessages[0].reactions, [MessageReaction(emoji: "🎉", authorIds: ["other"])])
+            XCTAssertEqual(chat.messages.count, loaded ? 1 : 0)
+            XCTAssertEqual(chat.currentSnapshot()?.cursor, "3")
+            XCTAssertEqual(chat.pinnedMessages[0].pinSeq, "2")
+            await chat.stop()
+        }
+    }
+
+    @MainActor
     func testReactionFailureRollsBackAndRapidSupersedingIntentWins() async throws {
         let channel = "chan00000001"
         let messageID = "Message00000001"

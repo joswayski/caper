@@ -2224,8 +2224,7 @@ public final class ChatModel {
     private func applyPin(_ message: ChatMessage) {
         editSnapshots.seed(messages + pinnedMessages + [message])
         reactionSnapshots.seed([message])
-        renderReactions()
-        guard pinSnapshots.apply(message) else { return }
+        guard pinSnapshots.apply(message) else { renderReactions(); return }
         messages = messages.map { editSnapshots.overlay(pinSnapshots.overlay($0)) }
         pinnedMessages.removeAll { $0.id == message.id }
         let updated = forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay(message))))
@@ -2233,6 +2232,7 @@ public final class ChatModel {
             pinnedMessages.append(updated)
             pinnedMessages.sort { (try? Sequence.compare($0.pinSeq ?? "0", $1.pinSeq ?? "0")) == .orderedDescending }
         }
+        renderReactions()
     }
 
     private func applyReactions(_ event: MessageReactionsEvent) {
@@ -2241,9 +2241,8 @@ public final class ChatModel {
     }
 
     private func renderReactions() {
-        pinnedMessages = pinnedMessages.map { reactionSnapshots.overlay($0) }
         let authorID = session?.author.id
-        messages = messages.map { message in
+        let project: (ChatMessage) -> ChatMessage = { [self] message in
             var result = reactionSnapshots.overlay(message)
             guard let authorID, let pending = pendingReactions[message.id], !pending.isEmpty else { return result }
             var reactions = result.reactions ?? []
@@ -2260,6 +2259,8 @@ public final class ChatModel {
             result.reactions = reactions
             return result
         }
+        messages = messages.map(project)
+        pinnedMessages = pinnedMessages.map(project)
     }
 
     private func savePendingReactions(messageID: String, channelID: String, generation requestGeneration: Int) async {
