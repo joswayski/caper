@@ -831,17 +831,23 @@ final class CaperParityUITests: XCTestCase {
 
         let generalFrame = general.frame
         let voiceFrame = generalVoice.frame
+        #if os(macOS)
+        general.hover()
+        #endif
         let optionsFrame = app.descendants(matching: .any)["channel-options-chan00000001"].frame
         let stack = app.buttons["voice-stack-chan00000002"]
         XCTAssertEqual(stack.value as? String, "Collapsed", "Occupied rosters start collapsed")
         stack.tap()
         XCTAssertEqual(general.frame, generalFrame, "Expanding another roster must not move the channel name")
         XCTAssertEqual(generalVoice.frame, voiceFrame, "Expanding another roster must not move Join")
+        #if os(macOS)
+        general.hover()
+        #endif
         XCTAssertEqual(app.descendants(matching: .any)["channel-options-chan00000001"].frame, optionsFrame,
                        "Expanding another roster must not move the channel menu")
 
         let options = app.descendants(matching: .any)["channel-options-chan00000001"]
-        XCTAssertTrue(options.exists, "Owners have a permanent channel menu")
+        XCTAssertTrue(options.exists, "Hover reveals the channel menu; touch always shows it")
         options.tap()
         let settings = app.descendants(matching: .any)["Channel settings"].firstMatch
         XCTAssertTrue(settings.waitForExistence(timeout: 3))
@@ -857,6 +863,8 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Leave channel"].exists, "Leave must not appear in the chat header")
         #if os(iOS)
         app.buttons["Back to Browse"].tap()
+        #else
+        app.buttons["channel-chan00000002"].hover()
         #endif
         let options = app.descendants(matching: .any)["channel-options-chan00000002"]
         XCTAssertTrue(options.waitForExistence(timeout: 10))

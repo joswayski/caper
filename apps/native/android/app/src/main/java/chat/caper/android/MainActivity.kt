@@ -637,7 +637,7 @@ private fun Modifier.browseSwipe(open: Boolean, enabled: Boolean, onOpenChange: 
                             .clickable { viewModel.selectChannel(channel); closeNavigation?.invoke() }
                             .semantics { if (channelMuted) stateDescription = "Muted" }, verticalAlignment = Alignment.CenterVertically) {
                             Icon(if (channel.private) painterResource(R.drawable.lucide_lock_keyhole) else painterResource(R.drawable.lucide_hash), null, Modifier.size(17.dp), tint = if (selected) TerracottaBright else TextMuted)
-                            Spacer(Modifier.width(9.dp)); Text(channel.name, Modifier.weight(1f), color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Spacer(Modifier.width(6.dp)); Text(channel.name, Modifier.weight(1f), color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             if (ownMute) MutedBell(Modifier.padding(horizontal = 6.dp))
                             sessionStartedAt?.let { VoiceSessionTimer(it) }
                         }

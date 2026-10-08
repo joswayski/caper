@@ -460,7 +460,7 @@
   flex: 1;
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 6px;
   padding: 0 34px 0 9px;
   border: 0;
   border-radius: 6px;
@@ -673,15 +673,24 @@
 .direct-section .direct-line .direct-select {
   padding-right: 4px;
 }
-/* With a mouse the DM options button appears on hover or focus; touch always shows it. */
+/* Reserve the menu's space; reveal it on hover, keyboard focus or while open.
+   Touch always shows the action because there is no hover. */
 @media (min-width: 761px) and (hover: hover) and (pointer: fine) {
   .direct-menu .channel-manage {
     width: 28px;
     height: 28px;
   }
-  .direct-line:not(:hover, :focus-within) .direct-menu:not([open]) .channel-manage {
+  :is(.channel-line, .direct-line):not(:hover, :has(:focus-visible)) .channel-menu:not([open]) .channel-manage {
     opacity: 0;
   }
+}
+/* Quiet keyboard feedback, without the oversized orange sidebar rings. */
+.call-page :is(.people-panel, .space-rail) :is(button, summary):focus {
+  outline: none;
+}
+.call-page :is(.people-panel, .space-rail) :is(button, summary):focus-visible {
+  color: var(--text);
+  background: var(--border);
 }
 .space-sidebar-error {
   margin: 14px 5px;
