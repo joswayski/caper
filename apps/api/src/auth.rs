@@ -186,37 +186,24 @@ impl AuthVerifier {
         .await
         .map_err(database_unavailable)?;
 
-        let email_recent: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM public.auth_email_challenges
-             WHERE email = $1 AND created_at > now() - interval '15 minutes'",
-        )
-        .bind(&email)
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(database_unavailable)?;
-        let email_daily: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM public.auth_email_challenges
-             WHERE email = $1 AND created_at > now() - interval '24 hours'",
-        )
-        .bind(&email)
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(database_unavailable)?;
-        let ip_hourly: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM public.auth_email_challenges
-             WHERE request_ip_hash = $1 AND created_at > now() - interval '1 hour'",
-        )
-        .bind(&ip_hash)
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(database_unavailable)?;
-        let global_hourly: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM public.auth_email_challenges
-             WHERE created_at > now() - interval '1 hour'",
-        )
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(database_unavailable)?;
+        // One round trip while every sign-in request waits on the global lock.
+        let (email_recent, email_daily, ip_hourly, global_hourly): (i64, i64, i64, i64) =
+            sqlx::query_as(
+                "SELECT
+                    (SELECT count(*) FROM public.auth_email_challenges
+                     WHERE email = $1 AND created_at > now() - interval '15 minutes'),
+                    (SELECT count(*) FROM public.auth_email_challenges
+                     WHERE email = $1 AND created_at > now() - interval '24 hours'),
+                    (SELECT count(*) FROM public.auth_email_challenges
+                     WHERE request_ip_hash = $2 AND created_at > now() - interval '1 hour'),
+                    (SELECT count(*) FROM public.auth_email_challenges
+                     WHERE created_at > now() - interval '1 hour')",
+            )
+            .bind(&email)
+            .bind(&ip_hash)
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(database_unavailable)?;
 
         let id = Uuid::new_v4();
         if email_recent >= auth.limits.email_15m

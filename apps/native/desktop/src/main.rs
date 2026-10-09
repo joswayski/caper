@@ -150,6 +150,12 @@ impl MessageWindow {
     }
 }
 
+/// A block in either direction: a definitive refusal shown in place, never an
+/// expired session or lost access that closes the conversation.
+fn dm_refusal(code: Option<&str>) -> bool {
+    matches!(code, Some("dm_blocked" | "dm_not_accepted"))
+}
+
 fn permanent_send_rejection(status: Option<u16>) -> bool {
     matches!(status, Some(400 | 404 | 409 | 413 | 422))
 }
@@ -1928,7 +1934,10 @@ impl CaperApp {
                             self.send_next_reaction(&message);
                         }
                         Ok(_) => self.reload_channel(),
-                        Err(error) if matches!(error.status, Some(401 | 403 | 404)) => {
+                        Err(error)
+                            if matches!(error.status, Some(401 | 403 | 404))
+                                && !dm_refusal(error.code.as_deref()) =>
+                        {
                             self.pending_reactions.remove(&key);
                             self.clear_channel(&error.message);
                         }
@@ -1996,7 +2005,10 @@ impl CaperApp {
                             self.pin_errors.remove(&message);
                         }
                         Ok(_) => self.reload_channel(),
-                        Err(error) if matches!(error.status, Some(401 | 403 | 404)) => {
+                        Err(error)
+                            if matches!(error.status, Some(401 | 403 | 404))
+                                && !dm_refusal(error.code.as_deref()) =>
+                        {
                             self.clear_channel(&error.message)
                         }
                         Err(error) => {
@@ -2744,8 +2756,12 @@ impl CaperApp {
 
     fn selected_is_joined(&self) -> bool {
         if self.selected_direct.is_some() && self.selected_direct == self.selected_channel {
-            // An incoming request stays read-only until it is accepted.
-            return self.selected_request().is_none();
+            // An incoming request stays read-only until it is accepted. A block
+            // stops reactions, pins and edits too, as the server refuses them.
+            return self.selected_request().is_none()
+                && self
+                    .selected_direct_conversation()
+                    .is_none_or(|direct| !(direct.blocked || self.is_blocked(&direct.peer.id)));
         }
         self.selected_channel.as_ref().is_some_and(|id| {
             self.detail.as_ref().is_some_and(|detail| {
@@ -3535,12 +3551,7 @@ impl CaperApp {
                 }
             }
             // A block (either way) is a definitive rejection, not an expired session.
-            Err(error)
-                if matches!(
-                    error.code.as_deref(),
-                    Some("dm_blocked" | "dm_not_accepted")
-                ) =>
-            {
+            Err(error) if dm_refusal(error.code.as_deref()) => {
                 if let Some(pending) = &mut self.pending {
                     pending.sending = false;
                     pending.rejection = Some(error.message);
@@ -13399,9 +13410,14 @@ mod tests {
         let labels = texts(&output);
         assert!(labels.contains(&"You blocked @maya."), "{labels:?}");
         assert!(!labels.contains(&"Message TEST FIXTURE Maya"));
+        assert!(
+            !app.selected_is_joined(),
+            "a block stops reactions, pins and edits as well as sending"
+        );
         click(&mut app, &context, last_text_position(&output, "Unblock"));
         receive_until(&mut app, |app| !app.is_blocked("fixture-maya"));
         assert!(!app.directs[0].blocked);
+        assert!(app.selected_is_joined());
         let output = render(&mut app, &context, vec![]);
         assert!(texts(&output).contains(&"Message TEST FIXTURE Maya"));
         assert!(

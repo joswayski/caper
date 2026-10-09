@@ -2149,8 +2149,8 @@ private struct ChatView: View {
             #if os(iOS)
             .sheet(item: $reactionMessage) { message in
                 MessageActionsSheet(message: message, chat: chat, showingEmojiPicker: $showingEmojiPicker,
-                                    canReact: !chat.isPreview && chat.currentAuthor != nil,
-                                    canPin: !chat.isPreview && chat.currentAuthor != nil && !chat.pendingPins.contains(message.id),
+                                    canReact: chat.canInteract,
+                                    canPin: chat.canInteract && !chat.pendingPins.contains(message.id),
                                     togglePin: {
                                         reactionMessage = nil
                                         Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
@@ -2159,13 +2159,13 @@ private struct ChatView: View {
                                     canForward: chat.canForward,
                                     forward: { reactionMessage = nil; chat.forwardTarget = message },
                                     quickReaction: { emoji in
-                                        guard !chat.isPreview, let author = chat.currentAuthor,
+                                        guard chat.canInteract, let author = chat.currentAuthor,
                                               let current = chat.messages.first(where: { $0.id == message.id }) else { return }
                                         let own = current.reactions?.first(where: { $0.emoji == emoji })?.authorIds.contains(author.id) == true
                                         reactionMessage = nil
                                         Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: !own) }
                                     }, selectReaction: { emoji in
-                                        guard !chat.isPreview, chat.currentAuthor != nil else { return }
+                                        guard chat.canInteract else { return }
                                         reactionMessage = nil
                                         Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) }
                                     },
@@ -2358,8 +2358,8 @@ private struct NativeThreadView: View {
             .sheet(item: $reactionMessage) { message in
                 #if os(iOS)
                 MessageActionsSheet(message: message, chat: chat, showingEmojiPicker: $showingEmojiPicker,
-                    canReact: !chat.isPreview && chat.currentAuthor != nil,
-                    canPin: !chat.isPreview && chat.currentAuthor != nil && !chat.pendingPins.contains(message.id),
+                    canReact: chat.canInteract,
+                    canPin: chat.canInteract && !chat.pendingPins.contains(message.id),
                     togglePin: { reactionMessage = nil; Task { await chat.setPin(messageID: message.id, active: message.pin == nil) } },
                     reply: nil,
                     // Thread actions don't forward: the forward sheets belong to the conversation under this cover.
@@ -2532,7 +2532,7 @@ private struct MessageRow: View {
                     HStack(spacing: 8) {
                         Text(error)
                         Button("Retry") { Task { await chat.retryPin(messageID: message.id) } }
-                            .disabled(chat.isPreview || chat.currentAuthor == nil || chat.pendingPins.contains(message.id))
+                            .disabled(!chat.canInteract || chat.pendingPins.contains(message.id))
                     }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.terracottaBright)
                 }
                 if !inThread && (message.threadRootId != nil || (message.thread?.replyCount ?? 0) > 0) {
@@ -2555,7 +2555,7 @@ private struct MessageRow: View {
                     HStack(spacing: 8) {
                         Text(error)
                         Button("Retry") { Task { await chat.retryReaction(messageID: message.id) } }
-                            .disabled(chat.isPreview || chat.currentAuthor == nil)
+                            .disabled(!chat.canInteract)
                     }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.terracottaBright)
                 }
             }
@@ -2592,7 +2592,7 @@ private struct MessageRow: View {
                     }.buttonStyle(.plain).frame(width: 24, height: 24)
                         .focused($reactionFocused).accessibilityLabel("Add reaction")
                         .modifier(ControlHover(isFocused: reactionFocused))
-                        .disabled(chat.isPreview || chat.currentAuthor == nil)
+                        .disabled(!chat.canInteract)
                         .accessibilityIdentifier("add-reaction-\(message.id)")
                     Menu {
                         if chat.canForward { Button("Forward message") { chat.forwardTarget = message } }
@@ -2600,7 +2600,7 @@ private struct MessageRow: View {
                         if message.forward == nil && (message.revision ?? 1) > 1 { Button("View edit history") { history = true } }
                         Button(message.pin == nil ? "Pin message" : "Unpin message") {
                             Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
-                        }.disabled(chat.isPreview || chat.currentAuthor == nil || chat.pendingPins.contains(message.id))
+                        }.disabled(!chat.canInteract || chat.pendingPins.contains(message.id))
                         Button("Copy message") {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(message.content.text, forType: .string)
@@ -2631,7 +2631,7 @@ private struct MessageRow: View {
                 if message.forward == nil && (message.revision ?? 1) > 1 { Button("View edit history") { history = true } }
                 Button(message.pin == nil ? "Pin message" : "Unpin message") {
                     Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
-                }.disabled(chat.isPreview || chat.currentAuthor == nil || chat.pendingPins.contains(message.id))
+                }.disabled(!chat.canInteract || chat.pendingPins.contains(message.id))
                 Button("Copy message") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(message.content.text, forType: .string)
@@ -2940,7 +2940,7 @@ private struct ReactionChip: View {
         #else
         .modifier(ControlHover())
         #endif
-        .disabled(chat.isPreview || chat.currentAuthor == nil)
+        .disabled(!chat.canInteract)
         .accessibilityLabel("\(reaction.emoji) reaction, \(reaction.authorIds.count), \(own ? "selected by you" : "not selected by you")")
         .accessibilityAddTraits(own ? .isSelected : [])
         // Outside .disabled: read-only previews can still see who reacted.
@@ -3420,8 +3420,8 @@ private struct PinnedMessagesView: View {
             #if os(iOS)
             .sheet(item: $actionTarget) { message in
                 MessageActionsSheet(message: message, chat: chat, showingEmojiPicker: $showingEmojiPicker,
-                    canReact: !chat.isPreview && chat.currentAuthor != nil,
-                    canPin: !chat.isPreview && chat.currentAuthor != nil && !chat.pendingPins.contains(message.id),
+                    canReact: chat.canInteract,
+                    canPin: chat.canInteract && !chat.pendingPins.contains(message.id),
                     togglePin: { actionTarget = nil; Task { await chat.setPin(messageID: message.id, active: message.pin == nil) } },
                     reply: { actionTarget = nil; close(); Task { await chat.openThread(message.threadRootId ?? message.id) } },
                     canForward: chat.canForward, forward: { actionTarget = nil; close(); chat.forwardTarget = message },

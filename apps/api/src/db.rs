@@ -1,9 +1,11 @@
 use crate::RuntimeEnvironment;
 use sqlx::{
-    PgPool,
+    Connection, PgPool,
     postgres::{PgConnectOptions, PgPoolOptions, PgSslMode},
 };
 use std::{str::FromStr, time::Duration};
+
+const IDLE_PING_AFTER: Duration = Duration::from_secs(30);
 
 /// Migrates through the direct connection, then connects using the application role.
 ///
@@ -121,6 +123,18 @@ async fn connect(url: &str) -> Result<PgPool, String> {
     PgPoolOptions::new()
         .max_connections(5)
         .acquire_timeout(Duration::from_secs(10))
+        // SQLx already pings every connection as it returns to the pool, so a
+        // second ping on each checkout only adds a round trip per query. Keep
+        // the check for connections that sat idle long enough to have dropped.
+        .test_before_acquire(false)
+        .before_acquire(|connection, meta| {
+            Box::pin(async move {
+                if meta.idle_for >= IDLE_PING_AFTER {
+                    connection.ping().await?;
+                }
+                Ok(true)
+            })
+        })
         .connect_with(options)
         .await
         .map_err(|_| "failed to connect to DATABASE_URL".to_string())

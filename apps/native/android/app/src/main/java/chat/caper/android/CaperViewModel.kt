@@ -827,7 +827,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 } catch (error: Throwable) {
                     if (error is kotlinx.coroutines.CancellationException) throw error
                     if (request == generation) {
-                        if (error is ApiException && error.status in listOf(401, 403, 404)) revokeChannel()
+                        if (lostChannel(error)) revokeChannel()
                         else {
                             val current = reactionIntents[messageId]?.get(intent.emoji)
                             if (current?.version == intent.version) {
@@ -869,7 +869,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             } catch (error: Throwable) {
                 if (error is kotlinx.coroutines.CancellationException) throw error
                 if (request == generation) {
-                    if (error is ApiException && error.status in listOf(401, 403, 404)) revokeChannel()
+                    if (lostChannel(error)) revokeChannel()
                     else mutable.value = mutable.value.copy(pinSaves = mutable.value.pinSaves + (messageId to PinSaveUi(active, false, message(error))))
                 }
             } finally {
@@ -1066,6 +1066,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     if (error.code == DM_BLOCKED) { refreshBlocks(); refreshDirectConversations() }
                     return@launch
                 }
+                if (error is ApiException && error.status == 401) chatToken = null
                 if (error is ApiException) when (classifySendFailure(error.status)) {
                     SendFailure.REVOKED -> { pendingSends.definitiveFailure(operation.id); revokeChannel() }
                     SendFailure.DEFINITIVE -> {
@@ -1257,7 +1258,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
-    fun canEdit(message: ChatMessage): Boolean = message.forward == null && mutable.value.selectedChannel?.let { it.id == message.channelId && it.joined } == true &&
+    fun canEdit(message: ChatMessage): Boolean = message.forward == null && mutable.value.canParticipate &&
+        mutable.value.selectedChannel?.id == message.channelId &&
         chatAuthor?.let { !it.isGuest && it.id == message.author.id } == true
 
     suspend fun editMessage(message: ChatMessage, text: String): Unit {
@@ -1267,7 +1269,13 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val authorId = requireNotNull(chatAuthor).id
         mutable.value = mutable.value.copy(editIntents = mutable.value.editIntents + (message.id to EditIntentUi(text, message.revision)))
         try {
-            val result = api.editMessage(accountToken, requireNotNull(chatToken), message.channelId, message.id, text, message.revision)
+            val capability = chatToken ?: createChatSession(accountGeneration) ?: error("Chat session is unavailable.")
+            val result = try {
+                api.editMessage(accountToken, capability, message.channelId, message.id, text, message.revision)
+            } catch (error: ApiException) {
+                if (error.status == 401 && chatToken == capability) chatToken = null
+                throw error
+            }
             if (request != generation || !canEdit(message)) throw kotlinx.coroutines.CancellationException()
             require(result.author.id == authorId) { "Message author mismatch." }
             applyEditSnapshot(result)
@@ -1611,6 +1619,15 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         )
         gateway?.watchMedia(detail.channels.filter { it.joined }.take(24).map { it.id }, detail.space.demo)
         watchVisiblePresence()
+    }
+
+    /** Whether a chat request lost access to the open channel. A DM privacy or block refusal
+     * keeps the conversation with an inline error instead. Only a 401 means the chat session
+     * itself is invalid, so only it retires the session for the next action to replace. */
+    private fun lostChannel(error: Throwable): Boolean {
+        if (error !is ApiException || directMessageError(error.code) != null) return false
+        if (error.status == 401) chatToken = null
+        return error.status in listOf(401, 403, 404)
     }
 
     private fun revokeChannel() {
