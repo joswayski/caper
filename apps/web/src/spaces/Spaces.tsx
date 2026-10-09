@@ -25,6 +25,7 @@ import {
   X,
 } from "lucide-react";
 import { getAccount, normalizeUsername, usernameError, type Account } from "../account/client";
+import { watchBrowserNotifications } from "../account/browser-notifications";
 import { playSound, preloadSoundEffects } from "../audio/effects";
 import { ChatHistoryError } from "../chat/client";
 import Wordmark from "../components/Wordmark";
@@ -1671,6 +1672,11 @@ export default function Spaces({
   const [navigationOpen, showNavigation] = useState(false);
   // Where Browse is headed: it changes inside a slide's view transition, after the request.
   const navigationTarget = useRef(false);
+  const notificationConversation = useRef<string | undefined>(undefined);
+  notificationConversation.current = engaged && !navigationOpen ? (directId ?? view?.channelId) : undefined;
+  useEffect(() => {
+    if (account?.id) return watchBrowserNotifications(account.id, () => notificationConversation.current);
+  }, [account?.id]);
   const changeNavigation = useCallback((open: boolean) => {
     navigationTarget.current = open;
     showNavigation(open);

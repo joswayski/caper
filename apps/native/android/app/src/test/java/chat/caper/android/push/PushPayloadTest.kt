@@ -12,6 +12,7 @@ class PushPayloadTest {
         "body" to "Are you around?",
         "sender" to "Maya",
         "senderId" to "account00002",
+        "senderAvatarId" to "317",
     )
     private val channel = mapOf(
         "kind" to "channel.message",
@@ -35,6 +36,7 @@ class PushPayloadTest {
         assertEquals("Maya", payload.title)
         assertEquals("Maya", payload.sender)
         assertEquals("account00002", payload.senderId)
+        assertEquals(317, payload.senderAvatarId)
         assertEquals("Are you around?", payload.body)
         assertNull(payload.spaceId)
         assertNull(payload.channelId)
@@ -88,5 +90,15 @@ class PushPayloadTest {
         assertNull(PushPayload.parse(channel - "spaceId"))
         assertNull(PushPayload.parse(channel + ("channelId" to "bad")))
         assertNull(PushPayload.parse(mapOf("messageId" to "message00000001")))
+    }
+
+    @Test fun `missing or invalid avatars preserve text notifications`() {
+        for (value in listOf("-1", "800", "1.5", "avatar", "999999999999999")) {
+            val payload = requireNotNull(PushPayload.parse(direct + ("senderAvatarId" to value)))
+            assertNull(payload.senderAvatarId)
+            assertEquals("Are you around?", payload.body)
+        }
+        assertNull(PushPayload.parse(direct - "senderAvatarId")?.senderAvatarId)
+        for (index in listOf(0, 799)) assertEquals(index, PushPayload.parse(channel + ("senderAvatarId" to "$index"))?.senderAvatarId)
     }
 }

@@ -155,6 +155,7 @@ function initialState() {
     pushRequests: [],
     notificationSettings: new Map(),
     notificationOverrides: new Map(),
+    notificationEvents: [],
   };
 }
 
@@ -479,6 +480,31 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           messages.push(message);
           state.messages.set(channelId, messages);
           created(message);
+        }
+        if (body.notification) {
+          const channel = channelFor(body.notification.channelId ?? ids.design);
+          if (!channel) return reject(response, 404, "Fixture channel not found.");
+          const event = {
+            type: "notification.created",
+            seq: String(state.notificationEvents.length + 1),
+            messageId: randomUUID().replaceAll("-", "").slice(0, 15),
+            kind: "channel.message",
+            title: `TEST FIXTURE — Alex · #${channel.name}`,
+            body: `TEST FIXTURE — ${body.notification.text ?? "A message in another conversation."}`,
+            sender: "Alex",
+            senderId: ids.other,
+            senderAvatarId: 799,
+            createdAt: new Date().toISOString(),
+            spaceId: channel.spaceId,
+            channelId: channel.id,
+          };
+          state.notificationEvents.push(event);
+          for (const client of sockets)
+            for (const [id, sub] of client.subscriptions)
+              if (sub.kind === "notifications" && client.userId === ids.owner) {
+                client.send({ type: "event", id, event });
+                client.send({ type: "event", id, event: { type: "ready", cursor: event.seq } });
+              }
         }
         if (body.messageRequest) {
           // Jordan, who shares no space with the owner, sends a request.
@@ -1442,6 +1468,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
     );
     const client = {
       socket,
+      userId: identity(request)?.id,
       subscriptions: new Map(),
       send: (value) => {
         if (!socket.destroyed) socket.write(socketFrame(value));
@@ -1507,6 +1534,18 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             id: frame.id,
             event: state.media.get(channelId) ?? { type: "snapshot", revision: 0, participants: [] },
           });
+        } else if (frame.kind === "notifications") {
+          if (!client.userId)
+            return client.send({ type: "error", id: frame.id, status: 401, error: "account required" });
+          const cursor = String(state.notificationEvents.length);
+          const after = frame.after ?? cursor;
+          if (!/^(0|[1-9]\d*)$/.test(after) || BigInt(after) > BigInt(cursor))
+            return client.send({ type: "error", id: frame.id, status: 400, error: "invalid subscription" });
+          client.subscriptions.set(frame.id, frame);
+          if (client.userId === ids.owner)
+            for (const event of state.notificationEvents.filter((event) => BigInt(event.seq) > BigInt(after)))
+              client.send({ type: "event", id: frame.id, event });
+          client.send({ type: "event", id: frame.id, event: { type: "ready", cursor } });
         } else return client.send({ type: "error", id: frame.id, status: 400, error: "invalid subscription" });
         client.send({ type: "subscribed", id: frame.id });
       } else if (frame.type === "unsubscribe") client.subscriptions.delete(frame.id);

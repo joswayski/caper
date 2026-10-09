@@ -44,7 +44,8 @@
   cursor: wait;
   opacity: 0.7;
 }
-.privacy-settings input[type="radio"] {
+.privacy-settings input[type="radio"],
+.privacy-settings input[type="checkbox"] {
   flex: 0 0 auto;
   margin: 0;
   accent-color: var(--terracotta);
@@ -154,4 +155,16 @@
   color: var(--text-muted);
   font-size: 0.78rem;
   font-weight: 650;
+}
+.privacy-notification-enable {
+  justify-self: start;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
 }

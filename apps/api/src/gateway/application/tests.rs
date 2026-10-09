@@ -577,3 +577,167 @@ async fn multiplexed_presence_commands_and_cross_gateway_handoff() {
         .await
         .unwrap();
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
+async fn account_notifications_skip_history_replay_gaps_and_recheck_private_access(
+    pool: sqlx::PgPool,
+) {
+    let mut users = Vec::new();
+    for name in ["sender", "recipient", "unrelated"] {
+        let external = crate::auth::random_id(12);
+        let id: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name,avatar_id) VALUES($1,$2,$2,317) RETURNING id")
+            .bind(external).bind(name).fetch_one(&pool).await.unwrap();
+        let token = Uuid::new_v4().to_string();
+        let hash = Sha256::digest(token.as_bytes()).to_vec();
+        sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 hour')")
+            .bind(&hash).bind(id).execute(&pool).await.unwrap();
+        users.push((id, token, hash));
+    }
+    let sender = users[0].0;
+    let recipient = users[1].0;
+    let space: i64 = sqlx::query_scalar(
+        "INSERT INTO public.spaces(external_id,name,owner_id) VALUES($1,'Studio',$2) RETURNING id",
+    )
+    .bind(crate::auth::random_id(12))
+    .bind(sender)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let external = crate::auth::random_id(12);
+    let channel: i64 = sqlx::query_scalar("INSERT INTO public.channels(external_id,space_id,name,private) VALUES($1,$2,'private',true) RETURNING id")
+        .bind(&external).bind(space).fetch_one(&pool).await.unwrap();
+    for user in [sender, recipient] {
+        sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+            .bind(space)
+            .bind(user)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) VALUES($1,$2)")
+            .bind(channel)
+            .bind(user)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    sqlx::query("INSERT INTO public.channel_members(channel_id,user_id) VALUES($1,$2)")
+        .bind(channel)
+        .bind(recipient)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let session: i64 = sqlx::query_scalar("INSERT INTO public.chat_sessions(external_id,token_hash,user_id,name,account_session_hash) VALUES($1,$2,$3,'Sender',$4) RETURNING id")
+        .bind(crate::auth::random_id(12)).bind(Sha256::digest(b"notification-test-chat").to_vec()).bind(sender).bind(&users[0].2).fetch_one(&pool).await.unwrap();
+    let insert = |seq: i64, user: i64| {
+        let pool = pool.clone();
+        async move {
+            let message: i64 = sqlx::query_scalar("INSERT INTO public.messages(external_id,channel_id,session_id,client_message_id,request_hash,channel_seq,payload) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id")
+                .bind(crate::auth::random_id(15)).bind(channel).bind(session).bind(Uuid::new_v4()).bind(vec![1u8]).bind(seq)
+                .bind(json!({"content":{"version":1,"type":"text","text":"private preview"}})).fetch_one(&pool).await.unwrap();
+            sqlx::query_scalar::<_, i64>("INSERT INTO public.notifications(user_id,kind,message_id,channel_id,space_id,actor_id) VALUES($1,'channel.message',$2,$3,$4,$5) RETURNING id")
+                .bind(user).bind(message).bind(channel).bind(space).bind(sender).fetch_one(&pool).await.unwrap()
+        }
+    };
+    let historical = insert(1, recipient).await;
+    insert(2, users[2].0).await; // Global IDs are deliberately not contiguous per account.
+    let broker = redis::Client::open(std::env::var("CHAT_TEST_VALKEY_URL").unwrap()).unwrap();
+    let chat = Chat::new(pool.clone(), broker.clone());
+    let mut state = AppState::with_database(
+        Config::test(false),
+        Arc::new(Cloudflare::new()),
+        Some(pool.clone()),
+    );
+    state.chat = Some(chat.clone());
+    let mut gateway = Gateway::new(chat.clone());
+    gateway.application = Arc::new(Application {
+        state: Some(state),
+        presence: Some(
+            Presence::new(&broker, Duration::from_secs(600))
+                .await
+                .unwrap(),
+        ),
+        broker: Mutex::new(Some(Application::connect(&chat).await.unwrap())),
+        idle_seconds: 600,
+        ..Application::default()
+    });
+    gateway.start();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(axum::serve(listener, super::super::router(gateway)).into_future());
+    let mut socket = connect(address, &users[1].1).await;
+    transmit(
+        &mut socket,
+        json!({"type":"subscribe","kind":"notifications","id":"alerts"}),
+    )
+    .await;
+    assert_eq!(
+        next(&mut socket, "event", Some("alerts")).await["event"],
+        json!({"type":"ready","cursor":historical.to_string()})
+    );
+    next(&mut socket, "subscribed", Some("alerts")).await;
+    transmit(&mut socket, json!({"type":"subscribe","kind":"notifications","id":"other","userIds":[users[0].0.to_string()]})).await;
+    assert_eq!(
+        next(&mut socket, "error", Some("other")).await["status"],
+        400
+    );
+    let live = insert(3, recipient).await;
+    let event = next(&mut socket, "event", Some("alerts")).await["event"].clone();
+    assert_eq!(event["type"], "notification.created");
+    assert_eq!(event["seq"], live.to_string());
+    assert_eq!(event["senderAvatarId"], 317);
+    assert_eq!(event["channelId"], external);
+    assert_eq!(event["body"], "private preview");
+    drop(socket);
+    // Resume includes only this account's rows, even though the cursor is global.
+    let mut replay = connect(address, &users[1].1).await;
+    transmit(
+        &mut replay,
+        json!({"type":"subscribe","kind":"notifications","id":"alerts","after":"0"}),
+    )
+    .await;
+    for seq in [historical, live] {
+        assert_eq!(
+            next(&mut replay, "event", Some("alerts")).await["event"]["seq"],
+            seq.to_string()
+        );
+    }
+    next(&mut replay, "event", Some("alerts")).await;
+    drop(replay);
+    sqlx::query(
+        "UPDATE public.channel_members SET deleted_at=now() WHERE channel_id=$1 AND user_id=$2",
+    )
+    .bind(channel)
+    .bind(recipient)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let suppressed = insert(4, recipient).await;
+    let mut replay = connect(address, &users[1].1).await;
+    transmit(
+        &mut replay,
+        json!({"type":"subscribe","kind":"notifications","id":"alerts","after":live.to_string()}),
+    )
+    .await;
+    assert_eq!(
+        next(&mut replay, "event", Some("alerts")).await["event"],
+        json!({"type":"ready","cursor":suppressed.to_string()})
+    );
+    next(&mut replay, "subscribed", Some("alerts")).await;
+    sqlx::query("UPDATE public.account_sessions SET revoked_at=now() WHERE token_hash=$1")
+        .bind(&users[1].2)
+        .execute(&pool)
+        .await
+        .unwrap();
+    transmit(
+        &mut replay,
+        json!({"type":"subscribe","kind":"notifications","id":"expired"}),
+    )
+    .await;
+    assert_eq!(
+        next(&mut replay, "error", Some("expired")).await["status"],
+        401
+    );
+    drop(replay);
+    server.abort();
+}

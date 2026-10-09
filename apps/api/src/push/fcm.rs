@@ -201,12 +201,16 @@ pub(super) fn message(token: &str, alert: &Alert) -> Value {
         "sender": alert.sender,
         "senderId": alert.sender_id,
     });
+    if let Some(id) = alert.sender_avatar_id {
+        data["senderAvatarId"] = json!(id.to_string());
+    }
     match &alert.conversation {
         Conversation::Direct { id } => data["conversationId"] = json!(id),
         Conversation::Channel {
             space_id,
             channel_id,
             title,
+            ..
         } => {
             data["spaceId"] = json!(space_id);
             data["channelId"] = json!(channel_id);

@@ -140,19 +140,26 @@ pub(super) fn payload(alert: &Alert) -> Value {
             "alert": {"title": alert.title, "body": alert.body},
             "sound": "default",
             "thread-id": alert.thread(),
+            "mutable-content": 1,
         },
         "kind": alert.kind,
         "messageId": alert.message_id,
+        "sender": alert.sender,
+        "senderId": alert.sender_id,
+        "senderAvatarId": alert.sender_avatar_id,
     });
     match &alert.conversation {
         Conversation::Direct { id } => payload["conversationId"] = json!(id),
         Conversation::Channel {
             space_id,
             channel_id,
-            ..
+            title,
+            recipient_count,
         } => {
             payload["spaceId"] = json!(space_id);
             payload["channelId"] = json!(channel_id);
+            payload["conversationTitle"] = json!(title);
+            payload["recipientCount"] = json!(recipient_count);
         }
     }
     payload

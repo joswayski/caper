@@ -137,6 +137,11 @@ public actor Gateway {
     }
 
     @discardableResult
+    public func subscribeNotifications(handler: @escaping Handler) async -> String {
+        await subscribe(frame: ["kind": "notifications"], handler: handler)
+    }
+
+    @discardableResult
     public func subscribePresence(spaceID: String, userIDs: [String], handler: @escaping Handler) async -> String {
         await subscribe(frame: ["kind": "presence", "spaceId": spaceID, "userIds": userIDs], handler: handler)
     }
@@ -319,6 +324,16 @@ public actor Gateway {
                 streamState.position = checkpoint; streamState.chatReady = true
                 logical.appliedPosition = max(logical.appliedPosition ?? 0, checkpoint)
             }
+        } else if kind == "notifications" {
+            let ready = event["type"] as? String == "ready"
+            guard ready || event["type"] as? String == "notification.created",
+                  let next = sequence(event[ready ? "cursor" : "seq"]) else { throw URLError(.cannotParseResponse) }
+            streamState.position = max(streamState.position ?? 0, next)
+            if ready { streamState.chatReady = true }
+            if !ready, let applied = logical.appliedPosition, next <= applied {
+                stream.subscriptions[id] = streamState; await maybePromote(stream); return
+            }
+            logical.appliedPosition = max(logical.appliedPosition ?? 0, next)
         } else if kind == "presence", stream === candidate {
             streamState.pendingPresence = event; stream.subscriptions[id] = streamState; await maybePromote(stream); return
         } else if kind == "media", event["type"] as? String == "snapshot" {
@@ -365,7 +380,7 @@ public actor Gateway {
         for (id, logical) in subscriptions {
             guard let value = stream.subscriptions[id], value.subscribed else { return }
             switch logical.frame["kind"] as? String {
-            case "chat":
+            case "chat", "notifications":
                 let required = max(logical.appliedPosition ?? 0, active?.subscriptions[id]?.position ?? 0)
                 guard value.chatReady, (value.position ?? 0) >= required else { return }
             case "media": guard let revision = value.snapshotRevision, revision >= (logical.revision ?? 0) else { return }
@@ -417,7 +432,7 @@ public actor Gateway {
 
     private func sendSubscription(_ id: String, on stream: Stream) async throws {
         guard var logical = subscriptions[id] else { return }
-        if logical.frame["kind"] as? String == "chat", let cursor = logical.appliedPosition { logical.frame["after"] = String(cursor) }
+        if ["chat", "notifications"].contains(logical.frame["kind"] as? String ?? ""), let cursor = logical.appliedPosition { logical.frame["after"] = String(cursor) }
         stream.subscriptions[id] = StreamSubscription(position: sequence(logical.frame["after"]))
         try await send(logical.frame, on: stream)
     }

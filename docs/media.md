@@ -4980,7 +4980,7 @@ space), and `PUT /api/blocks/member000001` blocks Maya, whose two seeded
 
 ### Mobile push (phase 1): direct APNs and FCM
 
-Phone push for DMs and channel messages is built on the server and sends
+Phone push with sender avatars for DMs and channel messages is built on the server and sends
 directly to APNs (iPhone) and FCM HTTP v1 (Android); there is no SNS or push
 vendor. It stays off until `NOTIFICATIONS_ENABLED=true`, and each platform is
 advertised by `GET /api/push/config` only when it is listed in `PUSH_PLATFORMS`
@@ -4992,8 +4992,9 @@ payloads, routes, retries and configuration.
 
 - Each committed account-authored message (sends and forwards, never edits)
   writes one `notification_jobs` row in its send transaction. Workers in the API
-  role expand it into per-recipient notifications and per-device deliveries and
-  send them without holding a database connection.
+  role expand it into per-recipient notifications whenever chat is enabled.
+  `NOTIFICATIONS_ENABLED` gates phone delivery, not this expansion or local OS
+  notifications. Provider sends hold no database connection.
 - Registrations belong to the account session: logout revokes them, delivery
   rechecks the session, and dead tokens reported by Apple or Google are revoked.
 - Provider keys live only in `production/apps/caper` (and `staging/apps/caper`),
@@ -5002,8 +5003,30 @@ payloads, routes, retries and configuration.
 - Provider acceptance does not prove device receipt, and sent notifications
   cannot be recalled. Server tests use mock APNs/FCM servers; validate on physical
   Android and signed iOS devices before adding a platform to `PUSH_PLATFORMS`.
-- Browser Web Push, macOS push and Rust desktop OS notifications are not
-  implemented (phases 2 and 3).
+- Open browser tabs and running macOS/Windows/Linux apps implement local OS
+  notifications from an account-wide gateway feed, independently of the current
+  channel. They include sender artwork, focused-conversation suppression,
+  reconnect deduplication, click navigation and logout cleanup. macOS uses an
+  avatar attachment rather than replacing the app icon. Closed-browser Web Push,
+  macOS APNs and keep-running-in-tray behavior remain unimplemented.
+
+The additive `202610090002_live_notifications.sql` index supports account
+notification cursors. Deploy API/migration, then gateway, then independent web
+and native releases. iOS requires Communication Notifications on the parent
+App ID, refreshed profiles and an embedded `.notifications` extension profile.
+See [the exact operator commands and rollback](notifications.md#sender-avatars-and-desktop-deployment-order).
+Merging does not deploy these components.
+
+Sender-avatar/local-notification validation (October 9, 2026):
+
+| Platform | Validation boundary |
+| --- | --- |
+| API/gateway | Rust workspace tests; 45 disposable Postgres/Valkey tests and two account integration tests pass, including real gateway reconnect, private-grant/session revocation, privacy/settings filtering and current avatar delivery to mock APNs/FCM. Provider mocks are not real device receipt. |
+| Web | `npm run check` and `npm test -- --maxWorkers=1` pass (491 tests). Chromium desktop/390px renders of default/granted/denied browser controls inspected; permission states and notification construction explicitly mocked. Fixture delivery includes sender icon/body and click routing. No service worker, Safari or physical-browser acceptance. |
+| Rust desktop | 327 full libwebrtc-linked Linux tests pass (9 existing opt-in tests ignored), including sparse notification replay without a UI loop; application-package Clippy passes. A temporary probe rendered the real Linux backend against Dunst and verified its Open callback; sender-avatar screenshot inspected. Dependency-inclusive Clippy hits existing vendored WebRTC safety-documentation warnings. Minimized-window activation and Windows runtime remain unverified. |
+| Android | Avatar parser regression added; no Android SDK/build/device available in this orb. FCM physical receipt and rendered MessagingStyle remain unverified. |
+| iOS/macOS | Extension/bundle/entitlement changes and macOS local delivery implemented; no Swift/Xcode build, XCTest, signed provisioning or OS banner inspection available in this orb. Signed iOS communication banners, extension fallback, macOS attachments and minimized activation require native acceptance. |
+| Containers | No Docker daemon in this orb. Web production build and Rust compilation checked directly; images not built or executed. |
 
 `202610080002_notifications.sql` drops the unused SNS-era `push_devices`,
 `push_notifications` and `push_deliveries` tables; `202610030002_push.sql` stays
@@ -5359,8 +5382,7 @@ Presentation stays platform-native.
 
 Gaps found but not changed here: Rust desktop has no automatic voice reconnect
 and Android only retries ICE once; Android and iPhone have no microphone choice;
-iPhone has no lock-screen call controls (CallKit); web, macOS and Rust desktop
-have no OS notifications; Android has no in-app update notice; Android and Apple
+iPhone has no lock-screen call controls (CallKit); Android has no in-app update notice; Android and Apple
 load older history only from the button; Apple scrolls to every new message even
 while reading history. Product gaps on every client (no change): message deletion,
 links, unread markers, jump to latest, per-channel drafts and shortcuts.

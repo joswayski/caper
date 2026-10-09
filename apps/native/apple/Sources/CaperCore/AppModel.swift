@@ -128,6 +128,9 @@ public final class AppModel {
     private var lastChannelBySpace: [String: String] = [:]
     private var directMessageRefreshTask: Task<Void, Never>?
     private var foreground = false
+    #if os(macOS)
+    @ObservationIgnored private lazy var desktopNotifications = DesktopNotifications(model: self)
+    #endif
     /// Web's membershipRevision: a background reconcile never applies a
     /// snapshot taken while a space or channel change here was running.
     @ObservationIgnored private var membershipChanges = 0
@@ -608,6 +611,9 @@ public final class AppModel {
     }
 
     private func startDirectMessageRefresh() {
+        #if os(macOS)
+        desktopNotifications.start()
+        #endif
         directMessageRefreshTask?.cancel()
         let attempt = generation
         Task { [weak self] in await self?.refreshBlocks() }
@@ -1471,6 +1477,9 @@ extension AppModel {
     }
 
     private func clearNotificationState() {
+        #if os(macOS)
+        desktopNotifications.stop()
+        #endif
         muteExpiryTask?.cancel(); muteExpiryTask = nil
         notificationSettings = nil; notificationError = nil; notificationsLoadError = nil
         notificationsLoadedAt = nil; notificationChangesInFlight = 0

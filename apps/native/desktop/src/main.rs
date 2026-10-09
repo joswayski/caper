@@ -20,6 +20,7 @@ mod mentions;
 mod model;
 mod navigation;
 mod notifications;
+mod os_notifications;
 mod startup;
 #[path = "../voice-spike/src/state.rs"]
 mod state;
@@ -463,7 +464,7 @@ struct CaperApp {
     privacy: Option<String>,
     privacy_saving: bool,
     privacy_error: Option<String>,
-    /// Notification levels and mutes; the controls only, for phone push.
+    /// Account notification levels and mutes, shared by phone and desktop.
     notifications: notifications::Notifications,
     selected_direct: Option<String>,
     directs_refreshed: Instant,
@@ -1666,6 +1667,29 @@ impl CaperApp {
         let events: Vec<_> = self.worker.events.try_iter().collect();
         for event in events {
             match event {
+                Event::OpenNotification { epoch, alert }
+                    if epoch == self.account_epoch && self.token.is_some() =>
+                {
+                    self.worker.focus();
+                    self.dialog = None;
+                    self.navigation_open = false;
+                    if let Some(id) = alert.conversation_id {
+                        // A new DM may arrive before the periodic conversation list.
+                        self.remember_conversation();
+                        self.selected_direct = Some(id.clone());
+                        self.reload_selected_channel(id, false);
+                        self.refresh_directs();
+                    } else if let (Some(space), Some(channel)) = (alert.space_id, alert.channel_id)
+                    {
+                        self.navigate(NavigationTarget {
+                            space: Some(space),
+                            channel: Some(channel),
+                        });
+                    }
+                }
+                Event::NotificationError { epoch, error } if epoch == self.account_epoch => {
+                    self.warning = Some(error);
+                }
                 Event::DirectsLoaded {
                     generation,
                     result: Ok(directs),
@@ -2187,6 +2211,10 @@ impl CaperApp {
         self.refresh_directs();
         self.account_op(AccountOperation::LoadBlocks);
         self.load_notifications();
+        self.worker.send(Command::StartNotifications {
+            epoch: self.account_epoch,
+            token: self.token.clone().expect("established account"),
+        });
         self.error = None;
         self.dialog = None;
         if needs_profile {
@@ -2244,6 +2272,8 @@ impl CaperApp {
     }
 
     fn reset_account_state(&mut self) {
+        self.worker.showing(None);
+        self.worker.send(Command::StopNotifications);
         self.account_epoch += 1;
         self.membership_refreshing = false;
         self.space_notice = None;
@@ -4772,6 +4802,13 @@ impl eframe::App for CaperApp {
                 self.voice.stop_speaker_test();
             }
         }
+        self.worker.showing(
+            if self.foreground && !self.navigation_open && self.dialog.is_none() {
+                self.selected_channel.as_deref()
+            } else {
+                None
+            },
+        );
     }
 }
 

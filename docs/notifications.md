@@ -1,12 +1,14 @@
-# Notifications: design and phase 1
+# Notifications: implementation and design
 
-**Status: phase 1 is built** (October 8, 2026): phone push for DMs and channel
-messages over APNs and FCM, plus notification and mute controls for spaces,
-channels and DMs. The server side runs behind `NOTIFICATIONS_ENABLED`, and each
-platform is advertised only after its credentials are stored and it has been
-validated on physical devices. [Phase 1 as built](#phase-1-as-built) is the
-contract; the rest of this document is the research (October 6, 2026) and the
-design for phases 2 and 3, which are not built. See also
+**Implemented** (October 9, 2026): APNs/FCM phone push with sender avatars,
+notification and mute controls, and an account-wide gateway feed for local OS
+notifications in open web tabs and running macOS/Windows/Linux apps. Phone
+delivery alone is gated by `NOTIFICATIONS_ENABLED` and validated provider
+credentials. Desktop delivery needs no provider credentials. Closed-browser Web
+Push, notifications after desktop quit, invitations and channel unread remain
+unimplemented. [The built contract](#phase-1-as-built) below takes precedence
+over the original October 6 proposal and phased roadmap. Implementation is not
+production/device acceptance; see the validation boundary and rollout below and
 [media.md](media.md#mobile-push-phase-1-direct-apns-and-fcm).
 
 **Owner decisions (October 6, 2026)**
@@ -98,15 +100,56 @@ offers the phone's platform, the app turns push on, unless the account turned
 - Title: DM → sender display name; channels and mentions → `Sender · #channel (Space)`.
 - Body: the message text, trimmed, cut to 180 characters including a final `…`;
   empty text (a forward without text) → `Sent a message`.
+- Sender artwork is the current profile's bundled avatar (0–799), not the
+  message's historical avatar or a remote image download. Missing/invalid
+  artwork retains the OS/app fallback. Android sets both the `MessagingStyle`
+  sender icon and large icon; iPhone's embedded notification service extension
+  donates an incoming `INSendMessageIntent` to produce a communication notification.
+  Extension failure or timeout preserves the original text notification.
 - APNs: `apns-push-type: alert`, `apns-priority: 10`, topic `APNS_TOPIC` (default
   `chat.caper.ios`), `apns-expiration` now + 24 h. Body
-  `{"aps":{"alert":{"title","body"},"sound":"default","thread-id"},"kind","messageId","spaceId","channelId"}`;
+  `{"aps":{"alert":{"title","body"},"sound":"default","thread-id","mutable-content":1},"kind","messageId","sender","senderId","senderAvatarId","spaceId","channelId","conversationTitle","recipientCount"}`;
   DMs carry `conversationId` instead of `spaceId`/`channelId`. `thread-id` is the
-  conversation or channel ID.
+  conversation or channel ID. Avatar is a numeric ID or null; channel payloads
+  also carry the conversation title and reader count for Apple's group metadata.
 - FCM HTTP v1, data only: `android.priority: HIGH`, `ttl: "86400s"`,
   `collapse_key` = conversation or channel ID. String data: `kind`, `messageId`,
   `conversationId` (DMs) or `spaceId` + `channelId`, `title`, `body`, `sender`,
-  `senderId`, and `conversationTitle` (`#channel (Space)`, channels only).
+  `senderId`, optional decimal `senderAvatarId`, and `conversationTitle`
+  (`#channel (Space)`, channels only).
+
+### Local web and desktop notifications
+
+- The authenticated account subscribes on `/api/chat/events` with
+  `{"type":"subscribe","id":"notifications","kind":"notifications","after"?}`.
+  No channel, space, account selector or media token is accepted. The first
+  subscription starts at the current head without historical banners; reconnects
+  resume `after`. `notification.created` contains a decimal-string `seq`,
+  `kind`, `messageId`, `title`, `body`, `sender`, `senderId`, `senderAvatarId`,
+  `createdAt` and the same conversation routing IDs as phone push.
+- Notification IDs are sparse per account, not contiguous channel sequences.
+  `ready` carries a decimal-string `cursor`, including suppressed rows. The
+  gateway rechecks session validity and current access, blocks, consent,
+  preferences, mutes and DM reads. Recipient row locks order concurrent inserts;
+  the existing gateway poll batches watched-account heads every two seconds.
+- Web uses the browser `Notification` API, sender artwork and click navigation.
+  **Edit profile → Notifications → On this browser** requests permission only
+  after a click and offers a local toggle. Storage/Web Locks coordinate tabs and
+  keep only bounded message IDs, never previews. Suppression/deduplication across
+  tabs is best effort if storage or Web Locks are unavailable.
+- macOS uses `UNUserNotificationCenter`, with the sender avatar as an image
+  attachment (not a replacement for the app icon). Windows uses a registered
+  AppUserModelID and sender app-logo override; Linux uses the desktop notification
+  service with sender artwork and an Open action. Native activation requests
+  focus/restoration and opens the corresponding DM or channel.
+- Clients suppress the conversation visible in a focused window, deduplicate
+  replay and clear their alerts on logout. Rust desktop presents from its account
+  worker, independently of rendering; its reading state is a two-second lease.
+  Clients discard replay older than two minutes (or over 30 seconds in the future).
+- **The browser tab/native app must remain running**; minimized native windows
+  can receive notifications. There is no keep-running-in-tray behavior, macOS
+  APNs registration, service worker or closed-browser Web Push. Mobile browsers
+  requiring service-worker notifications still rely on the native phone apps.
 
 ### HTTP contract
 
@@ -146,7 +189,9 @@ external IDs, and return errors as `{"error": "..."}`.
 `scripts/native-parity-fixture.mjs` serves the same routes in memory for client
 tests: `POST /__fixture/control {"pushPlatforms":[...]}` sets the advertised
 platforms, `GET /__fixture/push-devices` reads back registrations, and
-`{"reset": true}` clears both and all settings.
+`{"reset": true}` clears both and all settings. The authenticated owner fixture
+can subscribe to notifications; `{"notification":{"channelId","text"}}`
+emits a clearly labelled test alert, never a live provider send.
 
 ### Pipeline
 
@@ -169,15 +214,16 @@ platforms, `GET /__fixture/push-devices` reads back registrations, and
   `aws-lc-rs`, already the process's Rustls crypto provider.
 - Finished deliveries and expanded jobs are pruned after 7 days. Devices are
   revoked, never deleted; settings and overrides are updated in place.
-- Workers run in every API replica behind `NOTIFICATIONS_ENABLED`; they need
-  `CHAT_ENABLED` (Postgres and Valkey). Bad credentials disable that platform with
+- Expansion/pruning run in every API replica when `CHAT_ENABLED` supplies
+  Postgres and Valkey. `NOTIFICATIONS_ENABLED` gates phone delivery and platform
+  advertisement only. Bad credentials disable that platform with
   a `push_platform_unavailable` log instead of stopping the API.
 
 ### Configuration
 
 | Setting | Meaning |
 | --- | --- |
-| `NOTIFICATIONS_ENABLED` | `true` starts the workers and allows platforms to be advertised. Default off. |
+| `NOTIFICATIONS_ENABLED` | Enables phone provider delivery and advertisement, not account notification expansion or local desktop alerts. Default off. |
 | `PUSH_PLATFORMS` | Comma-separated `apns`, `apnsSandbox`, `fcm`. |
 | `APNS_TEAM_ID` | Apple team ID (10 characters). |
 | `APNS_KEY_ID`, `APNS_PRIVATE_KEY` | Production key ID and `.p8` PEM (`apns`). |
@@ -204,7 +250,8 @@ physical Android or signed iOS devices. Keep each platform out of
 ### Rollout
 
 1. Deploy the API (applies `202610080002_notifications.sql`). With
-   `NOTIFICATIONS_ENABLED` unset nothing is sent, and clients see no platform.
+   `NOTIFICATIONS_ENABLED` unset no phone push is sent and no phone platform is
+   advertised; account notification expansion still runs.
    Older API images fail at startup against the migrated database because they
    grant access to the dropped `push_*` tables: roll forward, not back.
 2. Deploy the gateway, so connection IDs carry session tags. Until then the hold
@@ -213,7 +260,52 @@ physical Android or signed iOS devices. Keep each platform out of
    with `--platforms` listing only platforms already validated and
    `--enabled true`. No infrastructure change or deploy is needed.
 4. Turning a platform off is the same command with a shorter `--platforms`;
-   `--enabled false` turns all push off.
+   `--enabled false` turns phone delivery off, not local desktop notifications.
+
+### Sender avatars and desktop deployment order
+
+1. No new AWS/Cloudflare infrastructure or provider secrets are needed. Keep the
+   current API replica/shared-state policy. Before releasing iOS, enable
+   **Communication Notifications** on the parent App ID in Apple Developer,
+   refresh its provisioning profiles and provision the embedded
+   `<CAPER_IOS_BUNDLE_ID>.notifications` extension. Existing APNs/FCM credentials
+   and phone enablement stay unchanged.
+2. After merge and successful main image builds, set `MERGED_SHA` to the full
+   merged commit. Deploy API first using the existing direct migration setup;
+   startup applies additive `202610090002_live_notifications.sql` (the account
+   cursor index). Wait for the workflow for this SHA before checking rollout:
+
+   ```bash
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
+
+3. Deploy the gateway after the API, waiting for the workflow and all replicas:
+
+   ```bash
+   gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-chat-gateway --timeout=15m
+   ```
+
+4. Web and native releases are independent after the server rollout. Release
+   iOS only after its capability/provisioning prerequisite; merging does not
+   deploy or publish any client:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
+   ```
+
+5. With separate accounts, verify DMs and another channel show the current
+   sender avatar; clicks open that conversation; focused reading, mute and
+   logout suppress alerts. Test minimized Windows/Linux/macOS, allowed/blocked
+   browser permission, APNs extension timeout/fallback and physical Android/iOS.
+   Keep provider advertisement gated by real-device acceptance. Roll back web
+   with the previous image and native clients with a corrected higher build
+   number. Leave the additive index and notification data intact; server rollback
+   requires a reviewed build retaining the applied SQLx migration ledger (a
+   pre-migration image rejects that ledger). No deployment was performed here.
 
 ## Recommendation in one screen
 
