@@ -134,7 +134,21 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     fun requestCode(email: String) = launchAccountAction { request ->
         val challenge = api.requestCode(email)
-        if (request == accountGeneration) mutable.value = mutable.value.copy(screen = SessionScreen.Verify(challenge.challengeId, email))
+        if (request == accountGeneration) mutable.value = mutable.value.copy(
+            screen = SessionScreen.Verify(challenge.challengeId, email, sentAt = android.os.SystemClock.elapsedRealtime()),
+        )
+    }
+
+    /**
+     * "Resend code" and "Email me a new code": a new code for the same email entry. The new
+     * challenge replaces the old one (fresh attempts) and restarts the resend wait.
+     */
+    fun resendCode() = launchAccountAction { request ->
+        val screen = mutable.value.screen as? SessionScreen.Verify ?: return@launchAccountAction
+        val challenge = api.requestCode(screen.email)
+        if (request == accountGeneration && mutable.value.screen == screen) mutable.value = mutable.value.copy(
+            screen = SessionScreen.Verify(challenge.challengeId, screen.email, resends = screen.resends + 1, sentAt = android.os.SystemClock.elapsedRealtime()),
+        )
     }
 
     fun verify(challenge: String, code: String) = launchAccountAction { request ->
@@ -1528,12 +1542,14 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value = mutable.value.copy(invitations = mutable.value.invitations.filter { it.id != invitation.id })
         done()
     }
-    fun removeSpaceMember(member: Member) = launchAction { request ->
+    /** [done] runs only after the removal succeeds, so a failed one keeps its confirmation open. */
+    fun removeSpaceMember(member: Member, done: () -> Unit = {}) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
         val context = AdminMutationContext(request, detail.space.id)
         api.removeSpaceMember(requireAccountToken(), detail.space.id, member.id)
         if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
         replaceDetail(detail.copy(members = detail.members.filter { it.id != member.id }))
+        done()
     }
     fun loadChannelGrants(channel: Channel) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
@@ -1550,12 +1566,14 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value = mutable.value.copy(pendingChannelInvitations = mutable.value.pendingChannelInvitations.filter { it.id != member.id } + member)
         done()
     }
-    fun removeChannelGrant(channel: Channel, member: Member) = launchAction { request ->
+    /** [done] runs only after the removal succeeds, so a failed one keeps its confirmation open. */
+    fun removeChannelGrant(channel: Channel, member: Member, done: () -> Unit = {}) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
         val context = AdminMutationContext(request, detail.space.id, channel.id)
         api.removeChannelMember(requireAccountToken(), detail.space.id, channel.id, member.id)
         if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
         mutable.value = mutable.value.copy(channelGrants = mutable.value.channelGrants.filter { it.id != member.id })
+        done()
     }
 
     fun cancelChannelInvitation(channel: Channel, member: Member) = launchAction { request ->

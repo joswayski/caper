@@ -9,12 +9,17 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import chat.caper.android.data.ApiException
 import chat.caper.android.data.friendlyError
+import chat.caper.android.data.linkRanges
 import chat.caper.android.model.*
 import chat.caper.android.ui.Border
 import chat.caper.android.ui.EmojiImage
@@ -34,7 +39,7 @@ import java.util.UUID
             Text(message.author.name, fontWeight = FontWeight.Bold, fontSize = 13.sp)
             if (message.editedAt != null) Text("edited", color = TextMuted, fontSize = 10.sp)
         }
-        Text(message.content.text, fontSize = 14.sp)
+        LinkedText(message.content.text, fontSize = 14.sp)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             message.reactions.forEach { reaction -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 EmojiImage(reaction.emoji, reaction.emoji, Modifier.size(18.dp))
@@ -42,6 +47,20 @@ import java.util.UUID
             } }
         }
     }
+}
+
+/** The original's text with its `http(s)://` and `www.` links (`data/Links.kt`); like web, no mention pills here. */
+@Composable private fun LinkedText(text: String, fontSize: TextUnit) {
+    val links = remember(text) { linkRanges(text) }
+    if (links.isEmpty()) return Text(text, fontSize = fontSize)
+    val uriHandler = LocalUriHandler.current
+    val annotated = remember(text, links, uriHandler) {
+        buildAnnotatedString {
+            append(text)
+            links.forEach { link -> addLink(LinkAnnotation.Url(link.href, MessageLink) { openExternalLink(uriHandler, link.href) }, link.start, link.end) }
+        }
+    }
+    Text(annotated, fontSize = fontSize)
 }
 
 @Composable internal fun ForwardCard(message: ChatMessage, open: () -> Unit) {

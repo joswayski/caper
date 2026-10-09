@@ -240,7 +240,14 @@ sealed interface SessionScreen {
     data object Loading : SessionScreen
     data object Home : SessionScreen
     data object SignedOut : SessionScreen
-    data class Verify(val challengeId: String, val email: String, val attemptsRemaining: Int? = null) : SessionScreen
+    /**
+     * The code step. [resends] counts new codes for this email entry (see `data/CodeResend.kt`);
+     * [sentAt] is when the current code was sent, on the `SystemClock.elapsedRealtime` clock.
+     */
+    data class Verify(
+        val challengeId: String, val email: String, val attemptsRemaining: Int? = null,
+        val resends: Int = 0, val sentAt: Long = 0,
+    ) : SessionScreen
     data class Profile(val account: Account) : SessionScreen
     data class Spaces(val account: Account) : SessionScreen
 }
