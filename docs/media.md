@@ -2507,8 +2507,11 @@ live ingestion into the user's dataset has not been verified.
 
 - 12 registered sessions total, one microphone publication each, 11 subscriptions.
   A running Mic test uses two additional private sessions within that same cap.
-- 30 joins/minute globally; 120 provider mutations/minute per participant;
-  256 KiB request bodies. These are **not a spending cap or DDoS defense**.
+- 30 joins/minute per room, at most 10 of them by one account; 120 provider
+  mutations/minute per participant; 256 KiB request bodies. One account holds
+  at most 4 of a room's 12 slots (participants, microphone-test monitors and
+  in-flight joins on any of its devices) and gets 409 `already in this call on
+  too many devices` beyond that. These are **not a spending cap or DDoS defense**.
 - No fixed call-age limit; 48-hour TURN credentials renewed at 24 hours;
   45-second presence lease, sweep every five seconds. Background browser
   throttling can force a reconnect.

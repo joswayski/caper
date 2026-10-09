@@ -46,6 +46,10 @@ const MAX_PARTICIPANTS: usize = 12;
 const MAX_TRACKS: usize = 1;
 const MAX_SUBSCRIPTIONS: usize = MAX_PARTICIPANTS - 1;
 const JOIN_LIMIT_PER_MINUTE: usize = 30;
+/// One account's share of a room: a device plus its two microphone-test
+/// monitors, and room for one reconnect overlapping an expiring lease.
+const MAX_ACCOUNT_SLOTS: usize = 4;
+const ACCOUNT_JOIN_LIMIT_PER_MINUTE: usize = 10;
 const OP_LIMIT_PER_MINUTE: usize = 120;
 const MAX_CLEANUP_BACKLOG: usize = 512;
 const CLEANUP_RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
@@ -847,6 +851,10 @@ struct Registry {
     /// Recent warm session issues, only to rate-limit them per account.
     #[serde(default)]
     warmed: Vec<WarmIssue>,
+    /// Recent accepted joins by account, so one account can't spend the
+    /// room's whole join budget.
+    #[serde(default)]
+    account_joins: VecDeque<(i64, Timestamp)>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct WarmIssue {
@@ -875,6 +883,8 @@ impl PreparedJoin {
 struct JoinReservation {
     started: Timestamp,
     monitor: Option<Monitor>,
+    #[serde(default)]
+    user: Option<i64>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Participant {
@@ -882,6 +892,10 @@ struct Participant {
     token: String,
     #[serde(default)]
     account_session: Option<Vec<u8>>,
+    /// The account's internal ID, for per-account room limits. Never sent to
+    /// clients. Absent for guests and older stored state.
+    #[serde(default)]
+    user_id: Option<i64>,
     /// Stable saved account avatar. Absent for guests and older stored state.
     #[serde(default)]
     avatar_id: Option<i16>,
@@ -1748,6 +1762,7 @@ async fn join(
                 principal.user.display_name,
                 principal.user.avatar_id,
                 Sha256::digest(token.as_bytes()).to_vec(),
+                principal.user.id,
             )),
             // Account channels already verified this session. If this lookup
             // fails (e.g. a database outage), never fall back to a roster name
@@ -1760,10 +1775,11 @@ async fn join(
     };
     let name = account
         .as_ref()
-        .and_then(|(name, _, _)| name.as_deref())
+        .and_then(|(name, _, _, _)| name.as_deref())
         .unwrap_or(submitted_name)
         .trim();
-    let avatar_id = account.as_ref().map(|(_, avatar_id, _)| *avatar_id);
+    let avatar_id = account.as_ref().map(|(_, avatar_id, _, _)| *avatar_id);
+    let user_id = account.as_ref().map(|(_, _, _, user)| *user);
     if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid name"));
     }
@@ -1784,7 +1800,7 @@ async fn join(
             let identity = s
                 .media_session
                 .as_ref()
-                .or_else(|| account.as_ref().map(|(_, _, hash)| hash));
+                .or_else(|| account.as_ref().map(|(_, _, hash, _)| hash));
             let verified = match (identity, &input.monitor, &input.publish) {
                 (Some(account), None, Some(_)) => verify_warm(&s.config, account, ticket),
                 _ => None,
@@ -1817,6 +1833,35 @@ async fn join(
                     StatusCode::TOO_MANY_REQUESTS,
                     "rate limit exceeded",
                 ));
+            }
+            r.account_joins
+                .retain(|(_, at)| now.duration_since(*at) < Duration::from_secs(60));
+            if let Some(user) = user_id {
+                // Per-account shares, so one member can't hold every slot or
+                // spend the room's join budget (including through mic tests).
+                if r.account_joins.iter().filter(|(u, _)| *u == user).count()
+                    >= ACCOUNT_JOIN_LIMIT_PER_MINUTE
+                {
+                    return Err(ApiError::new(
+                        StatusCode::TOO_MANY_REQUESTS,
+                        "rate limit exceeded",
+                    ));
+                }
+                let held = r
+                    .participants
+                    .values()
+                    .filter(|p| p.user_id == Some(user))
+                    .count()
+                    + r.reservations
+                        .values()
+                        .filter(|j| j.user == Some(user))
+                        .count();
+                if held >= MAX_ACCOUNT_SLOTS {
+                    return Err(ApiError::new(
+                        StatusCode::CONFLICT,
+                        "already in this call on too many devices",
+                    ));
+                }
             }
             if r.participants.len() + r.reservations.len() >= MAX_PARTICIPANTS {
                 return Err(ApiError::new(StatusCode::CONFLICT, "lobby full"));
@@ -1858,11 +1903,15 @@ async fn join(
                 );
             }
             r.joins.push_back(now);
+            if let Some(user) = user_id {
+                r.account_joins.push_back((user, now));
+            }
             r.reservations.insert(
                 reservation,
                 JoinReservation {
                     started: now,
                     monitor,
+                    user: user_id,
                 },
             );
             let pulls = if input.receive && input.publish.is_some() && monitor.is_none() {
@@ -1981,6 +2030,7 @@ async fn join(
         id,
         token: token_hash(&token),
         account_session: s.media_session.clone(),
+        user_id,
         avatar_id,
         name: name.into(),
         session,
