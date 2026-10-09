@@ -13,13 +13,13 @@ final class EmojiAutocompleteTests: XCTestCase {
 
     func testBoundariesAndCaret() {
         XCTAssertNotNil(EmojiAutocomplete.match(text: ":", selection: NSRange(location: 1, length: 0), markedText: false, catalog: catalog))
-        XCTAssertNotNil(EmojiAutocomplete.match(text: "hi (:g", selection: NSRange(location: 6, length: 0), markedText: false, catalog: catalog))
-        for text in ["word:g", "12:30", "https://x", ":grin:"] {
+        XCTAssertNotNil(EmojiAutocomplete.match(text: "hi (:gr", selection: NSRange(location: 7, length: 0), markedText: false, catalog: catalog))
+        for text in ["word:gr", "12:30", "https://x", ":grin:", ":D", "ok :P", "hi (:3"] {
             XCTAssertNil(EmojiAutocomplete.match(text: text, selection: NSRange(location: (text as NSString).length, length: 0), markedText: false, catalog: catalog), text)
         }
         XCTAssertNil(EmojiAutocomplete.match(text: ":grin", selection: NSRange(location: 2, length: 0), markedText: false, catalog: catalog))
-        XCTAssertNil(EmojiAutocomplete.match(text: ":g", selection: NSRange(location: 2, length: 0), markedText: true, catalog: catalog))
-        XCTAssertNil(EmojiAutocomplete.match(text: ":g", selection: NSRange(location: 1, length: 1), markedText: false, catalog: catalog))
+        XCTAssertNil(EmojiAutocomplete.match(text: ":gr", selection: NSRange(location: 3, length: 0), markedText: true, catalog: catalog))
+        XCTAssertNil(EmojiAutocomplete.match(text: ":gr", selection: NSRange(location: 1, length: 1), markedText: false, catalog: catalog))
     }
 
     func testRankingAndNormalization() {
@@ -41,12 +41,12 @@ final class EmojiAutocompleteTests: XCTestCase {
     }
 
     func testInsertionPreservesUnicodeSuffixAndScalarLimit() {
-        let text = "👩‍💻 :g then 🚀"
-        let caret = ("👩‍💻 :g" as NSString).length
+        let text = "👩‍💻 :gr then 🚀"
+        let caret = ("👩‍💻 :gr" as NSString).length
         let match = EmojiAutocomplete.match(text: text, selection: NSRange(location: caret, length: 0), markedText: false, catalog: catalog)!
         let result = EmojiAutocomplete.inserting(catalog[0], in: text, match: match)!
         XCTAssertEqual(result.text, "👩‍💻 😀 then 🚀")
         XCTAssertEqual(result.selection.location, ("👩‍💻 😀" as NSString).length)
-        XCTAssertNil(EmojiAutocomplete.inserting(entry("z", "😀😀", "two"), in: "abc :g", match: EmojiAutocomplete.match(text: "abc :g", selection: NSRange(location: 6, length: 0), markedText: false, catalog: catalog)!, scalarLimit: 5))
+        XCTAssertNil(EmojiAutocomplete.inserting(entry("z", "😀😀", "two"), in: "abc :gr", match: EmojiAutocomplete.match(text: "abc :gr", selection: NSRange(location: 7, length: 0), markedText: false, catalog: catalog)!, scalarLimit: 5))
     }
 }

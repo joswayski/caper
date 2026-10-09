@@ -10,7 +10,7 @@ private val serverErrors = mapOf(
     "account not found" to "User not found. Check the username and try again.",
     "enter an exact username" to "Enter an exact username.",
     "invalid username" to "Use 3–32 lowercase letters, numbers, or underscores.",
-    "user already in space" to "This person is already a member.",
+    "user already in space" to "This person is already in the space.",
     "user already in channel" to "This person already has access to this channel.",
     "user already invited" to "This person already has a pending invitation.",
     "user must join the space first" to "This person needs to join the space before you can add them to a channel.",

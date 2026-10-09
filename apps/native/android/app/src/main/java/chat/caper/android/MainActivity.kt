@@ -33,6 +33,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListLayoutInfo
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -49,6 +50,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
@@ -237,6 +239,11 @@ internal data class VoiceJoinIntent(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val voice by VoiceCallService.state.collectAsStateWithLifecycle()
     var overlay by remember { mutableStateOf<Overlay?>(null) }
+    // Web: a space removed elsewhere closes its dialogs; an invitation answered elsewhere closes its prompt.
+    LaunchedEffect(state.selectedSpace?.space?.id) {
+        if (overlay.let { it == Overlay.ManageSpace || it == Overlay.CreateChannel || it == Overlay.LeaveSpace || it is Overlay.ManageChannel || it is Overlay.LeaveChannel }) overlay = null
+    }
+    LaunchedEffect(state.invitations) { (overlay as? Overlay.Invitation)?.let { shown -> if (state.invitations.none { it.id == shown.space.id }) overlay = null } }
     var navigationOpen by remember { mutableStateOf(false) }
     VoiceChimes(voice)
 
@@ -710,7 +717,7 @@ private fun Modifier.browseDrag(drawer: BrowseDrawer, setOpen: (Boolean) -> Unit
                 ) {
                     Icon(if (channelsExpanded) painterResource(R.drawable.lucide_chevron_down) else painterResource(R.drawable.lucide_chevron_right), null, Modifier.size(18.dp), tint = TextMuted)
                     Text("Channels", color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                    Text(channelCount.toString(), color = TextMuted, fontSize = 10.sp)
+                    Text((detail?.channels?.count { it.joined } ?: 0).toString(), color = TextMuted, fontSize = 10.sp)
                 }
                 if (owner) {
                     IconButton({ show(Overlay.CreateChannel) }, enabled = canCreateChannel, modifier = Modifier.semantics {
@@ -1189,7 +1196,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 
 @Composable private fun ThreadConversation(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier) {
     val thread = state.thread ?: return
-    var draft by rememberSaveable(state.selectedChannel?.id, thread.rootId) { mutableStateOf("") }
+    var draft by rememberSaveable(state.selectedChannel?.id, thread.rootId, stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("")) }
     var broadcast by rememberSaveable(state.selectedChannel?.id, thread.rootId) { mutableStateOf(false) }
     val pending = state.pendingMessage?.takeIf { it.threadRootId == thread.rootId }
     // DMs are named after the other person, without a channel `#`.
@@ -1199,12 +1206,13 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     fun send() {
         if (state.pendingMessage != null && pending == null || pending?.rejected == true || pending != null && pending.error == null) return
         if (pending != null) viewModel.send(pending.text, threadRootId = thread.rootId, broadcast = pending.broadcast)
-        else if (draft.isNotBlank()) { viewModel.send(draft, threadRootId = thread.rootId, broadcast = broadcast); draft = "" }
+        // "Also send to channel" applies to one reply, so it resets with the draft.
+        else if (draft.text.isNotBlank()) { viewModel.send(draft.text, threadRootId = thread.rootId, broadcast = broadcast); draft = TextFieldValue(""); broadcast = false }
     }
     Column(modifier.background(SurfaceConversation).border(BorderStroke(1.dp, Border))) {
         Row(Modifier.fillMaxWidth().height(53.dp).padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Thread · $conversation", Modifier.weight(1f), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            TextButton(viewModel::closeThread) { Text("Back to channel") }
+            TextButton(viewModel::closeThread) { Text(if (direct) "Back to conversation" else "Back to channel") }
         }
         HorizontalDivider(color = Border)
         thread.error?.let { Text(it, Modifier.padding(12.dp), color = ErrorText); TextButton({ viewModel.loadThread() }) { Text("Retry") } }
@@ -1216,7 +1224,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             pending?.error?.let { error ->
                 Text(error, color = ErrorText)
                 if (pending.rejected) Row {
-                    TextButton({ viewModel.discardPending()?.let { draft = it } }, enabled = draft.isEmpty()) { Text("Edit") }
+                    TextButton({ viewModel.discardPending()?.let { draft = TextFieldValue(it, TextRange(it.length)) } }, enabled = draft.text.isEmpty()) { Text("Edit") }
                     TextButton({ viewModel.discardPending() }) { Text("Dismiss") }
                 } else TextButton(::send) { Text("Retry send") }
             }
@@ -1225,13 +1233,16 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         if (!thread.loading && rows.none { it.threadRootId == thread.rootId })
             Text(if (state.canParticipate) "No replies yet. Start the thread." else "No replies yet.", Modifier.padding(18.dp), color = TextMuted)
         if (state.canParticipate) Column(Modifier.padding(12.dp)) {
-            OutlinedTextField(draft, { draft = it.codePointTake(4000) }, Modifier.fillMaxWidth(), placeholder = { Text("Reply to thread…") }, maxLines = 5,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = KeyboardActions(onSend = { send() }), enabled = !thread.loading)
+            SuggestingComposer(draft, { draft = it }, mentionSource(state), thread.rootId, ::send) { field, change, actions ->
+                OutlinedTextField(draft, change, Modifier.fillMaxWidth().then(field), placeholder = { Text("Reply to thread…") }, maxLines = 5,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = actions, enabled = !thread.loading)
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(pending?.broadcast ?: broadcast, { broadcast = it }, enabled = pending == null)
-                Text("Also send to $conversation", Modifier.weight(1f), fontSize = 12.sp)
-                TextButton(::send, enabled = !thread.loading && state.chatAuthorId != null && state.pendingMessage == null && draft.isNotBlank()) { Text("Send reply") }
+                Text(if (direct) "Also send to conversation" else "Also send to $conversation", Modifier.weight(1f), fontSize = 12.sp)
+                TextButton(::send, enabled = !thread.loading && state.chatAuthorId != null && state.pendingMessage == null && draft.text.isNotBlank()) { Text("Send reply") }
             }
+            DraftCounter(draft.text)
             if (state.pendingMessage?.error != null && pending == null) Text("Confirm or dismiss the pending message first.", color = TextMuted)
         } else Text(when {
             state.selectedDirect?.incoming == true -> "Accept the request to reply."
@@ -1253,6 +1264,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     var showingPins by remember(channel.id) { mutableStateOf(false) }
     // Switching to Pins must not discard the channel's measured scroll position.
     val timelineState = key(channel.id) { rememberLazyListState() }
+    val timelineFollow = rememberSaveable(channel.id, saver = TimelineFollow.Saver) { TimelineFollow() }
     val joined = channel.joined
     // A 1:1 DM (not your notes) offers Block / Unblock; a request does so in its own bar.
     val direct = state.selectedDirect?.takeIf { channel.direct && it.peer.id != state.account?.id && !it.incoming }
@@ -1327,7 +1339,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 }
             }
         }
-        MessageTimeline(state, viewModel, Modifier.weight(1f).browseSwipeRegion(LocalBrowseDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen), listState = timelineState) {
+        MessageTimeline(state, viewModel, Modifier.weight(1f).browseSwipeRegion(LocalBrowseDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen), listState = timelineState, follow = timelineFollow) {
             channelPending?.error?.let { pending ->
                 val editable = canEditRejectedMessage(draft.text, channelPending.text)
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1368,98 +1380,121 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     TextButton(viewModel::retrySession) { Text("Retry session", fontSize = 12.sp) }
                 }
             }
-            val context = LocalContext.current
-            val catalog = remember { EmojiArtwork.catalog(context) }
-            var dismissedAt by remember(channel.id) { mutableStateOf<TextFieldValue?>(null) }
-            var composerFocused by remember(channel.id) { mutableStateOf(false) }
-            // `:` emoji and `@` mention tokens never overlap; both share one popup.
-            val token = emojiToken(draft)
-            val mention = if (token == null) mentionToken(draft) else null
-            val open = composerFocused && draft != dismissedAt
-            val emojiRows = if (open && token != null) emojiSuggestions(catalog, token.query) else emptyList()
-            val mentionRows = if (open && mention != null) mentionSuggestions(mentionSource(state), mention.query) else emptyList()
-            val suggestionCount = emojiRows.size + mentionRows.size
-            var selectedSuggestion by remember(channel.id) { mutableIntStateOf(0) }
-            LaunchedEffect(token, mention) { selectedSuggestion = 0 }
-            val suggestionList = rememberLazyListState()
-            LaunchedEffect(selectedSuggestion, token, mention) {
-                if (suggestionCount > 0) suggestionList.animateScrollToItem(selectedSuggestion.coerceAtMost(suggestionCount - 1))
-            }
-            fun accept(next: TextFieldValue?) {
-                next?.let { draft = it; dismissedAt = null; viewModel.reportActivity(); viewModel.setTyping(it.text.isNotBlank()) }
-            }
-            fun chooseSuggestion(index: Int): Boolean {
-                emojiToken(draft)?.let { current ->
-                    val entry = emojiRows.getOrNull(index) ?: return false
-                    accept(insertEmoji(draft, current, entry.emoji))
-                    return true
-                }
-                val current = mentionToken(draft) ?: return false
-                val candidate = mentionRows.getOrNull(index) ?: return false
-                accept(insertMention(draft, current, candidate.username))
-                return true
-            }
-            if (suggestionCount > 0) Surface(
-                Modifier.widthIn(max = 260.dp).fillMaxWidth().padding(bottom = 6.dp), color = SurfaceRaised,
-                shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border),
-            ) {
-                LazyColumn(Modifier.heightIn(max = 192.dp).padding(vertical = 4.dp), state = suggestionList) {
-                    itemsIndexed(emojiRows, key = { _, entry -> entry.id }) { index, entry ->
-                        SuggestionRow(index == selectedSuggestion, "Insert emoji ${emojiShortcodeLabel(entry.name)}", { selectedSuggestion = index; chooseSuggestion(index) }) {
-                            EmojiImage(entry.emoji, null, Modifier.size(28.dp))
-                            Text(emojiShortcodeLabel(entry.name), color = if (index == selectedSuggestion) Text else TextMuted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        }
-                    }
-                    itemsIndexed(mentionRows, key = { _, candidate -> "@${candidate.username}" }) { index, candidate ->
-                        MentionSuggestionRow(candidate, index == selectedSuggestion) { selectedSuggestion = index; chooseSuggestion(index) }
-                    }
+            fun submit() {
+                val pending = state.pendingMessage
+                // Web: Enter retries an unconfirmed send; a rejected one waits for Edit or Dismiss.
+                if (state.chatAuthorId != null) {
+                    if (pending != null) { if (pending.threadRootId == null && !pending.rejected && pending.error != null) viewModel.send(pending.text) }
+                    else if (draft.text.isNotBlank()) { val sent = draft.text; viewModel.setTyping(false); viewModel.send(sent); draft = TextFieldValue("") }
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
-                OutlinedTextField(
-                    draft, { value ->
-                        val limited = if (value.text.codePointCount(0, value.text.length) <= 4000) value else {
-                            val text = value.text.codePointTake(4000)
-                            value.copy(text = text, selection = TextRange(value.selection.start.coerceAtMost(text.length), value.selection.end.coerceAtMost(text.length)), composition = null)
-                        }
-                        draft = limited; dismissedAt = null; viewModel.reportActivity(); viewModel.setTyping(limited.text.isNotBlank())
-                    },
-                    modifier = Modifier.weight(1f).onFocusChanged { composerFocused = it.isFocused }.onPreviewKeyEvent { event ->
-                        if (event.type != KeyEventType.KeyDown || suggestionCount == 0) false else when (event.key) {
-                            Key.DirectionDown -> { selectedSuggestion = (selectedSuggestion + 1) % suggestionCount; true }
-                            Key.DirectionUp -> { selectedSuggestion = (selectedSuggestion - 1 + suggestionCount) % suggestionCount; true }
-                            Key.Enter, Key.Tab -> if (event.isShiftPressed) false else chooseSuggestion(selectedSuggestion.coerceAtMost(suggestionCount - 1))
-                            Key.Escape -> { dismissedAt = draft; true }
-                            else -> false
-                        }
-                    }, placeholder = { Text(if (channel.direct) "Message ${channel.name}" else "Message #${channel.name}") }, maxLines = 6,
-                    enabled = !state.messagesLoading && state.messagesError == null,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    keyboardActions = KeyboardActions(onSend = {
-                        if (suggestionCount > 0) { chooseSuggestion(selectedSuggestion.coerceAtMost(suggestionCount - 1)); return@KeyboardActions }
-                        val pending = state.pendingMessage
-                        // Web: Enter retries an unconfirmed send; a rejected one waits for Edit or Dismiss.
-                        if (state.chatAuthorId != null) {
-                            if (pending != null) { if (pending.threadRootId == null && !pending.rejected && pending.error != null) viewModel.send(pending.text) }
-                            else if (draft.text.isNotBlank()) { val sent = draft.text; viewModel.setTyping(false); viewModel.send(sent); draft = TextFieldValue("") }
-                        }
-                    }),
-                    colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = SurfaceComposer, unfocusedContainerColor = SurfaceComposer, focusedBorderColor = Terracotta, unfocusedBorderColor = Border),
-                )
-                FilledIconButton(
-                    { if (draft.text.isNotBlank() && state.pendingMessage == null) { val sent = draft.text; viewModel.setTyping(false); viewModel.send(sent); draft = TextFieldValue("") } },
-                    modifier = Modifier.size(48.dp).semantics { contentDescription = "Send" }, enabled = draft.text.isNotBlank() && state.pendingMessage == null && state.chatAuthorId != null,
-                    shape = MaterialTheme.shapes.small,
-                    colors = IconButtonDefaults.filledIconButtonColors(
-                        containerColor = Terracotta, contentColor = Color.White,
-                        disabledContainerColor = Terracotta.copy(alpha = 0.55f), disabledContentColor = Color.White.copy(alpha = 0.6f),
-                    ),
-                ) { Icon(painterResource(R.drawable.lucide_arrow_up), null) }
+            SuggestingComposer(draft, { draft = it; viewModel.reportActivity(); viewModel.setTyping(it.text.isNotBlank()) }, mentionSource(state), channel.id, ::submit) { field, change, actions ->
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+                    OutlinedTextField(
+                        draft, change, modifier = Modifier.weight(1f).then(field),
+                        placeholder = { Text(if (channel.direct) "Message ${channel.name}" else "Message #${channel.name}") }, maxLines = 6,
+                        enabled = !state.messagesLoading && state.messagesError == null,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = actions,
+                        colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = SurfaceComposer, unfocusedContainerColor = SurfaceComposer, focusedBorderColor = Terracotta, unfocusedBorderColor = Border),
+                    )
+                    FilledIconButton(
+                        { if (draft.text.isNotBlank() && state.pendingMessage == null) { val sent = draft.text; viewModel.setTyping(false); viewModel.send(sent); draft = TextFieldValue("") } },
+                        modifier = Modifier.size(48.dp).semantics { contentDescription = "Send" }, enabled = draft.text.isNotBlank() && state.pendingMessage == null && state.chatAuthorId != null,
+                        shape = MaterialTheme.shapes.small,
+                        colors = IconButtonDefaults.filledIconButtonColors(
+                            containerColor = Terracotta, contentColor = Color.White,
+                            disabledContainerColor = Terracotta.copy(alpha = 0.55f), disabledContentColor = Color.White.copy(alpha = 0.6f),
+                        ),
+                    ) { Icon(painterResource(R.drawable.lucide_arrow_up), null) }
+                }
             }
-            val count = draft.text.codePointCount(0, draft.text.length)
-            if (count >= 3000) Text("${"%,d".format(java.util.Locale.US, count)} / 4,000", Modifier.align(Alignment.End), color = counterTone(count), fontSize = 10.sp)
+            DraftCounter(draft.text)
         }
     }
+}
+
+/**
+ * A composer's `:` emoji / `@` mention popup above [content]'s field; the tokens never overlap, so both share it.
+ * While it is open Up/Down move, Enter or Tab inserts and Escape dismisses; otherwise a hardware Enter without
+ * Shift sends (Shift+Enter keeps the newline), like the keyboard's Send action.
+ */
+@Composable private fun SuggestingComposer(
+    draft: TextFieldValue, onDraft: (TextFieldValue) -> Unit, mentions: MentionSource, scope: Any?, send: () -> Unit,
+    content: @Composable (field: Modifier, change: (TextFieldValue) -> Unit, actions: KeyboardActions) -> Unit,
+) {
+    val context = LocalContext.current
+    val catalog = remember { EmojiArtwork.catalog(context) }
+    var dismissedAt by remember(scope) { mutableStateOf<TextFieldValue?>(null) }
+    var focused by remember(scope) { mutableStateOf(false) }
+    val token = emojiToken(draft)
+    val mention = if (token == null) mentionToken(draft) else null
+    val open = focused && draft != dismissedAt
+    val emojiRows = if (open && token != null) emojiSuggestions(catalog, token.query) else emptyList()
+    val mentionRows = if (open && mention != null) mentionSuggestions(mentions, mention.query) else emptyList()
+    val count = emojiRows.size + mentionRows.size
+    var selected by remember(scope) { mutableIntStateOf(0) }
+    LaunchedEffect(token, mention) { selected = 0 }
+    val list = rememberLazyListState()
+    LaunchedEffect(selected, token, mention) {
+        if (count > 0) list.animateScrollToItem(selected.coerceAtMost(count - 1))
+    }
+    fun accept(next: TextFieldValue?) { next?.let { dismissedAt = null; onDraft(it) } }
+    fun choose(index: Int): Boolean {
+        emojiToken(draft)?.let { current ->
+            val entry = emojiRows.getOrNull(index) ?: return false
+            accept(insertEmoji(draft, current, entry.emoji))
+            return true
+        }
+        val current = mentionToken(draft) ?: return false
+        val candidate = mentionRows.getOrNull(index) ?: return false
+        accept(insertMention(draft, current, candidate.username))
+        return true
+    }
+    if (count > 0) Surface(
+        Modifier.widthIn(max = 260.dp).fillMaxWidth().padding(bottom = 6.dp), color = SurfaceRaised,
+        shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border),
+    ) {
+        LazyColumn(Modifier.heightIn(max = 192.dp).padding(vertical = 4.dp), state = list) {
+            itemsIndexed(emojiRows, key = { _, entry -> entry.id }) { index, entry ->
+                SuggestionRow(index == selected, "Insert emoji ${emojiShortcodeLabel(entry.name)}", { selected = index; choose(index) }) {
+                    EmojiImage(entry.emoji, null, Modifier.size(28.dp))
+                    Text(emojiShortcodeLabel(entry.name), color = if (index == selected) Text else TextMuted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            itemsIndexed(mentionRows, key = { _, candidate -> "@${candidate.username}" }) { index, candidate ->
+                MentionSuggestionRow(candidate, index == selected) { selected = index; choose(index) }
+            }
+        }
+    }
+    content(
+        Modifier.onFocusChanged { focused = it.isFocused }.onPreviewKeyEvent { event ->
+            val enter = event.key == Key.Enter || event.key == Key.NumPadEnter
+            if (event.type != KeyEventType.KeyDown) false
+            // A hardware Enter outside IME composition sends; the text field never sees it.
+            else if (count == 0) (enter && !event.isShiftPressed && draft.composition == null).also { if (it) send() }
+            else when (event.key) {
+                Key.DirectionDown -> { selected = (selected + 1) % count; true }
+                Key.DirectionUp -> { selected = (selected - 1 + count) % count; true }
+                Key.Enter, Key.NumPadEnter, Key.Tab -> if (event.isShiftPressed) false else choose(selected.coerceAtMost(count - 1))
+                Key.Escape -> { dismissedAt = draft; true }
+                else -> false
+            }
+        },
+        { value ->
+            val limited = if (value.text.codePointCount(0, value.text.length) <= 4000) value else {
+                val text = value.text.codePointTake(4000)
+                value.copy(text = text, selection = TextRange(value.selection.start.coerceAtMost(text.length), value.selection.end.coerceAtMost(text.length)), composition = null)
+            }
+            accept(limited)
+        },
+        KeyboardActions(onSend = { if (count > 0) choose(selected.coerceAtMost(count - 1)) else send() }),
+    )
+}
+
+/** Web's `.chat-counter`: shown from 3,000 characters, toned toward the 4,000 limit. */
+@Composable private fun ColumnScope.DraftCounter(text: String) {
+    val count = text.codePointCount(0, text.length)
+    if (count >= 3000) Text("${"%,d".format(java.util.Locale.US, count)} / 4,000", Modifier.align(Alignment.End), color = counterTone(count), fontSize = 10.sp)
 }
 
 /** One flat row of the composer's `:` emoji / `@` mention popup. */
@@ -1518,7 +1553,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     }
 }
 
-@Composable private fun MessageTimeline(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, inThread: Boolean = false, listState: LazyListState = rememberLazyListState(), pendingStatus: @Composable () -> Unit = {}) {
+@Composable private fun MessageTimeline(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, inThread: Boolean = false, listState: LazyListState = rememberLazyListState(), follow: TimelineFollow = remember { TimelineFollow() }, pendingStatus: @Composable () -> Unit = {}) {
     var actionTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var pickerTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var forwardTarget by remember { mutableStateOf<ChatMessage?>(null) }
@@ -1560,8 +1595,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         revealedRuns = emptySet()
     }
     // Web's chat phases: loading, failed first load, then the conversation.
-    if (state.messagesLoading) return Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-        Text("Loading messages…", color = TextMuted, fontSize = 13.sp)
+    if (state.messagesLoading) {
+        SideEffect { follow.settled = false }
+        return Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { Text("Loading messages…", color = TextMuted, fontSize = 13.sp) }
     }
     state.messagesError?.let { error -> return Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1570,6 +1606,19 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 colors = ButtonDefaults.outlinedButtonColors(containerColor = SurfaceRaised, contentColor = Text)) { Text("Try again", fontSize = 12.sp) }
         }
     } }
+    val skeleton = inThread && state.thread?.loading == true && messages.none { it.threadRootId == state.thread.rootId }
+    val listedPending = state.pendingMessage?.takeIf { inThread || it.threadRootId == null }
+    val empty = messages.isEmpty() && state.pendingMessage == null && !(inThread && state.thread?.loading == true)
+    val firstRow = if (inThread) 0 else 1
+    val newer = !inThread && state.hasNewerMessages
+    val keys = remember(rows) { rows.map { it.key } }
+    val threadPaging = state.thread?.loading == true && !skeleton
+    FollowLatest(listState, follow, FollowFrame(keys, listedPending?.clientMessageId,
+        loadingOlder = if (inThread) threadPaging else state.loadingOlder,
+        historical = if (inThread) state.thread?.hasNewer == true else state.hasNewerMessages,
+        loadingNewer = if (inThread) threadPaging && state.thread?.hasNewer == true else state.loadingNewer,
+        jump = state.focusRevision.takeIf { state.focusedMessageId?.let { id -> messages.any { it.id == id } } == true }),
+        firstRow, firstRow + rows.size + listOf(skeleton, listedPending != null, empty, newer).count { it } - 1, ready = !skeleton)
     LazyColumn(modifier.fillMaxWidth(), state = listState, reverseLayout = false, contentPadding = PaddingValues(vertical = 8.dp)) {
         if (!inThread) item {
             Row(Modifier.fillMaxWidth().height(44.dp).padding(horizontal = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalAlignment = Alignment.CenterVertically) {
@@ -1613,7 +1662,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
               }
             }
         }
-        if (inThread && state.thread?.loading == true && messages.none { it.threadRootId == state.thread.rootId }) item("thread-loading") {
+        if (skeleton) item("thread-loading") {
             Column(Modifier.fillMaxWidth().semantics { contentDescription = "Loading thread replies" }) {
                 repeat(2) { index ->
                     Row(Modifier.fillMaxWidth().height(70.dp).padding(horizontal = 18.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1626,7 +1675,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 }
             }
         }
-        state.pendingMessage?.takeIf { inThread || it.threadRootId == null }?.let { pending -> item("pending:${pending.clientMessageId}") {
+        listedPending?.let { pending -> item("pending:${pending.clientMessageId}") {
             Column {
                 if (messages.lastOrNull()?.createdAt?.let { sameLocalDay(it, pending.createdAt) } != true) {
                     DateDivider(pending.createdAt)
@@ -1638,7 +1687,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 Box(Modifier.padding(start = 62.dp, end = 18.dp)) { Column { pendingStatus() } }
             }
         } }
-        if (messages.isEmpty() && state.pendingMessage == null && !(inThread && state.thread?.loading == true)) item { Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
+        if (empty) item { Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(7.dp)) {
                 if (state.selectedDirect?.let { it.peer.id == state.account?.id } == true) {
                     Text("You can message yourself here to keep notes, reminders, and ideas.", color = TextMuted, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
@@ -1649,7 +1698,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 }
             }
         } }
-        if (!inThread && state.hasNewerMessages) item {
+        if (newer) item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                 TextButton(viewModel::loadNewer, enabled = !state.loadingNewer) { Text(if (state.loadingNewer) "Loading…" else "Load newer messages") }
                 TextButton(viewModel::retryMessages) { Text("Back to latest") }
@@ -1746,6 +1795,89 @@ internal fun timelineRows(entries: List<TimelineEntry>): List<TimelineRow> = bui
         previous = entry.last
     }
 }
+
+/** What a message list last showed. Only [settled] (it was positioned since opening) survives recreation. */
+internal class TimelineFollow(var settled: Boolean = false) {
+    var last: FollowFrame? = null
+    /** You sent from a historical context; the return to the newest page reveals it. */
+    var sent = false
+    var jump: Long? = null
+    companion object { val Saver = Saver<TimelineFollow, Boolean>({ it.settled }, ::TimelineFollow) }
+}
+
+/**
+ * One composition of a message list: its row keys, your pending send, paging state, whether it shows a historical
+ * context window rather than the newest messages, and the Go to message revision whose target it contains.
+ */
+internal data class FollowFrame(
+    val keys: List<String>, val pendingId: String? = null, val loadingOlder: Boolean = false,
+    val historical: Boolean = false, val loadingNewer: Boolean = false, val jump: Long? = null,
+)
+
+/**
+ * Web's timeline following, as the `(index, offset)` to request (or null to stay), updating [follow]. A Go to
+ * message jump owns the viewport. Otherwise the list opens at the latest row once, always reveals your own send,
+ * returns to the bottom when it goes back to the newest page (but not when you paged forward into it), keeps the
+ * rows you were reading when an older page lands ([anchor]), and follows new rows only near the bottom ([near]) of
+ * the live conversation.
+ */
+internal fun followScroll(follow: TimelineFollow, ready: Boolean, now: FollowFrame, lastIndex: Int, near: () -> Boolean, anchor: () -> Pair<Int, Int>?): Pair<Int, Int>? {
+    val last = follow.last
+    val jumped = now.jump != null && now.jump != follow.jump
+    follow.last = now
+    if (now.jump != null) follow.jump = now.jump
+    val latest = lastIndex to PAST_END
+    return when {
+        !ready -> null
+        jumped -> { follow.settled = true; null }
+        !follow.settled -> if (now.keys.isEmpty()) null else latest.also { follow.settled = true; follow.sent = false }
+        // Recreated: the restored position stands.
+        last == null -> null
+        now.pendingId != null && now.pendingId != last.pendingId -> latest.also { follow.sent = now.historical }
+        last.historical && !now.historical -> if (last.loadingNewer && !follow.sent) null else latest.also { follow.sent = false }
+        else -> (if (last.loadingOlder && !now.loadingOlder) anchor() else null)
+            ?: latest.takeIf { !now.historical && !last.historical && now.keys.lastOrNull() != last.keys.lastOrNull() && near() }
+    }
+}
+
+/** Applies [followScroll] before the next measure, so nothing flashes at the old position, and keeps a reader at the bottom when the viewport shrinks (the keyboard opening). */
+@Composable private fun FollowLatest(list: LazyListState, follow: TimelineFollow, now: FollowFrame, firstRow: Int, lastIndex: Int, ready: Boolean) {
+    val threshold = with(LocalDensity.current) { 80.dp.roundToPx() }
+    SideEffect {
+        // The layout still shows the previous rows here.
+        followScroll(follow, ready, now, lastIndex, { list.layoutInfo.nearBottom(threshold) }) {
+            olderPageAnchor(list.layoutInfo.visibleItemsInfo.map { Triple(it.key, it.index, it.offset) }) { key -> (key as? String)?.let(now.keys::indexOf)?.takeIf { it >= 0 }?.plus(firstRow) }
+        }?.let { (index, offset) -> list.requestScrollToItem(index, offset) }
+    }
+    LaunchedEffect(list, follow) {
+        var height = 0
+        var near = true
+        snapshotFlow { list.layoutInfo }.collect { info ->
+            val shrank = info.viewportSize.height < height
+            height = info.viewportSize.height
+            if (shrank && near && follow.settled && follow.last?.historical == false && info.totalItemsCount > 0) list.requestScrollToItem(info.totalItemsCount - 1, PAST_END)
+            else near = info.nearBottom(threshold)
+        }
+    }
+}
+
+/** A past-the-end offset bottom-aligns the last row, even one taller than the viewport. */
+internal const val PAST_END = Int.MAX_VALUE / 2
+
+private fun LazyListLayoutInfo.nearBottom(threshold: Int): Boolean = visibleItemsInfo.lastOrNull().let { last ->
+    nearBottom(totalItemsCount, last?.index ?: -1, last?.let { it.offset + it.size } ?: 0, viewportEndOffset - afterContentPadding, threshold)
+}
+
+/** Web's at-bottom test: the last item ends within [threshold] of the content's end. An empty list is at the bottom. */
+internal fun nearBottom(totalItems: Int, lastVisibleIndex: Int, lastVisibleEnd: Int, contentEnd: Int, threshold: Int): Boolean =
+    totalItems == 0 || lastVisibleIndex == totalItems - 1 && lastVisibleEnd - contentEnd <= threshold
+
+/**
+ * After an older page lands: the first visible `(key, index, offset)` item whose index moved, as the new index and
+ * the scroll offset that keeps it where it was. A header or thread root above the page keeps its index.
+ */
+internal fun olderPageAnchor(visible: List<Triple<Any, Int, Int>>, newIndex: (Any) -> Int?): Pair<Int, Int>? =
+    visible.firstNotNullOfOrNull { (key, index, offset) -> newIndex(key)?.takeIf { it != index }?.let { it to -offset } }
 
 @Composable private fun DateDivider(createdAt: String) {
     val label = fullDateLabel(createdAt)
@@ -2387,7 +2519,7 @@ internal fun counterTone(count: Int): Color = when {
         Button({ viewModel.renameSpace(name) }, enabled = !state.busy && name.isNotBlank() && name.trim() != detail.space.name, shape = MaterialTheme.shapes.small) { Text("Save name") }
         HorizontalDivider(color = Border)
         InviteManager(detail.members, state.pendingSpaceInvitations, state.busy, viewModel::addSpaceMember,
-            { removing = it }, viewModel::cancelSpaceInvitation)
+            { removing = it }, viewModel::cancelSpaceInvitation, channel = false)
         HorizontalDivider(color = Border)
         DangerZone("Delete space", "Delete this space and all its channels for every member.", state.busy) { confirmingDelete = true }
     }
@@ -2421,11 +2553,11 @@ internal fun counterTone(count: Int): Color = when {
 }
 
 @Composable private fun InviteManager(
-    members: List<Member>, pending: List<Member>, busy: Boolean, add: (String, () -> Unit) -> Unit,
-    remove: (Member) -> Unit, cancel: (Member) -> Unit,
+    members: List<Member>, pending: List<Member>, busy: Boolean, add: (String, () -> Unit, (String) -> Unit) -> Unit,
+    remove: (Member) -> Unit, cancel: (Member) -> Unit, channel: Boolean,
 ) {
     Text("Invite", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-    MemberManager(members, busy, add, remove, heading = "Members", action = "Invite")
+    MemberManager(members, pending, busy, add, remove, channel, heading = "Members", action = "Invite")
     Text("Pending invitations", fontSize = 13.sp, fontWeight = FontWeight.Bold)
     if (pending.isEmpty()) Text("No pending invitations.", color = TextMuted, fontSize = 11.sp)
     pending.forEach { member ->
@@ -2461,8 +2593,8 @@ internal fun counterTone(count: Int): Color = when {
         PrivacyToggle(private, state.selectedSpace?.space?.name ?: "this space", stableSwitch = true) { private = it }
         if (channel.private) {
             HorizontalDivider(color = Border)
-            InviteManager(state.channelGrants, state.pendingChannelInvitations, state.busy, { username, added -> viewModel.addChannelGrant(channel, username, added) },
-                { removing = it }, { viewModel.cancelChannelInvitation(channel, it) })
+            InviteManager(state.channelGrants, state.pendingChannelInvitations, state.busy, { username, done, failed -> viewModel.addChannelGrant(channel, username, done, failed) },
+                { removing = it }, { viewModel.cancelChannelInvitation(channel, it) }, channel = true)
         }
         HorizontalDivider(color = Border)
         DangerZone("Delete channel", "Delete this channel for everyone in the space.", state.busy) { confirmingDelete = true }
@@ -2476,28 +2608,32 @@ internal fun counterTone(count: Int): Color = when {
     }
 }
 
-/** Web's MemberManager: exact-username add, then "@username · Owner" rows. */
-@Composable private fun MemberManager(members: List<Member>, busy: Boolean, add: (String, () -> Unit) -> Unit, remove: (Member) -> Unit, heading: String = "Members", action: String = "Add") {
+/** Web's MemberManager: exact-username invite, kept until it is sent, then "@username · Owner" rows. */
+@Composable private fun MemberManager(
+    members: List<Member>, invitations: List<Member>, busy: Boolean, add: (String, () -> Unit, (String) -> Unit) -> Unit, remove: (Member) -> Unit,
+    channel: Boolean, heading: String = "Members", action: String = "Add",
+) {
     var username by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
+    var success by remember { mutableStateOf<String?>(null) }
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(heading, fontSize = 13.sp, fontWeight = FontWeight.Bold)
         Surface(color = SurfaceRaised, shape = CircleShape) { Text(members.size.toString(), Modifier.padding(horizontal = 6.dp, vertical = 2.dp), color = TextMuted, fontSize = 10.sp) }
     }
     Row(verticalAlignment = Alignment.CenterVertically) {
-        // The field empties only after the add succeeds, so a failed add keeps the username to fix.
-        val submitMember = { if (!usernameValid(username)) error = "Use 3–32 lowercase letters, numbers, or underscores." else {
-            error = null
-            val submitted = username
-            add(submitted) { if (username == submitted) username = "" }
-        } }
-        OutlinedTextField(username, { username = normalizeUsername(it); error = null }, label = { Text("Exact username") }, modifier = Modifier.weight(1f), singleLine = true,
+        val submitMember = {
+            success = null
+            error = memberInviteError(username, members, invitations, channel)
+            if (error == null) add(username, { username = ""; success = "Invitation sent. They must accept before joining." }, { error = memberAddError(it) })
+        }
+        OutlinedTextField(username, { username = normalizeUsername(it); error = null; success = null }, label = { Text("Exact username") }, modifier = Modifier.weight(1f), singleLine = true,
             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, imeAction = ImeAction.Done),
             keyboardActions = KeyboardActions(onDone = { if (!busy) submitMember() }))
         Spacer(Modifier.width(8.dp))
         Button(submitMember, enabled = !busy, shape = MaterialTheme.shapes.small) { Text(action) }
     }
-    error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
+    success?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 12.sp) }
+    error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
     members.forEach { member ->
         Row(Modifier.fillMaxWidth().heightIn(min = 44.dp), verticalAlignment = Alignment.CenterVertically) {
             Avatar(member.displayName, 30.dp, avatarId = member.avatarId); Spacer(Modifier.width(9.dp))
@@ -2611,6 +2747,24 @@ internal fun channelNameError(name: String): String? = when {
 
 private fun normalizeUsername(value: String) = value.lowercase().filter { it in 'a'..'z' || it in '0'..'9' || it == '_' }.take(32)
 internal fun usernameValid(username: String) = Regex("^[a-z0-9_]{3,32}$").matches(username)
+
+/** Web's MemberManager checks before inviting [username] to a space or, with [channel], a private channel. */
+internal fun memberInviteError(username: String, members: List<Member>, invitations: List<Member>, channel: Boolean): String? = when {
+    !usernameValid(username) -> "Use 3–32 lowercase letters, numbers, or underscores."
+    members.any { it.username == username } -> if (channel) "This person already has access to this channel." else "This person is already in the space."
+    invitations.any { it.username == username } -> "This person already has a pending invitation."
+    else -> null
+}
+
+/** Web's copy for the server's member errors. */
+internal fun memberAddError(message: String): String = when (message) {
+    "user not found" -> "User not found. Check the username and try again."
+    "user already in space" -> "This person is already in the space."
+    "user already in channel" -> "This person already has access to this channel."
+    "user already invited" -> "This person already has a pending invitation."
+    "invalid username" -> "Use 3–32 lowercase letters, numbers, or underscores."
+    else -> message
+}
 internal fun profileValid(username: String, displayName: String) =
     usernameValid(username) && displayName.isNotBlank() &&
         displayName.codePointCount(0, displayName.length) <= 64 && displayName.none { it.isISOControl() }

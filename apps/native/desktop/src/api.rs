@@ -903,7 +903,10 @@ const SERVER_ERRORS: &[(&str, &str)] = &[
         "invalid username",
         "Use 3–32 lowercase letters, numbers, or underscores.",
     ),
-    ("user already in space", "This person is already a member."),
+    (
+        "user already in space",
+        "This person is already in the space.",
+    ),
     (
         "user already in channel",
         "This person already has access to this channel.",
@@ -1042,7 +1045,7 @@ mod tests {
         );
         assert_eq!(
             friendly_error("user already in space"),
-            "This person is already a member."
+            "This person is already in the space."
         );
         assert_eq!(
             friendly_error("resource not found"),

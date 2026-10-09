@@ -1,6 +1,7 @@
-import { Component, lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { Component, lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { loadMessageVersions } from "./client.ts";
+import { focusReturn } from "./focus-return.ts";
 import type { ChatMessage, MessageVersion } from "./types.ts";
 
 // History opens after a browser interaction; don't bundle the DOM renderer into the server.
@@ -120,20 +121,16 @@ export default function MessageHistory({ message, onClose }: { message: ChatMess
       if (!signal.aborted) setLoading(false);
     }
   };
-  useLayoutEffect(() => {
-    const modal = dialog.current!;
-    const opener = document.activeElement as HTMLElement | null;
-    modal.showModal();
-    return () => {
-      modal.close();
-      if (opener?.isConnected) opener.focus();
-    };
-  }, []);
   useEffect(() => {
     // The dialog's key follows the content revision, so live edits refresh history.
     controller.current = new AbortController();
+    const restore = focusReturn(message.clientMessageId);
+    dialog.current?.showModal();
     void load();
-    return () => controller.current.abort();
+    return () => {
+      controller.current.abort();
+      restore();
+    };
   }, []);
   const current = versions[0],
     latestPrevious = versions[1];

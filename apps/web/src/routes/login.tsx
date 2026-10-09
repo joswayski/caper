@@ -223,6 +223,7 @@ function Login() {
                 disabled={pending}
                 onClick={() => {
                   setChallengeId(undefined);
+                  setCode("");
                   setError(undefined);
                   setAttemptsRemaining(undefined);
                   setNotice(undefined);

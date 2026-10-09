@@ -193,7 +193,7 @@
 }
 .call-account .voice-icon-button {
   width: 28px;
-  height: 30px;
+  height: 32px;
   border: 0;
   border-radius: 4px 0 0 4px;
   color: var(--text-muted);
@@ -205,7 +205,7 @@
 }
 .call-settings-trigger {
   width: 28px;
-  height: 30px;
+  height: 32px;
   display: grid;
   place-items: center;
   padding: 0;
@@ -254,9 +254,6 @@
 }
 .device-menu .call-settings-trigger[aria-expanded="true"] svg {
   transform: rotate(180deg);
-}
-.device-menu .call-settings-panel {
-  border-radius: 8px;
 }
 .call-settings-panel > div {
   display: grid;
@@ -710,6 +707,23 @@
 .audio-dialog-heading h2 {
   margin: 0;
   font-size: 1rem;
+  font-weight: 700;
+}
+/* Profile and audio dialogs close like the space dialogs: borderless, neutral. */
+.audio-dialog-heading > .voice-icon-button {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  color: var(--text-muted);
+  background: transparent;
+}
+.audio-dialog-heading > .voice-icon-button:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--border);
+}
+.audio-dialog-heading > .voice-icon-button svg {
+  width: 18px;
+  height: 18px;
 }
 .audio-test-devices {
   display: grid;
@@ -743,6 +757,7 @@
 .mic-test-heading h3 {
   margin: 0;
   font-size: 1rem;
+  font-weight: 700;
 }
 .mic-test-copy {
   max-width: 580px;
@@ -855,6 +870,10 @@
 .mic-test-button:disabled {
   opacity: 0.55;
   cursor: wait;
+}
+.mic-test-button:hover:not(:disabled) {
+  border-color: var(--terracotta-bright);
+  background: var(--terracotta-bright);
 }
 .mic-comparison {
   display: grid;
@@ -974,18 +993,20 @@
 .call-account .voice-icon-button.active {
   color: var(--terracotta-bright);
 }
+/* The chevron half matches its icon half's hover. */
 .voice-action-group .call-settings-trigger:is(:focus-visible, [aria-expanded="true"]) {
-  background: var(--border);
+  background: var(--surface-composer);
   color: #fff;
 }
 @media (hover: hover) {
   .voice-action-group .call-settings-trigger:hover {
-    background: var(--border);
+    background: var(--surface-composer);
     color: #fff;
   }
 }
 .call-account .voice-icon-button[aria-disabled="true"] {
   opacity: 0.5;
+  cursor: default;
 }
 .voice-icon-button {
   width: 40px;
@@ -1010,7 +1031,8 @@
   color: #fff;
   background: #39231e;
 }
-.call-account .voice-icon-button:focus-visible {
+/* Mute and deafen stay dimmed while a mic test makes them unavailable. */
+.call-account .voice-icon-button:not([aria-disabled="true"]):focus-visible {
   color: #fff;
   background: var(--surface-composer);
   opacity: 1;
@@ -1018,12 +1040,12 @@
 /* A tap leaves :hover applied on touch screens, which made Mute/Deafen look
    pressed after toggling. Hover fills only apply with a real pointer. */
 @media (hover: hover) {
-  .voice-icon-button:hover:not(:disabled) {
+  .voice-icon-button:hover:not(:disabled, [aria-disabled="true"]) {
     border-color: #805143;
     color: #fff;
     background: #39231e;
   }
-  .call-account .voice-icon-button:hover {
+  .call-account .voice-icon-button:not([aria-disabled="true"]):hover {
     color: #fff;
     background: var(--surface-composer);
     opacity: 1;
@@ -1036,13 +1058,17 @@
   color: #ed5265;
   background: transparent;
 }
-.call-account .voice-action-group.active :is(.voice-icon-button, .call-settings-trigger):focus-visible,
+.call-account
+  .voice-action-group.active
+  :is(.voice-icon-button:not([aria-disabled="true"]), .call-settings-trigger):focus-visible,
 .call-account .voice-action-group.active .call-settings-trigger[aria-expanded="true"] {
   color: #ff7182;
   background: rgb(212 67 85 / 0.18);
 }
 @media (hover: hover) {
-  .call-account .voice-action-group.active :is(.voice-icon-button, .call-settings-trigger):hover {
+  .call-account
+    .voice-action-group.active
+    :is(.voice-icon-button:not([aria-disabled="true"]), .call-settings-trigger):hover {
     color: #ff7182;
     background: rgb(212 67 85 / 0.18);
   }
@@ -1114,8 +1140,9 @@
   background: var(--border);
   cursor: pointer;
   transition:
-    background-color 150ms ease-in-out,
-    border-color 150ms ease-in-out;
+    background-color 150ms ease,
+    border-color 150ms ease,
+    box-shadow 150ms ease;
 }
 .device-options input[role="switch"]::after {
   position: absolute;
@@ -1126,7 +1153,7 @@
   border-radius: 50%;
   background: var(--text);
   content: "";
-  transition: transform 150ms ease-in-out;
+  transition: transform 150ms ease;
 }
 .device-options input[role="switch"]:checked {
   background: var(--terracotta);
@@ -1134,6 +1161,23 @@
 }
 .device-options input[role="switch"]:checked::after {
   transform: translateX(16px);
+}
+/* Same hover as the channel privacy switch in spaces.css. */
+.device-options label:hover input[role="switch"]:not(:disabled) {
+  border-color: var(--text-muted);
+  background: #484d51;
+  box-shadow: 0 0 0 3px rgb(255 255 255 / 0.06);
+}
+.device-options label:hover input[role="switch"]:checked:not(:disabled) {
+  border-color: var(--terracotta-bright);
+  background: var(--terracotta-bright);
+  box-shadow: 0 0 0 3px rgb(182 77 50 / 0.18);
+}
+@media (prefers-reduced-motion: reduce) {
+  .device-options input[role="switch"],
+  .device-options input[role="switch"]::after {
+    transition: none;
+  }
 }
 .device-options span {
   overflow-wrap: anywhere;
@@ -1260,6 +1304,12 @@
   }
   .call-diagnostics dl {
     grid-template-columns: 1fr;
+  }
+  /* 44px touch targets on phones. */
+  .voice-error button,
+  .audio-dialog-heading > .voice-icon-button {
+    width: 44px;
+    height: 44px;
   }
 }
 

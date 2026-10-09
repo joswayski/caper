@@ -3,19 +3,9 @@ import { ArrowLeft, Send, X } from "lucide-react";
 import Avatar from "../components/Avatar";
 import type { ChatClient, ChatViewState } from "./client.ts";
 import { COUNTER_START, counterTone } from "./counter.ts";
+import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
+import type { MentionCandidate } from "./mentions.ts";
 import { sequence, type ChatMessage } from "./types.ts";
-
-// Escape belongs to these layers first; it closes the thread only when none is open.
-const ESCAPE_LAYERS = [
-  ".chat-reaction-picker",
-  ".chat-message-actions",
-  ".chat-reactors",
-  ".chat-reaction-tooltip",
-  ".chat-mention-card",
-  ".chat-forward-dialog",
-  // Also the message history dialog, which shares this class.
-  ".chat-edit-dialog[open]",
-].join(", ");
 
 export default function ThreadPanel({
   state,
@@ -23,15 +13,19 @@ export default function ThreadPanel({
   channelName,
   direct = false,
   readOnly,
+  mentionPeople,
+  specialMentions,
   renderMessage,
   onClose,
 }: {
   state: ChatViewState;
   client?: ChatClient;
   channelName: string;
-  /** DMs are named after the other person, without a channel `#`. */
   direct?: boolean;
   readOnly: boolean;
+  /** People `@` can suggest, without the author; undefined until loaded. */
+  mentionPeople?: MentionCandidate[];
+  specialMentions: boolean;
   renderMessage: (
     index: number,
     message: ChatMessage,
@@ -71,6 +65,15 @@ export default function ThreadPanel({
     if (rootId) setDrafts((current) => ({ ...current, [rootId]: { ...draft, ...change } }));
     setValidation(undefined);
   };
+  const suggestions = useComposerSuggestions({
+    id: "chat-thread",
+    draft: draft.text,
+    input: composer,
+    people: mentionPeople,
+    specialMentions,
+    onInsert: (text) => update({ text }),
+    onTooLong: () => setValidation("Messages must be 4,000 characters or fewer."),
+  });
   useEffect(() => {
     setDrafts({});
   }, [state.channelId]);
@@ -120,7 +123,16 @@ export default function ThreadPanel({
     follow.current = true;
     composer.current?.focus();
     const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !event.defaultPrevented && !document.querySelector(ESCAPE_LAYERS)) onClose();
+      // Escape closes the innermost layer first: a menu, popover or dialog
+      // over the thread (including sidebar menus and space dialogs) keeps it open.
+      if (
+        event.key === "Escape" &&
+        !event.defaultPrevented &&
+        !document.querySelector(
+          ".chat-reaction-picker, .chat-message-actions, .chat-reactors, .chat-mention-card, .chat-forward-dialog, dialog[open], details[open], [popover]:popover-open",
+        )
+      )
+        onClose();
     };
     document.addEventListener("keydown", escape);
     return () => {
@@ -136,7 +148,10 @@ export default function ThreadPanel({
     if (!pending) return;
     setDrafts((current) => {
       const old = current[pending.threadRootId!] ?? { text: "", broadcast: false };
-      return old.text === pending.text ? { ...current, [pending.threadRootId!]: { ...old, text: "" } } : current;
+      // "Also send to channel" applies to one reply, so it resets with the draft.
+      return old.text === pending.text
+        ? { ...current, [pending.threadRootId!]: { text: "", broadcast: false } }
+        : current;
     });
   }, [pending?.clientMessageId]);
   useEffect(() => {
@@ -169,7 +184,6 @@ export default function ThreadPanel({
     [replies, renderMessage],
   );
   if (!state.thread) return null;
-  const conversation = `${direct ? "" : "#"}${channelName}`;
   const count = Array.from(draft.text).length;
   const sending = !!state.pendingSend && !state.sendError;
   const blocked = !!state.pendingSend && !pending;
@@ -191,12 +205,17 @@ export default function ThreadPanel({
       aria-modal={mobile || undefined}
     >
       <header className="chat-thread-heading">
-        <button type="button" className="chat-thread-back" onClick={onClose} aria-label="Back to channel">
+        <button
+          type="button"
+          className="chat-thread-back"
+          onClick={onClose}
+          aria-label={direct ? "Back to conversation" : "Back to channel"}
+        >
           <ArrowLeft size={20} />
         </button>
         <div>
           <h2 id="chat-thread-heading">Thread</h2>
-          <span>in {conversation}</span>
+          <span>{direct ? `with ${channelName}` : `in #${channelName}`}</span>
         </div>
         <button type="button" className="chat-thread-close" onClick={onClose} aria-label="Close thread">
           <X size={20} />
@@ -315,8 +334,9 @@ export default function ThreadPanel({
                       type="button"
                       disabled={!!draft.text}
                       onClick={() => {
+                        const broadcast = pending.broadcast ?? false;
                         const text = client?.discardRejected();
-                        if (text !== undefined) update({ text });
+                        if (text !== undefined) update({ text, broadcast });
                       }}
                     >
                       Edit
@@ -344,6 +364,7 @@ export default function ThreadPanel({
               <label className="sr-only" htmlFor="chat-thread-reply">
                 Reply to thread
               </label>
+              {suggestions.popup}
               <textarea
                 ref={composer}
                 id="chat-thread-reply"
@@ -351,15 +372,26 @@ export default function ThreadPanel({
                 value={draft.text}
                 placeholder="Reply to thread…"
                 enterKeyHint="send"
+                aria-describedby="chat-thread-composer-hint"
+                {...suggestions.textarea}
                 disabled={state.phase !== "ready" || state.thread.loading}
-                onChange={(event) => update({ text: event.target.value })}
+                onChange={(event) => {
+                  update({ text: event.target.value });
+                  suggestions.change(event.target);
+                }}
+                onBlur={suggestions.blur}
                 onKeyDown={(event) => {
+                  if (suggestions.keyDown(event)) return;
                   if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                     event.preventDefault();
                     void submit();
                   }
                 }}
               />
+              <span id="chat-thread-composer-hint" className="sr-only">
+                Type : to find emoji or @ to mention someone. Up and Down choose; Enter or Tab inserts; Escape closes
+                suggestions. Enter to send. Shift+Enter for a new line.
+              </span>
               <div className="chat-thread-send-row">
                 <label>
                   <input
@@ -368,7 +400,7 @@ export default function ThreadPanel({
                     disabled={!!pending}
                     onChange={(event) => update({ broadcast: event.target.checked })}
                   />
-                  Also send to {conversation}
+                  {direct ? "Also send to conversation" : `Also send to #${channelName}`}
                 </label>
                 <button
                   type="submit"

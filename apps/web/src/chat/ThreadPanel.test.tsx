@@ -30,6 +30,7 @@ function render(
       channelName={channelName}
       direct={direct}
       readOnly={readOnly}
+      specialMentions
       renderMessage={(_index, message) => <p>{message.content.text}</p>}
       onClose={() => {}}
     />,
@@ -44,8 +45,8 @@ test("channel threads name the channel with #", () => {
 
 test("DM threads name the conversation without a channel #", () => {
   const markup = render([root], {}, { direct: true, channelName: "Maya" });
-  expect(markup).toContain("in Maya");
-  expect(markup).toContain("Also send to Maya");
+  expect(markup).toContain("with Maya");
+  expect(markup).toContain("Also send to conversation");
   expect(markup).not.toContain("#Maya");
 });
 
@@ -100,3 +101,10 @@ test.each([{ loading: true }, { error: "Thread could not be loaded." }])(
     expect(markup).not.toContain("No replies yet.");
   },
 );
+
+test("the reply composer offers the channel composer's emoji and mention suggestions", () => {
+  const markup = render([root]);
+  expect(markup).toMatch(/<textarea[^>]*id="chat-thread-reply"[^>]*aria-autocomplete="list"/);
+  expect(markup).toContain('aria-describedby="chat-thread-composer-hint"');
+  expect(markup).toContain("Type : to find emoji or @ to mention someone.");
+});

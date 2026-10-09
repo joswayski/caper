@@ -4,7 +4,7 @@ const serverErrors: Record<string, string> = {
   "account not found": "User not found. Check the username and try again.",
   "enter an exact username": "Enter an exact username.",
   "invalid username": "Use 3–32 lowercase letters, numbers, or underscores.",
-  "user already in space": "This person is already a member.",
+  "user already in space": "This person is already in the space.",
   "user already in channel": "This person already has access to this channel.",
   "user already invited": "This person already has a pending invitation.",
   "user must join the space first": "This person needs to join the space before you can add them to a channel.",

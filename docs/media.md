@@ -13,7 +13,9 @@ No camera, screen sharing, or server-side voice recording.
 Message composers offer `:` emoji autocomplete on web, Android, Apple and Rust
 desktop, using the same bundled Emoji 15 catalog. A colon at the start of a draft,
 after whitespace or after an opening bracket activates suggestions; URLs, times,
-selected text and active IME composition do not. Selection inserts Unicode at the
+selected text and active IME composition do not. A single character after the
+colon (`:D`, `:P`, `:3`) is an emoticon, not a search: it opens no suggestions,
+so Enter sends it as typed. The bare `:` still offers the default emoji. Selection inserts Unicode at the
 caret, preserves the rest of the draft and respects the 4,000-scalar limit. The
 emoji presentation selectors are preserved separately from normalized artwork IDs.
 Enter/Tab accepts a suggestion, arrows move the selection and Escape closes it;
@@ -1554,7 +1556,8 @@ broadcast opens its original root. The same contracts also apply to DMs.
 
 The unchecked **Also send to channel** option publishes one reply in both places,
 not a copied root message. IDs, content and reactions are shared. Drafts and the
-checkbox choice are per-root for the current channel session; retry commands
+checkbox choice are per-root for the current channel session, and the checkbox
+clears after each sent reply so later replies stay in the thread; retry commands
 freeze the root and broadcast choice. Ordinary sends cannot retry a pending reply
 into the channel. Replies use the existing participation and read permissions;
 thread reads do not expose another channel's messages.
@@ -1593,10 +1596,10 @@ them. Reconnect refetches the active thread and fences obsolete responses.
 | Apple | SwiftUI iPhone full-screen/wide panel, models, gateway and retry regressions implemented. Swift/Xcode unavailable here; iOS/macOS compilation, rendering and physical-device checks remain required |
 | Containers/live | No Docker daemon. Web/API build stages checked directly; no container-image, live multi-account cross-client, SFU or physical-device acceptance is inferred from fixtures |
 
-Web and Rust desktop thread composers accept Unicode emoji but do not yet reuse
-the main composer's colon-name autocomplete. Android/Apple use their existing
-native text entry. Native keyboard focus, accessibility, paging and IME behavior
-need platform validation before release.
+Thread composers on every client share the channel composer's `:` emoji and `@`
+mention suggestions and keys (see [cross-client parity](#cross-client-parity-pass-october-8-2026)).
+Native keyboard focus, accessibility, paging and IME behavior need platform
+validation before release.
 
 With the disposable fixture and Vite running:
 
@@ -5273,3 +5276,65 @@ views swapping in place:
    Roll back web by deploying the previous known-good web image SHA with the
    command above. For native clients, stop distribution and ship a corrected
    higher-build-number build. No data rollback is required.
+
+### Cross-client parity pass (October 8, 2026)
+
+An audit of web, Android, Apple and Rust desktop closed these capability gaps.
+Presentation stays platform-native.
+
+- **Thread composers** on web, Android and Rust desktop now share the channel
+  composer's `:` emoji / `@` mention suggestions (Apple already did). Android's
+  thread composer also gains the 3,000+ character counter.
+- **Message actions:** macOS and Rust desktop gain web's quick reactions (👍 ❤️ 😂
+  🎉 👀, toggling your own), View reactions with the full who-reacted list, Copy
+  text and Copy message ID; iOS gains View reactions. iOS and macOS offer Unblock
+  on a shown message from a blocked author. iPhone can forward from a thread.
+- **Threads:** Rust desktop broadcast replies show "Replied to a thread · View
+  thread". Escape closes the thread on macOS and Rust desktop after suggestions,
+  pickers, menus, dialogs and Pins have handled it. Escape typed in the macOS
+  composer stays with the composer.
+- **Android timeline** opens at the latest message, follows new messages only
+  while at the bottom, reveals your own sends and keeps its place when older
+  pages load; Go to message and historical context windows keep the viewport.
+  Hardware Enter sends and Shift+Enter adds a line, as on web/desktop/macOS.
+- **Navigation:** Android reopens the last channel viewed in each space and keeps
+  the current space/channel when it is chosen again; "Channels N" counts joined
+  channels, as on web and Apple.
+- **Membership refresh:** Android, Apple and Rust desktop reconcile `GET
+  /api/spaces` and the open space every 15 seconds and on returning to the app,
+  like web, so invitations and channels changed elsewhere appear without a
+  restart. A change made locally meanwhile wins; a failed read keeps what is
+  shown. Removal shows "This space is no longer available."
+- **Invites:** native space/channel member forms pre-check members and pending
+  invitations, show "Invitation sent. They must accept before joining.", explain
+  failures in web's words and keep the typed username. Every client's channel
+  pre-check, web's included, now says "This person already has access to this
+  channel."
+- **Rust desktop** always shows private-channel invitations, which previously
+  never arrived because `SpaceDetail` read `channel_invitations` instead of the
+  API's `channelInvitations`. Owners can manage unjoined channels from Browse on
+  Apple and Rust desktop. Ctrl+, opens Settings.
+- **Apple:** an automatic voice reconnect keeps per-person volume and Mute for
+  me; iPhone clears delivered pushes for an opened conversation (all of them when
+  push stops); Audio diagnostics is offered to debug accounts on iPhone.
+
+| Platform | Validation boundary for this change |
+| --- | --- |
+| Web desktop/narrow | `npm run check` passes; `npm test` passes 471 tests across 40 files under Node 24 (Node 22 fails the unrelated `noise-assets` WebAssembly mock). Chromium against the disposable fixture checked thread `:`/`@` suggestions, Enter/Tab insertion, Escape dismissing suggestions before the thread, and sending, at 1280px and 390px touch; captures inspected. Not Safari or physical-device acceptance. |
+| Rust desktop | Fmt and application-package Clippy (`--no-deps`) pass. 256 tests pass with libwebrtc symbols stubbed at link time locally; 53 media/voice tests need real libwebrtc and were not run. No rendered-layout inspection, macOS/Windows, live-server or hardware IME check. |
+| Android | With a locally installed SDK: `compileDebugKotlin`, `testDebugUnitTest` (209 tests, 0 failures) and `lintDebug` pass. No emulator or device run: rendering, real scrolling, hardware keys and live polling are unverified. |
+| iOS/macOS | Swift 6.1 on Linux parses all Sources/Tests; non-UI CaperCore files type-checked against local stubs. No Xcode build, XCTest run, simulator or device. Check menu `Toggle` rendering, `.onExitCommand`, sheet sequencing and push clearing in Xcode. |
+| Containers/services | No API, gateway, infrastructure, secret/configuration or migration change. No Docker build needed. |
+
+Gaps found but not changed here: Rust desktop has no automatic voice reconnect
+and Android only retries ICE once; Android and iPhone have no microphone choice;
+iPhone has no lock-screen call controls (CallKit); web, macOS and Rust desktop
+have no OS notifications; Android has no in-app update notice; Android and Apple
+load older history only from the button; Apple scrolls to every new message even
+while reading history. Product gaps on every client (no change): message deletion,
+links, unread markers, jump to latest, per-channel drafts and shortcuts.
+
+**Deployment order.** No backend step. Web, Android, Apple and Rust desktop can
+release independently, in any order; merging does not deploy. Roll back web with
+the previous web image and native clients with a corrected higher-build-number
+release. No data rollback is required.

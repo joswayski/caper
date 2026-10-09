@@ -9,7 +9,7 @@ final class FriendlyErrorTests: XCTestCase {
         XCTAssertEqual(FriendlyError.message(for: APIError(status: 409, message: "user must join the space first")),
                        "This person needs to join the space before you can add them to a channel.")
         XCTAssertEqual(FriendlyError.message(for: APIError(status: 409, message: "user already in space")),
-                       "This person is already a member.")
+                       "This person is already in the space.")
         XCTAssertEqual(FriendlyError.message(for: APIError(status: 429, message: "invitation cooldown; try again after 24 hours")),
                        "This person recently responded to an invitation. You can invite them again after 24 hours.")
     }
@@ -36,7 +36,7 @@ final class FriendlyErrorTests: XCTestCase {
 
     func testDisplayMappingLeavesTheRawErrorForCodeThatBranchesOnIt() {
         let error = APIError(status: 409, message: "user already in space")
-        XCTAssertEqual(FriendlyError.message(for: error), "This person is already a member.")
+        XCTAssertEqual(FriendlyError.message(for: error), "This person is already in the space.")
         XCTAssertEqual(error.message, "user already in space")
         XCTAssertEqual(error.localizedDescription, "user already in space")
     }

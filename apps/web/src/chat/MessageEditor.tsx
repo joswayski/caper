@@ -1,4 +1,5 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { focusReturn } from "./focus-return.ts";
 import type { ChatMessage } from "./types.ts";
 
 export default function MessageEditor({
@@ -19,10 +20,9 @@ export default function MessageEditor({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
   const count = Array.from(draft).length;
-  useLayoutEffect(() => {
-    const modal = dialog.current!;
-    const opener = document.activeElement as HTMLElement | null;
-    modal.showModal();
+  useEffect(() => {
+    const restore = focusReturn(message.clientMessageId);
+    dialog.current?.showModal();
     // Continue editing where the message ends, not before its first character.
     const input = textarea.current;
     if (input) {
@@ -30,10 +30,7 @@ export default function MessageEditor({
       input.setSelectionRange(input.value.length, input.value.length);
       input.scrollTop = input.scrollHeight;
     }
-    return () => {
-      modal.close();
-      if (opener?.isConnected) opener.focus();
-    };
+    return restore;
   }, []);
   const save = async () => {
     if (saving || !draft.trim() || count > 4_000) return;

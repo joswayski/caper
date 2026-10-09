@@ -202,7 +202,18 @@ export default function Chat({
   const [conversationTarget, setConversationTarget] = useState<ForwardTarget>();
   const [editTarget, setEditTarget] = useState<string>();
   const [historyTarget, setHistoryTarget] = useState<string>();
-  const [actionStatus, setActionStatus] = useState("");
+  // Confirmations such as "Text copied." show briefly; `key` restarts the timer when repeated.
+  const [actionStatus, setActionStatusState] = useState<{ text: string; key: number }>();
+  const setActionStatus = (text: string) =>
+    setActionStatusState(text ? (current) => ({ text, key: (current?.key ?? 0) + 1 }) : undefined);
+  useEffect(() => {
+    if (!actionStatus) return;
+    const timer = setTimeout(() => setActionStatusState(undefined), 3_000);
+    return () => clearTimeout(timer);
+  }, [actionStatus?.key]);
+  // Keeps the text while the visible confirmation fades out.
+  const lastActionStatus = useRef("");
+  if (actionStatus) lastActionStatus.current = actionStatus.text;
   const [reactionSaves, setReactionSaves] = useState<Record<string, ReactionSave | undefined>>({});
   const [mentionCard, setMentionCard] = useState<MentionCardTarget>();
   const [showPins, setShowPins] = useState(false);
@@ -401,6 +412,17 @@ export default function Chat({
   // Virtuoso needs browser APIs; the server and first client render use the plain list.
   const [hydrated, setHydrated] = useState(false);
   useEffect(() => setHydrated(true), []);
+  // Show "Loading messages…" only when loading takes a moment, so quick opens
+  // (such as DMs, which load on open) don't flash it.
+  const [loadingShown, setLoadingShown] = useState(false);
+  useEffect(() => {
+    if (state.phase !== "loading") {
+      setLoadingShown(false);
+      return;
+    }
+    const timer = setTimeout(() => setLoadingShown(true), 200);
+    return () => clearTimeout(timer);
+  }, [state.phase]);
   useEffect(() => {
     if (!state.author || readOnly) return;
     // Warm the code/data after chat settles, without mounting the picker or
@@ -410,6 +432,11 @@ export default function Chat({
     }, 1_000);
     return () => clearTimeout(timer);
   }, [state.author?.id, readOnly]);
+  // The thread composer suggests the same people as the channel composer.
+  const mentionPeople = useMemo(
+    () => mentionMembers?.filter((member) => member.id !== state.author?.id),
+    [mentionMembers, state.author?.id],
+  );
   const allowFollow = useRef(false);
   allowFollow.current = !state.hasNewer && !scrollTarget && !jumping;
   const latestMessage = state.messages.at(-1);
@@ -955,7 +982,9 @@ export default function Chat({
               ref={channelMenuRef}
               className="chat-channel-menu"
               onKeyDown={(event) => {
-                if (event.key === "Escape") {
+                if (event.key === "Escape" && event.currentTarget.open) {
+                  // Handled here, so an open thread does not also close.
+                  event.preventDefault();
                   event.currentTarget.open = false;
                   event.currentTarget.querySelector("summary")?.focus();
                 }
@@ -1134,7 +1163,7 @@ export default function Chat({
             </PinsDialog>
           )}
           <div className="chat-timeline" inert={showPins} aria-hidden={showPins}>
-            {state.phase === "loading" && (
+            {state.phase === "loading" && loadingShown && (
               <p className="chat-state" role="status">
                 Loading messages…
               </p>
@@ -1224,7 +1253,10 @@ export default function Chat({
               {state.phase === "ready" && announcement}
             </p>
             <p className="sr-only" role="status">
-              {actionStatus}
+              {actionStatus?.text}
+            </p>
+            <p className="chat-action-status" aria-hidden="true" data-visible={actionStatus ? "" : undefined}>
+              {lastActionStatus.current}
             </p>
           </div>
         </div>
@@ -1402,6 +1434,8 @@ export default function Chat({
         channelName={channelName}
         direct={direct}
         readOnly={readOnly}
+        mentionPeople={mentionPeople}
+        specialMentions={!direct}
         renderMessage={renderMessage}
         onClose={closeThread}
       />

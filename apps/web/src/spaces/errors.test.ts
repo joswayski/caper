@@ -12,7 +12,7 @@ test("known server errors read as sentences", () => {
     friendlyError(new SpacesApiError(409, "user must join the space first")),
     "This person needs to join the space before you can add them to a channel.",
   );
-  assert.equal(friendlyError(new SpacesApiError(409, "user already in space")), "This person is already a member.");
+  assert.equal(friendlyError(new SpacesApiError(409, "user already in space")), "This person is already in the space.");
 });
 
 test("network failures and timeouts don't show the browser's text", () => {

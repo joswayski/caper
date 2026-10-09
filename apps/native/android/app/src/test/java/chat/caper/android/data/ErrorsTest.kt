@@ -14,7 +14,7 @@ class ErrorsTest {
             "This person needs to join the space before you can add them to a channel.",
             friendlyError(ApiException(409, "user must join the space first")),
         )
-        assertEquals("This person is already a member.", friendlyError(ApiException(409, "user already in space")))
+        assertEquals("This person is already in the space.", friendlyError(ApiException(409, "user already in space")))
         assertEquals("That’s no longer available.", friendlyError(ApiException(404, "resource not found")))
     }
 

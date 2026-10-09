@@ -94,7 +94,10 @@ function OriginalMessage({ message }: { message: ChatMessage }) {
       {!!message.reactions?.length && (
         <div className="chat-forward-reactions" aria-label="Original reactions">
           {message.reactions.map(({ emoji, authorIds }) => (
-            <span key={emoji} aria-label={`${emoji}, ${authorIds.length} reactions`}>
+            <span
+              key={emoji}
+              aria-label={`${emoji}, ${authorIds.length} ${authorIds.length === 1 ? "reaction" : "reactions"}`}
+            >
               <img src={emojiAsset(emojiCode(emoji))} width={18} height={18} alt={emoji} />
               <span>{authorIds.length}</span>
             </span>
