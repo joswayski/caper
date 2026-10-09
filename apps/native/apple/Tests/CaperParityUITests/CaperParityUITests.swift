@@ -328,9 +328,29 @@ final class CaperParityUITests: XCTestCase {
         // The fixture's seeded message from Alex mentions @fixture_owner (you).
         let row = try require(app.descendants(matching: .any)["message-row-chan00000001m04"], timeout: 30,
                               "Missing the seeded message that mentions you")
-        let pill = try require(row.links.matching(NSPredicate(format: "label CONTAINS %@", "fixture_owner")).firstMatch,
-                               timeout: 5, "The @fixture_owner pill must be a link")
-        pill.tap()
+        #if os(macOS)
+        // macOS 15 exposes a message as one static text without its link runs.
+        let linksExposed = ProcessInfo.processInfo.isOperatingSystemAtLeast(
+            OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 0))
+        #else
+        let linksExposed = true
+        #endif
+        if linksExposed {
+            let pill = try require(row.links.matching(NSPredicate(format: "label CONTAINS %@", "fixture_owner")).firstMatch,
+                                   timeout: 5, "The @fixture_owner pill must be a link")
+            pill.tap()
+        } else {
+            #if os(macOS)
+            // Click the pill's characters within the single-line message text.
+            let mention = "@fixture_owner"
+            let text = try require(row.staticTexts.matching(NSPredicate(format: "value CONTAINS %@", mention)).firstMatch,
+                                   timeout: 5, "The message must show the @fixture_owner pill")
+            let value = text.value as? String ?? ""
+            let range = try XCTUnwrap(value.range(of: mention), "The message text must contain the pill")
+            let middle = value.distance(from: value.startIndex, to: range.lowerBound) + mention.count / 2
+            text.coordinate(withNormalizedOffset: CGVector(dx: Double(middle) / Double(value.count), dy: 0.5)).click()
+            #endif
+        }
         _ = try require(app.descendants(matching: .any)["mention-card"], timeout: 5, "Tapping a pill must open the mention card")
         XCTAssertTrue(app.descendants(matching: .any)["mention-card-you"].waitForExistence(timeout: 2), "Your own card says You")
         XCTAssertFalse(app.buttons["mention-card-message"].exists, "Your own card has no Message button")
