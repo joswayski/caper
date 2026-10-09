@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { AccountApiError, normalizeUsername, updateProfile, usernameError, type Account } from "./client";
+import { fieldClass, primaryButtonClass, Spinner } from "./controls";
 
 export default function ProfileForm({
   account,
@@ -39,7 +40,7 @@ export default function ProfileForm({
         Username
       </label>
       <input
-        className="w-full rounded-control border border-border bg-surface px-3.5 py-[13px] text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
+        className={fieldClass}
         id="username"
         name="username"
         value={username}
@@ -64,7 +65,7 @@ export default function ProfileForm({
         Display name
       </label>
       <input
-        className="w-full rounded-control border border-border bg-surface px-3.5 py-[13px] text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
+        className={fieldClass}
         id="display-name"
         name="displayName"
         value={displayName}
@@ -80,12 +81,16 @@ export default function ProfileForm({
         Shown to other people. It does not need to be unique.
       </small>
       <button
-        className="mt-7 flex w-full cursor-pointer items-center justify-between gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content hover:enabled:border-terracotta-bright hover:enabled:bg-terracotta-bright disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
+        className={`${primaryButtonClass} mt-7 min-w-[12.5rem]`}
         type="submit"
         disabled={pending}
+        aria-busy={pending}
       >
         {pending ? (
-          "Saving…"
+          <>
+            <Spinner />
+            Saving…
+          </>
         ) : (
           <>
             {account.username ? "Save profile" : "Finish account"} <span aria-hidden="true">→</span>

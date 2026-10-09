@@ -158,17 +158,20 @@ function ContactLinks() {
           <path d="M18.9 2H22l-6.8 7.8L23.2 22h-6.3L12 14.6 5.5 22H2.3l7.9-9L1.8 2h6.5l4.5 6.6L18.9 2Zm-1.1 18h1.7L7.3 3.9H5.5L17.8 20Z" />
         </svg>
       </a>{" "}
-      or{" "}
-      <button
-        type="button"
-        className="contact-action"
-        data-copied={status === "copied"}
-        onClick={() => void copyEmail()}
-        title={contactEmail}
-      >
-        {status === "copied" ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
-        <span>{status === "copied" ? "Copied." : "email."}</span>
-      </button>
+      {/* Kept together so "or" never ends a line with its button on the next. */}
+      <span className="contact-or">
+        or{" "}
+        <button
+          type="button"
+          className="contact-action"
+          data-copied={status === "copied"}
+          onClick={() => void copyEmail()}
+          title={contactEmail}
+        >
+          {status === "copied" ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+          <span>{status === "copied" ? "Copied." : "email."}</span>
+        </button>
+      </span>
       <span className={status === "failed" ? "contact-feedback" : "sr-only"} role="status">
         {status === "copied"
           ? "Email address copied to clipboard."

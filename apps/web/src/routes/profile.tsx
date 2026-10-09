@@ -30,7 +30,19 @@ function Profile() {
   return (
     <main className="grid min-h-dvh place-items-start justify-items-center px-6 pt-[clamp(48px,10vh,96px)] pb-12 max-[480px]:px-5 max-[480px]:pt-8">
       <section className="w-full max-w-[440px]">
-        <Wordmark />
+        {/* Settings save as they change, so leaving needs no Save: the way back
+            sits beside the wordmark rather than below every setting. */}
+        <div className="flex items-center justify-between gap-4">
+          <Wordmark />
+          {account.username && (
+            <a
+              className="-my-2 -mr-2 inline-flex min-h-11 items-center gap-1.5 rounded-control px-2 text-[.85rem] text-content-muted no-underline transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-2"
+              href="/spaces"
+            >
+              <span aria-hidden="true">←</span> Back to spaces
+            </a>
+          )}
+        </div>
         <p className="mt-14 text-[.7rem] font-bold tracking-[.14em] text-content-muted max-[480px]:mt-[42px]">
           {account.username ? "YOUR ACCOUNT" : "ONE LAST THING"}
         </p>
@@ -43,20 +55,9 @@ function Profile() {
         <ProfileForm account={account} onSaved={() => navigate({ to: "/spaces" })} />
         {account.username && <NotificationSettings />}
         {account.username && <PrivacySettings />}
-        <div className="mt-5 flex items-center justify-between gap-4 text-[.85rem]">
-          {/* Settings above save as they change, so leaving needs no Save. */}
-          {account.username ? (
-            <a
-              className="text-content-muted no-underline transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
-              href="/spaces"
-            >
-              <span aria-hidden="true">←</span> Back to spaces
-            </a>
-          ) : (
-            <span />
-          )}
+        <div className="mt-8 flex justify-end border-t border-border pt-3 text-[.85rem]">
           <button
-            className="cursor-pointer border-0 bg-transparent p-0 text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
+            className="-mr-2 min-h-11 cursor-pointer rounded-control border-0 bg-transparent px-2 text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-2"
             type="button"
             onClick={() => void logout().then(() => window.location.assign("/"))}
           >
