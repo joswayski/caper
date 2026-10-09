@@ -186,6 +186,31 @@ public enum WorkspaceValidation {
         }) ? nil : "Username must be 3–32 lowercase letters, numbers, or underscores."
     }
 
+    /// Web's confirmation after inviting someone to a space or a private channel.
+    public static let invitationSent = "Invitation sent. They must accept before joining."
+
+    /// Web's check before inviting: someone already a member or already invited.
+    public static func inviteError(username: String, members: [Member], invited: [Member], channel: Bool) -> String? {
+        if members.contains(where: { $0.username == username }) {
+            return channel ? "This person already has access to this channel." : "This person is already in the space."
+        }
+        if invited.contains(where: { $0.username == username }) { return "This person already has a pending invitation." }
+        return nil
+    }
+
+    /// Web's wording for the server's member and invitation errors.
+    public static func memberMessage(_ error: Error) -> String {
+        guard let api = error as? APIError else { return error.localizedDescription }
+        switch api.message {
+        case "user not found": return "User not found. Check the username and try again."
+        case "user already in space": return "This person is already in the space."
+        case "user already in channel": return "This person already has access to this channel."
+        case "user already invited": return "This person already has a pending invitation."
+        case "invalid username": return "Use 3–32 lowercase letters, numbers, or underscores."
+        default: return api.message
+        }
+    }
+
     public static func spaceNameError(_ value: String) -> String? {
         let name = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if name.isEmpty { return "Enter a space name." }
@@ -411,6 +436,7 @@ public struct ThreadHistory: Codable, Sendable {
     public let messages: [ChatMessage]
     public let cursor: String
     public let hasMore: Bool
+    public let hasNewer: Bool?
 }
 public struct ForwardDestination: Codable, Identifiable, Sendable {
     public let id: String
@@ -604,11 +630,12 @@ public struct ChatHistory: Codable, Sendable {
     public let pinnedMessages: [ChatMessage]
     public let cursor: String
     public let hasMore: Bool
+    public let hasNewer: Bool
 
-    private enum CodingKeys: String, CodingKey { case space, channel, messages, pinnedMessages, cursor, hasMore }
-    public init(space: HistoryIdentity?, channel: HistoryIdentity?, messages: [ChatMessage], pinnedMessages: [ChatMessage] = [], cursor: String, hasMore: Bool) {
+    private enum CodingKeys: String, CodingKey { case space, channel, messages, pinnedMessages, cursor, hasMore, hasNewer }
+    public init(space: HistoryIdentity?, channel: HistoryIdentity?, messages: [ChatMessage], pinnedMessages: [ChatMessage] = [], cursor: String, hasMore: Bool, hasNewer: Bool = false) {
         self.space = space; self.channel = channel; self.messages = messages; self.pinnedMessages = pinnedMessages
-        self.cursor = cursor; self.hasMore = hasMore
+        self.cursor = cursor; self.hasMore = hasMore; self.hasNewer = hasNewer
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -618,6 +645,7 @@ public struct ChatHistory: Codable, Sendable {
         pinnedMessages = try values.decodeIfPresent([ChatMessage].self, forKey: .pinnedMessages) ?? []
         cursor = try values.decode(String.self, forKey: .cursor)
         hasMore = try values.decode(Bool.self, forKey: .hasMore)
+        hasNewer = try values.decodeIfPresent(Bool.self, forKey: .hasNewer) ?? false
     }
 }
 

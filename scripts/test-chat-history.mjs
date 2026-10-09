@@ -174,12 +174,26 @@ const evaluate = (source) => browser("eval", source).result;
 const wait = (expression) => browser("wait", "--fn", expression);
 const settle = () => evaluate("new Promise(r => setTimeout(r, 300))");
 const screenshot = (name) => {
-  if (artifacts) browser("screenshot", "--full", join(artifacts, `${name}.png`));
+  if (!artifacts) return;
+  evaluate("document.fonts.ready.then(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))");
+  browser("screenshot", "--full", join(artifacts, `${name}.png`));
 };
 const metrics = () =>
   evaluate(
     `(() => { const s = document.querySelector('.chat-scroller'); return { rows: document.querySelectorAll('.chat-message').length, bottom: s.scrollHeight - s.clientHeight - s.scrollTop, top: s.scrollTop }; })()`,
   );
+// Virtualized extents can leave a few pixels of empty row padding below the
+// viewport. Check the fixture's actual newest text, not an estimated end gap.
+const latestVisibleExpression = `(() => {
+  const scroller = document.querySelector('.chat-scroller');
+  const row = [...document.querySelectorAll('.chat-message')].find(row => row.dataset.messageKey === chatHistoryFixture.latestKey);
+  const body = row?.querySelector('p');
+  if (!scroller || !body) return false;
+  const bounds = scroller.getBoundingClientRect();
+  const rect = body.getBoundingClientRect();
+  return body.checkVisibility({ visibilityProperty: true, opacityProperty: true }) && rect.top >= bounds.top && rect.bottom <= bounds.bottom;
+})()`;
+const latestVisible = () => evaluate(latestVisibleExpression);
 const anchor = () =>
   evaluate(`(() => {
   const top = document.querySelector('.chat-scroller').getBoundingClientRect().top;
@@ -191,8 +205,62 @@ const anchorOffset = (key) =>
     `document.querySelector('[data-message-key="${key}"]').getBoundingClientRect().top - document.querySelector('.chat-scroller').getBoundingClientRect().top`,
   );
 
+function quietTimeline(layout) {
+  assert.deepEqual(
+    evaluate(`(() => {
+      const s = document.querySelector('.chat-scroller');
+      return [getComputedStyle(s).scrollbarWidth, getComputedStyle(s, '::-webkit-scrollbar').display];
+    })()`),
+    ["none", "none"],
+    `${layout}: live follow must not reveal a scrollbar`,
+  );
+  browser("fill", "#chat-message", "TEST FIXTURE draft");
+  settle();
+  const height = evaluate('document.querySelector("#chat-message").offsetHeight');
+  browser("fill", "#chat-message", "TEST FIXTURE taller draft\nSecond line\nThird line\nFourth line");
+  settle();
+  assert.ok(evaluate('document.querySelector("#chat-message").offsetHeight') > height);
+  assert.ok(latestVisible(), `${layout}: growing the composer must retain latest`);
+  browser("press", "Control+a");
+  browser("press", "Backspace");
+  assert.equal(evaluate('document.querySelector("#chat-message").value'), "");
+  settle();
+  evaluate('chatHistoryFixture.append("TEST FIXTURE quiet live arrival")');
+  wait(
+    '[...document.querySelectorAll(".chat-message")].some(row => row.dataset.messageKey === chatHistoryFixture.latestKey)',
+  );
+  settle();
+  assert.ok(latestVisible(), `${layout}: live follow must still work`);
+  assert.equal(evaluate("document.activeElement.id"), "chat-message", `${layout}: delivery must not steal focus`);
+  screenshot(`chat-quiet-${layout}-latest`);
+
+  // Actual keyboard scrolling remains available without a draggable scrollbar.
+  browser("focus", ".chat-scroller");
+  browser("press", "PageUp");
+  settle();
+  assert.ok(metrics().bottom > 80, `${layout}: PageUp must still scroll history`);
+  const before = anchor();
+  browser("fill", "#chat-message", "TEST FIXTURE reading history");
+  evaluate('chatHistoryFixture.append("TEST FIXTURE arrival while reading")');
+  settle();
+  assert.ok(Math.abs(anchorOffset(before.key) - before.offset) < 2, `${layout}: typing/delivery must preserve history`);
+  assert.equal(evaluate("document.activeElement.id"), "chat-message");
+  screenshot(`chat-quiet-${layout}-history`);
+  browser("press", "Control+a");
+  browser("press", "Backspace");
+  assert.equal(evaluate('document.querySelector("#chat-message").value'), "");
+  browser("focus", ".chat-scroller");
+  browser("press", "End");
+  settle();
+  assert.ok(latestVisible(), `${layout}: End must still return to latest`);
+  console.log(`PASS: ${layout}: hidden indicators, composer growth, retained focus, PageUp/End and reader anchor.`);
+}
+
 function togglePins() {
-  if (evaluate('!!document.querySelector(".chat-channel-menu")')) browser("click", ".chat-channel-menu summary");
+  if (evaluate('!!document.querySelector(".chat-pins-dialog")')) {
+    browser("click", 'button[aria-label="Close pins"]');
+    return;
+  }
   browser("click", ".chat-pins-toggle");
 }
 
@@ -207,10 +275,11 @@ function pinsRoundTrip(name, { incoming = false, atBottom = false } = {}) {
       document.querySelector('.chat-scroller').focus();
       return timeline.inert && timeline.getAttribute('aria-hidden') === 'true'
         && !timeline.contains(document.activeElement)
-        && !timeline.querySelector('.chat-message').checkVisibility({ opacityProperty: true });
+        && timeline.querySelector('.chat-message').checkVisibility({ opacityProperty: true })
+        && document.querySelector('.chat-pins-dialog').checkVisibility({ visibilityProperty: true });
     })()`),
     true,
-    "The retained timeline must be invisible, inaccessible and unfocusable behind Pins",
+    "The retained timeline must stay visible but inaccessible and unfocusable behind the Pins modal",
   );
   if (incoming) {
     evaluate('chatHistoryFixture.append("TEST FIXTURE arrival while reading pins")');
@@ -231,7 +300,7 @@ function pinsRoundTrip(name, { incoming = false, atBottom = false } = {}) {
           retained: scroller === retainedScroller,
           painted: rows.some(row => row.checkVisibility({ visibilityProperty: true, opacityProperty: true }) && row.getBoundingClientRect().bottom > bounds.top && row.getBoundingClientRect().top < bounds.bottom),
           offset: anchor && anchor.getBoundingClientRect().top - bounds.top,
-          bottom: scroller && scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop,
+          latestVisible: ${latestVisibleExpression},
           height: scroller?.scrollHeight,
         });
       }
@@ -252,8 +321,8 @@ function pinsRoundTrip(name, { incoming = false, atBottom = false } = {}) {
   );
   if (atBottom)
     assert.ok(
-      frames.every((frame) => frame.bottom <= 2),
-      `${name}: latest must remain at the bottom`,
+      frames.every((frame) => frame.latestVisible),
+      `${name}: newest content must remain fully visible`,
     );
   else
     assert.ok(
@@ -271,18 +340,16 @@ try {
   browser("open", url);
   wait('!!document.querySelector(".chat-message") && !document.querySelector(".chat-offline")');
   evaluate("document.fonts.ready.then(() => true)");
-  // Integer scroll extents can differ by two CSS pixels at the list's end.
-  wait(
-    '(() => { const s = document.querySelector(".chat-scroller"); return s.scrollHeight - s.clientHeight - s.scrollTop <= 2; })()',
-  );
+  wait(latestVisibleExpression);
   settle();
   assert.ok(metrics().rows < 35);
   assert.ok(
     evaluate("chatHistoryFixture.initialFrames.length > 0 && chatHistoryFixture.initialFrames.every(Boolean)"),
     "History must be visible on every ready frame, including virtualizer positioning",
   );
-  assert.ok(metrics().bottom <= 2, JSON.stringify(metrics()));
+  assert.ok(latestVisible(), JSON.stringify(metrics()));
   assert.equal(evaluate("chatHistoryFixture.requests.length"), 0, "Initial positioning must not fetch older pages");
+  quietTimeline("desktop");
   screenshot("chat-history-latest");
   pinsRoundTrip("pins-desktop-latest", { atBottom: true });
   pinsRoundTrip("pins-desktop-live", { incoming: true, atBottom: true });
@@ -378,13 +445,12 @@ try {
 
   evaluate('document.querySelector(".chat-scroller").focus()');
   browser("press", "End");
-  wait(
-    '(() => { const s = document.querySelector(".chat-scroller"); return s.scrollHeight - s.clientHeight - s.scrollTop <= 2 && [...document.querySelectorAll(".chat-message")].some(row => row.dataset.messageKey === chatHistoryFixture.latestKey); })()',
-  );
+  wait(latestVisibleExpression);
   settle();
   evaluate('chatHistoryFixture.append("Fixture arrival at the bottom")');
   settle();
-  assert.ok(metrics().bottom <= 2, "Following live messages at bottom must still work: " + JSON.stringify(metrics()));
+  assert.ok(latestVisible(), "Following live messages at bottom must still work: " + JSON.stringify(metrics()));
+  quietTimeline("narrow");
   pinsRoundTrip("pins-narrow-latest", { incoming: true, atBottom: true });
   evaluate('document.querySelector(".chat-scroller").scrollTop = 0');
   settle();
@@ -400,7 +466,7 @@ try {
     ),
     1,
   );
-  assert.ok(metrics().bottom <= 2);
+  assert.ok(latestVisible());
   console.log(
     `PASS: 3,000-message history; 50-message cursor pages; immediate/settled live delivery preserves readers; stable prepend anchors; ${metrics().rows} mounted rows at latest; retry; narrow layout; optimistic reconciliation after sending from history.`,
   );
@@ -432,7 +498,9 @@ try {
     "History fixture failure state:",
     evaluate(`(() => {
     const s = document.querySelector('.chat-scroller');
+    const latest = document.querySelector('[data-message-key="' + chatHistoryFixture.latestKey + '"]');
     return { bottom: s && s.scrollHeight - s.clientHeight - s.scrollTop, top: s?.scrollTop,
+      latestBottom: latest && latest.getBoundingClientRect().bottom - s.getBoundingClientRect().bottom,
       visibleHeight: s?.clientHeight, rows: document.querySelectorAll('.chat-message').length,
       requests: chatHistoryFixture.requests, completed: chatHistoryFixture.completed };
   })()`),

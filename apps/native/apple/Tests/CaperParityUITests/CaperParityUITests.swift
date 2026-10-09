@@ -396,6 +396,18 @@ final class CaperParityUITests: XCTestCase {
         }
     }
 
+    /// The first match a person could touch. On iPhone a thread covers the
+    /// channel, but the channel's rows and composer stay in the accessibility
+    /// tree behind it, so a plain query can return those hidden copies.
+    private func visible(_ query: XCUIElementQuery, timeout: TimeInterval = 5) -> XCUIElement? {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if let match = query.allElementsBoundByIndex.first(where: { $0.exists && $0.isHittable }) { return match }
+            Thread.sleep(forTimeInterval: 0.2)
+        } while Date() < deadline
+        return nil
+    }
+
     func testIPhoneThreadComposerDoesNotFillItsMaximumHeight() throws {
         let app = launch()
         let row = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30,
@@ -409,8 +421,10 @@ final class CaperParityUITests: XCTestCase {
         try require(app.buttons["Back to channel"], timeout: 5, "Thread did not open")
         try require(app.staticTexts["No replies yet. Start the thread."], timeout: 5, "Missing empty thread state")
         XCTAssertFalse(app.staticTexts["0 replies"].exists, "Empty threads must not repeat the zero reply count")
-        let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 5,
-                                   "Missing thread composer")
+        // By label: the channel's own "message-composer" is still in the tree.
+        let composer = try require(app.descendants(matching: .any).matching(identifier: "message-composer")
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "Reply to thread")).firstMatch,
+                                   timeout: 5, "Missing thread composer")
         XCTAssertTrue(focus(composer))
         composer.typeText("Short reply")
         let send = app.buttons["Send reply"]
@@ -421,7 +435,9 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(send.isHittable)
         capture("thread-composer-single-line-keyboard", app: app)
 
-        hold(row)
+        let threadRoot = try XCTUnwrap(visible(app.descendants(matching: .any).matching(identifier: "message-row-chan00000001m01")),
+                                       "Missing the thread's root message")
+        hold(threadRoot)
         let actions = try require(app.descendants(matching: .any)["message-actions-sheet"], timeout: 5,
                                   "Missing thread root actions")
         XCTAssertFalse(actions.buttons["Reply in thread"].exists, "The root is already open in its thread")
@@ -431,10 +447,12 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed)
 
         send.tap()
-        let reply = try require(app.staticTexts["Short reply"], timeout: 5, "Reply was not sent")
+        // "Also send to #general" can put a copy in the hidden channel too.
+        let reply = try XCTUnwrap(visible(app.staticTexts.matching(NSPredicate(format: "label == %@", "Short reply"))),
+                                  "Reply was not sent")
         try require(app.staticTexts["1 reply"], timeout: 5, "Populated threads must keep their reply count")
         XCTAssertFalse(app.staticTexts["No replies yet. Start the thread."].exists)
-        hold(reply)
+        reply.press(forDuration: 0.8)
         let replyActions = try require(app.descendants(matching: .any)["message-actions-sheet"], timeout: 5,
                                        "Missing thread reply actions")
         XCTAssertFalse(replyActions.buttons["Reply in thread"].exists, "Replies cannot start nested threads")
@@ -563,7 +581,11 @@ final class CaperParityUITests: XCTestCase {
         let scaleX = CGFloat(bitmap.pixelsWide) / window.frame.width
         let scaleY = CGFloat(bitmap.pixelsHigh) / window.frame.height
         func hasTerracottaOutline(_ element: XCUIElement) throws -> Bool {
-            XCTAssertTrue(element.isHittable)
+            // Just after the picker closes, hit-testing can briefly report every
+            // timeline control as covered (CI saw this once, with the window
+            // drawn normally), so wait for it rather than checking once.
+            let hittable = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true"), object: element)
+            XCTAssertEqual(XCTWaiter.wait(for: [hittable], timeout: 5), .completed)
             let x = Int((element.frame.midX - window.frame.minX) * scaleX)
             // Sample only the straight top border, away from emoji artwork.
             let y = Int((element.frame.minY - window.frame.minY) * scaleY)
@@ -831,17 +853,23 @@ final class CaperParityUITests: XCTestCase {
 
         let generalFrame = general.frame
         let voiceFrame = generalVoice.frame
+        #if os(macOS)
+        general.hover()
+        #endif
         let optionsFrame = app.descendants(matching: .any)["channel-options-chan00000001"].frame
         let stack = app.buttons["voice-stack-chan00000002"]
         XCTAssertEqual(stack.value as? String, "Collapsed", "Occupied rosters start collapsed")
         stack.tap()
         XCTAssertEqual(general.frame, generalFrame, "Expanding another roster must not move the channel name")
         XCTAssertEqual(generalVoice.frame, voiceFrame, "Expanding another roster must not move Join")
+        #if os(macOS)
+        general.hover()
+        #endif
         XCTAssertEqual(app.descendants(matching: .any)["channel-options-chan00000001"].frame, optionsFrame,
                        "Expanding another roster must not move the channel menu")
 
         let options = app.descendants(matching: .any)["channel-options-chan00000001"]
-        XCTAssertTrue(options.exists, "Owners have a permanent channel menu")
+        XCTAssertTrue(options.exists, "Hover reveals the channel menu; touch always shows it")
         options.tap()
         let settings = app.descendants(matching: .any)["Channel settings"].firstMatch
         XCTAssertTrue(settings.waitForExistence(timeout: 3))
@@ -857,6 +885,8 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Leave channel"].exists, "Leave must not appear in the chat header")
         #if os(iOS)
         app.buttons["Back to Browse"].tap()
+        #else
+        app.buttons["channel-chan00000002"].hover()
         #endif
         let options = app.descendants(matching: .any)["channel-options-chan00000002"]
         XCTAssertTrue(options.waitForExistence(timeout: 10))
@@ -1891,6 +1921,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [unchanged], timeout: 5), .completed,
                        "Inviting must not grant immediate space membership")
         assertStaticText("Pending invitations  1", in: app)
+        assertStaticText("Invitation sent. They must accept before joining.", in: app)
         assertStaticText("Sam", in: app)
         assertStaticText("@sam", in: app)
         XCTAssertTrue(username.value as? String == "" || username.value as? String == username.placeholderValue,

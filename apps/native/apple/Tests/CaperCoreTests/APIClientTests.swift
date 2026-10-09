@@ -96,7 +96,7 @@ final class APIClientTests: XCTestCase {
             guard request.url?.path.hasSuffix("/thread") == true else { throw URLError(.badURL) }
             threadRequests += 1
             XCTAssertEqual(request.url?.query, "before=3")
-            return (200, try JSONEncoder().encode(ThreadHistory(root: root, messages: [older], cursor: "3", hasMore: false)))
+            return (200, try JSONEncoder().encode(ThreadHistory(root: root, messages: [older], cursor: "3", hasMore: false, hasNewer: false)))
         }
         let chat = ChatModel(api: client())
         await chat.open(history: history, displayName: "Me")
@@ -105,7 +105,7 @@ final class APIClientTests: XCTestCase {
         await chat.openThread(root.id)
         XCTAssertEqual(threadRequests, 1)
         XCTAssertTrue(chat.threadLoading)
-        held?.respond(status: 200, data: try JSONEncoder().encode(ThreadHistory(root: root, messages: [latest], cursor: "3", hasMore: true)))
+        held?.respond(status: 200, data: try JSONEncoder().encode(ThreadHistory(root: root, messages: [latest], cursor: "3", hasMore: true, hasNewer: false)))
         await opening.value
         chat.threadDraft = "Keep this draft"
         await chat.openThread(root.id)
@@ -123,7 +123,7 @@ final class APIClientTests: XCTestCase {
         await chat.preview(history: history)
         MockURLProtocol.handler = { _ in
             threadRequests += 1
-            return (200, try JSONEncoder().encode(ThreadHistory(root: root, messages: [], cursor: "3", hasMore: false)))
+            return (200, try JSONEncoder().encode(ThreadHistory(root: root, messages: [], cursor: "3", hasMore: false, hasNewer: false)))
         }
         await chat.openThread(root.id)
         XCTAssertEqual(threadRequests, 3)
@@ -249,6 +249,47 @@ final class APIClientTests: XCTestCase {
         XCTAssertNil(chat.requestReactors(messageID: messageID), "a stopped chat has no message to load")
     }
 
+    func testChatSessionIsReusedPerSignInAndReplacedOnlyAfter401OrRename() async throws {
+        var sessions = 0
+        var reactionStatus = 403
+        MockURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/api/chat/session":
+                sessions += 1
+                return (200, Data(#"{"token":"chat-\#(sessions)","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+            case "/api/chat/channels/Channel12345/messages/Message00000001/reactions":
+                return (reactionStatus, Data(#"{"error":"this person isn't accepting direct messages","code":"dm_not_accepted"}"#.utf8))
+            case "/api/account/profile":
+                return (200, Data(#"{"id":"self","username":"me","displayName":"Renamed"}"#.utf8))
+            default: throw URLError(.badURL)
+            }
+        }
+        let api = client()
+        let react = { () async -> APIError? in
+            do {
+                _ = try await api.setReaction(channelID: "Channel12345", messageID: "Message00000001",
+                                              sessionToken: "chat-1", emoji: "👍", active: true)
+                return nil
+            } catch { return error as? APIError }
+        }
+        let first = try await api.chatSession(name: "Me")
+        let forward = try await api.chatSession(name: "Forward")
+        XCTAssertEqual(first.token, "chat-1")
+        XCTAssertEqual(forward.token, "chat-1", "opening another conversation reuses the session")
+        let refusal = await react()
+        XCTAssertEqual(refusal?.code, "dm_not_accepted")
+        let kept = try await api.chatSession(name: "Me")
+        XCTAssertEqual(kept.token, "chat-1", "a block refusal is not an invalid session")
+        reactionStatus = 401
+        _ = await react()
+        let replaced = try await api.chatSession(name: "Me")
+        XCTAssertEqual(replaced.token, "chat-2")
+        _ = try await api.updateProfile(username: "me", displayName: "Renamed")
+        let renamed = try await api.chatSession(name: "Renamed")
+        XCTAssertEqual(renamed.token, "chat-3", "a rename mints a session with the new author name")
+        XCTAssertEqual(sessions, 3)
+    }
+
     func testPinPUTUsesChatTokenAndDecodesMessagePayload() async throws {
         let channel = "Channel12345", message = "Message00000001"
         MockURLProtocol.handler = { request in
@@ -355,6 +396,26 @@ final class APIClientTests: XCTestCase {
         XCTAssertNil(WorkspaceValidation.usernameError("alice_123"))
         XCTAssertNotNil(WorkspaceValidation.usernameError("Alice"))
         XCTAssertNotNil(WorkspaceValidation.usernameError("ab"))
+    }
+
+    func testInviteChecksAndWordingMatchWeb() {
+        let sam = Member(id: "member000003", username: "sam", displayName: "Sam", owner: false)
+        let kai = Member(id: "member000004", username: "kai", displayName: "Kai", owner: false)
+        XCTAssertEqual(WorkspaceValidation.invitationSent, "Invitation sent. They must accept before joining.")
+        XCTAssertEqual(WorkspaceValidation.inviteError(username: "sam", members: [sam], invited: [kai], channel: false),
+                       "This person is already in the space.")
+        XCTAssertEqual(WorkspaceValidation.inviteError(username: "sam", members: [sam], invited: [], channel: true),
+                       "This person already has access to this channel.")
+        XCTAssertEqual(WorkspaceValidation.inviteError(username: "kai", members: [sam], invited: [kai], channel: false),
+                       "This person already has a pending invitation.")
+        XCTAssertNil(WorkspaceValidation.inviteError(username: "alex", members: [sam], invited: [kai], channel: false))
+        XCTAssertEqual(WorkspaceValidation.memberMessage(APIError(status: 404, message: "user not found")),
+                       "User not found. Check the username and try again.")
+        XCTAssertEqual(WorkspaceValidation.memberMessage(APIError(status: 409, message: "user already invited")),
+                       "This person already has a pending invitation.")
+        XCTAssertEqual(WorkspaceValidation.memberMessage(APIError(status: 409, message: "user already in channel")),
+                       "This person already has access to this channel.")
+        XCTAssertEqual(WorkspaceValidation.memberMessage(APIError(status: 500, message: "Something else.")), "Something else.")
     }
 
     @MainActor

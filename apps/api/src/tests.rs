@@ -3179,3 +3179,23 @@ fn database_url_requires_postgres_and_tls() {
         "DATABASE_URL must be a PostgreSQL URL"
     );
 }
+
+#[test]
+fn live_media_streams_survive_transient_access_check_failures() {
+    let unavailable = StatusCode::SERVICE_UNAVAILABLE;
+    assert!(crate::skips_transient_failure(unavailable, "heartbeat", 0));
+    assert!(crate::skips_transient_failure(unavailable, "changed", 2));
+    // Setup events still fail fast so the client retries the whole stream.
+    assert!(!crate::skips_transient_failure(unavailable, "ready", 0));
+    assert!(!crate::skips_transient_failure(unavailable, "snapshot", 0));
+    // A sustained outage still ends the stream.
+    assert!(!crate::skips_transient_failure(unavailable, "heartbeat", 3));
+    // Revocation and expiry are never tolerated.
+    for denied in [
+        StatusCode::UNAUTHORIZED,
+        StatusCode::FORBIDDEN,
+        StatusCode::NOT_FOUND,
+    ] {
+        assert!(!crate::skips_transient_failure(denied, "heartbeat", 0));
+    }
+}

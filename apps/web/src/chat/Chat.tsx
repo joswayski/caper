@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, Ban, ChevronDown, MoreHorizontal, Pin } from "lucide-react";
+import { ArrowRight, Ban, ChevronDown, MoreHorizontal, Pin, X } from "lucide-react";
+import {
+  FloatingFocusManager,
+  FloatingOverlay,
+  FloatingPortal,
+  useDismiss,
+  useFloating,
+  useInteractions,
+  useRole,
+} from "@floating-ui/react";
 import { Virtuoso, type VirtuosoHandle, type ListProps, type ContextProp } from "react-virtuoso";
 import { ChatClient, initialChatView } from "./client.ts";
 import MessageReactions, { type ReactionSave } from "./MessageReactions.tsx";
@@ -14,20 +23,8 @@ import { dateDivider } from "./dates.ts";
 import { isChannelMessage, type ChatAuthor, type GeneralChatHistory } from "./types.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
 import Avatar from "../components/Avatar";
-import { emojiAsset } from "./emoji.ts";
-import { emojiToken, emojiSuggestions, insertEmoji, loadEmojiChoices, type EmojiChoice } from "./emoji-autocomplete.ts";
-import {
-  insertMention,
-  mentionCardPerson,
-  mentionName,
-  mentionSegments,
-  mentionSuggestions,
-  mentionToken,
-  mentionsAccount,
-  specialMentionLabels,
-  type MentionCandidate,
-  type MentionSuggestion,
-} from "./mentions.ts";
+import Composer, { type ComposerHandle } from "./Composer.tsx";
+import { mentionCardPerson, mentionSegments, mentionsAccount, type MentionCandidate } from "./mentions.ts";
 import MentionCard, { type MentionCardTarget } from "./MentionCard.tsx";
 import { blockedLabel, blockedRuns, type BlockedRun } from "./blocked.ts";
 import { unblock, useBlockedIds } from "../spaces/blocks.ts";
@@ -81,6 +78,46 @@ function MessageList({ context, children, ...props }: ListProps & ContextProp<Hi
 
 const listComponents = { Header: HistoryHeader, List: MessageList };
 const measureItem = (element: HTMLElement, field: "offsetHeight" | "offsetWidth") => element[field];
+
+function PinsDialog({
+  children,
+  onClose,
+  actionsOpen,
+}: {
+  children: ReactNode;
+  onClose: () => void;
+  actionsOpen: boolean;
+}) {
+  const { refs, context } = useFloating({
+    open: true,
+    onOpenChange: (open) => {
+      if (!open) onClose();
+    },
+  });
+  const { getFloatingProps } = useInteractions([useDismiss(context, { enabled: !actionsOpen }), useRole(context)]);
+  return (
+    <FloatingPortal>
+      <FloatingOverlay lockScroll className="chat-forward-overlay chat-pins-overlay">
+        <FloatingFocusManager context={context} disabled={actionsOpen}>
+          <section
+            ref={refs.setFloating}
+            className="chat-forward-dialog chat-pins-dialog"
+            aria-label="Pinned messages"
+            {...getFloatingProps()}
+          >
+            <header className="chat-reaction-picker-heading">
+              <strong>Pins</strong>
+              <button type="button" aria-label="Close pins" onClick={onClose}>
+                <X size={18} />
+              </button>
+            </header>
+            {children}
+          </section>
+        </FloatingFocusManager>
+      </FloatingOverlay>
+    </FloatingPortal>
+  );
+}
 
 export default function Chat({
   name,
@@ -144,7 +181,9 @@ export default function Chat({
   const viewerId = accountId ?? state.author?.id;
   const [showConnectionStatus, setShowConnectionStatus] = useState(false);
   const [firstItemIndex, setFirstItemIndex] = useState(INITIAL_ITEM_INDEX);
-  const [draft, setDraft] = useState("");
+  // The composer owns the draft; the conversation only needs to know one exists.
+  const composerRef = useRef<ComposerHandle>(null);
+  const [hasDraft, setHasDraft] = useState(false);
   const channelMenuRef = useRef<HTMLDetailsElement>(null);
   useEffect(() => {
     const dismiss = (event: PointerEvent) => {
@@ -154,7 +193,6 @@ export default function Chat({
     document.addEventListener("pointerdown", dismiss);
     return () => document.removeEventListener("pointerdown", dismiss);
   }, []);
-  const [validationError, setValidationError] = useState<string>();
   const clientRef = useRef<ChatClient | undefined>(undefined);
   const [actionTarget, setActionTarget] = useState<MessageActionTarget>();
   const [reactorsTarget, setReactorsTarget] = useState<ReactorsTarget>();
@@ -166,6 +204,15 @@ export default function Chat({
   const [reactionSaves, setReactionSaves] = useState<Record<string, ReactionSave | undefined>>({});
   const [mentionCard, setMentionCard] = useState<MentionCardTarget>();
   const [showPins, setShowPins] = useState(false);
+  const [jumping, setJumping] = useState<string>();
+  const [jumpError, setJumpError] = useState<string>();
+  const [jumpMessage, setJumpMessage] = useState<string>();
+  const [scrollTarget, setScrollTarget] = useState<string>();
+  const [listWindow, setListWindow] = useState(0);
+  const closePins = useCallback(() => {
+    setMentionCard(undefined);
+    setShowPins(false);
+  }, []);
   const [pinning, setPinning] = useState<Set<string>>(() => new Set());
   const [pinError, setPinError] = useState<{ messageId: string; active: boolean; text: string }>();
   // Runs of blocked messages the reader chose to show, by their first message.
@@ -188,6 +235,10 @@ export default function Chat({
     setActionStatus("");
     setReactionSaves({});
     setShowPins(false);
+    setJumping(undefined);
+    setJumpError(undefined);
+    setJumpMessage(undefined);
+    setScrollTarget(undefined);
     setPinning(new Set());
     setPinError(undefined);
     setRevealedRuns(new Set());
@@ -273,11 +324,11 @@ export default function Chat({
   const findMessage = (id?: string) =>
     state.messages.find((message) => message.id === id) ?? state.pinnedMessages.find((message) => message.id === id);
   const actionMessage = findMessage(actionTarget?.messageId);
-  const reactorsMessage = state.messages.find((message) => message.id === reactorsTarget?.messageId);
-  const forwardMessage = state.messages.find((message) => message.id === forwardTarget?.messageId);
-  const conversationMessage = [...state.messages, ...state.pinnedMessages].find(
-    (message) => message.id === conversationTarget?.messageId,
-  );
+  const reactorsMessage = findMessage(reactorsTarget?.messageId);
+  const forwardMessage = findMessage(forwardTarget?.messageId);
+  const conversationMessage = conversationTarget
+    ? [...state.messages, ...state.pinnedMessages].find((message) => message.id === conversationTarget.messageId)
+    : undefined;
   const closeForward = useCallback(() => setForwardTarget(undefined), []);
   const closeConversation = useCallback(() => setConversationTarget(undefined), []);
   const editMessage = findMessage(editTarget);
@@ -318,6 +369,31 @@ export default function Chat({
     }
   };
   const listRef = useRef<VirtuosoHandle>(null);
+  const scrollerRef = useRef<HTMLElement>(null);
+  const goToMessage = async (message: GeneralChatHistory["messages"][number]) => {
+    const client = clientRef.current;
+    if (!client || jumping) return;
+    setJumping(message.id);
+    setJumpError(undefined);
+    setActionTarget(undefined);
+    setMentionCard(undefined);
+    try {
+      if ((await client.loadMessageContext(message)) && clientRef.current === client) {
+        setShowPins(false);
+        setJumpMessage(message.id);
+        if (!message.threadRootId) {
+          // Cancel the previous window's queued follow/measurement corrections.
+          setListWindow((window) => window + 1);
+          setScrollTarget(message.id);
+        }
+      } else if (clientRef.current === client) setJumpError("Message could not be loaded. Try again.");
+    } catch (error) {
+      if (clientRef.current === client)
+        setJumpError(error instanceof Error ? error.message : "Message could not be loaded.");
+    } finally {
+      if (clientRef.current === client) setJumping(undefined);
+    }
+  };
   const initialListRef = useRef<HTMLDivElement>(null);
   const [listReady, setListReady] = useState(false);
   // Virtuoso needs browser APIs; the server and first client render use the plain list.
@@ -332,81 +408,13 @@ export default function Chat({
     }, 1_000);
     return () => clearTimeout(timer);
   }, [state.author?.id, readOnly]);
-  const composerRef = useRef<HTMLTextAreaElement>(null);
-  const [selection, setSelection] = useState({ start: 0, end: 0 });
-  const [composerFocused, setComposerFocused] = useState(false);
-  const [composing, setComposing] = useState(false);
-  const [emojiChoices, setEmojiChoices] = useState<EmojiChoice[]>();
-  const [emojiError, setEmojiError] = useState(false);
-  const [dismissedSuggestions, setDismissedSuggestions] = useState<string>();
-  const [selectedSuggestion, setSelectedSuggestion] = useState(0);
-  const selectionKey = `${draft}:${selection.start}:${selection.end}`;
-  const suggesting = composerFocused && !composing && dismissedSuggestions !== selectionKey;
-  const token = suggesting ? emojiToken(draft, selection.start, selection.end) : undefined;
-  const emojiOpen = !!token;
-  const suggestions = token && emojiChoices ? emojiSuggestions(emojiChoices, token.query) : [];
-  // `:` and `@` tokens never overlap; only one popup can be open.
-  const mention = suggesting && !token ? mentionToken(draft, selection.start, selection.end) : undefined;
-  const mentionOptions = mention
-    ? mentionSuggestions(
-        (mentionMembers ?? []).filter((member) => member.id !== state.author?.id),
-        mention.query,
-        !direct,
-      )
-    : [];
-  const mentionOpen = mentionOptions.length > 0;
-  const optionCount = token ? suggestions.length : mentionOptions.length;
-  const activeOption = Math.min(selectedSuggestion, Math.max(0, optionCount - 1));
-  const activeOptionId = token
-    ? suggestions[activeOption] && `chat-emoji-${suggestions[activeOption].id}`
-    : mentionOptions[activeOption] && `chat-mention-${mentionName(mentionOptions[activeOption])}`;
-  useLayoutEffect(() => {
-    if (activeOptionId) document.getElementById(activeOptionId)?.scrollIntoView({ block: "nearest" });
-  }, [activeOptionId]);
-  useEffect(() => {
-    setSelectedSuggestion(0);
-  }, [selectionKey]);
-  useEffect(() => {
-    if (!emojiOpen || emojiChoices) return;
-    let active = true;
-    setEmojiError(false);
-    void loadEmojiChoices()
-      .then((choices) => {
-        if (active) setEmojiChoices(choices);
-      })
-      .catch(() => {
-        if (active) setEmojiError(true);
-      });
-    return () => {
-      active = false;
-    };
-  }, [emojiOpen, emojiChoices]);
-  const updateSelection = (input: HTMLTextAreaElement) => {
-    setSelection({ start: input.selectionStart, end: input.selectionEnd });
-    const nextKey = `${input.value}:${input.selectionStart}:${input.selectionEnd}`;
-    setDismissedSuggestions((current) => (current === nextKey ? current : undefined));
-  };
-  const chooseEmoji = (entry: EmojiChoice) => {
-    if (token) applyInsertion(insertEmoji(draft, token, entry.emoji));
-  };
-  const chooseMention = (option: MentionSuggestion) => {
-    if (mention) applyInsertion(insertMention(draft, mention, mentionName(option)));
-  };
-  const applyInsertion = (result: { value: string; caret: number } | undefined) => {
-    if (!result) {
-      setValidationError("Messages must be 4,000 characters or fewer.");
-      return;
-    }
-    setDraft(result.value);
-    setSelection({ start: result.caret, end: result.caret });
-    setValidationError(undefined);
-    clientRef.current?.setTyping(!!result.value.trim());
-    requestAnimationFrame(() => {
-      composerRef.current?.focus();
-      composerRef.current?.setSelectionRange(result.caret, result.caret);
-    });
-  };
-  const followLatest = useRef(true);
+  // The thread composer suggests the same people as the channel composer.
+  const mentionPeople = useMemo(
+    () => mentionMembers?.filter((member) => member.id !== state.author?.id),
+    [mentionMembers, state.author?.id],
+  );
+  const allowFollow = useRef(false);
+  allowFollow.current = !state.hasNewer && !scrollTarget && !jumping;
   const latestMessage = state.messages.at(-1);
   const [announcement, setAnnouncement] = useState("");
   useEffect(() => {
@@ -415,8 +423,7 @@ export default function Chat({
   }, [latestMessage?.id, state.phase]);
   // Reaction events advance the conversation stream without adding a message.
   // HTTP reaction snapshots do not advance this committed replay cursor.
-  const readCursor =
-    clientRef.current?.snapshotHistory()?.cursor ?? initialHistory?.cursor ?? latestMessage?.seq ?? "0";
+  const readCursor = clientRef.current?.readCursor() ?? initialHistory?.cursor ?? latestMessage?.seq ?? "0";
   const readCallback = useRef(onReadCursor);
   readCallback.current = onReadCursor;
   useEffect(() => {
@@ -428,27 +435,18 @@ export default function Chat({
     return () => document.removeEventListener("visibilitychange", read);
   }, [state.phase, readCursor, channelId]);
 
-  useLayoutEffect(() => {
-    const composer = composerRef.current;
-    if (!composer) return;
-    const resize = () => {
-      composer.style.height = "0px";
-      composer.style.height = `${composer.scrollHeight + composer.offsetHeight - composer.clientHeight}px`;
-      if (followLatest.current) listRef.current?.autoscrollToBottom();
-    };
-    resize();
-    let width = composer.clientWidth;
-    const observer = new ResizeObserver(() => {
-      if (composer.clientWidth === width) return;
-      width = composer.clientWidth;
-      resize();
-    });
-    observer.observe(composer);
-    return () => observer.disconnect();
-  }, [draft]);
+  // The composer resizes itself; keep the conversation pinned to the newest
+  // message when it already was. Read the position before resizing, not a
+  // delayed bottom callback, and correct only real height changes using the
+  // new DOM extent rather than the virtualizer's previous measurements.
+  const keepLatestInView = useCallback((resize: () => boolean) => {
+    const scroller = scrollerRef.current;
+    const atBottom = scroller && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 80;
+    if (resize() && atBottom && allowFollow.current) scroller.scrollTop = scroller.scrollHeight;
+  }, []);
+  const setTyping = useCallback((active: boolean) => clientRef.current?.setTyping(active), []);
 
   useEffect(() => {
-    let pendingId: string | undefined;
     let firstMessageId: string | undefined;
     const client = new ChatClient(
       (next) => {
@@ -461,12 +459,7 @@ export default function Chat({
           if (prepended > 0) setFirstItemIndex((index) => index - prepended);
           firstMessageId = next.channelMessages?.[0]?.id;
         }
-        const pending = next.pendingSend;
-        if (pending && !pending.threadRootId && pending.clientMessageId !== pendingId) {
-          setDraft((current) => (current === pending.text ? "" : current));
-          followLatest.current = true;
-        }
-        pendingId = pending?.clientMessageId;
+        // The composer clears the draft a new local send came from.
         setState(next);
       },
       channelId,
@@ -513,8 +506,8 @@ export default function Chat({
   }, [state.online, onOnlineChange]);
 
   useEffect(() => {
-    if (identityReady && (!readOnly || signedIn)) clientRef.current?.identify(name, signedIn);
-  }, [identityReady, name, signedIn, readOnly]);
+    if (identityReady && (!readOnly || signedIn)) clientRef.current?.identify(name, signedIn, accountId);
+  }, [identityReady, name, signedIn, accountId, readOnly]);
 
   useEffect(() => {
     if (state.author) onAuthorChange?.(state.author);
@@ -535,12 +528,23 @@ export default function Chat({
   const channelName = direct
     ? (expectedChannelName ?? state.channelName)
     : (expectedChannelName ?? state.channelName).toLowerCase();
-  const characterCount = Array.from(draft).length;
-  const counterTone =
-    characterCount >= 3900 ? "red" : characterCount >= 3750 ? "orange" : characterCount >= 3500 ? "yellow" : "gray";
   const channelMessages = state.channelMessages ?? state.messages.filter(isChannelMessage);
   const messages =
     state.pendingSend && !state.pendingSend.threadRootId ? [...channelMessages, state.pendingSend] : channelMessages;
+  const scrollIndex =
+    scrollTarget && scrollTarget !== "latest"
+      ? messages.findIndex((message) => "id" in message && message.id === scrollTarget)
+      : "LAST";
+  useEffect(() => {
+    if (!scrollTarget || !listReady) return;
+    if (scrollTarget === "latest" && state.hasNewer) return;
+    if (scrollIndex === -1) return;
+    const frame = requestAnimationFrame(() => {
+      listRef.current?.scrollToIndex({ index: scrollIndex, align: scrollTarget === "latest" ? "end" : "center" });
+      setScrollTarget(undefined);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [scrollTarget, scrollIndex, messages, firstItemIndex, listReady, state.hasNewer]);
   const previewStart = Math.max(
     0,
     messages.length - Math.max(20, Math.ceil((typeof window === "undefined" ? 800 : window.innerHeight) / 50)),
@@ -565,13 +569,20 @@ export default function Chat({
       ),
     ]);
   }, [state.messages, threadRootId, blockedIds, ownId]);
-  const toggleRun = (first: string, shown: boolean) =>
+  useLayoutEffect(() => {
+    const target = state.messages.find((message) => message.id === jumpMessage);
+    const run = target && (target.threadRootId ? threadRuns : channelRuns).get(target.clientMessageId);
+    if (run) setRevealedRuns((current) => (current.has(run.first) ? current : new Set([...current, run.first])));
+  }, [jumpMessage, state.messages, threadRuns, channelRuns]);
+  const toggleRun = (first: string, shown: boolean) => {
+    if (!shown) setJumpMessage(undefined);
     setRevealedRuns((current) => {
       const next = new Set(current);
       if (shown) next.add(first);
       else next.delete(first);
       return next;
     });
+  };
   const typingLabel =
     typingNames.length > 2
       ? "Several people are typing…"
@@ -587,15 +598,10 @@ export default function Chat({
     const timer = setTimeout(() => setDisplayedTypingLabel(""), 180);
     return () => clearTimeout(timer);
   }, [typingLabel]);
-  const submit = async () => {
-    if (readOnly || !identityReady || sending || state.sendRejected || state.pendingSend?.threadRootId) return;
-    setValidationError(undefined);
-    followLatest.current = true;
-    const submitted = state.pendingSend?.text ?? draft;
-    try {
-      await clientRef.current?.send(submitted);
-    } catch (error) {
-      setValidationError(error instanceof Error ? error.message : "Message could not be sent.");
+  const sendDraft = async (text: string) => {
+    if ((await clientRef.current?.send(text)) && state.hasNewer) {
+      setJumpMessage(undefined);
+      setScrollTarget("latest");
     }
   };
 
@@ -656,8 +662,9 @@ export default function Chat({
           </div>
         )}
         <article
-          className={`chat-message${pending ? " chat-message-pending" : ""}${"content" in message && message.pin ? " chat-message-pinned" : ""}${!pending && mentionsAccount(message, state.author?.id) ? " chat-message-mentioned" : ""}${!inThread && "id" in message && state.thread?.rootId === message.id ? " chat-message-thread-active" : ""}`}
+          className={`chat-message${pending ? " chat-message-pending" : ""}${"id" in message && jumpMessage === message.id ? " chat-message-jump-target" : ""}${!pending && mentionsAccount(message, state.author?.id) ? " chat-message-mentioned" : ""}${!inThread && "id" in message && state.thread?.rootId === message.id ? " chat-message-thread-active" : ""}`}
           data-message-key={message.clientMessageId}
+          data-message-id={"id" in message ? message.id : undefined}
           onPointerDown={(event) => {
             cancelPress();
             if (
@@ -700,12 +707,6 @@ export default function Chat({
           }}
           tabIndex={pending ? undefined : -1}
         >
-          {"content" in message && message.pin && (
-            <div className="chat-pin-marker">
-              <Pin size={12} aria-hidden="true" />
-              Pinned by {message.pin.author.name}
-            </div>
-          )}
           <div className="chat-avatar">
             <Avatar avatarId={author?.avatarId} name={author?.name ?? name} />
           </div>
@@ -857,14 +858,11 @@ export default function Chat({
                   <>
                     <button
                       type="button"
-                      disabled={!!draft}
-                      title={draft ? "Clear your current draft to edit this message." : undefined}
+                      disabled={hasDraft}
+                      title={hasDraft ? "Clear your current draft to edit this message." : undefined}
                       onClick={() => {
                         const text = clientRef.current?.discardRejected();
-                        if (text !== undefined) {
-                          setDraft(text);
-                          composerRef.current?.focus();
-                        }
+                        if (text !== undefined) composerRef.current?.restore(text);
                       }}
                     >
                       Edit
@@ -874,7 +872,7 @@ export default function Chat({
                     </button>
                   </>
                 ) : (
-                  <button type="button" onClick={() => void submit()}>
+                  <button type="button" onClick={() => composerRef.current?.submit()}>
                     Retry send
                   </button>
                 )}
@@ -886,24 +884,26 @@ export default function Chat({
     );
   };
 
-  const pinsToggle =
-    state.phase === "ready" &&
-    (showPins ? (
-      <button type="button" className="chat-pins-toggle" onClick={() => setShowPins(false)}>
-        <ArrowLeft size={16} aria-hidden="true" />
-        Messages
-      </button>
-    ) : (
-      <button
-        type="button"
-        className="chat-pins-toggle"
-        onClick={() => setShowPins(true)}
-        aria-label={`Pins, ${state.pinnedMessages.length}`}
-      >
-        <Pin size={16} aria-hidden="true" />
-        Pins{state.pinnedMessages.length ? ` ${state.pinnedMessages.length}` : ""}
-      </button>
-    ));
+  const pinsToggle = state.phase === "ready" && (
+    <button
+      type="button"
+      className="chat-pins-toggle"
+      onClick={() => setShowPins(true)}
+      aria-label="Pins"
+      title="Pins"
+      aria-haspopup="dialog"
+    >
+      <Pin size={18} aria-hidden="true" />
+    </button>
+  );
+  const openPinner = (author: ChatAuthor, anchor: HTMLElement, focusOnOpen = true) => {
+    setMentionCard({
+      person: mentionCardPerson(author, mentionDirectory, state.author?.id),
+      anchor,
+      drawer: isTouchLayout(),
+      focusOnOpen,
+    });
+  };
 
   return (
     <div className="chat-layout" data-thread-open={!!state.thread}>
@@ -937,7 +937,6 @@ export default function Chat({
                   if ((event.target as HTMLElement).closest("button")) channelMenuRef.current!.open = false;
                 }}
               >
-                {pinsToggle}
                 {channelMenu}
               </div>
             </details>
@@ -947,7 +946,7 @@ export default function Chat({
               {channelName}
             </h2>
           )}
-          {!channelMenu && pinsToggle}
+          {pinsToggle}
           {headerActions}
           {!state.online && showConnectionStatus && (
             <span className="chat-offline" role="status">
@@ -981,61 +980,112 @@ export default function Chat({
 
         <div className="chat-messages" aria-busy={state.phase === "loading"}>
           {showPins && state.phase === "ready" && (
-            <div className="chat-pins" role="region" aria-label={`Pinned messages in ${channelName}`}>
-              <h3>Pinned messages</h3>
-              {!state.pinnedMessages.length ? (
-                <p className="chat-state">No pinned messages.</p>
-              ) : (
-                state.pinnedMessages.map((message) => (
-                  <article className="chat-pinned-message" key={message.id}>
-                    {message.pin && (
-                      <small className="chat-pin-marker">
-                        <Pin size={12} aria-hidden="true" />
-                        Pinned by {message.pin.author.name}
-                      </small>
-                    )}
-                    <div className="chat-avatar chat-pinned-avatar">
-                      <Avatar avatarId={message.author.avatarId} name={message.author.name} />
-                    </div>
-                    <header>
-                      <strong>{message.author.name}</strong>
-                      <time dateTime={message.createdAt}>
-                        {hydrated ? timeLabel(message.createdAt, pinTimeFormatter) : ""}
-                      </time>
-                    </header>
-                    <p>{message.content.text}</p>
-                    <ForwardCard
-                      message={message}
-                      onOpen={(anchor) => setConversationTarget({ messageId: message.id, anchor })}
-                    />
-                    {!message.forward &&
-                      ((message.revision ?? 1) > 1 || (!readOnly && state.author?.id === message.author.id)) && (
-                        <div className="chat-pinned-edit-actions">
-                          {(message.revision ?? 1) > 1 && (
-                            <button type="button" className="chat-edited" onClick={() => openHistory(message.id)}>
-                              edited · Message history
-                            </button>
-                          )}
-                          {!readOnly && state.author?.id === message.author.id && (
-                            <button type="button" onClick={() => openEdit(message.id)}>
-                              Edit message
-                            </button>
-                          )}
-                        </div>
+            <PinsDialog
+              onClose={closePins}
+              actionsOpen={
+                !!(
+                  actionTarget ||
+                  reactorsTarget ||
+                  forwardTarget ||
+                  conversationTarget ||
+                  editTarget ||
+                  historyTarget ||
+                  mentionCard
+                )
+              }
+            >
+              <div className="chat-pins">
+                {jumpError && (
+                  <p className="chat-inline-error" role="alert">
+                    {jumpError}
+                  </p>
+                )}
+                {!state.pinnedMessages.length ? (
+                  <p className="chat-state">No pinned messages.</p>
+                ) : (
+                  state.pinnedMessages.map((message) => (
+                    <article className="chat-message chat-pinned-message" key={message.id}>
+                      {message.pin && (
+                        <small className="chat-pin-marker">
+                          <Pin size={12} aria-hidden="true" />
+                          <button
+                            type="button"
+                            className="chat-pin-author"
+                            aria-label={`Open profile for ${message.pin.author.name}`}
+                            aria-haspopup="dialog"
+                            onClick={(event) => openPinner(message.pin!.author, event.currentTarget)}
+                            onPointerEnter={(event) => {
+                              if (event.pointerType === "mouse")
+                                openPinner(message.pin!.author, event.currentTarget, false);
+                            }}
+                            onPointerDown={(event) => {
+                              cancelPress();
+                              if (event.pointerType === "mouse" || !event.isPrimary) return;
+                              const anchor = event.currentTarget;
+                              press.current = {
+                                x: event.clientX,
+                                y: event.clientY,
+                                pointerId: event.pointerId,
+                                timer: setTimeout(() => {
+                                  suppressClick.current = true;
+                                  openPinner(message.pin!.author, anchor);
+                                }, 500),
+                              };
+                            }}
+                            onPointerMove={(event) => {
+                              const current = press.current;
+                              if (
+                                current &&
+                                (event.pointerId !== current.pointerId ||
+                                  Math.hypot(event.clientX - current.x, event.clientY - current.y) > 10)
+                              )
+                                cancelPress();
+                            }}
+                            onPointerUp={cancelPress}
+                            onPointerCancel={cancelPress}
+                            onContextMenu={(event) => {
+                              if (isTouchLayout()) event.preventDefault();
+                            }}
+                          >
+                            Pinned by {message.pin.author.name}
+                          </button>
+                        </small>
                       )}
-                    {!readOnly && !!state.author && (
+                      <div className="chat-avatar chat-pinned-avatar">
+                        <Avatar avatarId={message.author.avatarId} name={message.author.name} />
+                      </div>
+                      <header>
+                        <strong>{message.author.name}</strong>
+                        <time dateTime={message.createdAt}>
+                          {hydrated ? timeLabel(message.createdAt, pinTimeFormatter) : ""}
+                        </time>
+                      </header>
+                      <p>{message.content.text}</p>
+                      <ForwardCard
+                        message={message}
+                        onOpen={(anchor) => setConversationTarget({ messageId: message.id, anchor })}
+                      />
+                      <div className="chat-pinned-navigation">
+                        <button type="button" disabled={!!jumping} onClick={() => void goToMessage(message)}>
+                          {jumping === message.id ? "Loading message…" : "Go to message"}
+                          <ArrowRight size={14} aria-hidden="true" />
+                        </button>
+                      </div>
                       <button
                         type="button"
-                        disabled={pinning.has(message.id)}
-                        onClick={() => void pin(message.id, false)}
+                        className="chat-message-actions-trigger"
+                        aria-label={`Message actions for ${message.author.name}`}
+                        aria-haspopup="dialog"
+                        aria-expanded={actionTarget?.messageId === message.id}
+                        onClick={(event) => openActions(message.id, event.currentTarget, false)}
                       >
-                        {pinning.has(message.id) ? "Unpinning…" : "Unpin"}
+                        <MoreHorizontal size={14} aria-hidden="true" />
                       </button>
-                    )}
-                  </article>
-                ))
-              )}
-            </div>
+                    </article>
+                  ))
+                )}
+              </div>
+            </PinsDialog>
           )}
           <div className="chat-timeline" inert={showPins} aria-hidden={showPins}>
             {state.phase === "loading" && (
@@ -1069,21 +1119,25 @@ export default function Chat({
             )}
             {state.phase === "ready" && messages.length > 0 && hydrated && (
               <Virtuoso
+                key={listWindow}
                 ref={listRef}
+                scrollerRef={(element) => {
+                  scrollerRef.current = element instanceof HTMLElement ? element : null;
+                }}
                 data={messages}
                 firstItemIndex={firstItemIndex}
-                initialTopMostItemIndex={{ index: "LAST", align: "end" }}
+                initialTopMostItemIndex={{
+                  index: scrollIndex === -1 ? "LAST" : scrollIndex,
+                  align: scrollTarget && scrollTarget !== "latest" ? "center" : "end",
+                }}
                 computeItemKey={(_, message) => `${message.author?.id ?? "pending"}:${message.clientMessageId}`}
                 defaultItemHeight={70}
                 // Layout sizes, not getBoundingClientRect: inside the homepage's tilted
                 // window the rect is scaled, which would hide the newest messages.
                 itemSize={measureItem}
                 increaseViewportBy={{ top: 250, bottom: 150 }}
-                followOutput="auto"
+                followOutput={allowFollow.current ? "auto" : false}
                 atBottomThreshold={80}
-                atBottomStateChange={(atBottom) => {
-                  followLatest.current = atBottom;
-                }}
                 startReached={() => {
                   if (!state.olderError) loadOlder();
                 }}
@@ -1128,6 +1182,24 @@ export default function Chat({
             </p>
           </div>
         </div>
+        {state.hasNewer && (
+          <div className="chat-history" role="status">
+            {state.newerError && <span>{state.newerError}</span>}
+            <button type="button" disabled={state.loadingNewer} onClick={() => void clientRef.current?.loadNewer()}>
+              {state.loadingNewer ? "Loading…" : state.newerError ? "Retry newer messages" : "Load newer messages"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setJumpMessage(undefined);
+                setScrollTarget("latest");
+                clientRef.current?.retryLoad();
+              }}
+            >
+              Back to latest
+            </button>
+          </div>
+        )}
 
         {mentionCard && (
           <MentionCard
@@ -1199,8 +1271,8 @@ export default function Chat({
               if (!clientRef.current) return Promise.reject(new Error("Chat session is unavailable."));
               return clientRef.current.forward(destination, messageId, key, text);
             }}
-            onSent={(destination) => {
-              setActionStatus(`Forwarded to ${destination.direct ? "" : "#"}${destination.name}.`);
+            onSent={(count) => {
+              setActionStatus(`Forwarded to ${count} ${count === 1 ? "destination" : "destinations"}.`);
               setForwardTarget(undefined);
             }}
           />
@@ -1252,171 +1324,22 @@ export default function Chat({
                 </button>
               </p>
             )}
-            {validationError && (
-              <p className="chat-inline-error" role="alert">
-                {validationError}
-              </p>
-            )}
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                void submit();
-              }}
-            >
-              <label className="sr-only" htmlFor="chat-message">
-                Message {channelName}
-              </label>
-              {emojiOpen && (
-                <div className="chat-emoji-suggestions">
-                  {suggestions.length > 0 ? (
-                    <div id="chat-emoji-options" role="listbox" aria-label="Emoji suggestions">
-                      {suggestions.map((entry, index) => (
-                        <button
-                          type="button"
-                          role="option"
-                          id={`chat-emoji-${entry.id}`}
-                          key={entry.id}
-                          tabIndex={-1}
-                          aria-selected={index === activeOption}
-                          aria-label={`Insert ${entry.name} emoji`}
-                          onPointerDown={(event) => event.preventDefault()}
-                          onClick={() => chooseEmoji(entry)}
-                        >
-                          <img src={emojiAsset(entry.id)} alt="" width="24" height="24" />
-                          <span>:{entry.name.replaceAll(" ", "_")}:</span>
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <p role="status">
-                      {emojiError
-                        ? "Emoji suggestions unavailable. You can still send text."
-                        : emojiChoices
-                          ? "No emoji found."
-                          : "Loading emoji…"}
-                    </p>
-                  )}
-                </div>
-              )}
-              {mentionOpen && (
-                <div className="chat-emoji-suggestions chat-mention-suggestions">
-                  <div id="chat-mention-options" role="listbox" aria-label="People to mention">
-                    {mentionOptions.map((option, index) => {
-                      const name = mentionName(option);
-                      return (
-                        <button
-                          type="button"
-                          role="option"
-                          id={`chat-mention-${name}`}
-                          key={`${option.kind}:${name}`}
-                          tabIndex={-1}
-                          aria-selected={index === activeOption}
-                          aria-label={
-                            option.kind === "member"
-                              ? `Mention ${option.member.displayName}, @${name}`
-                              : `Mention @${name}, ${specialMentionLabels[option.kind].toLowerCase()}`
-                          }
-                          onPointerDown={(event) => event.preventDefault()}
-                          onClick={() => chooseMention(option)}
-                        >
-                          {option.kind === "member" ? (
-                            <>
-                              <i className="chat-mention-avatar">
-                                <Avatar avatarId={option.member.avatarId} name={option.member.displayName} />
-                              </i>
-                              <span>{option.member.displayName}</span>
-                              <small>@{name}</small>
-                            </>
-                          ) : (
-                            <>
-                              <i className="chat-mention-avatar chat-mention-special" aria-hidden="true">
-                                @
-                              </i>
-                              <span>@{name}</span>
-                              <small>{specialMentionLabels[option.kind]}</small>
-                            </>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-              <textarea
-                ref={composerRef}
-                id="chat-message"
-                rows={1}
-                value={draft}
-                disabled={state.phase !== "ready"}
-                enterKeyHint="send"
-                aria-describedby="chat-composer-hint"
-                aria-autocomplete="list"
-                aria-controls={
-                  suggestions.length ? "chat-emoji-options" : mentionOpen ? "chat-mention-options" : undefined
-                }
-                aria-activedescendant={activeOptionId || undefined}
-                placeholder={`Message ${direct ? "" : "#"}${channelName}`}
-                onFocus={(event) => {
-                  setComposerFocused(true);
-                  updateSelection(event.currentTarget);
-                }}
-                onSelect={(event) => updateSelection(event.currentTarget)}
-                onCompositionStart={() => setComposing(true)}
-                onCompositionEnd={(event) => {
-                  setComposing(false);
-                  updateSelection(event.currentTarget);
-                }}
-                onChange={(event) => {
-                  setDraft(event.target.value);
-                  setDismissedSuggestions(undefined);
-                  updateSelection(event.target);
-                  setValidationError(undefined);
-                  clientRef.current?.setTyping(!!event.target.value.trim());
-                }}
-                onBlur={() => {
-                  setComposerFocused(false);
-                  clientRef.current?.setTyping(false);
-                }}
-                onKeyDown={(event) => {
-                  if (event.nativeEvent.isComposing || composing) return;
-                  if ((emojiOpen || mentionOpen) && event.key === "Escape") {
-                    event.preventDefault();
-                    setDismissedSuggestions(selectionKey);
-                    return;
-                  }
-                  if (optionCount && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
-                    event.preventDefault();
-                    setSelectedSuggestion(
-                      (activeOption + (event.key === "ArrowDown" ? 1 : optionCount - 1)) % optionCount,
-                    );
-                    return;
-                  }
-                  if (optionCount && !event.shiftKey && (event.key === "Enter" || event.key === "Tab")) {
-                    event.preventDefault();
-                    if (token) chooseEmoji(suggestions[activeOption]);
-                    else chooseMention(mentionOptions[activeOption]);
-                    return;
-                  }
-                  if (emojiOpen && !emojiChoices && !emojiError && event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    return;
-                  }
-                  if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                    event.preventDefault();
-                    if (!sending) void submit();
-                  }
-                }}
-              />
-              <span id="chat-composer-hint" className="sr-only">
-                Type : to find emoji or @ to mention someone. Up and Down choose; Enter or Tab inserts; Escape closes
-                suggestions. Enter to send. Shift+Enter for a new line.
-              </span>
-              {characterCount >= 3000 && (
-                <small className="chat-counter" data-tone={counterTone}>
-                  {characterCount.toLocaleString()} / 4,000
-                </small>
-              )}
-            </form>
+            <Composer
+              ref={composerRef}
+              channelName={channelName}
+              direct={direct}
+              disabled={state.phase !== "ready"}
+              identityReady={identityReady}
+              sending={sending}
+              sendRejected={!!state.sendRejected}
+              pendingSend={state.pendingSend}
+              authorId={state.author?.id}
+              mentionMembers={mentionMembers}
+              onSend={sendDraft}
+              onTyping={setTyping}
+              onResize={keepLatestInView}
+              onDraftPresence={setHasDraft}
+            />
           </div>
         )}
       </section>
@@ -1425,6 +1348,8 @@ export default function Chat({
         client={clientRef.current}
         channelName={channelName}
         readOnly={readOnly}
+        mentionPeople={mentionPeople}
+        specialMentions={!direct}
         renderMessage={renderMessage}
         onClose={closeThread}
       />

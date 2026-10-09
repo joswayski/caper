@@ -8,6 +8,7 @@ use reqwest::blocking::{Client, Response};
 use reqwest::{Method, StatusCode, redirect::Policy};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use url::Url;
 
@@ -15,6 +16,11 @@ use url::Url;
 pub struct Api {
     base: Url,
     client: Client,
+    /// The signed-in chat capability and the account token that minted it. It
+    /// is bound to the account session, not a conversation, so navigation
+    /// reuses it (like web and mobile) until the server refuses it or the
+    /// profile (and so its author name) changes.
+    chat_session: Arc<Mutex<Option<(String, ChatSession)>>>,
 }
 
 #[derive(Debug)]
@@ -52,7 +58,11 @@ impl Api {
             .user_agent(concat!("Caper-Desktop/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|_| "Could not initialize secure networking")?;
-        Ok(Self { base, client })
+        Ok(Self {
+            base,
+            client,
+            chat_session: Arc::new(Mutex::new(None)),
+        })
     }
 
     pub fn base(&self) -> &Url {
@@ -102,13 +112,16 @@ impl Api {
         username: &str,
         display_name: &str,
     ) -> Result<Account, ApiError> {
-        self.request(
+        let account = self.request(
             Method::POST,
             "api/account/profile",
             Some(token),
             None,
             Some(json!({"username":username,"displayName":display_name})),
-        )
+        )?;
+        // The next conversation mints a session carrying the new author name.
+        *self.chat_session.lock().unwrap() = None;
+        Ok(account)
     }
 
     pub fn spaces(&self, token: &str) -> Result<Spaces, ApiError> {
@@ -276,14 +289,44 @@ impl Api {
         self.request(Method::GET, &path, token, None, None)
     }
 
+    pub fn message_context(
+        &self,
+        token: Option<&str>,
+        channel: &str,
+        root: Option<&str>,
+        anchor: &str,
+        newer: bool,
+    ) -> Result<crate::model::MessageContext, ApiError> {
+        let path = root.map_or_else(
+            || format!("api/chat/channels/{channel}/messages"),
+            |root| format!("api/chat/channels/{channel}/messages/{root}/thread"),
+        );
+        let mut url = self.base.join(&path).expect("valid API path");
+        url.query_pairs_mut()
+            .append_pair(if newer { "after" } else { "around" }, anchor);
+        self.request(Method::GET, url.as_str(), token, None, None)
+    }
+
     pub fn chat_session(&self, token: Option<&str>, name: &str) -> Result<ChatSession, ApiError> {
-        self.request(
+        if let Some(token) = token
+            && let Some((owner, session)) = self.chat_session.lock().unwrap().as_ref()
+            && owner == token
+        {
+            return Ok(session.clone());
+        }
+        let session: ChatSession = self.request(
             Method::POST,
             "api/chat/session",
             token,
             None,
             Some(json!({"name":name})),
-        )
+        )?;
+        if let Some(token) = token
+            && !session.author.is_guest
+        {
+            *self.chat_session.lock().unwrap() = Some((token.to_owned(), session.clone()));
+        }
+        Ok(session)
     }
 
     pub fn forward_destinations(
@@ -754,6 +797,7 @@ impl Api {
     }
 
     pub fn logout(&self, token: &str) -> Result<(), ApiError> {
+        *self.chat_session.lock().unwrap() = None;
         let response = self.raw(Method::POST, "api/auth/logout", Some(token), None, None)?;
         checked(response).map(|_| ())
     }
@@ -793,12 +837,26 @@ impl Api {
         if let Some(body) = body {
             request = request.json(&body);
         }
-        request.send().map_err(|_| ApiError {
+        let response = request.send().map_err(|_| ApiError {
             status: None,
             message: "Could not reach Caper. Check your connection and try again.".into(),
             attempts_remaining: None,
             code: None,
-        })
+        })?;
+        // Only 401 means the capability itself is invalid; a 403 is a refusal
+        // (such as a block) that a new session would not change.
+        if response.status() == StatusCode::UNAUTHORIZED
+            && let Some(chat_token) = chat_token
+        {
+            let mut cached = self.chat_session.lock().unwrap();
+            if cached
+                .as_ref()
+                .is_some_and(|(_, session)| session.token == chat_token)
+            {
+                *cached = None;
+            }
+        }
+        Ok(response)
     }
 }
 
@@ -896,6 +954,87 @@ mod tests {
         assert_eq!(list.reactions[0].authors[1].avatar_id, Some(100));
         let missing = api.reactors(Some("account"), "c1", "m1").unwrap_err();
         assert_eq!(missing.status.map(|status| status.as_u16()), Some(404));
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn chat_session_is_minted_once_per_sign_in_and_replaced_only_after_401() {
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api = Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
+        let worker = std::thread::spawn(move || {
+            let session = |token: &str| {
+                format!(
+                    r#"{{"token":"{token}","author":{{"id":"u","name":"User","isGuest":false}}}}"#
+                )
+            };
+            let refused = r#"{"error":"this person isn't accepting direct messages","code":"dm_not_accepted"}"#;
+            for (path, status, body) in [
+                ("POST /api/chat/session", "200 OK", session("first")),
+                (
+                    "PUT /api/chat/channels/c/messages/m/reactions",
+                    "403 Forbidden",
+                    refused.into(),
+                ),
+                (
+                    "PUT /api/chat/channels/c/messages/m/reactions",
+                    "401 Unauthorized",
+                    r#"{"error":"guest session expired"}"#.into(),
+                ),
+                ("POST /api/chat/session", "200 OK", session("second")),
+                ("POST /api/chat/session", "200 OK", session("other-account")),
+            ] {
+                let (stream, _) = server.accept().unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                assert_eq!(request, format!("{path} HTTP/1.1\r\n"));
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length: ")
+                    {
+                        length = value.trim().parse().unwrap();
+                    }
+                }
+                std::io::Read::read_exact(&mut reader, &mut vec![0; length]).unwrap();
+                write!(
+                    reader.get_mut(),
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+        });
+        let first = api.chat_session(Some("account"), "User").unwrap();
+        assert_eq!(first.token, "first");
+        assert_eq!(
+            api.chat_session(Some("account"), "User").unwrap().token,
+            "first",
+            "navigation reuses the account's session"
+        );
+        let refused = api
+            .react(Some("account"), "first", "c", "m", "👍", true)
+            .unwrap_err();
+        assert_eq!(refused.code.as_deref(), Some("dm_not_accepted"));
+        assert_eq!(
+            api.chat_session(Some("account"), "User").unwrap().token,
+            "first"
+        );
+        api.react(Some("account"), "first", "c", "m", "👍", true)
+            .unwrap_err();
+        assert_eq!(
+            api.chat_session(Some("account"), "User").unwrap().token,
+            "second"
+        );
+        assert_eq!(
+            api.chat_session(Some("new-sign-in"), "User").unwrap().token,
+            "other-account",
+            "another sign-in never inherits the capability"
+        );
         worker.join().unwrap();
     }
 

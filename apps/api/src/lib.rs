@@ -1475,6 +1475,19 @@ struct EventStreamState {
     revision: Option<u64>,
     handoff: bool,
     handoff_deadline: Option<tokio::time::Instant>,
+    /// Consecutive transient (5xx) access-check failures on live events.
+    transient_failures: u8,
+}
+
+/// About 30s of heartbeats: a blip skips emissions; an outage still ends streams.
+const MAX_TRANSIENT_STREAM_FAILURES: u8 = 3;
+
+/// Whether a failed access check skips one live emission instead of ending the
+/// stream. Only transient (5xx) failures after setup qualify; denials never do.
+fn skips_transient_failure(status: StatusCode, event: &str, failures: u8) -> bool {
+    status.is_server_error()
+        && matches!(event, "changed" | "heartbeat")
+        && failures < MAX_TRANSIENT_STREAM_FAILURES
 }
 
 #[derive(Deserialize, Default)]
@@ -1564,6 +1577,7 @@ async fn event_stream(
             revision: None,
             handoff,
             handoff_deadline: None,
+            transient_failures: 0,
         },
         |mut stream| async move {
             loop {
@@ -1618,8 +1632,26 @@ async fn event_stream(
                 }
                 // Heartbeats do not renew the lease. They do bound expiry/revocation detection
                 // even when the cleanup sweep is not running.
-                stream.state.check_media_access().await.ok()?;
-                let snapshot = stream
+                // A database blip (for example an exhausted pool) must not end every
+                // voice stream at once: disclose nothing until a later check succeeds,
+                // and the next heartbeat delivers any missed revision. Denials, setup
+                // events and a sustained outage still end it.
+                match stream.state.check_media_access().await {
+                    Ok(()) => stream.transient_failures = 0,
+                    Err(error)
+                        if skips_transient_failure(
+                            error.status,
+                            event,
+                            stream.transient_failures,
+                        ) =>
+                    {
+                        stream.transient_failures += 1;
+                        continue;
+                    }
+                    Err(_) => return None,
+                }
+                // A shared-store outage fails closed, so clients see it and reconnect.
+                let (revision, snapshot) = stream
                     .state
                     .read(|r| {
                         if let Some(token) = &stream.token {
@@ -1643,7 +1675,6 @@ async fn event_stream(
                     })
                     .await
                     .ok()?;
-                let (revision, snapshot) = snapshot;
                 // A delayed/lost Pub/Sub wake must not let a heartbeat acknowledge
                 // a new revision without delivering it. Heartbeats also repair state.
                 let event = if event == "heartbeat" && stream.revision != Some(revision) {

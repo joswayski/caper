@@ -223,41 +223,14 @@ async fn accept_request(
 
 /// Called with the channel row locked before a message is stored in a DM.
 /// Either side's block stops sending; the recipient replying accepts a request.
-pub(crate) async fn authorize_send(
+/// Whether `user` blocked the other person, whether they blocked `user`, and
+/// whether the conversation is a request still waiting on `user`.
+async fn block_state(
     connection: &mut sqlx::PgConnection,
     channel: i64,
     user: i64,
-) -> Result<(), ApiError> {
-    if unblocked_request_for(&mut *connection, channel, user).await? {
-        sqlx::query("UPDATE public.direct_conversations SET accepted_at=now(),declined_at=NULL WHERE channel_id=$1 AND accepted_at IS NULL")
-            .bind(channel)
-            .execute(connection)
-            .await
-            .map_err(|_| chat::unavailable())?;
-    }
-    Ok(())
-}
-
-/// Checked before every other DM write (reactions, pins, edits, typing). A
-/// block stops these too, but unlike a reply they never accept a request.
-pub(crate) async fn ensure_not_blocked(
-    connection: &mut sqlx::PgConnection,
-    channel: i64,
-    user: i64,
-) -> Result<(), ApiError> {
-    unblocked_request_for(connection, channel, user)
-        .await
-        .map(|_| ())
-}
-
-/// Refuses while either person blocks the other. Otherwise returns whether
-/// the conversation is a pending request addressed to `user`.
-async fn unblocked_request_for(
-    connection: &mut sqlx::PgConnection,
-    channel: i64,
-    user: i64,
-) -> Result<bool, ApiError> {
-    let (you_blocked, they_blocked, pending_for_you): (bool, bool, bool) = sqlx::query_as(
+) -> Result<(bool, bool, bool), ApiError> {
+    sqlx::query_as(
         "SELECT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=$2 AND b.blocked_id=peer AND b.deleted_at IS NULL),
                 EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=peer AND b.blocked_id=$2 AND b.deleted_at IS NULL),
                 pending_for_you
@@ -269,14 +242,47 @@ async fn unblocked_request_for(
     .bind(user)
     .fetch_one(connection)
     .await
-    .map_err(|_| chat::unavailable())?;
+    .map_err(|_| chat::unavailable())
+}
+
+fn refuse_blocked(you_blocked: bool, they_blocked: bool) -> Result<(), ApiError> {
     if you_blocked {
         return Err(blocked_by_you());
     }
     if they_blocked {
         return Err(not_accepting());
     }
-    Ok(pending_for_you)
+    Ok(())
+}
+
+pub(crate) async fn authorize_send(
+    connection: &mut sqlx::PgConnection,
+    channel: i64,
+    user: i64,
+) -> Result<(), ApiError> {
+    let (you_blocked, they_blocked, pending_for_you) =
+        block_state(&mut *connection, channel, user).await?;
+    refuse_blocked(you_blocked, they_blocked)?;
+    if pending_for_you {
+        sqlx::query("UPDATE public.direct_conversations SET accepted_at=now(),declined_at=NULL WHERE channel_id=$1 AND accepted_at IS NULL")
+            .bind(channel)
+            .execute(connection)
+            .await
+            .map_err(|_| chat::unavailable())?;
+    }
+    Ok(())
+}
+
+/// Reactions, pins, edits and typing in a DM. A block in either direction
+/// stops every interaction, like sending; unlike a reply, none of these
+/// accepts a pending request.
+pub(crate) async fn authorize_interaction(
+    connection: &mut sqlx::PgConnection,
+    channel: i64,
+    user: i64,
+) -> Result<(), ApiError> {
+    let (you_blocked, they_blocked, _) = block_state(connection, channel, user).await?;
+    refuse_blocked(you_blocked, they_blocked)
 }
 
 async fn accept(

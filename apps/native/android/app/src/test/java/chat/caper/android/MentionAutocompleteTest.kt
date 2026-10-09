@@ -6,6 +6,7 @@ import chat.caper.android.model.Account
 import chat.caper.android.model.AppUiState
 import chat.caper.android.model.Channel
 import chat.caper.android.model.ChatContent
+import chat.caper.android.model.ChatAuthor
 import chat.caper.android.model.DirectConversation
 import chat.caper.android.model.DirectPeer
 import chat.caper.android.model.Member
@@ -198,6 +199,20 @@ class MentionAutocompleteTest {
         assertFalse(mentionCard("other000000a", "me", AppUiState(account = me)).self)
         assertFalse(mentionCard("me000000000a", "me", AppUiState()).self)
         assertTrue(mentionCard("me000000000a", "me", AppUiState(chatAuthorId = "me000000000a")).self)
+    }
+
+    @Test fun `pinner profiles match IDs instead of names and do not invent usernames`() {
+        val author = ChatAuthor("pinner000001", "Same Name", false, 7)
+        val members = listOf(
+            Member("writer000001", "wrong_person", "Same Name", false, 2),
+            Member("pinner000001", "renamed_pinner", "Current Name", false, null),
+        )
+        val state = AppUiState(chatAuthorId = "writer000001", selectedSpace = SpaceDetail(Space("space0000001", "Space"), emptyList(), members))
+        assertEquals(MentionCard(author.id, "renamed_pinner", "Current Name", null, false), authorCard(author, state))
+        val unknown = authorCard(author, state.copy(selectedSpace = null))
+        assertEquals(MentionCard(author.id, null, "Same Name", 7, false), unknown)
+        assertNull(unknown.subtitle)
+        assertTrue(authorCard(author, AppUiState(chatAuthorId = author.id)).self)
     }
 
     @Test fun `mentions me by id, or by everyone and here from someone else`() {

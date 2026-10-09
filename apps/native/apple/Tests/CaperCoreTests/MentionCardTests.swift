@@ -53,6 +53,20 @@ final class MentionCardTests: XCTestCase {
         XCTAssertFalse(resolve(maya).isSelf)
     }
 
+    func testPinnerMatchesIDAndPreservesUnknownAuthorWithoutInventingUsername() {
+        let author = ChatAuthor(id: "Pinner000001", name: "Same Name", isGuest: false, avatarId: 7)
+        let members = [
+            Member(id: "Writer000001", username: "wrong_person", displayName: "Same Name", owner: false, avatarId: 2),
+            Member(id: author.id, username: "renamed_pinner", displayName: "Current Name", owner: false, avatarId: nil),
+        ]
+        let known = MentionCard.resolve(author, members: members, people: [], peers: [], account: me, viewerID: me.id)
+        XCTAssertEqual(known, MentionCardPerson(id: author.id, username: "renamed_pinner", displayName: "Current Name", avatarId: nil, isSelf: false))
+        let unknown = MentionCard.resolve(author, members: Array(members.prefix(1)), people: nil, peers: [], account: me, viewerID: me.id)
+        XCTAssertEqual(unknown, MentionCardPerson(id: author.id, username: nil, displayName: "Same Name", avatarId: 7, isSelf: false))
+        XCTAssertNil(unknown.subtitle)
+        XCTAssertTrue(MentionCard.resolve(author, members: [], people: nil, peers: [], account: nil, viewerID: author.id).isSelf)
+    }
+
     func testPillLinksRoundTripAndIgnoreOtherURLs() throws {
         let pill = MentionPill(id: "AbC123xyz_-9", username: "alice")
         let url = try XCTUnwrap(MentionCard.url(for: pill))

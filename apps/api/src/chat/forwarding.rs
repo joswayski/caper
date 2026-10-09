@@ -165,6 +165,14 @@ async fn persist_forward(
             "this message can't be forwarded again",
         ));
     }
+    // Mentions in the note are highlighted and open profile cards like any
+    // message's. The forward notifies as a message; its note's mentions don't.
+    let content = with_mentions(
+        &mut tx,
+        content,
+        &mentions::parse(&input.text, destination.space_id.is_some()),
+    )
+    .await?;
     let head: i64 = sqlx::query_scalar("SELECT last_seq FROM public.channels WHERE id=$1")
         .bind(destination.id)
         .fetch_one(&mut *tx)
@@ -346,6 +354,10 @@ pub(super) async fn project_events(
     targets.extend(parents);
     let destinations: Vec<i64> = sqlx::query_scalar("SELECT DISTINCT f.channel_id FROM public.messages f JOIN public.messages source ON source.id=f.forward_source_id JOIN public.channels c ON c.id=f.channel_id WHERE source.external_id=ANY($1) AND c.deleted_at IS NULL ORDER BY f.channel_id")
         .bind(&targets).fetch_all(&mut **tx).await.map_err(database_error)?;
+    // Most messages were never forwarded: skip the locks and snapshot read.
+    if destinations.is_empty() {
+        return Ok(());
+    }
     lock_spaces(tx, &destinations).await?;
     sqlx::query("SELECT id FROM public.channels WHERE id=ANY($1) ORDER BY id FOR UPDATE")
         .bind(&destinations)

@@ -3,6 +3,7 @@ package chat.caper.android
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import chat.caper.android.model.AppUiState
+import chat.caper.android.model.ChatAuthor
 import chat.caper.android.model.MessageMention
 import java.util.Locale
 
@@ -139,20 +140,20 @@ internal fun mentionedUser(span: MentionSpan, mentions: List<MessageMention>): M
 /** The mention card for a tagged person, from data already loaded (no network call). */
 internal data class MentionCard(
     val id: String?,
-    val username: String,
+    val username: String?,
     /** Null for someone you share nothing with: the title is then `@username`, without a second line. */
     val displayName: String?,
     val avatarId: Int? = null,
     val self: Boolean = false,
 ) {
-    val title: String get() = displayName ?: "@$username"
-    val subtitle: String? get() = displayName?.let { "@$username" }
+    val title: String get() = displayName ?: username?.let { "@$it" } ?: "Profile"
+    val subtitle: String? get() = if (displayName != null) username?.let { "@$it" } else null
 }
 
 /** Matches by id: loaded space members, then `/api/people`, then DM peers (then your own account), else unknown. */
-internal fun mentionCard(id: String?, username: String, state: AppUiState): MentionCard {
+internal fun mentionCard(id: String?, username: String?, state: AppUiState): MentionCard {
     val selfId = state.account?.id ?: state.chatAuthorId
-    val self = if (id != null) id == selfId else state.account?.username?.equals(username, ignoreCase = true) == true
+    val self = if (id != null) id == selfId else username != null && state.account?.username?.equals(username, ignoreCase = true) == true
     if (id != null) {
         state.selectedSpace?.members?.firstOrNull { it.id == id }?.let { return MentionCard(id, it.username, it.displayName, it.avatarId, self) }
         state.people?.firstOrNull { it.id == id }?.let { return MentionCard(id, it.username, it.displayName, it.avatarId, self) }
@@ -163,6 +164,12 @@ internal fun mentionCard(id: String?, username: String, state: AppUiState): Ment
         return MentionCard(account.id, account.username, account.displayName, account.avatarId, true)
     }
     return MentionCard(id, username, null, null, self)
+}
+
+/** A pinner has an account id and real name/avatar, but no username in pin metadata. */
+internal fun authorCard(author: ChatAuthor, state: AppUiState): MentionCard {
+    val card = mentionCard(author.id, null, state)
+    return card.copy(displayName = card.displayName ?: author.name, avatarId = if (card.username == null) author.avatarId else card.avatarId)
 }
 
 /** You are mentioned by id, or by `@everyone`/`@here` in someone else's message. */

@@ -191,7 +191,8 @@ pub(super) async fn expand(
     // messages older than a day (a stopped worker) notify nobody.
     let source: Option<Source> = sqlx::query_as(
         "SELECT m.channel_id, c.space_id, cs.user_id AS author, m.thread_root_id IS NOT NULL AS thread_reply,
-                m.payload->'content'->'mentions' AS mentions,
+                -- A forward's note shows its mentions but never notifies them.
+                CASE WHEN m.forward_source_id IS NULL THEN m.payload->'content'->'mentions' END AS mentions,
                 (c.deleted_at IS NULL AND (c.space_id IS NULL OR (s.deleted_at IS NULL AND NOT s.demo))
                  AND m.created_at > now() - interval '24 hours') AS sendable
          FROM public.messages m

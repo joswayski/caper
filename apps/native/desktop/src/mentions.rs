@@ -2,7 +2,7 @@
 //! composer suggestions and insertion, which message tokens to highlight, and
 //! what a person pill's card shows. Mentions do not notify anyone yet.
 
-use crate::model::{DirectConversation, Member, Mention, Person as KnownPerson};
+use crate::model::{Author, DirectConversation, Member, Mention, Person as KnownPerson};
 use std::ops::Range;
 
 /// Longer runs after `@` are plain text.
@@ -190,7 +190,7 @@ pub fn highlights<'a>(text: &str, mentions: &'a [Mention]) -> Vec<(Range<usize>,
 /// What a person pill's card shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Profile {
-    pub username: String,
+    pub username: Option<String>,
     /// `None` when nothing loaded knows the id: the card is titled `@username`.
     pub display_name: Option<String>,
     pub avatar_id: Option<i32>,
@@ -200,9 +200,11 @@ pub struct Profile {
 impl Profile {
     /// Display name, or `@username` for someone unknown.
     pub fn title(&self) -> String {
-        self.display_name
-            .clone()
-            .unwrap_or_else(|| format!("@{}", self.username))
+        self.display_name.clone().unwrap_or_else(|| {
+            self.username
+                .as_ref()
+                .map_or_else(|| "Profile".into(), |name| format!("@{name}"))
+        })
     }
 }
 
@@ -245,10 +247,38 @@ pub fn profile(
         None => (entry.username.clone()?, None, None),
     };
     Some(Profile {
-        username,
+        username: Some(username),
         display_name,
         avatar_id,
         me: id.is_some() && id == me,
+    })
+}
+
+/// Pin metadata has a name/avatar but no username. Match the author by id;
+/// keep that identity when the pinner is no longer in the loaded directory.
+pub fn author_profile(
+    author: &Author,
+    me: Option<&str>,
+    members: &[Member],
+    people: &[KnownPerson],
+    directs: &[DirectConversation],
+) -> Profile {
+    profile(
+        &Mention {
+            kind: "user".into(),
+            id: Some(author.id.clone()),
+            username: None,
+        },
+        me,
+        members,
+        people,
+        directs,
+    )
+    .unwrap_or_else(|| Profile {
+        username: None,
+        display_name: Some(author.name.clone()),
+        avatar_id: author.avatar_id,
+        me: Some(author.id.as_str()) == me,
     })
 }
 
@@ -541,7 +571,7 @@ mod tests {
         assert_eq!(
             card(user("u1", "stale_name")),
             Some(Profile {
-                username: "alex".into(),
+                username: Some("alex".into()),
                 display_name: Some("Alex (space)".into()),
                 avatar_id: Some(3),
                 me: false,
@@ -560,7 +590,7 @@ mod tests {
         assert_eq!(
             unknown,
             Profile {
-                username: "zed".into(),
+                username: Some("zed".into()),
                 display_name: None,
                 avatar_id: None,
                 me: false,
@@ -578,5 +608,50 @@ mod tests {
                 .unwrap()
                 .me
         );
+    }
+
+    #[test]
+    fn pinner_profiles_match_ids_and_keep_unknown_author_metadata() {
+        let author = Author {
+            id: "pinner".into(),
+            name: "Same Name".into(),
+            avatar_id: Some(7),
+            is_guest: false,
+        };
+        let members = [
+            Member {
+                id: "writer".into(),
+                username: "wrong_person".into(),
+                display_name: "Same Name".into(),
+                avatar_id: Some(2),
+                owner: false,
+            },
+            Member {
+                id: "pinner".into(),
+                username: "renamed_pinner".into(),
+                display_name: "Current Name".into(),
+                avatar_id: None,
+                owner: false,
+            },
+        ];
+        assert_eq!(
+            author_profile(&author, Some("writer"), &members, &[], &[]),
+            Profile {
+                username: Some("renamed_pinner".into()),
+                display_name: Some("Current Name".into()),
+                avatar_id: None,
+                me: false,
+            }
+        );
+        assert_eq!(
+            author_profile(&author, Some("writer"), &members[..1], &[], &[]),
+            Profile {
+                username: None,
+                display_name: Some("Same Name".into()),
+                avatar_id: Some(7),
+                me: false,
+            }
+        );
+        assert!(author_profile(&author, Some("pinner"), &[], &[], &[]).me);
     }
 }

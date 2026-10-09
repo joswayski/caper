@@ -80,13 +80,12 @@ async fn local_fanout_does_not_wake_unrelated_channels() {
 
 #[tokio::test]
 async fn retired_unscoped_media_cannot_subscribe_or_replay_commands() {
-    let gateway = Gateway::new(Chat {
-        pool: PgPoolOptions::new()
+    let gateway = Gateway::new(Chat::new(
+        PgPoolOptions::new()
             .connect_lazy("postgres://localhost:1/unused")
             .unwrap(),
-        broker: redis::Client::open("redis://localhost:1").unwrap(),
-        wake: Arc::new(tokio::sync::Notify::new()),
-    });
+        redis::Client::open("redis://localhost:1").unwrap(),
+    ));
     for hash in [None, Some(vec![1])] {
         let identity = Identity {
             headers: HeaderMap::new(),
@@ -210,11 +209,7 @@ async fn multiplexed_presence_commands_and_cross_gateway_handoff() {
         redis_url.starts_with("redis://127.0.0.1:") || redis_url.starts_with("redis://localhost:")
     );
     let broker = redis::Client::open(redis_url).unwrap();
-    let chat = Chat {
-        pool: pool.clone(),
-        broker: broker.clone(),
-        wake: Arc::new(tokio::sync::Notify::new()),
-    };
+    let chat = Chat::new(pool.clone(), broker.clone());
     let chat_token = Uuid::new_v4().to_string();
     sqlx::query("INSERT INTO public.chat_sessions(external_id,token_hash,user_id,name,account_session_hash) VALUES($1,$2,$3,'Owner',$4)")
         .bind(crate::auth::random_id(12)).bind(Sha256::digest(chat_token.as_bytes()).to_vec())
