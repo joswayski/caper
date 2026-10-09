@@ -1895,6 +1895,33 @@ final class CaperParityUITests: XCTestCase {
     }
     #endif
 
+    func testNewDirectMessageRefusalStaysInStableDialog() async throws {
+        try await Self.fixtureControl(["reset": true])
+        addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+        let message = "This person isn't accepting direct messages."
+        try await Self.fixtureControl(["failure": ["path": "/api/dms", "method": "POST", "status": 403, "error": message]])
+        let app = launch(fixture: "new-direct-message")
+        let username = try require(app.textFields["dm-username"], timeout: 30, "The new-DM dialog must open")
+        type("jordan", into: username)
+        let submit = app.buttons["dm-create-submit"]
+        let fieldFrame = username.frame, buttonFrame = submit.frame
+        submit.tap()
+        let failure = try require(app.staticTexts["dm-create-error"], timeout: 10, "The refusal must appear in the dialog")
+        assertElement("dm-create-error", label: message, in: app)
+        XCTAssertEqual(username.value as? String, "jordan")
+        XCTAssertTrue(submit.isEnabled, "A refusal must leave the form retryable")
+        XCTAssertEqual(username.frame, fieldFrame, "The error must not move the username field")
+        XCTAssertEqual(submit.frame, buttonFrame, "The error must not move or resize the action")
+        capture("new-dm-refused", app: app)
+        type("_other", into: username)
+        let cleared = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: failure)
+        XCTAssertEqual(XCTWaiter.wait(for: [cleared], timeout: 3), .completed)
+        XCTAssertEqual(submit.frame, buttonFrame, "Editing must not collapse the error's space")
+        app.buttons["Close"].firstMatch.tap()
+        XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label == %@ OR value == %@", message, message)).firstMatch.exists,
+                       "The refusal must not leak into the sidebar after closing")
+    }
+
     func testManageSpace() {
         let app = launch(fixture: "manage-space")
         assertStaticText("Manage space", in: app)

@@ -28,6 +28,8 @@ function fixture() {
     presenceSubscribes: 0,
     releases: [],
     holdDesign: true,
+    directReleases: [],
+    directError: "dm_not_accepted",
   });
   const NativeSocket = window.WebSocket;
   window.WebSocket = class extends EventTarget {
@@ -67,7 +69,11 @@ function fixture() {
         limits: { ownedSpaces: 20, totalSpaces: 100, channelsPerSpace: 100 },
       });
     if (path === `/api/spaces/${space.id}`) return Response.json({ space, channels, members });
-    if (path === "/api/dms") return Response.json({ conversations: [] });
+    if (path === "/api/dms") {
+      if (options.method !== "POST") return Response.json({ conversations: [] });
+      await new Promise((resolve) => control.directReleases.push(resolve));
+      return Response.json({ error: "TEST FIXTURE refusal", code: control.directError }, { status: 403 });
+    }
     if (path === "/api/chat/session")
       return Response.json({ token: "fixture", author: { id: account.id, name: account.displayName, isGuest: false } });
     if (path.endsWith("/media/status")) return Response.json({ enabled: false });
@@ -454,9 +460,68 @@ try {
   );
   screenshot("mobile-small-menu");
   browser("press", "Escape");
+
+  // A refused new DM stays in its dialog, without moving controls or the shell.
+  const directArtifacts = process.env.NAVIGATION_TEST_DIRECT_ARTIFACTS;
+  if (directArtifacts) mkdirSync(directArtifacts, { recursive: true });
+  const directBounds = () =>
+    evaluate(`['dialog[open]', '.start-direct-form input', '.start-direct-form .primary', '.direct-section'].map(selector => {
+      const { x, y, width, height } = document.querySelector(selector).getBoundingClientRect();
+      return { x, y, width, height };
+    })`);
+  for (const width of [1280, 390, 320]) {
+    browser("set", "viewport", String(width), "844", "2");
+    evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+    if (width <= 760 && !browsing()) {
+      browser("click", ".navigation-toggle");
+      settled();
+    }
+    browser("click", '[aria-label="New direct message"]');
+    wait('document.querySelector(".start-direct-form input") === document.activeElement');
+    browser("fill", ".start-direct-form input", "blocked_person");
+    const before = directBounds();
+    const captureDirect = (state) => {
+      if (directArtifacts) browser("screenshot", "dialog[open]", `${directArtifacts}/dm-${width}-${state}.png`);
+    };
+    captureDirect("ready");
+    for (const [code, message] of [
+      ["dm_not_accepted", "This person isn’t accepting direct messages."],
+      ["dm_blocked", "You blocked this person. Unblock them to message them."],
+    ]) {
+      evaluate(`navigationFixture.directError = ${JSON.stringify(code)}`);
+      browser("click", ".start-direct-form .primary");
+      wait('document.querySelector(".start-direct-form .primary").textContent === "Opening…"');
+      assert.deepEqual(directBounds(), before, "Pending must not move the modal, field, button or sidebar");
+      assert.equal(evaluate('document.querySelector(".start-direct-form input").readOnly'), true);
+      assert.equal(evaluate('document.querySelector(".start-direct-error").textContent'), "");
+      if (code === "dm_not_accepted") captureDirect("pending");
+      evaluate("navigationFixture.directReleases.splice(0).forEach(release => release())");
+      wait(`document.querySelector('.start-direct-error')?.textContent === ${JSON.stringify(message)}`);
+      assert.deepEqual(directBounds(), before, "Rejection must not move the modal, field, button or sidebar");
+      assert.equal(
+        evaluate(`(() => {
+          const sidebar = document.querySelector('.channel-navigation').cloneNode(true);
+          sidebar.querySelectorAll('dialog').forEach(dialog => dialog.remove());
+          return sidebar.textContent.includes('accepting direct messages');
+        })()`),
+        false,
+      );
+      assert.equal(evaluate('document.querySelector(".start-direct-form input").value'), "blocked_person");
+      assert.equal(evaluate('document.querySelector(".start-direct-form .primary").disabled'), false);
+      if (code === "dm_not_accepted") captureDirect("refused");
+    }
+    browser("fill", ".start-direct-form input", "another_person");
+    assert.equal(evaluate('document.querySelector(".start-direct-error").textContent'), "");
+    assert.deepEqual(directBounds(), before, "Editing must clear the error without collapsing its space");
+    browser("press", "Escape");
+    wait('!document.querySelector("dialog[open]")');
+  }
   browser("set", "viewport", "390", "844", "2");
   if (process.env.NAVIGATION_TEST_NARROW_SCREENSHOT)
     browser("screenshot", process.env.NAVIGATION_TEST_NARROW_SCREENSHOT);
+  console.log(
+    "PASS: New-DM refusals stay inline; loading, refusal and editing preserve modal, input, button and sidebar bounds at 1280px, 390px and 320px.",
+  );
   console.log(
     "PASS: desktop navigation/presence; Chromium touch: finger-tracked bidirectional Browse slides over a still Browse with the conversation's edge kept in view (tap/drag back), fling/halfway/snap-back, direction/vertical/cancel guards, reduced motion, composer and overlays, row release-click protection, draft/history retention, Back button, Members dropdown, empty Pins and 320px layout.",
   );
