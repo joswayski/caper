@@ -290,7 +290,7 @@ function testSettingRows(width, height) {
     const dialog = document.querySelector('.profile-dialog');
     const section = dialog.querySelector('.notification-settings');
     const heading = dialog.querySelector('.audio-dialog-heading');
-    dialog.scrollTop += section.getBoundingClientRect().top - heading.getBoundingClientRect().bottom - 12;
+    dialog.querySelector(".audio-dialog-body").scrollTop += section.getBoundingClientRect().top - heading.getBoundingClientRect().bottom - 12;
   })()`);
   if (artifacts) browser("screenshot", ".profile-dialog", `${artifacts}/settings-centered-${width}-${height}.png`);
 }
