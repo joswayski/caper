@@ -63,6 +63,8 @@ Requires the Xcode 16 toolchain on GitHub `macos-15` / `macos-15-intel`. `prepar
 ./apps/native/apple/build.sh ios
 ```
 
+On Apple silicon, `CAPER_MACOS_ARCH=x86_64 ./apps/native/apple/build.sh macos` builds the Intel app and runs its tests under Rosetta; CI does this for `macos-x64` on the self-hosted Mac. Rosetta UI tests use the same window-size-based desktop/medium capture layout as ARM; only a real Intel Mac requires the 1,440×900 desktop window.
+
 Each command first runs the macOS XCTest suite. Outputs are ignored and credential-free:
 
 - `dist/Caper-macos-arm64.zip` or `dist/Caper-macos-x64.zip` with an ad-hoc-signed `.app`

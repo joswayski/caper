@@ -83,7 +83,7 @@ try {
       wait(`getComputedStyle(document.querySelector('${row} .chat-message-actions-trigger')).opacity === '1'`);
       assert.equal(actionOpacity(), "1", "hover still reveals the actions");
       browser("hover", chip);
-      wait('document.querySelector(".chat-reaction-tooltip")?.textContent === "Alex reacted with :rockets:"');
+      wait('document.querySelector(".chat-reaction-tooltip")?.textContent === "Alex reacted with :rocket:"');
       // Hold writes and name refreshes independently. Inspect every DOM update,
       // not just the final text after both requests have settled.
       evaluate(`(() => {
@@ -106,20 +106,20 @@ try {
       })()`);
       browser("click", chip);
       wait(
-        'window.releaseReactionWrites.length === 1 && document.querySelector(".chat-reaction-tooltip")?.textContent === "You and Alex reacted with :rockets:"',
+        'window.releaseReactionWrites.length === 1 && document.querySelector(".chat-reaction-tooltip")?.textContent === "You and Alex reacted with :rocket:"',
       );
       assert.equal(evaluate(`getComputedStyle(document.querySelector('${chip}')).outlineStyle`), "none");
       evaluate("window.releaseReactionWrites.shift()()");
       wait("window.releaseReactionNames.length === 1");
       assert.equal(
         evaluate('document.querySelector(".chat-reaction-tooltip").textContent'),
-        "You and Alex reacted with :rockets:",
+        "You and Alex reacted with :rocket:",
       );
       evaluate("window.releaseReactionNames.shift()(503)");
       if (artifacts) browser("screenshot", `${artifacts}/reaction-desktop-selected.png`);
       browser("click", chip);
       wait(
-        'window.releaseReactionWrites.length === 1 && document.querySelector(".chat-reaction-tooltip")?.textContent === "Alex reacted with :rockets:"',
+        'window.releaseReactionWrites.length === 1 && document.querySelector(".chat-reaction-tooltip")?.textContent === "Alex reacted with :rocket:"',
       );
       // Rapidly re-add then remove while the previous removal is still pending.
       browser("click", chip);
@@ -128,11 +128,11 @@ try {
       evaluate("window.releaseReactionWrites.shift()()");
       wait("window.releaseReactionNames.length >= 1");
       evaluate("window.restoreReactionFetch(); window.releaseReactionNames.splice(0).forEach(release => release())");
-      wait('document.querySelector(".chat-reaction-tooltip")?.textContent === "Alex reacted with :rockets:"');
+      wait('document.querySelector(".chat-reaction-tooltip")?.textContent === "Alex reacted with :rocket:"');
       const texts = evaluate("window.tooltipObserver.disconnect(); [...new Set(window.tooltipTexts)]");
       assert.ok(texts.length >= 2);
       assert.ok(
-        texts.every((text) => ["Alex reacted with :rockets:", "You and Alex reacted with :rockets:"].includes(text)),
+        texts.every((text) => ["Alex reacted with :rocket:", "You and Alex reacted with :rocket:"].includes(text)),
         JSON.stringify(texts),
       );
       browser("mouse", "move", "10", "10");

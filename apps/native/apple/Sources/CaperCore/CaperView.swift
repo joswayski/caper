@@ -4276,11 +4276,16 @@ private struct NewDirectMessageSheet: View {
                 .focused($usernameFocused)
                 .onChange(of: username) { _, _ in error = nil }
                 .accessibilityIdentifier("dm-username")
-            Text(error ?? " ").font(CaperTheme.font(12)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51))
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
-                .opacity(error == nil ? 0 : 1).accessibilityHidden(error == nil)
-                .accessibilityIdentifier("dm-create-error")
+            // The frame keeps the error's space; iOS still exposes a transparent
+            // placeholder to accessibility, so the text exists only with an error.
+            ZStack(alignment: .leading) {
+                if let error {
+                    Text(error).font(CaperTheme.font(12)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("dm-create-error")
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
             HStack {
                 Spacer()
                 Button(action: start) {

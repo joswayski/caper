@@ -130,6 +130,21 @@ final class CaperParityUITests: XCTestCase {
         #endif
     }
 
+    #if os(macOS)
+    /// Apple silicon, including the x86_64 build under Rosetta on the
+    /// self-hosted Mac, whose VM screen fits only the medium layout. Only a
+    /// real Intel Mac gets the 1,440×900 desktop reference window.
+    private static let runsOnAppleSilicon: Bool = {
+        #if arch(arm64)
+        return true
+        #else
+        var translated: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        return sysctlbyname("sysctl.proc_translated", &translated, &size, nil, 0) == 0 && translated == 1
+        #endif
+    }()
+    #endif
+
     private func capture(_ name: String, app: XCUIApplication) {
         #if os(macOS)
         // Screenshot the frontmost window (the fixed-size Settings window when
@@ -140,16 +155,17 @@ final class CaperParityUITests: XCTestCase {
         let main = app.windows.matching(NSPredicate(format: "identifier != %@", "com_apple_SwiftUI_Settings_window")).firstMatch
         XCTAssertTrue(main.exists, "The main app window must stay open behind any capture")
         let size = main.frame.size
-        #if arch(arm64)
-        let desktop = size.width >= 1_400
-        let layout = desktop ? "desktop" : "medium"
-        XCTAssertGreaterThanOrEqual(size.width, desktop ? 1_400 : 980, "Hosted ARM medium capture requires at least 980 points of width")
-        XCTAssertGreaterThanOrEqual(size.height, desktop ? 880 : 640, "Hosted ARM capture is too short for its declared layout")
-        #else
-        let layout = "desktop"
-        XCTAssertGreaterThanOrEqual(size.width, 1_400, "Intel desktop parity capture requires a 1,400-point-wide app window")
-        XCTAssertGreaterThanOrEqual(size.height, 880, "Intel desktop parity capture requires an app window close to the 1,440×900 reference")
-        #endif
+        let layout: String
+        if Self.runsOnAppleSilicon {
+            let desktop = size.width >= 1_400
+            layout = desktop ? "desktop" : "medium"
+            XCTAssertGreaterThanOrEqual(size.width, desktop ? 1_400 : 980, "ARM medium capture requires at least 980 points of width")
+            XCTAssertGreaterThanOrEqual(size.height, desktop ? 880 : 640, "ARM capture is too short for its declared layout")
+        } else {
+            layout = "desktop"
+            XCTAssertGreaterThanOrEqual(size.width, 1_400, "Intel desktop parity capture requires a 1,400-point-wide app window")
+            XCTAssertGreaterThanOrEqual(size.height, 880, "Intel desktop parity capture requires an app window close to the 1,440×900 reference")
+        }
         let captureName = "\(layout)-\(name)"
         let dimensions = XCTAttachment(string: "layout=\(layout) width=\(Int(size.width)) height=\(Int(size.height))")
         dimensions.name = "\(captureName)-window-size"
@@ -328,9 +344,29 @@ final class CaperParityUITests: XCTestCase {
         // The fixture's seeded message from Alex mentions @fixture_owner (you).
         let row = try require(app.descendants(matching: .any)["message-row-chan00000001m04"], timeout: 30,
                               "Missing the seeded message that mentions you")
-        let pill = try require(row.links.matching(NSPredicate(format: "label CONTAINS %@", "fixture_owner")).firstMatch,
-                               timeout: 5, "The @fixture_owner pill must be a link")
-        pill.tap()
+        #if os(macOS)
+        // macOS 15 exposes a message as one static text without its link runs.
+        let linksExposed = ProcessInfo.processInfo.isOperatingSystemAtLeast(
+            OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 0))
+        #else
+        let linksExposed = true
+        #endif
+        if linksExposed {
+            let pill = try require(row.links.matching(NSPredicate(format: "label CONTAINS %@", "fixture_owner")).firstMatch,
+                                   timeout: 5, "The @fixture_owner pill must be a link")
+            pill.tap()
+        } else {
+            #if os(macOS)
+            // Click the pill's characters within the single-line message text.
+            let mention = "@fixture_owner"
+            let text = try require(row.staticTexts.matching(NSPredicate(format: "value CONTAINS %@", mention)).firstMatch,
+                                   timeout: 5, "The message must show the @fixture_owner pill")
+            let value = text.value as? String ?? ""
+            let range = try XCTUnwrap(value.range(of: mention), "The message text must contain the pill")
+            let middle = value.distance(from: value.startIndex, to: range.lowerBound) + mention.count / 2
+            text.coordinate(withNormalizedOffset: CGVector(dx: Double(middle) / Double(value.count), dy: 0.5)).click()
+            #endif
+        }
         _ = try require(app.descendants(matching: .any)["mention-card"], timeout: 5, "Tapping a pill must open the mention card")
         XCTAssertTrue(app.descendants(matching: .any)["mention-card-you"].waitForExistence(timeout: 2), "Your own card says You")
         XCTAssertFalse(app.buttons["mention-card-message"].exists, "Your own card has no Message button")
@@ -725,10 +761,10 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(hasKeyboardFocus(search), "One tap must focus search without reopening the sheet")
         search.typeText("rocket")
         // Scope to the picker grid: on macOS a Touch Bar item also titled
-        // "rockets" appears while searching, so app.buttons["rockets"] matches
+        // "rocket" appears while searching, so app.buttons["rocket"] matches
         // twice and tapping it fails.
-        let rockets = try require(app.scrollViews["reaction-picker-grid"].buttons["rockets"], timeout: 5,
-                                  "Searching rocket never showed the rockets emoji")
+        let rockets = try require(app.scrollViews["reaction-picker-grid"].buttons["rocket"], timeout: 5,
+                                  "Searching rocket never showed the rocket emoji")
 
         // Push the presenting row out of the lazy timeline's viewport
         // while the picker is open and its keyboard has focus.
@@ -741,7 +777,7 @@ final class CaperParityUITests: XCTestCase {
             XCTAssertTrue(hasKeyboardFocus(search), "Live scrolling must not replace the sheet")
         }
         capture("reaction-picker-focused-after-live-scroll-fixture", app: app)
-        try require(rockets, timeout: 2, "Live delivery must not drop the rockets search result")
+        try require(rockets, timeout: 2, "Live delivery must not drop the rocket search result")
         rockets.tap()
         let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: search)
         XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
@@ -837,8 +873,9 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertFalse(app.buttons["voice-stack-chan00000001"].exists, "Empty channels expose no voice count or status")
         XCTAssertGreaterThanOrEqual(generalVoice.frame.minY, general.frame.maxY, "Voice stays below the channel name")
         XCTAssertLessThanOrEqual(generalVoice.frame.minY - general.frame.maxY, 2, "No extra gap separates the voice action from its channel")
-        XCTAssertEqual(generalVoice.frame.width, designVoice.frame.width, "Actions share one stable slot")
-        XCTAssertEqual(generalVoice.frame.width, 108, "The whole reserved action slot is accessible, not just its text")
+        // Layout widths are fractional on iOS (107.99999999999997 for 108).
+        XCTAssertEqual(generalVoice.frame.width, designVoice.frame.width, accuracy: 0.5, "Actions share one stable slot")
+        XCTAssertEqual(generalVoice.frame.width, 108, accuracy: 0.5, "The whole reserved action slot is accessible, not just its text")
         #if os(iOS)
         XCTAssertGreaterThanOrEqual(general.frame.height, 44)
         XCTAssertGreaterThanOrEqual(design.frame.height, 44)
