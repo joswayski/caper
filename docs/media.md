@@ -4888,9 +4888,10 @@ account's message, and from a request. Clients confirm first. A block:
   hidden while it lasts.
 - hides their messages wherever you share a conversation. Each run of consecutive
   messages becomes one row, "⊘ N blocked messages — Show", in channels, threads and
-  DMs. **Show** reveals that run until you hide it or leave. Their messages don't
-  play sounds, and their typing isn't shown. Pins, who-reacted lists and thread
-  participant avatars still list them.
+  DMs. **Show** reveals that run until you hide it or leave. The notice and revealed
+  messages share a neutral background and leading border, ending before the next
+  normal message. Their messages don't play sounds, and their typing isn't shown.
+  Pins, who-reacted lists and thread participant avatars still list them.
 - isn't visible to the blocked person, whose DM list doesn't change.
 
 Unblocking keeps the record (`deleted_at`). The web Edit profile dialog and
