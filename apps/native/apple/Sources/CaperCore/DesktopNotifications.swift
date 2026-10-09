@@ -44,6 +44,9 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
         accountID = nil
         let previous = gateway; gateway = nil
         Task { await previous?.stop() }
+        // Logout reaches this in unit tests, whose xctest host is not an app
+        // bundle; there the notification center throws.
+        guard Bundle.main.bundleURL.pathExtension == "app" else { return }
         UNUserNotificationCenter.current().removeAllDeliveredNotifications()
         UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
     }
