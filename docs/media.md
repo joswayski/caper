@@ -743,7 +743,9 @@ are visible to their explicitly selected space members and the owner. The public
 demo cannot be managed through these APIs.
 
 Owners invite existing accounts by exact username and can remove members or
-cancel pending invitations. Invitees must accept before becoming members.
+cancel pending invitations. Every client confirms before removing a space member
+("Remove {name}?") or a private-channel member ("Remove {name} from #channel?");
+cancelling an invitation stays one click. Invitees must accept before becoming members.
 Existing memberships are unchanged; the migration does not retroactively ask
 existing members to accept. There are no invite links, custom roles, ownership
 transfers or public space discovery yet.
@@ -1974,6 +1976,13 @@ roots always keep their header. Compact rows keep the avatar column empty and
 show the time there on pointer hover; an "edited" marker moves after the
 text. Grouping is presentation only: ordering, paging, unread state and
 actions are unchanged.
+
+Validation: web was checked in a browser at desktop and phone sizes. Android
+compiles with 221 JVM unit tests passing, including the shared link cases.
+Desktop UI and unit tests pass (stand-in fonts; no rendered screenshot in CI).
+Apple was not compiled in the implementing environment; its unit and parity UI
+tests, and link colour when a message also has mention pills, still need a
+macOS run. No physical device, TalkBack/VoiceOver or touch-hover checks yet.
 
 ## Shared call state and rolling deployments
 
@@ -3843,6 +3852,12 @@ minutes and have three attempts by default. A replacement code consumes the prio
 active code for that email. Request limits default to 3/email/15 minutes,
 5/email/day, 10/IP/hour, and 500 globally/hour; all are configurable through the
 application secret.
+Past a limit the API still returns a challenge ID but sends nothing, so clients
+cap resends: the code step offers **Resend code** 60 seconds after each code is
+sent (with an m:ss countdown), at most twice per email entry, then shows "Still
+nothing? Check your spam folder, or try again in 15 minutes." **Email me a new
+code** (after all attempts are used) counts as a resend. **Use a different
+email** resets the count.
 
 ### Notifications webhook
 
