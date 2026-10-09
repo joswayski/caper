@@ -11,7 +11,7 @@ export const sidebarWidthScript = `try{const w=Number(localStorage.getItem('${ST
 
 export default function ChannelSidebar({ children }: { children: ReactNode }) {
   const panel = useRef<HTMLElement>(null);
-  const drag = useRef<{ x: number; width: number } | undefined>(undefined);
+  const drag = useRef<{ x: number; width: number; last?: number } | undefined>(undefined);
   const [width, setWidth] = useState<number>();
   const [maximum, setMaximum] = useState(MAX_WIDTH);
 
@@ -39,15 +39,25 @@ export default function ChannelSidebar({ children }: { children: ReactNode }) {
     return () => observer.disconnect();
   }, []);
 
-  const resize = (value: number) => {
-    const next = Math.round(Math.max(MIN_WIDTH, Math.min(maximum, value)));
-    setWidth(next);
-    document.documentElement.style.setProperty("--channel-sidebar-width", `${next}px`);
+  const save = (value: number) => {
     try {
-      localStorage.setItem(STORAGE_KEY, String(next));
+      localStorage.setItem(STORAGE_KEY, String(value));
     } catch {
       /* Optional preference. */
     }
+  };
+  // A drag saves once on release: synchronous storage writes on every pointer
+  // move can drop frames while the sidebar follows the pointer.
+  const resize = (value: number, persist = true) => {
+    const next = Math.round(Math.max(MIN_WIDTH, Math.min(maximum, value)));
+    setWidth(next);
+    document.documentElement.style.setProperty("--channel-sidebar-width", `${next}px`);
+    if (persist) save(next);
+    return next;
+  };
+  const endDrag = () => {
+    if (drag.current?.last !== undefined) save(drag.current.last);
+    drag.current = undefined;
   };
 
   return (
@@ -78,16 +88,14 @@ export default function ChannelSidebar({ children }: { children: ReactNode }) {
           event.currentTarget.setPointerCapture(event.pointerId);
         }}
         onPointerMove={(event) => {
-          if (drag.current) resize(drag.current.width + event.clientX - drag.current.x);
+          if (drag.current) drag.current.last = resize(drag.current.width + event.clientX - drag.current.x, false);
         }}
         onPointerUp={(event) => {
-          drag.current = undefined;
+          endDrag();
           if (event.currentTarget.hasPointerCapture(event.pointerId))
             event.currentTarget.releasePointerCapture(event.pointerId);
         }}
-        onLostPointerCapture={() => {
-          drag.current = undefined;
-        }}
+        onLostPointerCapture={endDrag}
         onDoubleClick={() => resize(DEFAULT_WIDTH)}
         onKeyDown={(event) => {
           const sizes: Record<string, number> = {

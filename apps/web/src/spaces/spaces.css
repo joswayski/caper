@@ -24,8 +24,13 @@
   gap: 10px;
   padding: 14px 0;
   overflow-y: auto;
+  /* A classic scrollbar would squeeze the tiles off-center in the 60px rail. */
+  scrollbar-width: none;
   border-right: 1px solid var(--border);
   background: var(--blackout);
+}
+.space-rail::-webkit-scrollbar {
+  display: none;
 }
 .space-rail-item {
   position: relative;
@@ -57,12 +62,15 @@
     color 150ms ease,
     background-color 150ms ease;
 }
-/* Hover stays neutral; terracotta marks only the current space. */
-.space-rail :is(button, a):hover:not(:disabled, [aria-current="page"]) {
-  border-color: var(--text-muted);
-  border-radius: 8px;
-  color: var(--text);
-  background: var(--surface-raised);
+/* Hover stays neutral; terracotta marks only the current space. Touch has no
+   hover, and a tapped tile would otherwise keep it after the tap. */
+@media (hover: hover) {
+  .space-rail :is(button, a):hover:not(:disabled, [aria-current="page"]) {
+    border-color: var(--text-muted);
+    border-radius: 8px;
+    color: var(--text);
+    background: var(--surface-raised);
+  }
 }
 .space-rail button[aria-current="page"] {
   border-color: #805143;
@@ -136,6 +144,21 @@
 .spaces-room .channel-navigation > :is(header, .channel-section-heading) {
   flex-shrink: 0;
 }
+/* The space name and its menu stay in reach while a long channel list scrolls.
+   The side shadows cover the scroller's gutters so rows never show beside it. */
+.call-room.spaces-room .channel-navigation {
+  /* Keyboard focus scrolls rows clear of the pinned header. */
+  scroll-padding-top: 54px;
+}
+.call-room.spaces-room .channel-navigation > header {
+  position: sticky;
+  z-index: 3;
+  top: 0;
+  background: var(--surface-sidebar);
+  box-shadow:
+    calc(-1 * var(--channel-sidebar-inset)) 0 var(--surface-sidebar),
+    var(--channel-sidebar-inset) 0 var(--surface-sidebar);
+}
 .spaces-room .channel-navigation > #space-channel-list {
   flex: 0 0 auto;
   min-height: 0;
@@ -208,9 +231,32 @@
 }
 .direct-select > small {
   flex: none;
+  overflow: hidden;
   color: var(--text-muted);
   font-size: 0.72rem;
+  text-overflow: ellipsis;
   white-space: nowrap;
+}
+@media (max-width: 760px), (hover: none), (pointer: coarse) {
+  /* Touch rows are tall enough for a status under the name, so neither crowds
+     the other down to a letter in a phone-width column. */
+  .direct-line .direct-select:has(> small) {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-content: center;
+    align-items: center;
+    column-gap: 6px;
+  }
+  .direct-line .direct-select:has(> small) > * {
+    grid-row: 1 / 3;
+  }
+  .direct-line .direct-select:has(> small) > span:nth-child(2) {
+    grid-area: 1 / 2;
+  }
+  .direct-line .direct-select:has(> small) > small {
+    grid-area: 2 / 2;
+    line-height: 1.25;
+  }
 }
 .direct-self:disabled {
   opacity: 0.5;
@@ -229,6 +275,8 @@
   flex: 0 0 20px;
   display: grid;
   place-items: center;
+  /* Explicit for the two-line grid layout below, where flex sizing does not apply. */
+  width: 20px;
   height: 20px;
   margin-inline: 5px;
   border-radius: var(--radius-avatar);
@@ -271,9 +319,13 @@
 .space-menu summary::-webkit-details-marker {
   display: none;
 }
-.space-menu summary:hover,
 .space-menu[open] summary {
   background: var(--surface-composer);
+}
+@media (hover: hover) {
+  .space-menu summary:hover {
+    background: var(--surface-composer);
+  }
 }
 .space-menu h1 {
   flex: 1;
@@ -294,6 +346,15 @@
 }
 .space-menu[open] summary > svg {
   transform: rotate(180deg);
+}
+/* The menu spans the whole header, under the phone's Close button too, so its
+   items keep a usable width in a narrow Browse column. */
+.channel-navigation > header > .space-menu {
+  position: static;
+}
+.channel-navigation > header > .space-menu > .space-actions {
+  /* 6px below the summary, which is centered in the 54px header. */
+  top: calc(100% - 2px);
 }
 .space-actions {
   position: absolute;
@@ -322,8 +383,10 @@
   text-align: left;
   cursor: pointer;
 }
-.space-actions button:hover:not(:disabled) {
-  background: var(--surface-hover);
+@media (hover: hover) {
+  .space-actions button:hover:not(:disabled) {
+    background: var(--surface-hover);
+  }
 }
 .space-actions button:disabled {
   opacity: 0.45;
@@ -350,9 +413,11 @@
   background: transparent;
   cursor: pointer;
 }
-.channel-navigation > header > button:hover {
-  color: var(--text);
-  background: var(--border);
+@media (hover: hover) {
+  .channel-navigation > header > button:hover {
+    color: var(--text);
+    background: var(--border);
+  }
 }
 .channel-navigation > header > button svg {
   width: 16px;
@@ -383,11 +448,16 @@
   font-weight: 700;
   cursor: pointer;
 }
-.channel-section-heading button:hover:not(:disabled),
-.channel-section-menu summary:hover,
 .channel-section-menu[open] > summary {
   color: var(--text);
   background: var(--surface-hover);
+}
+@media (hover: hover) {
+  .channel-section-heading button:hover:not(:disabled),
+  .channel-section-menu summary:hover {
+    color: var(--text);
+    background: var(--surface-hover);
+  }
 }
 .channel-section-heading button:disabled {
   opacity: 0.45;
@@ -420,8 +490,10 @@
   display: flex;
   gap: 2px;
 }
+/* Static, so the menu below anchors to the whole heading and stays inside a
+   narrow column instead of hanging off the small ⋯ button. */
 .channel-section-menu {
-  position: relative;
+  position: static;
 }
 .channel-section-menu summary {
   list-style: none;
@@ -430,9 +502,11 @@
   display: none;
 }
 .channel-section-menu .space-actions {
+  top: calc(100% + 4px);
   left: auto;
   right: 0;
   width: 190px;
+  max-width: 100%;
 }
 .channel-section-menu .space-actions button {
   justify-content: flex-start;
@@ -515,13 +589,15 @@
   white-space: nowrap;
   transform: translateY(-1px);
 }
-.channel-select:hover {
-  color: var(--text);
-  background: var(--surface-hover);
-}
-/* Overrides call.css: the raised surface barely differs from the sidebar. */
-.spaces-room .channel-line:hover:not(:has(.channel-select[aria-current="page"])) {
-  background: var(--surface-hover);
+@media (hover: hover) {
+  .channel-select:hover {
+    color: var(--text);
+    background: var(--surface-hover);
+  }
+  /* Overrides call.css: the raised surface barely differs from the sidebar. */
+  .spaces-room .channel-line:hover:not(:has(.channel-select[aria-current="page"])) {
+    background: var(--surface-hover);
+  }
 }
 .channel-select[aria-current="page"] {
   color: var(--text);
@@ -565,6 +641,9 @@
   left: auto;
   right: 6px;
   width: 220px;
+  /* The scrolling column clips anything wider than the row, as in a narrow
+     Browse column or at the minimum sidebar width. */
+  max-width: calc(100% - 6px);
 }
 /* Set when the sidebar has no room below the row (see placeMenu). */
 .channel-menu[data-placement="above"] .space-actions {
@@ -584,6 +663,15 @@
     min-width: 44px;
     min-height: 44px;
   }
+  .channel-section-toggle,
+  .pending-channel-invite {
+    min-height: 44px;
+  }
+  /* Retry links are small text; give them a full-size target without moving the text. */
+  .space-sidebar-error:not(.notification-error) button {
+    min-height: 44px;
+    margin: -6px 0 -14px;
+  }
   .channel-manage {
     width: 44px;
     height: 44px;
@@ -592,10 +680,15 @@
     min-height: 44px;
   }
 }
-.channel-manage:hover,
 .channel-menu[open] > .channel-manage {
   color: var(--text);
   background: var(--border);
+}
+@media (hover: hover) {
+  .channel-manage:hover {
+    color: var(--text);
+    background: var(--border);
+  }
 }
 .channel-manage svg {
   width: 18px;
@@ -719,8 +812,10 @@
 .direct-line:has(.direct-select[aria-current="page"]) {
   background: rgb(182 77 50 / 0.16);
 }
-.direct-line:hover:not(:has(.direct-select[aria-current="page"])) {
-  background: var(--surface-hover);
+@media (hover: hover) {
+  .direct-line:hover:not(:has(.direct-select[aria-current="page"])) {
+    background: var(--surface-hover);
+  }
 }
 .direct-section .direct-line .direct-select {
   padding-right: 4px;
@@ -745,7 +840,8 @@
   background: var(--border);
 }
 .space-sidebar-error {
-  margin: 14px 5px;
+  /* In line with the rows' leading icons. */
+  margin: 14px 9px;
   color: #ff9b82;
   font-size: 0.7rem;
   line-height: 1.4;
@@ -765,7 +861,8 @@
   width: 100%;
   min-height: 54px;
   margin: 0;
-  padding: 8px 12px;
+  /* The name column below starts 16px in (list and row padding). */
+  padding: 8px 12px 8px 16px;
   color: var(--text-muted);
   font-size: 0.75rem;
   font-weight: 700;
@@ -778,8 +875,9 @@
   display: grid;
   place-items: center;
   flex-shrink: 0;
-  width: 32px;
-  height: 36px;
+  /* The same 34px square as Pins beside it. */
+  width: 34px;
+  height: 34px;
   padding: 6px;
   border: 0;
   border-radius: 8px;
@@ -787,10 +885,20 @@
   background: transparent;
   cursor: pointer;
 }
-.member-list-toggle:hover,
 .member-list-toggle[aria-expanded="true"] {
   color: var(--text);
   background: var(--surface-composer);
+}
+/* Hover matches Pins beside it; the lighter fill marks the open list. */
+@media (hover: hover) {
+  .member-list-toggle:hover:not([aria-expanded="true"]) {
+    color: var(--text);
+    background: var(--surface);
+  }
+}
+.member-list-toggle:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
 }
 .member-list-toggle svg {
   width: 20px;
@@ -884,10 +992,6 @@
   font: inherit;
   cursor: pointer;
 }
-.member-presence-pages button:hover:not(:disabled) {
-  border-color: var(--text-muted);
-  background: var(--surface-hover);
-}
 .member-presence-pages button:disabled {
   opacity: 0.4;
   cursor: default;
@@ -943,9 +1047,13 @@
 .chat-channel-menu > summary::-webkit-details-marker {
   display: none;
 }
-.chat-channel-menu > summary:hover,
 .chat-channel-menu[open] > summary {
   background: var(--surface-composer);
+}
+@media (hover: hover) {
+  .chat-channel-menu > summary:hover {
+    background: var(--surface-composer);
+  }
 }
 .chat-channel-menu > summary > svg {
   flex: 0 0 auto;
@@ -1008,9 +1116,6 @@
   width: min(560px, 100%);
   margin: 18vh auto 0;
 }
-.spaces-empty .direct-section {
-  margin-top: 40px;
-}
 /* Matches the sign-in and profile onboarding headings. */
 .spaces-empty h1 {
   margin: 10px 0 14px;
@@ -1066,9 +1171,12 @@
   margin-top: 10px;
   color: var(--text-muted);
 }
-/* Direct messages sit below the form as a secondary option, not as a sidebar. */
+/* Direct messages sit below the form as a secondary option, not as a sidebar.
+   The rows' padding and centered icon column hang outside the form's edge, so
+   the icons line up with the heading and field above. */
 .spaces-empty .direct-section {
   margin-top: 40px;
+  margin-left: -16px;
 }
 .empty-channel {
   flex: 1;
@@ -1098,7 +1206,8 @@
   flex-wrap: wrap;
   justify-content: center;
   gap: 8px;
-  max-width: 420px;
+  /* Room for all three actions on one line where the stage allows. */
+  max-width: 520px;
   margin-top: 18px;
 }
 .empty-channel-actions > button {
@@ -1156,11 +1265,19 @@
   background: rgb(0 0 0 / 0.4);
 }
 .space-dialog:has(.invitation-consent)::backdrop {
+  /* Safari before 18 only knows the prefixed property. */
+  -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
   background: rgb(0 0 0 / 0.5);
 }
 .invitation-consent {
   margin: 24px 22px;
+}
+.channel-invitation-consent > svg {
+  display: block;
+  width: 28px;
+  height: 28px;
+  color: var(--terracotta-bright);
 }
 .invitation-consent h3 {
   margin: 16px 0 10px;
@@ -1185,9 +1302,11 @@
   border-color: var(--terracotta);
   border-style: dashed;
 }
-.space-rail .invited-space:hover:not(:disabled) {
-  color: var(--terracotta-bright);
-  border-color: var(--terracotta-bright);
+@media (hover: hover) {
+  .space-rail .invited-space:hover:not(:disabled) {
+    color: var(--terracotta-bright);
+    border-color: var(--terracotta-bright);
+  }
 }
 .pending-space-invites {
   display: grid;
@@ -1231,13 +1350,17 @@
 .space-access-notice {
   position: fixed;
   z-index: 12;
-  bottom: 20px;
-  left: 20px;
-  max-width: calc(100vw - 40px);
+  /* Top center: at the bottom it covered the account's audio controls on
+     desktop and the composer on phones. */
+  top: max(16px, env(safe-area-inset-top, 0px));
+  left: 16px;
+  right: 16px;
+  width: fit-content;
+  max-width: calc(100vw - 32px);
   display: flex;
   align-items: center;
   gap: 16px;
-  margin: 0;
+  margin: 0 auto;
   padding: 14px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -1453,15 +1576,17 @@
 .channel-privacy input:checked::after {
   transform: translateX(16px);
 }
-.channel-privacy label:hover input:not(:disabled) {
-  border-color: var(--text-muted);
-  background: #484d51;
-  box-shadow: 0 0 0 3px rgb(255 255 255 / 0.06);
-}
-.channel-privacy label:hover input:checked:not(:disabled) {
-  border-color: var(--terracotta-bright);
-  background: var(--terracotta-bright);
-  box-shadow: 0 0 0 3px rgb(182 77 50 / 0.18);
+@media (hover: hover) {
+  .channel-privacy label:hover input:not(:disabled) {
+    border-color: var(--text-muted);
+    background: #484d51;
+    box-shadow: 0 0 0 3px rgb(255 255 255 / 0.06);
+  }
+  .channel-privacy label:hover input:checked:not(:disabled) {
+    border-color: var(--terracotta-bright);
+    background: var(--terracotta-bright);
+    box-shadow: 0 0 0 3px rgb(182 77 50 / 0.18);
+  }
 }
 .channel-privacy input:focus-visible {
   outline: 2px solid var(--terracotta-bright);
@@ -1700,9 +1825,11 @@
   width: 16px;
   height: 16px;
 }
-.pending-channel-invite:hover {
-  background: var(--surface-hover);
-  color: var(--text);
+@media (hover: hover) {
+  .pending-channel-invite:hover {
+    background: var(--surface-hover);
+    color: var(--text);
+  }
 }
 .pending-channel-invites {
   margin-top: 20px;
@@ -1874,10 +2001,13 @@
   color: #ff8c9a;
   background: rgb(185 54 70 / 0.12);
 }
-.space-sidebar-error button:hover:not(:disabled),
-.navigation-toggle:hover:not(:disabled) {
-  color: var(--text);
-  background: var(--surface-hover);
+/* Gated: on touch, Back would keep its hover after the tap that opened Browse. */
+@media (hover: hover) {
+  .space-sidebar-error button:hover:not(:disabled),
+  .navigation-toggle:hover:not(:disabled) {
+    color: var(--text);
+    background: var(--surface-hover);
+  }
 }
 .space-dialog button:focus-visible,
 .delete-confirmation [data-initial-focus]:focus {
@@ -2130,7 +2260,7 @@ html[data-browse-transition="close"]::view-transition-new(browse-room) {
     flex: none;
     padding: 12px 12px 0;
   }
-  .spaces-room:not(.navigation-open) .direct-section {
+  .spaces-room:not(.navigation-open) :is(.direct-section, .pending-channel-invites) {
     display: none;
   }
   .spaces-room[data-direct]:not(.navigation-open) .sidebar-channels {
@@ -2197,6 +2327,10 @@ html[data-browse-transition="close"]::view-transition-new(browse-room) {
     width: 44px;
     height: 44px;
   }
+  /* Grown from 32px about its center, so the X stays level with the title. */
+  .space-dialog > header > button {
+    margin: -6px -6px -6px 0;
+  }
   /* 44px touch targets: Close navigation and the access notice's dismiss. */
   .channel-navigation > header > button,
   .space-rail .space-access-notice button {
@@ -2224,6 +2358,15 @@ html[data-browse-transition="close"]::view-transition-new(browse-room) {
   flex: 0 0 30px;
   width: 30px;
   height: 16px;
+  transition: transform 150ms ease;
+}
+.direct-requests[aria-expanded="false"] > svg {
+  transform: rotate(-90deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .direct-section .direct-requests > svg {
+    transition: none;
+  }
 }
 .direct-request-count {
   flex: 0 0 auto;
@@ -2258,7 +2401,8 @@ html[data-browse-transition="close"]::view-transition-new(browse-room) {
   white-space: nowrap;
 }
 .direct-request-group .direct-select > small {
-  flex: 0 1 auto;
+  /* The username gives way before the name does. */
+  flex: 0 1000 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
