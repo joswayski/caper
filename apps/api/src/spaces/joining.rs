@@ -116,6 +116,7 @@ pub(super) async fn add_channel_member(
         return Err(conflict("public channels are self-joined"));
     }
     let member = find_user_for_update(&mut tx, &input.username).await?;
+    ensure_invitee_allows(&mut tx, member.0, principal.user.id).await?;
     let belongs: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM public.space_members WHERE space_id=$1 AND user_id=$2 AND deleted_at IS NULL)",
     )
@@ -148,7 +149,7 @@ pub(super) async fn add_channel_member(
             return Err(conflict("invitation cooldown; try again after 24 hours"));
         }
     }
-    let (received,sent): (i64,i64) = sqlx::query_as("SELECT count(*) FILTER(WHERE i.user_id=$1),count(*) FILTER(WHERE i.channel_id=$2) FROM public.channel_invitations i JOIN public.channels c ON c.id=i.channel_id JOIN public.spaces s ON s.id=c.space_id WHERE i.status='pending' AND i.updated_at > now()-interval '7 days' AND c.deleted_at IS NULL AND s.deleted_at IS NULL AND (i.user_id=$1 OR i.channel_id=$2)")
+    let (received,sent): (i64,i64) = sqlx::query_as("SELECT count(*) FILTER(WHERE i.user_id=$1 AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=$1 AND b.blocked_id=s.owner_id AND b.deleted_at IS NULL)),count(*) FILTER(WHERE i.channel_id=$2) FROM public.channel_invitations i JOIN public.channels c ON c.id=i.channel_id JOIN public.spaces s ON s.id=c.space_id WHERE i.status='pending' AND i.updated_at > now()-interval '7 days' AND c.deleted_at IS NULL AND s.deleted_at IS NULL AND (i.user_id=$1 OR i.channel_id=$2)")
         .bind(member.0).bind(id).fetch_one(&mut *tx).await.map_err(database_error)?;
     if received >= 50 || sent >= 100 {
         return Err(conflict("pending invitation limit reached"));

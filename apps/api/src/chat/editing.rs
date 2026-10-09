@@ -227,7 +227,12 @@ pub(super) async fn message(
         "SELECT m.payload,u.avatar_id,u.display_name FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.channel_id=$1 AND m.external_id=$2",
     ).bind(channel_id).bind(message).fetch_optional(&mut *tx).await.map_err(database_error)?
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "message not found"))?;
-    Ok(Json(enrich_author(payload, avatar, name.as_deref())))
+    // Like history, never serve a forward's stored snapshot: its source may
+    // since have been deleted.
+    let mut payload = [enrich_author(payload, avatar, name.as_deref())];
+    forwarding::hydrate(&mut tx, &mut payload).await?;
+    let [payload] = payload;
+    Ok(Json(payload))
 }
 
 async fn versions_page(

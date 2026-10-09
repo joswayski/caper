@@ -4,6 +4,11 @@ use super::*;
 use crate::spaces::{channel_access, channel_participation};
 use sqlx::{Postgres, Transaction};
 
+/// Forwards of one original, in total and by any one account. Projection
+/// rewrites every forward whenever the original changes.
+const MAX_FORWARDS: i64 = 100;
+const MAX_FORWARDS_PER_ACCOUNT: i64 = 10;
+
 #[cfg(test)]
 mod tests;
 
@@ -142,12 +147,22 @@ async fn persist_forward(
             user.map(|_| name.as_str()),
         ));
     }
-    let (global, personal): (i64, i64) = sqlx::query_as("SELECT count(*),count(*) FILTER(WHERE session_id=$2) FROM public.messages WHERE channel_id=$1 AND created_at>now()-interval '1 minute'")
-        .bind(destination.id).bind(session).fetch_one(&mut *tx).await.map_err(database_error)?;
+    let (global, personal): (i64, i64) = sqlx::query_as("SELECT count(*),count(*) FILTER(WHERE m.session_id=$2 OR cs.user_id=$3) FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id WHERE m.channel_id=$1 AND m.created_at>now()-interval '1 minute'")
+        .bind(destination.id).bind(session).bind(user).fetch_one(&mut *tx).await.map_err(database_error)?;
     if global >= 120 || personal >= 30 {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
             "sending too quickly; try again shortly",
+        ));
+    }
+    // Each reaction, edit or reply on an original rewrites every forward of it,
+    // so bound that fan-out per original and per forwarding account.
+    let (forwards, yours): (i64, i64) = sqlx::query_as("SELECT count(*),count(*) FILTER(WHERE m.session_id=$2 OR cs.user_id=$3) FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id WHERE m.forward_source_id=$1")
+        .bind(source).bind(session).bind(user).fetch_one(&mut *tx).await.map_err(database_error)?;
+    if forwards >= MAX_FORWARDS || yours >= MAX_FORWARDS_PER_ACCOUNT {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "this message can't be forwarded again",
         ));
     }
     // Mentions in the note are highlighted and open profile cards like any

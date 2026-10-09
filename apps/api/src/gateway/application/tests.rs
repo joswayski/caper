@@ -400,6 +400,20 @@ async fn multiplexed_presence_commands_and_cross_gateway_handoff() {
             if response.status() == StatusCode::SERVICE_UNAVAILABLE
     ));
     let mut replacement = connect(gateways[1].1, &token).await;
+    // Every stream and command needs an account, so anonymous sockets are
+    // refused before they can hold one of the gateway's connection slots.
+    let anonymous = format!("ws://{}/api/chat/events", gateways[1].1)
+        .into_client_request()
+        .unwrap();
+    let error = tokio_tungstenite::connect_async(anonymous)
+        .await
+        .err()
+        .unwrap();
+    assert!(matches!(
+        error,
+        tokio_tungstenite::tungstenite::Error::Http(response)
+            if response.status() == StatusCode::UNAUTHORIZED
+    ));
     // The current multiplexed protocol must keep delivering chat while the old
     // gateway drains, not just recover an accepted media command afterward.
     transmit(

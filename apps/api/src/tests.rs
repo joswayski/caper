@@ -754,6 +754,93 @@ async fn authenticated_join_uses_the_account_display_name_without_country() {
 }
 
 #[tokio::test]
+async fn account_channel_join_never_falls_back_to_a_submitted_name() {
+    let (mut s, _) = state();
+    // Dispatch verified the session, but this lookup fails (as in an outage).
+    s.media_channel = Some("channel00001".into());
+    s.media_session = Some(b"authenticated-channel-session".to_vec());
+    s.auth = auth::AuthVerifier::new();
+    let response = app(s)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/media/join")
+                .header("content-type", "application/json")
+                .header("authorization", "Bearer test-fixture")
+                .body(Body::from(json!({"name":"Caper Support"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn one_account_cannot_hold_the_room_or_spend_its_join_budget() {
+    let (s, _) = state();
+    let join = || async {
+        let response = app(s.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/media/join")
+                    .header("content-type", "application/json")
+                    .header("authorization", "Bearer test-fixture")
+                    .body(Body::from(json!({"name":"Test User"}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), BODY_LIMIT).await.unwrap())
+                .unwrap();
+        (status, body)
+    };
+    let mut tokens = Vec::new();
+    for _ in 0..MAX_ACCOUNT_SLOTS {
+        let (status, joined) = join().await;
+        assert_eq!(status, StatusCode::OK, "{joined}");
+        tokens.push(joined["token"].as_str().unwrap().to_owned());
+    }
+    assert_eq!(
+        join().await,
+        (
+            StatusCode::CONFLICT,
+            json!({"error":"already in this call on too many devices"})
+        )
+    );
+    // Others can still join the room.
+    assert!(joined(&s, "Someone else").await["token"].is_string());
+    // Joining and leaving can't spend the whole room's join budget either.
+    for token in tokens {
+        let (status, _) = call(
+            app(s.clone()),
+            "POST",
+            "/api/media/leave",
+            Some(&token),
+            json!({}),
+        )
+        .await;
+        assert!(status.is_success());
+    }
+    for _ in MAX_ACCOUNT_SLOTS..ACCOUNT_JOIN_LIMIT_PER_MINUTE {
+        let (status, joined) = join().await;
+        assert_eq!(status, StatusCode::OK, "{joined}");
+        call(
+            app(s.clone()),
+            "POST",
+            "/api/media/leave",
+            joined["token"].as_str(),
+            json!({}),
+        )
+        .await;
+    }
+    assert_eq!(join().await.0, StatusCode::TOO_MANY_REQUESTS);
+    assert!(joined(&s, "Another person").await["token"].is_string());
+}
+
+#[tokio::test]
 async fn stored_participant_without_avatar_id_decodes_and_omits_avatar() {
     let (s, _) = state();
     joined(&s, "legacy").await;
@@ -1893,6 +1980,27 @@ async fn warm_sessions_are_signed_in_only_rate_limited_and_revoked_unless_adopte
         .0,
         StatusCode::TOO_MANY_REQUESTS,
         "one warm pair per account at a time"
+    );
+    // Parked revocations can't crowd out the immediate cleanup a removal needs.
+    {
+        let mut r = s.registry.lock().await;
+        for n in r.cleanup.len()..MAX_CLEANUP_BACKLOG / 2 {
+            enqueue_action_at_locked(
+                &mut r,
+                CleanupAction::Revoke {
+                    username: format!("parked-{n}"),
+                },
+                Timestamp::now() + WARM_REVOKE_AFTER,
+            );
+        }
+    }
+    let mut crowded = s.clone();
+    crowded.media_session = Some(b"crowded".to_vec());
+    assert_eq!(
+        call(app(crowded), "POST", "/api/media/warm", None, warm_offers())
+            .await
+            .0,
+        StatusCode::TOO_MANY_REQUESTS
     );
     for body in [
         json!({"main":{"type":"answer","sdp":"x"},"receive":{"type":"offer","sdp":"x"}}),
