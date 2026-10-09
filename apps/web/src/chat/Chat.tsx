@@ -415,6 +415,11 @@ export default function Chat({
     }, 1_000);
     return () => clearTimeout(timer);
   }, [state.author?.id, readOnly]);
+  // The thread composer suggests the same people as the channel composer.
+  const mentionPeople = useMemo(
+    () => mentionMembers?.filter((member) => member.id !== state.author?.id),
+    [mentionMembers, state.author?.id],
+  );
   const allowFollow = useRef(false);
   allowFollow.current = !state.hasNewer && !scrollTarget && !jumping;
   const latestMessage = state.messages.at(-1);
@@ -1358,6 +1363,8 @@ export default function Chat({
         channelName={channelName}
         direct={direct}
         readOnly={readOnly}
+        mentionPeople={mentionPeople}
+        specialMentions={!direct}
         renderMessage={renderMessage}
         onClose={closeThread}
       />

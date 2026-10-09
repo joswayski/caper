@@ -96,7 +96,7 @@ final class APIClientTests: XCTestCase {
             guard request.url?.path.hasSuffix("/thread") == true else { throw URLError(.badURL) }
             threadRequests += 1
             XCTAssertEqual(request.url?.query, "before=3")
-            return (200, try JSONEncoder().encode(ThreadHistory(root: root, messages: [older], cursor: "3", hasMore: false)))
+            return (200, try JSONEncoder().encode(ThreadHistory(root: root, messages: [older], cursor: "3", hasMore: false, hasNewer: false)))
         }
         let chat = ChatModel(api: client())
         await chat.open(history: history, displayName: "Me")
@@ -105,7 +105,7 @@ final class APIClientTests: XCTestCase {
         await chat.openThread(root.id)
         XCTAssertEqual(threadRequests, 1)
         XCTAssertTrue(chat.threadLoading)
-        held?.respond(status: 200, data: try JSONEncoder().encode(ThreadHistory(root: root, messages: [latest], cursor: "3", hasMore: true)))
+        held?.respond(status: 200, data: try JSONEncoder().encode(ThreadHistory(root: root, messages: [latest], cursor: "3", hasMore: true, hasNewer: false)))
         await opening.value
         chat.threadDraft = "Keep this draft"
         await chat.openThread(root.id)
@@ -123,7 +123,7 @@ final class APIClientTests: XCTestCase {
         await chat.preview(history: history)
         MockURLProtocol.handler = { _ in
             threadRequests += 1
-            return (200, try JSONEncoder().encode(ThreadHistory(root: root, messages: [], cursor: "3", hasMore: false)))
+            return (200, try JSONEncoder().encode(ThreadHistory(root: root, messages: [], cursor: "3", hasMore: false, hasNewer: false)))
         }
         await chat.openThread(root.id)
         XCTAssertEqual(threadRequests, 3)
@@ -396,6 +396,26 @@ final class APIClientTests: XCTestCase {
         XCTAssertNil(WorkspaceValidation.usernameError("alice_123"))
         XCTAssertNotNil(WorkspaceValidation.usernameError("Alice"))
         XCTAssertNotNil(WorkspaceValidation.usernameError("ab"))
+    }
+
+    func testInviteChecksAndWordingMatchWeb() {
+        let sam = Member(id: "member000003", username: "sam", displayName: "Sam", owner: false)
+        let kai = Member(id: "member000004", username: "kai", displayName: "Kai", owner: false)
+        XCTAssertEqual(WorkspaceValidation.invitationSent, "Invitation sent. They must accept before joining.")
+        XCTAssertEqual(WorkspaceValidation.inviteError(username: "sam", members: [sam], invited: [kai], channel: false),
+                       "This person is already in the space.")
+        XCTAssertEqual(WorkspaceValidation.inviteError(username: "sam", members: [sam], invited: [], channel: true),
+                       "This person already has access to this channel.")
+        XCTAssertEqual(WorkspaceValidation.inviteError(username: "kai", members: [sam], invited: [kai], channel: false),
+                       "This person already has a pending invitation.")
+        XCTAssertNil(WorkspaceValidation.inviteError(username: "alex", members: [sam], invited: [kai], channel: false))
+        XCTAssertEqual(WorkspaceValidation.memberMessage(APIError(status: 404, message: "user not found")),
+                       "User not found. Check the username and try again.")
+        XCTAssertEqual(WorkspaceValidation.memberMessage(APIError(status: 409, message: "user already invited")),
+                       "This person already has a pending invitation.")
+        XCTAssertEqual(WorkspaceValidation.memberMessage(APIError(status: 409, message: "user already in channel")),
+                       "This person already has access to this channel.")
+        XCTAssertEqual(WorkspaceValidation.memberMessage(APIError(status: 500, message: "Something else.")), "Something else.")
     }
 
     @MainActor

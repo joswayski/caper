@@ -15,14 +15,14 @@ pub struct Account {
     pub debug_enabled: bool,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Inviter {
     pub username: String,
     pub display_name: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Space {
     pub id: String,
@@ -33,7 +33,7 @@ pub struct Space {
     pub demo: bool,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Channel {
     pub id: String,
@@ -49,7 +49,7 @@ fn default_joined() -> bool {
     true
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelInvitation {
     pub channel: Channel,
@@ -200,7 +200,7 @@ pub struct VoiceOccupant {
     pub deafened: bool,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Member {
     pub id: String,
@@ -245,7 +245,9 @@ pub struct SpaceLimits {
     pub channels_per_space: usize,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+// The server sends `channelInvitations`; the other fields are one word.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct SpaceDetail {
     pub space: Space,
     pub channels: Vec<Channel>,
@@ -343,6 +345,60 @@ pub struct Reactors {
     pub reactions: Vec<ReactorGroup>,
 }
 
+/// A reactor's display name, else username, else "Someone" (web's `reactorName`).
+pub fn reactor_name(author: &Reactor) -> String {
+    let named = |value: &Option<String>| {
+        value
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+    named(&author.display_name)
+        .or_else(|| named(&author.username))
+        .unwrap_or_else(|| "Someone".into())
+}
+
+/// Known names projected onto a displayed reaction's IDs: the loaded group's
+/// order first, then the rest in snapshot order. You need no name; anyone
+/// else not yet loaded makes the list unknown (`None`).
+pub fn reactor_list(
+    groups: &[ReactorGroup],
+    reaction: &Reaction,
+    self_id: Option<&str>,
+) -> Option<Vec<Reactor>> {
+    let mut authors: Vec<_> = groups
+        .iter()
+        .find(|group| group.emoji == reaction.emoji)
+        .into_iter()
+        .flat_map(|group| &group.authors)
+        .filter(|author| reaction.author_ids.contains(&author.id))
+        .cloned()
+        .collect();
+    for id in &reaction.author_ids {
+        if authors.iter().any(|author| author.id == *id) {
+            continue;
+        }
+        if Some(id.as_str()) == self_id {
+            authors.push(Reactor {
+                id: id.clone(),
+                username: None,
+                display_name: None,
+                avatar_id: None,
+            });
+        } else {
+            authors.push(
+                groups
+                    .iter()
+                    .flat_map(|group| &group.authors)
+                    .find(|author| author.id == *id)?
+                    .clone(),
+            );
+        }
+    }
+    Some(authors)
+}
+
 /// Who reacted, worded identically on every Caper client: names in reaction
 /// order with you first as "You", at most three names before "and N others".
 pub fn reactor_summary(
@@ -351,24 +407,13 @@ pub fn reactor_summary(
     emoji_name: Option<&str>,
     emoji: &str,
 ) -> String {
-    let named = |value: &Option<String>| {
-        value
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-    };
     let mut you = false;
     let mut names = Vec::new();
     for author in authors {
         if self_id == Some(author.id.as_str()) {
             you = true;
         } else {
-            names.push(
-                named(&author.display_name)
-                    .or_else(|| named(&author.username))
-                    .unwrap_or_else(|| "Someone".into()),
-            );
+            names.push(reactor_name(author));
         }
     }
     if you {
@@ -2333,6 +2378,68 @@ mod tests {
         assert_eq!(
             reactor_summary(&authors, None, Some("eyes"), "👀"),
             "only_username, Someone and Someone reacted with :eyes:"
+        );
+    }
+
+    #[test]
+    fn space_detail_reads_the_servers_channel_invitations() {
+        let detail: SpaceDetail = serde_json::from_str(
+            r#"{"space":{"id":"s","name":"Studio","ownerId":"o"},"channels":[],"members":[],
+            "channelInvitations":[{"channel":{"id":"c","spaceId":"s","name":"plans","private":true,"joined":false},
+            "inviter":{"username":"host","displayName":"Host"}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(detail.channel_invitations.len(), 1);
+        assert_eq!(detail.channel_invitations[0].channel.name, "plans");
+    }
+
+    #[test]
+    fn reactor_list_projects_known_names_onto_displayed_ids() {
+        let person = |id: &str, name: Option<&str>| Reactor {
+            id: id.into(),
+            username: None,
+            display_name: name.map(Into::into),
+            avatar_id: None,
+        };
+        let groups = vec![
+            ReactorGroup {
+                emoji: "👍".into(),
+                authors: vec![person("ana", Some("Ana")), person("gone", Some("Gone"))],
+            },
+            ReactorGroup {
+                emoji: "🎉".into(),
+                authors: vec![person("bo", Some("Bo"))],
+            },
+        ];
+        let reaction = |ids: &[&str]| Reaction {
+            emoji: "👍".into(),
+            author_ids: ids.iter().map(|id| (*id).to_owned()).collect(),
+        };
+        // Loaded order first; another emoji names Bo; you need no name.
+        let list = reactor_list(&groups, &reaction(&["me", "bo", "ana"]), Some("me")).unwrap();
+        assert_eq!(
+            list.iter()
+                .map(|author| author.id.as_str())
+                .collect::<Vec<_>>(),
+            ["ana", "me", "bo"]
+        );
+        assert_eq!(
+            list.iter().map(reactor_name).collect::<Vec<_>>(),
+            ["Ana", "Someone", "Bo"]
+        );
+        assert_eq!(
+            reactor_list(&groups, &reaction(&["ana", "new"]), Some("me")),
+            None,
+            "an unloaded person keeps the list unknown"
+        );
+        assert_eq!(
+            reactor_name(&Reactor {
+                id: "x".into(),
+                username: Some("x_user".into()),
+                display_name: Some("  ".into()),
+                avatar_id: None,
+            }),
+            "x_user"
         );
     }
 

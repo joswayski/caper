@@ -89,6 +89,9 @@ offers the phone's platform, the app turns push on, unless the account turned
   doesn't ask again, and allowing it later in Android settings turns push on.
 - Turning the switch off in settings is remembered per account on that phone.
   Turning it on again clears that. Logging out doesn't count as turning it off.
+- Opening a channel or DM in the foreground removes its delivered notifications
+  (Android by tag, iPhone by the APNs `thread-id`); turning push off on the phone
+  or logging out removes them all.
 
 ### Content and payloads
 

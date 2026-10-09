@@ -154,4 +154,12 @@ final class MessageRequestsTests: XCTestCase {
         XCTAssertFalse(BlockedMessages.canBlock(ChatAuthor(id: "guest", name: "Guest", isGuest: true), viewerID: me, blocked: []), "not guests")
         XCTAssertFalse(BlockedMessages.canBlock(alex, viewerID: nil, blocked: []), "only when signed in")
     }
+
+    func testWhoCanBeUnblockedFromMessageActions() {
+        XCTAssertTrue(BlockedMessages.canUnblock(alex, viewerID: me, blocked: [alex.id]))
+        XCTAssertFalse(BlockedMessages.canUnblock(alex, viewerID: me, blocked: []), "not blocked")
+        XCTAssertFalse(BlockedMessages.canUnblock(ChatAuthor(id: me, name: "Me", isGuest: false), viewerID: me, blocked: [me]), "not yourself")
+        XCTAssertFalse(BlockedMessages.canUnblock(ChatAuthor(id: "guest", name: "Guest", isGuest: true), viewerID: me, blocked: ["guest"]), "not guests")
+        XCTAssertFalse(BlockedMessages.canUnblock(alex, viewerID: nil, blocked: [alex.id]), "only when signed in")
+    }
 }
