@@ -10,6 +10,8 @@ mod effects;
 mod emoji;
 mod forwarding;
 mod gateway;
+mod grouping;
+mod links;
 #[path = "../voice-spike/src/media.rs"]
 mod media;
 #[path = "../voice-spike/src/media_gateway.rs"]
@@ -257,6 +259,17 @@ enum Dialog {
         account: model::BlockedAccount,
         request: Option<String>,
     },
+    /// Confirm removing a space member, or a private channel's member; it
+    /// returns to that settings dialog.
+    RemoveMember {
+        space: String,
+        channel: Option<String>,
+        member: String,
+        /// The member's display name.
+        name: String,
+        /// The space's name, or the channel's.
+        place: String,
+    },
 }
 
 #[derive(Clone)]
@@ -315,6 +328,11 @@ impl ReactorCache {
     }
 }
 
+/// "Resend code" waits this long after each code is sent.
+const RESEND_COOLDOWN: Duration = Duration::from_secs(60);
+/// The API stops sending after three codes per 15 minutes, so a fourth would
+/// never verify: one code plus at most two resends per email entry.
+const MAX_RESENDS: u8 = 2;
 const REACTOR_RETRY: Duration = Duration::from_secs(5);
 const REACTOR_CACHE_LIMIT: usize = 256;
 /// Discord-style hover card: large emoji, then the summary.
@@ -432,6 +450,14 @@ struct CaperApp {
     email: String,
     challenge: Option<String>,
     attempts_remaining: Option<u64>,
+    /// When the latest sign-in code was sent; "Resend code" waits a minute.
+    code_sent_at: Option<Instant>,
+    /// Codes re-sent for this email entry, at most `MAX_RESENDS`.
+    resends: u8,
+    /// The code request in flight is a resend.
+    resending: bool,
+    /// The code step's status line after a resend.
+    login_status: Option<&'static str>,
     code: String,
     /// Last drawn (loading, code step) of the sign-in page; refocus its field
     /// when a request finishes or the step changes.
@@ -591,6 +617,10 @@ impl CaperApp {
             email: String::new(),
             challenge: None,
             attempts_remaining: None,
+            code_sent_at: None,
+            resends: 0,
+            resending: false,
+            login_status: None,
             code: String::new(),
             login_focus: None,
             username: String::new(),
@@ -1648,11 +1678,18 @@ impl CaperApp {
                 }
                 Event::CodeRequested { generation, result } if generation == self.generation => {
                     self.loading = false;
+                    let resend = std::mem::take(&mut self.resending);
                     match result {
                         Ok(challenge) => {
                             self.challenge = Some(challenge);
                             self.code.clear();
                             self.attempts_remaining = None;
+                            self.code_sent_at = Some(Instant::now());
+                            if resend {
+                                self.resends = self.resends.saturating_add(1);
+                                self.login_status =
+                                    Some("We sent a new code. Earlier codes no longer work.");
+                            }
                         }
                         Err(error) => self.error = Some(error),
                     }
@@ -3771,9 +3808,30 @@ impl CaperApp {
         self.challenge = None;
         self.code.clear();
         self.attempts_remaining = None;
+        self.reset_resends();
         self.loading = false;
         self.error = None;
         self.dialog = None;
+    }
+
+    /// A new email entry starts with a fresh resend count and timer.
+    fn reset_resends(&mut self) {
+        self.code_sent_at = None;
+        self.resends = 0;
+        self.resending = false;
+        self.login_status = None;
+    }
+
+    /// Requests another code for the same email; `CodeRequested` counts it.
+    fn resend_code(&mut self) {
+        self.loading = true;
+        self.resending = true;
+        self.error = None;
+        self.login_status = None;
+        self.worker.send(Command::RequestCode {
+            generation: self.generation,
+            email: self.email.trim().to_owned(),
+        });
     }
 
     fn send_message(&mut self) {
@@ -4256,6 +4314,14 @@ impl CaperApp {
                 if channel == self.managed_channel {
                     self.managed_members.retain(|item| item.id != member);
                     self.managed_invitations.retain(|item| item.id != member);
+                }
+                // The confirmation closes; its settings dialog stays open.
+                if let Some(Dialog::RemoveMember { channel, .. }) = &self.dialog {
+                    self.dialog = Some(
+                        channel
+                            .clone()
+                            .map_or(Dialog::ManageSpace, Dialog::ManageChannel),
+                    );
                 }
             }
             AdminResult::ChannelLeft(channel) => {
@@ -4890,6 +4956,9 @@ impl CaperApp {
                             if let Some(error) = self.error.as_ref().or(self.warning.as_ref()) {
                                 ui.add_space(12.0);
                                 login_error_frame(ui, error);
+                            } else if let Some(status) = self.login_status {
+                                ui.add_space(12.0);
+                                ui.label(RichText::new(status).size(14.0).color(MUTED));
                             }
                             if self.attempts_remaining == Some(1) {
                                 ui.add_space(8.0);
@@ -4898,25 +4967,28 @@ impl CaperApp {
                                 );
                             }
                             ui.add_space(12.0);
+                            let resends_left = self.resends < MAX_RESENDS;
                             if exhausted {
-                                if login_action(
-                                    ui,
-                                    if self.loading { "Sending…" } else { "Email me a new code" },
-                                    self.loading,
-                                )
-                                .clicked()
+                                // Counts as a resend; "Resend code" would repeat it. At the
+                                // limit it is hidden, as on web: the API would send nothing.
+                                if resends_left
+                                    && login_action(
+                                        ui,
+                                        if self.loading { "Sending…" } else { "Email me a new code" },
+                                        self.loading,
+                                    )
+                                    .clicked()
                                 {
-                                    self.loading = true;
-                                    self.error = None;
                                     self.code.clear();
-                                    self.worker.send(Command::RequestCode {
-                                        generation: self.generation,
-                                        email: self.email.trim().to_owned(),
-                                    });
+                                    self.resend_code();
                                 }
                             } else if login_action(
                                 ui,
-                                if self.loading { "Checking…" } else { "Continue" },
+                                if self.loading && !self.resending {
+                                    "Checking…"
+                                } else {
+                                    "Continue"
+                                },
                                 self.loading || self.code.len() != 6,
                             )
                             .clicked()
@@ -4928,6 +5000,7 @@ impl CaperApp {
                                 let challenge = self.challenge.clone().unwrap_or_default();
                                 self.loading = true;
                                 self.error = None;
+                                self.login_status = None;
                                 self.worker.send(Command::VerifyCode {
                                     generation: self.generation,
                                     challenge,
@@ -4935,22 +5008,58 @@ impl CaperApp {
                                 });
                             }
                             ui.add_space(10.0);
-                            if ui
-                                .add_enabled(
-                                    !self.loading,
-                                    egui::Button::new(
-                                        RichText::new("Use a different email")
-                                            .size(13.6)
-                                            .color(MUTED),
+                            let text_button = |text: &str| {
+                                egui::Button::new(RichText::new(text).size(13.6).color(MUTED))
+                                    .frame(false)
+                            };
+                            let mut resend = false;
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing.x = 16.0;
+                                if ui
+                                    .add_enabled(!self.loading, text_button("Use a different email"))
+                                    .clicked()
+                                {
+                                    self.challenge = None;
+                                    self.code.clear();
+                                    self.error = None;
+                                    self.attempts_remaining = None;
+                                    self.reset_resends();
+                                }
+                                if exhausted || !resends_left || self.challenge.is_none() {
+                                    return;
+                                }
+                                let wait = self
+                                    .code_sent_at
+                                    .and_then(|sent| resend_wait(sent.elapsed()));
+                                let label = if self.loading && self.resending {
+                                    "Sending…".to_owned()
+                                } else if let Some(wait) = wait {
+                                    let (label, changes) = resend_countdown(wait);
+                                    ui.ctx().request_repaint_after(changes);
+                                    label
+                                } else {
+                                    "Resend code".to_owned()
+                                };
+                                resend = ui
+                                    .add_enabled(!self.loading && wait.is_none(), text_button(&label))
+                                    .clicked();
+                            });
+                            if resend {
+                                self.resend_code();
+                                // Keep typing in the code field, as on web.
+                                ui.memory_mut(|memory| {
+                                    memory.request_focus(egui::Id::new("sign-in-code"));
+                                });
+                            }
+                            if !resends_left && self.challenge.is_some() {
+                                ui.add_space(8.0);
+                                ui.label(
+                                    RichText::new(
+                                        "Still nothing? Check your spam folder, or try again in 15 minutes.",
                                     )
-                                    .frame(false),
-                                )
-                                .clicked()
-                            {
-                                self.challenge = None;
-                                self.code.clear();
-                                self.error = None;
-                                self.attempts_remaining = None;
+                                    .size(13.6)
+                                    .color(MUTED),
+                                );
                             }
                         } else {
                             ui.label(bold("Email address").size(14.0));
@@ -6063,13 +6172,18 @@ impl CaperApp {
         self.revealed_blocked.contains(key)
     }
 
-    /// Thread rows (root or replies), collapsing blocked authors' runs.
+    /// Thread rows (root or replies), collapsing blocked authors' runs. Each
+    /// call is its own list for grouping, so the root never groups and the
+    /// first reply never groups with it.
     fn messages_or_blocked(&mut self, ui: &mut egui::Ui, messages: &[&model::Message]) {
         let me = self.account.as_ref().map(|account| account.id.clone());
+        let mut previous: Option<grouping::Row> = None;
         for row in blocking::rows(messages, &self.blocked_ids(), me.as_deref()) {
             let range = match row {
                 blocking::Row::Message(index) => index..index + 1,
                 blocking::Row::Blocked { range, key } => {
+                    // The placeholder separates the rows on either side.
+                    previous = None;
                     if self.scroll_to_target
                         && messages[range.clone()]
                             .iter()
@@ -6084,7 +6198,12 @@ impl CaperApp {
                 }
             };
             for message in &messages[range] {
-                self.message(ui, message, true);
+                let current = grouping::Row::new(&message.author.id, &message.created_at, false);
+                let grouped = grouping::grouped(previous.as_ref(), &current);
+                // Nothing groups under a highlighted jump target.
+                previous =
+                    (self.focused_message.as_deref() != Some(&message.id)).then_some(current);
+                self.message(ui, message, true, grouped);
             }
         }
     }
@@ -8226,12 +8345,15 @@ impl CaperApp {
                     let mut last_date = None;
                     let messages: Vec<_> = timeline.messages().filter(|message| message.is_channel_message() && !self.thread_only_rows.contains(&message.id) && self.context_window.is_none_or(|window| window.contains(message))).collect();
                     let me = self.account.as_ref().map(|account| account.id.clone());
+                    // The row above for grouping; dividers and placeholders clear it.
+                    let mut previous: Option<grouping::Row> = None;
                     for row in blocking::rows(&messages, &self.blocked_ids(), me.as_deref()) {
                         let (range, blocked) = match row {
                             blocking::Row::Message(index) => (index..index + 1, None),
                             blocking::Row::Blocked { range, key } => (range, Some(key)),
                         };
                         if let Some(key) = blocked {
+                            previous = None;
                             if let Some(date) = display_date(&messages[range.start].created_at)
                                 && take_date_divider(&mut last_date, &date.key)
                             {
@@ -8249,25 +8371,38 @@ impl CaperApp {
                                 && take_date_divider(&mut last_date, &date.key)
                             {
                                 date_divider(ui, &date.label);
+                                previous = None;
                             }
-                            self.message(ui, message, false);
+                            // A "Replied to a thread" broadcast keeps its header.
+                            let current = grouping::Row::new(&message.author.id, &message.created_at, message.thread_root_id.is_some());
+                            let grouped = grouping::grouped(previous.as_ref(), &current);
+                            // Nothing groups under a highlighted jump target.
+                            previous = (self.focused_message.as_deref() != Some(&message.id)).then_some(current);
+                            self.message(ui, message, false, grouped);
                         }
                     }
                     self.timeline = timeline;
                     if self.has_newer && ui.add_enabled(!self.context_loading, egui::Button::new("Load newer messages")).clicked() { self.load_newer_context(None); }
                     if self.context_window.is_some() && ui.button("Back to latest messages").clicked() { self.reload_channel(); }
+                    if self.has_newer || self.context_window.is_some() {
+                        previous = None;
+                    }
                     if let Some(pending) = self.pending.clone().filter(|pending| pending.thread_root_id.is_none()) {
                         if let Some(pending_date) = display_date(&pending.created_at)
                             && take_date_divider(&mut last_date, &pending_date.key)
                         {
                             date_divider(ui, &pending_date.label);
+                            previous = None;
                         }
                         let author = self.session.as_ref().map_or_else(
                             || self.identity_name(),
                             |session| session.author.name.clone(),
                         );
                         let avatar_id = self.session.as_ref().and_then(|session| session.author.avatar_id);
-                        message_row(ui, &author, avatar_id, "Now", false, |ui| {
+                        // An unsent own message groups under your earlier ones.
+                        let author_id = self.session.as_ref().map(|session| session.author.id.clone()).or_else(|| me.clone()).unwrap_or_default();
+                        let grouped = grouping::grouped(previous.as_ref(), &grouping::Row::new(&author_id, &pending.created_at, false));
+                        message_row(ui, &author, avatar_id, "Now", false, grouped.then_some("Now"), |ui| {
                             ui.label(RichText::new(&pending.text).size(14.0).color(MUTED));
                         });
                         if let Some(rejection) = &pending.rejection {
@@ -8462,8 +8597,16 @@ impl CaperApp {
         }
     }
 
-    fn message(&mut self, ui: &mut egui::Ui, message: &model::Message, in_thread: bool) {
-        self.message_in(ui, message, in_thread, false);
+    /// A timeline or thread row; `grouped` rows continue the row above
+    /// (see `grouping`).
+    fn message(
+        &mut self,
+        ui: &mut egui::Ui,
+        message: &model::Message,
+        in_thread: bool,
+        grouped: bool,
+    ) {
+        self.message_in(ui, message, in_thread, false, grouped);
     }
 
     fn message_in(
@@ -8472,10 +8615,11 @@ impl CaperApp {
         message: &model::Message,
         in_thread: bool,
         in_pins: bool,
+        grouped: bool,
     ) {
         let projected = self.mutations.project(message);
         let message = projected.as_ref();
-        let time = if in_pins {
+        let plain_time = if in_pins {
             DateTime::parse_from_rfc3339(&message.created_at).map_or_else(
                 |_| message.created_at.clone(),
                 |date| {
@@ -8487,11 +8631,14 @@ impl CaperApp {
         } else {
             display_time(&message.created_at)
         };
-        let time = if message.revision > 1 {
-            format!("{time} (edited)")
+        let edited = message.revision > 1;
+        // Grouped rows show the marker after their text instead.
+        let time = if edited && !grouped {
+            format!("{plain_time} (edited)")
         } else {
-            time
+            plain_time
         };
+        let short = grouped.then(|| short_time(&message.created_at));
         let mentioned = mentions::mentions_me(
             &message.content.mentions,
             &message.author.id,
@@ -8571,12 +8718,13 @@ impl CaperApp {
                             }
                         });
                 }
-                let (timestamp, pill) = message_row(
+                let (timestamp, body) = message_row(
                     ui,
                     &message.author.name,
                     message.author.avatar_id,
                     &time,
                     message.author.is_guest,
+                    short.as_deref(),
                     |ui| {
                         message_body(
                             ui,
@@ -8595,12 +8743,17 @@ impl CaperApp {
                                 );
                                 format!("Open profile for {name}")
                             },
+                            grouped && edited,
                         )
                     },
                 );
-                if message.forward.is_none() && message.revision > 1 {
+                // The header's time, or a grouped row's inline marker.
+                if message.forward.is_none()
+                    && edited
+                    && let Some(target) = timestamp.or(body.edited)
+                {
                     let marker = ui.interact(
-                        timestamp,
+                        target,
                         ui.id().with(("edit-history", &message.id)),
                         egui::Sense::click(),
                     );
@@ -8615,10 +8768,11 @@ impl CaperApp {
                         self.open_edit_history(message);
                     }
                 }
-                pill
+                body
             });
         let message_rect = shown.response.rect;
-        if let Some(pill) = shown.inner {
+        let body = shown.inner;
+        if let Some(pill) = body.pill {
             // Opening another pill replaces the card.
             self.mention_card = Some(MentionCard {
                 pill,
@@ -8631,13 +8785,16 @@ impl CaperApp {
         }
         if let Some(token) = self.token.clone() {
             // Hover only: sensing clicks here, above the row, would swallow
-            // clicks inside it (the edited marker). Right-clicks still open it.
+            // clicks inside it (the edited marker). Right-clicks still open it,
+            // except on a link, which belongs to the link.
             let row = ui.interact(
                 message_rect,
                 ui.id().with((&message.id, "forward-context")),
                 egui::Sense::hover(),
             );
-            let opened = row.contains_pointer() && ui.input(|i| i.pointer.secondary_clicked());
+            let opened = row.contains_pointer()
+                && !body.link_hovered
+                && ui.input(|i| i.pointer.secondary_clicked());
             egui::Popup::menu(&row)
                 .open_memory(opened.then_some(egui::SetOpenCommand::Bool(true)))
                 .at_pointer_fixed()
@@ -8756,6 +8913,27 @@ impl CaperApp {
                     || more.has_focus()
                     || reply.as_ref().is_some_and(|reply| reply.has_focus());
                 if visible {
+                    // Web's bordered surface buttons: grouped rows have no
+                    // header line, so the strip can sit over their text.
+                    for button in [reply.as_ref(), Some(&emoji), Some(&more)]
+                        .into_iter()
+                        .flatten()
+                    {
+                        ui.painter().rect(
+                            button.rect,
+                            8.0,
+                            SURFACE,
+                            Stroke::new(
+                                1.0,
+                                if button.hovered() || button.has_focus() {
+                                    TERRACOTTA
+                                } else {
+                                    BORDER
+                                },
+                            ),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
                     if let Some(reply) = &reply {
                         paint_icon(ui.painter(), reply.rect.shrink(5.0), NavIcon::Speech, MUTED);
                     }
@@ -9050,7 +9228,7 @@ impl CaperApp {
                                         .inner_margin(egui::Margin::symmetric(0, 8))
                                         .show(ui, |ui| {
                                             ui.spacing_mut().item_spacing.y = 0.0;
-                                            self.message_in(ui, message, false, true);
+                                            self.message_in(ui, message, false, true, false);
                                             egui::Frame::new()
                                                 .inner_margin(egui::Margin {
                                                     left: 62,
@@ -9799,6 +9977,16 @@ impl CaperApp {
             Dialog::Block { account, .. } => {
                 leave_title.get_or_insert(format!("Block {}?", account.display_name))
             }
+            Dialog::RemoveMember {
+                channel,
+                name,
+                place,
+                ..
+            } => leave_title.get_or_insert(if channel.is_some() {
+                format!("Remove {name} from #{place}?")
+            } else {
+                format!("Remove {name}?")
+            }),
         };
         context
             .layer_painter(egui::LayerId::new(
@@ -9831,7 +10019,10 @@ impl CaperApp {
             560.0
         } else if matches!(
             dialog,
-            Dialog::ConfirmDelete { .. } | Dialog::LeaveSpace { .. } | Dialog::Block { .. }
+            Dialog::ConfirmDelete { .. }
+                | Dialog::LeaveSpace { .. }
+                | Dialog::Block { .. }
+                | Dialog::RemoveMember { .. }
         ) {
             300.0
         } else {
@@ -9839,13 +10030,15 @@ impl CaperApp {
         };
         let available = context.viewport_rect().size() - egui::vec2(32.0, 32.0);
         let return_to = match &dialog {
-            Dialog::ConfirmDelete { channel, .. } => Some(
+            Dialog::ConfirmDelete { channel, .. } | Dialog::RemoveMember { channel, .. } => Some(
                 channel
                     .clone()
                     .map_or(Dialog::ManageSpace, Dialog::ManageChannel),
             ),
             _ => None,
         };
+        // A member removal in flight can't be cancelled or closed.
+        let removing = self.loading && matches!(dialog, Dialog::RemoveMember { .. });
         // These requests navigate when they finish, so their dialogs stay open
         // (Cancel, close, Escape and backdrop do nothing) until then.
         let hold_while_loading = return_to.is_some()
@@ -9902,15 +10095,17 @@ impl CaperApp {
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::TOP),
                                         |ui| {
-                                            if drawn_icon_button(
-                                                ui,
-                                                NavIcon::Close,
-                                                &format!("Close {title}"),
-                                            )
-                                            .clicked()
-                                            {
-                                                close = true;
-                                            }
+                                            ui.add_enabled_ui(!removing, |ui| {
+                                                if drawn_icon_button(
+                                                    ui,
+                                                    NavIcon::Close,
+                                                    &format!("Close {title}"),
+                                                )
+                                                .clicked()
+                                                {
+                                                    close = true;
+                                                }
+                                            });
                                         },
                                     );
                                 });
@@ -10011,6 +10206,25 @@ impl CaperApp {
                                                 if let Some(error) = &self.block_error {
                                                     ui.colored_label(ERROR, error);
                                                 }
+                                            }
+                                            Dialog::RemoveMember { space, channel, member, place, .. } => {
+                                                ui.label(if channel.is_some() {
+                                                    "They’ll lose access to this private channel. You can add them again later.".to_owned()
+                                                } else {
+                                                    format!("They’ll lose access to {place} and its channels. You can invite them again later.")
+                                                });
+                                                ui.add_space(16.0);
+                                                ui.horizontal(|ui| {
+                                                    let cancel = ui.add_enabled(!self.loading, egui::Button::new("Cancel"));
+                                                    if self.focus_dialog_field {
+                                                        cancel.request_focus();
+                                                    }
+                                                    if cancel.clicked() { close = true; }
+                                                    let remove = ui.add_enabled(!self.loading, egui::Button::new(RichText::new(if self.loading { "Removing…" } else { "Remove" }).color(ERROR)));
+                                                    if remove.clicked() {
+                                                        self.admin(AdminOperation::RemoveMember { space, channel, member });
+                                                    }
+                                                });
                                             }
                                             Dialog::StartDirect => {
                                                 ui.label("Enter an exact username.");
@@ -10840,10 +11054,25 @@ impl CaperApp {
                                     .clicked()
                                 && let Some(space) = self.selected_space.clone()
                             {
-                                self.admin(AdminOperation::RemoveMember {
+                                // Confirm first; "Cancel invite" stays one click.
+                                let place = match &channel {
+                                    Some(id) => self.saved_channel(id).map_or_else(
+                                        || "this channel".to_owned(),
+                                        |(name, _)| name,
+                                    ),
+                                    None => self
+                                        .detail
+                                        .as_ref()
+                                        .map_or("this space", |detail| detail.space.name.as_str())
+                                        .to_owned(),
+                                };
+                                self.error = None;
+                                self.dialog = Some(Dialog::RemoveMember {
                                     space,
                                     channel: channel.clone(),
                                     member: member.id.clone(),
+                                    name: member.display_name.clone(),
+                                    place,
                                 });
                             }
                         });
@@ -10965,6 +11194,23 @@ fn clean_sign_in_code(code: &mut String) {
     code.make_ascii_uppercase();
     code.retain(|character| "ABCDEFGHJKMNPQRSTWXYZ23456789".contains(character));
     code.truncate(6);
+}
+
+/// How long "Resend code" still waits, `elapsed` after the latest code.
+fn resend_wait(elapsed: Duration) -> Option<Duration> {
+    RESEND_COOLDOWN
+        .checked_sub(elapsed)
+        .filter(|wait| !wait.is_zero())
+}
+
+/// "Resend code in 0:42" (whole seconds rounded up), and how long until the
+/// shown second changes.
+fn resend_countdown(wait: Duration) -> (String, Duration) {
+    let seconds = wait.as_secs() + u64::from(wait.subsec_nanos() > 0);
+    (
+        format!("Resend code in {}:{:02}", seconds / 60, seconds % 60),
+        wait.saturating_sub(Duration::from_secs(seconds.saturating_sub(1))),
+    )
 }
 
 fn login_error_frame(ui: &mut egui::Ui, error: &str) {
@@ -11417,20 +11663,48 @@ fn users_button(ui: &mut egui::Ui, active: bool) -> egui::Response {
     })
 }
 
+/// A message row: avatar, then the name and time above the body. A grouped
+/// row (`grouped` is its short time, like "9:42") continues the row above
+/// instead: no avatar or header, 2px top padding, and the avatar column stays
+/// empty so the text lines up, showing the short time while hovered. Screen
+/// readers still get the author and `time` there.
+///
+/// Returns the header timestamp's rect (the edit-history target; `None` for
+/// grouped rows) and the body's result.
 fn message_row<R>(
     ui: &mut egui::Ui,
     author: &str,
     avatar_id: Option<i32>,
     time: &str,
     guest: bool,
+    grouped: Option<&str>,
     body: impl FnOnce(&mut egui::Ui) -> R,
-) -> (egui::Rect, R) {
-    // The timestamp's rect (the edit-history target) and the body's result.
-    egui::Frame::new()
-        .inner_margin(egui::Margin::symmetric(18, 10))
+) -> (Option<egui::Rect>, R) {
+    let shown = egui::Frame::new()
+        .inner_margin(egui::Margin {
+            left: 18,
+            right: 18,
+            top: if grouped.is_some() { 2 } else { 10 },
+            bottom: 10,
+        })
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(10.0, 4.0);
             ui.horizontal_top(|ui| {
+                if grouped.is_some() {
+                    let line =
+                        ui.fonts_mut(|fonts| fonts.row_height(&egui::FontId::proportional(14.0)));
+                    let (column, response) =
+                        ui.allocate_exact_size(egui::vec2(34.0, line), egui::Sense::hover());
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Label,
+                            true,
+                            format!("{author} {time}"),
+                        )
+                    });
+                    let result = ui.vertical(body).inner;
+                    return (Err(column), result);
+                }
                 avatar(ui, author, avatar_id, 34.0, false);
                 ui.vertical(|ui| {
                     let timestamp = ui
@@ -11442,36 +11716,127 @@ fn message_row<R>(
                             ui.label(RichText::new(time).size(10.0).color(MUTED)).rect
                         })
                         .inner;
-                    (timestamp, body(ui))
+                    (Ok(timestamp), body(ui))
                 })
                 .inner
             })
             .inner
-        })
-        .inner
+        });
+    let (head, result) = shown.inner;
+    match head {
+        Ok(timestamp) => (Some(timestamp), result),
+        Err(column) => {
+            if let Some(short) = grouped
+                && ui.rect_contains_pointer(shown.response.rect)
+            {
+                ui.painter().text(
+                    column.center(),
+                    egui::Align2::CENTER_CENTER,
+                    short,
+                    egui::FontId::proportional(10.0),
+                    MUTED,
+                );
+            }
+            (None, result)
+        }
+    }
 }
 
-/// Message text with resolved mentions drawn as pills: one weight bolder,
-/// primary text color and a terracotta background (24%, or 32% while hovered
-/// or focused) with 2px side padding. egui `LayoutJob` backgrounds are plain
-/// rectangles, so pills have square corners rather than the 4px corners other
-/// clients draw.
-///
-/// The text stays one selectable label, so wrapping and drag-selection are
-/// unchanged. Person pills get click targets on top of it from the laid-out
-/// glyphs, one per wrapped row; only the first takes keyboard focus. The
-/// hover/focus state of the last pass picks each pill's fill.
+/// What a message body reports back to its row.
+#[derive(Default)]
+struct Body {
+    /// A person pill that was clicked or activated with Enter/Space.
+    pill: Option<PillClick>,
+    /// Where a grouped row's inline "(edited)" marker was drawn.
+    edited: Option<egui::Rect>,
+    /// The pointer is over a link, so the row's own menu stays closed.
+    link_hovered: bool,
+}
+
+/// One styled run of message text, by UTF-8 byte range.
+#[derive(Debug, PartialEq, Eq)]
+enum Run {
+    Plain(std::ops::Range<usize>),
+    /// The index of the resolved mention pill drawn here.
+    Pill(std::ops::Range<usize>, usize),
+    Link(std::ops::Range<usize>, String),
+}
+
+/// Message text split for drawing: resolved mentions first, then links found
+/// on the plain runs between them (`links::segments`, kept separate so a
+/// future Markdown renderer can reuse it for bare URLs).
+fn message_runs(text: &str, pills: &[std::ops::Range<usize>]) -> Vec<Run> {
+    let plain = |runs: &mut Vec<Run>, start: usize, end: usize| {
+        let mut offset = start;
+        for segment in links::segments(&text[start..end]) {
+            let range = offset..offset + segment.text.len();
+            offset = range.end;
+            runs.push(match segment.href {
+                Some(href) => Run::Link(range, href),
+                None => Run::Plain(range),
+            });
+        }
+    };
+    let mut runs = Vec::new();
+    let mut written = 0;
+    for (index, range) in pills.iter().enumerate() {
+        plain(&mut runs, written, range.start);
+        runs.push(Run::Pill(range.clone(), index));
+        written = range.end;
+    }
+    plain(&mut runs, written, text.len());
+    runs
+}
+
+/// Message text in the 14px message style; see `rich_text`.
 fn message_body(
     ui: &mut egui::Ui,
     message: &str,
     text: &str,
     mentions: &[model::Mention],
     describe: impl Fn(&model::Mention) -> String,
-) -> Option<PillClick> {
+    edited: bool,
+) -> Body {
+    let plain = egui::TextFormat::simple(egui::FontId::proportional(14.0), MESSAGE_TEXT);
+    rich_text(ui, message, text, plain, mentions, describe, edited)
+}
+
+/// A forwarded original's text: the card's usual label, with clickable links.
+fn linked_text(ui: &mut egui::Ui, message: &str, text: &str) {
+    let plain = egui::TextFormat::simple(egui::TextStyle::Body.resolve(ui.style()), TEXT);
+    rich_text(ui, message, text, plain, &[], |_| String::new(), false);
+}
+
+/// Message text with resolved mentions drawn as pills and links drawn
+/// terracotta-bright and underlined. Pills are one weight bolder, primary
+/// text color and a terracotta background (24%, or 32% while hovered or
+/// focused) with 2px side padding. egui `LayoutJob` backgrounds are plain
+/// rectangles, so pills have square corners rather than the 4px corners other
+/// clients draw.
+///
+/// The text stays one selectable label, so wrapping and drag-selection are
+/// unchanged. Person pills and links get click targets on top of it from the
+/// laid-out glyphs, one per wrapped row; only the first takes keyboard focus.
+/// The hover/focus state of the last pass picks each pill's fill. A link opens
+/// in the system browser and takes the click, so the row does nothing else.
+///
+/// `edited` adds a grouped row's "(edited)" marker right after the text.
+fn rich_text(
+    ui: &mut egui::Ui,
+    message: &str,
+    text: &str,
+    plain: egui::TextFormat,
+    mentions: &[model::Mention],
+    describe: impl Fn(&model::Mention) -> String,
+    edited: bool,
+) -> Body {
     let pills = mentions::highlights(text, mentions);
-    if pills.is_empty() {
-        ui.label(RichText::new(text).size(14.0).color(MESSAGE_TEXT));
-        return None;
+    let ranges: Vec<_> = pills.iter().map(|(range, _)| range.clone()).collect();
+    let runs = message_runs(text, &ranges);
+    let linked = runs.iter().any(|run| matches!(run, Run::Link(..)));
+    if pills.is_empty() && !linked && !edited {
+        ui.label(RichText::new(text).font(plain.font_id).color(plain.color));
+        return Body::default();
     }
     let ids: Vec<_> = (0..pills.len())
         .map(|index| ui.make_persistent_id(("mention-pill", message, index)))
@@ -11480,27 +11845,34 @@ fn message_body(
         .iter()
         .map(|id| ui.data(|data| data.get_temp::<bool>(*id)).unwrap_or(false))
         .collect();
-    let plain = egui::TextFormat::simple(egui::FontId::proportional(14.0), MESSAGE_TEXT);
     let pill = |hot: bool| egui::TextFormat {
-        font_id: egui::FontId::new(14.0, egui::FontFamily::Name("Satoshi Medium".into())),
+        font_id: egui::FontId::new(
+            plain.font_id.size,
+            egui::FontFamily::Name("Satoshi Medium".into()),
+        ),
         color: TEXT,
         background: TERRACOTTA.gamma_multiply(if hot { 0.32 } else { 0.24 }),
         // Grow the background into the 2px gaps left on either side.
         expand_bg: 2.0,
         ..Default::default()
     };
+    let link = egui::TextFormat {
+        color: TERRACOTTA_BRIGHT,
+        underline: Stroke::new(1.0, TERRACOTTA_BRIGHT),
+        ..plain.clone()
+    };
     let mut job = egui::text::LayoutJob::default();
-    let mut written = 0;
-    for ((range, _), hot) in pills.iter().zip(&hot) {
-        if range.start > written {
-            let gap = if written == 0 { 0.0 } else { 2.0 };
-            job.append(&text[written..range.start], gap, plain.clone());
-        }
-        job.append(&text[range.clone()], 2.0, pill(*hot));
-        written = range.end;
-    }
-    if written < text.len() {
-        job.append(&text[written..], 2.0, plain);
+    let mut after_pill = false;
+    for run in &runs {
+        let (range, format, is_pill) = match run {
+            Run::Plain(range) => (range, plain.clone(), false),
+            Run::Link(range, _) => (range, link.clone(), false),
+            Run::Pill(range, index) => (range, pill(hot[*index]), true),
+        };
+        // Pills keep 2px on either side for their background.
+        let gap = if is_pill || after_pill { 2.0 } else { 0.0 };
+        job.append(&text[range.clone()], gap, format);
+        after_pill = is_pill;
     }
     let (position, galley, response) = egui::Label::new(job).layout_in_ui(ui);
     response.widget_info(|| {
@@ -11516,14 +11888,19 @@ fn message_body(
             Stroke::NONE,
         );
     }
-    let mut clicked = None;
+    let characters = |range: &std::ops::Range<usize>| {
+        text[..range.start].chars().count()..text[..range.end].chars().count()
+    };
+    let mut body = Body::default();
     for (((range, entry), id), was_hot) in pills.iter().zip(&ids).zip(&hot) {
         if entry.kind != "user" {
             continue;
         }
-        let characters = text[..range.start].chars().count()..text[..range.end].chars().count();
         let mut is_hot = false;
-        for (row, rect) in pill_rects(&galley, characters).into_iter().enumerate() {
+        for (row, rect) in pill_rects(&galley, characters(range))
+            .into_iter()
+            .enumerate()
+        {
             let rect = rect.translate(position.to_vec2()).expand(2.0);
             let (piece, sense) = if row == 0 {
                 (*id, egui::Sense::click())
@@ -11540,7 +11917,7 @@ fn message_body(
             }
             is_hot |= target.hovered() || target.has_focus();
             if target.clicked() {
-                clicked = Some(PillClick {
+                body.pill = Some(PillClick {
                     id: *id,
                     rect,
                     entry: (*entry).clone(),
@@ -11552,7 +11929,68 @@ fn message_body(
             ui.ctx().request_repaint();
         }
     }
-    clicked
+    let links = runs.iter().filter_map(|run| match run {
+        Run::Link(range, href) => Some((range, href)),
+        _ => None,
+    });
+    for (index, (range, href)) in links.enumerate() {
+        let id = ui.make_persistent_id(("message-link", message, index));
+        for (row, rect) in pill_rects(&galley, characters(range))
+            .into_iter()
+            .enumerate()
+        {
+            let rect = rect.translate(position.to_vec2());
+            let (piece, sense) = if row == 0 {
+                (id, egui::Sense::click())
+            } else {
+                (id.with(row), egui::Sense::CLICK)
+            };
+            let target = ui
+                .interact(rect, piece, sense)
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            if row == 0 {
+                target.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Link, true, &text[range.clone()])
+                });
+            }
+            if target.has_focus() {
+                ui.painter().rect_stroke(
+                    rect.expand(1.0),
+                    2.0,
+                    Stroke::new(1.0, TERRACOTTA_BRIGHT),
+                    egui::StrokeKind::Outside,
+                );
+            }
+            body.link_hovered |= target.hovered();
+            if target.clicked() {
+                ui.ctx().open_url(egui::OpenUrl::new_tab(href));
+            }
+        }
+    }
+    if edited {
+        let marker =
+            ui.painter()
+                .layout_no_wrap("(edited)".into(), egui::FontId::proportional(10.0), MUTED);
+        let size = marker.size();
+        // Right after the last line when it fits, else on its own line.
+        let rect = galley
+            .rows
+            .last()
+            .map(|row| row.rect().translate(position.to_vec2()))
+            .filter(|row| row.right() + 4.0 + size.x <= ui.max_rect().right())
+            .map_or_else(
+                || ui.allocate_exact_size(size, egui::Sense::hover()).0,
+                |row| {
+                    egui::Rect::from_min_size(
+                        egui::pos2(row.right() + 4.0, row.center().y - size.y / 2.0),
+                        size,
+                    )
+                },
+            );
+        ui.painter().galley(rect.min, marker, MUTED);
+        body.edited = Some(rect);
+    }
+    body
 }
 
 /// Galley-relative bounds of the characters in `range`, one rect per row.
@@ -11815,6 +12253,14 @@ fn take_date_divider(previous: &mut Option<String>, date: &str) -> bool {
 
 fn display_time(timestamp: &str) -> String {
     timestamp_parts(timestamp, &Local).map_or_else(|| timestamp.to_owned(), |parts| parts.1)
+}
+
+/// A grouped row's hover time, like "9:42", without AM/PM.
+fn short_time(timestamp: &str) -> String {
+    DateTime::parse_from_rfc3339(timestamp).map_or_else(
+        |_| String::new(),
+        |date| date.with_timezone(&Local).format("%-I:%M").to_string(),
+    )
 }
 
 fn configure(context: &egui::Context) {
@@ -12367,10 +12813,11 @@ fn main() -> eframe::Result {
 mod tests {
     use super::{
         AccountOperation, CaperApp, ComposerToken, ConnectionReport, Dialog, GatewayEvent,
-        NavigationTarget, PendingReaction, PendingSend, Phase, SelfDirectTarget, Suggestion,
-        TERRACOTTA, TEXT, endpoint, media, member_page_ids, normalize_channel,
-        permanent_send_rejection, pill_rects, projected_reactions, take_date_divider,
-        timestamp_parts, voice,
+        MAX_RESENDS, MESSAGE_TEXT, NavigationTarget, PendingReaction, PendingSend, Phase,
+        RESEND_COOLDOWN, Run, SelfDirectTarget, Suggestion, TERRACOTTA, TERRACOTTA_BRIGHT, TEXT,
+        display_time, endpoint, media, member_page_ids, message_runs, normalize_channel,
+        permanent_send_rejection, pill_rects, projected_reactions, resend_countdown, resend_wait,
+        short_time, take_date_divider, timestamp_parts, voice,
     };
     use crate::{mentions, navigation};
     use std::time::{Duration, Instant};
@@ -18009,6 +18456,591 @@ mod tests {
         );
         assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
             egui::epaint::Shape::Rect(rect) if rect.fill == TERRACOTTA && rect.rect.width() == 2.0)));
+    }
+
+    /// The format of `token`'s run inside the drawn `text`.
+    fn section_format(output: &egui::FullOutput, text: &str, token: &str) -> egui::TextFormat {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(shape) if shape.galley.job.text == text => shape
+                    .galley
+                    .job
+                    .sections
+                    .iter()
+                    .find(|section| &text[section.byte_range.clone()] == token)
+                    .map(|section| section.format.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{token} is not its own run in {text}"))
+    }
+
+    fn opened_url(output: &egui::FullOutput) -> Option<&str> {
+        output
+            .platform_output
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                egui::OutputCommand::OpenUrl(url) => Some(url.url.as_str()),
+                _ => None,
+            })
+    }
+
+    #[test]
+    fn mentions_split_first_and_links_are_found_only_between_them() {
+        let text = "hi @alex: https://example.com/@alex (www.caper.example)";
+        assert_eq!(
+            message_runs(text, std::slice::from_ref(&(3..8))),
+            [
+                Run::Plain(0..3),
+                Run::Pill(3..8, 0),
+                Run::Plain(8..10),
+                Run::Link(10..35, "https://example.com/@alex".into()),
+                Run::Plain(35..37),
+                Run::Link(37..54, "https://www.caper.example".into()),
+                Run::Plain(54..55),
+            ]
+        );
+        // A pill never becomes part of a link, even with a URL-like name.
+        assert_eq!(
+            message_runs("@www.a.b", std::slice::from_ref(&(0..4))),
+            [Run::Pill(0..4, 0), Run::Plain(4..8)]
+        );
+        assert!(message_runs("", &[]).is_empty());
+    }
+
+    #[test]
+    fn message_links_open_in_the_browser_and_keep_the_row_menu_off() {
+        const LINKED: &str = "Notes at www.example.com/notes, and (https://caper.example/a_(b)).";
+        const ORIGINAL: &str = "Forwarded from https://example.com/original";
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        // Signed in, so rows carry the right-click forward menu.
+        app.token = Some("account-token".into());
+        let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+        messages[3].content.text = LINKED.into();
+        let mut original = messages[1].clone();
+        original.id = "fixture-original".into();
+        original.content.text = ORIGINAL.into();
+        messages[0].forward = Some(Box::new(crate::model::MessageForward {
+            message: Some(original),
+            seq: "4".into(),
+        }));
+        app.timeline.reset(messages, "4").unwrap();
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        for token in ["www.example.com/notes", "https://caper.example/a_(b)"] {
+            let format = section_format(&output, LINKED, token);
+            assert_eq!(format.color, TERRACOTTA_BRIGHT, "{token}");
+            assert_eq!(format.underline, egui::Stroke::new(1.0, TERRACOTTA_BRIGHT));
+        }
+        let plain = section_format(&output, LINKED, "Notes at ");
+        assert_eq!(plain.color, MESSAGE_TEXT);
+        assert_eq!(plain.underline, egui::Stroke::NONE);
+        assert_eq!(
+            section_format(&output, LINKED, ").").color,
+            MESSAGE_TEXT,
+            "trailing punctuation stays text"
+        );
+        assert_eq!(
+            section_format(&output, ORIGINAL, "https://example.com/original").color,
+            TERRACOTTA_BRIGHT,
+            "forwarded originals link too"
+        );
+
+        let link = pill_center(&output, LINKED, "www.example.com/notes");
+        let hovered = render(&mut app, &context, vec![egui::Event::PointerMoved(link)]);
+        assert_eq!(
+            hovered.platform_output.cursor_icon,
+            egui::CursorIcon::PointingHand
+        );
+        let clicked = click_at(&mut app, &context, link);
+        assert_eq!(opened_url(&clicked), Some("https://www.example.com/notes"));
+
+        // A right-click on a link belongs to the link, not the row's menu.
+        let right_click = |app: &mut CaperApp, pos: egui::Pos2| {
+            for pressed in [true, false] {
+                render(
+                    app,
+                    &context,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Secondary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            }
+            // New egui areas spend their first pass measuring, invisibly.
+            render(app, &context, vec![]);
+            render(app, &context, vec![])
+        };
+        let output = right_click(&mut app, link);
+        assert!(!texts(&output).contains(&"Forward message"));
+        let output = right_click(&mut app, pill_center(&output, LINKED, "Notes at "));
+        assert!(
+            texts(&output).contains(&"Forward message"),
+            "the row's text still offers forwarding"
+        );
+    }
+
+    #[test]
+    fn consecutive_rows_share_one_header_and_show_time_on_hover() {
+        const FIRST: &str = "The same conversation should feel familiar on every platform.";
+        const SECOND: &str =
+            "Keep the space rail, channel list, and audio controls in their usual places.";
+        const OTHER: &str = "Agreed. Let’s check the narrow layout and the management dialogs too.";
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        // Maya's two rows are a minute apart; the second was edited.
+        let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+        let created = messages[2].created_at.clone();
+        messages[2].revision = 2;
+        messages[2].edited_at = Some("2026-09-23T09:50:00Z".into());
+        messages[2].edit_seq = Some("4".into());
+        app.timeline.reset(messages, "4").unwrap();
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let first = text_position(&output, FIRST);
+        let second = text_position(&output, SECOND);
+        let other = text_position(&output, OTHER);
+        assert_eq!(
+            first.x, second.x,
+            "grouped text lines up with the row above"
+        );
+        let headers = |output: &egui::FullOutput, label: &str| {
+            output
+                .shapes
+                .iter()
+                .filter(|shape| {
+                    matches!(&shape.shape, egui::Shape::Text(text)
+                    if text.galley.job.text == label && (text.pos.x + 4.0 - first.x).abs() < 1.0)
+                })
+                .count()
+        };
+        assert_eq!(headers(&output, "Maya"), 1, "one header for Maya's run");
+        assert_eq!(headers(&output, "Alex"), 1, "another author keeps a header");
+        assert!(
+            second.y - first.y < other.y - second.y,
+            "the run reads as one block"
+        );
+        let full_time = display_time(&created);
+        assert!(!shows(&output, &full_time) && !shows(&output, &format!("{full_time} (edited)")));
+        // "(edited)" follows the text on its line, and opens the history.
+        let marker = text_position(&output, "(edited)");
+        assert!(marker.x > second.x && (marker.y - second.y).abs() < 12.0);
+        // Screen readers still hear who and when (egui labels carry a value).
+        let spoken = format!("Maya {full_time}");
+        assert!(
+            output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .any(|(_, node)| node.value() == Some(spoken.as_str()))
+        );
+
+        let short = short_time(&created);
+        assert!(!shows(&output, &short), "the short time waits for hover");
+        render(&mut app, &context, vec![egui::Event::PointerMoved(second)]);
+        let hovered = render(&mut app, &context, vec![]);
+        let time = text_position(&hovered, &short);
+        assert!(
+            time.x < second.x && (time.y - second.y).abs() < 12.0,
+            "in the empty avatar column, beside the text"
+        );
+        click(&mut app, &context, marker);
+        assert!(app.edit_history.is_some());
+    }
+
+    #[test]
+    fn thread_replies_group_but_never_with_the_root_or_under_a_jump_target() {
+        const FIRST: &str =
+            "Keep the space rail, channel list, and audio controls in their usual places.";
+        const SECOND: &str =
+            "Agreed. Let’s check the narrow layout and the management dialogs too.";
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        // Maya's root at 9:41, then her replies at 9:42 and 9:43.
+        let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+        let root = messages[1].id.clone();
+        let first_reply = messages[2].id.clone();
+        messages[2].thread_root_id = Some(root.clone());
+        messages[3].thread_root_id = Some(root.clone());
+        messages[3].author = messages[1].author.clone();
+        app.timeline.reset(messages, "4").unwrap();
+        app.open_thread(root);
+        // The thread panel is on the right; take the rightmost copy.
+        let rightmost = |output: &egui::FullOutput, label: &str| {
+            output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == label => Some(text.pos),
+                    _ => None,
+                })
+                .max_by(|left, right| left.x.total_cmp(&right.x))
+                .unwrap_or_else(|| panic!("missing {label}"))
+        };
+        let headers = |output: &egui::FullOutput| {
+            let column = rightmost(output, FIRST).x;
+            output
+                .shapes
+                .iter()
+                .filter(|shape| {
+                    matches!(&shape.shape, egui::Shape::Text(text)
+                    if text.galley.job.text == "Maya" && (text.pos.x - column).abs() < 1.0)
+                })
+                .count()
+        };
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert_eq!(rightmost(&output, FIRST).x, rightmost(&output, SECOND).x);
+        assert_eq!(
+            headers(&output),
+            2,
+            "the root and the first reply keep their headers; the second groups"
+        );
+        app.focused_message = Some(first_reply);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert_eq!(headers(&output), 3, "nothing groups under a jump target");
+    }
+
+    #[test]
+    fn pending_own_messages_group_under_your_earlier_row() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+        let now = chrono::Utc::now();
+        let mine = messages[0].author.clone();
+        messages[3].author = mine.clone();
+        messages[3].created_at = (now - chrono::Duration::seconds(10)).to_rfc3339();
+        app.timeline.reset(messages, "4").unwrap();
+        app.session = Some(crate::model::ChatSession {
+            token: "fixture-token".into(),
+            author: mine.clone(),
+        });
+        let mut pending = PendingSend::prepare(None, "still sending");
+        pending.created_at = now.to_rfc3339();
+        app.pending = Some(pending);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            !shows(&output, "Now"),
+            "no second header for your own unsent message"
+        );
+        assert_eq!(
+            text_position(&output, "still sending").x,
+            text_position(
+                &output,
+                "Agreed. Let’s check the narrow layout and the management dialogs too."
+            )
+            .x
+        );
+    }
+
+    #[test]
+    fn resend_countdown_shows_minutes_and_seconds_rounded_up() {
+        assert_eq!(resend_wait(Duration::ZERO), Some(RESEND_COOLDOWN));
+        assert_eq!(resend_wait(RESEND_COOLDOWN), None);
+        assert_eq!(resend_wait(Duration::from_secs(90)), None);
+        let (label, changes) = resend_countdown(RESEND_COOLDOWN);
+        assert_eq!(
+            (label.as_str(), changes),
+            ("Resend code in 1:00", Duration::from_secs(1))
+        );
+        let (label, changes) = resend_countdown(Duration::from_millis(41_250));
+        assert_eq!(
+            (label.as_str(), changes),
+            ("Resend code in 0:42", Duration::from_millis(250))
+        );
+        assert_eq!(
+            resend_countdown(Duration::from_millis(1)).0,
+            "Resend code in 0:01"
+        );
+    }
+
+    #[test]
+    fn resend_code_waits_a_minute_then_sends_a_new_code_at_most_twice() {
+        let (base, seen) = account_server(vec![(
+            "POST /api/auth/email/request",
+            200,
+            r#"{"challengeId":"next-challenge"}"#,
+        )]);
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new(&base).unwrap(),
+            Some("signed-out"),
+        );
+        app.email = "fixture@example.test".into();
+        app.challenge = Some("first-challenge".into());
+        app.code = "ABC2".into();
+        app.code_sent_at = Some(Instant::now() - Duration::from_secs(18));
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let waiting = text_position(&output, "Resend code in 0:42");
+        click(&mut app, &context, waiting);
+        assert!(!app.loading, "disabled during the first minute");
+
+        for resend in 1..=MAX_RESENDS {
+            app.code_sent_at = Some(Instant::now() - RESEND_COOLDOWN);
+            let output = render(&mut app, &context, vec![]);
+            click(&mut app, &context, text_position(&output, "Resend code"));
+            assert!(app.loading);
+            receive_until(&mut app, |app| !app.loading);
+            assert_eq!(app.challenge.as_deref(), Some("next-challenge"));
+            assert!(app.code.is_empty(), "the old code is cleared");
+            assert_eq!(app.resends, resend);
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            assert!(shows(
+                &output,
+                "We sent a new code. Earlier codes no longer work."
+            ));
+            assert!(
+                context.memory(|memory| memory.has_focus(egui::Id::new("sign-in-code"))),
+                "focus stays in the code field"
+            );
+            if resend < MAX_RESENDS {
+                assert!(
+                    texts(&output).iter().any(|text| [
+                        "Resend code in 1:00",
+                        "Resend code in 0:59"
+                    ]
+                    .contains(text)),
+                    "each code restarts the wait"
+                );
+            }
+        }
+        assert_eq!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|line| *line
+                    == r#"POST /api/auth/email/request {"email":"fixture@example.test"}"#)
+                .count(),
+            usize::from(MAX_RESENDS)
+        );
+        app.code_sent_at = Some(Instant::now() - RESEND_COOLDOWN);
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            !texts(&output)
+                .iter()
+                .any(|text| text.starts_with("Resend code")),
+            "no third resend"
+        );
+        assert!(shows(
+            &output,
+            "Still nothing? Check your spam folder, or try again in 15 minutes."
+        ));
+
+        click(
+            &mut app,
+            &context,
+            text_position(&output, "Use a different email"),
+        );
+        assert!(app.challenge.is_none());
+        assert_eq!(app.resends, 0);
+        assert!(app.code_sent_at.is_none() && app.login_status.is_none());
+    }
+
+    #[test]
+    fn used_up_attempts_offer_only_email_me_a_new_code_which_counts_as_a_resend() {
+        let (base, _) = account_server(vec![(
+            "POST /api/auth/email/request",
+            200,
+            r#"{"challengeId":"next-challenge"}"#,
+        )]);
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new(&base).unwrap(),
+            Some("signed-out"),
+        );
+        app.email = "fixture@example.test".into();
+        app.challenge = Some("first-challenge".into());
+        app.attempts_remaining = Some(0);
+        app.code_sent_at = Some(Instant::now() - RESEND_COOLDOWN);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            !texts(&output)
+                .iter()
+                .any(|text| text.starts_with("Resend code"))
+        );
+        click(
+            &mut app,
+            &context,
+            text_position(&output, "Email me a new code"),
+        );
+        receive_until(&mut app, |app| !app.loading);
+        assert_eq!(app.resends, 1);
+        assert_eq!(app.attempts_remaining, None);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            texts(&output)
+                .iter()
+                .any(|text| ["Resend code in 1:00", "Resend code in 0:59"].contains(text)),
+            "it starts the wait"
+        );
+
+        // With both resends used, the button is hidden.
+        app.attempts_remaining = Some(0);
+        app.resends = MAX_RESENDS;
+        // At the limit the API would send nothing, so the button is hidden (as on web).
+        let output = render(&mut app, &context, vec![]);
+        assert!(!shows(&output, "Email me a new code"));
+        assert!(!app.loading);
+        assert!(shows(
+            &output,
+            "Still nothing? Check your spam folder, or try again in 15 minutes."
+        ));
+    }
+
+    #[test]
+    fn removing_a_member_asks_first_and_cancel_keeps_them() {
+        for (fixture, title, body) in [
+            (
+                "parity-admin",
+                "Remove Maya?",
+                "They’ll lose access to Fixture Studio and its channels. You can invite them again later.",
+            ),
+            (
+                "parity-channel",
+                "Remove Maya from #planning?",
+                "They’ll lose access to this private channel. You can add them again later.",
+            ),
+        ] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some(fixture),
+            );
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            // The owner has no Remove; the first belongs to Maya.
+            click(&mut app, &context, text_position(&output, "Remove"));
+            assert!(
+                matches!(&app.dialog, Some(Dialog::RemoveMember { member, .. }) if member == "fixture-maya"),
+                "{fixture}"
+            );
+            assert!(!app.loading, "opening the confirmation removes nobody");
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            assert!(
+                shows(&output, title),
+                "{fixture}: {:?}",
+                text_shapes(&output)
+            );
+            assert!(shows(&output, body), "{fixture}");
+            assert!(shows(&output, "Remove") && shows(&output, "Cancel"));
+            // Cancel has the initial focus, so Enter keeps the member.
+            render(&mut app, &context, press(egui::Key::Enter));
+            assert!(
+                matches!(
+                    app.dialog,
+                    Some(Dialog::ManageSpace | Dialog::ManageChannel(_))
+                ),
+                "{fixture}"
+            );
+            assert!(!app.loading);
+            assert!(
+                app.managed_members
+                    .iter()
+                    .any(|member| member.id == "fixture-maya")
+            );
+        }
+    }
+
+    #[test]
+    fn confirmed_removal_returns_to_settings_and_errors_stay_in_the_confirmation() {
+        for (fixture, route) in [
+            (
+                "parity-admin",
+                "DELETE /api/spaces/space0000001/members/fixture-maya",
+            ),
+            (
+                "parity-channel",
+                "DELETE /api/spaces/space0000001/channels/chan00000003/members/fixture-maya",
+            ),
+        ] {
+            for status in [200, 500] {
+                let (base, seen) = account_server(vec![(route, status, "{}")]);
+                let context = egui::Context::default();
+                let mut app = CaperApp::new(
+                    &context,
+                    crate::api::Api::new(&base).unwrap(),
+                    Some(fixture),
+                );
+                app.token = Some("account-token".into());
+                render(&mut app, &context, vec![]);
+                let output = render(&mut app, &context, vec![]);
+                click(&mut app, &context, text_position(&output, "Remove"));
+                render(&mut app, &context, vec![]);
+                let output = render(&mut app, &context, vec![]);
+                click(&mut app, &context, text_position(&output, "Remove"));
+                assert!(app.loading);
+                let output = render(&mut app, &context, vec![]);
+                assert!(shows(&output, "Removing…"));
+                // Nothing cancels a removal in flight.
+                render(&mut app, &context, press(egui::Key::Escape));
+                assert!(matches!(app.dialog, Some(Dialog::RemoveMember { .. })));
+                receive_until(&mut app, |app| !app.loading);
+                assert!(seen.lock().unwrap().iter().any(|line| line == route));
+                let kept = app
+                    .managed_members
+                    .iter()
+                    .any(|member| member.id == "fixture-maya");
+                if status == 200 {
+                    assert!(
+                        matches!(
+                            app.dialog,
+                            Some(Dialog::ManageSpace | Dialog::ManageChannel(_))
+                        ),
+                        "{fixture}: the settings dialog stays open"
+                    );
+                    assert!(!kept, "{fixture}: the member is gone");
+                } else {
+                    assert!(matches!(app.dialog, Some(Dialog::RemoveMember { .. })));
+                    assert!(kept);
+                    let error = app.error.clone().expect("an inline error");
+                    render(&mut app, &context, vec![]);
+                    let output = render(&mut app, &context, vec![]);
+                    assert!(
+                        shows(&output, &error),
+                        "{fixture}: {:?}",
+                        text_shapes(&output)
+                    );
+                }
+            }
+        }
     }
 
     #[test]

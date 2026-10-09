@@ -407,7 +407,7 @@ impl Forwarding {
 pub fn original(ui: &mut egui::Ui, message: &Message, textures: &mut crate::emoji::Textures) {
     ui.add_space(8.0);
     ui.label(RichText::new(&message.author.name).strong().size(13.0));
-    ui.label(&message.content.text);
+    crate::linked_text(ui, &message.id, &message.content.text);
     if message.edited_at.is_some() {
         ui.label(RichText::new("edited").size(10.0).color(crate::MUTED));
     }
