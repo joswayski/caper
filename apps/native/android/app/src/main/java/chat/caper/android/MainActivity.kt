@@ -286,7 +286,9 @@ internal data class VoiceJoinIntent(
             // Web opens a new private channel's Overview so people can be added.
             viewModel.createChannel(name, private) { created -> overlay = if (created.private) Overlay.ManageChannel(created) else null }
         } }
-        Overlay.StartDirect -> StartDirectDialog(state.busy, state.error, viewModel::clearError, { overlay = null }) { username -> viewModel.startDirect(username) { overlay = null } }
+        Overlay.StartDirect -> StartDirectDialog(state.busy, { overlay = null }) { username, failed ->
+            viewModel.startDirect(username, done = { overlay = null }, failed = failed)
+        }
         is Overlay.ManageChannel -> ManageChannelDialog(state, state.selectedSpace?.channels?.find { it.id == shown.channel.id } ?: shown.channel, viewModel) { overlay = null }
         is Overlay.LeaveChannel -> {
             val owner = state.selectedSpace?.space?.ownerId == state.account?.id
@@ -2472,19 +2474,29 @@ internal fun counterTone(count: Int): Color = when {
     }
 }
 
-@Composable private fun StartDirectDialog(busy: Boolean, serverError: String?, clearError: () -> Unit, close: () -> Unit, start: (String) -> Unit) {
+@Composable private fun StartDirectDialog(busy: Boolean, close: () -> Unit, start: (String, (String) -> Unit) -> Unit) {
     var username by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
-    var submitted by remember { mutableStateOf(false) }
     CaperDialog("New direct message", close, busy = busy) {
         val field = remember { FocusRequester() }
         LaunchedEffect(Unit) { runCatching { field.requestFocus() } }
         Text("Enter an account’s exact username.", color = TextMuted, fontSize = 12.sp)
-        OutlinedTextField(username, { username = normalizeUsername(it); error = null; if (submitted && serverError != null) clearError() }, label = { Text("Username") }, placeholder = { Text("username") },
+        OutlinedTextField(username, { username = normalizeUsername(it); error = null }, label = { Text("Username") }, placeholder = { Text("username") }, readOnly = busy,
             modifier = Modifier.fillMaxWidth().focusRequester(field), singleLine = true)
-        (error ?: serverError?.takeIf { submitted })?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
-        DialogActions(close, "Start conversation", busy, pendingLabel = "Opening…", canSubmit = username.isNotBlank()) {
-            if (!Regex("^[a-z0-9_]{3,32}$").matches(username)) error = "Enter an exact valid username." else { submitted = true; start(username) }
+        Box(Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+            error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton(close, enabled = !busy) { Text("Cancel") }; Spacer(Modifier.width(8.dp))
+            Button({
+                if (!Regex("^[a-z0-9_]{3,32}$").matches(username)) error = "Enter an exact valid username."
+                else { error = null; start(username) { error = it } }
+            }, enabled = !busy && username.isNotBlank(), shape = MaterialTheme.shapes.small) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text("Start conversation", Modifier.alpha(0f).clearAndSetSemantics {})
+                    Text(if (busy) "Opening…" else "Start conversation")
+                }
+            }
         }
     }
 }

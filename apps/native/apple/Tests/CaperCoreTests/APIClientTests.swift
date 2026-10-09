@@ -2135,6 +2135,35 @@ final class APIClientTests: XCTestCase {
     }
 
     @MainActor
+    func testDirectMessageCreationRefusalBelongsToCallerAndKeepsWorkspace() async throws {
+        let model = AppModel(api: client())
+        model.account = Account(id: "owner0000001", username: "owner", displayName: "Owner")
+        let existing = DirectMessageConversation(id: "dm0000000001", peer: DirectMessagePeer(id: "maya", username: "maya", displayName: "Maya"), lastSeq: "9", readSeq: "7")
+        model.directMessages = [existing]
+        model.selectedDirectMessageID = existing.id
+        model.error = "An unrelated workspace error."
+        for (code, message) in [
+            ("dm_not_accepted", "This person isn't accepting direct messages."),
+            ("dm_blocked", "You blocked this person. Unblock them to message them."),
+        ] {
+            MockURLProtocol.handler = { request in
+                XCTAssertEqual(request.url?.path, "/api/dms")
+                return (403, Data(#"{"error":"server wording","code":"\#(code)"}"#.utf8))
+            }
+            do {
+                _ = try await model.createDirectMessage(username: "jordan")
+                XCTFail("The dialog must receive the refusal")
+            } catch {
+                XCTAssertEqual(FriendlyError.message(for: error), message)
+            }
+            XCTAssertFalse(model.busy)
+            XCTAssertEqual(model.error, "An unrelated workspace error.", "The failure must never pass through sidebar state")
+            XCTAssertEqual(model.directMessages, [existing])
+            XCTAssertEqual(model.selectedDirectMessageID, existing.id)
+        }
+    }
+
+    @MainActor
     func testRequestsDeclineAndBlocksUpdateListsAndTimelines() async throws {
         let model = AppModel(api: client())
         model.account = Account(id: "owner0000001", username: "owner", displayName: "Owner")

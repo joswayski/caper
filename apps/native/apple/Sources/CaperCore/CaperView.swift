@@ -562,6 +562,7 @@ private struct WorkspaceView: View {
             guard sheet == nil, model.detail != nil else { return }
             if parityFixture == "manage-space" || parityFixture == "modal" { sheet = .manageSpace }
             else if parityFixture == "manage-channel", let channel = model.detail?.channels.first(where: { $0.private }) { sheet = .manageChannel(channel) }
+            else if parityFixture == "new-direct-message" { sheet = .newDirectMessage }
             else if parityFixture == "voice-roster" { CaperRuntime.showVoiceRosterPreview(model) }
         }
         #if os(iOS)
@@ -2989,13 +2990,11 @@ private struct MentionCardView: View {
     private func message() async {
         guard !opening, let username = person.username else { return }
         opening = true; error = nil
-        model.error = nil
-        let opened = await model.createDirectMessage(username: username)
-        opening = false
-        if opened { close(); return }
-        // Shown in the card, which stays open, rather than in the sidebar.
-        error = model.error ?? "Couldn’t open that conversation."
-        model.error = nil
+        defer { opening = false }
+        do {
+            if try await model.createDirectMessage(username: username) { close() }
+            else { error = "Couldn’t open that conversation." }
+        } catch { self.error = FriendlyError.message(for: error) }
     }
 }
 
@@ -4228,7 +4227,7 @@ private struct NewDirectMessageSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             SheetHeader(title: "New direct message", detail: "Enter an account’s exact username.", closeDisabled: pending, close: close)
-            TextField("Exact username", text: $username).textFieldStyle(.roundedBorder)
+            TextField("Exact username", text: Binding(get: { username }, set: { if !pending { username = $0 } })).textFieldStyle(.roundedBorder)
                 #if os(iOS)
                 .textInputAutocapitalization(.never)
                 #endif
@@ -4236,10 +4235,20 @@ private struct NewDirectMessageSheet: View {
                 .focused($usernameFocused)
                 .onChange(of: username) { _, _ in error = nil }
                 .accessibilityIdentifier("dm-username")
-            // In the sheet, not only in the sidebar behind it.
-            if let error { Text(error).font(CaperTheme.font(12)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)) }
-            HStack { Spacer(); Button(pending ? "Opening…" : "Start conversation", action: start)
-                .buttonStyle(VoiceJoinButton()).disabled(pending || username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+            Text(error ?? " ").font(CaperTheme.font(12)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51))
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+                .opacity(error == nil ? 0 : 1).accessibilityHidden(error == nil)
+                .accessibilityIdentifier("dm-create-error")
+            HStack {
+                Spacer()
+                Button(action: start) {
+                    Text("Start conversation").hidden().overlay { Text(pending ? "Opening…" : "Start conversation") }
+                }
+                .buttonStyle(VoiceJoinButton()).disabled(pending || username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityLabel(pending ? "Opening…" : "Start conversation")
+                .accessibilityIdentifier("dm-create-submit")
+            }
         }.padding(22).onAppear { usernameFocused = true }
             .interactiveDismissDisabled(pending).preference(key: DialogDismissDisabled.self, value: pending)
     }
@@ -4248,11 +4257,11 @@ private struct NewDirectMessageSheet: View {
         let submitted = username
         pending = true; error = nil
         Task {
-            let opened = await model.createDirectMessage(username: submitted)
-            pending = false
-            guard !opened else { close(); return }
-            // Shown here; the sidebar behind the sheet would repeat it after closing.
-            if let failure = model.error { error = failure; model.error = nil }
+            defer { pending = false }
+            do {
+                if try await model.createDirectMessage(username: submitted) { close() }
+                else { error = "Couldn’t open that conversation." }
+            } catch { self.error = FriendlyError.message(for: error) }
         }
     }
 }
