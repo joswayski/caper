@@ -186,6 +186,31 @@ public enum WorkspaceValidation {
         }) ? nil : "Username must be 3–32 lowercase letters, numbers, or underscores."
     }
 
+    /// Web's confirmation after inviting someone to a space or a private channel.
+    public static let invitationSent = "Invitation sent. They must accept before joining."
+
+    /// Web's check before inviting: someone already a member or already invited.
+    public static func inviteError(username: String, members: [Member], invited: [Member], channel: Bool) -> String? {
+        if members.contains(where: { $0.username == username }) {
+            return channel ? "This person already has access to this channel." : "This person is already in the space."
+        }
+        if invited.contains(where: { $0.username == username }) { return "This person already has a pending invitation." }
+        return nil
+    }
+
+    /// Web's wording for the server's member and invitation errors.
+    public static func memberMessage(_ error: Error) -> String {
+        guard let api = error as? APIError else { return error.localizedDescription }
+        switch api.message {
+        case "user not found": return "User not found. Check the username and try again."
+        case "user already in space": return "This person is already in the space."
+        case "user already in channel": return "This person already has access to this channel."
+        case "user already invited": return "This person already has a pending invitation."
+        case "invalid username": return "Use 3–32 lowercase letters, numbers, or underscores."
+        default: return api.message
+        }
+    }
+
     public static func spaceNameError(_ value: String) -> String? {
         let name = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if name.isEmpty { return "Enter a space name." }

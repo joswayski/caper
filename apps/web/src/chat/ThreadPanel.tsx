@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Send, X } from "lucide-react";
 import type { ChatClient, ChatViewState } from "./client.ts";
+import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
+import type { MentionCandidate } from "./mentions.ts";
 import { sequence, type ChatMessage } from "./types.ts";
 
 export default function ThreadPanel({
@@ -9,6 +11,8 @@ export default function ThreadPanel({
   channelName,
   direct = false,
   readOnly,
+  mentionPeople,
+  specialMentions,
   renderMessage,
   onClose,
 }: {
@@ -17,6 +21,9 @@ export default function ThreadPanel({
   channelName: string;
   direct?: boolean;
   readOnly: boolean;
+  /** People `@` can suggest, without the author; undefined until loaded. */
+  mentionPeople?: MentionCandidate[];
+  specialMentions: boolean;
   renderMessage: (index: number, message: ChatMessage, inThread: boolean) => ReactNode;
   onClose: () => void;
 }) {
@@ -50,6 +57,15 @@ export default function ThreadPanel({
     if (rootId) setDrafts((current) => ({ ...current, [rootId]: { ...draft, ...change } }));
     setValidation(undefined);
   };
+  const suggestions = useComposerSuggestions({
+    id: "chat-thread",
+    draft: draft.text,
+    input: composer,
+    people: mentionPeople,
+    specialMentions,
+    onInsert: (text) => update({ text }),
+    onTooLong: () => setValidation("Messages must be 4,000 characters or fewer."),
+  });
   useEffect(() => {
     setDrafts({});
   }, [state.channelId]);
@@ -333,6 +349,7 @@ export default function ThreadPanel({
               <label className="sr-only" htmlFor="chat-thread-reply">
                 Reply to thread
               </label>
+              {suggestions.popup}
               <textarea
                 ref={composer}
                 id="chat-thread-reply"
@@ -340,15 +357,26 @@ export default function ThreadPanel({
                 value={draft.text}
                 placeholder="Reply to thread…"
                 enterKeyHint="send"
+                aria-describedby="chat-thread-composer-hint"
+                {...suggestions.textarea}
                 disabled={state.phase !== "ready" || state.thread.loading}
-                onChange={(event) => update({ text: event.target.value })}
+                onChange={(event) => {
+                  update({ text: event.target.value });
+                  suggestions.change(event.target);
+                }}
+                onBlur={suggestions.blur}
                 onKeyDown={(event) => {
+                  if (suggestions.keyDown(event)) return;
                   if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                     event.preventDefault();
                     void submit();
                   }
                 }}
               />
+              <span id="chat-thread-composer-hint" className="sr-only">
+                Type : to find emoji or @ to mention someone. Up and Down choose; Enter or Tab inserts; Escape closes
+                suggestions. Enter to send. Shift+Enter for a new line.
+              </span>
               <div className="chat-thread-send-row">
                 <label>
                   <input

@@ -662,11 +662,12 @@ public final class VoiceClient {
         peer?.close()
         peer = nil; delegate = nil; microphone = nil
         remoteAudio = []; remoteAudioByMID = [:]; participantByMID = [:]
-        participantGains = [:]; locallyMutedParticipants = []
         token = nil; selfID = nil; subscribed = [:]; participants = []; sessionStartedAt = nil
         publishedMID = nil; snapshotRevisions = MonotonicRevision(); signalingOwner = nil
         channelID = nil
-        if !preservingContext { context = nil }
+        // An automatic reconnect rejoins the same call, where everyone else keeps
+        // their id: keep each person's volume and Mute for me, as web does.
+        if !preservingContext { context = nil; participantGains = [:]; locallyMutedParticipants = [] }
         #if os(iOS)
         removeAudioObservers()
         let audio = RTCAudioSession.sharedInstance()

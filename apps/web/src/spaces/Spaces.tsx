@@ -560,20 +560,21 @@ function LeaveSpaceDialog({
 function MemberManager({
   members,
   invitations,
+  channel = false,
   onCancel,
   onAdd,
   onRemove,
   pending,
-  kind,
   loading = false,
 }: {
   members: Member[];
   invitations?: Member[];
+  /** A private channel's grants rather than the space's members. */
+  channel?: boolean;
   onCancel?: (member: Member) => Promise<void>;
   onAdd: (username: string) => Promise<void>;
   onRemove: (member: Member) => Promise<void>;
   pending: boolean;
-  kind: "space" | "channel";
   loading?: boolean;
 }) {
   const [username, setUsername] = useState("");
@@ -595,9 +596,7 @@ function MemberManager({
           if (invalid) return setError(invalid);
           if (invitations && members.some((member) => member.username === username))
             return setError(
-              kind === "space"
-                ? "This person is already in the space."
-                : "This person already has access to this channel.",
+              channel ? "This person already has access to this channel." : "This person is already in the space.",
             );
           if (invitations?.some((member) => member.username === username))
             return setError("This person already has a pending invitation.");
@@ -799,7 +798,6 @@ function ManageSpaceDialog({
         </p>
       )}
       <MemberManager
-        kind="space"
         members={members}
         invitations={invitations}
         pending={pending}
@@ -934,10 +932,10 @@ function ManageChannelDialog({
       )}
       {channel.private && (
         <MemberManager
-          kind="channel"
           loading={!membersLoaded}
           members={members}
           invitations={invitations}
+          channel
           pending={pending}
           onAdd={async (username) =>
             run(async () => {

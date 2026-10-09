@@ -71,6 +71,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var foreground = false
     private var threadRequest = 0L
     private val threadPages = mutableMapOf<String, ThreadUi>()
+    /** Web/Apple: the channel last opened in each space, in memory; returning to the space reopens it. */
+    private val lastChannelBySpace = mutableMapOf<String, String>()
+    /** Web's membershipRevision: a background reconcile never applies a snapshot taken while a change here ran. */
+    private var membershipChanges = 0
+    private var membershipRevision = 0L
+    private var membershipRefresh: Job? = null
 
     init {
         loadHome()
@@ -80,6 +86,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun loadHome() {
         val requestAccountGeneration = accountGeneration
         notificationEdits = null
+        lastChannelBySpace.clear()
         mutable.value = AppUiState(screen = SessionScreen.Loading, busy = true)
         viewModelScope.launch {
             try {
@@ -263,9 +270,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (granted && epoch == accountGeneration) enablePush { }
     }
 
-    /** Opens a space at [preferredChannelId] when it has one, otherwise its first joined channel. */
-    fun selectSpace(id: String, preferredChannelId: String? = null) {
-        if (mutable.value.spaces.none { it.id == id }) return
+    /**
+     * Opens a space at [preferredChannelId] when it has one, otherwise the channel you last opened there, otherwise
+     * its first joined channel; [notice] is shown once it opens. Choosing the space already shown keeps it.
+     */
+    fun selectSpace(id: String, preferredChannelId: String? = null, notice: String? = null) {
+        if (mutable.value.spaces.none { it.id == id } || preferredChannelId == null && showsSpace(mutable.value, id)) return
         ++spaceAccessGeneration
         val request = ++generation
         closeChannel(clearPending = true)
@@ -276,7 +286,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 val detail = api.space(requireAccountToken(), id)
                 if (request != generation) return@launch
                 mutable.value = mutable.value.copy(selectedSpace = detail, busy = false, presencePage = 0)
-                (detail.channels.firstOrNull { it.id == preferredChannelId } ?: detail.channels.firstOrNull { it.joined })?.let(::selectChannel)
+                spaceLandingChannel(detail.channels, preferredChannelId, lastChannelBySpace[id])?.let(::selectChannel)
+                notice?.let { mutable.value = mutable.value.copy(error = it) }
             } catch (error: Throwable) {
                 if (request == generation) {
                     if (error is ApiException && error.status == 404) removeUnavailableSpace(id)
@@ -302,6 +313,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun retryOpening() { retryOpen?.invoke() }
 
     fun selectChannel(channel: Channel) {
+        // Choosing the conversation already shown keeps it, with its draft, scroll and live connection.
+        if (showsChannel(mutable.value, channel)) {
+            if (mutable.value.selectedChannel != channel) mutable.value = mutable.value.copy(selectedChannel = channel)
+            return
+        }
+        if (!channel.direct) lastChannelBySpace[channel.spaceId] = channel.id
         val request = ++generation
         closeChannel(clearPending = true)
         mutable.value = mutable.value.copy(selectedChannel = channel, selectedDirectId = null, messages = emptyList(), busy = true, error = null, messagesLoading = true)
@@ -579,7 +596,64 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun startDirectRefresh() {
         directRefresh?.cancel()
-        directRefresh = viewModelScope.launch { while (true) { delay(15_000); refreshDirectConversations() } }
+        directRefresh = viewModelScope.launch { while (true) { delay(15_000); refreshDirectConversations(); refreshMembership() } }
+    }
+
+    /**
+     * Web's membership reconcile, every 15 seconds and on returning to the app: invitations, and spaces or channels
+     * changed elsewhere, appear without a restart. A change made here meanwhile wins over the older snapshot, and a
+     * failed read keeps what is shown: an outage is not revocation.
+     */
+    private fun refreshMembership() {
+        val token = accountToken ?: return
+        val start = mutable.value
+        if (!foreground || start.screen != SessionScreen.Home || start.busy || membershipChanges > 0 || membershipRefresh?.isActive == true) return
+        val account = accountGeneration
+        val revision = membershipRevision
+        fun unchanged() = account == accountGeneration && revision == membershipRevision && membershipChanges == 0
+        membershipRefresh = viewModelScope.launch {
+            try {
+                val list = api.spaces(token)
+                val known = mutable.value
+                if (!unchanged() || known.spaces != start.spaces || known.invitations != start.invitations) return@launch
+                val available = list.spaces.map { it.id }.toSet()
+                lastChannelBySpace.keys.retainAll(available)
+                mutable.value = known.copy(spaces = list.spaces, invitations = list.invitations, limits = list.limits)
+                val open = known.selectedSpace?.space?.id ?: return@launch
+                if (open !in available) {
+                    // Removed from the open space elsewhere, or it was deleted.
+                    val notice = "This space is no longer available."
+                    if (known.selectedDirectId != null) {
+                        VoiceCallService.stopIfSpace(getApplication(), open)
+                        ++spaceAccessGeneration
+                        mutable.value = mutable.value.copy(selectedSpace = null, error = notice)
+                    } else {
+                        ++generation
+                        removeUnavailableSpace(open)
+                        list.spaces.firstOrNull()?.let { selectSpace(it.id, notice = notice) }
+                    }
+                    return@launch
+                }
+                if (known.selectedDirectId != null) return@launch
+                val navigation = generation
+                val detail = api.space(token, open)
+                val current = mutable.value
+                if (!unchanged() || navigation != generation || current.busy || current.selectedSpace?.space?.id != open || current.selectedDirectId != null || detail == current.selectedSpace) return@launch
+                replaceDetail(detail)
+                val selected = current.selectedChannel
+                val retained = selected?.let { channel -> detail.channels.firstOrNull { it.id == channel.id } }
+                if (selected != null && retained != null) {
+                    // Joined or left elsewhere: reopen with or without the composer. Otherwise only its name or privacy changed.
+                    if (retained.joined != selected.joined) selectChannel(retained) else mutable.value = mutable.value.copy(selectedChannel = retained)
+                } else {
+                    // Deleted, or private access removed, elsewhere (or nothing was open): the first joined channel, as web.
+                    selected?.let { VoiceCallService.stopIfChannel(getApplication(), it.id) }
+                    val next = detail.channels.firstOrNull { it.joined }
+                    if (next != null) selectChannel(next) else if (selected != null) { ++generation; closeChannel(clearPending = true) }
+                }
+            } catch (error: CancellationException) { throw error }
+            catch (_: Throwable) { /* An outage is not revocation; keep known navigation. */ }
+        }
     }
 
     fun setForeground(active: Boolean) {
@@ -587,6 +661,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         publishForegroundConversation()
         if (!active) return
         refreshDirectConversations()
+        refreshMembership()
         val current = mutable.value
         if (!current.messagesLoading) current.selectedDirectId?.let { id ->
             current.messages.lastOrNull()?.let { markDirectRead(id, it.seq) }
@@ -1489,12 +1564,13 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         replaceDetail(detail.copy(channels = channels)); done()
         channels.firstOrNull { it.joined }?.let(::selectChannel) ?: closeChannel(clearPending = true)
     }
-    fun addSpaceMember(username: String) = launchAction { request ->
+    fun addSpaceMember(username: String, done: () -> Unit = {}, failed: (String) -> Unit = {}) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
         val context = AdminMutationContext(request, detail.space.id)
-        val member = api.addSpaceMember(requireAccountToken(), detail.space.id, username)
+        val member = memberRequest(request, failed) { api.addSpaceMember(requireAccountToken(), detail.space.id, username) } ?: return@launchAction
         if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
         mutable.value = mutable.value.copy(pendingSpaceInvitations = mutable.value.pendingSpaceInvitations.filter { it.id != member.id } + member)
+        done()
     }
     fun loadSpaceInvitations() = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
@@ -1539,13 +1615,20 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
         mutable.value = mutable.value.copy(channelGrants = response.members, pendingChannelInvitations = response.invitations)
     }
-    fun addChannelGrant(channel: Channel, username: String) = launchAction { request ->
+    fun addChannelGrant(channel: Channel, username: String, done: () -> Unit = {}, failed: (String) -> Unit = {}) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
         val context = AdminMutationContext(request, detail.space.id, channel.id)
-        val member = api.addChannelMember(requireAccountToken(), detail.space.id, channel.id, username)
+        val member = memberRequest(request, failed) { api.addChannelMember(requireAccountToken(), detail.space.id, channel.id, username) } ?: return@launchAction
         if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
         mutable.value = mutable.value.copy(pendingChannelInvitations = mutable.value.pendingChannelInvitations.filter { it.id != member.id } + member)
+        done()
     }
+
+    /** Web's MemberManager: an add's failure belongs to its form, which keeps the username, not to the screen. */
+    private suspend fun <T> memberRequest(request: Long, failed: (String) -> Unit, block: suspend () -> T): T? = try { block() }
+        catch (error: CancellationException) { throw error }
+        catch (error: Throwable) { if (request == accountGeneration) failed(error.message ?: "That request did not work."); null }
+
     fun removeChannelGrant(channel: Channel, member: Member) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
         val context = AdminMutationContext(request, detail.space.id, channel.id)
@@ -1687,8 +1770,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun launchAction(block: suspend (Long) -> Unit) = viewModelScope.launch {
         val request = accountGeneration
         mutable.value = mutable.value.copy(busy = true, error = null)
+        membershipChanges++
         try { block(request) } catch (error: Throwable) { if (request == accountGeneration) fail(error) }
-        finally { if (request == accountGeneration) mutable.value = mutable.value.copy(busy = false) }
+        finally {
+            membershipChanges--; membershipRevision++
+            if (request == accountGeneration) mutable.value = mutable.value.copy(busy = false)
+        }
     }
 
     override fun onCleared() {
@@ -1718,6 +1805,18 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         const val PRESENCE_PAGE_SIZE = 25
     }
 }
+
+/** Web/Apple: [preferred] when the space has it, else the channel last opened there while still joined, else the first joined channel. */
+internal fun spaceLandingChannel(channels: List<Channel>, preferred: String?, remembered: String?): Channel? =
+    channels.firstOrNull { it.id == preferred } ?: channels.firstOrNull { it.id == remembered && it.joined } ?: channels.firstOrNull { it.joined }
+
+/** The space's own channel is open (not a DM): choosing the space again changes nothing. */
+internal fun showsSpace(state: AppUiState, id: String): Boolean =
+    state.selectedDirectId == null && state.selectedSpace?.space?.id == id && state.selectedChannel?.spaceId == id
+
+/** [channel] is already open the same way (joined or preview), and not waiting on Try again. */
+internal fun showsChannel(state: AppUiState, channel: Channel): Boolean =
+    state.selectedDirectId == null && state.selectedChannel?.id == channel.id && state.selectedChannel.joined == channel.joined && state.messagesError == null
 
 internal fun mergeDirects(current: List<DirectConversation>, incoming: List<DirectConversation>): List<DirectConversation> =
     (incoming + current).distinctBy { it.id }
