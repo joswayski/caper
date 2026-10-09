@@ -243,13 +243,18 @@ jobs:
           - os: macos-15
             platform: ios
             target: ios-simulator-arm64
-    # Intel builds stay on GitHub-hosted macos-15-intel. On the self-hosted Mac
-    # the macOS UI tests (josemac-ui) and the iOS simulator (josemac-sim) run in
-    # different VMs so the two jobs run at the same time.
-    runs-on: ${{ needs.route.outputs.mac == 'true' && matrix.os == 'macos-15' && (matrix.platform == 'ios' && fromJSON('["self-hosted","josemac-sim"]') || fromJSON('["self-hosted","josemac-ui"]')) || matrix.os }}
+    # On the self-hosted Mac the macOS UI tests (josemac-ui) and the iOS
+    # simulator (josemac-sim) run in different VMs so they run at the same time.
+    # Apple allows only two macOS VMs per Mac, so the Intel job builds x86_64 in
+    # the UI VM after the ARM job and runs its tests under Rosetta. Without the
+    # Mac, Intel runs on GitHub-hosted macos-15-intel as before.
+    runs-on: ${{ needs.route.outputs.mac == 'true' && (matrix.platform == 'ios' && fromJSON('["self-hosted","josemac-sim"]') || fromJSON('["self-hosted","josemac-ui"]')) || matrix.os }}
     # A cold Intel build plus UI tests can exceed 30 minutes while still
     # progressing normally. Keep the existing budget for ARM and iOS.
     timeout-minutes: ${{ matrix.target == 'macos-x64' && 45 || 30 }}
+    env:
+      # build.sh and parity-screenshots.sh target the runner's own architecture otherwise.
+      CAPER_MACOS_ARCH: ${{ matrix.target == 'macos-x64' && 'x86_64' || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -269,6 +274,9 @@ jobs:
         background: true
         run: |
           uv run --locked --only-group dmg python -m unittest discover -s tests -p test_apple_release_signing.py -v
+      - name: Install Rosetta for the Intel build on Apple silicon
+        if: matrix.target == 'macos-x64' && runner.arch == 'ARM64'
+        run: /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null || sudo -n softwareupdate --install-rosetta --agree-to-license
       - name: Build and package Apple development client
         env:
           PLATFORM: ${{ matrix.platform }}
@@ -291,7 +299,7 @@ jobs:
           retention-days: 14
 
       - name: Provide room for the macOS desktop reference window
-        if: matrix.target == 'macos-x64'
+        if: matrix.target == 'macos-x64' && runner.environment != 'self-hosted'
         run: |
           # The hosted VM can default to 1024x768, forcing the medium layout.
           # Leave room for a 1440x900 app window and native menu/Dock chrome.
