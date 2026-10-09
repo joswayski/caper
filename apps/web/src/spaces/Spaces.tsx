@@ -597,6 +597,65 @@ function LeaveSpaceDialog({
   );
 }
 
+/** Removing someone is easy to do by accident and hard for them to undo. */
+function RemoveMemberDialog({
+  title,
+  description,
+  onClose,
+  onRemove,
+}: {
+  title: string;
+  description: string;
+  onClose: () => void;
+  onRemove: () => Promise<void>;
+}) {
+  const [error, setError] = useState<string>();
+  const [pending, setPending] = useState(false);
+  const submitting = useRef(false);
+  return (
+    <Dialog
+      title={title}
+      onClose={() => {
+        if (!submitting.current) onClose();
+      }}
+    >
+      <div className="delete-confirmation">
+        <p>{description}</p>
+        {error && (
+          <p className="space-form-error" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="space-dialog-actions">
+          <button type="button" className="secondary" data-initial-focus disabled={pending} onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="danger"
+            disabled={pending}
+            onClick={() => {
+              if (submitting.current) return;
+              submitting.current = true;
+              setPending(true);
+              setError(undefined);
+              void onRemove()
+                .then(onClose)
+                .catch((reason) => {
+                  setError(errorMessage(reason));
+                  submitting.current = false;
+                  setPending(false);
+                });
+            }}
+          >
+            {pending ? "Removing…" : "Remove"}
+          </button>
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
 function MemberManager({
   members,
   invitations,
@@ -604,6 +663,7 @@ function MemberManager({
   onCancel,
   onAdd,
   onRemove,
+  removalCopy,
   pending,
 }: {
   members: Member[];
@@ -612,9 +672,12 @@ function MemberManager({
   onCancel?: (member: Member) => Promise<void>;
   onAdd: (username: string) => Promise<void>;
   onRemove: (member: Member) => Promise<void>;
+  /** Confirmation title and body for removing this member. */
+  removalCopy: (member: Member) => { title: string; description: string };
   pending: boolean;
 }) {
   const [username, setUsername] = useState("");
+  const [removing, setRemoving] = useState<Member>();
   const [error, setError] = useState<string>();
   const [success, setSuccess] = useState<string>();
   const submitting = useRef(false);
@@ -718,17 +781,24 @@ function MemberManager({
               </small>
             </span>
             {!member.owner && (
-              <button
-                type="button"
-                disabled={pending}
-                onClick={() => void onRemove(member).catch((reason) => setError(errorMessage(reason)))}
-              >
+              <button type="button" disabled={pending} onClick={() => setRemoving(member)}>
                 Remove
               </button>
             )}
           </li>
         ))}
       </ul>
+      {removing && (
+        <RemoveMemberDialog
+          {...removalCopy(removing)}
+          onClose={() => setRemoving(undefined)}
+          onRemove={async () => {
+            await onRemove(removing);
+            // The removed row (and its button) is gone; continue in the username field.
+            refocus.current = true;
+          }}
+        />
+      )}
       {invitations && (
         <>
           <div className="dialog-section-heading">
@@ -858,6 +928,10 @@ function ManageSpaceDialog({
             setInvitations((current) => current.filter((item) => item.id !== member.id));
           })
         }
+        removalCopy={(member) => ({
+          title: `Remove ${member.displayName}?`,
+          description: `They’ll lose access to ${detail.space.name} and its channels. You can invite them again later.`,
+        })}
         onRemove={async (member) =>
           run(async () => {
             await removeSpaceMember(detail.space.id, member.id);
@@ -975,6 +1049,10 @@ function ManageChannelDialog({
               setInvitations((items) => items.filter((item) => item.id !== member.id));
             })
           }
+          removalCopy={(member) => ({
+            title: `Remove ${member.displayName} from #${channel.name}?`,
+            description: "They’ll lose access to this private channel. You can add them again later.",
+          })}
           onRemove={async (member) =>
             run(async () => {
               await removeChannelMember(detail.space.id, channel.id, member.id);

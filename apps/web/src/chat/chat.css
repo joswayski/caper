@@ -256,6 +256,52 @@
 .chat-message:has(:focus-visible) {
   background: rgb(255 255 255 / 2%);
 }
+/* Follow-ups from the same person (grouping.ts): no avatar or name, tighter
+   spacing, and the time in the avatar column on hover. */
+.chat-message-grouped {
+  padding-top: 2px;
+}
+.chat-message-continued {
+  padding-bottom: 2px;
+}
+.chat-grouped-time {
+  width: 34px;
+  padding-top: 5px;
+  color: var(--text-muted);
+  font-size: 0.6rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  text-align: right;
+  white-space: nowrap;
+  visibility: hidden;
+}
+@media (hover: hover) {
+  .chat-message-grouped:hover .chat-grouped-time {
+    visibility: visible;
+  }
+}
+.chat-message-grouped:has(:focus-visible) .chat-grouped-time {
+  visibility: visible;
+}
+.chat-message > div > p > .chat-edited {
+  margin-left: 2px;
+  vertical-align: baseline;
+}
+.chat-link {
+  color: var(--terracotta-bright);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+.chat-link:hover {
+  text-decoration-thickness: 2px;
+}
+.chat-link:focus-visible {
+  border-radius: 2px;
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
+}
 .chat-message-jump-target {
   background: rgb(182 77 50 / 12%);
   box-shadow: inset 3px 0 var(--terracotta);

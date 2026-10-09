@@ -10,6 +10,7 @@ import {
 } from "@floating-ui/react";
 import { Forward, X } from "lucide-react";
 import Avatar from "../components/Avatar";
+import LinkedText from "./LinkedText.tsx";
 import { apiError, ChatHistoryError } from "./client.ts";
 import { emojiAsset, emojiCode } from "./emoji.ts";
 import { isChatMessage, sequence, type ChatMessage } from "./types.ts";
@@ -87,7 +88,9 @@ function OriginalMessage({ message }: { message: ChatMessage }) {
         <strong>{message.author.name}</strong>
         {message.editedAt && <small title={`Edited ${new Date(message.editedAt).toLocaleString()}`}>edited</small>}
       </header>
-      <p>{message.content.text}</p>
+      <p>
+        <LinkedText text={message.content.text} />
+      </p>
       {!!message.reactions?.length && (
         <div className="chat-forward-reactions" aria-label="Original reactions">
           {message.reactions.map(({ emoji, authorIds }) => (

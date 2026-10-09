@@ -32,7 +32,13 @@ export default function ThreadPanel({
   /** DMs are named after the other person, without a channel `#`. */
   direct?: boolean;
   readOnly: boolean;
-  renderMessage: (index: number, message: ChatMessage, inThread: boolean) => ReactNode;
+  renderMessage: (
+    index: number,
+    message: ChatMessage,
+    inThread: boolean,
+    previous?: ChatMessage,
+    next?: ChatMessage,
+  ) => ReactNode;
   onClose: () => void;
 }) {
   const [drafts, setDrafts] = useState<Record<string, { text: string; broadcast: boolean }>>({});
@@ -157,7 +163,9 @@ export default function ThreadPanel({
   // Typing a reply changes only this panel's draft; keep the rendered messages.
   const renderedRoot = useMemo(() => root && renderMessage(0, root, true), [root, renderMessage]);
   const renderedReplies = useMemo(
-    () => replies.map((message, index) => renderMessage(index + 1, message, true)),
+    // Replies group with the reply above them; the root never groups.
+    () =>
+      replies.map((message, index) => renderMessage(index + 1, message, true, replies[index - 1], replies[index + 1])),
     [replies, renderMessage],
   );
   if (!state.thread) return null;
