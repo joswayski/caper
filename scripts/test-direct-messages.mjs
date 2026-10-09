@@ -92,6 +92,8 @@ try {
   await control({ reset: true });
   browser("open", "about:blank");
   browser("set", "viewport", "1440", "900", "2");
+  // The phone Browse slide is covered by test-desktop-navigation; settle it here.
+  browser("set", "media", "reduced-motion");
   browser("cookies", "set", "caper_fixture", "owner", "--url", web, "--path", "/", "--sameSite", "Lax");
   browser("open", `${web}/spaces`);
   wait('!!document.querySelector(".direct-section") && !!document.querySelector(".chat-composer textarea")');
@@ -473,6 +475,20 @@ try {
   const saved = (await conversations()).conversations;
   assert.equal(saved.length, 2, "Reopening self notes must reuse the same conversation");
   assert.equal(saved.find((item) => item.peer.id === "owner0000001").id, "dm0000000002");
+  // Each DM keeps its own unsent draft across conversation switches.
+  browser("click", ".direct-select:not(.direct-self)");
+  wait(
+    'document.querySelector(".chat-heading")?.textContent.includes("TEST FIXTURE Alex") && !!document.querySelector(".chat-composer textarea")',
+  );
+  browser("fill", ".chat-composer textarea", "TEST FIXTURE unsent DM draft");
+  browser("click", ".direct-self");
+  wait('document.querySelector(".chat-messages")?.textContent.includes("private notes that survive a reload.")');
+  assert.equal(evaluate('document.querySelector(".chat-composer textarea").value'), "", "Drafts belong to one DM");
+  browser("click", ".direct-select:not(.direct-self)");
+  wait('document.querySelector(".chat-composer textarea")?.value === "TEST FIXTURE unsent DM draft"');
+  browser("fill", ".chat-composer textarea", "");
+  browser("click", ".direct-self");
+  wait('document.querySelector(".chat-messages")?.textContent.includes("private notes that survive a reload.")');
   // Instrument only history reads; the real local fixture still supplies data.
   evaluate(`(() => {
     const fetch = window.fetch.bind(window);
@@ -562,7 +578,7 @@ try {
   assert.ok(evaluate("document.documentElement.scrollWidth <= innerWidth"));
   screenshot("dm-self-narrow-browse");
   console.log(
-    "PASS: self notes lazy creation/error/reuse/send/persistence/isolation/navigation race, full-width dividers, real space invitation action, DM start/error/reopen/live replies/reactions/read receipts, space independence, and desktop/narrow navigation (disposable fixture).",
+    "PASS: self notes lazy creation/error/reuse/send/persistence/isolation/navigation race, full-width dividers, real space invitation action, DM start/error/reopen/unsent drafts/live replies/reactions/read receipts, space independence, and desktop/narrow navigation (disposable fixture).",
   );
 } finally {
   browser("close");

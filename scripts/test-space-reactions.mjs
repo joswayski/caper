@@ -1,5 +1,6 @@
 // Disposable browser mocks: hold chat-session responses across cold/cached navigation.
-// Start Vite, then run with MESSAGE_TEST_CHROME pointing to a fine-pointer Chromium wrapper.
+// The page mints one chat session per account and reuses it across space and channel switches.
+// Start Vite, then run with MESSAGE_TEST_CHROME="$PWD/scripts/fine-pointer-chromium.sh".
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -28,7 +29,7 @@ function fixture() {
     joined: true,
   }));
   channels.push({ ...channels[1], id: "channel12342", name: "design" });
-  const control = (window.reactionFixture = { releases: [], writes: 0, badFrames: [], frames: 0 });
+  const control = (window.reactionFixture = { releases: [], sessions: 0, writes: 0, badFrames: [], frames: 0 });
   const NativeSocket = window.WebSocket;
   window.WebSocket = class extends EventTarget {
     constructor(url, protocols) {
@@ -75,6 +76,7 @@ function fixture() {
     if (path === "/api/dms") return Response.json({ conversations: [] });
     if (path === "/api/blocks") return Response.json({ accounts: [] });
     if (path === "/api/chat/session") {
+      control.sessions++;
       const status = await new Promise((resolve) => control.releases.push(resolve));
       return status === 503
         ? Response.json({ error: "TEST FIXTURE session unavailable" }, { status })
@@ -160,10 +162,17 @@ const check = (disabled) => {
     true,
   );
 };
-const loaded = (channel) =>
+// A cold page holds its first session request; later switches reuse that session.
+const loaded = (channel, { held = true } = {}) =>
   wait(
-    `document.querySelector('[data-message-key="${channel}-1"] .chat-reaction') && !document.querySelector('.chat-initial-messages') && reactionFixture.releases.length > 0`,
+    `document.querySelector('[data-message-key="${channel}-1"] .chat-reaction') && !document.querySelector('.chat-initial-messages')${held ? " && reactionFixture.releases.length > 0" : ""}`,
   );
+const reused = (channel) => {
+  const sessions = evaluate("reactionFixture.sessions");
+  loaded(channel, { held: false });
+  check(false);
+  assert.equal(evaluate("reactionFixture.sessions"), sessions, "Switching conversations reuses the chat session");
+};
 
 try {
   browser("open", "about:blank");
@@ -176,6 +185,9 @@ try {
   );
   loaded("channel12340");
   check(true);
+  browser("click", ".chat-reaction");
+  assert.equal(evaluate("reactionFixture.writes"), 0, "Knowing ownership must not allow writes without a session");
+  browser("click", "#chat-heading");
   evaluate("reactionFixture.releases.splice(0).forEach(release => release(200))");
   wait('document.querySelector(".chat-reaction").getAttribute("aria-disabled") === "false"');
   check(false);
@@ -186,15 +198,8 @@ try {
     ["space2345678", "channel12341"],
   ]) {
     browser("click", `.space-rail button[title="TEST FIXTURE ${space === "space1234567" ? "Studio" : "Lounge"}"]`);
-    loaded(channel);
-    check(true);
-    browser("click", ".chat-reaction");
-    assert.equal(evaluate("reactionFixture.writes"), 0, "Knowing ownership must not allow writes without a session");
-    browser("click", "#chat-heading");
+    reused(channel);
     screenshot("reactions-desktop-switch");
-    evaluate("reactionFixture.releases.splice(0).forEach(release => release(200))");
-    wait('document.querySelector(".chat-reaction").getAttribute("aria-disabled") === "false"');
-    check(false);
   }
   browser("hover", '[data-message-key="channel12341-1"] p');
   wait('getComputedStyle(document.querySelector(".chat-add-reaction")).opacity === "1"');
@@ -202,14 +207,19 @@ try {
   screenshot("reactions-desktop-hover");
   browser("mouse", "move", "5", "5");
   browser("focus", ".chat-add-reaction");
-  assert.equal(evaluate('getComputedStyle(document.querySelector(".chat-add-reaction")).opacity'), "1");
+  // Script focus after mouse use is not :focus-visible; a key press makes it keyboard focus.
+  browser("press", "Shift");
+  wait('getComputedStyle(document.querySelector(".chat-add-reaction")).opacity === "1"');
   browser("press", "Enter");
   wait('!!document.querySelector(".chat-reaction-picker")');
   browser("press", "Escape");
   wait('!document.querySelector(".chat-reaction-picker")');
 
-  // Same-space switch with a failed session still has correct ownership/visibility.
+  // Same-space channel switch, then a cold page whose session fails: ownership and
+  // visibility stay correct, and Retry mints the session.
   browser("click", '.channel-select:not([aria-current="page"])');
+  reused("channel12342");
+  browser("reload");
   loaded("channel12342");
   evaluate("reactionFixture.releases.splice(0).forEach(release => release(503))");
   wait('document.body.textContent.includes("TEST FIXTURE session unavailable")');
@@ -225,10 +235,12 @@ try {
   loaded("channel12342");
   check(true);
   evaluate("reactionFixture.releases.splice(0).forEach(release => release(200))");
+  wait('document.querySelector(".chat-reaction").getAttribute("aria-disabled") === "false"');
   browser("click", ".navigation-toggle");
+  // Phone Browse slides swallow clicks until they settle.
+  wait("!document.documentElement.dataset.browseTransition");
   browser("click", '.space-rail button[title="TEST FIXTURE Studio"]');
-  loaded("channel12340");
-  check(true);
+  reused("channel12340");
   assert.equal(
     evaluate(
       '[...document.querySelectorAll(".chat-add-reaction")].every(button => getComputedStyle(button).display === "none")',
@@ -238,7 +250,7 @@ try {
   assert.equal(evaluate("document.documentElement.scrollWidth <= innerWidth"), true);
   screenshot("reactions-narrow-switch");
   console.log(
-    "PASS: first-frame own/other reactions, cold/cached space switches, channel switch, held/failed/retried sessions, no premature writes, desktop hover/focus/picker, narrow layout; no incorrect rendered frames.",
+    "PASS: first-frame own/other reactions, cold/cached space switches and a channel switch on one reused session, held/failed/retried sessions, no premature writes, desktop hover/focus/picker, narrow layout; no incorrect rendered frames.",
   );
 } finally {
   browser("close");

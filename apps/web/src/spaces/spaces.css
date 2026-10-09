@@ -128,6 +128,10 @@
   display: flex;
   flex-direction: column;
   overflow-y: auto;
+  /* Span the whole panel: full-bleed dividers and row focus rings then stay inside
+     this scroller instead of adding a sideways scroll and clipping the rings. */
+  margin-inline: calc(-4px - var(--channel-sidebar-inset));
+  padding-inline: var(--channel-sidebar-inset);
 }
 .spaces-room .channel-navigation > :is(header, .channel-section-heading) {
   flex-shrink: 0;
@@ -526,6 +530,14 @@
 .channel-select[aria-current="page"] svg {
   color: var(--terracotta-bright);
 }
+.channel-select[aria-busy="true"],
+.space-rail button[aria-busy="true"] {
+  cursor: progress;
+}
+.channel-select[aria-busy="true"]:not([aria-current="page"]) {
+  color: var(--text);
+  background: var(--surface-raised);
+}
 .channel-menu {
   margin-right: 4px;
 }
@@ -697,6 +709,7 @@
   display: flex;
   align-items: center;
   border-radius: 6px;
+  transition: background-color 140ms ease;
 }
 .direct-line .direct-select,
 .direct-line .direct-select:hover,
@@ -738,6 +751,7 @@
   line-height: 1.4;
 }
 .space-member-presence {
+  --presence-ring: var(--surface-sidebar);
   min-height: 0;
   min-width: 0;
   border-left: 1px solid var(--border);
@@ -1056,18 +1070,8 @@
 .spaces-empty .direct-section {
   margin-top: 40px;
 }
-.empty-channel-account {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: auto 12px 12px;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface-raised);
-  font-size: 0.8rem;
-}
 .empty-channel {
+  flex: 1;
   min-height: 360px;
   display: grid;
   place-content: center;
@@ -1185,10 +1189,6 @@
   color: var(--terracotta-bright);
   border-color: var(--terracotta-bright);
 }
-.space-rail .invited-space svg {
-  width: 17px;
-  height: 17px;
-}
 .pending-space-invites {
   display: grid;
   gap: 10px;
@@ -1295,6 +1295,7 @@
   font-size: 1.2rem;
   font-weight: 700;
   letter-spacing: -0.025em;
+  overflow-wrap: anywhere;
 }
 .space-dialog > header h2:has(img) {
   display: flex;
@@ -1567,6 +1568,9 @@
   padding: 0;
   overflow-y: auto;
   list-style: none;
+}
+.member-manager ul + .dialog-section-heading {
+  margin-top: 18px;
 }
 .member-manager li {
   display: grid;
@@ -2007,6 +2011,10 @@ html[data-browse-transition="close"]::view-transition-new(browse-room) {
     background: transparent;
     cursor: pointer;
   }
+  .member-list-close:hover {
+    color: var(--text);
+    background: var(--surface-raised);
+  }
   .member-list-close svg {
     width: 20px;
     height: 20px;
@@ -2037,7 +2045,7 @@ html[data-browse-transition="close"]::view-transition-new(browse-room) {
     background: var(--surface-sidebar);
   }
   /* The account and voice bar keeps the full width, below the conversation's edge. */
-  .spaces-room.navigation-open > .people-panel > :is(.voice-panel, .empty-channel-account) {
+  .spaces-room.navigation-open > .people-panel > .voice-panel {
     grid-area: 2 / 1 / 3 / -1;
     margin: 12px calc(12px - var(--browse-peek)) 12px 12px;
   }
@@ -2134,6 +2142,13 @@ html[data-browse-transition="close"]::view-transition-new(browse-room) {
   }
   .spaces-room:not(.navigation-open) .channel-navigation > ul {
     margin: 0;
+  }
+  /* The one-row channel strip must not clip its row's "…" menu. */
+  .spaces-room:not(.navigation-open) :is(.sidebar-channels, .channel-navigation) {
+    overflow: visible;
+  }
+  .spaces-room:not(.navigation-open) > .people-panel:has(.channel-menu[open]) {
+    z-index: 9;
   }
   /* A collapsed channel section still shows the channel being viewed. */
   .spaces-room:not(.navigation-open) .channel-navigation > ul[data-collapsed] {

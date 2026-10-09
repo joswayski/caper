@@ -2,13 +2,17 @@ import type { SyntheticEvent } from "react";
 import EmojiPicker, { Categories, EmojiStyle, Theme } from "emoji-picker-react";
 import english from "emoji-picker-react/dist/data/emojis-en";
 import { emojiAsset, emojiNames, preloadEmojiImages } from "./emoji.ts";
+import emojiLabels from "./emoji-labels.json";
 
 const emojiData = {
   categories: english.categories,
   emojis: Object.fromEntries(
     Object.entries(english.emojis).map(([category, entries]) => [
       category,
-      entries.map((entry) => ({ ...entry, n: emojiNames(entry.n) })),
+      entries.map((entry) => ({
+        ...entry,
+        n: emojiNames(entry.n, (emojiLabels as Record<string, string>)[entry.u]),
+      })),
     ]),
   ),
 };

@@ -255,6 +255,8 @@ targets:
       - target: CaperCoreIOS
       - target: CaperRTCBridgeIOS
         embed: true
+      - target: CaperNotificationService
+        embed: true
       - package: WebRTC
         product: WebRTC
         link: true
@@ -272,6 +274,7 @@ targets:
         ITSAppUsesNonExemptEncryption: false
         NSMicrophoneUsageDescription: Caper uses your microphone when you join a voice channel.
         CaperAPNsEnvironment: $(CAPER_APNS_ENVIRONMENT)
+        NSUserActivityTypes: [INSendMessageIntent]
         UIAppFonts: [Satoshi-Regular.otf, Satoshi-Medium.otf, Satoshi-Bold.otf, Satoshi-Black.otf]
         UIBackgroundModes: [audio]
         UILaunchScreen: {}
@@ -292,6 +295,26 @@ targets:
         Release:
           CAPER_APNS_ENVIRONMENT: production
           CODE_SIGN_ENTITLEMENTS: Configuration/iOS-Release.entitlements
+  CaperNotificationService:
+    type: app-extension
+    platform: iOS
+    sources:
+      - Sources/CaperNotificationService
+      - path: Sources/CaperCore/CaperAvatars.xcassets
+        buildPhase: resources
+    info:
+      path: Configuration/NotificationService-Info.plist
+      properties:
+        CFBundleDisplayName: Caper Notifications
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(CAPER_IOS_BUNDLE_ID).notifications
+        CODE_SIGN_STYLE: Automatic
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
   CaperCoreTests:
     type: bundle.unit-test
     platform: macOS

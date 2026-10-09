@@ -421,9 +421,9 @@ final class CaperParityUITests: XCTestCase {
         try require(app.buttons["Back to channel"], timeout: 5, "Thread did not open")
         try require(app.staticTexts["No replies yet. Start the thread."], timeout: 5, "Missing empty thread state")
         XCTAssertFalse(app.staticTexts["0 replies"].exists, "Empty threads must not repeat the zero reply count")
-        // By label: the channel's own "message-composer" is still in the tree.
-        let composer = try require(app.descendants(matching: .any).matching(identifier: "message-composer")
-            .matching(NSPredicate(format: "label BEGINSWITH %@", "Reply to thread")).firstMatch,
+        // By label: the channel's composer is still in the tree, and the thread
+        // panel's "message-thread" identifier replaces this text view's own.
+        let composer = try require(app.textViews.matching(NSPredicate(format: "label BEGINSWITH %@", "Reply to thread")).firstMatch,
                                    timeout: 5, "Missing thread composer")
         XCTAssertTrue(focus(composer))
         composer.typeText("Short reply")
@@ -874,7 +874,7 @@ final class CaperParityUITests: XCTestCase {
         let settings = app.descendants(matching: .any)["Channel settings"].firstMatch
         XCTAssertTrue(settings.waitForExistence(timeout: 3))
         settings.tap()
-        assertStaticText("Overview", in: app, timeout: 3)
+        assertStaticText("Channel settings", in: app, timeout: 3)
         XCTAssertEqual(app.textFields["project-updates"].value as? String, "general", "The menu opens its own channel's editor")
         capture("channel-settings-from-menu", app: app)
     }
@@ -1992,7 +1992,7 @@ final class CaperParityUITests: XCTestCase {
 
     func testPrivateChannelOverview() {
         let app = launch(fixture: "manage-channel")
-        assertStaticText("Overview", in: app)
+        assertStaticText("Channel settings", in: app)
         assertStaticText("Private channel", in: app, timeout: 2)
         capture("private-channel-overview", app: app)
     }

@@ -128,6 +128,8 @@ export default function ThreadPanel({
       if (
         event.key === "Escape" &&
         !event.defaultPrevented &&
+        // Escape that cancels an input-method composition must not also close the thread.
+        !event.isComposing &&
         !document.querySelector(
           ".chat-reaction-picker, .chat-message-actions, .chat-reactors, .chat-mention-card, .chat-forward-dialog, dialog[open], details[open], [popover]:popover-open",
         )

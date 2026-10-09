@@ -29,6 +29,10 @@ struct PersonFeed {
     value: watch::Sender<Value>,
 }
 
+struct NotificationFeed {
+    head: watch::Sender<i64>,
+}
+
 #[derive(Default)]
 pub(super) struct Application {
     state: Option<AppState>,
@@ -39,6 +43,7 @@ pub(super) struct Application {
     idle_seconds: u64,
     channels: Mutex<HashMap<String, Arc<ChannelFeed>>>,
     people: Mutex<HashMap<String, Arc<PersonFeed>>>,
+    notifications: Mutex<HashMap<i64, Arc<NotificationFeed>>>,
     pub(super) interests: tokio::sync::Notify,
 }
 
@@ -135,6 +140,19 @@ impl Application {
             .clone()
     }
 
+    fn notifications(&self, user: i64) -> Arc<NotificationFeed> {
+        self.notifications
+            .lock()
+            .unwrap()
+            .entry(user)
+            .or_insert_with(|| {
+                Arc::new(NotificationFeed {
+                    head: watch::channel(-1).0,
+                })
+            })
+            .clone()
+    }
+
     fn update_people(&self, values: Vec<Value>) {
         let feeds = self.people.lock().unwrap();
         for value in values {
@@ -188,6 +206,23 @@ impl Application {
                         let feeds = app.channels.lock().unwrap();
                         for (id, head) in rows {
                             if let Some(feed) = feeds.get(&id) {
+                                feed.head.send_if_modified(|old| { if *old == head { false } else { *old = head; true } });
+                            }
+                        }
+                    }
+                }
+                let accounts: Vec<i64> = {
+                    let mut feeds = app.notifications.lock().unwrap();
+                    feeds.retain(|_, feed| Arc::strong_count(feed) > 1);
+                    feeds.keys().copied().collect()
+                };
+                for chunk in accounts.chunks(256) {
+                    if let Ok(rows) = sqlx::query_as::<_, (i64, i64)>(
+                        "SELECT u.id,COALESCE((SELECT max(n.id) FROM public.notifications n WHERE n.user_id=u.id),0) FROM public.users u WHERE u.id=ANY($1)"
+                    ).bind(chunk).fetch_all(&chat.pool).await {
+                        let feeds = app.notifications.lock().unwrap();
+                        for (user, head) in rows {
+                            if let Some(feed) = feeds.get(&user) {
                                 feed.head.send_if_modified(|old| { if *old == head { false } else { *old = head; true } });
                             }
                         }
@@ -466,6 +501,7 @@ async fn serve(socket: WebSocket, state: Gateway, identity: Identity) {
                                 "chat" => chat_subscription(&state, &identity, &subscription, &out).await,
                                 "media" => media_subscription(&state, &identity, &subscription, &out).await,
                                 "presence" => presence_subscription(&state, &identity, &subscription, &out).await,
+                                "notifications" => notification_subscription(&state, &identity, &subscription, &out).await,
                                 _ => Err(invalid()),
                             };
                             if let Err(error) = result {
@@ -510,6 +546,71 @@ async fn subscribed(out: &mpsc::Sender<Value>, id: &str) -> Result<(), ApiError>
     send(out, json!({"type":"subscribed","id":id}))
         .await
         .map_err(|_| chat::unavailable())
+}
+
+async fn notification_subscription(
+    state: &Gateway,
+    identity: &Identity,
+    sub: &Subscribe,
+    out: &mpsc::Sender<Value>,
+) -> Result<(), ApiError> {
+    if sub.channel_id.is_some()
+        || sub.space_id.is_some()
+        || sub.token.is_some()
+        || !sub.user_ids.is_empty()
+    {
+        return Err(invalid());
+    }
+    identity.check(state).await?;
+    let user = identity.user.ok_or_else(unauthorized)?;
+    let feed = state.application.notifications(user);
+    let mut heads = feed.head.subscribe();
+    // A shared poll may lag a reconnect's cursor. Take a current checkpoint
+    // once on subscribe; ongoing recovery remains batched per account.
+    let initial: i64 =
+        sqlx::query_scalar("SELECT COALESCE(max(id),0) FROM public.notifications WHERE user_id=$1")
+            .bind(user)
+            .fetch_one(&state.chat.pool)
+            .await
+            .map_err(|_| chat::unavailable())?;
+    // No historical banners on first login. Reconnect/handoff resumes a cursor.
+    let mut after = sub
+        .after
+        .as_deref()
+        .map(chat::cursor)
+        .transpose()?
+        .unwrap_or(initial);
+    if after > initial {
+        return Err(invalid());
+    }
+    let mut check = tokio::time::interval(Duration::from_secs(10));
+    loop {
+        identity.check(state).await?;
+        let head = (*heads.borrow_and_update()).max(initial);
+        while after < head {
+            identity.check(state).await?;
+            let rows = crate::push::live::read(&state.chat.pool, user, after, head)
+                .await
+                .map_err(|_| chat::unavailable())?;
+            if rows.is_empty() {
+                return Err(chat::unavailable());
+            }
+            for (id, payload) in rows {
+                if let Some(payload) = payload {
+                    event(out, &sub.id, payload).await?;
+                }
+                after = id;
+            }
+        }
+        event(
+            out,
+            &sub.id,
+            json!({"type":"ready","cursor":after.to_string()}),
+        )
+        .await?;
+        subscribed(out, &sub.id).await?;
+        tokio::select! { _ = heads.changed() => {}, _ = check.tick() => {} }
+    }
 }
 
 async fn replay(

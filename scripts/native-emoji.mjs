@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { basename, join } from "node:path";
 import { emojiAsset, emojiNames } from "../apps/web/src/chat/emoji.ts";
 import "../apps/web/scripts/prepare-emoji.mjs";
+import labels from "../apps/web/src/chat/emoji-labels.json" with { type: "json" };
 
 const require = createRequire(import.meta.url);
 const source = fileURLToPath(new URL("../apps/web/public/emoji/twemoji-15/", import.meta.url));
@@ -17,7 +18,7 @@ const offered = new Map();
 for (const [category, entries] of Object.entries(data.emojis)) {
   for (const entry of entries.filter((item) => Number(item.a) <= 15)) {
     const id = basename(emojiAsset(entry.u), ".svg");
-    const names = emojiNames(entry.n);
+    const names = emojiNames(entry.n, labels[entry.u]);
     offered.set(id, {
       emoji: String.fromCodePoint(...entry.u.split("-").map((point) => parseInt(point, 16))),
       name: names.at(-1),

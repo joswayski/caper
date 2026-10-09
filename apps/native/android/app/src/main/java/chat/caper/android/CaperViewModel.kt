@@ -52,6 +52,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var accountGeneration = 0L
     private var spaceAccessGeneration = 0L
     internal val accountEpoch: Long get() = accountGeneration
+    internal val drafts = ConversationDrafts()
     internal val spaceAccessEpoch: Long get() = spaceAccessGeneration
     private var voiceAuthorizationRequest = 0L
     private val pendingSends = PendingSendTracker()
@@ -227,6 +228,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         directRefresh?.cancel(); directRefresh = null
         peopleRefresh?.cancel(); peopleRefresh = null
         tokens.clear()
+        drafts.clear()
         notificationEdits = null
         if (token != null) {
             viewModelScope.launch { PushRegistration.disable(getApplication(), token) }

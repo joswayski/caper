@@ -24,6 +24,7 @@ mod metadata;
 mod model;
 mod navigation;
 mod notifications;
+mod os_notifications;
 mod startup;
 #[path = "../voice-spike/src/state.rs"]
 mod state;
@@ -494,7 +495,7 @@ struct CaperApp {
     privacy: Option<String>,
     privacy_saving: bool,
     privacy_error: Option<String>,
-    /// Notification levels and mutes; the controls only, for phone push.
+    /// Account notification levels and mutes, shared by phone and desktop.
     notifications: notifications::Notifications,
     selected_direct: Option<String>,
     directs_refreshed: Instant,
@@ -535,6 +536,8 @@ struct CaperApp {
     username: String,
     display_name: String,
     draft: String,
+    /// Unsent text of other conversations by channel or DM ID, restored on return.
+    drafts: BTreeMap<String, String>,
     /// `:`/`@` suggestions by composer editor ID (channel and thread).
     composer_suggestions: egui::IdMap<SuggestionState>,
     ime_composing: bool,
@@ -622,7 +625,7 @@ struct CaperApp {
     /// Latest `attachment.progress` percent per processing attachment id.
     attachment_progress: BTreeMap<String, u8>,
     uploads_checked: Option<Instant>,
-    drafts: Vec<DraftUpload>,
+    draft_files: Vec<DraftUpload>,
     draft_keys: u64,
     media: attachments::Media,
     file_picker: Option<std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>>,
@@ -718,6 +721,7 @@ impl CaperApp {
             username: String::new(),
             display_name: String::new(),
             draft: String::new(),
+            drafts: BTreeMap::new(),
             composer_suggestions: egui::IdMap::default(),
             ime_composing: false,
             pending: None,
@@ -793,7 +797,7 @@ impl CaperApp {
             uploads: None,
             attachment_progress: BTreeMap::new(),
             uploads_checked: None,
-            drafts: Vec::new(),
+            draft_files: Vec::new(),
             draft_keys: 0,
             media,
             file_picker: None,
@@ -1808,7 +1812,7 @@ impl CaperApp {
         failed.thumbnail_image = None;
         let mut uploading = draft(2, "TEST FIXTURE diagram.png", 640_000, 0.45, None);
         uploading.stored_size = Some(52_000);
-        self.drafts = vec![done, uploading, failed];
+        self.draft_files = vec![done, uploading, failed];
         self.draft_keys = 3;
     }
 
@@ -1902,6 +1906,29 @@ impl CaperApp {
         let events: Vec<_> = self.worker.events.try_iter().collect();
         for event in events {
             match event {
+                Event::OpenNotification { epoch, alert }
+                    if epoch == self.account_epoch && self.token.is_some() =>
+                {
+                    self.worker.focus();
+                    self.dialog = None;
+                    self.navigation_open = false;
+                    if let Some(id) = alert.conversation_id {
+                        // A new DM may arrive before the periodic conversation list.
+                        self.remember_conversation();
+                        self.selected_direct = Some(id.clone());
+                        self.reload_selected_channel(id, false);
+                        self.refresh_directs();
+                    } else if let (Some(space), Some(channel)) = (alert.space_id, alert.channel_id)
+                    {
+                        self.navigate(NavigationTarget {
+                            space: Some(space),
+                            channel: Some(channel),
+                        });
+                    }
+                }
+                Event::NotificationError { epoch, error } if epoch == self.account_epoch => {
+                    self.warning = Some(error);
+                }
                 Event::DirectsLoaded {
                     generation,
                     result: Ok(directs),
@@ -2425,6 +2452,7 @@ impl CaperApp {
         self.detail = None;
         self.selected_space = None;
         self.clear_channel_state();
+        self.drafts.clear();
         self.token = Some(token);
         self.uploads = None;
         self.uploads_checked = None;
@@ -2437,6 +2465,10 @@ impl CaperApp {
         self.refresh_directs();
         self.account_op(AccountOperation::LoadBlocks);
         self.load_notifications();
+        self.worker.send(Command::StartNotifications {
+            epoch: self.account_epoch,
+            token: self.token.clone().expect("established account"),
+        });
         self.error = None;
         self.dialog = None;
         if needs_profile {
@@ -2494,6 +2526,8 @@ impl CaperApp {
     }
 
     fn reset_account_state(&mut self) {
+        self.worker.showing(None);
+        self.worker.send(Command::StopNotifications);
         self.account_epoch += 1;
         self.membership_refreshing = false;
         self.space_notice = None;
@@ -2528,6 +2562,20 @@ impl CaperApp {
     fn selected_direct_conversation(&self) -> Option<&model::DirectConversation> {
         let id = self.selected_direct.as_ref()?;
         self.directs.iter().find(|direct| &direct.id == id)
+    }
+
+    /// Under "No messages yet." (not your own DM): who can read a DM, or a channel prompt.
+    fn empty_conversation_note(&self) -> String {
+        match self.selected_direct_conversation() {
+            Some(direct) => format!(
+                "Only you and {} can read this conversation.",
+                direct.peer.display_name
+            ),
+            None if self.selected_direct.is_some() => {
+                "Only you and this person can read this conversation.".to_owned()
+            }
+            None => format!("Start the conversation in #{}.", self.channel_name()),
+        }
     }
 
     /// The open conversation when it is an incoming message request.
@@ -3504,6 +3552,18 @@ impl CaperApp {
         });
     }
 
+    /// Keeps the open conversation's unsent text so returning to it restores it.
+    fn stash_draft(&mut self) {
+        let draft = std::mem::take(&mut self.draft);
+        if let Some(channel) = &self.selected_channel {
+            if draft.is_empty() {
+                self.drafts.remove(channel);
+            } else {
+                self.drafts.insert(channel.clone(), draft);
+            }
+        }
+    }
+
     fn reload_selected_channel(&mut self, id: String, general: bool) {
         self.navigation += 1;
         self.opening = false;
@@ -3511,6 +3571,7 @@ impl CaperApp {
         self.navigation_error = None;
         self.voice.state.browse(id.clone());
         self.generation += 1;
+        self.stash_draft();
         self.selected_channel = Some(id.clone());
         self.session = None;
         self.session_error = None;
@@ -3536,7 +3597,7 @@ impl CaperApp {
         self.reactors.clear();
         self.pending_pins.clear();
         self.mutations = model::MessageMutations::default();
-        self.draft.clear();
+        self.draft = self.drafts.remove(&id).unwrap_or_default();
         self.typers.clear();
         self.error = None;
         self.loading = true;
@@ -4051,7 +4112,7 @@ impl CaperApp {
             let general = self.detail.as_ref().is_some_and(|detail| detail.space.demo);
             let mut pending = self.pending.take();
             let draft = std::mem::take(&mut self.draft);
-            let drafts = std::mem::take(&mut self.drafts);
+            let drafts = std::mem::take(&mut self.draft_files);
             let timeline = std::mem::take(&mut self.timeline);
             let thread = self.thread_view.take();
             let thread_drafts = std::mem::take(&mut self.thread_drafts);
@@ -4065,7 +4126,7 @@ impl CaperApp {
             self.reload_selected_channel(channel, general);
             self.pending = pending;
             self.draft = draft;
-            self.drafts = drafts;
+            self.draft_files = drafts;
             self.timeline = timeline;
             self.thread_view = thread;
             self.thread_drafts = thread_drafts;
@@ -4145,6 +4206,7 @@ impl CaperApp {
         self.channel_rosters.clear();
         self.voice_session_starts.clear();
         self.unavailable_rosters.clear();
+        self.stash_draft();
         self.selected_channel = None;
         self.session = None;
         self.session_error = None;
@@ -4219,6 +4281,7 @@ impl CaperApp {
         self.selected_space = None;
         self.selected_channel = None;
         self.clear_channel_state();
+        self.drafts.clear();
         self.challenge = None;
         self.code.clear();
         self.attempts_remaining = None;
@@ -4346,7 +4409,7 @@ impl CaperApp {
             Vec::new()
         } else {
             let drafts: Vec<_> = self
-                .drafts
+                .draft_files
                 .iter()
                 .filter(|draft| draft.channel == channel)
                 .collect();
@@ -4407,7 +4470,7 @@ impl CaperApp {
                 self.draft.clear();
             }
             // The pending row now owns the sent files.
-            self.drafts.retain(|draft| {
+            self.draft_files.retain(|draft| {
                 draft
                     .attachment
                     .as_ref()
@@ -4470,7 +4533,7 @@ impl CaperApp {
         ) else {
             return;
         };
-        let room = uploads::MAX_ATTACHMENTS.saturating_sub(self.drafts.len());
+        let room = uploads::MAX_ATTACHMENTS.saturating_sub(self.draft_files.len());
         if room == 0 {
             self.error = Some(format!(
                 "You can attach up to {} files.",
@@ -4487,7 +4550,7 @@ impl CaperApp {
         for path in paths.into_iter().take(room) {
             self.draft_keys += 1;
             let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-            self.drafts.push(DraftUpload {
+            self.draft_files.push(DraftUpload {
                 key: self.draft_keys,
                 channel: channel.clone(),
                 name: path
@@ -4519,10 +4582,10 @@ impl CaperApp {
         let Some(channel) = self.selected_channel.clone() else {
             return;
         };
-        let room = uploads::MAX_ATTACHMENTS.saturating_sub(self.drafts.len());
+        let room = uploads::MAX_ATTACHMENTS.saturating_sub(self.draft_files.len());
         for attachment in attachments.into_iter().take(room) {
             self.draft_keys += 1;
-            self.drafts.push(DraftUpload {
+            self.draft_files.push(DraftUpload {
                 key: self.draft_keys,
                 channel: channel.clone(),
                 name: attachment.name.clone(),
@@ -4540,17 +4603,17 @@ impl CaperApp {
     }
 
     fn remove_draft(&mut self, key: u64) {
-        if let Some(index) = self.drafts.iter().position(|draft| draft.key == key) {
-            self.drafts[index]
+        if let Some(index) = self.draft_files.iter().position(|draft| draft.key == key) {
+            self.draft_files[index]
                 .cancel
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            self.drafts.remove(index);
+            self.draft_files.remove(index);
         }
     }
 
     /// Uploads belong to one channel; abandon them when it changes.
     fn drop_drafts(&mut self) {
-        for draft in self.drafts.drain(..) {
+        for draft in self.draft_files.drain(..) {
             draft
                 .cancel
                 .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -4558,7 +4621,7 @@ impl CaperApp {
     }
 
     fn upload_update(&mut self, key: u64, update: worker::UploadUpdate) {
-        let Some(draft) = self.drafts.iter_mut().find(|draft| draft.key == key) else {
+        let Some(draft) = self.draft_files.iter_mut().find(|draft| draft.key == key) else {
             return;
         };
         match update {
@@ -4852,7 +4915,7 @@ impl CaperApp {
                 }
                 self.dialog = None;
                 self.select_channel(channel.id.clone(), false);
-                // Web opens a new private channel's Overview to add members.
+                // Web opens a new private channel's settings to add members.
                 if channel.private {
                     self.open_manage_channel(&channel.id, &channel.name, true);
                 }
@@ -5303,6 +5366,13 @@ impl eframe::App for CaperApp {
                 self.voice.stop_speaker_test();
             }
         }
+        self.worker.showing(
+            if self.foreground && !self.navigation_open && self.dialog.is_none() {
+                self.selected_channel.as_deref()
+            } else {
+                None
+            },
+        );
     }
 }
 
@@ -6235,13 +6305,23 @@ impl CaperApp {
                     ui.add_space(10.0);
                 }
                 for invitation in self.invitations.clone() {
+                    // The space's initial, matching web, Apple and Android.
+                    let initial = invitation
+                        .name
+                        .trim()
+                        .chars()
+                        .next()
+                        .map(|letter| letter.to_uppercase().to_string())
+                        .unwrap_or_default();
                     let response = ui
                         .add(
-                            egui::Button::new(RichText::new("?").strong().color(TERRACOTTA_BRIGHT))
-                                .min_size(egui::vec2(40.0, 40.0))
-                                .fill(SURFACE)
-                                .stroke(Stroke::new(1.0, TERRACOTTA))
-                                .corner_radius(12),
+                            egui::Button::new(
+                                RichText::new(initial).strong().color(TERRACOTTA_BRIGHT),
+                            )
+                            .min_size(egui::vec2(40.0, 40.0))
+                            .fill(SURFACE)
+                            .stroke(Stroke::new(1.0, TERRACOTTA))
+                            .corner_radius(12),
                         )
                         .on_hover_text(format!("Invitation to {}", invitation.name));
                     if response.clicked() {
@@ -8909,9 +8989,9 @@ impl CaperApp {
                 self.draft.clone(), egui::FontId::proportional(13.6), TEXT,
                 (ui.available_width() - 36.0 - 22.0 - attach_width).max(1.0),
             ).size().y);
-            let chip_rows = if attach && !self.drafts.is_empty() {
+            let chip_rows = if attach && !self.draft_files.is_empty() {
                 let per_row = (((ui.available_width() - 36.0 + 8.0) / 244.0).floor() as usize).max(1);
-                self.drafts.len().div_ceil(per_row) as f32
+                self.draft_files.len().div_ceil(per_row) as f32
             } else {
                 0.0
             };
@@ -8995,7 +9075,7 @@ impl CaperApp {
                             }
                         });
                     }
-                    if attach && !self.drafts.is_empty() {
+                    if attach && !self.draft_files.is_empty() {
                         self.draft_chips(ui);
                         ui.add_space(8.0);
                     }
@@ -9030,7 +9110,7 @@ impl CaperApp {
                             .char_limit(4_000).show(ui)
                     );
                     let editor = if attach {
-                        let full = self.drafts.len() >= uploads::MAX_ATTACHMENTS;
+                        let full = self.draft_files.len() >= uploads::MAX_ATTACHMENTS;
                         let mut pick = false;
                         let editor = ui.horizontal_top(|ui| {
                             ui.vertical(|ui| {
@@ -9290,14 +9370,7 @@ impl CaperApp {
                                     ui.label(RichText::new("You can message yourself here to keep notes, reminders, and ideas.").color(MUTED));
                                 } else {
                                     ui.label("No messages yet.");
-                                    ui.label(
-                                        RichText::new(if self.selected_direct.is_some() {
-                                            "Only you and this person can read this conversation.".to_owned()
-                                        } else {
-                                            format!("Start the conversation in #{}.", self.channel_name())
-                                        })
-                                        .color(MUTED),
-                                    );
+                                    ui.label(RichText::new(self.empty_conversation_note()).color(MUTED));
                                 }
                             });
                         });
@@ -10421,7 +10494,7 @@ impl CaperApp {
         let mut remove = None;
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
-            for draft in &mut self.drafts {
+            for draft in &mut self.draft_files {
                 let (rect, chip) =
                     ui.allocate_exact_size(egui::vec2(236.0, 48.0), egui::Sense::hover());
                 let painter = ui.painter_at(rect);
@@ -10567,14 +10640,14 @@ impl CaperApp {
             }
         }
         let channel = self.selected_channel.clone();
-        for draft in &self.drafts {
+        for draft in &self.draft_files {
             if Some(&draft.channel) != channel.as_ref() {
                 draft
                     .cancel
                     .store(true, std::sync::atomic::Ordering::Relaxed);
             }
         }
-        self.drafts
+        self.draft_files
             .retain(|draft| Some(&draft.channel) == channel.as_ref());
         for (id, image) in std::mem::take(&mut self.local_media) {
             self.media.insert_local(context, &id, image);
@@ -11638,7 +11711,7 @@ impl CaperApp {
                 }
             }
             Dialog::CreateChannel => "Create a channel",
-            Dialog::ManageChannel(_) => "Overview",
+            Dialog::ManageChannel(_) => "Channel settings",
             Dialog::StartDirect => "Start a direct message",
             Dialog::Block { account, .. } => {
                 leave_title.get_or_insert(format!("Block {}?", account.display_name))
@@ -12403,7 +12476,7 @@ impl CaperApp {
         }
     }
 
-    /// Web's channel Overview: private channels load their member grants.
+    /// Web's channel settings: private channels load their member grants.
     fn open_manage_channel(&mut self, id: &str, name: &str, private: bool) {
         self.form_name = name.into();
         self.form_private = private;
@@ -18058,7 +18131,7 @@ mod tests {
             })
             .collect();
         assert!(texts.contains(&"Message TEST FIXTURE Maya"));
-        assert!(texts.contains(&"Only you and this person can read this conversation."));
+        assert!(texts.contains(&"Only you and TEST FIXTURE Maya can read this conversation."));
         assert!(texts.contains(&"No messages yet."));
         assert!(!texts.contains(&"Message #general"));
         assert!(!texts.contains(&"Members"));
@@ -22792,7 +22865,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["fixture-draft"]
         );
-        assert!(app.drafts.is_empty(), "the pending row owns sent files");
+        assert!(
+            app.draft_files.is_empty(),
+            "the pending row owns sent files"
+        );
         // A retry resends the same id and files.
         app.pending.as_mut().unwrap().sending = false;
         app.send_message();
@@ -22815,7 +22891,10 @@ mod tests {
         );
         app.upload_update(2, crate::worker::UploadUpdate::Progress(0.75));
         app.upload_update(2, crate::worker::UploadUpdate::Progress(0.5));
-        assert_eq!(app.drafts[1].progress, 0.75, "progress never goes back");
+        assert_eq!(
+            app.draft_files[1].progress, 0.75,
+            "progress never goes back"
+        );
         let attachment = model::Attachment {
             id: "uploaded".into(),
             kind: model::AttachmentKind::Image,
@@ -22836,7 +22915,7 @@ mod tests {
             2,
             crate::worker::UploadUpdate::Finished(Ok(attachment.clone())),
         );
-        assert_eq!(app.drafts[1].attachment, Some(attachment));
+        assert_eq!(app.draft_files[1].attachment, Some(attachment));
         assert!(
             app.local_media.iter().any(|(id, _)| id == "uploaded"),
             "own images show without a download"
@@ -22852,8 +22931,8 @@ mod tests {
                 stored_size: 146_432,
             },
         );
-        assert_eq!(app.drafts[0].source_size, 1_677_722);
-        assert_eq!(app.drafts[0].stored_size, Some(146_432));
+        assert_eq!(app.draft_files[0].source_size, 1_677_722);
+        assert_eq!(app.draft_files[0].stored_size, Some(146_432));
         app.upload_update(
             1,
             crate::worker::UploadUpdate::Thumbnail(egui::ColorImage::filled(
@@ -22866,13 +22945,13 @@ mod tests {
         app.remove_draft(2);
         app.upload_update(2, crate::worker::UploadUpdate::Progress(1.0));
         let cancels: Vec<_> = app
-            .drafts
+            .draft_files
             .iter()
             .map(|draft| draft.cancel.clone())
             .collect();
         app.selected_channel = Some("another-channel".into());
         app.attachment_housekeeping(&context);
-        assert!(app.drafts.is_empty());
+        assert!(app.draft_files.is_empty());
         assert!(
             cancels
                 .iter()
@@ -23514,6 +23593,34 @@ mod tests {
         assert!(!app.loading_older);
         assert!(app.older_error.is_none());
         assert!(!app.has_more);
+    }
+
+    #[test]
+    fn switching_conversations_keeps_each_unsent_draft_until_sign_out() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        let first = app.selected_channel.clone().unwrap();
+        app.draft = "first draft".into();
+        app.reload_selected_channel("other".into(), false);
+        assert!(app.draft.is_empty(), "drafts belong to one conversation");
+        app.draft = "other draft".into();
+        app.reload_selected_channel(first.clone(), false);
+        assert_eq!(app.draft, "first draft");
+        app.draft.clear();
+        app.reload_selected_channel("other".into(), false);
+        assert_eq!(app.draft, "other draft");
+        app.reload_selected_channel(first.clone(), false);
+        assert!(app.draft.is_empty(), "a cleared draft stays cleared");
+        app.reload_channel();
+        app.draft = "reloaded draft".into();
+        app.reload_channel();
+        assert_eq!(app.draft, "reloaded draft");
+        app.logout();
+        assert!(app.draft.is_empty() && app.drafts.is_empty());
     }
 
     #[test]

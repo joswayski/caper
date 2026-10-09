@@ -25,10 +25,11 @@ import {
   X,
 } from "lucide-react";
 import { getAccount, normalizeUsername, usernameError, type Account } from "../account/client";
+import { watchBrowserNotifications } from "../account/browser-notifications";
 import { playSound, preloadSoundEffects } from "../audio/effects";
 import { ChatHistoryError } from "../chat/client";
 import Wordmark from "../components/Wordmark";
-import Avatar from "../components/Avatar";
+import Avatar, { initial } from "../components/Avatar";
 import Call, { type VoiceSlot } from "../pages/Call";
 import ChannelSidebar from "../pages/ChannelSidebar";
 import MemberPresence from "./MemberPresence";
@@ -46,7 +47,7 @@ import {
 } from "./notifications";
 import Tooltip from "../components/Tooltip";
 import { createSpaceNavigation, type PreparedSpace } from "./navigation";
-import { transitionBrowse, useBrowseLayout } from "./browseTransition";
+import { transitionBrowse } from "./browseTransition";
 import {
   acceptChannelInvitation,
   acceptDirectRequest,
@@ -987,7 +988,7 @@ function ManageChannelDialog({
     };
   }, [channel.id, channel.private, detail.space.id]);
   return (
-    <Dialog title="Overview" onClose={onClose} width="wide" dismissOnBackdrop>
+    <Dialog title="Channel settings" onClose={onClose} width="wide" dismissOnBackdrop>
       <form
         id="channel-overview"
         onSubmit={(event) => {
@@ -1596,6 +1597,9 @@ export default function Spaces({
   const [account, setAccount] = useState<Account | undefined>(initialAccount);
   const [spaces, setSpaces] = useState<Space[]>(initialSpaceList?.spaces ?? []);
   const [invitations, setInvitations] = useState<Space[]>(initialSpaceList?.invitations ?? []);
+  // From the rail an invitation opens over the room instead of navigating away,
+  // which would unmount the room and end a call in progress.
+  const [railInvitation, setRailInvitation] = useState<Space>();
   const [limits, setLimits] = useState<SpaceLimits | undefined>(initialSpaceList?.limits);
   const [view, setView] = useState<PreparedSpace>();
   const [directs, setDirects] = useState<DirectConversation[]>([]);
@@ -1671,6 +1675,11 @@ export default function Spaces({
   const [navigationOpen, showNavigation] = useState(false);
   // Where Browse is headed: it changes inside a slide's view transition, after the request.
   const navigationTarget = useRef(false);
+  const notificationConversation = useRef<string | undefined>(undefined);
+  notificationConversation.current = engaged && !navigationOpen ? (directId ?? view?.channelId) : undefined;
+  useEffect(() => {
+    if (account?.id) return watchBrowserNotifications(account.id, () => notificationConversation.current);
+  }, [account?.id]);
   const changeNavigation = useCallback((open: boolean) => {
     navigationTarget.current = open;
     showNavigation(open);
@@ -1681,8 +1690,6 @@ export default function Spaces({
     navigationTarget.current = open;
     transitionBrowse(open, () => showNavigation(open));
   }, []);
-  const emptyRoomRef = useRef<HTMLElement>(null);
-  useBrowseLayout(emptyRoomRef, navigationOpen);
   const spaceMenu = useRef<HTMLDetailsElement>(null);
   const channelMenu = useRef<HTMLDetailsElement>(null);
   const channelNavigationRef = useRef<HTMLElement>(null);
@@ -1690,10 +1697,13 @@ export default function Spaces({
 
   useEffect(() => {
     const dismiss = (event: PointerEvent) => {
+      // Every menu, including DM rows outside the channel list and the narrow-layout
+      // channel title menu: Safari does not focus a tapped <summary>, so onBlur alone
+      // never closes them on an outside tap.
       for (const menu of [
         spaceMenu.current,
         channelMenu.current,
-        ...(channelNavigationRef.current?.querySelectorAll<HTMLDetailsElement>(".channel-menu[open]") ?? []),
+        ...document.querySelectorAll<HTMLDetailsElement>(".channel-menu[open], .chat-channel-menu[open]"),
       ]) {
         if (menu && !menu.contains(event.target as Node)) menu.open = false;
       }
@@ -2355,6 +2365,21 @@ export default function Spaces({
     </button>
   ));
 
+  // Closing an invitation re-reads the rail: it may have been withdrawn meanwhile.
+  const refreshInvitations = () =>
+    void listSpaces()
+      .then((result) => {
+        setSpaces(result.spaces);
+        setInvitations(result.invitations ?? []);
+      })
+      .catch(() => undefined);
+  const acceptedInvitation = (space: Space, replace: boolean) => {
+    setInvitations((items) => items.filter((item) => item.id !== space.id));
+    setSpaces((items) => [...items.filter((item) => item.id !== space.id), space]);
+    navigation.current.forget(space.id);
+    choose(space.id, undefined, replace);
+  };
+
   if (loading) return <SpacesLoading />;
   if (invitation)
     return (
@@ -2376,19 +2401,9 @@ export default function Spaces({
           space={invitation}
           onClose={() => {
             choose(spaces[0]?.id, undefined, true);
-            void listSpaces()
-              .then((result) => {
-                setSpaces(result.spaces);
-                setInvitations(result.invitations ?? []);
-              })
-              .catch(() => undefined);
+            refreshInvitations();
           }}
-          onAccepted={(space) => {
-            setInvitations((items) => items.filter((item) => item.id !== space.id));
-            setSpaces((items) => [...items.filter((item) => item.id !== space.id), space]);
-            navigation.current.forget(space.id);
-            choose(space.id, undefined, true);
-          }}
+          onAccepted={(space) => acceptedInvitation(space, true)}
           onDeclined={() => {
             setInvitations((items) => items.filter((item) => item.id !== invitation.id));
             choose(spaces[0]?.id, undefined, true);
@@ -2517,7 +2532,7 @@ export default function Spaces({
               onFocus={() => prefetch(space.id)}
               onClick={() => choose(space.id)}
             >
-              <span>{space.name.slice(0, 1).toUpperCase()}</span>
+              <span>{initial(space.name)}</span>
               {muted && <BellOff className="space-rail-muted" aria-hidden="true" />}
             </button>
           </div>
@@ -2530,9 +2545,10 @@ export default function Spaces({
           type="button"
           title={`Invitation to ${space.name}`}
           aria-label={`Invitation to ${space.name}`}
-          onClick={() => choose(space.id)}
+          onClick={() => (detail ? setRailInvitation(space) : choose(space.id))}
         >
-          <LockKeyhole aria-hidden="true" />
+          {/* The space's initial in a dashed tile, as on Apple, Android and desktop. */}
+          <span aria-hidden="true">{initial(space.name)}</span>
         </button>
       ))}
       <button
@@ -2863,138 +2879,52 @@ export default function Spaces({
     </nav>
   );
 
-  if (!channel)
-    return (
-      <>
-        <main className="call-page">
-          <header className="call-header">
-            <Wordmark />
-          </header>
-          <section
-            ref={emptyRoomRef}
-            className={`call-room spaces-room empty-channel-room${navigationOpen ? " navigation-open" : ""}`}
-          >
-            {rail}
-            <ChannelSidebar>
-              <div className="sidebar-channels">{channelNavigation(() => null)}</div>
-              <div className="empty-channel-account">
-                <span className="account-avatar" aria-hidden="true">
-                  <Avatar avatarId={account?.avatarId} name={account?.displayName ?? ""} />
-                </span>
-                <strong>{account?.displayName}</strong>
-              </div>
-            </ChannelSidebar>
-            <div className="stage empty-channel">
-              <button
-                className="navigation-toggle"
-                type="button"
-                aria-label="Back to Browse"
-                aria-expanded={navigationOpen}
-                onClick={() => setNavigationOpen((open) => !open)}
-              >
-                <ArrowLeft aria-hidden="true" />
-              </button>
-              <Hash aria-hidden="true" />
-              <h2>{spaces.length ? "No joined channels" : "Start a conversation"}</h2>
-              <p>
-                {!spaces.length
-                  ? "Create a space for your people, or start a direct message."
-                  : owner
-                    ? "Browse channels or create one to start a conversation."
-                    : "Browse channels to find a conversation, or accept a private channel invitation."}
-              </p>
-              {/* One primary action; the rest are secondary. */}
-              <div className="empty-channel-actions">
-                {spaces.length > 0 && (
-                  <button type="button" className={owner ? "secondary" : "primary"} onClick={() => setBrowseOpen(true)}>
-                    Browse channels
-                  </button>
-                )}
-                {owner && (
-                  <button type="button" className="primary" onClick={() => setDialog("channel")}>
-                    Create channel
-                  </button>
-                )}
-                {!spaces.length && (
-                  <button type="button" className="primary" onClick={() => setDialog("space")}>
-                    Create your first space
-                  </button>
-                )}
-                <button type="button" className="secondary" onClick={() => setDialog("direct")}>
-                  New direct message
-                </button>
-              </div>
-            </div>
-            {navigationOpen && (
-              <button
-                type="button"
-                className="browse-peek"
-                aria-label="Back to conversation"
-                onClick={() => setNavigationOpen(false)}
-              />
-            )}
-          </section>
-        </main>
-        {dialog === "space" && (
-          <CreateSpaceDialog
-            onClose={() => setDialog(undefined)}
-            onCreated={(space) => {
-              setSpaces((current) => [...current, space]);
-              setDialog(undefined);
-              choose(space.id);
-            }}
-          />
+  // A space with no joined channel replaces the conversation inside the room
+  // instead of rendering its own page: unmounting the room would end a call
+  // running in another space or channel.
+  const emptyStage = !channel && (
+    <div className="empty-channel">
+      <button
+        className="navigation-toggle"
+        type="button"
+        aria-label="Back to Browse"
+        aria-expanded={navigationOpen}
+        onClick={() => setNavigationOpen((open) => !open)}
+      >
+        <ArrowLeft aria-hidden="true" />
+      </button>
+      <Hash aria-hidden="true" />
+      <h2>{spaces.length ? "No joined channels" : "Start a conversation"}</h2>
+      <p>
+        {!spaces.length
+          ? "Create a space for your people, or start a direct message."
+          : owner
+            ? "Browse channels or create one to start a conversation."
+            : "Browse channels to find a conversation, or accept a private channel invitation."}
+      </p>
+      {/* One primary action; the rest are secondary. */}
+      <div className="empty-channel-actions">
+        {spaces.length > 0 && (
+          <button type="button" className={owner ? "secondary" : "primary"} onClick={() => setBrowseOpen(true)}>
+            Browse channels
+          </button>
         )}
-        {dialog === "channel" && (
-          <CreateChannelDialog
-            space={detail}
-            onClose={() => setDialog(undefined)}
-            onCreated={(created) => {
-              replaceDetail({ ...detail, channels: [...detail.channels, created] });
-              setDialog(undefined);
-              choose(detail.space.id, created.id);
-              if (created.private) setManageChannel(created);
-            }}
-          />
+        {owner && (
+          <button type="button" className="primary" onClick={() => setDialog("channel")}>
+            Create channel
+          </button>
         )}
-        {dialog === "manage-space" && (
-          <ManageSpaceDialog
-            detail={detail}
-            onClose={() => setDialog(undefined)}
-            onChanged={replaceDetail}
-            onDeleted={forgetSpace}
-          />
+        {!spaces.length && (
+          <button type="button" className="primary" onClick={() => setDialog("space")}>
+            Create your first space
+          </button>
         )}
-        {dialog === "leave-space" && account && (
-          <LeaveSpaceDialog
-            space={detail.space}
-            account={account}
-            onClose={() => setDialog(undefined)}
-            onLeft={forgetSpace}
-          />
-        )}
-        {channelDialogs}
-        {accessNotice}
-        {manageChannel && (
-          <ManageChannelDialog
-            detail={detail}
-            channel={manageChannel}
-            onClose={() => setManageChannel(undefined)}
-            onChanged={(updated) => {
-              replaceDetail({
-                ...detail,
-                channels: detail.channels.map((item) => (item.id === updated.id ? updated : item)),
-              });
-              setManageChannel(updated);
-            }}
-            onDeleted={() => {
-              replaceDetail({ ...detail, channels: detail.channels.filter((item) => item.id !== manageChannel.id) });
-              setManageChannel(undefined);
-            }}
-          />
-        )}
-      </>
-    );
+        <button type="button" className="secondary" onClick={() => setDialog("direct")}>
+          New direct message
+        </button>
+      </div>
+    </div>
+  );
 
   return (
     <>
@@ -3002,22 +2932,26 @@ export default function Spaces({
         embedded={embedded}
         engaged={engaged}
         onChatOnlineChange={onChatOnlineChange}
-        channel={{
-          id: channel.id,
-          name: channel.name,
-          spaceName: detail.space.name,
-          spaceId: detail.space.id,
-          demo: detail.space.demo,
-          direct: !!directView,
-          directPeerId: currentDirect?.peer.id,
-          // An open request or a blocked DM replaces the composer.
-          joined: currentDirect ? !directLocked : channel.joined,
-        }}
+        channel={
+          channel && {
+            id: channel.id,
+            name: channel.name,
+            spaceName: detail.space.name,
+            spaceId: detail.space.id,
+            demo: detail.space.demo,
+            direct: !!directView,
+            directPeerId: currentDirect?.peer.id,
+            // An open request or a blocked DM replaces the composer.
+            joined: currentDirect ? !directLocked : channel.joined,
+          }
+        }
+        stage={emptyStage || undefined}
+        space={{ id: detail.space.id, name: detail.space.name, demo: detail.space.demo }}
         voiceChannels={joinedChannels.map((item) => ({ id: item.id, name: item.name }))}
         channelActions={
           currentDirect ? (
             directActions
-          ) : channel.joined === false ? (
+          ) : channel?.joined === false ? (
             <div className="channel-preview">
               <div>
                 <strong>Preview</strong>
@@ -3057,8 +2991,8 @@ export default function Spaces({
           })
         }
         initialAccount={account}
-        initialHistory={!directView && view?.history?.channel.id === channel.id ? view.history : undefined}
-        initialHistoryError={!directView && view?.channelId === channel.id ? view.historyError : undefined}
+        initialHistory={!directView && channel && view?.history?.channel.id === channel.id ? view.history : undefined}
+        initialHistoryError={!directView && channel && view?.channelId === channel.id ? view.historyError : undefined}
         onReadCursor={directView ? readDirect : undefined}
         mentionMembers={
           directView ? (people ?? [directView.conversation.peer]) : view?.detail ? detail.members : undefined
@@ -3077,7 +3011,7 @@ export default function Spaces({
         spaceRail={rail}
         channelNavigation={channelNavigation}
         membersPanel={
-          directView || channel.joined === false
+          directView || !channel || channel.joined === false
             ? undefined
             : (onClose) => (
                 <MemberPresence
@@ -3150,13 +3084,31 @@ export default function Spaces({
             replaceDetail({ ...detail, channels: remaining });
             setManageChannel(undefined);
             // Deleting another channel keeps you where you are.
-            if (manageChannel.id === channel.id)
+            if (manageChannel.id === channel?.id)
               choose(detail.space.id, remaining.find((item) => item.joined !== false)?.id, true);
           }}
         />
       )}
       {channelDialogs}
       {accessNotice}
+      {railInvitation && (
+        <InvitationDialog
+          key={railInvitation.id}
+          space={railInvitation}
+          onClose={() => {
+            setRailInvitation(undefined);
+            refreshInvitations();
+          }}
+          onAccepted={(space) => {
+            setRailInvitation(undefined);
+            acceptedInvitation(space, false);
+          }}
+          onDeclined={() => {
+            setInvitations((items) => items.filter((item) => item.id !== railInvitation.id));
+            setRailInvitation(undefined);
+          }}
+        />
+      )}
     </>
   );
 }

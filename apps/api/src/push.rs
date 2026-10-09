@@ -25,6 +25,7 @@ mod credentials;
 mod delivery;
 mod expansion;
 mod fcm;
+pub(crate) mod live;
 mod settings;
 #[cfg(test)]
 mod tests;
@@ -108,6 +109,7 @@ pub(crate) enum Conversation {
         channel_id: String,
         /// `#channel (Space)`.
         title: String,
+        recipient_count: i64,
     },
 }
 
@@ -121,6 +123,7 @@ pub(crate) struct Alert {
     pub body: String,
     pub sender: String,
     pub sender_id: String,
+    pub sender_avatar_id: Option<i16>,
 }
 
 impl Alert {
@@ -130,6 +133,7 @@ impl Alert {
         conversation: Conversation,
         sender: &str,
         sender_id: &str,
+        sender_avatar_id: Option<i16>,
         text: &str,
     ) -> Self {
         let title = match &conversation {
@@ -144,6 +148,7 @@ impl Alert {
             body: preview(text),
             sender: sender.to_owned(),
             sender_id: sender_id.to_owned(),
+            sender_avatar_id: sender_avatar_id.filter(|id| (0..800).contains(id)),
         }
     }
 
@@ -382,17 +387,20 @@ fn idle_timeout(environment: &RuntimeEnvironment) -> Result<Duration, String> {
         .ok_or_else(|| "PRESENCE_IDLE_TIMEOUT_SECONDS must be between 1 and 86400".into())
 }
 
-/// Starts the workers when notifications are enabled. They need chat (the
-/// database and Valkey) because they read messages and gateway presence.
+/// Account notifications run whenever chat is enabled. The phone flag controls
+/// provider delivery only; desktop notifications need no provider credentials.
 pub(crate) fn start(
     push: &Push,
     chat: Option<&Chat>,
     environment: &RuntimeEnvironment,
 ) -> Result<(), String> {
-    if !push.enabled() {
-        return Ok(());
-    }
-    let chat = chat.ok_or("NOTIFICATIONS_ENABLED requires CHAT_ENABLED")?;
+    let Some(chat) = chat else {
+        return if push.enabled() {
+            Err("NOTIFICATIONS_ENABLED requires CHAT_ENABLED".into())
+        } else {
+            Ok(())
+        };
+    };
     let workers = Workers::new(
         chat.pool.clone(),
         push.clone(),
@@ -427,7 +435,11 @@ pub(crate) fn start(
                 delivery::prune(&workers.pool).await;
                 pruned = Some(tokio::time::Instant::now());
             }
-            match delivery::deliver_pending(&workers).await {
+            match if workers.push.enabled() {
+                delivery::deliver_pending(&workers).await
+            } else {
+                Ok(false)
+            } {
                 Ok(true) => continue,
                 Ok(false) => {}
                 Err(()) => tracing::warn!(

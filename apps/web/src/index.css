@@ -1,4 +1,6 @@
-@import "../../../shared/design.css";
+/* Base layer: element resets must not outrank Tailwind utilities (font-bold,
+   text-content, disabled:cursor-wait) on the login, profile and privacy pages. */
+@import "../../../shared/design.css" layer(base);
 @import "tailwindcss";
 
 @font-face {
@@ -47,19 +49,26 @@
   --radius-control: var(--radius);
 }
 
-body {
-  color: var(--text);
-  background: var(--blackout);
-}
+@layer base {
+  body {
+    color: var(--text);
+    background: var(--blackout);
+  }
 
-button:enabled,
-a[href],
-summary {
-  cursor: pointer;
-}
-button:disabled,
-:is(button, a, summary)[aria-disabled="true"] {
-  cursor: default;
+  button:enabled,
+  a[href],
+  summary {
+    cursor: pointer;
+  }
+  button:disabled,
+  :is(button, a, summary)[aria-disabled="true"] {
+    cursor: default;
+  }
+
+  /* Preflight resets headings to 400; titles must not be lighter than their labels. */
+  :is(h1, h2, h3, h4) {
+    font-weight: 700;
+  }
 }
 
 .page {
@@ -156,9 +165,17 @@ button:disabled,
   top: 32.971014%;
   width: 12.667946%;
   aspect-ratio: 1;
+  /* Fades in once the client picks the day's character. */
+  transition: opacity 160ms ease-out;
 }
 .wordmark .wordmark-character[data-pending] {
   visibility: hidden;
+  opacity: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .wordmark .wordmark-character {
+    transition: none;
+  }
 }
 .wordmark:focus-visible {
   outline: 2px solid var(--terracotta);
@@ -309,9 +326,10 @@ button:disabled,
   color: var(--blackout);
   background: var(--text);
 }
+/* #fff on #f3f4f5 is invisible; dim instead so the hover reads like its sibling's. */
 .app-downloads .download-button:hover {
   color: var(--blackout);
-  background: #fff;
+  background: #d4d6d8;
 }
 .app-downloads .source-button {
   color: var(--text);
@@ -356,6 +374,17 @@ button:disabled,
   color: var(--terracotta-bright);
 }
 :is(.made-by a, .latest-changes li a, .not-found a):focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 4px;
+  border-radius: 2px;
+}
+.made-by a:hover,
+.experimental-note a:hover,
+.latest-changes li a:hover {
+  color: var(--terracotta-bright);
+}
+:is(.made-by, .experimental-note, .latest-changes) a:focus-visible,
+.not-found a:focus-visible {
   outline: 2px solid var(--terracotta);
   outline-offset: 4px;
   border-radius: 2px;

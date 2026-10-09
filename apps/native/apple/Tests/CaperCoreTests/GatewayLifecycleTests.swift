@@ -94,6 +94,33 @@ final class GatewayLifecycleTests: XCTestCase {
         return socket.frames(type: "subscribe").first { $0["kind"] as? String == kind }!["id"] as! String
     }
 
+    func testNotificationsResumeSparseIDsAndDeduplicateDuringHandoff() async {
+        let factory = SocketFactory(); var delivered: [String] = []
+        let subject = gateway(factory)
+        _ = await subject.subscribeNotifications { event in
+            if let seq = event["seq"] as? String { delivered.append(seq) }
+        }
+        await eventually { factory.socket(0) != nil }; let old = factory.socket(0)!
+        old.push(["type": "hello"])
+        let id = await subscribeID(old, kind: "notifications")
+        old.push(["type": "event", "id": id, "event": ["type": "ready", "cursor": "9007199254740993"]])
+        old.push(["type": "subscribed", "id": id]); old.push(["type": "migrating"])
+        await eventually { factory.socket(1) != nil }; let candidate = factory.socket(1)!
+        candidate.push(["type": "hello"]); _ = await subscribeID(candidate, kind: "notifications")
+        XCTAssertEqual(candidate.frames(type: "subscribe").first?["after"] as? String, "9007199254740993")
+        candidate.push(["type": "subscribed", "id": id])
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertFalse(old.cancelled, "an echoed cursor is not proof of catch-up")
+        let event: [String: Any] = ["type": "notification.created", "seq": "9007199254740999", "senderAvatarId": 317]
+        old.push(["type": "event", "id": id, "event": event])
+        await eventually { delivered == ["9007199254740999"] }
+        candidate.push(["type": "event", "id": id, "event": event])
+        candidate.push(["type": "event", "id": id, "event": ["type": "ready", "cursor": "9007199254741005"]])
+        await eventually { old.cancelled }
+        XCTAssertEqual(delivered, ["9007199254740999"])
+        await subject.stop()
+    }
+
     func testHandoffWaitsForChatReadyAndMediaWhileOldDeliversAndSuppressesDuplicates() async {
         let factory = SocketFactory(); var chatEvents: [String] = []; var mediaRevisions: [Int] = []
         var states: [GatewayState] = []

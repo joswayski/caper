@@ -128,6 +128,9 @@ public final class AppModel {
     private var lastChannelBySpace: [String: String] = [:]
     private var directMessageRefreshTask: Task<Void, Never>?
     private var foreground = false
+    #if os(macOS)
+    @ObservationIgnored private lazy var desktopNotifications = DesktopNotifications(model: self)
+    #endif
     /// Web's membershipRevision: a background reconcile never applies a
     /// snapshot taken while a space or channel change here was running.
     @ObservationIgnored private var membershipChanges = 0
@@ -274,7 +277,7 @@ public final class AppModel {
         limits = nil; navigationOpen = false
         busy = false; phase = .signedOut
         async let revoke: Void = api.logout()
-        await chat.stop()
+        await chat.stop(discardingDrafts: true)
         await presence.stop()
         await voicePresence.stop()
         do { try await revoke } catch { self.error = FriendlyError.message(for: error) }
@@ -608,6 +611,9 @@ public final class AppModel {
     }
 
     private func startDirectMessageRefresh() {
+        #if os(macOS)
+        desktopNotifications.start()
+        #endif
         directMessageRefreshTask?.cancel()
         let attempt = generation
         Task { [weak self] in await self?.refreshBlocks() }
@@ -1471,6 +1477,9 @@ extension AppModel {
     }
 
     private func clearNotificationState() {
+        #if os(macOS)
+        desktopNotifications.stop()
+        #endif
         muteExpiryTask?.cancel(); muteExpiryTask = nil
         notificationSettings = nil; notificationError = nil; notificationsLoadError = nil
         notificationsLoadedAt = nil; notificationChangesInFlight = 0
@@ -1552,6 +1561,9 @@ public final class ChatModel {
     private var threadPages: [String: (hasMore: Bool, before: String?, hasNewer: Bool, after: String?, windowStart: String?, windowEnd: String?)] = [:]
     private var threadOnlyRows: Set<String> = []
     private var threadDrafts: [String: String] = [:]
+    /// Unsent text of other conversations by channel or DM ID, restored on return.
+    private var drafts: [String: String] = [:]
+    private var restoredDraft: String?
     private var threadBroadcasts: [String: Bool] = [:]
     public var channelMessages: [ChatMessage] { messages.filter { $0.isChannelMessage && !threadOnlyRows.contains($0.id) && Self.inWindow($0, start: windowStart, end: windowEnd) } }
     public var displayedChannelMessages: [ChatMessage] { channelMessages.map(mutations.project) }
@@ -1821,7 +1833,9 @@ public final class ChatModel {
         } else {
             clearLocal(preservingPending: preservingPending)
         }
-        if preservingPending { draft = preservedDraft }
+        let restoredDraft = channelID.flatMap { drafts.removeValue(forKey: $0) } ?? ""
+        draft = preservingPending ? preservedDraft : restoredDraft
+        self.restoredDraft = draft.isEmpty ? nil : draft
         // Prepared history is already loaded and authorized by navigation.
         // Show it immediately; obtaining a sending capability is not a new
         // history load (and must not flash the previous channel's title).
@@ -2344,6 +2358,15 @@ public final class ChatModel {
         return true
     }
 
+    /// Typing follows edits, not a draft restored on opening its conversation.
+    public func draftChanged(_ value: String) {
+        if let restored = restoredDraft {
+            restoredDraft = nil
+            if value == restored { return }
+        }
+        setTyping(!value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
     public func setTyping(_ active: Bool) {
         typingIdleTask?.cancel()
         typingActive = active
@@ -2357,11 +2380,12 @@ public final class ChatModel {
         flushTyping()
     }
 
-    public func stop() async {
+    public func stop(discardingDrafts: Bool = false) async {
         generation += 1
         let oldSubscription = subscriptionID
         subscriptionID = nil
         clearLocal()
+        if discardingDrafts { drafts = [:] }
         if let oldSubscription { await gateway.unsubscribe(oldSubscription) }
     }
 
@@ -2525,7 +2549,14 @@ public final class ChatModel {
         }
     }
 
+    /// Keeps the open conversation's unsent text so returning to it restores it.
+    private func stashDraft() {
+        guard let channelID else { return }
+        drafts[channelID] = draft.isEmpty ? nil : draft
+    }
+
     private func clearLocal(preservingPending: Bool = false) {
+        stashDraft()
         typingTask?.cancel(); typingIdleTask?.cancel(); typingExpiryTask?.cancel()
         typingTask = nil; typingIdleTask = nil; typingExpiryTask = nil
         typers = [:]; typingNames = []; typingActive = false; typingSent = false

@@ -34,7 +34,7 @@ try {
   browser("set", "viewport", "1280", "800", "2");
   // Hold the catalog request to exercise loading without slowing other APIs.
   evaluate(
-    'const fetch=window.fetch.bind(window); window.fetch=(input, options) => String(input).endsWith("/autocomplete-v2.json") ? new Promise(resolve => { window.releaseEmojiCatalog=() => fetch(input, options).then(resolve); }) : fetch(input, options);',
+    'const fetch=window.fetch.bind(window); window.fetch=(input, options) => String(input).endsWith("/autocomplete-v3.json") ? new Promise(resolve => { window.releaseEmojiCatalog=() => fetch(input, options).then(resolve); }) : fetch(input, options);',
   );
   const beforeLoading = messages();
   browser("fill", "#chat-message", ":tom");
@@ -178,7 +178,7 @@ try {
       `PASS: ${layout} colon/search, arrows/Tab, pointer/caret/Unicode, Escape, URL/time boundaries, insertion then send, artwork and viewport bounds`,
     );
   }
-  browser("network", "route", "**/emoji/twemoji-15/autocomplete-v2.json", "--abort");
+  browser("network", "route", "**/emoji/twemoji-15/autocomplete-v3.json", "--abort");
   browser("reload");
   wait('!!document.querySelector("#chat-message:not(:disabled)")');
   browser("fill", "#chat-message", ":tom");

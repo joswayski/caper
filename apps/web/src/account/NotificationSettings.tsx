@@ -1,6 +1,11 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { NotificationLevel } from "../spaces/client.ts";
 import { refreshNotificationSettings, setNotificationLevel, useNotificationSettings } from "../spaces/notifications.ts";
+import {
+  browserNotificationPermission,
+  browserNotificationsEnabled,
+  setBrowserNotificationsEnabled,
+} from "./browser-notifications";
 import "./privacy.css";
 
 const choices: Array<{ value: NotificationLevel; label: string }> = [
@@ -14,6 +19,8 @@ export default function NotificationSettings() {
   const settings = useNotificationSettings();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
+  const [permission, setPermission] = useState<NotificationPermission | "unsupported">("unsupported");
+  const [browserEnabled, setBrowserEnabled] = useState(true);
   const name = useId();
   // Only the latest load (initial or a retry) may report an error; unmounting invalidates it.
   const loadRequest = useRef(0);
@@ -28,8 +35,17 @@ export default function NotificationSettings() {
 
   useEffect(() => {
     load();
+    const sync = () => {
+      setPermission(browserNotificationPermission());
+      setBrowserEnabled(browserNotificationsEnabled());
+    };
+    sync();
+    window.addEventListener("focus", sync);
+    window.addEventListener("storage", sync);
     return () => {
       loadRequest.current++;
+      window.removeEventListener("focus", sync);
+      window.removeEventListener("storage", sync);
     };
   }, []);
 
@@ -62,6 +78,49 @@ export default function NotificationSettings() {
             </span>
           </label>
         ))}
+      </fieldset>
+      <fieldset>
+        <legend>On this browser</legend>
+        {permission === "granted" ? (
+          <label>
+            <input
+              type="checkbox"
+              checked={browserEnabled}
+              onChange={(event) => {
+                setBrowserEnabled(event.target.checked);
+                setBrowserNotificationsEnabled(event.target.checked);
+              }}
+            />
+            <span>
+              <strong>Show desktop notifications</strong>
+              <small>While Caper is open, including other conversations.</small>
+            </span>
+          </label>
+        ) : permission === "default" ? (
+          <button
+            type="button"
+            className="privacy-notification-enable"
+            onClick={() => {
+              void Notification.requestPermission()
+                .then((value) => {
+                  setPermission(value);
+                  if (value === "granted") {
+                    setBrowserEnabled(true);
+                    setBrowserNotificationsEnabled(true);
+                  }
+                })
+                .catch(() => setError("Browser notification permission couldn’t be requested."));
+            }}
+          >
+            Enable browser notifications
+          </button>
+        ) : (
+          <small>
+            {permission === "denied"
+              ? "Notifications are blocked. Allow them in your browser’s site settings."
+              : "This browser doesn’t support desktop notifications."}
+          </small>
+        )}
       </fieldset>
       {error && (
         <p className="privacy-error" role="alert">

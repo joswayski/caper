@@ -49,6 +49,9 @@ export default function ProfileForm({
         }}
         autoFocus={!account.username}
         autoComplete="username"
+        autoCapitalize="none"
+        autoCorrect="off"
+        spellCheck={false}
         minLength={3}
         maxLength={32}
         pattern="[a-z0-9_]{3,32}"

@@ -49,6 +49,8 @@ struct Claimed {
     space_name: Option<String>,
     sender_id: String,
     sender: String,
+    sender_avatar_id: Option<i16>,
+    recipient_count: i64,
     recipient: String,
     mobile: String,
 }
@@ -83,6 +85,7 @@ impl Claimed {
                 space_id: space_id.clone(),
                 channel_id: self.channel_id.clone(),
                 title: format!("#{} ({space_name})", self.channel_name),
+                recipient_count: self.recipient_count,
             },
             _ => Conversation::Direct {
                 id: self.channel_id.clone(),
@@ -94,6 +97,7 @@ impl Claimed {
             conversation,
             &self.sender,
             &self.sender_id,
+            self.sender_avatar_id,
             self.text.as_deref().unwrap_or_default(),
         )
     }
@@ -154,6 +158,11 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
                 s.external_id AS space_id, s.name AS space_name,
                 COALESCE(author.external_id, m.payload->'author'->>'id', '') AS sender_id,
                 COALESCE(author.display_name, m.payload->'author'->>'name', '') AS sender,
+                author.avatar_id AS sender_avatar_id,
+                (SELECT count(*) FROM public.space_members sm JOIN public.users u ON u.id=sm.user_id
+                 WHERE sm.space_id=ch.space_id AND sm.deleted_at IS NULL AND u.deleted_at IS NULL AND sm.user_id<>n.actor_id
+                 AND (NOT ch.private OR s.owner_id=sm.user_id OR EXISTS(SELECT 1 FROM public.channel_members cm
+                      WHERE cm.channel_id=ch.id AND cm.user_id=sm.user_id AND cm.deleted_at IS NULL))) AS recipient_count,
                 recipient.external_id AS recipient,
                 COALESCE(ns.mobile, 'whenInactive') AS mobile
          FROM claimed c

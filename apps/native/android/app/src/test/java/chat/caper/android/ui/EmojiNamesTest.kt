@@ -37,7 +37,8 @@ class EmojiNamesTest {
         assertEquals("thumbs-up", emojiName("👍", index))
         assertEquals("face-with-tears-of-joy", emojiName("😂", index))
         assertEquals("party-popper", emojiName("🎉", index))
-        assertEquals("looking", emojiName("👀", index))
+        assertEquals("eyes", emojiName("👀", index))
+        assertEquals("fire", emojiName("🔥", index))
         assertEquals("red-heart", emojiName("\u2764\uFE0F", index))
     }
 }

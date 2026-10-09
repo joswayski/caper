@@ -3,6 +3,7 @@ import { Paperclip } from "lucide-react";
 import { DraftAttachments, type DraftAttachment } from "./Attachments.tsx";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import { COUNTER_START, counterTone } from "./counter.ts";
+import { readDraft, saveDraft } from "./drafts.ts";
 import type { MentionCandidate } from "./mentions.ts";
 import { MAX_ATTACHMENTS } from "./uploads.ts";
 
@@ -27,6 +28,8 @@ export interface ComposerHandle {
 interface ComposerProps {
   ref?: Ref<ComposerHandle>;
   channelName: string;
+  /** Keeps unsent text for this conversation across channel and DM switches. */
+  draftKey?: string;
   direct: boolean;
   disabled: boolean;
   identityReady: boolean;
@@ -57,6 +60,7 @@ interface ComposerProps {
 export default function Composer({
   ref,
   channelName,
+  draftKey,
   direct,
   disabled,
   identityReady,
@@ -71,7 +75,7 @@ export default function Composer({
   onDraftPresence,
   attachments,
 }: ComposerProps) {
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(() => (draftKey ? readDraft(draftKey) : ""));
   const [validationError, setValidationError] = useState<string>();
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -90,6 +94,9 @@ export default function Composer({
     onTooLong: () => setValidationError("Messages must be 4,000 characters or fewer."),
   });
 
+  useEffect(() => {
+    if (draftKey) saveDraft(draftKey, draft);
+  }, [draftKey, draft]);
   const hasDraft = draft !== "";
   useEffect(() => {
     onDraftPresence(hasDraft);

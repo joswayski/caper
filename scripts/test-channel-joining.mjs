@@ -397,6 +397,8 @@ try {
   );
   screenshot("public-channel-preview-390");
   browser("find", "role", "button", "click", "--name", "Back to Browse", "--exact");
+  // The phone Browse slide swallows clicks until it settles.
+  wait("!document.documentElement.dataset.browseTransition");
   browser("click", ".pending-channel-invite");
   wait('!!document.querySelector(".channel-invitation-consent")');
   screenshot("private-channel-consent-390");

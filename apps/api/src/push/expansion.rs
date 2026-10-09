@@ -220,6 +220,14 @@ pub(super) async fn expand(
     {
         let ids: Vec<i64> = recipients.iter().map(|r| r.id).collect();
         let kinds: Vec<&str> = recipients.iter().map(|r| r.kind.name()).collect();
+        // Serialize inserts per recipient before allocating notification IDs.
+        // An ID cursor must not skip a lower ID that commits after a higher one.
+        // Sorted locks also prevent deadlocks between overlapping fanout jobs.
+        sqlx::query("SELECT id FROM public.users WHERE id=ANY($1) ORDER BY id FOR NO KEY UPDATE")
+            .bind(&ids)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|_| ())?;
         sqlx::query(
             "INSERT INTO public.notifications (user_id,kind,message_id,channel_id,space_id,actor_id)
              SELECT r.user_id, r.kind, $3, $4, $5, $6 FROM UNNEST($1::bigint[], $2::text[]) AS r(user_id, kind)

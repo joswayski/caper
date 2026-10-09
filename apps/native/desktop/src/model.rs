@@ -2777,8 +2777,8 @@ mod tests {
             reactor("three", None, None),
         ];
         assert_eq!(
-            reactor_summary(&authors, None, Some("looking"), "👀"),
-            "only_username, Someone and Someone reacted with :looking:"
+            reactor_summary(&authors, None, Some("eyes"), "👀"),
+            "only_username, Someone and Someone reacted with :eyes:"
         );
     }
 

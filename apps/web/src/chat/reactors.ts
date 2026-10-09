@@ -97,18 +97,21 @@ const bareCode = (code: string) =>
 let names: Promise<Map<string, string>> | undefined;
 
 /** Code points (ignoring U+FE0F) to the picker's preferred dashed name. */
-export function emojiNameIndex(emojis: Record<string, { n: string[]; u: string }[]>) {
+export function emojiNameIndex(
+  emojis: Record<string, { n: string[]; u: string }[]>,
+  labels: Record<string, string> = {},
+) {
   const byCode = new Map<string, string>();
   for (const entries of Object.values(emojis)) {
-    for (const entry of entries) byCode.set(bareCode(entry.u), emojiNames(entry.n).at(-1)!);
+    for (const entry of entries) byCode.set(bareCode(entry.u), emojiNames(entry.n, labels[entry.u]).at(-1)!);
   }
   return byCode;
 }
 
 /** Catalog names from the picker's data, loaded on first use. */
 export function loadEmojiNames() {
-  names ??= import("emoji-picker-react/dist/data/emojis-en")
-    .then(({ default: english }) => emojiNameIndex(english.emojis))
+  names ??= Promise.all([import("emoji-picker-react/dist/data/emojis-en"), import("./emoji-labels.json")])
+    .then(([{ default: english }, { default: labels }]) => emojiNameIndex(english.emojis, labels))
     .catch((error: unknown) => {
       names = undefined;
       throw error;

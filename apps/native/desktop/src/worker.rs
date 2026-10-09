@@ -8,10 +8,13 @@ use crate::notifications::{Change, Saved, Scope};
 use eframe::egui;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{
+    Arc, Mutex,
+    mpsc::{self, Receiver, Sender},
+};
 use std::thread;
+use std::time::{Duration, Instant};
 
 pub enum Command {
     Forward {
@@ -257,6 +260,11 @@ pub enum Command {
     },
     Activity,
     StopGateway,
+    StartNotifications {
+        epoch: u64,
+        token: String,
+    },
+    StopNotifications,
 }
 
 #[derive(Clone, Debug)]
@@ -429,6 +437,14 @@ pub enum AdminResult {
 }
 
 pub enum Event {
+    OpenNotification {
+        epoch: u64,
+        alert: crate::os_notifications::Alert,
+    },
+    NotificationError {
+        epoch: u64,
+        error: String,
+    },
     Forward {
         generation: u64,
         request: u64,
@@ -836,29 +852,105 @@ fn prepare_navigation_read(
 pub struct Worker {
     commands: Sender<Command>,
     pub events: Receiver<Event>,
+    context: egui::Context,
+    visible_conversation: Arc<Mutex<Option<(String, Instant)>>>,
 }
 
 impl Worker {
     pub fn new(api: Api, context: egui::Context) -> Self {
         let (commands, incoming) = mpsc::channel();
         let (events, outgoing) = mpsc::channel();
-        thread::spawn(move || manage(api, context, incoming, events));
+        let repaint = context.clone();
+        let visible_conversation = Arc::new(Mutex::new(None));
+        let visible = visible_conversation.clone();
+        thread::spawn(move || manage(api, repaint, incoming, events, visible));
         Self {
             commands,
             events: outgoing,
+            context,
+            visible_conversation,
         }
     }
 
     pub fn send(&self, command: Command) {
         let _ = self.commands.send(command);
     }
+
+    pub fn focus(&self) {
+        self.context
+            .send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        self.context.send_viewport_cmd(egui::ViewportCommand::Focus);
+    }
+
+    pub fn showing(&self, conversation: Option<&str>) {
+        *self.visible_conversation.lock().unwrap() =
+            conversation.map(|id| (id.to_owned(), Instant::now()));
+        if conversation.is_some() {
+            self.context.request_repaint_after(Duration::from_secs(1));
+        }
+    }
 }
 
-fn manage(api: Api, context: egui::Context, incoming: Receiver<Command>, events: Sender<Event>) {
+fn manage(
+    api: Api,
+    context: egui::Context,
+    incoming: Receiver<Command>,
+    events: Sender<Event>,
+    visible: Arc<Mutex<Option<(String, Instant)>>>,
+) {
     let mut gateway: Option<gateway::GatewayControl> = None;
+    let mut notifications: Option<(u64, crate::os_notifications::Control)> = None;
     let mut credential_generation = 0;
     while let Ok(command) = incoming.recv() {
         match command {
+            Command::StartNotifications { epoch, token } => {
+                notifications.take();
+                let events = events.clone();
+                let context = context.clone();
+                let visible = visible.clone();
+                notifications = Some((
+                    epoch,
+                    crate::os_notifications::watch(api.base(), token, move |alert, stopped| {
+                        // A focused UI publishes a short lease. If minimized
+                        // windows stop repainting, stale focus cannot suppress alerts.
+                        if !alert.fresh()
+                            || visible.lock().unwrap().as_ref().is_some_and(|(id, at)| {
+                                Some(id.as_str()) == alert.conversation()
+                                    && at.elapsed() < Duration::from_secs(2)
+                            })
+                        {
+                            return;
+                        }
+                        let events = events.clone();
+                        let context = context.clone();
+                        thread::spawn(move || {
+                            let target = alert.clone();
+                            let clicks = events.clone();
+                            let repaint = context.clone();
+                            if let Err(error) =
+                                crate::os_notifications::show(alert, stopped, move || {
+                                    repaint
+                                        .send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                                    repaint.send_viewport_cmd(egui::ViewportCommand::Focus);
+                                    send(
+                                        &clicks,
+                                        &repaint,
+                                        Event::OpenNotification {
+                                            epoch,
+                                            alert: target.clone(),
+                                        },
+                                    );
+                                })
+                            {
+                                send(&events, &context, Event::NotificationError { epoch, error });
+                            }
+                        });
+                    }),
+                ));
+            }
+            Command::StopNotifications => {
+                notifications.take();
+            }
             Command::Connect {
                 generation,
                 token,
@@ -896,6 +988,9 @@ fn manage(api: Api, context: egui::Context, incoming: Receiver<Command>, events:
             }
             Command::Activity => {
                 if let Some(control) = &gateway {
+                    control.activity();
+                }
+                if let Some((_, control)) = &notifications {
                     control.activity();
                 }
             }
@@ -1484,6 +1579,8 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
         },
         Command::Connect { .. }
         | Command::StopGateway
+        | Command::StartNotifications { .. }
+        | Command::StopNotifications
         | Command::Activity
         | Command::PersistCredential { .. }
         | Command::ClearCredential { .. } => return,

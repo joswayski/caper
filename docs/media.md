@@ -119,7 +119,10 @@ channel. Its roster opens automatically on connection. Mic, deafen and device
 settings stay in the account footer, including before joining. When navigation
 hides the active channel, its roster, channel/space status and single Leave
 action pin above that footer; participant audio menus open upward. Browsing
-other chats, spaces or DMs does not leave voice.
+other chats, spaces or DMs does not leave voice. That includes a space with no
+joined channel, whose empty state replaces only the conversation, and a pending
+invitation opened from the rail, which opens over the room. Voice still ends
+when its own channel is left, deleted or revoked.
 Voice actions are neutral until hover/focus, and empty channels have no voice
 status text. Only occupied channels show a voice count. Hover and connection
 updates do not shift the active channel's action target; expanding its roster
@@ -593,6 +596,13 @@ Message bodies, chat capabilities, and account credentials are never logged.
 Messages and author snapshots are saved in Postgres and visible to authorized
 channel members; there is no automatic retention purge. Browser tokens use local
 storage; drafts/pending sends survive reconnects but not closing/reloading a tab.
+Each channel and DM keeps its own unsent draft while the app stays open on web,
+Android, Apple and Rust desktop: switching conversations and coming back restores
+it, sending clears it, and signing out discards every draft. Drafts stay in memory
+and are never sent to the API. Restoring one does not send a typing indicator.
+`scripts/test-desktop-navigation.mjs` (channels) and
+`scripts/test-direct-messages.mjs` (DMs) check this in Chromium. Desktop, Apple
+and Android unit tests cover switching and sign-out.
 Signed-in startup obtains a fresh capability
 from the current account session rather than identifying an account by its name.
 
@@ -957,7 +967,7 @@ from its own domain after checking a signature the API issued.
 
 ### Data model
 
-One `assets` row per logical file (`202610080010_assets.sql`), shared by future
+One `assets` row per logical file (`202610090010_assets.sql`), shared by future
 purposes such as avatars (`purpose`, today only `attachment`). An optional
 preview is a fixed derived object beside the original, not another row:
 
@@ -1359,7 +1369,13 @@ ImageMagick 7). Android and Rust read `shared/emoji`; SwiftPM requires a generat
 copy inside its target, checked byte-for-byte by CI, including licenses.
 Picker names use dashes (for example, `grinning-face`). Web and all native
 catalogs also include underscore and spaced search aliases (`grinning_face` and
-`grinning face`). Names are labels/search terms, not stored reaction identifiers:
+`grinning face`). The picker package orders its names by length, so its last name
+can be slang or a category (`litaf` for 🔥, `looking` for 👀, `animals` for 🐕).
+`apps/web/src/chat/emoji-labels.json` supplies the Unicode CLDR short name for those
+entries; the package's names stay searchable. Regenerate it with
+`node scripts/emoji-labels.mjs` (fetches the Emoji 15.0 `emoji-test.txt`), then
+`node scripts/native-emoji.mjs --catalog-only`. Composer suggestions rank exact,
+prefix, keyword and substring matches, preferring shorter names within a rank. Names are labels/search terms, not stored reaction identifiers:
 selecting any spelling still sends the same Unicode emoji. Existing reactions
 need no migration. The browser fixture checks all three search spellings,
 dash-separated accessible names/image alt text, and Unicode persistence.
@@ -1803,7 +1819,9 @@ CHAT_TEST_VALKEY_URL=redis://127.0.0.1:6379 \
 
 For desktop hover assertions, set `MESSAGE_TEST_CHROME` to a Chromium executable
 wrapper that adds
-`--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4`.
+`--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4`;
+`scripts/fine-pointer-chromium.sh` is one (`CAPER_CHROMIUM` picks the browser,
+otherwise Playwright's newest Chromium).
 Stock headless Chromium reports no hover device. The script verifies the fine
 pointer before checking hover and later checks a 390px narrow browser layout.
 That is not touch emulation or physical-device validation.
@@ -5283,7 +5301,7 @@ space), and `PUT /api/blocks/member000001` blocks Maya, whose two seeded
 
 ### Mobile push (phase 1): direct APNs and FCM
 
-Phone push for DMs and channel messages is built on the server and sends
+Phone push with sender avatars for DMs and channel messages is built on the server and sends
 directly to APNs (iPhone) and FCM HTTP v1 (Android); there is no SNS or push
 vendor. It stays off until `NOTIFICATIONS_ENABLED=true`, and each platform is
 advertised by `GET /api/push/config` only when it is listed in `PUSH_PLATFORMS`
@@ -5295,8 +5313,9 @@ payloads, routes, retries and configuration.
 
 - Each committed account-authored message (sends and forwards, never edits)
   writes one `notification_jobs` row in its send transaction. Workers in the API
-  role expand it into per-recipient notifications and per-device deliveries and
-  send them without holding a database connection.
+  role expand it into per-recipient notifications whenever chat is enabled.
+  `NOTIFICATIONS_ENABLED` gates phone delivery, not this expansion or local OS
+  notifications. Provider sends hold no database connection.
 - Registrations belong to the account session: logout revokes them, delivery
   rechecks the session, and dead tokens reported by Apple or Google are revoked.
 - Provider keys live only in `production/apps/caper` (and `staging/apps/caper`),
@@ -5305,8 +5324,30 @@ payloads, routes, retries and configuration.
 - Provider acceptance does not prove device receipt, and sent notifications
   cannot be recalled. Server tests use mock APNs/FCM servers; validate on physical
   Android and signed iOS devices before adding a platform to `PUSH_PLATFORMS`.
-- Browser Web Push, macOS push and Rust desktop OS notifications are not
-  implemented (phases 2 and 3).
+- Open browser tabs and running macOS/Windows/Linux apps implement local OS
+  notifications from an account-wide gateway feed, independently of the current
+  channel. They include sender artwork, focused-conversation suppression,
+  reconnect deduplication, click navigation and logout cleanup. macOS uses an
+  avatar attachment rather than replacing the app icon. Closed-browser Web Push,
+  macOS APNs and keep-running-in-tray behavior remain unimplemented.
+
+The additive `202610090002_live_notifications.sql` index supports account
+notification cursors. Deploy API/migration, then gateway, then independent web
+and native releases. iOS requires Communication Notifications on the parent
+App ID, refreshed profiles and an embedded `.notifications` extension profile.
+See [the exact operator commands and rollback](notifications.md#sender-avatars-and-desktop-deployment-order).
+Merging does not deploy these components.
+
+Sender-avatar/local-notification validation (October 9, 2026):
+
+| Platform | Validation boundary |
+| --- | --- |
+| API/gateway | Rust workspace tests; 45 disposable Postgres/Valkey tests and two account integration tests pass, including real gateway reconnect, private-grant/session revocation, privacy/settings filtering and current avatar delivery to mock APNs/FCM. Provider mocks are not real device receipt. |
+| Web | `npm run check` and `npm test -- --maxWorkers=1` pass (491 tests). Chromium desktop/390px renders of default/granted/denied browser controls inspected; permission states and notification construction explicitly mocked. Fixture delivery includes sender icon/body and click routing. No service worker, Safari or physical-browser acceptance. |
+| Rust desktop | 327 full libwebrtc-linked Linux tests pass (9 existing opt-in tests ignored), including sparse notification replay without a UI loop; application-package Clippy passes. A temporary probe rendered the real Linux backend against Dunst and verified its Open callback; sender-avatar screenshot inspected. Dependency-inclusive Clippy hits existing vendored WebRTC safety-documentation warnings. Minimized-window activation and Windows runtime remain unverified. |
+| Android | Avatar parser regression added; no Android SDK/build/device available in this orb. FCM physical receipt and rendered MessagingStyle remain unverified. |
+| iOS/macOS | Extension/bundle/entitlement changes and macOS local delivery implemented; no Swift/Xcode build, XCTest, signed provisioning or OS banner inspection available in this orb. Signed iOS communication banners, extension fallback, macOS attachments and minimized activation require native acceptance. |
+| Containers | No Docker daemon in this orb. Web production build and Rust compilation checked directly; images not built or executed. |
 
 `202610080002_notifications.sql` drops the unused SNS-era `push_devices`,
 `push_notifications` and `push_deliveries` tables; `202610030002_push.sql` stays
@@ -5662,11 +5703,11 @@ Presentation stays platform-native.
 
 Gaps found but not changed here: Rust desktop has no automatic voice reconnect
 and Android only retries ICE once; Android and iPhone have no microphone choice;
-iPhone has no lock-screen call controls (CallKit); web, macOS and Rust desktop
-have no OS notifications; Android has no in-app update notice; Android and Apple
+iPhone has no lock-screen call controls (CallKit); Android has no in-app update notice; Android and Apple
 load older history only from the button; Apple scrolls to every new message even
 while reading history. Product gaps on every client (no change): message deletion,
-links, unread markers, jump to latest, per-channel drafts and shortcuts.
+links, unread markers, jump to latest and shortcuts. (Per-conversation drafts
+were added later on every client.)
 
 **Deployment order.** No backend step. Web, Android, Apple and Rust desktop can
 release independently, in any order; merging does not deploy. Roll back web with
