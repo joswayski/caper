@@ -19,7 +19,7 @@ const NARROW = "(max-width: 760px)";
 const ROOM = ".call-room.spaces-room";
 const NAME = "browse-room";
 /** Browse's account and voice bar, which stays uncovered at the bottom. */
-const BAR = ":scope > .people-panel > :is(.voice-panel, .empty-channel-account)";
+const BAR = ":scope > .people-panel > .voice-panel";
 const SETTLE = { duration: 320, easing: "cubic-bezier(0.32, 0.72, 0, 1)" };
 /** An ease-out whose initial speed is three times its average, to carry on from a finger. */
 const RELEASE_EASING = "cubic-bezier(0.2, 0.6, 0.35, 1)";

@@ -117,12 +117,17 @@ async function fixture() {
     if (path === "/api/spaces")
       return Response.json({
         spaces: f.noSpaces ? [] : [space, otherSpace],
+        invitations: f.invitations ?? [],
         limits: { ownedSpaces: 20, totalSpaces: 100, channelsPerSpace: 100 },
       });
     if (path === "/api/spaces/workspace123")
       return Response.json({ space, channels, members: [{ ...account, owner: true }] });
     if (path === "/api/spaces/otherSpace12")
-      return Response.json({ space: otherSpace, channels: [otherChannel], members: [{ ...account, owner: true }] });
+      return Response.json({
+        space: otherSpace,
+        channels: f.otherDeleted ? [] : [{ ...otherChannel, ...(f.otherUnjoined ? { joined: false } : {}) }],
+        members: [{ ...account, owner: true }],
+      });
     if (path === "/api/spaces/workspace123/channels/private00000/members") return Response.json({ members: [account] });
     if (path.startsWith("/api/chat/channels/") && path.endsWith("/messages"))
       return Response.json({
@@ -590,6 +595,69 @@ try {
       wait(`voiceFixture.client.phase === 'idle'`);
     }
     browser("set", "media", "no-preference");
+    // A space without a joined channel and a rail invitation replace only the
+    // conversation: the room, and a call running elsewhere, stay mounted.
+    browser("set", "viewport", "1280", "900", "2");
+    evaluate(`voiceFixture.invitations = [{ id: "invited00000", name: "Invited space", ownerId: "other-owner",
+      inviter: { id: "inviter", username: "inviter", displayName: "Inviter" } }];
+      voiceFixture.showSpaces(true);`);
+    wait(
+      `document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha' && document.querySelector('.voice-button[aria-disabled="false"]')`,
+    );
+    const mediaLeaves = () => evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.leave').length;`);
+    click("Other test space");
+    wait(
+      `document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'lobby' && document.querySelector('.voice-button[aria-disabled="false"]')`,
+    );
+    click("Join voice");
+    wait(`voiceFixture.client?.phase === 'connected' && document.querySelector('[aria-label="Leave voice"]')`);
+    let leaves = mediaLeaves();
+    evaluate(`voiceFixture.otherDeleted = true; window.dispatchEvent(new Event("focus"));`);
+    wait(`document.querySelector('.empty-channel') && voiceFixture.client.phase === 'idle'`);
+    assert.equal(mediaLeaves(), leaves + 1, "A call whose channel disappears still ends in the empty view");
+    click("Test space");
+    wait(
+      `document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha' && document.querySelector('.voice-button[aria-disabled="false"]')`,
+    );
+    click("Join voice");
+    wait(`voiceFixture.client?.phase === 'connected' && document.querySelector('[aria-label="Leave voice"]')`);
+    leaves = mediaLeaves();
+    click("Other test space");
+    wait(`document.querySelector('.empty-channel')`);
+    assert.equal(
+      evaluate(`return voiceFixture.client.phase;`),
+      "connected",
+      "A space with no joined channel keeps the call",
+    );
+    assert.equal(mediaLeaves(), leaves);
+    assert.match(
+      evaluate(`return document.querySelector('.voice-dock .connected-channel')?.textContent ?? '';`),
+      /alpha \/ Test space/,
+      "The dock keeps the call's channel and leave control",
+    );
+    screenshot("empty-space-in-call-1280");
+    browser("set", "viewport", "390", "844", "2");
+    wait(`document.querySelector('.empty-channel')?.getBoundingClientRect().width < 390`);
+    assert.equal(evaluate(`return document.documentElement.scrollWidth > innerWidth;`), false);
+    assert.ok(
+      evaluate(`const r = document.querySelector('[aria-label="Leave voice"]').getBoundingClientRect();
+        return r.width > 0 && r.top >= 0 && r.bottom <= innerHeight;`),
+      "Phones keep the call's Leave control in view",
+    );
+    screenshot("empty-space-in-call-390");
+    browser("set", "viewport", "1280", "900", "2");
+    click("Invitation to Invited space");
+    wait(`document.querySelector('.invitation-consent')`);
+    assert.equal(evaluate(`return voiceFixture.client.phase;`), "connected", "A rail invitation keeps the call");
+    assert.ok(evaluate(`return !!document.querySelector('.empty-channel');`), "The invitation opens over the room");
+    screenshot("rail-invitation-in-call-1280");
+    browser("press", "Escape");
+    wait(`!document.querySelector('.invitation-consent')`);
+    assert.equal(evaluate(`return voiceFixture.client.phase;`), "connected");
+    assert.equal(mediaLeaves(), leaves);
+    click("Leave voice");
+    wait(`voiceFixture.client.phase === 'idle'`);
+    evaluate(`voiceFixture.invitations = []; voiceFixture.otherDeleted = false;`);
     // A cold DM URL must check a real channel, not the DM's media endpoint.
     browser("set", "viewport", "1280", "900", "2");
     evaluate(`voiceFixture.showSpaces(true, 'selfdm000000');`);
@@ -612,7 +680,7 @@ try {
     );
     evaluate(`await voiceFixture.cleanup();`);
     console.log(
-      "PASS DM row geometry, voice retention/join from DMs, cold DM/no-space routes, hover/open/keyboard menus, ringless click/keyboard focus and 6px channel gaps at 1280px/390px (mock signaling/WebRTC)",
+      "PASS DM row geometry, voice retention/join from DMs, calls kept across empty spaces and rail invitations, cold DM/no-space routes, hover/open/keyboard menus, ringless click/keyboard focus and 6px channel gaps at 1280px/390px (mock signaling/WebRTC)",
     );
   } else if (process.env.VOICE_TEST_REDESIGN === "1") {
     evaluate(`voiceFixture.timerEnabled = true; voiceFixture.showSpaces();`);

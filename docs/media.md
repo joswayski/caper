@@ -119,7 +119,10 @@ channel. Its roster opens automatically on connection. Mic, deafen and device
 settings stay in the account footer, including before joining. When navigation
 hides the active channel, its roster, channel/space status and single Leave
 action pin above that footer; participant audio menus open upward. Browsing
-other chats, spaces or DMs does not leave voice.
+other chats, spaces or DMs does not leave voice. That includes a space with no
+joined channel, whose empty state replaces only the conversation, and a pending
+invitation opened from the rail, which opens over the room. Voice still ends
+when its own channel is left, deleted or revoked.
 Voice actions are neutral until hover/focus, and empty channels have no voice
 status text. Only occupied channels show a voice count. Hover and connection
 updates do not shift the active channel's action target; expanding its roster

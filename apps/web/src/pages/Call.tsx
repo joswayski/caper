@@ -418,6 +418,14 @@ interface CallProps {
     directPeerId?: string;
     joined?: boolean;
   };
+  /**
+   * Shown in place of the conversation when no channel is open (a space with no
+   * joined channel). The room stays mounted, so voice in another channel keeps
+   * playing with its dock; like a DM, this view has no voice of its own.
+   */
+  stage?: ReactNode;
+  /** The space being viewed when `stage` replaces its conversation. */
+  space?: { id: string; name: string; demo?: boolean };
   onReadCursor?: (seq: string) => void;
   channelActions?: ReactNode;
   membersPanel?: (onClose: () => void) => ReactNode;
@@ -456,6 +464,8 @@ interface CallProps {
 
 export default function Call({
   channel,
+  stage,
+  space,
   onReadCursor,
   channelActions,
   voiceChannels,
@@ -531,16 +541,20 @@ export default function Call({
   const [publicParticipants, setPublicParticipants] = useState<Record<string, PublicPresence>>({});
   const [voiceChannel, setVoiceChannel] = useState(channel);
   const clientRef = useRef<PublicCallClient | undefined>(undefined);
-  // DMs have no voice of their own; the space's joined channels still do.
-  const mediaChannelId = channel?.direct ? voiceChannels?.[0]?.id : channel?.id;
+  const spaceId = channel?.spaceId ?? space?.id;
+  const demo = channel?.demo ?? space?.demo;
+  // DMs and a space without a joined channel have no voice of their own; the
+  // space's joined channels still do.
+  const voiceless = !!channel?.direct || stage !== undefined;
+  const mediaChannelId = voiceless ? voiceChannels?.[0]?.id : channel?.id;
   const mediaRoot =
-    mediaChannelId && !channel?.demo ? `/api/channels/${encodeURIComponent(mediaChannelId)}/media` : "/api/media";
+    mediaChannelId && !demo ? `/api/channels/${encodeURIComponent(mediaChannelId)}/media` : "/api/media";
   const channelJoined = channel?.joined !== false;
-  const voiceJoined = channel?.direct ? !!voiceChannels?.length : channelJoined;
+  const voiceJoined = voiceless ? !!voiceChannels?.length : channelJoined;
   const available = voiceJoined ? availability[mediaRoot] : false;
   const clientRoot = useRef(mediaRoot);
   const rootFor = (channelId?: string) =>
-    !channelId || channel?.demo ? "/api/media" : `/api/channels/${encodeURIComponent(channelId)}/media`;
+    !channelId || demo ? "/api/media" : `/api/channels/${encodeURIComponent(channelId)}/media`;
   const createClient = (root = mediaRoot) => {
     const client = new PublicCallClient((next) => {
       if (clientRef.current === client) setState(next);
@@ -559,7 +573,7 @@ export default function Call({
   const publicRoster = idle || (state.phase === "joining" && !state.participants.length);
   const roster = publicRoster ? (publicParticipants[mediaRoot]?.participants ?? []) : state.participants;
   const identityName = account?.displayName || chatAuthor?.name || name;
-  const accountPresence = !!account && !!channel?.spaceId && !channel.demo;
+  const accountPresence = !!account && !!spaceId && !demo;
   const joined = useRef(false);
   const focusedJoin = useRef<HTMLButtonElement | null>(null);
   useLayoutEffect(() => {
@@ -599,16 +613,16 @@ export default function Call({
   useEffect(() => {
     setSelfPresence(undefined);
     setPresenceLive(false);
-    if (!account || !channel?.spaceId || channel.demo) return;
+    if (!account || !spaceId || demo) return;
     return watchAccountPresence(
-      channel.spaceId,
+      spaceId,
       [account.id],
       (members) => {
         setSelfPresence(members.find((member) => member.userId === account.id)?.status);
       },
       setPresenceLive,
     );
-  }, [account?.id, channel?.spaceId, channel?.demo]);
+  }, [account?.id, spaceId, demo]);
 
   useEffect(() => {
     if (connected && !joined.current) {
@@ -730,14 +744,14 @@ export default function Call({
       voiceChannel?.id &&
       voiceChannels &&
       !channel?.direct &&
-      voiceChannel.spaceId === channel?.spaceId &&
+      voiceChannel.spaceId === spaceId &&
       !voiceChannels.some((item) => item.id === voiceChannel.id)
     ) {
       // leave() also publishes the idle state; leaveImmediately() alone left the
       // dock showing "Voice connected" with a hang-up button that did nothing.
       void clientRef.current?.leave();
     }
-  }, [voiceChannel?.id, voiceChannel?.spaceId, voiceChannels, channel?.spaceId, channel?.direct]);
+  }, [voiceChannel?.id, voiceChannel?.spaceId, voiceChannels, spaceId, channel?.direct]);
 
   useEffect(() => {
     // Download/compile only; never a permission prompt. Deferred for embedded
@@ -760,7 +774,7 @@ export default function Call({
   // others are and join them. One spectator subscription per channel, capped
   // to stay within the gateway's per-connection subscription limit.
   const [channelRosters, setChannelRosters] = useState<Record<string, PublicPresence>>({});
-  const watchedChannels = channel?.demo
+  const watchedChannels = demo
     ? ""
     : (voiceChannels ?? [])
         .slice(0, MAX_WATCHED_CHANNELS)
@@ -874,18 +888,16 @@ export default function Call({
   const joinBlocked = !identityReady || state.phase === "leaving" || available !== true || actionPending;
   /** Join (or switch voice to) any listed channel without leaving the one being read. */
   const joinChannel = (channelId?: string) => {
-    if (channel?.direct && (!channelId || channelId === channel.id)) return;
+    if (voiceless && (!channelId || channelId === channel?.id)) return;
+    const voiceName = voiceChannels?.find((item) => item.id === channelId)?.name ?? "voice";
     const target =
       channelId === channel?.id
         ? channel
         : channel && channelId
-          ? {
-              ...channel,
-              id: channelId,
-              name: voiceChannels?.find((item) => item.id === channelId)?.name ?? "voice",
-              direct: false,
-            }
-          : channel;
+          ? { ...channel, id: channelId, name: voiceName, direct: false }
+          : space && channelId
+            ? { id: channelId, name: voiceName, spaceName: space.name, spaceId: space.id, demo: space.demo }
+            : channel;
     const root = channelId === channel?.id ? mediaRoot : rootFor(channelId);
     if (joinBlocked || (!idle && clientRoot.current === root)) return;
     setActionError(undefined);
@@ -905,7 +917,7 @@ export default function Call({
   /** Signed-in members: create the provider session as the pointer or focus reaches Join. */
   const prepareChannel = (channelId?: string) => {
     const root = channelId === channel?.id ? mediaRoot : rootFor(channelId);
-    if (!signedIn || channel?.demo || joinBlocked || (!idle && clientRoot.current === root)) return;
+    if (!signedIn || demo || joinBlocked || (!idle && clientRoot.current === root)) return;
     if (hasWarmVoice()) return; // Join will use the connected pair instead.
     prepareVoiceJoin(root);
   };
@@ -925,7 +937,7 @@ export default function Call({
   // Start preparing as the pointer approaches a Join button, not only on hover.
   // One listener, at most one geometry check per frame, and only while signed in.
   useEffect(() => {
-    if (!signedIn || channel?.demo) return;
+    if (!signedIn || demo) return;
     let frame = 0,
       x = 0,
       y = 0;
@@ -953,7 +965,7 @@ export default function Call({
       document.removeEventListener("pointermove", move);
       cancelAnimationFrame(frame);
     };
-  }, [signedIn, channel?.demo]);
+  }, [signedIn, demo]);
   // Touch has no approach, and pointerdown lands too close to the tap to help. On a
   // touch screen, prepare the viewed channel once when its Join button is shown;
   // Cloudflare keeps an unused session for 10-15 s, so this covers a prompt tap.
@@ -1132,7 +1144,7 @@ export default function Call({
   // render the same roster and leave action above the persistent audio controls.
   let rosterPlaced = false;
   const voiceFor = (channelId?: string): VoiceSlot | null => {
-    if ((channel?.direct && (!channelId || channelId === channel.id)) || (channelId === channel?.id && !channelJoined))
+    if ((voiceless && (!channelId || channelId === channel?.id)) || (channelId === channel?.id && !channelJoined))
       return null;
     const { people, startedAt, own } = rosterFor(channelId);
     const ownVisible = own && (!narrow || !onNavigationToggle || navigationOpen || channelId === channel?.id);
@@ -1287,7 +1299,7 @@ export default function Call({
       )}
       <section
         ref={roomRef}
-        className={`call-room${channel ? " spaces-room" : ""}${navigationOpen ? " navigation-open" : ""}`}
+        className={`call-room${channel || space ? " spaces-room" : ""}${navigationOpen ? " navigation-open" : ""}`}
         data-direct={channel?.direct ? "" : undefined}
         {...navigationSwipe}
       >
@@ -1538,87 +1550,91 @@ export default function Call({
               name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"}
             />
           ))}
-          <Chat
-            key={`${channel?.id ?? "general"}:${channelJoined}`}
-            name={name}
-            signedIn={!!account}
-            accountId={account?.id}
-            identityReady={identityReady && engaged}
-            direct={channel?.direct}
-            directPeerId={channel?.directPeerId}
-            onReadCursor={onReadCursor}
-            readOnly={!channelJoined}
-            composerNotice={channelActions}
-            composerBanner={composerBanner}
-            onBlockAuthor={onBlockAuthor}
-            messageSounds={engaged && channelJoined}
-            onOnlineChange={onChatOnlineChange}
-            mentionMembers={mentionMembers}
-            mentionDirectory={mentionDirectory}
-            onMessagePerson={onMessagePerson}
-            channelId={channel?.id}
-            channelName={channel?.name}
-            initialHistory={initialHistory}
-            initialHistoryError={initialHistoryError}
-            onHistoryChange={onHistoryChange}
-            showTitle={!!channel || embedded}
-            onAuthorChange={setChatAuthor}
-            onLocalPresenceChange={accountPresence ? undefined : setLocalPresence}
-            headerLeading={
-              onNavigationToggle && (
-                <button
-                  className="navigation-toggle"
-                  type="button"
-                  aria-label="Back to Browse"
-                  onClick={onNavigationToggle}
-                >
-                  <ArrowLeft aria-hidden="true" />
-                </button>
-              )
-            }
-            channelMenu={
-              narrow ? (
-                <>
-                  {membersPanel && (
-                    <button
-                      type="button"
-                      className="member-list-toggle"
-                      aria-expanded={membersVisible}
-                      aria-controls={membersVisible ? "space-member-list" : undefined}
-                      onClick={() => setMembersVisible(!membersVisible)}
-                    >
-                      <Users aria-hidden="true" />
-                      {membersVisible ? "Hide member list" : "Members"}
-                    </button>
+          {stage !== undefined ? (
+            stage
+          ) : (
+            <Chat
+              key={`${channel?.id ?? "general"}:${channelJoined}`}
+              name={name}
+              signedIn={!!account}
+              accountId={account?.id}
+              identityReady={identityReady && engaged}
+              direct={channel?.direct}
+              directPeerId={channel?.directPeerId}
+              onReadCursor={onReadCursor}
+              readOnly={!channelJoined}
+              composerNotice={channelActions}
+              composerBanner={composerBanner}
+              onBlockAuthor={onBlockAuthor}
+              messageSounds={engaged && channelJoined}
+              onOnlineChange={onChatOnlineChange}
+              mentionMembers={mentionMembers}
+              mentionDirectory={mentionDirectory}
+              onMessagePerson={onMessagePerson}
+              channelId={channel?.id}
+              channelName={channel?.name}
+              initialHistory={initialHistory}
+              initialHistoryError={initialHistoryError}
+              onHistoryChange={onHistoryChange}
+              showTitle={!!channel || embedded}
+              onAuthorChange={setChatAuthor}
+              onLocalPresenceChange={accountPresence ? undefined : setLocalPresence}
+              headerLeading={
+                onNavigationToggle && (
+                  <button
+                    className="navigation-toggle"
+                    type="button"
+                    aria-label="Back to Browse"
+                    onClick={onNavigationToggle}
+                  >
+                    <ArrowLeft aria-hidden="true" />
+                  </button>
+                )
+              }
+              channelMenu={
+                narrow ? (
+                  <>
+                    {membersPanel && (
+                      <button
+                        type="button"
+                        className="member-list-toggle"
+                        aria-expanded={membersVisible}
+                        aria-controls={membersVisible ? "space-member-list" : undefined}
+                        onClick={() => setMembersVisible(!membersVisible)}
+                      >
+                        <Users aria-hidden="true" />
+                        {membersVisible ? "Hide member list" : "Members"}
+                      </button>
+                    )}
+                  </>
+                ) : undefined
+              }
+              headerActions={
+                <div className="voice-actions">
+                  {!audioPanel && actionError && (
+                    <div className="room-error chat-refresh-error" role="alert">
+                      {actionError}
+                    </div>
                   )}
-                </>
-              ) : undefined
-            }
-            headerActions={
-              <div className="voice-actions">
-                {!audioPanel && actionError && (
-                  <div className="room-error chat-refresh-error" role="alert">
-                    {actionError}
-                  </div>
-                )}
-                {channelJoined && channelActions}
-                {!narrow && membersPanel && (
-                  <Tooltip content={membersVisible ? "Hide member list" : "Show member list"}>
-                    <button
-                      type="button"
-                      className="member-list-toggle"
-                      aria-label={membersVisible ? "Hide member list" : "Show member list"}
-                      aria-expanded={membersVisible}
-                      aria-controls={membersVisible ? "space-member-list" : undefined}
-                      onClick={() => setMembersVisible(!membersVisible)}
-                    >
-                      <Users aria-hidden="true" />
-                    </button>
-                  </Tooltip>
-                )}
-              </div>
-            }
-          />
+                  {channelJoined && channelActions}
+                  {!narrow && membersPanel && (
+                    <Tooltip content={membersVisible ? "Hide member list" : "Show member list"}>
+                      <button
+                        type="button"
+                        className="member-list-toggle"
+                        aria-label={membersVisible ? "Hide member list" : "Show member list"}
+                        aria-expanded={membersVisible}
+                        aria-controls={membersVisible ? "space-member-list" : undefined}
+                        onClick={() => setMembersVisible(!membersVisible)}
+                      >
+                        <Users aria-hidden="true" />
+                      </button>
+                    </Tooltip>
+                  )}
+                </div>
+              }
+            />
+          )}
         </div>
         {membersVisible && membersPanel && (
           <>
@@ -1635,7 +1651,7 @@ export default function Call({
           <button
             type="button"
             className="browse-peek"
-            aria-label={`Back to ${channel?.direct ? "" : "#"}${channel?.name ?? "conversation"}`}
+            aria-label={`Back to ${channel ? `${channel.direct ? "" : "#"}${channel.name}` : "conversation"}`}
             onClick={onNavigationToggle}
           />
         )}
