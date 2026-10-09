@@ -43,9 +43,20 @@ function Profile() {
         <ProfileForm account={account} onSaved={() => navigate({ to: "/spaces" })} />
         {account.username && <NotificationSettings />}
         {account.username && <PrivacySettings />}
-        <div className="mt-5 flex items-center justify-end text-[.85rem]">
+        <div className="mt-5 flex items-center justify-between gap-4 text-[.85rem]">
+          {/* Settings above save as they change, so leaving needs no Save. */}
+          {account.username ? (
+            <a
+              className="text-content-muted no-underline transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
+              href="/spaces"
+            >
+              <span aria-hidden="true">←</span> Back to spaces
+            </a>
+          ) : (
+            <span />
+          )}
           <button
-            className="cursor-pointer border-0 bg-transparent p-0 text-content-muted hover:text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
+            className="cursor-pointer border-0 bg-transparent p-0 text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
             type="button"
             onClick={() => void logout().then(() => window.location.assign("/"))}
           >

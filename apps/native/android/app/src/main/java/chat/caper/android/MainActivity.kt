@@ -156,6 +156,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
+/** First character of a name, whole even when it is an emoji (a surrogate pair). */
+internal fun initialOf(name: String): String {
+    val trimmed = name.trim()
+    return if (trimmed.isEmpty()) "" else trimmed.substring(0, trimmed.offsetByCodePoints(0, 1)).uppercase()
+}
+
 class MainActivity : ComponentActivity() {
     private val viewModel: CaperViewModel by viewModels()
     private val dailyBranding by lazy { DailyBrandingAvatar(applicationContext) }
@@ -284,7 +290,7 @@ internal data class VoiceJoinIntent(
             { viewModel.declineInvitation(shown.space) { overlay = null } })
         Overlay.ManageSpace -> state.selectedSpace?.let { detail -> ManageSpaceDialog(state, detail, viewModel, { overlay = null }) }
         Overlay.CreateChannel -> state.selectedSpace?.let { detail -> CreateChannelDialog(detail, state.busy, state.error, viewModel::clearError, { overlay = null }) { name, private ->
-            // Web opens a new private channel's Overview so people can be added.
+            // Web opens a new private channel's settings so people can be added.
             viewModel.createChannel(name, private) { created -> overlay = if (created.private) Overlay.ManageChannel(created) else null }
         } }
         Overlay.StartDirect -> StartDirectDialog(state.busy, { overlay = null }) { username, failed ->
@@ -604,7 +610,7 @@ private fun Modifier.browseDrag(drawer: BrowseDrawer, setOpen: (Boolean) -> Unit
                             .semantics { contentDescription = space.name; if (muted) stateDescription = "Muted" },
                         color = if (selected) TerracottaDark else Surface, shape = MaterialTheme.shapes.medium,
                         border = BorderStroke(1.dp, if (selected) TerracottaBorder else Border),
-                    ) { Box(contentAlignment = Alignment.Center) { Text(space.name.take(1).uppercase(), fontWeight = FontWeight.Black, color = if (selected) Color.White else TextMuted) } }
+                    ) { Box(contentAlignment = Alignment.Center) { Text(initialOf(space.name), fontWeight = FontWeight.Black, color = if (selected) Color.White else TextMuted) } }
                     if (muted) Box(Modifier.align(Alignment.BottomEnd).offset(x = 3.dp, y = 3.dp).background(Blackout, CircleShape).padding(2.dp).clearAndSetSemantics {}) { MutedBell() }
                 }
             }
@@ -615,7 +621,7 @@ private fun Modifier.browseDrag(drawer: BrowseDrawer, setOpen: (Boolean) -> Unit
                     contentDescription = "Invitation to ${invitation.name}"
                 },
                 color = Surface, shape = MaterialTheme.shapes.medium, border = BorderStroke(1.dp, TerracottaBorder),
-            ) { Box(contentAlignment = Alignment.Center) { Text("!", color = TerracottaBright, fontWeight = FontWeight.Black) } }
+            ) { Box(contentAlignment = Alignment.Center) { Text(initialOf(invitation.name), color = TerracottaBright, fontWeight = FontWeight.Black) } }
         }
         val limits = state.limits
         val canCreateSpace = limits != null && state.spaces.count { it.ownerId == state.account?.id } < limits.ownedSpaces &&
@@ -1262,7 +1268,11 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 ) {
     val channel = state.selectedChannel
     if (channel == null) return EmptyChannel(state, narrow, show, openNavigation, modifier)
-    var draft by rememberSaveable(channel.id, stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("")) }
+    var draft by rememberSaveable(channel.id, stateSaver = TextFieldValue.Saver) {
+        viewModel.drafts[channel.id].let { mutableStateOf(TextFieldValue(it, TextRange(it.length))) }
+    }
+    // Kept per conversation, so switching channels or DMs and coming back restores it.
+    fun updateDraft(value: TextFieldValue) { draft = value; viewModel.drafts[channel.id] = value.text }
     var channelMenuOpen by remember(channel.id) { mutableStateOf(false) }
     var showingPins by remember(channel.id) { mutableStateOf(false) }
     // Switching to Pins must not discard the channel's measured scroll position.
@@ -1349,7 +1359,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     Text(if (channelPending.rejected) "Not sent. $pending" else "Not confirmed yet. $pending", Modifier.weight(1f), color = ErrorText, fontSize = 11.sp)
                     TextButton({
                         if (channelPending.rejected) {
-                            if (editable) viewModel.discardPending()?.let { draft = TextFieldValue(it, TextRange(it.length)) }
+                            if (editable) viewModel.discardPending()?.let { updateDraft(TextFieldValue(it, TextRange(it.length))) }
                         } else viewModel.send(channelPending.text)
                     }, Modifier.semantics { if (channelPending.rejected && !editable) stateDescription = "Clear your current draft to edit this message." },
                         enabled = !channelPending.rejected || editable) {
@@ -1388,10 +1398,10 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 // Web: Enter retries an unconfirmed send; a rejected one waits for Edit or Dismiss.
                 if (state.chatAuthorId != null) {
                     if (pending != null) { if (pending.threadRootId == null && !pending.rejected && pending.error != null) viewModel.send(pending.text) }
-                    else if (draft.text.isNotBlank()) { val sent = draft.text; viewModel.setTyping(false); viewModel.send(sent); draft = TextFieldValue("") }
+                    else if (draft.text.isNotBlank()) { val sent = draft.text; viewModel.setTyping(false); viewModel.send(sent); updateDraft(TextFieldValue("")) }
                 }
             }
-            SuggestingComposer(draft, { draft = it; viewModel.reportActivity(); viewModel.setTyping(it.text.isNotBlank()) }, mentionSource(state), channel.id, ::submit) { field, change, actions ->
+            SuggestingComposer(draft, { updateDraft(it); viewModel.reportActivity(); viewModel.setTyping(it.text.isNotBlank()) }, mentionSource(state), channel.id, ::submit) { field, change, actions ->
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
                     OutlinedTextField(
                         draft, change, modifier = Modifier.weight(1f).then(field),
@@ -1401,7 +1411,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = SurfaceComposer, unfocusedContainerColor = SurfaceComposer, focusedBorderColor = Terracotta, unfocusedBorderColor = Border),
                     )
                     FilledIconButton(
-                        { if (draft.text.isNotBlank() && state.pendingMessage == null) { val sent = draft.text; viewModel.setTyping(false); viewModel.send(sent); draft = TextFieldValue("") } },
+                        { if (draft.text.isNotBlank() && state.pendingMessage == null) { val sent = draft.text; viewModel.setTyping(false); viewModel.send(sent); updateDraft(TextFieldValue("")) } },
                         modifier = Modifier.size(48.dp).semantics { contentDescription = "Send" }, enabled = draft.text.isNotBlank() && state.pendingMessage == null && state.chatAuthorId != null,
                         shape = MaterialTheme.shapes.small,
                         colors = IconButtonDefaults.filledIconButtonColors(
@@ -2312,7 +2322,7 @@ internal fun counterTone(count: Int): Color = when {
             .then(if (speaking) Modifier.border(2.dp, CaperGreen, CircleShape) else Modifier),
         contentAlignment = Alignment.Center,
     ) {
-        if (index == null) Text(name.take(1).uppercase(), fontWeight = FontWeight.Black, fontSize = (size.value * .38f).sp)
+        if (index == null) Text(initialOf(name), fontWeight = FontWeight.Black, fontSize = (size.value * .38f).sp)
         else {
             Image(
                 painter = painterResource(caperAvatarResources[index]),
@@ -2610,7 +2620,7 @@ internal fun counterTone(count: Int): Color = when {
     LaunchedEffect(channel.id, channel.private) { viewModel.loadChannelGrants(channel) }
     val dirty = name.removeSuffix("-") != channel.name || private != channel.private
     // Keep the sticky save bar's footprint stable while hiding clean controls.
-    CaperDialog("Overview", close, wide = true, footer = {
+    CaperDialog("Channel settings", close, wide = true, footer = {
         val hiddenSemantics = if (dirty) Modifier else Modifier.clearAndSetSemantics { }
         Row(Modifier.fillMaxWidth().then(hiddenSemantics).graphicsLayer { alpha = if (dirty) 1f else 0f }.background(Blackout).padding(horizontal = 22.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("You have unsaved changes.", Modifier.weight(1f), fontSize = 12.sp)

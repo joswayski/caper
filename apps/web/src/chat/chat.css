@@ -443,7 +443,11 @@
   font: inherit;
   font-size: 0.75rem;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
   cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease;
 }
 .chat-reaction[aria-pressed="true"] {
   border-color: #b64d32;
@@ -562,6 +566,7 @@
 }
 .chat-copy-actions {
   display: grid;
+  overflow: hidden;
   border-radius: 8px;
   background: var(--surface-raised);
 }
@@ -1228,6 +1233,7 @@
   line-height: 16px;
 }
 .chat-typing-content {
+  min-width: 0;
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -1387,6 +1393,10 @@
 .chat-reaction-tooltip img {
   flex-shrink: 0;
 }
+.chat-reaction-tooltip > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .chat-reactors {
   z-index: 1000;
   display: flex;
@@ -1514,11 +1524,12 @@
   outline: 2px solid var(--terracotta, #b64d32);
   outline-offset: -2px;
 }
+/* The open thread is a selection (terracotta); gold stays reserved for pins. */
 .chat-message-thread-active,
 .chat-message-thread-active:hover,
 .chat-message-thread-active:focus-within {
-  background: rgb(228 199 106 / 10%);
-  box-shadow: inset 3px 0 var(--pin-gold);
+  background: rgb(182 77 50 / 12%);
+  box-shadow: inset 3px 0 var(--terracotta-bright);
 }
 .chat-thread-summary {
   display: flex;
@@ -1703,6 +1714,7 @@
   display: flex;
   align-items: center;
   gap: 7px;
+  cursor: pointer;
   min-height: 44px;
   color: var(--text-muted);
   font-size: 0.72rem;

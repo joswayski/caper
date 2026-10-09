@@ -187,6 +187,17 @@ try {
     2,
     "a canceled request is not treated as a committed visited history",
   );
+  // Each conversation keeps its own unsent text across switches.
+  assert.equal(evaluate('document.querySelector("#chat-message").value'), "", "drafts belong to one conversation");
+  browser("fill", "#chat-message", "design draft");
+  browser("click", '.channel-select:not([aria-current="page"])');
+  wait(
+    'document.querySelector("#space-channel-list [aria-current=page] span").textContent === "general" && document.querySelector("#chat-message")?.value === "draft survives repeat click"',
+  );
+  browser("click", '.channel-select:not([aria-current="page"])');
+  wait(
+    'document.querySelector("#space-channel-list [aria-current=page] span").textContent === "design" && document.querySelector("#chat-message")?.value === "design draft"',
+  );
   if (process.env.NAVIGATION_TEST_SCREENSHOT) browser("screenshot", process.env.NAVIGATION_TEST_SCREENSHOT);
 
   browser("set", "viewport", "390", "844", "2");

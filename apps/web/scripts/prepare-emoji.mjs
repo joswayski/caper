@@ -17,7 +17,7 @@ await cp(source, target, {
 // All composers use the native catalog's names/order, without its sprite metadata.
 // Version metadata when names change: this directory is cached immutably.
 await writeFile(
-  new URL("autocomplete-v2.json", target),
+  new URL("autocomplete-v3.json", target),
   JSON.stringify(
     catalog.filter((entry) => entry.selectable).map(({ id, emoji, name, keywords }) => ({ id, emoji, name, keywords })),
   ),

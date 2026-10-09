@@ -123,7 +123,8 @@ pub fn suggestions(query: &str) -> Vec<&'static Entry> {
             Some((rank, entry))
         })
         .collect();
-    matches.sort_by_key(|(rank, _)| *rank);
+    // Within a rank the shorter name is the closer match: ":fi" offers fire before film-frames.
+    matches.sort_by_key(|(rank, entry)| (*rank, entry.name.chars().count()));
     matches
         .into_iter()
         .take(6)
@@ -222,7 +223,8 @@ mod tests {
             ("👍", "thumbs-up"),
             ("😂", "face-with-tears-of-joy"),
             ("🎉", "party-popper"),
-            ("👀", "looking"),
+            ("👀", "eyes"),
+            ("🔥", "fire"),
             ("❤️", "red-heart"),
             ("❤", "red-heart"),
         ] {
@@ -259,6 +261,9 @@ mod tests {
         assert_eq!(suggestions("+1")[0].emoji, "👍");
         assert_eq!(suggestions("WOMAN-TECHNOLOGIST")[0].emoji, "👩‍💻");
         assert_eq!(suggestions("red_heart")[0].emoji, "❤️");
+        assert_eq!(suggestions("fire")[0].emoji, "🔥");
+        assert_eq!(suggestions("dog")[0].emoji, "🐕");
+        assert!(suggestions("fi").iter().any(|entry| entry.emoji == "🔥"));
         assert_eq!(
             suggestions("")
                 .iter()

@@ -12,6 +12,7 @@
   color: var(--text);
 }
 .voice-panel {
+  --presence-ring: var(--surface-raised);
   flex: 0 0 auto;
   margin: auto 12px 12px;
   border: 1px solid var(--border);
@@ -168,6 +169,7 @@
 }
 @media (hover: hover) {
   .account-profile:hover {
+    --presence-ring: var(--surface-composer);
     background: var(--surface-composer);
   }
 }
@@ -972,12 +974,13 @@
   font-size: 0.75rem;
 }
 .call-diagnostics dd {
+  min-width: 0;
   margin: 0;
   color: var(--text);
   font-size: 0.78rem;
   font-variant-numeric: tabular-nums;
   text-align: right;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 .call-diagnostics > p {
   margin: 12px 0 0;
@@ -1351,6 +1354,7 @@
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   border-radius: 8px;
+  transition: background-color 140ms ease;
 }
 .channel-row:has(.channel-link[aria-current]) {
   background: rgb(182 77 50 / 0.14);

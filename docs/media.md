@@ -119,7 +119,10 @@ channel. Its roster opens automatically on connection. Mic, deafen and device
 settings stay in the account footer, including before joining. When navigation
 hides the active channel, its roster, channel/space status and single Leave
 action pin above that footer; participant audio menus open upward. Browsing
-other chats, spaces or DMs does not leave voice.
+other chats, spaces or DMs does not leave voice. That includes a space with no
+joined channel, whose empty state replaces only the conversation, and a pending
+invitation opened from the rail, which opens over the room. Voice still ends
+when its own channel is left, deleted or revoked.
 Voice actions are neutral until hover/focus, and empty channels have no voice
 status text. Only occupied channels show a voice count. Hover and connection
 updates do not shift the active channel's action target; expanding its roster
@@ -593,6 +596,13 @@ Message bodies, chat capabilities, and account credentials are never logged.
 Messages and author snapshots are saved in Postgres and visible to authorized
 channel members; there is no automatic retention purge. Browser tokens use local
 storage; drafts/pending sends survive reconnects but not closing/reloading a tab.
+Each channel and DM keeps its own unsent draft while the app stays open on web,
+Android, Apple and Rust desktop: switching conversations and coming back restores
+it, sending clears it, and signing out discards every draft. Drafts stay in memory
+and are never sent to the API. Restoring one does not send a typing indicator.
+`scripts/test-desktop-navigation.mjs` (channels) and
+`scripts/test-direct-messages.mjs` (DMs) check this in Chromium. Desktop, Apple
+and Android unit tests cover switching and sign-out.
 Signed-in startup obtains a fresh capability
 from the current account session rather than identifying an account by its name.
 
@@ -1056,7 +1066,13 @@ ImageMagick 7). Android and Rust read `shared/emoji`; SwiftPM requires a generat
 copy inside its target, checked byte-for-byte by CI, including licenses.
 Picker names use dashes (for example, `grinning-face`). Web and all native
 catalogs also include underscore and spaced search aliases (`grinning_face` and
-`grinning face`). Names are labels/search terms, not stored reaction identifiers:
+`grinning face`). The picker package orders its names by length, so its last name
+can be slang or a category (`litaf` for 🔥, `looking` for 👀, `animals` for 🐕).
+`apps/web/src/chat/emoji-labels.json` supplies the Unicode CLDR short name for those
+entries; the package's names stay searchable. Regenerate it with
+`node scripts/emoji-labels.mjs` (fetches the Emoji 15.0 `emoji-test.txt`), then
+`node scripts/native-emoji.mjs --catalog-only`. Composer suggestions rank exact,
+prefix, keyword and substring matches, preferring shorter names within a rank. Names are labels/search terms, not stored reaction identifiers:
 selecting any spelling still sends the same Unicode emoji. Existing reactions
 need no migration. The browser fixture checks all three search spellings,
 dash-separated accessible names/image alt text, and Unicode persistence.
@@ -1500,7 +1516,9 @@ CHAT_TEST_VALKEY_URL=redis://127.0.0.1:6379 \
 
 For desktop hover assertions, set `MESSAGE_TEST_CHROME` to a Chromium executable
 wrapper that adds
-`--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4`.
+`--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4`;
+`scripts/fine-pointer-chromium.sh` is one (`CAPER_CHROMIUM` picks the browser,
+otherwise Playwright's newest Chromium).
 Stock headless Chromium reports no hover device. The script verifies the fine
 pointer before checking hover and later checks a 390px narrow browser layout.
 That is not touch emulation or physical-device validation.
@@ -5363,7 +5381,8 @@ iPhone has no lock-screen call controls (CallKit); web, macOS and Rust desktop
 have no OS notifications; Android has no in-app update notice; Android and Apple
 load older history only from the button; Apple scrolls to every new message even
 while reading history. Product gaps on every client (no change): message deletion,
-links, unread markers, jump to latest, per-channel drafts and shortcuts.
+links, unread markers, jump to latest and shortcuts. (Per-conversation drafts
+were added later on every client.)
 
 **Deployment order.** No backend step. Web, Android, Apple and Rust desktop can
 release independently, in any order; merging does not deploy. Roll back web with

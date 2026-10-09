@@ -80,6 +80,24 @@ function MessageList({ context, children, ...props }: ListProps & ContextProp<Hi
 
 const listComponents = { Header: HistoryHeader, List: MessageList };
 const measureItem = (element: HTMLElement, field: "offsetHeight" | "offsetWidth") => element[field];
+/** A message row's top below the scroller's top edge, in layout pixels (the homepage window is scaled). */
+function messageOffset(scroller: HTMLElement, key: string, row?: Element | null) {
+  row ??= scroller.querySelector(`.chat-message[data-message-key="${CSS.escape(key)}"]`);
+  if (!row) return undefined;
+  const bounds = scroller.getBoundingClientRect();
+  return (row.getBoundingClientRect().top - bounds.top) / (bounds.height / scroller.offsetHeight || 1);
+}
+/** The first message row the reader can see, with its offset. */
+function topMessage(scroller: HTMLElement | null) {
+  if (!scroller) return undefined;
+  const top = scroller.getBoundingClientRect().top;
+  const row = [...scroller.querySelectorAll<HTMLElement>(".chat-message[data-message-key]")].find(
+    (item) => item.getBoundingClientRect().bottom > top,
+  );
+  const key = row?.dataset.messageKey;
+  const offset = key ? messageOffset(scroller, key, row) : undefined;
+  return key && offset !== undefined ? { key, offset } : undefined;
+}
 
 function PinsDialog({
   children,
@@ -299,7 +317,14 @@ export default function Chat({
   }, [state.phase]);
   const isTouchLayout = () => window.matchMedia("(max-width: 760px), (pointer: coarse)").matches;
   const openActions = (messageId: string, anchor: HTMLElement, inThread: boolean) =>
-    setActionTarget({ messageId, anchor, mode: "actions", drawer: isTouchLayout(), inThread });
+    setActionTarget({
+      messageId,
+      anchor,
+      anchorRect: anchor.getBoundingClientRect(),
+      mode: "actions",
+      drawer: isTouchLayout(),
+      inThread,
+    });
   const openThread = (rootId: string) => {
     setActionTarget(undefined);
     setReactorsTarget(undefined);
@@ -383,6 +408,11 @@ export default function Chat({
   };
   const listRef = useRef<VirtuosoHandle>(null);
   const scrollerRef = useRef<HTMLElement>(null);
+  // Virtuoso shifts the list by the prepended rows' estimated heights, but the
+  // old first row also changes as an older page lands above it: it can join
+  // that page's last group (losing its name and time) and loses its date
+  // divider. Remember the top visible message so it can be held in place.
+  const prependAnchor = useRef<{ key: string; offset: number } | undefined>(undefined);
   const goToMessage = async (message: GeneralChatHistory["messages"][number]) => {
     const client = clientRef.current;
     if (!client || jumping) return;
@@ -480,7 +510,10 @@ export default function Chat({
           setFirstItemIndex(INITIAL_ITEM_INDEX);
         } else if (next.channelMessages?.[0]?.id !== firstMessageId) {
           const prepended = next.channelMessages?.findIndex((message) => message.id === firstMessageId) ?? -1;
-          if (prepended > 0) setFirstItemIndex((index) => index - prepended);
+          if (prepended > 0) {
+            prependAnchor.current = topMessage(scrollerRef.current);
+            setFirstItemIndex((index) => index - prepended);
+          }
           firstMessageId = next.channelMessages?.[0]?.id;
         }
         // The composer clears the draft a new local send came from.
@@ -547,6 +580,35 @@ export default function Chat({
   const loadOlder = () => {
     void clientRef.current?.loadOlder();
   };
+  // After a prepend, keep the remembered message where the reader left it while
+  // Virtuoso measures the new rows. Stops once it holds still, or as soon as the
+  // reader scrolls themselves.
+  useLayoutEffect(() => {
+    const scroller = scrollerRef.current;
+    const anchor = prependAnchor.current;
+    prependAnchor.current = undefined;
+    if (!scroller || !anchor) return;
+    let frame = 0;
+    let frames = 0;
+    let still = 0;
+    const inputs = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
+    const stop = () => {
+      cancelAnimationFrame(frame);
+      for (const type of inputs) scroller.removeEventListener(type, stop);
+    };
+    const hold = () => {
+      const offset = messageOffset(scroller, anchor.key);
+      if (offset !== undefined && Math.abs(offset - anchor.offset) >= 1) {
+        scroller.scrollTop += offset - anchor.offset;
+        still = 0;
+      } else still++;
+      if (++frames < 60 && still < 6) frame = requestAnimationFrame(hold);
+      else stop();
+    };
+    for (const type of inputs) scroller.addEventListener(type, stop, { passive: true });
+    frame = requestAnimationFrame(hold);
+    return stop;
+  }, [firstItemIndex]);
 
   const sending = !!state.pendingSend && !state.sendError;
   const channelName = direct
@@ -862,7 +924,12 @@ export default function Chat({
                     title="More actions"
                     aria-haspopup="dialog"
                     aria-expanded={actionTarget?.messageId === message.id && actionTarget.mode === "actions"}
-                    onClick={(event) => openActions(message.id, event.currentTarget, inThread)}
+                    onClick={(event) =>
+                      // A second click on the open menu's own trigger closes it, like a toggle.
+                      actionTarget?.messageId === message.id && actionTarget.mode === "actions"
+                        ? setActionTarget(undefined)
+                        : openActions(message.id, event.currentTarget, inThread)
+                    }
                   >
                     <MoreHorizontal size={14} aria-hidden="true" />
                   </button>
@@ -889,14 +956,16 @@ export default function Chat({
                     onShowReactors={(emoji, anchor) => showReactors(message.id, emoji, anchor)}
                     pickerOpen={actionTarget?.messageId === message.id && actionTarget.mode === "emoji"}
                     onOpenPicker={(anchor) =>
-                      setActionTarget({
-                        messageId: message.id,
-                        anchor,
-                        anchorRect: anchor.getBoundingClientRect(),
-                        mode: "emoji",
-                        drawer: isTouchLayout(),
-                        inThread,
-                      })
+                      actionTarget?.messageId === message.id && actionTarget.mode === "emoji"
+                        ? setActionTarget(undefined)
+                        : setActionTarget({
+                            messageId: message.id,
+                            anchor,
+                            anchorRect: anchor.getBoundingClientRect(),
+                            mode: "emoji",
+                            drawer: isTouchLayout(),
+                            inThread,
+                          })
                     }
                     onDismissError={() => setReactionSaves((current) => ({ ...current, [message.id]: undefined }))}
                   />
@@ -1421,6 +1490,7 @@ export default function Chat({
             <Composer
               ref={composerRef}
               channelName={channelName}
+              draftKey={accountId && channelId ? `${accountId}:${channelId}` : undefined}
               direct={direct}
               disabled={state.phase !== "ready"}
               identityReady={identityReady}

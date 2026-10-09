@@ -97,7 +97,7 @@ export default function MessageActions({
     },
     placement: "bottom-end",
     strategy: "fixed",
-    middleware: [offset(6), flip(), shift({ padding: 12 })],
+    middleware: [offset(6), flip(), shift({ padding: 12, crossAxis: true })],
     whileElementsMounted: autoUpdate,
   });
   const { getFloatingProps } = useInteractions([useDismiss(context), useRole(context)]);

@@ -54,7 +54,7 @@ export default function ReactorsPanel({
     },
     placement: "top-start",
     strategy: "fixed",
-    middleware: [offset(8), flip(), shift({ padding: 12 })],
+    middleware: [offset(8), flip(), shift({ padding: 12, crossAxis: true })],
     whileElementsMounted: autoUpdate,
   });
   const { getFloatingProps } = useInteractions([useDismiss(context), useRole(context)]);

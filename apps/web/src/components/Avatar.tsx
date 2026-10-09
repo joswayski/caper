@@ -1,5 +1,10 @@
 import { avatarUrl } from "../account/avatar";
 
+/** First character of a name, whole even when it is an emoji or other surrogate pair. */
+export function initial(name: string) {
+  return (Array.from(name.trim())[0] ?? "").toUpperCase();
+}
+
 /** Decorative; the adjacent account/member/author name supplies the label. */
 export default function Avatar({ avatarId, name }: { avatarId?: number | null; name: string }) {
   const url = avatarUrl(avatarId);
@@ -19,7 +24,7 @@ export default function Avatar({ avatarId, name }: { avatarId?: number | null; n
         backgroundRepeat: "no-repeat",
       }}
     >
-      {url ? null : name.slice(0, 1).toUpperCase()}
+      {url ? null : initial(name)}
     </span>
   );
 }

@@ -147,12 +147,16 @@ test("names, labels and responses are validated with safe fallbacks", () => {
 test("emoji names come from the picker data and ignore variation selectors", () => {
   const require = createRequire(import.meta.url);
   const english = JSON.parse(readFileSync(require.resolve("emoji-picker-react/dist/data/emojis-en.json"), "utf8"));
-  const index = emojiNameIndex(english.emojis);
+  const labels = JSON.parse(readFileSync(new URL("../chat/emoji-labels.json", import.meta.url), "utf8"));
+  const index = emojiNameIndex(english.emojis, labels);
   for (const [emoji, name] of [
     ["👍", "thumbs-up"],
     ["😂", "face-with-tears-of-joy"],
     ["🎉", "party-popper"],
-    ["👀", "looking"],
+    // CLDR names, not the package's longest alias ("looking", "litaf", "fairytale").
+    ["👀", "eyes"],
+    ["🔥", "fire"],
+    ["💀", "skull"],
     ["❤️", "red-heart"],
     ["❤", "red-heart"],
   ]) {
