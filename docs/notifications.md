@@ -38,7 +38,8 @@ Per committed message (edits never notify; demo spaces and guests never do):
    private channel, the owner and people with a grant), minus anyone who blocked
    the author. Joining a channel is consent to hear from it, so readers who
    haven't joined, and thread replies, notify only the people they @mention.
-   The kind is `mention.user` for people in `content.mentions`,
+   The kind is `mention.user` for people in `content.mentions` (never a
+   forward's note, whose mentions are display-only),
    `mention.everyone` for `@everyone` (every joined reader) or `@here` (joined
    readers whose presence is `online`), otherwise `channel.message`.
 4. For each candidate, in order: account level `nothing` or `paused_until` in the

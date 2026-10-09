@@ -16,18 +16,25 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.run_id }}
   cancel-in-progress: false
 jobs:
+  route:
+    uses: ./.github/workflows/mac-route.yml
+    secrets: inherit
+
+  # Builds and tests the image on the Mac's arm64 Linux VM when mac-route.yml
+  # picks it, and hands the tested image to the publish job, which runs on
+  # GitHub so the ECR role never reaches a self-hosted machine.
   api:
-    runs-on: ubuntu-24.04-arm
+    name: linux/arm64 API image
+    needs: route
+    runs-on: ${{ needs.route.outputs.linux_arm == 'true' && fromJSON('["self-hosted","joselinux-arm"]') || 'ubuntu-24.04-arm' }}
     timeout-minutes: 20
-    permissions:
-      contents: read
-      id-token: write
-      pull-requests: read
-    env:
-      ECR: 395451633568.dkr.ecr.us-east-1.amazonaws.com/production/caper
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      # GitHub-hosted runners start empty, so they build in a BuildKit container
+      # backed by GitHub's layer cache. Self-hosted runners use their own Docker
+      # daemon, whose layer cache stays on the machine.
+      - if: runner.environment == 'github-hosted'
+        uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
         with:
           context: .
@@ -36,10 +43,8 @@ jobs:
           platforms: linux/arm64
           load: true
           tags: caper-api:test
-          cache-from: type=gha,scope=api
-          # Only main exports the layer cache (mode=max uploads take up to a
-          # minute).
-          cache-to: ${{ github.event_name == 'push' && 'type=gha,scope=api,mode=max' || '' }}
+          cache-from: ${{ runner.environment == 'github-hosted' && 'type=gha,scope=api' || '' }}
+          cache-to: ${{ runner.environment == 'github-hosted' && 'type=gha,scope=api,mode=max' || '' }}
       - name: Verify public health, protected accounts, and retired demo routes
         run: |
           set -euo pipefail
@@ -67,28 +72,57 @@ jobs:
           test "$(curl --silent --show-error -o /dev/null -w '%{http_code}' http://127.0.0.1:3002/readyz)" = 503
       - name: Verify deployment notification payloads
         run: tests/api-image-notifications.sh
+      - name: Export the tested image
+        run: |
+          set -euo pipefail
+          docker save caper-api:test | gzip -1 > "$RUNNER_TEMP/caper-api.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: caper-api-image
+          path: ${{ runner.temp }}/caper-api.tar.gz
+          retention-days: 1
+          compression-level: 0
+
+  publish:
+    name: Publish immutable API image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: api
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: read
+    env:
+      ECR: 395451633568.dkr.ecr.us-east-1.amazonaws.com/production/caper
+    steps:
       - name: Configure AWS credentials
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: aws-actions/configure-aws-credentials@v6.2.3
         with:
           role-to-assume: arn:aws:iam::395451633568:role/production-caper-ecr-publisher
           aws-region: us-east-1
           allowed-account-ids: "395451633568"
       - name: Check immutable tag
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         id: existing
         run: |
           digest="$(aws ecr describe-images --repository-name production/caper --image-ids "imageTag=api-$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || true)"
           if [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then echo 'exists=true' >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/download-artifact@v4
+        if: steps.existing.outputs.exists != 'true'
+        with:
+          name: caper-api-image
+          path: ${{ runner.temp }}
+      - name: Load the tested image
+        if: steps.existing.outputs.exists != 'true'
+        run: docker load --input "$RUNNER_TEMP/caper-api.tar.gz"
       - uses: aws-actions/amazon-ecr-login@v2.1.6
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.existing.outputs.exists != 'true'
+        if: steps.existing.outputs.exists != 'true'
       - name: Publish separately from the website
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.existing.outputs.exists != 'true'
+        if: steps.existing.outputs.exists != 'true'
         run: |
           docker tag caper-api:test "$ECR:api-$GITHUB_SHA"
           docker push "$ECR:api-$GITHUB_SHA"
       - name: Record immutable image
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         id: record
         run: |
           set -euo pipefail
@@ -97,7 +131,6 @@ jobs:
           printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
           printf '### Published API image\n\n`%s:api-%s@%s`\n' "$ECR" "$GITHUB_SHA" "$digest" >> "$GITHUB_STEP_SUMMARY"
       - name: Notify deployment webhook
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
           DEPLOY_NOTIFICATION_WEBHOOK_URL: ${{ secrets.DEPLOY_NOTIFICATION_WEBHOOK_URL }}

@@ -492,6 +492,8 @@ try {
     const desktopHover = () => evaluate(`return matchMedia('(hover: hover) and (pointer: fine)').matches;`);
     const menuOpacity = () =>
       evaluate(`return getComputedStyle(document.querySelector('[aria-label="Manage alpha"]')).opacity;`);
+    // Phone Browse slides (covered by test-desktop-navigation) swallow input while they run.
+    browser("set", "media", "reduced-motion");
     for (const width of [1280, 390]) {
       browser("set", "viewport", String(width), "900", "2");
       evaluate(`voiceFixture.publishPresence([]); voiceFixture.showSpaces(${width === 1280});`);
@@ -587,6 +589,7 @@ try {
       click("Leave voice");
       wait(`voiceFixture.client.phase === 'idle'`);
     }
+    browser("set", "media", "no-preference");
     // A cold DM URL must check a real channel, not the DM's media endpoint.
     browser("set", "viewport", "1280", "900", "2");
     evaluate(`voiceFixture.showSpaces(true, 'selfdm000000');`);
