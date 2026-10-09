@@ -460,6 +460,8 @@ struct CaperApp {
     member_page: usize,
     members_visible: bool,
     narrow_members_visible: bool,
+    /// Height of narrow Browse's account bar, which the conversation's edge stops above.
+    browse_bar: f32,
     channels_expanded: bool,
     browse_channels: bool,
     channel_search: String,
@@ -604,6 +606,7 @@ impl CaperApp {
             member_page: 0,
             members_visible: false,
             narrow_members_visible: false,
+            browse_bar: 0.0,
             channels_expanded: true,
             browse_channels: false,
             channel_search: String::new(),
@@ -4952,39 +4955,96 @@ impl CaperApp {
                 }
                 let content = ui.max_rect();
                 if narrow {
-                    if self.navigation_open {
-                        let rail_rect = egui::Rect::from_min_max(
-                            content.min,
-                            egui::pos2(content.left() + 59.0, content.bottom()),
-                        );
-                        let sidebar_rect = egui::Rect::from_min_max(
-                            egui::pos2(rail_rect.right(), content.top()),
-                            content.max,
-                        );
-                        ui.scope_builder(egui::UiBuilder::new().max_rect(rail_rect), |ui| {
-                            self.rail(ui);
-                        });
-                        ui.scope_builder(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
-                            self.sidebar(ui, sidebar_rect.width());
-                        });
-                    } else {
+                    // As on phones, the conversation slides over a still Browse and
+                    // rests with its edge in view beside it; that edge returns to it.
+                    let uncovered = context.animate_bool_with_time_and_easing(
+                        egui::Id::new("browse-slide"),
+                        self.navigation_open,
+                        0.3,
+                        egui::emath::easing::cubic_out,
+                    );
+                    let peek = (content.width() * 0.2).clamp(56.0, 96.0);
+                    if uncovered > 0.0 {
                         ui.scope_builder(egui::UiBuilder::new().max_rect(content), |ui| {
-                            self.conversation(ui, true)
+                            // The account bar keeps the full width, below the conversation's edge.
+                            let bar = egui::TopBottomPanel::bottom("narrow-account")
+                                .show_separator_line(false)
+                                .frame(egui::Frame::new().fill(SIDEBAR).inner_margin(12))
+                                .show_inside(ui, |ui| self.account_bar(ui));
+                            self.browse_bar = bar.response.rect.height();
+                            let browse = ui.available_rect_before_wrap();
+                            let rail_rect = egui::Rect::from_min_max(
+                                browse.min,
+                                egui::pos2(browse.left() + 59.0, browse.bottom()),
+                            );
+                            let sidebar_rect = egui::Rect::from_min_max(
+                                egui::pos2(rail_rect.right(), browse.top()),
+                                egui::pos2(browse.right() - peek, browse.bottom()),
+                            );
+                            ui.scope_builder(egui::UiBuilder::new().max_rect(rail_rect), |ui| {
+                                self.rail(ui);
+                            });
+                            ui.scope_builder(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
+                                self.sidebar(ui, sidebar_rect.width(), false);
+                            });
                         });
+                    }
+                    // Panels inside set their own clip, so the conversation's rect itself
+                    // stops above Browse's account bar as it slides aside.
+                    let stage = egui::Rect::from_min_max(
+                        content.min,
+                        egui::pos2(
+                            content.right(),
+                            content.bottom() - uncovered * self.browse_bar,
+                        ),
+                    )
+                    .translate(egui::vec2(uncovered * (content.width() - peek), 0.0));
+                    if uncovered > 0.0 {
+                        let shadow = egui::Shadow {
+                            offset: [-4, 0],
+                            blur: 16,
+                            spread: 0,
+                            color: egui::Color32::from_black_alpha(110),
+                        };
+                        ui.painter().add(shadow.as_shape(stage, 0));
+                    }
+                    ui.painter().rect_filled(stage, 0.0, SURFACE);
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(stage), |ui| {
+                        self.conversation(ui, true);
                         if self.selected_direct.is_none()
                             && self.narrow_members_visible
+                            && !self.navigation_open
                             && !self.no_accessible_channels()
                         {
                             let members_rect = egui::Rect::from_min_max(
                                 egui::pos2(
-                                    (content.right() - 280.0).max(content.left()),
-                                    content.top() + 53.0,
+                                    (stage.right() - 280.0).max(stage.left()),
+                                    stage.top() + 53.0,
                                 ),
-                                content.max,
+                                stage.max,
                             );
                             ui.scope_builder(egui::UiBuilder::new().max_rect(members_rect), |ui| {
                                 self.member_presence(ui)
                             });
+                        }
+                    });
+                    if self.navigation_open {
+                        let edge = egui::Rect::from_min_max(
+                            egui::pos2(content.right() - peek, content.top()),
+                            egui::pos2(content.right(), content.bottom() - self.browse_bar),
+                        );
+                        let back = ui
+                            .interact(edge, egui::Id::new("browse-peek"), egui::Sense::click())
+                            .on_hover_cursor(egui::CursorIcon::PointingHand);
+                        back.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Button,
+                                true,
+                                "Back to conversation",
+                            )
+                        });
+                        if back.clicked() {
+                            self.navigation_open = false;
                         }
                     }
                 } else {
@@ -5036,7 +5096,7 @@ impl CaperApp {
                         self.rail(ui);
                     });
                     ui.scope_builder(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
-                        self.sidebar(ui, sidebar_width)
+                        self.sidebar(ui, sidebar_width, true)
                     });
                     let separator = ui
                         .interact(
@@ -5266,7 +5326,7 @@ impl CaperApp {
             });
     }
 
-    fn sidebar(&mut self, ui: &mut egui::Ui, width: f32) {
+    fn sidebar(&mut self, ui: &mut egui::Ui, width: f32, account_bar: bool) {
         // Redraw when a timed mute ends.
         if let Some(wait) = self.notifications.next_expiry(chrono::Utc::now()) {
             ui.ctx().request_repaint_after(wait);
@@ -5288,10 +5348,12 @@ impl CaperApp {
                 ui.set_width(width - 24.0);
                 ui.set_height(ui.available_height());
                 ui.spacing_mut().item_spacing.y = 0.0;
-                egui::TopBottomPanel::bottom("native-account")
-                    .show_separator_line(false)
-                    .frame(egui::Frame::NONE)
-                    .show_inside(ui, |ui| self.account_bar(ui));
+                if account_bar {
+                    egui::TopBottomPanel::bottom("native-account")
+                        .show_separator_line(false)
+                        .frame(egui::Frame::NONE)
+                        .show_inside(ui, |ui| self.account_bar(ui));
+                }
                 egui::ScrollArea::vertical()
                     .id_salt("sidebar-scroll")
                     .show(ui, |ui| {

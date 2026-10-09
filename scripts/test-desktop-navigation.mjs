@@ -123,6 +123,8 @@ try {
   browser("set", "viewport", "1280", "900", "2");
   browser("open", url.toString());
   wait('document.querySelector("#chat-message") && !document.querySelector("#chat-message").disabled');
+  // The member list starts closed on every client.
+  browser("click", ".member-list-toggle");
   wait('document.querySelector(".space-member-presence .presence-dot")?.dataset.status === "online"');
   browser("fill", "#chat-message", "draft survives repeat click");
   evaluate('(window.navigationFixture.messageNode = document.querySelector(".chat-message"), true)');
@@ -193,15 +195,11 @@ try {
     null,
     "Mobile members belongs in the channel menu",
   );
+  // Pins is an icon-only header control on every layout (#363).
   assert.equal(
-    evaluate('document.querySelector(".chat-heading > .chat-pins-toggle")'),
-    null,
-    "Mobile Pins must not have a dedicated header button",
-  );
-  assert.equal(
-    evaluate('document.querySelectorAll(".chat-channel-menu .chat-pins-toggle").length'),
+    evaluate('document.querySelectorAll(".chat-heading .chat-pins-toggle").length'),
     1,
-    "Pins remains available inside the channel menu",
+    "Mobile Pins is one header control",
   );
   assert.equal(evaluate('document.querySelector(".navigation-toggle").getAttribute("aria-label")'), "Back to Browse");
   assert.equal(evaluate('document.querySelector(".navigation-toggle").getBoundingClientRect().width'), 44);
@@ -231,19 +229,32 @@ try {
   const { sessionId } = await cdp("Target.attachToTarget", { targetId: target.targetId, flatten: true });
   await cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 2 }, sessionId);
   assert.equal(evaluate('matchMedia("(pointer: coarse)").matches'), true);
-  const touch = (type, x, y) =>
-    cdp(
+  // Touches carry their own timestamps (seconds), `after` the previous one, so
+  // swipe speeds do not depend on how quickly headless Chromium renders.
+  let clock = 0;
+  const touch = (type, x, y, after = 0.016) => {
+    clock = type === "touchStart" ? Math.max(clock, Date.now() / 1000) : clock + after;
+    return cdp(
       "Input.dispatchTouchEvent",
-      { type, touchPoints: type === "touchEnd" || type === "touchCancel" ? [] : [{ x, y }] },
+      { type, timestamp: clock, touchPoints: type === "touchEnd" || type === "touchCancel" ? [] : [{ x, y }] },
       sessionId,
     );
-  const swipe = async (x, y, dx, dy = 0, end = "touchEnd") => {
+  };
+  const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  // Moves 16ms apart over `duration`, like a finger; then the slide settles.
+  const swipe = async (x, y, dx, dy = 0, end = "touchEnd", duration = 96) => {
+    const steps = Math.max(1, Math.round(duration / 16));
     await touch("touchStart", x, y);
-    for (let step = 1; step <= 6; step++) await touch("touchMove", x + (dx * step) / 6, y + (dy * step) / 6);
+    for (let step = 1; step <= steps; step++)
+      await touch("touchMove", x + (dx * step) / steps, y + (dy * step) / steps);
     await touch(end);
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    await pause(500);
   };
   const browsing = () => evaluate('document.querySelector(".spaces-room").classList.contains("navigation-open")');
+  const settled = () =>
+    wait(
+      '!document.documentElement.dataset.browseTransition && !document.getAnimations().some(a => a.effect?.pseudoElement?.includes("browse-room"))',
+    );
   const point = (selector) =>
     evaluate(
       `(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`,
@@ -253,15 +264,51 @@ try {
   const currentUrl = evaluate("location.href");
   const reads = evaluate("navigationFixture.historyReads.design123456");
   const p = point(".chat-messages");
-  for (const [dx, dy, end] of [
-    [60, 0],
+  for (const [dx, dy, end, duration] of [
+    [60, 0, "touchEnd", 800],
+    [120, 0, "touchEnd", 1200],
+    [30, 0],
     [-100, 0],
     [90, 140],
     [100, 0, "touchCancel"],
   ]) {
-    await swipe(p.x - 60, p.y, dx, dy, end);
-    assert.equal(browsing(), false, "Short, wrong-direction, vertical and canceled gestures must not navigate");
+    await swipe(p.x - 60, p.y, dx, dy, end, duration);
+    settled();
+    assert.equal(
+      browsing(),
+      false,
+      "Slow drags short of halfway, tiny flicks, wrong-direction, vertical and canceled gestures snap back",
+    );
   }
+  assert.equal(
+    evaluate('document.querySelector("#chat-message").value'),
+    "mobile draft survives both swipe directions",
+  );
+
+  // The conversation follows the finger over a still, live Browse. It travels
+  // the room's width less the edge it keeps in view beside Browse.
+  const peekWidth = evaluate(
+    'parseFloat(getComputedStyle(document.querySelector(".spaces-room")).getPropertyValue("--browse-peek"))',
+  );
+  assert.ok(peekWidth >= 56 && peekWidth <= 96, `peek ${peekWidth}`);
+  const travel = evaluate('document.querySelector(".spaces-room").getBoundingClientRect().width') - peekWidth;
+  await touch("touchStart", p.x - 100, p.y);
+  for (let step = 1; step <= 10; step++) await touch("touchMove", p.x - 100 + step * 10, p.y);
+  wait('document.getAnimations().filter(a => a.effect?.pseudoElement?.includes("browse-room")).length === 1');
+  assert.equal(evaluate("document.documentElement.dataset.browseTransition"), "open");
+  assert.equal(browsing(), true, "Browse renders live beneath the sliding conversation");
+  const scrubbed = evaluate(
+    'document.getAnimations().filter(a => a.effect?.pseudoElement?.includes("browse-room")).map(a => [a.playState, Math.round(a.currentTime)])',
+  );
+  for (const [state, time] of scrubbed) {
+    assert.equal(state, "paused");
+    assert.ok(Math.abs(time - (100 / travel) * 1000) < 15, `slide follows the finger (${time})`);
+  }
+  screenshot("mobile-swipe-midway");
+  await touch("touchEnd", 0, 0, 0.2); // Held still before lifting: not a fling.
+  settled();
+  assert.equal(browsing(), false, "Releasing before halfway snaps back to the conversation");
+
   const fingers = [
     { id: 0, x: p.x - 60, y: p.y },
     { id: 1, x: p.x - 60, y: p.y + 40 },
@@ -280,11 +327,31 @@ try {
   evaluate("window.getSelection()?.removeAllRanges(); document.activeElement.blur()");
   screenshot("mobile-chat");
   await swipe(p.x - 60, p.y, 68);
-  assert.equal(browsing(), true, "Right swipe above threshold must reveal Browse");
+  settled();
+  assert.equal(browsing(), true, "A quick right flick reveals Browse");
+  // Browse stays put and fits beside the conversation, which rests at the edge.
+  const edge = evaluate(`(() => {
+    const room = document.querySelector(".spaces-room").getBoundingClientRect();
+    return {
+      peek: room.right - document.querySelector(".spaces-room > .stage").getBoundingClientRect().left,
+      browse: room.right - document.querySelector(".sidebar-channels").getBoundingClientRect().right,
+      inert: document.querySelector(".spaces-room > .stage").inert,
+    };
+  })()`);
+  assert.ok(Math.abs(edge.peek - peekWidth) < 2, `conversation rests at the edge (${edge.peek})`);
+  assert.ok(edge.browse >= peekWidth, "Browse is not covered by the conversation's edge");
+  assert.equal(edge.inert, true, "The conversation's edge is not interactive");
   screenshot("mobile-browse");
   const row = point('.channel-select:not([aria-current="page"])');
   await swipe(row.x + 60, row.y, -110);
+  settled();
   assert.equal(browsing(), false, "Left swipe on a channel row must return to the current chat, not select that row");
+  await swipe(p.x - 100, p.y, 220, 0, "touchEnd", 1200);
+  settled();
+  assert.equal(browsing(), true, "A slow drag past halfway reveals Browse");
+  await swipe(row.x + 40, row.y, -200, 0, "touchEnd", 1200);
+  settled();
+  assert.equal(browsing(), false, "A slow drag back past halfway returns to the conversation");
   assert.equal(evaluate("location.href"), currentUrl);
   assert.equal(
     evaluate('document.querySelector("#chat-message").value'),
@@ -311,24 +378,17 @@ try {
   browser("press", "Escape");
   assert.equal(evaluate('document.querySelector(".chat-channel-menu").open'), false);
   assert.equal(evaluate('document.activeElement === document.querySelector(".chat-channel-menu summary")'), true);
-  browser("click", ".chat-channel-menu summary");
   assert.equal(
-    evaluate('document.querySelector(".chat-channel-menu .chat-pins-toggle").getAttribute("aria-label")'),
-    "Pins, 0",
+    evaluate('document.querySelector(".chat-heading .chat-pins-toggle").getAttribute("aria-label")'),
+    "Pins",
   );
-  browser("click", ".chat-channel-menu .chat-pins-toggle");
+  browser("click", ".chat-heading .chat-pins-toggle");
   wait('document.querySelector(".chat-pins")?.textContent.includes("No pinned messages.")');
-  assert.equal(evaluate('document.querySelector(".chat-channel-menu").open'), false, "Choosing Pins closes the menu");
   screenshot("mobile-empty-pins");
-  browser("click", ".chat-channel-menu summary");
-  assert.equal(evaluate('document.querySelector(".chat-channel-menu .chat-pins-toggle").textContent'), "Messages");
-  browser("click", ".chat-channel-menu .chat-pins-toggle");
+  await swipe(p.x - 60, p.y, 100);
+  assert.equal(browsing(), false, "Open Pins must not pass swipes through");
+  browser("press", "Escape");
   wait('!document.querySelector(".chat-pins") && !!document.querySelector(".chat-message")');
-  assert.equal(
-    evaluate('document.querySelector(".chat-channel-menu").open'),
-    false,
-    "Choosing Messages closes the menu",
-  );
   assert.equal(
     evaluate('document.querySelector("#chat-message").value'),
     "mobile draft survives both swipe directions",
@@ -347,9 +407,39 @@ try {
   assert.equal(browsing(), false, "Member overlay must not pass swipes through");
   if (evaluate('!!document.querySelector(".space-member-presence")')) browser("click", ".member-list-close");
   browser("click", ".navigation-toggle");
+  settled();
   assert.equal(browsing(), true, "Back button must open Browse");
+  browser("click", ".browse-peek");
+  settled();
+  assert.equal(browsing(), false, "Tapping the conversation's edge returns to it");
+  browser("click", ".navigation-toggle");
+  settled();
+  const peek = point(".browse-peek");
+  await swipe(peek.x, peek.y, -200, 0, "touchEnd", 1200);
+  settled();
+  assert.equal(browsing(), false, "Dragging the conversation's edge back returns to it");
+  browser("click", ".navigation-toggle");
+  settled();
   browser("click", '.channel-select[aria-current="page"]');
+  settled();
   assert.equal(browsing(), false);
+
+  // Reduced motion keeps the instant switch and its quick-swipe threshold.
+  await cdp(
+    "Emulation.setEmulatedMedia",
+    { features: [{ name: "prefers-reduced-motion", value: "reduce" }] },
+    sessionId,
+  );
+  await swipe(p.x - 60, p.y, 68);
+  assert.equal(
+    evaluate("document.documentElement.dataset.browseTransition ?? null"),
+    null,
+    "No slide with reduced motion",
+  );
+  assert.equal(browsing(), true, "Reduced motion: a quick swipe still reveals Browse");
+  browser("click", '.channel-select[aria-current="page"]');
+  assert.equal(browsing(), false, "Reduced motion: choosing a channel returns at once");
+  await cdp("Emulation.setEmulatedMedia", { features: [] }, sessionId);
   assert.equal(
     evaluate('document.querySelector("#chat-message").value'),
     "mobile draft survives both swipe directions",
@@ -368,7 +458,7 @@ try {
   if (process.env.NAVIGATION_TEST_NARROW_SCREENSHOT)
     browser("screenshot", process.env.NAVIGATION_TEST_NARROW_SCREENSHOT);
   console.log(
-    "PASS: desktop navigation/presence; Chromium touch: bidirectional Browse swipes, threshold/direction/vertical/cancel guards, composer and overlays, row release-click protection, draft/history retention, Back button, Pins/Messages/Members dropdown, empty pins and 320px layout.",
+    "PASS: desktop navigation/presence; Chromium touch: finger-tracked bidirectional Browse slides over a still Browse with the conversation's edge kept in view (tap/drag back), fling/halfway/snap-back, direction/vertical/cancel guards, reduced motion, composer and overlays, row release-click protection, draft/history retention, Back button, Members dropdown, empty Pins and 320px layout.",
   );
 } finally {
   socket?.close();

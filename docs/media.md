@@ -5013,8 +5013,10 @@ their existing Pins/member controls.
 Swiping right opens the existing space/channel browser; swiping left returns to
 the selected conversation without selecting a different channel. Web keeps the
 chat mounted, Apple keeps the draft in its chat model, and Android saves the
-conversation state while Browse replaces it. Gestures require at least 64
-CSS pixels/native points of mostly horizontal travel and reject vertical drags.
+conversation state while Browse replaces it. Gestures originally required at
+least 64 CSS pixels/native points of mostly horizontal travel and reject vertical
+drags; see [Sliding Browse on phones](#sliding-browse-on-phones-october-8-2026)
+for the current finger-tracked behavior.
 
 | Platform | Intentional behavior and validation boundary |
 | --- | --- |
@@ -5127,3 +5129,69 @@ presents Pins as a sheet over the mounted conversation and is unchanged.
 | Rust desktop | 276 tests pass, 9 existing tests ignored, including rendered scroll-anchor/paging preservation across empty Pins. No macOS/Windows or physical-device acceptance. |
 | Android | Scroll state is hoisted above Pins navigation. Gradle compile attempt is blocked by the missing Android SDK; no native build or device verification. |
 | Deployment | Web, Android and Rust desktop can release independently. No API/gateway, infrastructure, secret/configuration, database or Apple release is required. Docker daemon unavailable; web build stages validated directly. No deployment performed. |
+
+### Sliding Browse on phones (October 8, 2026)
+
+On narrow layouts, Browse works like Discord's mobile drawer instead of the two
+views swapping in place:
+
+- **Still Browse:** Browse (spaces, channels and DMs) stays still underneath.
+  The conversation slides over it, following the finger during a swipe.
+- **Resting edge:** with Browse shown, the conversation's left edge stays in
+  view on the right, about 20% of the width (56–96 CSS px/dp/pt). Browse's
+  channel list is laid out beside it.
+- **Account bar:** keeps the full width at the bottom, and the edge view stops
+  above it. During the slide, the conversation's bottom edge lifts off the bar.
+- **Edge view:** inert. Tapping it, or dragging it left, returns to the
+  conversation.
+- **Release:** past halfway, or a flick of at least 300 CSS px/points per second
+  after 40 of travel, completes the move; anything else springs back. A flick
+  back toward the start cancels.
+- **Buttons:** Back to Browse, Close navigation, and choosing a channel or DM
+  animate the same slide.
+- **Swipe starts:** unchanged from the October 6 rules above, plus the edge
+  view. Swipes never select a channel. Drafts and history are kept.
+
+| Platform | Behavior and validation boundary |
+| --- | --- |
+| Web ≤760px | Same-document View Transitions snapshot the room. The conversation's snapshot is moved (and its bottom clipped) by the drag, then settled with WAAPI. The rest of the page stays live. Browse's live layout keeps the conversation laid out at the edge: inert, at its usual offset, and clipped above the bar. That keeps its scroll position, which previously reset to the latest message on every Browse. Without View Transitions, or with `prefers-reduced-motion`, Browse switches at once, keeping the edge view and the original 64px/600ms quick-swipe rule. `npm run check` passes, and `npm test` passes 471 tests on Node 24. `scripts/test-desktop-navigation.mjs` passes against disposable mocks in Chromium touch emulation, with timestamped touches. It covers mid-drag tracking, slow snap-back, halfway and fling commits both ways, the resting edge (position, inert, Browse not covered), tap and drag back from the edge, cancel/vertical/wrong-direction/multi-touch guards, reduced motion, Back/Close, overlays, drafts and history reads. The test's stale members-default and Pins-header expectations (#363/#366) were updated. 320px and 390px captures (resting edge, mid-swipe, button slide) were inspected. Not Safari, Firefox or physical-device acceptance. |
+| Android narrow | Compose `Animatable` with a critically damped spring that carries the release velocity. The conversation stays composed. Its layer is translated and clipped above the account bar; the clip also limits touches, so the bar's controls stay reachable. The finger is tracked on the unmoving container. Follows the system animator duration scale. `./gradlew :app:compileDebugKotlin` and `:app:lintDebug` pass (Android SDK 36). No emulator or device run: there is no KVM in this environment. |
+| Apple narrow | SwiftUI offset and clip shape inside a scoped transaction: no animation while dragged, then an interpolating spring carrying the release velocity. Model-driven changes use the default spring, and Reduce Motion switches without animation. Only a small modifier reads the drag, so the chat itself doesn't re-render per frame. The conversation stays in the hierarchy. Beside Browse it is not hit-testable or exposed to accessibility, and a "Back to conversation" target covers its edge. Switching dismisses the keyboard. Timeline and channel-list edge-start rules (24pt) are unchanged. Swift/Xcode are unavailable in this Linux environment, so this is not compiled, UI-tested or device-checked. The existing iOS UI test's swipe/Back expectations are expected to hold. |
+| Rust desktop narrow | No touch gestures. Toggling Browse slides the conversation over a still Browse to the same resting edge (0.3s cubic ease-out). The account bar moves to a full-width bottom bar in narrow Browse, and the conversation's rect stops above it (egui panels set their own clip). Clicking the edge returns. Fmt, application-package Clippy (`--no-deps`) and the debug build pass, and 288 tests pass (9 existing ignored). 60 fps Xvfb recordings of the `parity-narrow` fixture were inspected frame by frame. Not macOS or Windows acceptance. |
+| Containers/services | No API, gateway, infrastructure, secret/configuration or database change. No deployment performed. |
+
+#### Deployment order
+
+1. No infrastructure, secret/configuration, database migration, API, gateway or
+   Valkey change is necessary. Web, Android, Apple and Rust desktop can deploy
+   independently. Wait for the merged revision's immutable web image and native
+   build checks, and set `MERGED_SHA` to that full merged commit SHA. Merging
+   does not deploy services or release apps.
+2. Deploy web through the existing operator workflow from an authenticated
+   checkout with the production Kubernetes context:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # Wait for this SHA's deployment workflow to succeed, then:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+
+3. Build Android, Apple and Rust desktop through their existing native
+   workflows after native checks pass: `bash apps/native/android/build.sh`,
+   `bash apps/native/apple/build.sh ios`, `bash apps/native/apple/build.sh macos`
+   and `bash apps/native/desktop/build.sh`. Build output is not a store release.
+4. On a real iPhone, an Android phone and mobile Safari/Chrome, verify:
+   - slow drags snapping back, half-way drags, and flicks in both directions;
+   - tapping and dragging the conversation's edge beside Browse;
+   - the account bar's controls beside that edge;
+   - catching a slide mid-animation;
+   - vertical scrolling while horizontally still;
+   - Back to Browse and Close navigation;
+   - choosing a channel and a DM;
+   - draft and scroll retention, and keyboard dismissal;
+   - Reduce Motion or Remove animations;
+   - member overlay and audio slider drags.
+
+   Roll back web by deploying the previous known-good web image SHA with the
+   command above. For native clients, stop distribution and ship a corrected
+   higher-build-number build. No data rollback is required.

@@ -58,6 +58,7 @@ import MicPlayback, { SpeakerTest } from "./MicPlayback";
 import AudioDiagnostics from "./AudioDiagnostics";
 import VoiceActivity from "./VoiceActivity";
 import ChannelSidebar from "./ChannelSidebar";
+import { useBrowseLayout, useBrowseSwipe } from "../spaces/browseTransition";
 import "./call.css";
 
 const initialState: CallViewState = {
@@ -421,6 +422,8 @@ interface CallProps {
   channelNavigation?: ReactNode | ((voiceFor: (channelId: string) => VoiceSlot | null) => ReactNode);
   navigationOpen?: boolean;
   onNavigationToggle?: () => void;
+  /** Sets Browse at once; swipes on phones animate it themselves. */
+  onNavigationChange?: (open: boolean) => void;
   initialAccount?: Account;
   initialHistory?: GeneralChatHistory;
   initialHistoryError?: string;
@@ -455,6 +458,7 @@ export default function Call({
   membersPanel,
   navigationOpen = false,
   onNavigationToggle,
+  onNavigationChange,
   initialAccount,
   initialHistory,
   initialHistoryError,
@@ -494,18 +498,17 @@ export default function Call({
   );
   const [membersVisible, setMembersVisible] = useState(false);
   const [narrow, setNarrow] = useState(false);
-  const navigationSwipe = useRef<{ id: number; x: number; y: number; time: number } | undefined>(undefined);
-  const suppressNavigationClick = useRef(false);
   useEffect(() => {
     const media = window.matchMedia("(max-width: 760px)");
-    const update = () => {
-      setNarrow(media.matches);
-      navigationSwipe.current = undefined;
-    };
+    const update = () => setNarrow(media.matches);
     update();
     media.addEventListener("change", update);
     return () => media.removeEventListener("change", update);
   }, []);
+  const navigationSwipe = useBrowseSwipe(narrow && !membersVisible, navigationOpen, onNavigationChange);
+  const roomRef = useRef<HTMLElement>(null);
+  const peeking = narrow && navigationOpen && !!onNavigationToggle;
+  useBrowseLayout(roomRef, navigationOpen);
   const [selfPresence, setSelfPresence] = useState<PresenceStatus>();
   const [localPresence, setLocalPresence] = useState<PresenceStatus>("offline");
   const [presenceLive, setPresenceLive] = useState(false);
@@ -1275,64 +1278,10 @@ export default function Call({
         </header>
       )}
       <section
+        ref={roomRef}
         className={`call-room${channel ? " spaces-room" : ""}${navigationOpen ? " navigation-open" : ""}`}
         data-direct={channel?.direct ? "" : undefined}
-        onPointerDownCapture={(event) => {
-          suppressNavigationClick.current = false;
-          navigationSwipe.current = undefined;
-          if (
-            !narrow ||
-            !onNavigationToggle ||
-            event.pointerType !== "touch" ||
-            !event.isPrimary ||
-            membersVisible ||
-            document.querySelector("dialog[open], details[open], [role=dialog], [popover]:popover-open") ||
-            window.getSelection()?.type === "Range" ||
-            (event.target as HTMLElement).closest(
-              "input, textarea, select, [contenteditable=true], [role=slider], a, summary, button:not(.channel-select):not(.direct-select)",
-            )
-          )
-            return;
-          navigationSwipe.current = { id: event.pointerId, x: event.clientX, y: event.clientY, time: event.timeStamp };
-        }}
-        onPointerMove={(event) => {
-          const start = navigationSwipe.current;
-          if (
-            start &&
-            (event.pointerId !== start.id ||
-              Math.abs(event.clientY - start.y) > Math.max(12, Math.abs(event.clientX - start.x)))
-          )
-            navigationSwipe.current = undefined;
-        }}
-        onPointerCancel={() => {
-          navigationSwipe.current = undefined;
-        }}
-        onPointerUp={(event) => {
-          const start = navigationSwipe.current;
-          navigationSwipe.current = undefined;
-          if (!start || start.id !== event.pointerId || event.timeStamp - start.time > 600) return;
-          const dx = event.clientX - start.x,
-            dy = event.clientY - start.y;
-          if (
-            Math.abs(dx) < 64 ||
-            Math.abs(dx) < Math.abs(dy) * 2 ||
-            (navigationOpen ? dx >= 0 : dx <= 0) ||
-            document.querySelector("dialog[open], details[open], [role=dialog], [popover]:popover-open") ||
-            window.getSelection()?.type === "Range"
-          )
-            return;
-          suppressNavigationClick.current = true;
-          onNavigationToggle?.();
-        }}
-        onKeyDownCapture={() => {
-          suppressNavigationClick.current = false;
-        }}
-        onClickCapture={(event) => {
-          if (!suppressNavigationClick.current) return;
-          suppressNavigationClick.current = false;
-          event.preventDefault();
-          event.stopPropagation();
-        }}
+        {...navigationSwipe}
       >
         {spaceRail}
         <ChannelSidebar>
@@ -1570,7 +1519,7 @@ export default function Call({
             </div>
           </div>
         </ChannelSidebar>
-        <div className="stage">
+        <div className="stage" inert={peeking}>
           {state.remoteMedia.map((media) => (
             <AudioOutput
               key={media.trackId}
@@ -1673,6 +1622,14 @@ export default function Call({
             />
             {membersPanel(() => setMembersVisible(false))}
           </>
+        )}
+        {peeking && (
+          <button
+            type="button"
+            className="browse-peek"
+            aria-label={`Back to ${channel?.direct ? "" : "#"}${channel?.name ?? "conversation"}`}
+            onClick={onNavigationToggle}
+          />
         )}
       </section>
       <dialog
