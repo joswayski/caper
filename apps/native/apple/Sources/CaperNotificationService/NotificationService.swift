@@ -55,7 +55,7 @@ final class NotificationService: UNNotificationServiceExtension {
             guard let count = data["recipientCount"] as? Int, count > 0 else { return nil }
             metadata.recipientCount = count
             // Caper has no separate group artwork: show the actual sender.
-            intent.setImage(avatar, forParameterNamed: "speakableGroupName")
+            intent.setImage(avatar, forParameterNamed: \.speakableGroupName)
         }
         metadata.mentionsCurrentUser = data["kind"] as? String == "mention.user"
         intent.donationMetadata = metadata
