@@ -1928,6 +1928,53 @@ actions performed during development.
    Never drop retained content/outbox/migration records or roll SQLx images back
    across the applied migration.
 
+## Message text: links and grouping
+
+Message content stays plain text on the wire
+(`content: {version: 1, type: "text", text, mentions}`); there is no server,
+database or API change. Clients find links at render time the same way they
+find mentions: split the text into mention segments, then run link detection
+on the plain segments only.
+
+**Links.** `http://`, `https://` and `www.` URLs (case-insensitive) become
+links. The rules follow GitHub Flavored Markdown's autolink literals: a link
+starts at the beginning, after whitespace, or after `( [ { < " ' * _ ~`; runs
+to whitespace or `<`; drops trailing `? ! . , : ; * _ ~ " ' >`, a trailing
+`&entity;`, and unbalanced `)`/`]`; and needs a host of ASCII letters,
+digits, `_`, `.` and `-` with at least two labels (three after `www.`) and no
+`_` in the last two. `www.` links open as `https://`. Nothing else
+(`javascript:`, `mailto:`, `ftp:`, bare domains) is ever linked, and the
+visible text is never shortened. Links open in the system browser; on web in a
+new tab with `rel="noopener noreferrer nofollow ugc"`. They apply to message
+bodies in the timeline, threads, Pins and forwarded-message cards, not to
+edit-history diffs or the composer.
+
+The algorithm lives in `apps/web/src/chat/links.ts` and each native client;
+all four clients' unit tests assert the same segments for every case in
+`shared/messages/link-cases.json`. Change the rules and that file together.
+
+**Compatibility with rich messages.** Markdown and multi-part bot messages
+(titles, fields, embeds, buttons) should be added as optional fields on the
+same version-1 text content, for example a format flag or a structured
+`blocks`/`embeds` list, while `text` always carries a readable plain fallback.
+Every current client ignores unknown content fields but rejects unknown
+`version`/`type` values, so this keeps already-installed apps showing the
+fallback instead of dropping the message. A future Markdown renderer should
+call the same link detection for bare URLs (GFM autolink literals), so plain
+messages render identically before and after it ships; explicit
+`[label](url)` links and bot embed links should go through the same
+http/https-only, open-externally link handling. Link previews, if added, are
+separate server-generated attachments rather than text.
+
+**Grouping.** A message is shown compactly, without avatar and name, when the
+previous visible row in the same list (timeline or a thread's replies) is by
+the same account, at most five minutes earlier, on the same day, and neither
+is a blocked-message placeholder; "Replied to a thread" broadcasts and thread
+roots always keep their header. Compact rows keep the avatar column empty and
+show the time there on pointer hover; an "edited" marker moves after the
+text. Grouping is presentation only: ordering, paging, unread state and
+actions are unchanged.
+
 ## Shared call state and rolling deployments
 
 The original shared-state rollout below covers the public General room. Account
