@@ -1169,7 +1169,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 
 @Composable private fun ThreadConversation(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier) {
     val thread = state.thread ?: return
-    var draft by rememberSaveable(state.selectedChannel?.id, thread.rootId) { mutableStateOf("") }
+    val draftState = rememberSaveable(state.selectedChannel?.id, thread.rootId, stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("")) }
+    var draft by draftState
     var broadcast by rememberSaveable(state.selectedChannel?.id, thread.rootId) { mutableStateOf(false) }
     val pending = state.pendingMessage?.takeIf { it.threadRootId == thread.rootId }
     BackHandler { viewModel.closeThread() }
@@ -1177,7 +1178,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         if (state.pendingMessage != null && pending == null || pending?.rejected == true || pending != null && pending.error == null) return
         if (pending != null) viewModel.send(pending.text, threadRootId = thread.rootId, broadcast = pending.broadcast)
         // "Also send to channel" applies to one reply, so it resets with the draft.
-        else if (draft.isNotBlank()) { viewModel.send(draft, threadRootId = thread.rootId, broadcast = broadcast); draft = ""; broadcast = false }
+        else if (draft.text.isNotBlank()) { viewModel.send(draft.text, threadRootId = thread.rootId, broadcast = broadcast); draft = TextFieldValue(""); broadcast = false }
     }
     Column(modifier.background(SurfaceConversation).border(BorderStroke(1.dp, Border))) {
         Row(Modifier.fillMaxWidth().height(53.dp).padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1194,7 +1195,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             pending?.error?.let { error ->
                 Text(error, color = ErrorText)
                 if (pending.rejected) Row {
-                    TextButton({ viewModel.discardPending()?.let { draft = it } }, enabled = draft.isEmpty()) { Text("Edit") }
+                    TextButton({ viewModel.discardPending()?.let { draft = TextFieldValue(it, TextRange(it.length)) } }, enabled = draft.text.isEmpty()) { Text("Edit") }
                     TextButton({ viewModel.discardPending() }) { Text("Dismiss") }
                 } else TextButton(::send) { Text("Retry send") }
             }
@@ -1202,12 +1203,15 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         if (thread.hasNewer) TextButton({ viewModel.loadThread(newer = true) }, enabled = !thread.loading) { Text("Load newer replies") }
         if (!thread.loading && rows.none { it.threadRootId == thread.rootId }) Text("No replies yet. Start the thread.", Modifier.padding(18.dp), color = TextMuted)
         if (state.canParticipate) Column(Modifier.padding(12.dp)) {
-            OutlinedTextField(draft, { draft = it.codePointTake(4000) }, Modifier.fillMaxWidth(), placeholder = { Text("Reply to thread…") }, maxLines = 5,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = KeyboardActions(onSend = { send() }), enabled = !thread.loading)
+            // Thread replies report activity but, as before, no typing indicator.
+            val suggestions = rememberComposerSuggestions(draftState, state, state.selectedChannel?.id to thread.rootId) { viewModel.reportActivity() }
+            ComposerSuggestionPopup(suggestions)
+            OutlinedTextField(draft, suggestions::change, Modifier.fillMaxWidth().then(suggestions.fieldModifier), placeholder = { Text("Reply to thread…") }, maxLines = 5,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = KeyboardActions(onSend = { if (!suggestions.acceptOnSend()) send() }), enabled = !thread.loading)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(pending?.broadcast ?: broadcast, { broadcast = it }, enabled = pending == null)
                 Text("Also send to #${state.selectedChannel?.name}", Modifier.weight(1f), fontSize = 12.sp)
-                TextButton(::send, enabled = !thread.loading && state.chatAuthorId != null && state.pendingMessage == null && draft.isNotBlank()) { Text("Send reply") }
+                TextButton(::send, enabled = !thread.loading && state.chatAuthorId != null && state.pendingMessage == null && draft.text.isNotBlank()) { Text("Send reply") }
             }
             if (state.pendingMessage?.error != null && pending == null) Text("Confirm or dismiss the pending message first.", color = TextMuted)
         } else Text(if (state.selectedDirect?.incoming == true) "Accept the request to reply." else "Join the channel to reply.", Modifier.padding(18.dp), color = TextMuted)
@@ -1221,7 +1225,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 ) {
     val channel = state.selectedChannel
     if (channel == null) return EmptyChannel(state, narrow, show, openNavigation, modifier)
-    var draft by rememberSaveable(channel.id, stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("")) }
+    val draftState = rememberSaveable(channel.id, stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("")) }
+    var draft by draftState
     var channelMenuOpen by remember(channel.id) { mutableStateOf(false) }
     var showingPins by remember(channel.id) { mutableStateOf(false) }
     // Switching to Pins must not discard the channel's measured scroll position.
@@ -1341,75 +1346,16 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     TextButton(viewModel::retrySession) { Text("Retry session", fontSize = 12.sp) }
                 }
             }
-            val context = LocalContext.current
-            val catalog = remember { EmojiArtwork.catalog(context) }
-            var dismissedAt by remember(channel.id) { mutableStateOf<TextFieldValue?>(null) }
-            var composerFocused by remember(channel.id) { mutableStateOf(false) }
-            // `:` emoji and `@` mention tokens never overlap; both share one popup.
-            val token = emojiToken(draft)
-            val mention = if (token == null) mentionToken(draft) else null
-            val open = composerFocused && draft != dismissedAt
-            val emojiRows = if (open && token != null) emojiSuggestions(catalog, token.query) else emptyList()
-            val mentionRows = if (open && mention != null) mentionSuggestions(mentionSource(state), mention.query) else emptyList()
-            val suggestionCount = emojiRows.size + mentionRows.size
-            var selectedSuggestion by remember(channel.id) { mutableIntStateOf(0) }
-            LaunchedEffect(token, mention) { selectedSuggestion = 0 }
-            val suggestionList = rememberLazyListState()
-            LaunchedEffect(selectedSuggestion, token, mention) {
-                if (suggestionCount > 0) suggestionList.animateScrollToItem(selectedSuggestion.coerceAtMost(suggestionCount - 1))
-            }
-            fun accept(next: TextFieldValue?) {
-                next?.let { draft = it; dismissedAt = null; viewModel.reportActivity(); viewModel.setTyping(it.text.isNotBlank()) }
-            }
-            fun chooseSuggestion(index: Int): Boolean {
-                emojiToken(draft)?.let { current ->
-                    val entry = emojiRows.getOrNull(index) ?: return false
-                    accept(insertEmoji(draft, current, entry.emoji))
-                    return true
-                }
-                val current = mentionToken(draft) ?: return false
-                val candidate = mentionRows.getOrNull(index) ?: return false
-                accept(insertMention(draft, current, candidate.username))
-                return true
-            }
-            if (suggestionCount > 0) Surface(
-                Modifier.widthIn(max = 260.dp).fillMaxWidth().padding(bottom = 6.dp), color = SurfaceRaised,
-                shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border),
-            ) {
-                LazyColumn(Modifier.heightIn(max = 192.dp).padding(vertical = 4.dp), state = suggestionList) {
-                    itemsIndexed(emojiRows, key = { _, entry -> entry.id }) { index, entry ->
-                        SuggestionRow(index == selectedSuggestion, "Insert emoji ${emojiShortcodeLabel(entry.name)}", { selectedSuggestion = index; chooseSuggestion(index) }) {
-                            EmojiImage(entry.emoji, null, Modifier.size(28.dp))
-                            Text(emojiShortcodeLabel(entry.name), color = if (index == selectedSuggestion) Text else TextMuted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        }
-                    }
-                    itemsIndexed(mentionRows, key = { _, candidate -> "@${candidate.username}" }) { index, candidate ->
-                        MentionSuggestionRow(candidate, index == selectedSuggestion) { selectedSuggestion = index; chooseSuggestion(index) }
-                    }
-                }
-            }
+            val suggestions = rememberComposerSuggestions(draftState, state, channel.id) { viewModel.reportActivity(); viewModel.setTyping(it.text.isNotBlank()) }
+            ComposerSuggestionPopup(suggestions)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
                 OutlinedTextField(
-                    draft, { value ->
-                        val limited = if (value.text.codePointCount(0, value.text.length) <= 4000) value else {
-                            val text = value.text.codePointTake(4000)
-                            value.copy(text = text, selection = TextRange(value.selection.start.coerceAtMost(text.length), value.selection.end.coerceAtMost(text.length)), composition = null)
-                        }
-                        draft = limited; dismissedAt = null; viewModel.reportActivity(); viewModel.setTyping(limited.text.isNotBlank())
-                    },
-                    modifier = Modifier.weight(1f).onFocusChanged { composerFocused = it.isFocused }.onPreviewKeyEvent { event ->
-                        if (event.type != KeyEventType.KeyDown || suggestionCount == 0) false else when (event.key) {
-                            Key.DirectionDown -> { selectedSuggestion = (selectedSuggestion + 1) % suggestionCount; true }
-                            Key.DirectionUp -> { selectedSuggestion = (selectedSuggestion - 1 + suggestionCount) % suggestionCount; true }
-                            Key.Enter, Key.Tab -> if (event.isShiftPressed) false else chooseSuggestion(selectedSuggestion.coerceAtMost(suggestionCount - 1))
-                            Key.Escape -> { dismissedAt = draft; true }
-                            else -> false
-                        }
-                    }, placeholder = { Text(if (channel.direct) "Message ${channel.name}" else "Message #${channel.name}") }, maxLines = 6,
+                    draft, suggestions::change,
+                    modifier = Modifier.weight(1f).then(suggestions.fieldModifier), placeholder = { Text(if (channel.direct) "Message ${channel.name}" else "Message #${channel.name}") }, maxLines = 6,
                     enabled = !state.messagesLoading && state.messagesError == null,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(onSend = {
-                        if (suggestionCount > 0) { chooseSuggestion(selectedSuggestion.coerceAtMost(suggestionCount - 1)); return@KeyboardActions }
+                        if (suggestions.acceptOnSend()) return@KeyboardActions
                         val pending = state.pendingMessage
                         // Web: Enter retries an unconfirmed send; a rejected one waits for Edit or Dismiss.
                         if (state.chatAuthorId != null) {
@@ -1434,6 +1380,111 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         }
     }
 }
+
+/**
+ * `:` emoji and `@` mention autocomplete shared by the channel and thread composers.
+ * The tokens never overlap, so both kinds share one popup and one selection.
+ * [onEdit] runs after every typed or inserted change to [draft].
+ */
+private class ComposerSuggestions(
+    private val draft: MutableState<TextFieldValue>,
+    val emojiRows: List<EmojiEntry>,
+    val mentionRows: List<MentionCandidate>,
+    val list: LazyListState,
+    selectedState: MutableIntState,
+    dismissedState: MutableState<TextFieldValue?>,
+    private val focused: MutableState<Boolean>,
+    private val onEdit: (TextFieldValue) -> Unit,
+) {
+    val count = emojiRows.size + mentionRows.size
+    var selected by selectedState
+    private var dismissedAt by dismissedState
+
+    private fun accept(next: TextFieldValue) { draft.value = next; dismissedAt = null; onEdit(next) }
+
+    /** Typing reopens a popup that Escape dismissed. */
+    fun change(value: TextFieldValue) { accept(capComposerDraft(value)) }
+
+    fun choose(index: Int): Boolean {
+        val value = draft.value
+        emojiToken(value)?.let { token ->
+            val entry = emojiRows.getOrNull(index) ?: return false
+            insertEmoji(value, token, entry.emoji)?.let { accept(it) }
+            return true
+        }
+        val token = mentionToken(value) ?: return false
+        val candidate = mentionRows.getOrNull(index) ?: return false
+        insertMention(value, token, candidate.username)?.let { accept(it) }
+        return true
+    }
+
+    /** IME Send inserts the highlighted suggestion instead of sending while the popup shows. */
+    fun acceptOnSend(): Boolean {
+        if (count == 0) return false
+        choose(selected.coerceAtMost(count - 1))
+        return true
+    }
+
+    /** Down/Up move, Enter/Tab accept (not with Shift), Escape dismisses until the next edit. */
+    val fieldModifier: Modifier = Modifier.onFocusChanged { focused.value = it.isFocused }.onPreviewKeyEvent { event ->
+        if (event.type != KeyEventType.KeyDown || count == 0) false else when (event.key) {
+            Key.DirectionDown -> { selected = (selected + 1) % count; true }
+            Key.DirectionUp -> { selected = (selected - 1 + count) % count; true }
+            Key.Enter, Key.Tab -> if (event.isShiftPressed) false else choose(selected.coerceAtMost(count - 1))
+            Key.Escape -> { dismissedAt = draft.value; true }
+            else -> false
+        }
+    }
+}
+
+@Composable private fun rememberComposerSuggestions(draft: MutableState<TextFieldValue>, state: AppUiState, key: Any?, onEdit: (TextFieldValue) -> Unit): ComposerSuggestions {
+    val context = LocalContext.current
+    val catalog = remember { EmojiArtwork.catalog(context) }
+    val dismissedAt = remember(key) { mutableStateOf<TextFieldValue?>(null) }
+    val focused = remember(key) { mutableStateOf(false) }
+    val value = draft.value
+    val token = emojiToken(value)
+    val mention = if (token == null) mentionToken(value) else null
+    val open = focused.value && value != dismissedAt.value
+    val emojiRows = if (open && token != null) emojiSuggestions(catalog, token.query) else emptyList()
+    val mentionRows = if (open && mention != null) mentionSuggestions(mentionSource(state), mention.query) else emptyList()
+    val count = emojiRows.size + mentionRows.size
+    val selected = remember(key) { mutableIntStateOf(0) }
+    LaunchedEffect(token, mention) { selected.intValue = 0 }
+    val list = rememberLazyListState()
+    LaunchedEffect(selected.intValue, token, mention) {
+        if (count > 0) list.animateScrollToItem(selected.intValue.coerceAtMost(count - 1))
+    }
+    return ComposerSuggestions(draft, emojiRows, mentionRows, list, selected, dismissedAt, focused, onEdit)
+}
+
+/** The composer's suggestion popup, placed above the field while a token has matches. */
+@Composable private fun ComposerSuggestionPopup(suggestions: ComposerSuggestions) {
+    if (suggestions.count == 0) return
+    Surface(
+        Modifier.widthIn(max = 260.dp).fillMaxWidth().padding(bottom = 6.dp), color = SurfaceRaised,
+        shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border),
+    ) {
+        LazyColumn(Modifier.heightIn(max = 192.dp).padding(vertical = 4.dp), state = suggestions.list) {
+            itemsIndexed(suggestions.emojiRows, key = { _, entry -> entry.id }) { index, entry ->
+                SuggestionRow(index == suggestions.selected, "Insert emoji ${emojiShortcodeLabel(entry.name)}", { suggestions.selected = index; suggestions.choose(index) }) {
+                    EmojiImage(entry.emoji, null, Modifier.size(28.dp))
+                    Text(emojiShortcodeLabel(entry.name), color = if (index == suggestions.selected) Text else TextMuted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            itemsIndexed(suggestions.mentionRows, key = { _, candidate -> "@${candidate.username}" }) { index, candidate ->
+                MentionSuggestionRow(candidate, index == suggestions.selected) { suggestions.selected = index; suggestions.choose(index) }
+            }
+        }
+    }
+}
+
+/** Caps a composer draft at [limit] code points, keeping the selection inside the text. */
+internal fun capComposerDraft(value: TextFieldValue, limit: Int = 4000): TextFieldValue =
+    if (value.text.codePointCount(0, value.text.length) <= limit) value else {
+        val text = value.text.codePointTake(limit)
+        value.copy(text = text, selection = TextRange(value.selection.start.coerceAtMost(text.length), value.selection.end.coerceAtMost(text.length)), composition = null)
+    }
 
 /** One flat row of the composer's `:` emoji / `@` mention popup. */
 @Composable private fun SuggestionRow(selected: Boolean, description: String, choose: () -> Unit, content: @Composable RowScope.() -> Unit) = Row(

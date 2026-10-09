@@ -1592,10 +1592,14 @@ them. Reconnect refetches the active thread and fences obsolete responses.
 | Apple | SwiftUI iPhone full-screen/wide panel, models, gateway and retry regressions implemented. Swift/Xcode unavailable here; iOS/macOS compilation, rendering and physical-device checks remain required |
 | Containers/live | No Docker daemon. Web/API build stages checked directly; no container-image, live multi-account cross-client, SFU or physical-device acceptance is inferred from fixtures |
 
-Web and Rust desktop thread composers accept Unicode emoji but do not yet reuse
-the main composer's colon-name autocomplete. Android/Apple use their existing
-native text entry. Native keyboard focus, accessibility, paging and IME behavior
-need platform validation before release.
+Thread reply composers offer the same `:` emoji and `@` mention suggestions as
+the channel composer on web, Android, Apple and Rust desktop, sharing each
+client's channel-composer implementation: the same rankings, keys (arrows,
+Enter/Tab to insert, Escape closes the suggestions before the thread) and
+4,000-character limit. Mentions suggest the conversation's members. Web is covered by
+`scripts/test-message-threads.mjs` and browser checks at desktop and phone
+widths; Android has not been compiled here, and native keyboard focus,
+accessibility, paging and IME behavior need platform validation before release.
 
 With the disposable fixture and Vite running:
 
