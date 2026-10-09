@@ -1509,7 +1509,9 @@ CHAT_TEST_VALKEY_URL=redis://127.0.0.1:6379 \
 
 For desktop hover assertions, set `MESSAGE_TEST_CHROME` to a Chromium executable
 wrapper that adds
-`--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4`.
+`--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4`;
+`scripts/fine-pointer-chromium.sh` is one (`CAPER_CHROMIUM` picks the browser,
+otherwise Playwright's newest Chromium).
 Stock headless Chromium reports no hover device. The script verifies the fine
 pointer before checking hover and later checks a 390px narrow browser layout.
 That is not touch emulation or physical-device validation.
