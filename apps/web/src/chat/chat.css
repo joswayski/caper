@@ -2266,6 +2266,12 @@
   outline-offset: 2px;
   border-radius: 4px;
 }
+/* Each virtualized row paints its part of one continuous revealed run,
+   including the notice. Inset painting keeps the message gutter aligned. */
+.chat-blocked-revealed {
+  background: var(--surface);
+  box-shadow: inset 2px 0 var(--border);
+}
 /* One pixel, not zero: the virtual list needs every item to have a size. */
 .chat-blocked-hidden {
   height: 1px;

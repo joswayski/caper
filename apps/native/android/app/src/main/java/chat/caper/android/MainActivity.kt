@@ -129,6 +129,7 @@ import chat.caper.android.data.override
 import chat.caper.android.data.spaceKey
 import chat.caper.android.data.spaceMuted
 import chat.caper.android.data.directUnread
+import chat.caper.android.data.collapsesFor
 import chat.caper.android.data.groupBlocked
 import chat.caper.android.data.groupsWithPrevious
 import chat.caper.android.data.linkRanges
@@ -1639,27 +1640,38 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         items(rows, key = { it.key }) { row ->
             val message = row.first
             val previous = row.previous
-            if (previous == null || !sameLocalDay(previous.createdAt, message.createdAt)) {
-                DateDivider(message.createdAt)
-            }
-            if (row is TimelineRow.Blocked) BlockedRunRow(row.run.messages.size, row.run.revealed) {
-                revealedRuns = if (row.run.revealed) revealedRuns - row.run.key else revealedRuns + row.run.key
-            } else Column(Modifier.background(if (state.focusedMessageId == message.id) TerracottaWash else if (!inThread && state.thread?.rootId == message.id) Color(0xFFE4C76A).copy(alpha = 0.1f) else Color.Transparent)) {
-              ReactionMessageRow(
-                message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
-                openReactors = { target, emoji -> reactorsTarget = target.id to emoji },
-                openMention = { mentionTarget = it },
-                openActions = { actionTarget = it },
-                openConversation = { conversationTarget = it },
-                openHistory = { historyTarget = it },
-                retryPin = viewModel::retryPin,
-                dismissPinError = viewModel::dismissPinError,
-                grouped = row is TimelineRow.Message && groupsWithPrevious(row.above, message, inThread, state.focusedMessageId),
-            )
-              if (!inThread && (message.threadRootId != null || (message.thread?.replyCount ?: 0) > 0)) Row(Modifier.padding(start = 62.dp), verticalAlignment = Alignment.CenterVertically) {
-                  message.thread?.takeIf { message.threadRootId == null }?.participants?.forEach { Avatar(it.name, 24.dp, avatarId = it.avatarId) }
-                  TextButton({ viewModel.openThread(message.threadRootId ?: message.id) }) { Text(message.thread?.takeIf { message.threadRootId == null }?.let { "${it.replyCount} ${if (it.replyCount == 1) "reply" else "replies"} · View thread" } ?: "Replied to a thread · View thread") }
-              }
+            val divider = previous == null || !sameLocalDay(previous.createdAt, message.createdAt)
+            val revealed = if (row is TimelineRow.Blocked) row.run.revealed else collapsesFor(message, blocked, selfId)
+            // The initial date stays outside the group; later dates stay within it.
+            if (divider && row is TimelineRow.Blocked) DateDivider(message.createdAt)
+            Column(Modifier.fillMaxWidth().drawBehind {
+                if (revealed) {
+                    drawRect(chat.caper.android.ui.Surface)
+                    drawRect(Border, size = Size(2.dp.toPx(), size.height))
+                }
+            }) {
+                if (divider && row !is TimelineRow.Blocked) DateDivider(message.createdAt)
+                if (row is TimelineRow.Blocked) {
+                    BlockedRunRow(row.run.messages.size, row.run.revealed) {
+                        revealedRuns = if (row.run.revealed) revealedRuns - row.run.key else revealedRuns + row.run.key
+                    }
+                } else Column(Modifier.background(if (state.focusedMessageId == message.id) TerracottaWash else if (!inThread && state.thread?.rootId == message.id) Color(0xFFE4C76A).copy(alpha = 0.1f) else Color.Transparent)) {
+                    ReactionMessageRow(
+                        message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
+                        openReactors = { target, emoji -> reactorsTarget = target.id to emoji },
+                        openMention = { mentionTarget = it },
+                        openActions = { actionTarget = it },
+                        openConversation = { conversationTarget = it },
+                        openHistory = { historyTarget = it },
+                        retryPin = viewModel::retryPin,
+                        dismissPinError = viewModel::dismissPinError,
+                        grouped = row is TimelineRow.Message && groupsWithPrevious(row.above, message, inThread, state.focusedMessageId),
+                    )
+                    if (!inThread && (message.threadRootId != null || (message.thread?.replyCount ?: 0) > 0)) Row(Modifier.padding(start = 62.dp), verticalAlignment = Alignment.CenterVertically) {
+                        message.thread?.takeIf { message.threadRootId == null }?.participants?.forEach { Avatar(it.name, 24.dp, avatarId = it.avatarId) }
+                        TextButton({ viewModel.openThread(message.threadRootId ?: message.id) }) { Text(message.thread?.takeIf { message.threadRootId == null }?.let { "${it.replyCount} ${if (it.replyCount == 1) "reply" else "replies"} · View thread" } ?: "Replied to a thread · View thread") }
+                    }
+                }
             }
         }
         if (skeleton) item("thread-loading") {

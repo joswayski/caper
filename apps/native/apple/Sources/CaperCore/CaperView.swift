@@ -1956,8 +1956,14 @@ private struct ChatView: View {
                                     switch entry {
                                     case let .message(message): channelRow(message, grouping: grouping)
                                     case let .blocked(run):
-                                        BlockedRunRow(run: run) { revealedBlocked = BlockedMessages.toggling(run, in: revealedBlocked) }
-                                        if run.revealed { ForEach(run.messages) { channelRow($0, grouping: grouping) } }
+                                        VStack(spacing: 0) {
+                                            BlockedRunRow(run: run) { revealedBlocked = BlockedMessages.toggling(run, in: revealedBlocked) }
+                                            if run.revealed { ForEach(run.messages) { channelRow($0, grouping: grouping) } }
+                                        }
+                                        .background(run.revealed ? CaperTheme.surface : .clear)
+                                        .overlay(alignment: .leading) {
+                                            if run.revealed { Rectangle().fill(CaperTheme.border).frame(width: 2) }
+                                        }
                                     }
                                 }.id(entry.scrollID)
                             }
@@ -2290,7 +2296,12 @@ private struct NativeThreadView: View {
                 VStack(spacing: 0) {
                     BlockedRunRow(run: run) { revealedBlocked = BlockedMessages.toggling(run, in: revealedBlocked) }
                     if run.revealed { ForEach(run.messages) { threadRow($0, grouping: grouping) } }
-                }.id(entry.scrollID)
+                }
+                .background(run.revealed ? CaperTheme.surface : .clear)
+                .overlay(alignment: .leading) {
+                    if run.revealed { Rectangle().fill(CaperTheme.border).frame(width: 2) }
+                }
+                .id(entry.scrollID)
             }
         }
     }
