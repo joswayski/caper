@@ -2138,7 +2138,11 @@ private struct ChatView: View {
                 .accessibilityIdentifier("send-message-button")
             }
             }
-            }.padding(.horizontal, 18).padding(.vertical, 12)
+            }.padding(.horizontal, 18).padding(.top, 12)
+            #if os(macOS)
+            .padding(.bottom, 12)
+            #endif
+            // iOS already avoids the keyboard/home indicator through the safe area.
             if chat.draft.unicodeScalars.count >= 3000 {
                 Text("\(chat.draft.unicodeScalars.count.formatted()) / 4,000").font(CaperTheme.font(10)).foregroundStyle(counterTone).padding(.bottom, 6)
             }
@@ -2394,7 +2398,11 @@ private struct NativeThreadView: View {
                    !chat.sending, chat.error != nil || chat.sendRejected {
                     Text("Confirm or dismiss the pending message first.").font(CaperTheme.font(11))
                 }
-            }.padding(12) }
+            }.padding(.horizontal, 12).padding(.top, 12)
+            #if os(macOS)
+            .padding(.bottom, 12)
+            #endif
+            }
         }.background(CaperTheme.conversation)
             .overlay(alignment: .leading) { Rectangle().fill(CaperTheme.border).frame(width: 1) }
             .sheet(item: $reactionMessage) { message in
