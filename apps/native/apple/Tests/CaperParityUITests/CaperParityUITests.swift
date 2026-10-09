@@ -234,6 +234,13 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(result, .completed, "Pasteboard holds \(pasteboard.exists ? pasteboard.label : "nothing"), expected \(expected)",
                        file: file, line: line)
     }
+    #else
+    /// Hovers a message on its header text, like `hold` on iPhone. The row's
+    /// centre can fall on a reaction chip, and that chip's "who reacted"
+    /// tooltip then covers the row's own Add reaction button.
+    private func hoverMessage(_ row: XCUIElement) {
+        row.staticTexts.firstMatch.hover()
+    }
     #endif
 
     private func openReactionPicker(for messageID: String, in app: XCUIApplication) throws {
@@ -246,9 +253,16 @@ final class CaperParityUITests: XCTestCase {
         #else
         let row = try require(app.descendants(matching: .any)["message-row-\(messageID)"], timeout: 10,
                               "Missing message-row-\(messageID)")
-        row.hover()
-        let add = try require(app.buttons["add-reaction-\(messageID)"], timeout: 10,
-                              "Hovering \(messageID) did not reveal Add reaction")
+        // Just after launch the timeline can still move the row out from
+        // under a pointer that stays put (CI saw the controls appear and then
+        // vanish), so hover again until they stay up.
+        let add = app.buttons["add-reaction-\(messageID)"]
+        var shown = false
+        for _ in 0..<4 where !shown {
+            hoverMessage(row)
+            shown = add.waitForExistence(timeout: 3) && add.isHittable
+        }
+        XCTAssertTrue(shown, "Hovering \(messageID) did not reveal Add reaction")
         #endif
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: add)
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
@@ -360,25 +374,57 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(send.isHittable, "Send must remain available above the keyboard at the height cap")
         capture("composer-capped-keyboard", app: app)
 
-        composer.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: multiline.count + overflow.count))
+        deleteBack(to: short, in: composer)
         XCTAssertEqual(composer.value as? String, short)
         XCTAssertEqual(composer.frame.height, 42, accuracy: 2, "Removing extra lines must shrink the composer")
         XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
-        composer.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: short.count))
+        deleteBack(to: "", in: composer)
         XCTAssertEqual(composer.value as? String, "")
         XCTAssertEqual(composer.frame.height, 42, accuracy: 2)
         XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
+    }
+
+    /// Deletes from the end until the field holds `target`. On the simulator a
+    /// long burst of Delete keys loses some while the composer shrinks a line
+    /// at a time (in CI, 36 of 103 characters were left), so this deletes in
+    /// small batches and recounts.
+    private func deleteBack(to target: String, in field: XCUIElement) {
+        for _ in 0..<30 {
+            let value = field.value as? String ?? ""
+            guard value.count > target.count, value.hasPrefix(target) else { return }
+            field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: min(10, value.count - target.count)))
+        }
+    }
+
+    /// The first match a person could touch. On iPhone a thread covers the
+    /// channel, but the channel's rows and composer stay in the accessibility
+    /// tree behind it, so a plain query can return those hidden copies.
+    private func visible(_ query: XCUIElementQuery, timeout: TimeInterval = 5) -> XCUIElement? {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if let match = query.allElementsBoundByIndex.first(where: { $0.exists && $0.isHittable }) { return match }
+            Thread.sleep(forTimeInterval: 0.2)
+        } while Date() < deadline
+        return nil
     }
 
     func testIPhoneThreadComposerDoesNotFillItsMaximumHeight() throws {
         let app = launch()
         let row = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30,
                               "Missing fixture message")
+        XCTAssertFalse(app.buttons["Reply in thread"].exists, "Unthreaded messages must not show a reply link")
         hold(row)
-        try require(app.buttons["Reply in thread"], timeout: 5, "Missing thread action").tap()
+        // Each row also has its own "Reply in thread" link, so look in the sheet.
+        let rowActions = try require(app.descendants(matching: .any)["message-actions-sheet"], timeout: 5,
+                                     "Missing message actions")
+        try require(rowActions.buttons["Reply in thread"], timeout: 5, "Missing thread action").tap()
         try require(app.buttons["Back to channel"], timeout: 5, "Thread did not open")
-        let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 5,
-                                   "Missing thread composer")
+        try require(app.staticTexts["No replies yet. Start the thread."], timeout: 5, "Missing empty thread state")
+        XCTAssertFalse(app.staticTexts["0 replies"].exists, "Empty threads must not repeat the zero reply count")
+        // By label: the channel's own "message-composer" is still in the tree.
+        let composer = try require(app.descendants(matching: .any).matching(identifier: "message-composer")
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "Reply to thread")).firstMatch,
+                                   timeout: 5, "Missing thread composer")
         XCTAssertTrue(focus(composer))
         composer.typeText("Short reply")
         let send = app.buttons["Send reply"]
@@ -389,7 +435,9 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(send.isHittable)
         capture("thread-composer-single-line-keyboard", app: app)
 
-        hold(row)
+        let threadRoot = try XCTUnwrap(visible(app.descendants(matching: .any).matching(identifier: "message-row-chan00000001m01")),
+                                       "Missing the thread's root message")
+        hold(threadRoot)
         let actions = try require(app.descendants(matching: .any)["message-actions-sheet"], timeout: 5,
                                   "Missing thread root actions")
         XCTAssertFalse(actions.buttons["Reply in thread"].exists, "The root is already open in its thread")
@@ -399,13 +447,21 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed)
 
         send.tap()
-        let reply = try require(app.staticTexts["Short reply"], timeout: 5, "Reply was not sent")
-        hold(reply)
+        // "Also send to #general" can put a copy in the hidden channel too.
+        let reply = try XCTUnwrap(visible(app.staticTexts.matching(NSPredicate(format: "label == %@", "Short reply"))),
+                                  "Reply was not sent")
+        try require(app.staticTexts["1 reply"], timeout: 5, "Populated threads must keep their reply count")
+        XCTAssertFalse(app.staticTexts["No replies yet. Start the thread."].exists)
+        reply.press(forDuration: 0.8)
         let replyActions = try require(app.descendants(matching: .any)["message-actions-sheet"], timeout: 5,
                                        "Missing thread reply actions")
         XCTAssertFalse(replyActions.buttons["Reply in thread"].exists, "Replies cannot start nested threads")
         XCTAssertTrue(replyActions.buttons["Copy text"].exists)
         capture("thread-reply-actions-fixture", app: app)
+        replyActions.buttons["Copy text"].tap()
+        try require(app.buttons["Back to channel"], timeout: 5, "Missing thread navigation").tap()
+        try require(app.buttons["View thread"], timeout: 5, "Existing thread links must remain available")
+        XCTAssertFalse(app.buttons["Reply in thread"].exists)
     }
     #endif
 
@@ -420,7 +476,7 @@ final class CaperParityUITests: XCTestCase {
         let hoverTargetID = "chan00000001m01"
         let target = app.descendants(matching: .any)["message-row-\(hoverTargetID)"]
         XCTAssertTrue(target.waitForExistence(timeout: 5))
-        target.hover()
+        hoverMessage(target)
         XCTAssertTrue(app.buttons["add-reaction-\(hoverTargetID)"].waitForExistence(timeout: 2), "Message controls appear on hover")
         #else
         XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label == %@", "Add reaction")).count, 0, "iPhone must not show an add-reaction button under each message")
@@ -514,7 +570,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
         let unrelatedRow = try require(app.descendants(matching: .any)["message-row-chan00000001m02"], timeout: 5,
                                        "Missing unrelated hover target")
-        unrelatedRow.hover()
+        hoverMessage(unrelatedRow)
         let unrelatedAdd = try require(app.buttons["add-reaction-chan00000001m02"], timeout: 5,
                                        "Hovering another message did not reveal Add reaction")
 
@@ -525,7 +581,11 @@ final class CaperParityUITests: XCTestCase {
         let scaleX = CGFloat(bitmap.pixelsWide) / window.frame.width
         let scaleY = CGFloat(bitmap.pixelsHigh) / window.frame.height
         func hasTerracottaOutline(_ element: XCUIElement) throws -> Bool {
-            XCTAssertTrue(element.isHittable)
+            // Just after the picker closes, hit-testing can briefly report every
+            // timeline control as covered (CI saw this once, with the window
+            // drawn normally), so wait for it rather than checking once.
+            let hittable = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true"), object: element)
+            XCTAssertEqual(XCTWaiter.wait(for: [hittable], timeout: 5), .completed)
             let x = Int((element.frame.midX - window.frame.minX) * scaleX)
             // Sample only the straight top border, away from emoji artwork.
             let y = Int((element.frame.minY - window.frame.minY) * scaleY)
@@ -541,6 +601,54 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertFalse(try hasTerracottaOutline(other), "An unselected chip must not inherit another control's focus ring")
         XCTAssertFalse(try hasTerracottaOutline(unrelatedAdd), "Focusing one add-reaction button must not highlight another message's button")
         capture("reaction-focus-isolated-fixture", app: app)
+    }
+
+    func testThreadFocusDoesNotOutlineOtherThreadLinks() async throws {
+        try await Self.fixtureControl(["reset": true])
+        addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+        for rootID in ["chan00000001m01", "chan00000001m02", "chan00000001m03"] {
+            try await Self.fixtureControl(["incomingReply": ["rootId": rootID, "text": "Focus isolation reply"]])
+        }
+        // The message list is a plain `.focusable()` view, which macOS only
+        // focuses when "Keyboard navigation" is on; CI's Macs leave it off.
+        // Turn it on for this launch only (an argument-domain default).
+        let app = Self.configuredApp()
+        app.launchArguments += ["-AppleKeyboardUIMode", "2"]
+        app.launch()
+        launchedApp = app
+        let selectedRow = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30,
+                                      "Missing fixture thread root")
+        try require(selectedRow.buttons["View thread"], timeout: 5, "Missing existing thread link").click()
+        try require(app.buttons["Back to channel"], timeout: 5, "Thread did not open")
+
+        // Focusing the list must not outline every descendant link. Clicking a
+        // thread button can leave this focusable ancestor active on macOS.
+        let timeline = try require(app.descendants(matching: .any)["chat-timeline"], timeout: 5, "Missing timeline")
+        timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.9)).click()
+        // Without focus on the list this can't reproduce the old outline, but
+        // the check below still guards what people see after these clicks.
+        if !hasKeyboardFocus(timeline) {
+            XCTContext.runActivity(named: "The message list did not take focus; checking the links as they look after the clicks") { _ in }
+        }
+        let window = app.windows.firstMatch
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: window.screenshot().pngRepresentation))
+        let scaleX = CGFloat(bitmap.pixelsWide) / window.frame.width
+        let scaleY = CGFloat(bitmap.pixelsHigh) / window.frame.height
+        for rootID in ["chan00000001m02", "chan00000001m03"] {
+            let row = try require(app.descendants(matching: .any)["message-row-\(rootID)"], timeout: 5,
+                                  "Missing unrelated thread root")
+            let link = try require(row.buttons["View thread"], timeout: 5, "Missing unrelated thread link")
+            XCTAssertTrue(link.isHittable)
+            let x = Int((link.frame.midX - window.frame.minX) * scaleX)
+            let y = Int((link.frame.minY - window.frame.minY) * scaleY)
+            // Only sample the straight top border, not the terracotta label.
+            for offset in -1...2 {
+                let color = try XCTUnwrap(bitmap.colorAt(x: x, y: y + offset)?.usingColorSpace(.sRGB))
+                XCTAssertFalse(color.redComponent > 0.6 && color.redComponent - color.greenComponent > 0.25,
+                               "An unrelated thread link must not inherit the timeline's focus outline")
+            }
+        }
+        capture("thread-focus-isolated-fixture", app: app)
     }
     #endif
 
@@ -745,17 +853,23 @@ final class CaperParityUITests: XCTestCase {
 
         let generalFrame = general.frame
         let voiceFrame = generalVoice.frame
+        #if os(macOS)
+        general.hover()
+        #endif
         let optionsFrame = app.descendants(matching: .any)["channel-options-chan00000001"].frame
         let stack = app.buttons["voice-stack-chan00000002"]
         XCTAssertEqual(stack.value as? String, "Collapsed", "Occupied rosters start collapsed")
         stack.tap()
         XCTAssertEqual(general.frame, generalFrame, "Expanding another roster must not move the channel name")
         XCTAssertEqual(generalVoice.frame, voiceFrame, "Expanding another roster must not move Join")
+        #if os(macOS)
+        general.hover()
+        #endif
         XCTAssertEqual(app.descendants(matching: .any)["channel-options-chan00000001"].frame, optionsFrame,
                        "Expanding another roster must not move the channel menu")
 
         let options = app.descendants(matching: .any)["channel-options-chan00000001"]
-        XCTAssertTrue(options.exists, "Owners have a permanent channel menu")
+        XCTAssertTrue(options.exists, "Hover reveals the channel menu; touch always shows it")
         options.tap()
         let settings = app.descendants(matching: .any)["Channel settings"].firstMatch
         XCTAssertTrue(settings.waitForExistence(timeout: 3))
@@ -771,6 +885,8 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Leave channel"].exists, "Leave must not appear in the chat header")
         #if os(iOS)
         app.buttons["Back to Browse"].tap()
+        #else
+        app.buttons["channel-chan00000002"].hover()
         #endif
         let options = app.descendants(matching: .any)["channel-options-chan00000002"]
         XCTAssertTrue(options.waitForExistence(timeout: 10))
@@ -813,9 +929,30 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [matches], timeout: 5), .completed, message)
     }
 
+    /// Mutes #design for the fixture account through the API, as another client would.
+    private nonisolated static func muteDesignInFixture() async throws {
+        let url = URL(string: "http://127.0.0.1:3001/api/spaces/space0000001/channels/chan00000002/notifications")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("Bearer fixture-owner-token", forHTTPHeaderField: "authorization")
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["mutedUntil": "forever"])
+        let (_, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+    }
+
     func testMuteChannelFromItsOptionsMenu() async throws {
         try await Self.fixtureControl(["reset": true])
         addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+        #if os(macOS)
+        // People can choose a preset with the mouse or the keyboard (checked
+        // by hand on a Mac), but XCUITest on CI's Macs can't: its pointer
+        // closes the "Mute channel" submenu, and its arrow keys skip both
+        // submenus. iPhone drives this same SwiftUI menu end to end, so here
+        // the mute comes from the server before launch, and the test checks
+        // the app shows it and that Unmute, a top-level item, clears it.
+        try await Self.muteDesignInFixture()
+        #endif
         let app = launch()
         assertElement("selected-channel-name", label: "# general", in: app)
         #if os(iOS)
@@ -823,27 +960,16 @@ final class CaperParityUITests: XCTestCase {
         #endif
         let design = app.buttons["channel-chan00000002"]
         XCTAssertTrue(design.waitForExistence(timeout: 10))
-        XCTAssertEqual(design.value as? String ?? "", "", "An unselected, unmuted channel has no state")
-
         let options = app.descendants(matching: .any)["channel-options-chan00000002"]
+        let mute = app.descendants(matching: .any)["Mute channel"].firstMatch
+
+        #if os(iOS)
+        XCTAssertEqual(design.value as? String ?? "", "", "An unselected, unmuted channel has no state")
         options.tap()
         XCTAssertTrue(app.descendants(matching: .any)["Notifications"].firstMatch.waitForExistence(timeout: 5))
-        let mute = app.descendants(matching: .any)["Mute channel"].firstMatch
         XCTAssertTrue(mute.waitForExistence(timeout: 5), "The channel menu offers Mute channel")
         let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: mute)
         XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 5), .completed, "Mute is available once settings load")
-        #if os(macOS)
-        // One typeText call. Each XCUITest action first snapshots the app's
-        // accessibility tree, and in CI's recordings that closed the open
-        // "Mute channel" submenu every time (after a hover, an existence check,
-        // or the next separate key press), so the choice never landed. One
-        // call snapshots once, while only the top-level menu is open. ↓↓↓
-        // reaches "Mute channel" after Channel settings and Notifications,
-        // → opens its submenu at "For 15 minutes", ↓↓↓↓ reaches the last preset.
-        let down = XCUIKeyboardKey.downArrow.rawValue
-        app.typeText(String(repeating: down, count: 3) + XCUIKeyboardKey.rightArrow.rawValue
-                     + String(repeating: down, count: 4) + XCUIKeyboardKey.return.rawValue)
-        #else
         let forever = app.descendants(matching: .any)["Until I turn it back on"].firstMatch
         mute.tap()
         XCTAssertTrue(forever.waitForExistence(timeout: 3))
@@ -862,6 +988,11 @@ final class CaperParityUITests: XCTestCase {
         waitForMuted(design, false, "Unmuting clears the sidebar mark")
         overrides = try await Self.fixtureNotificationOverrides()
         XCTAssertEqual(overrides, [], "Unmuting clears the override on the server")
+        #if os(macOS)
+        options.tap()
+        XCTAssertTrue(mute.waitForExistence(timeout: 3), "An unmuted channel's menu offers Mute channel again")
+        app.typeKey(.escape, modifierFlags: [])
+        #endif
     }
 
     func testSpectatorRosterCollapsesAndVoiceTargetDoesNotChangeChat() async throws {
@@ -1143,6 +1274,10 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(staticTexts("WELCOME TO CAPER", in: app).count, 0)
         assertStaticText("Enter the six-character code sent to owner@example.test. It expires in 10 minutes.", in: app)
         XCTAssertTrue(app.buttons["Use a different email"].exists)
+        let resend = app.buttons["login-resend-code"]
+        XCTAssertTrue(resend.exists, "The code step offers Resend code")
+        XCTAssertFalse(resend.isEnabled, "Resend code waits a minute after each code")
+        XCTAssertTrue(resend.label.hasPrefix("Resend code in 0:") || resend.label == "Resend code in 1:00", resend.label)
         capture("login-code", app: app)
         let code = app.textFields["Sign-in code"]
         // Separate bursts: the field rewrites itself between keystrokes, as it does for a person typing.
@@ -1204,6 +1339,76 @@ final class CaperParityUITests: XCTestCase {
         // Web shows its save bar only once something changed.
         XCTAssertFalse(app.buttons["Save changes"].exists)
         assertStaticText("Delete this channel for everyone in the space.", in: app)
+    }
+
+    func testPendingSendIsVisibleAndLeftAlignedBeforeConfirmation() async throws {
+        let app = launch()
+        let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 30,
+                                   "Missing message composer")
+        let timeline = app.scrollViews["chat-timeline"]
+        let send = app.buttons["send-message-button"]
+        let path = "http://127.0.0.1:3001/api/chat/channels/chan00000001/messages"
+        func holdSends(_ hold: Bool) async throws {
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:3001/__fixture/control")!)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: ["holdSends": hold])
+            let (_, response) = try await URLSession.shared.data(for: request)
+            XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        }
+        // The short row catches intrinsic-width centering; the long row catches
+        // wrapping/height changes with the keyboard reducing the viewport.
+        let suffix = String(UUID().uuidString.prefix(4))
+        for message in ["Hi \(suffix)", String(repeating: "A wrapping pending message. ", count: 8) + suffix] {
+            XCTAssertTrue(focus(composer))
+            composer.typeText(message)
+            // Sending must reveal the row even from older history.
+            #if os(macOS)
+            timeline.scroll(byDeltaX: 0, deltaY: 600)
+            #else
+            timeline.swipeDown()
+            #endif
+            try await holdSends(true)
+            do {
+                send.tap()
+                let cleared = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == ''"), object: composer)
+                XCTAssertEqual(XCTWaiter.wait(for: [cleared], timeout: 3), .completed)
+                // Do not wait for confirmation: the server has neither stored
+                // nor broadcast this send. Inspect the local pending row now.
+                let pending = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "pending-message-")).firstMatch
+                XCTAssertTrue(pending.exists, "Clearing the composer must leave a visible pending message")
+                let text = pending.staticTexts[message].firstMatch
+                XCTAssertTrue(text.exists)
+                XCTAssertTrue(timeline.frame.contains(text.frame), "Pending text must be in the visible timeline")
+                // The row's own frame can't be checked: accessibility reports a
+                // `.contain` container as the union of its children (in CI 130
+                // points wide from the avatar, on iPhone and macOS alike), not
+                // the full-width row. The text inset below checks the alignment.
+                XCTAssertEqual(text.frame.minX, timeline.frame.minX + 62, accuracy: 2,
+                               "Pending text must share confirmed messages' 18 + 34 + 10 point inset")
+                #if os(iOS)
+                XCTAssertTrue(app.keyboards.firstMatch.exists, "Sending must retain the software keyboard")
+                #endif
+                let pendingX = text.frame.minX
+                let clientID = String(pending.identifier.dropFirst("pending-message-".count))
+                var history = URLRequest(url: URL(string: path)!)
+                history.setValue("Bearer fixture-owner-token", forHTTPHeaderField: "authorization")
+                let (before, _) = try await URLSession.shared.data(for: history)
+                let stored = try XCTUnwrap(JSONSerialization.jsonObject(with: before) as? [String: Any])
+                XCTAssertFalse((stored["messages"] as? [[String: Any]] ?? []).contains { $0["clientMessageId"] as? String == clientID })
+                capture(message.count < 20 ? "send-pending-short" : "send-pending-wrapped", app: app)
+                try await holdSends(false)
+                let confirmed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: pending)
+                XCTAssertEqual(XCTWaiter.wait(for: [confirmed], timeout: 10), .completed)
+                let delivered = staticTexts(message, in: app)
+                XCTAssertEqual(delivered.count, 1)
+                XCTAssertEqual(delivered.firstMatch.frame.minX, pendingX, accuracy: 2,
+                               "Confirmation must not shift text horizontally")
+            } catch {
+                try await holdSends(false)
+                throw error
+            }
+        }
     }
 
     func testAccountCanSendExactlyOneMessageAndComposerClears() async throws {
@@ -1698,6 +1903,15 @@ final class CaperParityUITests: XCTestCase {
         let username = app.textFields["Exact username"]
         XCTAssertTrue(username.isEnabled, "The dialog must not inherit the disabled workspace")
         app.buttons["Remove"].firstMatch.tap()
+        // Removal asks first, naming the person and the space.
+        let confirmRemove = app.buttons["confirm-destructive-action"]
+        XCTAssertTrue(confirmRemove.waitForExistence(timeout: 5), "Remove must ask for confirmation")
+        assertStaticText("Remove Maya?", in: app)
+        assertStaticText("They’ll lose access to Fixture Studio and its channels. You can invite them again later.", in: app)
+        capture("remove-member-confirmation", app: app)
+        confirmRemove.tap()
+        let confirmClosed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: confirmRemove)
+        XCTAssertEqual(XCTWaiter.wait(for: [confirmClosed], timeout: 5), .completed, "The confirmation closes after removing")
         #if os(macOS)
         let headingProperty = "value"
         #else
@@ -1720,6 +1934,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [unchanged], timeout: 5), .completed,
                        "Inviting must not grant immediate space membership")
         assertStaticText("Pending invitations  1", in: app)
+        assertStaticText("Invitation sent. They must accept before joining.", in: app)
         assertStaticText("Sam", in: app)
         assertStaticText("@sam", in: app)
         XCTAssertTrue(username.value as? String == "" || username.value as? String == username.placeholderValue,

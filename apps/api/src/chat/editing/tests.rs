@@ -87,12 +87,7 @@ async fn edits_retain_versions_authorize_accounts_and_commit_with_thread_project
         broker_url.starts_with("redis://127.0.0.1:")
             || broker_url.starts_with("redis://localhost:")
     );
-    let chat = Chat {
-        pool: pool.clone(),
-        broker: redis::Client::open(broker_url).unwrap(),
-        wake: Arc::new(Notify::new()),
-        cdn: None,
-    };
+    let chat = Chat::new(pool.clone(), redis::Client::open(broker_url).unwrap());
     let mut state = AppState::new(
         crate::Config::test(false),
         Arc::new(crate::Cloudflare::new()),

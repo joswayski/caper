@@ -13,6 +13,8 @@ mod effects;
 mod emoji;
 mod forwarding;
 mod gateway;
+mod grouping;
+mod links;
 #[path = "../voice-spike/src/media.rs"]
 mod media;
 #[path = "../voice-spike/src/media_gateway.rs"]
@@ -75,6 +77,7 @@ enum NavIcon {
     Hash,
     Lock,
     Users,
+    Pin,
     Speech,
     Mic,
     MicOff,
@@ -137,12 +140,34 @@ impl PendingSend {
     }
 }
 
+#[derive(Clone)]
 struct ThreadView {
     root: String,
     loading: bool,
     has_more: bool,
     before: Option<String>,
     error: Option<String>,
+    window: Option<MessageWindow>,
+    has_newer: bool,
+}
+
+#[derive(Clone, Copy)]
+struct MessageWindow {
+    start: u64,
+    end: Option<u64>,
+}
+
+impl MessageWindow {
+    fn contains(self, message: &model::Message) -> bool {
+        model::sequence(&message.seq)
+            .is_ok_and(|seq| seq >= self.start && self.end.is_none_or(|end| seq <= end))
+    }
+}
+
+/// A block in either direction: a definitive refusal shown in place, never an
+/// expired session or lost access that closes the conversation.
+fn dm_refusal(code: Option<&str>) -> bool {
+    matches!(code, Some("dm_blocked" | "dm_not_accepted"))
 }
 
 fn permanent_send_rejection(status: Option<u16>) -> bool {
@@ -190,6 +215,35 @@ enum Suggestion {
     Mention(mentions::Candidate),
 }
 
+/// One composer's suggestion popup, kept by its editor's ID so the channel
+/// and thread composers never share a highlight or a dismissal.
+#[derive(Default)]
+struct SuggestionState {
+    token: Option<ComposerToken>,
+    selected: usize,
+    /// Escape hides the token ending at this caret in this text.
+    dismissed: Option<(String, usize)>,
+}
+
+impl SuggestionState {
+    /// The token at a collapsed caret, unless Escape dismissed it there.
+    fn token_at(&self, text: &str, range: egui::text::CCursorRange) -> Option<ComposerToken> {
+        if !range.is_empty() {
+            return None;
+        }
+        ComposerToken::at(text, range.primary.index)
+            .filter(|token| self.dismissed.as_ref() != Some(&(text.to_owned(), token.end())))
+    }
+}
+
+/// What a composer's suggestion keys decided before its editor drew.
+struct SuggestionPass {
+    id: egui::Id,
+    /// IME events this pass: composition never opens or accepts suggestions.
+    ime: bool,
+    chosen: Option<Suggestion>,
+}
+
 /// A person pill that was clicked or activated with Enter/Space.
 #[derive(Clone, Debug)]
 struct PillClick {
@@ -203,6 +257,9 @@ struct PillClick {
 #[derive(Clone, Debug)]
 struct MentionCard {
     pill: PillClick,
+    /// Pin metadata supplies the fallback identity, not a made-up username.
+    author: Option<model::Author>,
+    focus_on_open: bool,
     /// The `CreateDirect` navigation while **Message** is opening a DM.
     opening: Option<u64>,
     error: Option<String>,
@@ -242,6 +299,17 @@ enum Dialog {
     Block {
         account: model::BlockedAccount,
         request: Option<String>,
+    },
+    /// Confirm removing a space member, or a private channel's member; it
+    /// returns to that settings dialog.
+    RemoveMember {
+        space: String,
+        channel: Option<String>,
+        member: String,
+        /// The member's display name.
+        name: String,
+        /// The space's name, or the channel's.
+        place: String,
     },
 }
 
@@ -320,7 +388,14 @@ impl ReactorCache {
     }
 }
 
+/// "Resend code" waits this long after each code is sent.
+const RESEND_COOLDOWN: Duration = Duration::from_secs(60);
+/// The API stops sending after three codes per 15 minutes, so a fourth would
+/// never verify: one code plus at most two resends per email entry.
+const MAX_RESENDS: u8 = 2;
 const REACTOR_RETRY: Duration = Duration::from_secs(5);
+/// Web re-reads spaces, invitations and the open space this often.
+const MEMBERSHIP_REFRESH: Duration = Duration::from_secs(15);
 const REACTOR_CACHE_LIMIT: usize = 256;
 /// Discord-style hover card: large emoji, then the summary.
 const REACTOR_TOOLTIP_WIDTH: f32 = 280.0;
@@ -383,6 +458,12 @@ struct CaperApp {
     history_height: f32,
     history_offset: Option<f32>,
     has_more: bool,
+    history_request: u64,
+    context_window: Option<MessageWindow>,
+    has_newer: bool,
+    context_loading: bool,
+    focused_message: Option<String>,
+    scroll_to_target: bool,
     error: Option<String>,
     warning: Option<String>,
     token: Option<String>,
@@ -396,11 +477,15 @@ struct CaperApp {
     account_epoch: u64,
     /// `GET /api/blocks`, newest first; `None` until loaded.
     blocks: Option<Vec<model::BlockedAccount>>,
+    /// The last blocked-accounts load failed (not a block or unblock).
+    blocks_error: Option<String>,
     /// Blocked-message runs shown in place, by first message id (memory only).
     revealed_blocked: BTreeSet<String>,
     requests_open: bool,
     /// The open request bar's Accept/Decline/Block in flight, and its error.
     request_busy: bool,
+    /// Which request action is in flight, so only its button says so.
+    request_declining: bool,
     request_error: Option<String>,
     /// Block, unblock, or confirmation in flight, and the last failure.
     block_busy: bool,
@@ -413,6 +498,14 @@ struct CaperApp {
     notifications: notifications::Notifications,
     selected_direct: Option<String>,
     directs_refreshed: Instant,
+    /// Web's membership reconcile: when it last ran, the request in flight,
+    /// and a revision that space and channel changes made here advance.
+    membership_refreshed: Instant,
+    membership_request: u64,
+    membership_refreshing: bool,
+    membership_revision: u64,
+    /// Web's dismissible notice, such as a space removed elsewhere.
+    space_notice: Option<String>,
     foreground: bool,
     invitations: Vec<model::Space>,
     limits: Option<SpaceLimits>,
@@ -427,18 +520,29 @@ struct CaperApp {
     email: String,
     challenge: Option<String>,
     attempts_remaining: Option<u64>,
+    /// When the latest sign-in code was sent; "Resend code" waits a minute.
+    code_sent_at: Option<Instant>,
+    /// Codes re-sent for this email entry, at most `MAX_RESENDS`.
+    resends: u8,
+    /// The code request in flight is a resend.
+    resending: bool,
+    /// The code step's status line after a resend.
+    login_status: Option<&'static str>,
     code: String,
+    /// Last drawn (loading, code step) of the sign-in page; refocus its field
+    /// when a request finishes or the step changes.
+    login_focus: Option<(bool, bool)>,
     username: String,
     display_name: String,
     draft: String,
-    suggestion_token: Option<ComposerToken>,
-    suggestion_selected: usize,
-    suggestion_dismissed: Option<(String, usize)>,
+    /// `:`/`@` suggestions by composer editor ID (channel and thread).
+    composer_suggestions: egui::IdMap<SuggestionState>,
     ime_composing: bool,
     pending: Option<PendingSend>,
     mention_card: Option<MentionCard>,
     thread_view: Option<ThreadView>,
     thread_request: u64,
+    thread_pages: BTreeMap<String, ThreadView>,
     thread_drafts: BTreeMap<String, (String, bool)>,
     thread_only_rows: BTreeSet<String>,
     reaction_picker: Option<String>,
@@ -449,6 +553,8 @@ struct CaperApp {
     reaction_errors: BTreeMap<String, String>,
     /// Who reacted, by message ID, for reaction chip hover cards.
     reactors: BTreeMap<String, ReactorCache>,
+    /// The open **View reactions** window: message ID and selected emoji.
+    reactors_view: Option<(String, String)>,
     pending_pins: BTreeSet<String>,
     mutations: model::MessageMutations,
     pin_errors: BTreeMap<String, (bool, String)>,
@@ -464,6 +570,8 @@ struct CaperApp {
     member_page: usize,
     members_visible: bool,
     narrow_members_visible: bool,
+    /// Height of narrow Browse's account bar, which the conversation's edge stops above.
+    browse_bar: f32,
     channels_expanded: bool,
     browse_channels: bool,
     channel_search: String,
@@ -489,10 +597,19 @@ struct CaperApp {
     navigation_cache: navigation::NavigationCache,
     navigation_cache_generation: u64,
     dialog: Option<Dialog>,
+    /// The dialog kind drawn last frame, so a newly opened one focuses its field.
+    dialog_shown: Option<std::mem::Discriminant<Dialog>>,
+    focus_dialog_field: bool,
+    /// Which invitation response is in flight, so only its button says so.
+    invitation_declining: bool,
     form_name: String,
     form_private: bool,
     member_username: String,
     member_error: Option<&'static str>,
+    /// Refocus the username field once an add or invite finishes.
+    member_refocus: bool,
+    /// Web's confirmation after an invitation was sent from the member form.
+    member_status: Option<&'static str>,
     managed_members: Vec<Member>,
     managed_invitations: Vec<Member>,
     managed_channel: Option<String>,
@@ -544,6 +661,12 @@ impl CaperApp {
             history_height: 0.0,
             history_offset: None,
             has_more: false,
+            history_request: 0,
+            context_window: None,
+            has_newer: false,
+            context_loading: false,
+            focused_message: None,
+            scroll_to_target: false,
             error: None,
             warning: None,
             token: None,
@@ -553,9 +676,11 @@ impl CaperApp {
             people: None,
             account_epoch: 0,
             blocks: None,
+            blocks_error: None,
             revealed_blocked: BTreeSet::new(),
             requests_open: false,
             request_busy: false,
+            request_declining: false,
             request_error: None,
             block_busy: false,
             block_error: None,
@@ -565,6 +690,11 @@ impl CaperApp {
             notifications: notifications::Notifications::default(),
             selected_direct: None,
             directs_refreshed: now - Duration::from_secs(15),
+            membership_refreshed: now,
+            membership_request: 0,
+            membership_refreshing: false,
+            membership_revision: 0,
+            space_notice: None,
             foreground: false,
             invitations: Vec::new(),
             limits: None,
@@ -579,18 +709,22 @@ impl CaperApp {
             email: String::new(),
             challenge: None,
             attempts_remaining: None,
+            code_sent_at: None,
+            resends: 0,
+            resending: false,
+            login_status: None,
             code: String::new(),
+            login_focus: None,
             username: String::new(),
             display_name: String::new(),
             draft: String::new(),
-            suggestion_token: None,
-            suggestion_selected: 0,
-            suggestion_dismissed: None,
+            composer_suggestions: egui::IdMap::default(),
             ime_composing: false,
             pending: None,
             mention_card: None,
             thread_view: None,
             thread_request: 0,
+            thread_pages: BTreeMap::new(),
             thread_drafts: BTreeMap::new(),
             thread_only_rows: BTreeSet::new(),
             reaction_picker: None,
@@ -600,6 +734,7 @@ impl CaperApp {
             pending_reactions: BTreeMap::new(),
             reaction_errors: BTreeMap::new(),
             reactors: BTreeMap::new(),
+            reactors_view: None,
             pending_pins: BTreeSet::new(),
             mutations: model::MessageMutations::default(),
             pin_errors: BTreeMap::new(),
@@ -615,6 +750,7 @@ impl CaperApp {
             member_page: 0,
             members_visible: false,
             narrow_members_visible: false,
+            browse_bar: 0.0,
             channels_expanded: true,
             browse_channels: false,
             channel_search: String::new(),
@@ -638,10 +774,15 @@ impl CaperApp {
             navigation_cache: navigation::NavigationCache::default(),
             navigation_cache_generation: 1,
             dialog: None,
+            dialog_shown: None,
+            focus_dialog_field: false,
+            invitation_declining: false,
             form_name: String::new(),
             form_private: false,
             member_username: String::new(),
             member_error: None,
+            member_refocus: false,
+            member_status: None,
             managed_members: Vec::new(),
             managed_invitations: Vec::new(),
             managed_channel: None,
@@ -687,7 +828,39 @@ impl CaperApp {
             Some("login") => app.dialog = Some(Dialog::SignIn),
             Some(name) if name.starts_with("parity") => {
                 app.install_fixture();
-                if name.starts_with("parity-settings") {
+                if name.starts_with("parity-pins") {
+                    let author = app.timeline.messages().next().unwrap().author.clone();
+                    app.session = Some(ChatSession {
+                        token: "fixture-token".into(),
+                        author: author.clone(),
+                    });
+                    let count = match name {
+                        "parity-pins-empty" => 0,
+                        "parity-pins-long" => 3,
+                        _ => 1,
+                    };
+                    let pins = app
+                        .timeline
+                        .messages()
+                        .take(count)
+                        .cloned()
+                        .enumerate()
+                        .map(|(index, mut message)| {
+                            message.pin = Some(model::Pin {
+                                author: author.clone(),
+                                created_at: message.created_at.clone(),
+                            });
+                            message.pin_seq = Some((index + 5).to_string());
+                            if name == "parity-pins-long" && index == count - 1 {
+                                message.content.text = "TEST FIXTURE — local sample data, not a live conversation.\n\n".into();
+                                message.content.text.push_str(&"A longer pinned message wraps inside the card without moving the close control or hiding the next message. ".repeat(5));
+                            }
+                            message
+                        })
+                        .collect();
+                    app.timeline.reset_pins(pins).unwrap();
+                    app.showing_pins = true;
+                } else if name.starts_with("parity-settings") {
                     app.dialog = Some(Dialog::Settings);
                     app.updates = updates::Updates::preview_status(match name {
                         "parity-settings-checking" => updates::Status::Checking,
@@ -729,6 +902,31 @@ impl CaperApp {
                         .expect("valid reaction fixture");
                 } else if name == "parity-attachments" {
                     app.install_attachments_fixture();
+                } else if name.starts_with("parity-thread") {
+                    let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+                    let root = messages[0].id.clone();
+                    let loading = name.contains("loading");
+                    if !loading {
+                        messages[1].thread_root_id = Some(root.clone());
+                        messages[1].content.text =
+                            "TEST FIXTURE — Replies stay put when you reopen this thread.".into();
+                    }
+                    app.timeline
+                        .reset(messages, "4")
+                        .expect("valid thread fixture");
+                    let thread = ThreadView {
+                        root: root.clone(),
+                        loading,
+                        has_more: false,
+                        before: None,
+                        error: None,
+                        window: None,
+                        has_newer: false,
+                    };
+                    if !loading {
+                        app.thread_pages.insert(root, thread.clone());
+                    }
+                    app.thread_view = Some(thread);
                 } else if name == "parity-mentions" {
                     // Labelled sample entries as the server would resolve them:
                     // you (Fixture Owner) are named once and by Alex's @everyone.
@@ -1763,11 +1961,18 @@ impl CaperApp {
                 }
                 Event::CodeRequested { generation, result } if generation == self.generation => {
                     self.loading = false;
+                    let resend = std::mem::take(&mut self.resending);
                     match result {
                         Ok(challenge) => {
                             self.challenge = Some(challenge);
                             self.code.clear();
                             self.attempts_remaining = None;
+                            self.code_sent_at = Some(Instant::now());
+                            if resend {
+                                self.resends = self.resends.saturating_add(1);
+                                self.login_status =
+                                    Some("We sent a new code. Earlier codes no longer work.");
+                            }
                         }
                         Err(error) => self.error = Some(error),
                     }
@@ -1864,13 +2069,30 @@ impl CaperApp {
                 }
                 Event::OlderLoaded {
                     generation,
+                    request,
                     channel,
                     result,
                 } if generation == self.generation
+                    && request == self.history_request
                     && self.selected_channel.as_deref() == Some(&channel) =>
                 {
                     self.loading_older = false;
                     self.accept_older(&channel, result);
+                }
+                Event::ContextLoaded {
+                    generation,
+                    request,
+                    channel,
+                    root,
+                    anchor,
+                    newer,
+                    result,
+                } if generation == self.generation
+                    && request == self.history_request
+                    && self.selected_channel.as_deref() == Some(&channel) =>
+                {
+                    self.context_loading = false;
+                    self.accept_context(root, &anchor, newer, result);
                 }
                 Event::ThreadLoaded {
                     generation,
@@ -1921,6 +2143,12 @@ impl CaperApp {
                                 thread.loading = false;
                                 thread.has_more = page.has_more;
                                 thread.before = before.or(thread.before.take());
+                                if let (Some(window), Some(before)) =
+                                    (&mut thread.window, &thread.before)
+                                {
+                                    window.start = model::sequence(before).unwrap_or(window.start);
+                                }
+                                self.thread_pages.insert(root, thread.clone());
                             }
                         }
                         Err(error) if error.access_denied => {
@@ -2058,7 +2286,10 @@ impl CaperApp {
                             self.send_next_reaction(&message);
                         }
                         Ok(_) => self.reload_channel(),
-                        Err(error) if matches!(error.status, Some(401 | 403 | 404)) => {
+                        Err(error)
+                            if matches!(error.status, Some(401 | 403 | 404))
+                                && !dm_refusal(error.code.as_deref()) =>
+                        {
                             self.pending_reactions.remove(&key);
                             self.clear_channel(&error.message);
                         }
@@ -2126,7 +2357,10 @@ impl CaperApp {
                             self.pin_errors.remove(&message);
                         }
                         Ok(_) => self.reload_channel(),
-                        Err(error) if matches!(error.status, Some(401 | 403 | 404)) => {
+                        Err(error)
+                            if matches!(error.status, Some(401 | 403 | 404))
+                                && !dm_refusal(error.code.as_deref()) =>
+                        {
                             self.clear_channel(&error.message)
                         }
                         Err(error) => {
@@ -2136,9 +2370,10 @@ impl CaperApp {
                 }
                 Event::Admin { generation, result } if generation == self.generation => {
                     self.loading = false;
+                    self.membership_revision += 1;
                     match result {
                         Ok(result) => self.admin_result(result),
-                        Err(error) => self.error = Some(error),
+                        Err(error) => self.error = Some(admin_error(error)),
                     }
                 }
                 Event::Credential {
@@ -2152,6 +2387,27 @@ impl CaperApp {
                     self.warning = Some(format!(
                         "Signed out locally; server revocation failed: {error}"
                     ))
+                }
+                Event::MembershipRefreshed {
+                    epoch,
+                    request,
+                    revision,
+                    navigation,
+                    result,
+                } if request == self.membership_request => {
+                    self.membership_refreshing = false;
+                    // A change made here meanwhile wins over the older snapshot,
+                    // and a failed read keeps what is shown: an outage is not
+                    // revocation.
+                    if epoch == self.account_epoch
+                        && revision == self.membership_revision
+                        && !self.loading
+                        && let Ok((spaces, detail)) = result
+                    {
+                        let detail =
+                            detail.filter(|_| navigation == self.navigation && !self.opening);
+                        self.reconcile_membership(spaces, detail);
+                    }
                 }
                 Event::Gateway(event) => self.gateway(event),
                 Event::Account { epoch, result } if epoch == self.account_epoch => {
@@ -2239,7 +2495,10 @@ impl CaperApp {
 
     fn reset_account_state(&mut self) {
         self.account_epoch += 1;
+        self.membership_refreshing = false;
+        self.space_notice = None;
         self.blocks = None;
+        self.blocks_error = None;
         self.revealed_blocked.clear();
         self.requests_open = false;
         self.request_busy = false;
@@ -2358,8 +2617,11 @@ impl CaperApp {
 
     fn account_result(&mut self, result: AccountResult) {
         match result {
-            AccountResult::Blocks(Ok(blocks)) => self.blocks = Some(blocks),
-            AccountResult::Blocks(Err(error)) => self.block_error = Some(error),
+            AccountResult::Blocks(Ok(blocks)) => {
+                self.blocks = Some(blocks);
+                self.blocks_error = None;
+            }
+            AccountResult::Blocks(Err(error)) => self.blocks_error = Some(error),
             AccountResult::Block {
                 account,
                 blocked,
@@ -2701,6 +2963,8 @@ impl CaperApp {
         self.managed_invitations.clear();
         self.member_username.clear();
         self.member_error = None;
+        self.member_refocus = false;
+        self.member_status = None;
         if let (Some(token), Some(space)) = (self.token.clone(), self.selected_space.clone()) {
             self.worker.send(Command::Admin {
                 generation: self.generation,
@@ -2717,6 +2981,24 @@ impl CaperApp {
             });
         }
         self.dialog = Some(Dialog::ManageSpace);
+    }
+
+    fn open_settings(&mut self) {
+        if self.persist_preferences {
+            match startup::enabled() {
+                Ok(enabled) => self.launch_at_login = enabled,
+                Err(error) => {
+                    self.startup_error = Some(format!("Could not read startup settings: {error}"));
+                }
+            }
+        }
+        self.dialog = Some(Dialog::Settings);
+        if !self.privacy_saving {
+            self.privacy_error = None;
+            self.account_op(AccountOperation::LoadPrivacy);
+        }
+        self.account_op(AccountOperation::LoadBlocks);
+        self.load_notifications();
     }
 
     fn open_direct_action(&mut self) {
@@ -2770,6 +3052,7 @@ impl CaperApp {
             })
             && model::sequence(&history.cursor) == Ok(accounted);
         let retained_older = contiguous
+            && self.context_window.is_none()
             && self
                 .timeline
                 .messages()
@@ -2789,12 +3072,14 @@ impl CaperApp {
             .messages()
             .filter(|message| {
                 (contiguous
+                    && self.context_window.is_none()
                     && message.is_channel_message()
                     && !self.thread_only_rows.contains(&message.id))
                     || fresh_ids.contains(&message.id)
             })
             .cloned()
             .collect();
+        self.thread_pages.clear();
         self.thread_only_rows.clear();
         messages.extend(std::mem::take(&mut history.messages));
         if let Err(error) = self.timeline.reset(messages, &history.cursor) {
@@ -2811,6 +3096,10 @@ impl CaperApp {
         if !retained_older {
             self.has_more = history.has_more;
         }
+        self.context_window = None;
+        self.has_newer = false;
+        self.context_loading = false;
+        self.history_request += 1;
         self.selected_channel = Some(history.channel.id.clone());
         if general {
             let demo = model::Space {
@@ -2870,8 +3159,12 @@ impl CaperApp {
 
     fn selected_is_joined(&self) -> bool {
         if self.selected_direct.is_some() && self.selected_direct == self.selected_channel {
-            // An incoming request stays read-only until it is accepted.
-            return self.selected_request().is_none();
+            // An incoming request stays read-only until it is accepted. A block
+            // stops reactions, pins and edits too, as the server refuses them.
+            return self.selected_request().is_none()
+                && self
+                    .selected_direct_conversation()
+                    .is_none_or(|direct| !(direct.blocked || self.is_blocked(&direct.peer.id)));
         }
         self.selected_channel.as_ref().is_some_and(|id| {
             self.detail.as_ref().is_some_and(|detail| {
@@ -3227,6 +3520,7 @@ impl CaperApp {
         self.timeline = Timeline::default();
         self.thread_view = None;
         self.thread_request += 1;
+        self.thread_pages.clear();
         self.thread_drafts.clear();
         self.thread_only_rows.clear();
         self.older_armed = false;
@@ -3236,6 +3530,7 @@ impl CaperApp {
         self.drop_drafts();
         self.mention_card = None;
         self.reaction_picker = None;
+        self.reactors_view = None;
         self.pending_reactions.clear();
         self.reaction_errors.clear();
         self.reactors.clear();
@@ -3459,11 +3754,13 @@ impl CaperApp {
                 self.selected_channel.as_deref(),
             ) =>
             {
-                if self.pending.as_ref().is_some_and(|pending| {
+                let root = message.thread_root_id.clone();
+                let confirmed = self.pending.as_ref().is_some_and(|pending| {
                     self.session
                         .as_ref()
                         .is_some_and(|session| pending.confirmed_by(&message, &session.author.id))
-                }) {
+                });
+                if confirmed {
                     self.pending = None;
                     self.error = None;
                 }
@@ -3490,6 +3787,16 @@ impl CaperApp {
                     }
                     Ok(model::Apply::Resync) | Err(_) => self.reload_channel(),
                     _ => {}
+                }
+                if confirmed && !self.loading {
+                    self.focused_message = None;
+                    if root.is_none() && self.has_newer {
+                        self.reload_channel();
+                    } else if self.thread_view.as_ref().is_some_and(|thread| {
+                        Some(thread.root.as_str()) == root.as_deref() && thread.has_newer
+                    }) {
+                        self.load_thread(false);
+                    }
                 }
             }
             GatewayEvent::Reactions {
@@ -3682,6 +3989,7 @@ impl CaperApp {
     fn sent(&mut self, result: Result<model::Message, worker::SendFailure>) {
         match result {
             Ok(message) => {
+                let root = message.thread_root_id.clone();
                 let confirmed = self.selected_channel.as_deref() == Some(&message.channel_id)
                     && self.pending.as_ref().is_some_and(|pending| {
                         self.session.as_ref().is_some_and(|session| {
@@ -3690,6 +3998,14 @@ impl CaperApp {
                     });
                 if confirmed && self.timeline.merge_sent(message).is_ok() {
                     self.pending = None;
+                    self.focused_message = None;
+                    if root.is_none() && self.has_newer {
+                        self.reload_channel();
+                    } else if self.thread_view.as_ref().is_some_and(|thread| {
+                        Some(thread.root.as_str()) == root.as_deref() && thread.has_newer
+                    }) {
+                        self.load_thread(false);
+                    }
                 } else {
                     if let Some(pending) = &mut self.pending {
                         pending.sending = false;
@@ -3698,12 +4014,7 @@ impl CaperApp {
                 }
             }
             // A block (either way) is a definitive rejection, not an expired session.
-            Err(error)
-                if matches!(
-                    error.code.as_deref(),
-                    Some("dm_blocked" | "dm_not_accepted")
-                ) =>
-            {
+            Err(error) if dm_refusal(error.code.as_deref()) => {
                 if let Some(pending) = &mut self.pending {
                     pending.sending = false;
                     pending.rejection = Some(error.message);
@@ -3746,6 +4057,8 @@ impl CaperApp {
             let thread_drafts = std::mem::take(&mut self.thread_drafts);
             let rows = std::mem::take(&mut self.thread_only_rows);
             let has_more = self.has_more;
+            let window = self.context_window;
+            let has_newer = self.has_newer;
             if let Some(pending) = &mut pending {
                 pending.sending = false;
             }
@@ -3758,6 +4071,8 @@ impl CaperApp {
             self.thread_drafts = thread_drafts;
             self.thread_only_rows = rows;
             self.has_more = has_more;
+            self.context_window = window;
+            self.has_newer = has_newer;
         }
     }
 
@@ -3798,6 +4113,11 @@ impl CaperApp {
                 for message in &history.messages {
                     self.thread_only_rows.remove(&message.id);
                 }
+                if let (Some(window), Some(first)) =
+                    (&mut self.context_window, history.messages.first())
+                {
+                    window.start = model::sequence(&first.seq).unwrap_or(window.start);
+                }
                 if let Err(error) = self.timeline.prepend(history.messages) {
                     self.older_error = Some(error);
                 }
@@ -3831,7 +4151,18 @@ impl CaperApp {
         self.loading_older = false;
         self.older_error = None;
         self.has_more = false;
+        self.history_request += 1;
+        self.context_window = None;
+        self.has_newer = false;
+        self.context_loading = false;
+        self.focused_message = None;
+        self.scroll_to_target = false;
         self.timeline = Timeline::default();
+        self.thread_view = None;
+        self.thread_request += 1;
+        self.thread_pages.clear();
+        self.thread_drafts.clear();
+        self.thread_only_rows.clear();
         self.forwarding.close();
         self.older_armed = false;
         self.older_anchor = None;
@@ -3840,6 +4171,7 @@ impl CaperApp {
         self.drop_drafts();
         self.mention_card = None;
         self.reaction_picker = None;
+        self.reactors_view = None;
         self.pending_reactions.clear();
         self.reaction_errors.clear();
         self.reactors.clear();
@@ -3890,9 +4222,30 @@ impl CaperApp {
         self.challenge = None;
         self.code.clear();
         self.attempts_remaining = None;
+        self.reset_resends();
         self.loading = false;
         self.error = None;
         self.dialog = None;
+    }
+
+    /// A new email entry starts with a fresh resend count and timer.
+    fn reset_resends(&mut self) {
+        self.code_sent_at = None;
+        self.resends = 0;
+        self.resending = false;
+        self.login_status = None;
+    }
+
+    /// Requests another code for the same email; `CodeRequested` counts it.
+    fn resend_code(&mut self) {
+        self.loading = true;
+        self.resending = true;
+        self.error = None;
+        self.login_status = None;
+        self.worker.send(Command::RequestCode {
+            generation: self.generation,
+            email: self.email.trim().to_owned(),
+        });
     }
 
     fn send_message(&mut self) {
@@ -3900,14 +4253,33 @@ impl CaperApp {
     }
 
     fn open_thread(&mut self, root: String) {
+        if self
+            .thread_view
+            .as_ref()
+            .is_some_and(|thread| thread.root == root)
+        {
+            return;
+        }
+        self.thread_request += 1;
+        if let Some(cached) = self.thread_pages.get(&root) {
+            self.thread_view = Some(cached.clone());
+            return;
+        }
         self.thread_view = Some(ThreadView {
             root,
             loading: true,
             has_more: false,
             before: None,
             error: None,
+            window: None,
+            has_newer: false,
         });
         self.load_thread(false);
+    }
+
+    fn close_thread(&mut self) {
+        self.thread_view = None;
+        self.thread_request += 1;
     }
 
     fn load_thread(&mut self, older: bool) {
@@ -3916,6 +4288,10 @@ impl CaperApp {
         };
         thread.loading = true;
         thread.error = None;
+        if !older {
+            thread.window = None;
+            thread.has_newer = false;
+        }
         self.thread_request += 1;
         self.worker.send(Command::LoadThread {
             generation: self.generation,
@@ -4023,11 +4399,10 @@ impl CaperApp {
             .collect();
         if self.pending.is_none() {
             if let Some(root) = &root {
-                self.thread_drafts
-                    .entry(root.clone())
-                    .or_default()
-                    .0
-                    .clear();
+                // "Also send to channel" applies to one reply, so it resets with the draft.
+                let draft = self.thread_drafts.entry(root.clone()).or_default();
+                draft.0.clear();
+                draft.1 = false;
             } else if self.draft == text {
                 self.draft.clear();
             }
@@ -4241,7 +4616,7 @@ impl CaperApp {
     }
 
     fn load_older(&mut self) {
-        if self.loading || self.loading_older || !self.has_more {
+        if self.loading || self.loading_older || self.context_loading || !self.has_more {
             return;
         }
         let Some(channel) = self.selected_channel.clone() else {
@@ -4251,7 +4626,11 @@ impl CaperApp {
             .timeline
             .messages()
             .find(|message| {
-                message.is_channel_message() && !self.thread_only_rows.contains(&message.id)
+                message.is_channel_message()
+                    && !self.thread_only_rows.contains(&message.id)
+                    && self
+                        .context_window
+                        .is_none_or(|window| window.contains(message))
             })
             .map(|message| message.seq.clone())
         else {
@@ -4261,10 +4640,161 @@ impl CaperApp {
         self.older_error = None;
         self.worker.send(Command::LoadOlder {
             generation: self.generation,
+            request: self.history_request,
             token: self.token.clone(),
             channel,
             before,
         });
+    }
+
+    fn load_context(&mut self, root: Option<String>, anchor: String, newer: bool) {
+        let Some(channel) = self.selected_channel.clone() else {
+            return;
+        };
+        self.mention_card = None;
+        self.history_request += 1;
+        self.thread_request += 1;
+        self.loading_older = false;
+        self.context_loading = true;
+        self.error = None;
+        self.worker.send(Command::LoadContext {
+            generation: self.generation,
+            request: self.history_request,
+            token: self.token.clone(),
+            channel,
+            root,
+            anchor,
+            newer,
+        });
+    }
+
+    fn load_newer_context(&mut self, root: Option<String>) {
+        let window = root
+            .as_ref()
+            .and_then(|_| self.thread_view.as_ref().and_then(|thread| thread.window))
+            .or(self.context_window);
+        if let Some(end) = window.and_then(|window| window.end) {
+            self.load_context(root, end.to_string(), true);
+        }
+    }
+
+    fn accept_context(
+        &mut self,
+        root: Option<String>,
+        anchor: &str,
+        newer: bool,
+        result: Result<model::MessageContext, worker::LoadError>,
+    ) {
+        let page = match result {
+            Ok(page) => page,
+            Err(error) if error.access_denied => {
+                self.clear_channel(&error.message);
+                return;
+            }
+            Err(error) => {
+                self.error = Some(error.message);
+                return;
+            }
+        };
+        let valid_root = root.as_ref().is_none_or(|root| {
+            page.root.as_ref().is_some_and(|message| {
+                message.id == *root
+                    && message.thread_root_id.is_none()
+                    && Some(&message.channel_id) == self.selected_channel.as_ref()
+                    && message.validate().is_ok()
+            })
+        });
+        if !valid_root
+            || !page.messages.iter().all(|message| {
+                Some(&message.channel_id) == self.selected_channel.as_ref()
+                    && message.validate().is_ok()
+                    && root.as_ref().map_or_else(
+                        || message.is_channel_message(),
+                        |root| message.thread_root_id.as_ref() == Some(root),
+                    )
+            })
+            || (!newer && !page.messages.iter().any(|message| message.id == anchor))
+        {
+            self.error = Some("Caper returned invalid message context.".into());
+            return;
+        }
+        let start = page
+            .messages
+            .first()
+            .and_then(|message| model::sequence(&message.seq).ok())
+            .unwrap_or(0);
+        let end = page
+            .messages
+            .last()
+            .and_then(|message| model::sequence(&message.seq).ok());
+        let window = MessageWindow {
+            start,
+            end: if page.has_newer { end } else { None },
+        };
+        let before = page.messages.first().map(|message| message.seq.clone());
+        let rows: Vec<_> = page.root.into_iter().chain(page.messages).collect();
+        if root.is_some() {
+            self.thread_only_rows.extend(
+                rows.iter()
+                    .filter(|message| {
+                        message.is_channel_message()
+                            && !self
+                                .timeline
+                                .messages()
+                                .any(|loaded| loaded.id == message.id)
+                    })
+                    .map(|message| message.id.clone()),
+            );
+        } else {
+            for message in &rows {
+                self.thread_only_rows.remove(&message.id);
+            }
+        }
+        if let Err(error) = self.timeline.prepend(rows) {
+            self.error = Some(error);
+            return;
+        }
+        if let Some(root) = root {
+            if newer {
+                if let Some(thread) = &mut self.thread_view {
+                    if let Some(window) = &mut thread.window {
+                        window.end = if page.has_newer { end } else { None };
+                    }
+                    thread.has_newer = page.has_newer;
+                }
+            } else {
+                self.thread_view = Some(ThreadView {
+                    root: root.clone(),
+                    loading: false,
+                    has_more: page.has_more,
+                    before,
+                    error: None,
+                    window: Some(window),
+                    has_newer: page.has_newer,
+                });
+            }
+            if let Some(thread) = &self.thread_view {
+                self.thread_pages.insert(root, thread.clone());
+            }
+        } else if newer {
+            if let Some(window) = &mut self.context_window {
+                window.end = if page.has_newer { end } else { None };
+            }
+            self.has_newer = page.has_newer;
+        } else {
+            self.thread_view = None;
+            self.context_window = Some(window);
+            self.has_more = page.has_more;
+            self.has_newer = page.has_newer;
+            self.older_armed = false;
+            self.older_anchor = None;
+            self.history_offset = None;
+        }
+        if !newer {
+            self.focused_message = Some(anchor.into());
+            self.scroll_to_target = true;
+            self.showing_pins = false;
+        }
     }
 
     fn admin(&mut self, operation: AdminOperation) {
@@ -4279,6 +4809,7 @@ impl CaperApp {
         self.navigation_error = None;
         self.loading = true;
         self.error = None;
+        self.membership_revision += 1;
         self.worker.send(Command::Admin {
             generation: self.generation,
             token,
@@ -4309,19 +4840,7 @@ impl CaperApp {
                 self.dialog = None;
             }
             AdminResult::SpaceDeleted(id) | AdminResult::SpaceLeft(id) => {
-                self.voice.revoke_space(&id);
-                self.invalidate_navigation_cache();
-                self.spaces.retain(|space| space.id != id);
-                self.dialog = None;
-                self.detail = None;
-                self.selected_space = None;
-                self.managed_members.clear();
-                self.managed_invitations.clear();
-                self.presence.clear();
-                if self.selected_direct.is_none() {
-                    self.generation += 1;
-                    self.clear_channel_state();
-                }
+                self.forget_open_space(&id);
                 // General is retired, so only an account space can follow.
                 if let Some(space) = self.spaces.iter().find(|space| !space.demo) {
                     self.select_space(space.id.clone());
@@ -4385,6 +4904,7 @@ impl CaperApp {
                 self.managed_invitations.retain(|item| item.id != member.id);
                 self.managed_invitations.push(member);
                 self.member_username.clear();
+                self.member_status = Some(INVITATION_SENT);
             }
             AdminResult::InvitationCancelled(user) => {
                 self.managed_invitations.retain(|item| item.id != user);
@@ -4404,12 +4924,21 @@ impl CaperApp {
                     self.managed_invitations.retain(|item| item.id != member.id);
                     self.managed_invitations.push(member);
                     self.member_username.clear();
+                    self.member_status = Some(INVITATION_SENT);
                 }
             }
             AdminResult::MemberRemoved { channel, member } => {
                 if channel == self.managed_channel {
                     self.managed_members.retain(|item| item.id != member);
                     self.managed_invitations.retain(|item| item.id != member);
+                }
+                // The confirmation closes; its settings dialog stays open.
+                if let Some(Dialog::RemoveMember { channel, .. }) = &self.dialog {
+                    self.dialog = Some(
+                        channel
+                            .clone()
+                            .map_or(Dialog::ManageSpace, Dialog::ManageChannel),
+                    );
                 }
             }
             AdminResult::ChannelLeft(channel) => {
@@ -4473,6 +5002,169 @@ impl CaperApp {
         }
     }
 
+    /// Closes a space this account can no longer open: its call, cached
+    /// navigation, dialogs, member lists and (outside a DM) its channel.
+    fn forget_open_space(&mut self, id: &str) {
+        self.voice.revoke_space(id);
+        self.invalidate_navigation_cache();
+        self.spaces.retain(|space| space.id != id);
+        self.dialog = None;
+        self.detail = None;
+        self.selected_space = None;
+        self.managed_members.clear();
+        self.managed_invitations.clear();
+        self.presence.clear();
+        if self.selected_direct.is_none() {
+            self.generation += 1;
+            self.clear_channel_state();
+        }
+    }
+
+    /// Web's membership reconcile, every 15 seconds and when the window
+    /// regains focus: invitations, and spaces or channels changed elsewhere,
+    /// appear without a restart. Transport authorization still enforces
+    /// access independently of this refresh.
+    fn refresh_membership(&mut self) {
+        self.membership_refreshed = Instant::now();
+        let Some(token) = self.token.clone() else {
+            return;
+        };
+        if self.account.is_none() || self.membership_refreshing || self.loading || self.opening {
+            return;
+        }
+        self.membership_request += 1;
+        self.membership_refreshing = true;
+        self.worker.send(Command::RefreshMembership {
+            epoch: self.account_epoch,
+            request: self.membership_request,
+            revision: self.membership_revision,
+            navigation: self.navigation,
+            token,
+            space: self
+                .selected_space
+                .clone()
+                .filter(|_| self.selected_direct.is_none()),
+        });
+    }
+
+    fn reconcile_membership(&mut self, spaces: model::Spaces, detail: Option<model::SpaceDetail>) {
+        let available: BTreeSet<_> = spaces.spaces.iter().map(|space| space.id.clone()).collect();
+        let removed: Vec<_> = self
+            .spaces
+            .iter()
+            .filter(|space| !available.contains(&space.id))
+            .map(|space| space.id.clone())
+            .collect();
+        for space in &removed {
+            self.navigation_cache.forget_space(space);
+        }
+        self.set_spaces(spaces);
+        if let Some(Dialog::Invitation(space)) = &self.dialog
+            && !self.invitations.iter().any(|item| item.id == space.id)
+        {
+            self.dialog = None;
+        }
+        let Some(open) = self.selected_space.clone() else {
+            return;
+        };
+        if !available.contains(&open) {
+            // Removed from the open space elsewhere, or it was deleted. A DM
+            // stays open; otherwise the first remaining space follows.
+            self.forget_open_space(&open);
+            self.space_notice = Some("This space is no longer available.".into());
+            if self.selected_direct.is_none()
+                && let Some(space) = self.spaces.iter().find(|space| !space.demo)
+            {
+                self.select_space(space.id.clone());
+            }
+            return;
+        }
+        let Some(detail) = detail.filter(|detail| {
+            detail.space.id == open
+                && self.selected_direct.is_none()
+                && self.detail.as_ref() != Some(detail)
+        }) else {
+            return;
+        };
+        self.navigation_cache.forget_space(&open);
+        if let Some(space) = self.spaces.iter_mut().find(|space| space.id == open) {
+            *space = detail.space.clone();
+        }
+        let joined = |detail: Option<&model::SpaceDetail>, channel: &str| {
+            detail.and_then(|detail| {
+                detail
+                    .channels
+                    .iter()
+                    .find(|item| item.id == channel)
+                    .map(|item| item.joined)
+            })
+        };
+        let previous = self.detail.replace(detail);
+        let first_joined = self.detail.as_ref().and_then(|detail| {
+            detail
+                .channels
+                .iter()
+                .find(|item| item.joined)
+                .map(|item| item.id.clone())
+        });
+        let Some(channel) = self.selected_channel.clone() else {
+            // Nothing was open: a channel joined elsewhere opens, as on web.
+            if let Some(next) = first_joined {
+                self.select_channel(next, false);
+            }
+            return;
+        };
+        match joined(self.detail.as_ref(), &channel) {
+            // Only its name or privacy changed.
+            Some(now) if joined(previous.as_ref(), &channel) == Some(now) => {}
+            // Joined or left elsewhere: reopen with or without the composer.
+            Some(now) => {
+                if !now && self.voice.state.active_channel() == Some(&channel) {
+                    self.voice.leave();
+                }
+                self.generation += 1;
+                self.clear_channel_state();
+                self.select_channel(channel, false);
+            }
+            // Deleted, or private access removed, elsewhere.
+            None => {
+                self.voice.revoke_channel(&channel);
+                self.navigation_cache.forget_channel(&channel);
+                self.generation += 1;
+                self.clear_channel_state();
+                if let Some(next) = first_joined {
+                    self.select_channel(next, false);
+                }
+            }
+        }
+    }
+
+    /// Web's dismissible notice, bottom left.
+    fn space_notice(&mut self, context: &egui::Context) {
+        let Some(notice) = self.space_notice.clone() else {
+            return;
+        };
+        egui::Area::new(egui::Id::new("space-notice"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(20.0, -20.0))
+            .show(context, |ui| {
+                egui::Frame::new()
+                    .fill(SURFACE)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .corner_radius(8)
+                    .inner_margin(14)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 16.0;
+                            ui.label(RichText::new(notice).size(13.0).color(TEXT));
+                            if drawn_icon_button(ui, NavIcon::Close, "Dismiss notice").clicked() {
+                                self.space_notice = None;
+                            }
+                        });
+                    });
+            });
+    }
+
     fn periodic(&mut self, context: &egui::Context) {
         let now = Instant::now();
         if let Some(target) = self.navigation_prefetch.clone() {
@@ -4492,6 +5184,15 @@ impl CaperApp {
             && now.duration_since(self.directs_refreshed) >= Duration::from_secs(15)
         {
             self.refresh_directs();
+        }
+        if self.token.is_some() {
+            let waited = now.duration_since(self.membership_refreshed);
+            if waited >= MEMBERSHIP_REFRESH {
+                self.refresh_membership();
+            } else {
+                // Also while idle: invitations and removals arrive unprompted.
+                context.request_repaint_after(MEMBERSHIP_REFRESH - waited);
+            }
         }
         let live = self.live == "Live";
         if live != self.was_live {
@@ -4573,6 +5274,7 @@ impl eframe::App for CaperApp {
         self.receive();
         if self.foreground && !was_foreground {
             self.mark_selected_direct_read();
+            self.refresh_membership();
         }
         self.refresh_media_status();
         self.periodic(context);
@@ -4606,17 +5308,37 @@ impl eframe::App for CaperApp {
 
 impl CaperApp {
     fn page(&mut self, context: &egui::Context) {
-        if self.account.is_none() || matches!(self.dialog, Some(Dialog::SignIn)) {
+        let login = self.account.is_none() || matches!(self.dialog, Some(Dialog::SignIn));
+        if !login {
+            // The next sign-in page focuses its field again.
+            self.login_focus = None;
+        }
+        if login {
             self.login_page(context);
         } else if self.onboarding() {
             self.onboarding_page(context);
         } else if self.needs_first_space() {
             self.first_space_page(context);
         } else {
+            // Ctrl+, (⌘, on macOS) opens Settings, as in the Apple client.
+            if self.dialog.is_none()
+                && context.input_mut(|input| {
+                    input.consume_shortcut(&egui::KeyboardShortcut::new(
+                        egui::Modifiers::COMMAND,
+                        egui::Key::Comma,
+                    ))
+                })
+            {
+                self.open_settings();
+            }
             let dialog_was_open = self.dialog.is_some();
             self.shell(context);
+            self.pins_dialog(context);
             self.dialogs(context, dialog_was_open);
             self.message_edit_dialogs(context);
+        }
+        if self.account.is_some() {
+            self.space_notice(context);
         }
         // egui's buttons and custom click targets do not set a hand cursor.
         // Only supply a fallback: text fields and resize handles keep theirs.
@@ -4807,6 +5529,9 @@ impl CaperApp {
                                     .min_size(egui::vec2(0.0, 52.0))
                                     .desired_width(f32::INFINITY),
                             );
+                            if field.changed() {
+                                self.error = None;
+                            }
                             let allowed = self.can_create_space();
                             if !allowed {
                                 ui.add_space(6.0);
@@ -5004,25 +5729,41 @@ impl CaperApp {
                             .color(MUTED),
                         );
                         ui.add_space(20.0);
+                        // Web keeps the field focused (read-only, not disabled)
+                        // during a request, and focuses it when one finishes.
+                        let step = (self.loading, self.challenge.is_some());
+                        let refocus = !self.loading && self.login_focus != Some(step);
+                        self.login_focus = Some(step);
                         if self.challenge.is_some() {
                             ui.label(bold("Sign-in code").size(14.0));
                             ui.add_space(8.0);
                             let exhausted = self.attempts_remaining == Some(0);
+                            let snapshot = self.code.clone();
+                            let mut frozen = snapshot.as_str();
+                            let text: &mut dyn egui::TextBuffer =
+                                if self.loading { &mut frozen } else { &mut self.code };
                             let response = ui.add_enabled(
-                                !self.loading && !exhausted,
-                                egui::TextEdit::singleline(&mut self.code)
+                                !exhausted,
+                                egui::TextEdit::singleline(text)
+                                    .id(egui::Id::new("sign-in-code"))
                                     .vertical_align(egui::Align::Center)
-                                    .char_limit(6)
                                     .min_size(egui::vec2(width, 52.0))
                                     .desired_width(width),
                             );
-                            self.code.make_ascii_uppercase();
-                            self.code.retain(|character| {
-                                "ABCDEFGHJKMNPQRSTWXYZ23456789".contains(character)
-                            });
+                            // No char limit: it would cut a pasted " ABC-234" before cleanup.
+                            clean_sign_in_code(&mut self.code);
+                            if refocus && !exhausted {
+                                response.request_focus();
+                            }
+                            if response.changed() && !self.loading && !exhausted {
+                                self.error = None;
+                            }
                             if let Some(error) = self.error.as_ref().or(self.warning.as_ref()) {
                                 ui.add_space(12.0);
                                 login_error_frame(ui, error);
+                            } else if let Some(status) = self.login_status {
+                                ui.add_space(12.0);
+                                ui.label(RichText::new(status).size(14.0).color(MUTED));
                             }
                             if self.attempts_remaining == Some(1) {
                                 ui.add_space(8.0);
@@ -5031,25 +5772,28 @@ impl CaperApp {
                                 );
                             }
                             ui.add_space(12.0);
+                            let resends_left = self.resends < MAX_RESENDS;
                             if exhausted {
-                                if login_action(
-                                    ui,
-                                    if self.loading { "Sending…" } else { "Email me a new code" },
-                                    self.loading,
-                                )
-                                .clicked()
+                                // Counts as a resend; "Resend code" would repeat it. At the
+                                // limit it is hidden, as on web: the API would send nothing.
+                                if resends_left
+                                    && login_action(
+                                        ui,
+                                        if self.loading { "Sending…" } else { "Email me a new code" },
+                                        self.loading,
+                                    )
+                                    .clicked()
                                 {
-                                    self.loading = true;
-                                    self.error = None;
                                     self.code.clear();
-                                    self.worker.send(Command::RequestCode {
-                                        generation: self.generation,
-                                        email: self.email.trim().to_owned(),
-                                    });
+                                    self.resend_code();
                                 }
                             } else if login_action(
                                 ui,
-                                if self.loading { "Checking…" } else { "Continue" },
+                                if self.loading && !self.resending {
+                                    "Checking…"
+                                } else {
+                                    "Continue"
+                                },
                                 self.loading || self.code.len() != 6,
                             )
                             .clicked()
@@ -5061,6 +5805,7 @@ impl CaperApp {
                                 let challenge = self.challenge.clone().unwrap_or_default();
                                 self.loading = true;
                                 self.error = None;
+                                self.login_status = None;
                                 self.worker.send(Command::VerifyCode {
                                     generation: self.generation,
                                     challenge,
@@ -5068,34 +5813,80 @@ impl CaperApp {
                                 });
                             }
                             ui.add_space(10.0);
-                            if ui
-                                .add_enabled(
-                                    !self.loading,
-                                    egui::Button::new(
-                                        RichText::new("Use a different email")
-                                            .size(13.6)
-                                            .color(MUTED),
+                            let text_button = |text: &str| {
+                                egui::Button::new(RichText::new(text).size(13.6).color(MUTED))
+                                    .frame(false)
+                            };
+                            let mut resend = false;
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing.x = 16.0;
+                                if ui
+                                    .add_enabled(!self.loading, text_button("Use a different email"))
+                                    .clicked()
+                                {
+                                    self.challenge = None;
+                                    self.code.clear();
+                                    self.error = None;
+                                    self.attempts_remaining = None;
+                                    self.reset_resends();
+                                }
+                                if exhausted || !resends_left || self.challenge.is_none() {
+                                    return;
+                                }
+                                let wait = self
+                                    .code_sent_at
+                                    .and_then(|sent| resend_wait(sent.elapsed()));
+                                let label = if self.loading && self.resending {
+                                    "Sending…".to_owned()
+                                } else if let Some(wait) = wait {
+                                    let (label, changes) = resend_countdown(wait);
+                                    ui.ctx().request_repaint_after(changes);
+                                    label
+                                } else {
+                                    "Resend code".to_owned()
+                                };
+                                resend = ui
+                                    .add_enabled(!self.loading && wait.is_none(), text_button(&label))
+                                    .clicked();
+                            });
+                            if resend {
+                                self.resend_code();
+                                // Keep typing in the code field, as on web.
+                                ui.memory_mut(|memory| {
+                                    memory.request_focus(egui::Id::new("sign-in-code"));
+                                });
+                            }
+                            if !resends_left && self.challenge.is_some() {
+                                ui.add_space(8.0);
+                                ui.label(
+                                    RichText::new(
+                                        "Still nothing? Check your spam folder, or try again in 15 minutes.",
                                     )
-                                    .frame(false),
-                                )
-                                .clicked()
-                            {
-                                self.challenge = None;
-                                self.code.clear();
-                                self.error = None;
-                                self.attempts_remaining = None;
+                                    .size(13.6)
+                                    .color(MUTED),
+                                );
                             }
                         } else {
                             ui.label(bold("Email address").size(14.0));
                             ui.add_space(8.0);
-                            let response = ui.add_enabled(
-                                !self.loading,
-                                egui::TextEdit::singleline(&mut self.email)
+                            let snapshot = self.email.clone();
+                            let mut frozen = snapshot.as_str();
+                            let text: &mut dyn egui::TextBuffer =
+                                if self.loading { &mut frozen } else { &mut self.email };
+                            let response = ui.add(
+                                egui::TextEdit::singleline(text)
+                                    .id(egui::Id::new("sign-in-email"))
                                     .vertical_align(egui::Align::Center)
                                     .min_size(egui::vec2(width, 52.0))
                                     .desired_width(width)
                                     .hint_text("you@example.com"),
                             );
+                            if refocus {
+                                response.request_focus();
+                            }
+                            if response.changed() && !self.loading {
+                                self.error = None;
+                            }
                             if let Some(error) = self.error.as_ref().or(self.warning.as_ref()) {
                                 ui.add_space(12.0);
                                 login_error_frame(ui, error);
@@ -5146,39 +5937,96 @@ impl CaperApp {
                 }
                 let content = ui.max_rect();
                 if narrow {
-                    if self.navigation_open {
-                        let rail_rect = egui::Rect::from_min_max(
-                            content.min,
-                            egui::pos2(content.left() + 59.0, content.bottom()),
-                        );
-                        let sidebar_rect = egui::Rect::from_min_max(
-                            egui::pos2(rail_rect.right(), content.top()),
-                            content.max,
-                        );
-                        ui.scope_builder(egui::UiBuilder::new().max_rect(rail_rect), |ui| {
-                            self.rail(ui);
-                        });
-                        ui.scope_builder(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
-                            self.sidebar(ui, sidebar_rect.width());
-                        });
-                    } else {
+                    // As on phones, the conversation slides over a still Browse and
+                    // rests with its edge in view beside it; that edge returns to it.
+                    let uncovered = context.animate_bool_with_time_and_easing(
+                        egui::Id::new("browse-slide"),
+                        self.navigation_open,
+                        0.3,
+                        egui::emath::easing::cubic_out,
+                    );
+                    let peek = (content.width() * 0.2).clamp(56.0, 96.0);
+                    if uncovered > 0.0 {
                         ui.scope_builder(egui::UiBuilder::new().max_rect(content), |ui| {
-                            self.conversation(ui, true)
+                            // The account bar keeps the full width, below the conversation's edge.
+                            let bar = egui::TopBottomPanel::bottom("narrow-account")
+                                .show_separator_line(false)
+                                .frame(egui::Frame::new().fill(SIDEBAR).inner_margin(12))
+                                .show_inside(ui, |ui| self.account_bar(ui));
+                            self.browse_bar = bar.response.rect.height();
+                            let browse = ui.available_rect_before_wrap();
+                            let rail_rect = egui::Rect::from_min_max(
+                                browse.min,
+                                egui::pos2(browse.left() + 59.0, browse.bottom()),
+                            );
+                            let sidebar_rect = egui::Rect::from_min_max(
+                                egui::pos2(rail_rect.right(), browse.top()),
+                                egui::pos2(browse.right() - peek, browse.bottom()),
+                            );
+                            ui.scope_builder(egui::UiBuilder::new().max_rect(rail_rect), |ui| {
+                                self.rail(ui);
+                            });
+                            ui.scope_builder(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
+                                self.sidebar(ui, sidebar_rect.width(), false);
+                            });
                         });
+                    }
+                    // Panels inside set their own clip, so the conversation's rect itself
+                    // stops above Browse's account bar as it slides aside.
+                    let stage = egui::Rect::from_min_max(
+                        content.min,
+                        egui::pos2(
+                            content.right(),
+                            content.bottom() - uncovered * self.browse_bar,
+                        ),
+                    )
+                    .translate(egui::vec2(uncovered * (content.width() - peek), 0.0));
+                    if uncovered > 0.0 {
+                        let shadow = egui::Shadow {
+                            offset: [-4, 0],
+                            blur: 16,
+                            spread: 0,
+                            color: egui::Color32::from_black_alpha(110),
+                        };
+                        ui.painter().add(shadow.as_shape(stage, 0));
+                    }
+                    ui.painter().rect_filled(stage, 0.0, SURFACE);
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(stage), |ui| {
+                        self.conversation(ui, true);
                         if self.selected_direct.is_none()
                             && self.narrow_members_visible
+                            && !self.navigation_open
                             && !self.no_accessible_channels()
                         {
                             let members_rect = egui::Rect::from_min_max(
                                 egui::pos2(
-                                    (content.right() - 280.0).max(content.left()),
-                                    content.top() + 53.0,
+                                    (stage.right() - 280.0).max(stage.left()),
+                                    stage.top() + 53.0,
                                 ),
-                                content.max,
+                                stage.max,
                             );
                             ui.scope_builder(egui::UiBuilder::new().max_rect(members_rect), |ui| {
                                 self.member_presence(ui)
                             });
+                        }
+                    });
+                    if self.navigation_open {
+                        let edge = egui::Rect::from_min_max(
+                            egui::pos2(content.right() - peek, content.top()),
+                            egui::pos2(content.right(), content.bottom() - self.browse_bar),
+                        );
+                        let back = ui
+                            .interact(edge, egui::Id::new("browse-peek"), egui::Sense::click())
+                            .on_hover_cursor(egui::CursorIcon::PointingHand);
+                        back.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Button,
+                                true,
+                                "Back to conversation",
+                            )
+                        });
+                        if back.clicked() {
+                            self.navigation_open = false;
                         }
                     }
                 } else {
@@ -5230,7 +6078,7 @@ impl CaperApp {
                         self.rail(ui);
                     });
                     ui.scope_builder(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
-                        self.sidebar(ui, sidebar_width)
+                        self.sidebar(ui, sidebar_width, true)
                     });
                     let separator = ui
                         .interact(
@@ -5460,7 +6308,7 @@ impl CaperApp {
             });
     }
 
-    fn sidebar(&mut self, ui: &mut egui::Ui, width: f32) {
+    fn sidebar(&mut self, ui: &mut egui::Ui, width: f32, account_bar: bool) {
         // Redraw when a timed mute ends.
         if let Some(wait) = self.notifications.next_expiry(chrono::Utc::now()) {
             ui.ctx().request_repaint_after(wait);
@@ -5482,10 +6330,12 @@ impl CaperApp {
                 ui.set_width(width - 24.0);
                 ui.set_height(ui.available_height());
                 ui.spacing_mut().item_spacing.y = 0.0;
-                egui::TopBottomPanel::bottom("native-account")
-                    .show_separator_line(false)
-                    .frame(egui::Frame::NONE)
-                    .show_inside(ui, |ui| self.account_bar(ui));
+                if account_bar {
+                    egui::TopBottomPanel::bottom("native-account")
+                        .show_separator_line(false)
+                        .frame(egui::Frame::NONE)
+                        .show_inside(ui, |ui| self.account_bar(ui));
+                }
                 egui::ScrollArea::vertical()
                     .id_salt("sidebar-scroll")
                     .show(ui, |ui| {
@@ -5732,29 +6582,19 @@ impl CaperApp {
                             let query = self.channel_search.to_lowercase();
                             let previews: Vec<_> = self.detail.as_ref().map_or_else(Vec::new, |detail| detail.channels.iter()
                                 .filter(|channel| !channel.joined && channel.name.to_lowercase().contains(&query))
-                                .map(|channel| (channel.id.clone(), channel.name.clone())).collect());
-                            for (id, name) in previews {
+                                .map(|channel| (channel.id.clone(), channel.name.clone(), channel.private)).collect());
+                            for (id, name, private) in previews {
                                 ui.horizontal(|ui| {
                                     if ui.button(format!("# {name}")).clicked() { self.select_channel(id.clone(), false); }
                                     if ui.small_button("Join").clicked() && let Some(space) = self.selected_space.clone() {
                                         self.admin(AdminOperation::JoinChannel { space, channel: id.clone() });
                                     }
-                                });
-                            }
-                            let invitations = self.detail.as_ref().map_or_else(Vec::new, |detail| detail.channel_invitations.clone());
-                            for invitation in invitations {
-                                ui.group(|ui| {
-                                    ui.label(bold(format!("Private invitation · #{}", invitation.channel.name)).size(12.0));
-                                    ui.label(RichText::new(format!("{} (@{}) invited you. Expires seven days after it was sent.", invitation.inviter.display_name, invitation.inviter.username)).size(11.0).color(MUTED));
-                                    ui.label(RichText::new("Messages stay hidden until acceptance. Accepting joins the channel, not its voice call.").size(11.0).color(MUTED));
-                                    ui.horizontal(|ui| {
-                                        if ui.button("Decline").clicked() && let Some(space) = self.selected_space.clone() {
-                                            self.admin(AdminOperation::DeclineChannelInvitation { space, channel: invitation.channel.id.clone() });
-                                        }
-                                        if ui.button("Accept").clicked() && let Some(space) = self.selected_space.clone() {
-                                            self.admin(AdminOperation::AcceptChannelInvitation { space, channel: invitation.channel.id.clone() });
-                                        }
-                                    });
+                                    // Web: owners manage any channel from Browse, joined or not.
+                                    if self.owner() && drawn_icon_button(ui, NavIcon::Settings, &format!("Manage {name}")).on_hover_text("Channel settings").clicked() {
+                                        self.browse_channels = false;
+                                        self.channel_search.clear();
+                                        self.open_manage_channel(&id, &name, private);
+                                    }
                                 });
                             }
                         }
@@ -5806,7 +6646,7 @@ impl CaperApp {
                                 if let Some(space) = &space {
                                     menu = Some(RowMenu {
                                         label: format!("Channel options for {name}"),
-                                        on_hover: false,
+                                        on_hover: true,
                                         content: Box::new(|ui: &mut egui::Ui| {
                                             self.channel_menu(ui, space, &id, &name, private)
                                         }),
@@ -5843,6 +6683,28 @@ impl CaperApp {
                                 });
                             });
                             ui.add_space(3.0);
+                        }
+                        // Web always lists pending private channel invitations.
+                        let invitations = self.detail.as_ref().map_or_else(Vec::new, |detail| detail.channel_invitations.clone());
+                        if !invitations.is_empty() {
+                            ui.add_space(10.0);
+                            ui.label(bold("Invitations").size(12.0).color(MUTED));
+                            ui.add_space(4.0);
+                        }
+                        for invitation in invitations {
+                            ui.group(|ui| {
+                                ui.label(bold(format!("Private invitation · #{}", invitation.channel.name)).size(12.0));
+                                ui.label(RichText::new(format!("{} (@{}) invited you. Expires seven days after it was sent.", invitation.inviter.display_name, invitation.inviter.username)).size(11.0).color(MUTED));
+                                ui.label(RichText::new("Messages stay hidden until acceptance. Accepting joins the channel, not its voice call.").size(11.0).color(MUTED));
+                                ui.horizontal(|ui| {
+                                    if ui.button("Decline").clicked() && let Some(space) = self.selected_space.clone() {
+                                        self.admin(AdminOperation::DeclineChannelInvitation { space, channel: invitation.channel.id.clone() });
+                                    }
+                                    if ui.button("Accept").clicked() && let Some(space) = self.selected_space.clone() {
+                                        self.admin(AdminOperation::AcceptChannelInvitation { space, channel: invitation.channel.id.clone() });
+                                    }
+                                });
+                            });
                         }
                         let active_visible = self.channels_expanded
                             && self.detail.as_ref().is_some_and(|detail| {
@@ -6127,13 +6989,25 @@ impl CaperApp {
         self.revealed_blocked.contains(key)
     }
 
-    /// Thread rows (root or replies), collapsing blocked authors' runs.
+    /// Thread rows (root or replies), collapsing blocked authors' runs. Each
+    /// call is its own list for grouping, so the root never groups and the
+    /// first reply never groups with it.
     fn messages_or_blocked(&mut self, ui: &mut egui::Ui, messages: &[&model::Message]) {
         let me = self.account.as_ref().map(|account| account.id.clone());
+        let mut previous: Option<grouping::Row> = None;
         for row in blocking::rows(messages, &self.blocked_ids(), me.as_deref()) {
             let range = match row {
                 blocking::Row::Message(index) => index..index + 1,
                 blocking::Row::Blocked { range, key } => {
+                    // The placeholder separates the rows on either side.
+                    previous = None;
+                    if self.scroll_to_target
+                        && messages[range.clone()]
+                            .iter()
+                            .any(|message| self.focused_message.as_deref() == Some(&message.id))
+                    {
+                        self.revealed_blocked.insert(key.clone());
+                    }
                     if !self.blocked_row(ui, &key, range.len()) {
                         continue;
                     }
@@ -6141,7 +7015,12 @@ impl CaperApp {
                 }
             };
             for message in &messages[range] {
-                self.message(ui, message, true);
+                let current = grouping::Row::new(&message.author.id, &message.created_at, false);
+                let grouped = grouping::grouped(previous.as_ref(), &current);
+                // Nothing groups under a highlighted jump target.
+                previous =
+                    (self.focused_message.as_deref() != Some(&message.id)).then_some(current);
+                self.message(ui, message, true, grouped);
             }
         }
     }
@@ -6171,14 +7050,22 @@ impl CaperApp {
         ui.label(copy);
         ui.add_space(8.0);
         let busy = self.request_busy;
+        // Only the clicked action says it is in progress.
+        let declining = busy && self.request_declining;
+        let accepting = busy && !self.request_declining;
         ui.horizontal(|ui| {
-            if primary_button(ui, if busy { "Working…" } else { "Accept" }, !busy).clicked() {
+            if primary_button(ui, if accepting { "Accepting…" } else { "Accept" }, !busy).clicked()
+            {
                 self.request_busy = true;
+                self.request_declining = false;
                 self.request_error = None;
                 self.account_op(AccountOperation::Accept(direct.id.clone()));
             }
-            if secondary_button(ui, "Decline", !busy).clicked() {
+            if secondary_button(ui, if declining { "Declining…" } else { "Decline" }, !busy)
+                .clicked()
+            {
                 self.request_busy = true;
+                self.request_declining = true;
                 self.request_error = None;
                 self.account_op(AccountOperation::Decline(direct.id.clone()));
             }
@@ -6384,14 +7271,6 @@ impl CaperApp {
                 });
                 if stack.hovered() || stack.has_focus() {
                     ui.painter().rect_filled(rect, 8.0, RAISED);
-                }
-                if stack.has_focus() {
-                    ui.painter().rect_stroke(
-                        rect,
-                        8.0,
-                        Stroke::new(1.0, TERRACOTTA_BRIGHT),
-                        egui::StrokeKind::Inside,
-                    );
                 }
                 let font = egui::FontId::new(11.0, egui::FontFamily::Name("Satoshi Medium".into()));
                 let mut count = format!("{} in voice", people.len());
@@ -6938,23 +7817,7 @@ impl CaperApp {
                     .width(232.0)
                     .show(|ui| {
                         if ui.button("Settings…").clicked() {
-                            if self.persist_preferences {
-                                match startup::enabled() {
-                                    Ok(enabled) => self.launch_at_login = enabled,
-                                    Err(error) => {
-                                        self.startup_error = Some(format!(
-                                            "Could not read startup settings: {error}"
-                                        ));
-                                    }
-                                }
-                            }
-                            self.dialog = Some(Dialog::Settings);
-                            if !self.privacy_saving {
-                                self.privacy_error = None;
-                                self.account_op(AccountOperation::LoadPrivacy);
-                            }
-                            self.account_op(AccountOperation::LoadBlocks);
-                            self.load_notifications();
+                            self.open_settings();
                             ui.close();
                         }
                         ui.separator();
@@ -7686,6 +8549,11 @@ impl CaperApp {
     }
 
     fn conversation(&mut self, ui: &mut egui::Ui, narrow: bool) {
+        // Web closes the thread on Escape unless something open takes it.
+        // These may close earlier in this pass without consuming the key.
+        let escape_taken = self.reaction_picker.is_some()
+            || self.reactors_view.is_some()
+            || egui::Popup::is_any_open(ui.ctx());
         if self.thread_view.is_some() && narrow {
             self.thread_panel(ui);
         } else {
@@ -7694,12 +8562,30 @@ impl CaperApp {
                     .default_width(340.0)
                     .min_width(300.0)
                     .max_width(480.0)
+                    .frame(egui::Frame::new().fill(CONVERSATION))
                     .show_inside(ui, |ui| self.thread_panel(ui));
             }
             self.channel_conversation(ui, narrow);
         }
         // Once per pass, for pills in the channel and in thread replies.
-        self.mention_card(ui.ctx());
+        // Pins draws these above its overlay instead.
+        if !self.showing_pins {
+            self.mention_card(ui.ctx());
+            self.reactors_window(ui.ctx());
+        }
+        // Suggestions and the mention card consume Escape; dialogs and the
+        // other windows draw after the conversation.
+        if self.thread_view.is_some()
+            && !escape_taken
+            && !self.showing_pins
+            && self.dialog.is_none()
+            && self.message_editor.is_none()
+            && self.edit_history.is_none()
+            && !self.forwarding.is_open()
+            && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            self.close_thread();
+        }
     }
 
     fn thread_panel(&mut self, ui: &mut egui::Ui) {
@@ -7709,19 +8595,70 @@ impl CaperApp {
         let root = thread.root.clone();
         let loading = thread.loading;
         let has_more = thread.has_more;
+        let has_newer = thread.has_newer;
+        let window = thread.window;
         let error = thread.error.clone();
-        let broadcast_label = format!("Also send to #{}", self.channel_name());
+        // DMs are named after the other person, without a channel `#`.
+        let direct = self.selected_direct.is_some();
+        let (conversation, broadcast_label) = if direct {
+            (
+                format!("with {}", self.channel_name()),
+                "Also send to conversation".to_owned(),
+            )
+        } else {
+            (
+                format!("in #{}", self.channel_name()),
+                format!("Also send to #{}", self.channel_name()),
+            )
+        };
+        // As on web, a blocked DM is read-only here too, like an incoming request.
+        let read_only = !self.selected_is_joined()
+            || self
+                .selected_direct_conversation()
+                .is_some_and(|direct| direct.blocked || self.is_blocked(&direct.peer.id));
         ui.set_min_height(ui.available_height());
-        ui.horizontal(|ui| {
-            ui.heading("Thread");
-            if ui.button("Back to channel").clicked() {
-                self.thread_view = None;
-                self.thread_request += 1;
-            }
-        });
-        ui.label(format!("in #{}", self.channel_name()));
-        ui.separator();
-        if self.selected_is_joined() {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let heading = egui::TopBottomPanel::top("thread-heading")
+            .exact_height(54.0)
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(CONVERSATION)
+                    .inner_margin(egui::Margin::symmetric(18, 8)),
+            )
+            .show_inside(ui, |ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), 38.0),
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        if ui
+                            .button(if direct {
+                                "Back to conversation"
+                            } else {
+                                "Back to channel"
+                            })
+                            .clicked()
+                        {
+                            self.close_thread();
+                        }
+                        ui.vertical(|ui| {
+                            ui.label(bold("Thread").size(15.0));
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&conversation).size(11.0).color(MUTED),
+                                )
+                                .truncate(),
+                            );
+                        });
+                    },
+                );
+            });
+        ui.painter().hline(
+            heading.response.rect.x_range(),
+            heading.response.rect.bottom(),
+            Stroke::new(1.0, BORDER),
+        );
+        if !read_only {
             egui::TopBottomPanel::bottom("thread-composer").show_inside(ui, |ui| {
                 let pending = self.pending.clone().filter(|pending| pending.thread_root_id.as_deref() == Some(&root));
                 if let Some(pending) = &pending {
@@ -7742,37 +8679,50 @@ impl CaperApp {
                 if pending.is_none() && self.pending.as_ref().is_some_and(|pending| !pending.sending && (pending.rejection.is_some() || self.error.is_some())) {
                     ui.label("Confirm or dismiss the pending message first.");
                 }
+                // The channel composer's `:`/`@` suggestions, with their own state.
+                let composer_id = egui::Id::new(("thread-draft", &root));
+                let text = self.thread_drafts.entry(root.clone()).or_default().0.clone();
+                let suggestions = self.suggestion_keys(ui, composer_id, &text);
                 let draft = self.thread_drafts.entry(root.clone()).or_default();
-                let output = ui.add_enabled(!loading, egui::TextEdit::multiline(&mut draft.0)
-                    .id_salt(("thread-draft", &root)).desired_rows(3).desired_width(f32::INFINITY).char_limit(4000)
-                    .hint_text("Reply to thread…").return_key(Some(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter))));
-                let enter = output.has_focus() && ui.input(|input| !input.events.iter().any(|event| matches!(event, egui::Event::Ime(_))) && input.events.iter().any(|event| matches!(event, egui::Event::Key { key: egui::Key::Enter, pressed: true, modifiers, .. } if !modifiers.shift)));
+                let mut output = ui.add_enabled_ui(!loading, |ui| egui::TextEdit::multiline(&mut draft.0)
+                    .id(composer_id).desired_rows(3).desired_width(f32::INFINITY).char_limit(4000)
+                    .hint_text("Reply to thread…").return_key(Some(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter))).show(ui)).inner;
+                let text = draft.0.clone();
+                if let Some(value) = self.suggestion_popup(ui, &suggestions, &text, &mut output) {
+                    self.thread_drafts.entry(root.clone()).or_default().0 = value;
+                }
+                let enter = output.response.has_focus() && !self.ime_composing && !suggestions.ime && ui.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::Key { key: egui::Key::Enter, pressed: true, modifiers, .. } if !modifiers.shift)));
+                let draft = self.thread_drafts.entry(root.clone()).or_default();
                 ui.add_enabled(!blocked, egui::Checkbox::new(&mut draft.1, &broadcast_label));
                 let draft = self.thread_drafts.get(&root).cloned().unwrap_or_default();
                 let send = ui.add_enabled(!blocked && !loading && !draft.0.trim().is_empty(), egui::Button::new("Send reply")).clicked();
                 if (enter || send) && !blocked && !loading { self.send_message_to(Some(root.clone()), draft.1); }
             });
         } else {
-            ui.label("Join the channel to reply.");
+            ui.label(if direct {
+                "You can’t reply in this conversation."
+            } else {
+                "Join the channel to reply."
+            });
         }
         egui::ScrollArea::vertical()
             .id_salt(("thread-history", &root))
             .stick_to_bottom(true)
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 let rows: Vec<_> = self
                     .timeline
                     .messages()
                     .filter(|message| {
-                        message.id == root || message.thread_root_id.as_deref() == Some(&root)
+                        message.id == root
+                            || (message.thread_root_id.as_deref() == Some(&root)
+                                && window.is_none_or(|window| window.contains(message)))
                     })
                     .cloned()
                     .collect();
                 if let Some(parent) = rows.iter().find(|message| message.id == root) {
                     self.messages_or_blocked(ui, &[parent]);
-                }
-                if loading {
-                    ui.label("Loading thread…");
                 }
                 if let Some(error) = error {
                     ui.colored_label(ERROR, error);
@@ -7791,10 +8741,30 @@ impl CaperApp {
                     .iter()
                     .filter(|message| message.thread_root_id.is_some())
                     .collect();
+                if loading && replies.is_empty() {
+                    ui.allocate_ui(egui::vec2(ui.available_width(), 196.0), message_skeleton);
+                }
                 if replies.is_empty() && !loading {
-                    ui.label("No replies yet. Start the thread.");
+                    ui.label(if read_only {
+                        "No replies yet."
+                    } else {
+                        "No replies yet. Start the thread."
+                    });
                 }
                 self.messages_or_blocked(ui, &replies);
+                if has_newer
+                    && ui
+                        .add_enabled(
+                            !self.context_loading,
+                            egui::Button::new("Load newer replies"),
+                        )
+                        .clicked()
+                {
+                    self.load_newer_context(Some(root.clone()));
+                }
+                if window.is_some() && ui.button("Back to latest replies").clicked() {
+                    self.open_thread(root.clone());
+                }
             });
         self.emoji_picker(ui.ctx());
     }
@@ -7837,9 +8807,6 @@ impl CaperApp {
                                 Some(item) => item.peer.display_name.clone(),
                                 None => format!("# {}", self.channel_name()),
                             }).size(13.76));
-                            if self.showing_pins {
-                                ui.label(RichText::new("Pinned messages").size(12.0).color(MUTED));
-                            }
                             // Web: a failed refresh keeps the conversation and offers Retry in the header.
                             if let Some(error) = self.load_error.clone().filter(|_| self.timeline.messages().next().is_some()) {
                                 ui.add(egui::Label::new(RichText::new(error).size(11.2).color(ERROR)).truncate());
@@ -7850,10 +8817,7 @@ impl CaperApp {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    let pin_count = self.mutations.pinned(&self.timeline).len();
-                                    if self.showing_pins {
-                                        if ui.button("Messages").clicked() { self.showing_pins = false; }
-                                    } else if ui.button(format!("Pins ({pin_count})")).clicked() {
+                                    if drawn_icon_button(ui, NavIcon::Pin, "Pins").clicked() {
                                         self.showing_pins = true;
                                     }
                                     if self.selected_direct.is_none() {
@@ -8003,36 +8967,8 @@ impl CaperApp {
                         format!("Message #{}", self.channel_name())
                     };
                     let composer_id = egui::Id::new("message-composer");
-                    let ime_frame = ui.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::Ime(_))));
-                    ui.input(|input| {
-                        for event in &input.events {
-                            if let egui::Event::Ime(event) = event {
-                                self.ime_composing = matches!(event, egui::ImeEvent::Enabled | egui::ImeEvent::Preedit(_));
-                            }
-                        }
-                    });
-                    let cursor = egui::TextEdit::load_state(ui.ctx(), composer_id)
-                        .and_then(|state| state.cursor.char_range());
-                    if let Some((text, caret)) = &self.suggestion_dismissed
-                        && (text != &self.draft || cursor.is_none_or(|range| !range.is_empty() || range.primary.index != *caret)) {
-                        self.suggestion_dismissed = None;
-                    }
-                    let active = cursor.filter(|range| range.is_empty())
-                        .filter(|_| !self.ime_composing && !ime_frame && ui.memory(|memory| memory.has_focus(composer_id)))
-                        .and_then(|range| ComposerToken::at(&self.draft, range.primary.index))
-                        .filter(|token| self.suggestion_dismissed.as_ref() != Some(&(self.draft.clone(), token.end())));
-                    if active != self.suggestion_token { self.suggestion_selected = 0; self.suggestion_token = active.clone(); }
-                    let choices = active.as_ref().map(|token| self.suggestions(token)).unwrap_or_default();
-                    let mut chosen = None;
-                    if !choices.is_empty() {
-                        self.suggestion_selected = self.suggestion_selected.min(choices.len() - 1);
-                        ui.input_mut(|input| {
-                            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) { self.suggestion_selected = (self.suggestion_selected + 1) % choices.len(); }
-                            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) { self.suggestion_selected = (self.suggestion_selected + choices.len() - 1) % choices.len(); }
-                            if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter) || input.consume_key(egui::Modifiers::NONE, egui::Key::Tab) { chosen = Some(choices[self.suggestion_selected].clone()); }
-                            if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) { self.suggestion_dismissed = active.as_ref().map(|token| (self.draft.clone(), token.end())); }
-                        });
-                    }
+                    let draft = self.draft.clone();
+                    let suggestions = self.suggestion_keys(ui, composer_id, &draft);
                     let editor_area = |ui: &mut egui::Ui, draft: &mut String| egui::ScrollArea::vertical()
                         .id_salt("composer-scroll")
                         .max_height((ui.ctx().viewport_rect().height() * 0.4).min(320.0))
@@ -8076,59 +9012,11 @@ impl CaperApp {
                         editor_area(ui, &mut self.draft)
                     };
                     let mut output = editor.inner;
-                    let response = &output.response;
-                    let active = output.cursor_range.filter(|range| range.is_empty())
-                        .filter(|_| response.has_focus() && !self.ime_composing && !ime_frame)
-                        .and_then(|range| ComposerToken::at(&self.draft, range.primary.index))
-                        .filter(|token| self.suggestion_dismissed.as_ref() != Some(&(self.draft.clone(), token.end())));
-                    let choices = active.as_ref().map(|token| self.suggestions(token)).unwrap_or_default();
-                    // One popup serves `:` emoji and `@` mention rows.
-                    if !choices.is_empty() && chosen.is_none() {
-                        egui::Area::new(egui::Id::new("composer-suggestions"))
-                            .order(egui::Order::Foreground).pivot(egui::Align2::LEFT_BOTTOM)
-                            .fixed_pos(response.rect.left_top() - egui::vec2(0.0, 6.0))
-                            .show(ui.ctx(), |ui| {
-                                egui::Frame::new().fill(COMPOSER).stroke(Stroke::new(1.0, BORDER)).corner_radius(8).inner_margin(4).show(ui, |ui| {
-                                    let width = response.rect.width().min(260.0) - 8.0;
-                                    ui.set_width(width);
-                                    ui.spacing_mut().icon_spacing = 12.0;
-                                    ui.spacing_mut().item_spacing.y = 0.0;
-                                    for (index, choice) in choices.iter().enumerate() {
-                                        let fill = if index == self.suggestion_selected { Color32::from_rgb(67, 36, 30) } else { Color32::TRANSPARENT };
-                                        let clicked = match choice {
-                                            Suggestion::Emoji(entry) => {
-                                                let image = self.reaction_textures.image(ui, entry, 24.0);
-                                                let label = format!(":{}:", entry.name.replace(' ', "_"));
-                                                let button = egui::Button::image_and_text(image, label)
-                                                    .min_size(egui::vec2(width, 44.0))
-                                                    .truncate()
-                                                    .stroke(Stroke::NONE)
-                                                    .fill(fill);
-                                                ui.add(button).clicked()
-                                            }
-                                            Suggestion::Mention(candidate) => mention_suggestion(ui, candidate, width, fill).clicked(),
-                                        };
-                                        if clicked { chosen = Some(choice.clone()); }
-                                    }
-                                });
-                            });
-                    }
-                    if let Some(choice) = &chosen
-                        && let Some(token) = active.as_ref()
-                        && let Some((value, caret)) = token.insert(&self.draft, choice) {
+                    let draft = self.draft.clone();
+                    if let Some(value) = self.suggestion_popup(ui, &suggestions, &draft, &mut output) {
                         self.draft = value;
-                        output.state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(caret))));
-                        output.state.store(ui.ctx(), composer_id);
-                        response.request_focus();
-                        self.suggestion_token = None;
                     }
-                    // egui processes focus traversal before widgets handle keys.
-                    // Keep Tab/Escape in the editor while suggestions are open.
-                    let lock_suggestions = chosen.is_none() && !choices.is_empty();
-                    ui.memory_mut(|memory| memory.set_focus_lock_filter(composer_id, egui::EventFilter {
-                        horizontal_arrows: true, vertical_arrows: true,
-                        tab: lock_suggestions, escape: lock_suggestions,
-                    }));
+                    let response = &output.response;
                     ui.painter().rect_stroke(
                         editor.inner_rect,
                         6.0,
@@ -8138,7 +9026,7 @@ impl CaperApp {
                     if self.draft != before {
                         self.typing_edited = Instant::now();
                     }
-                    let send = response.has_focus() && !self.ime_composing && !ime_frame
+                    let send = response.has_focus() && !self.ime_composing && !suggestions.ime
                         && ui.input(|input| {
                             // The modifier belongs to the key event, not the end of
                             // the frame (Shift may already have been released).
@@ -8213,24 +9101,19 @@ impl CaperApp {
             let jump_latest = ui.memory(|memory| memory.focused().is_none())
                 && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::End));
             let mut history = egui::ScrollArea::vertical()
+                // The conversation stays mounted behind the separate Pins modal.
                 .id_salt("history")
-                .stick_to_bottom(true)
+                .stick_to_bottom(!self.showing_pins)
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                 .auto_shrink([false, false]);
-            if let Some(offset) = self.history_offset.take() {
-                history = history.vertical_scroll_offset(offset);
-            } else if jump_latest {
-                history = history.vertical_scroll_offset(f32::MAX);
+            if !self.showing_pins {
+                if let Some(offset) = self.history_offset.take() {
+                    history = history.vertical_scroll_offset(offset);
+                } else if jump_latest {
+                    history = history.vertical_scroll_offset(f32::MAX);
+                }
             }
             let history = history.show(ui, |ui| {
-                    if self.showing_pins {
-                        let pins = self.mutations.pinned(&self.timeline);
-                        if pins.is_empty() {
-                            chat_state(ui, 2, |ui| { ui.label(RichText::new("No pinned messages.").color(MUTED)); });
-                        } else {
-                            for message in &pins { self.message(ui, message, false); }
-                        }
-                        return;
-                    }
                     if let Some(error) = self.load_error.clone().filter(|_| empty) {
                         chat_state(ui, 2, |ui| {
                             ui.label(RichText::new(error).color(MUTED));
@@ -8260,18 +9143,24 @@ impl CaperApp {
                     // pending/empty state and paging can inspect the timeline.
                     let timeline = std::mem::take(&mut self.timeline);
                     let mut last_date = None;
-                    let messages: Vec<_> = timeline.messages().filter(|message| message.is_channel_message() && !self.thread_only_rows.contains(&message.id)).collect();
+                    let messages: Vec<_> = timeline.messages().filter(|message| message.is_channel_message() && !self.thread_only_rows.contains(&message.id) && self.context_window.is_none_or(|window| window.contains(message))).collect();
                     let me = self.account.as_ref().map(|account| account.id.clone());
+                    // The row above for grouping; dividers and placeholders clear it.
+                    let mut previous: Option<grouping::Row> = None;
                     for row in blocking::rows(&messages, &self.blocked_ids(), me.as_deref()) {
                         let (range, blocked) = match row {
                             blocking::Row::Message(index) => (index..index + 1, None),
                             blocking::Row::Blocked { range, key } => (range, Some(key)),
                         };
                         if let Some(key) = blocked {
+                            previous = None;
                             if let Some(date) = display_date(&messages[range.start].created_at)
                                 && take_date_divider(&mut last_date, &date.key)
                             {
                                 date_divider(ui, &date.label);
+                            }
+                            if self.scroll_to_target && messages[range.clone()].iter().any(|message| self.focused_message.as_deref() == Some(&message.id)) {
+                                self.revealed_blocked.insert(key.clone());
                             }
                             if !self.blocked_row(ui, &key, range.len()) {
                                 continue;
@@ -8282,23 +9171,38 @@ impl CaperApp {
                                 && take_date_divider(&mut last_date, &date.key)
                             {
                                 date_divider(ui, &date.label);
+                                previous = None;
                             }
-                            self.message(ui, message, false);
+                            // A "Replied to a thread" broadcast keeps its header.
+                            let current = grouping::Row::new(&message.author.id, &message.created_at, message.thread_root_id.is_some());
+                            let grouped = grouping::grouped(previous.as_ref(), &current);
+                            // Nothing groups under a highlighted jump target.
+                            previous = (self.focused_message.as_deref() != Some(&message.id)).then_some(current);
+                            self.message(ui, message, false, grouped);
                         }
                     }
                     self.timeline = timeline;
+                    if self.has_newer && ui.add_enabled(!self.context_loading, egui::Button::new("Load newer messages")).clicked() { self.load_newer_context(None); }
+                    if self.context_window.is_some() && ui.button("Back to latest messages").clicked() { self.reload_channel(); }
+                    if self.has_newer || self.context_window.is_some() {
+                        previous = None;
+                    }
                     if let Some(pending) = self.pending.clone().filter(|pending| pending.thread_root_id.is_none()) {
                         if let Some(pending_date) = display_date(&pending.created_at)
                             && take_date_divider(&mut last_date, &pending_date.key)
                         {
                             date_divider(ui, &pending_date.label);
+                            previous = None;
                         }
                         let author = self.session.as_ref().map_or_else(
                             || self.identity_name(),
                             |session| session.author.name.clone(),
                         );
                         let avatar_id = self.session.as_ref().and_then(|session| session.author.avatar_id);
-                        message_row(ui, &author, avatar_id, "Now", false, |ui| {
+                        // An unsent own message groups under your earlier ones.
+                        let author_id = self.session.as_ref().map(|session| session.author.id.clone()).or_else(|| me.clone()).unwrap_or_default();
+                        let grouped = grouping::grouped(previous.as_ref(), &grouping::Row::new(&author_id, &pending.created_at, false));
+                        message_row(ui, &author, avatar_id, "Now", false, grouped.then_some("Now"), |ui| {
                             // File-only messages have no text row.
                             if !pending.text.is_empty() {
                                 ui.label(RichText::new(&pending.text).size(14.0).color(MUTED));
@@ -8333,17 +9237,24 @@ impl CaperApp {
                         && self.pending.is_none()
                         && !self.loading
                     {
+                        let self_direct = self.selected_direct_conversation().is_some_and(|direct| {
+                            self.account.as_ref().is_some_and(|account| account.id == direct.peer.id)
+                        });
                         ui.centered_and_justified(|ui| {
                             ui.vertical_centered(|ui| {
-                                ui.label("No messages yet.");
-                                ui.label(
-                                    RichText::new(if self.selected_direct.is_some() {
-                                        "Only you and this person can read this conversation.".to_owned()
-                                    } else {
-                                        format!("Start the conversation in #{}.", self.channel_name())
-                                    })
-                                    .color(MUTED),
-                                );
+                                if self_direct {
+                                    ui.label(RichText::new("You can message yourself here to keep notes, reminders, and ideas.").color(MUTED));
+                                } else {
+                                    ui.label("No messages yet.");
+                                    ui.label(
+                                        RichText::new(if self.selected_direct.is_some() {
+                                            "Only you and this person can read this conversation.".to_owned()
+                                        } else {
+                                            format!("Start the conversation in #{}.", self.channel_name())
+                                        })
+                                        .color(MUTED),
+                                    );
+                                }
                             });
                         });
                     }
@@ -8449,29 +9360,31 @@ impl CaperApp {
         history: &egui::scroll_area::ScrollAreaOutput<()>,
         heading: egui::Rect,
     ) {
-        let height = history.content_size.y;
-        let viewport = history.inner_rect.height();
-        let offset = history.state.offset.y;
-        if let Some(previous) = self.older_anchor.take() {
-            // Keep the reader's place after older messages arrive above.
-            self.history_offset = Some(offset + (height - previous).max(0.0));
-            ui.ctx().request_repaint();
-        }
-        self.history_height = height;
-        if self.timeline.messages().next().is_some()
-            && (height <= viewport + 1.0 || offset >= height - viewport - 2.0)
-        {
-            self.older_armed = true;
-        }
-        // Web loads the previous page when the list reaches its start.
-        if self.older_armed
-            && self.history_offset.is_none()
-            && offset <= 1.0
-            && self.has_more
-            && !self.loading_older
-            && self.older_error.is_none()
-        {
-            self.load_older();
+        if !self.showing_pins {
+            let height = history.content_size.y;
+            let viewport = history.inner_rect.height();
+            let offset = history.state.offset.y;
+            if let Some(previous) = self.older_anchor.take() {
+                // Keep the reader's place after older messages arrive above.
+                self.history_offset = Some(offset + (height - previous).max(0.0));
+                ui.ctx().request_repaint();
+            }
+            self.history_height = height;
+            if self.timeline.messages().next().is_some()
+                && (height <= viewport + 1.0 || offset >= height - viewport - 2.0)
+            {
+                self.older_armed = true;
+            }
+            // Web loads the previous page when the list reaches its start.
+            if self.older_armed
+                && self.history_offset.is_none()
+                && offset <= 1.0
+                && self.has_more
+                && !self.loading_older
+                && self.older_error.is_none()
+            {
+                self.load_older();
+            }
         }
         // Web shows the connection state under the header after a second.
         if self.live != "Live" && self.selected_channel.is_some() {
@@ -8502,10 +9415,29 @@ impl CaperApp {
         }
     }
 
-    fn message(&mut self, ui: &mut egui::Ui, message: &model::Message, in_thread: bool) {
+    /// A timeline or thread row; `grouped` rows continue the row above
+    /// (see `grouping`).
+    fn message(
+        &mut self,
+        ui: &mut egui::Ui,
+        message: &model::Message,
+        in_thread: bool,
+        grouped: bool,
+    ) {
+        self.message_in(ui, message, in_thread, false, grouped);
+    }
+
+    fn message_in(
+        &mut self,
+        ui: &mut egui::Ui,
+        message: &model::Message,
+        in_thread: bool,
+        in_pins: bool,
+        grouped: bool,
+    ) {
         let projected = self.mutations.project(message);
         let message = projected.as_ref();
-        let time = if self.showing_pins {
+        let plain_time = if in_pins {
             DateTime::parse_from_rfc3339(&message.created_at).map_or_else(
                 |_| message.created_at.clone(),
                 |date| {
@@ -8517,11 +9449,14 @@ impl CaperApp {
         } else {
             display_time(&message.created_at)
         };
-        let time = if message.revision > 1 {
-            format!("{time} (edited)")
+        let edited = message.revision > 1;
+        // Grouped rows show the marker after their text instead.
+        let time = if edited && !grouped {
+            format!("{plain_time} (edited)")
         } else {
-            time
+            plain_time
         };
+        let short = grouped.then(|| short_time(&message.created_at));
         let mentioned = mentions::mentions_me(
             &message.content.mentions,
             &message.author.id,
@@ -8530,6 +9465,7 @@ impl CaperApp {
         // Reserved beneath the row so the tint can be sized after drawing.
         let tint = ui.painter().add(egui::Shape::Noop);
         let pinned = message.pin.as_ref();
+        let mut view_thread = None;
         // The row's background; its files below are drawn on the same fill.
         let fill = if !in_thread
             && self
@@ -8538,14 +9474,14 @@ impl CaperApp {
                 .is_some_and(|thread| thread.root == message.id)
         {
             Color32::from_rgba_unmultiplied(228, 199, 106, 26)
-        } else if pinned.is_some() {
-            Color32::from_rgba_unmultiplied(228, 199, 106, 15)
+        } else if !in_pins && self.focused_message.as_deref() == Some(&message.id) {
+            Color32::from_rgba_unmultiplied(182, 77, 50, 35)
         } else {
             Color32::TRANSPARENT
         };
         let shown = egui::Frame::new().fill(fill).show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            if let Some(pin) = pinned {
+            if in_pins && let Some(pin) = pinned {
                 egui::Frame::new()
                     .inner_margin(egui::Margin {
                         left: 62,
@@ -8554,20 +9490,68 @@ impl CaperApp {
                         bottom: 0,
                     })
                     .show(ui, |ui| {
-                        ui.label(
-                            RichText::new(format!("Pinned by {}", pin.author.name))
-                                .size(11.0)
-                                .color(Color32::from_rgb(228, 199, 106)),
+                        let response = ui.add(
+                            egui::Button::new(
+                                RichText::new(format!("Pinned by {}", pin.author.name))
+                                    .size(11.0)
+                                    .color(MUTED),
+                            )
+                            .frame(false),
                         );
+                        response.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Button,
+                                true,
+                                format!("Open profile for {}", pin.author.name),
+                            )
+                        });
+                        let hover_id = response.id.with("was-hovered");
+                        let was_hovered = ui
+                            .data(|data| data.get_temp::<bool>(hover_id))
+                            .unwrap_or(false);
+                        ui.data_mut(|data| data.insert_temp(hover_id, response.hovered()));
+                        if response.clicked()
+                            || response.long_touched()
+                            || (response.hovered()
+                                && !was_hovered
+                                && !ui.input(|input| input.pointer.any_down()))
+                        {
+                            self.mention_card = Some(MentionCard {
+                                pill: PillClick {
+                                    id: response.id,
+                                    rect: response.rect,
+                                    entry: model::Mention {
+                                        kind: "user".into(),
+                                        id: Some(pin.author.id.clone()),
+                                        username: None,
+                                    },
+                                },
+                                author: Some(pin.author.clone()),
+                                focus_on_open: response.clicked() || response.long_touched(),
+                                opening: None,
+                                error: None,
+                                fresh: true,
+                            });
+                        }
                     });
             }
-            let (timestamp, pill) = message_row(
+            let (timestamp, body) = message_row(
                 ui,
                 &message.author.name,
                 message.author.avatar_id,
                 &time,
                 message.author.is_guest,
+                short.as_deref(),
                 |ui| {
+                    // Web: a thread reply also sent to the channel links back.
+                    // Pins has its own Go to message.
+                    if !in_thread
+                        && !in_pins
+                        && let Some(root) = &message.thread_root_id
+                        && thread_context(ui).clicked()
+                    {
+                        view_thread = Some(root.clone());
+                    }
                     message_body(
                         ui,
                         &message.id,
@@ -8580,12 +9564,17 @@ impl CaperApp {
                             );
                             format!("Open profile for {name}")
                         },
+                        grouped && edited,
                     )
                 },
             );
-            if message.forward.is_none() && message.revision > 1 {
+            // The header's time, or a grouped row's inline marker.
+            if message.forward.is_none()
+                && edited
+                && let Some(target) = timestamp.or(body.edited)
+            {
                 let marker = ui.interact(
-                    timestamp,
+                    target,
                     ui.id().with(("edit-history", &message.id)),
                     egui::Sense::click(),
                 );
@@ -8596,27 +9585,46 @@ impl CaperApp {
                     self.open_edit_history(message);
                 }
             }
-            pill
+            body
         });
         let message_rect = shown.response.rect;
-        if let Some(pill) = shown.inner {
+        let body = shown.inner;
+        if let Some(root) = view_thread {
+            self.open_thread(root);
+        }
+        if let Some(pill) = body.pill {
             // Opening another pill replaces the card.
             self.mention_card = Some(MentionCard {
                 pill,
+                author: None,
+                focus_on_open: true,
                 opening: None,
                 error: None,
                 fresh: true,
             });
         }
+        let author = self
+            .session
+            .as_ref()
+            .map(|session| session.author.id.clone());
+        let reactions = projected_reactions(
+            &message.reactions,
+            &message.id,
+            author.as_deref(),
+            &self.pending_reactions,
+        );
         if let Some(token) = self.token.clone() {
             // Hover only: sensing clicks here, above the row, would swallow
-            // clicks inside it (the edited marker). Right-clicks still open it.
+            // clicks inside it (the edited marker). Right-clicks still open it,
+            // except on a link, which belongs to the link.
             let row = ui.interact(
                 message_rect,
                 ui.id().with((&message.id, "forward-context")),
                 egui::Sense::hover(),
             );
-            let opened = row.contains_pointer() && ui.input(|i| i.pointer.secondary_clicked());
+            let opened = row.contains_pointer()
+                && !body.link_hovered
+                && ui.input(|i| i.pointer.secondary_clicked());
             egui::Popup::menu(&row)
                 .open_memory(opened.then_some(egui::SetOpenCommand::Bool(true)))
                 .at_pointer_fixed()
@@ -8630,6 +9638,11 @@ impl CaperApp {
                         );
                         ui.close();
                     }
+                    if !reactions.is_empty() && ui.button("View reactions").clicked() {
+                        self.reactors_view = Some((message.id.clone(), reactions[0].emoji.clone()));
+                        ui.close();
+                    }
+                    copy_items(ui, message);
                 });
         }
         // Files follow the forward context target so their own clicks (open
@@ -8695,16 +9708,6 @@ impl CaperApp {
                         });
                 });
         }
-        let author = self
-            .session
-            .as_ref()
-            .map(|session| session.author.id.clone());
-        let reactions = projected_reactions(
-            &message.reactions,
-            &message.id,
-            author.as_deref(),
-            &self.pending_reactions,
-        );
         let can_react = self.selected_is_joined() && self.session.is_some();
         if can_react {
             let action_width = if in_thread { 50.0 } else { 76.0 };
@@ -8750,6 +9753,27 @@ impl CaperApp {
                     || more.has_focus()
                     || reply.as_ref().is_some_and(|reply| reply.has_focus());
                 if visible {
+                    // Web's bordered surface buttons: grouped rows have no
+                    // header line, so the strip can sit over their text.
+                    for button in [reply.as_ref(), Some(&emoji), Some(&more)]
+                        .into_iter()
+                        .flatten()
+                    {
+                        ui.painter().rect(
+                            button.rect,
+                            8.0,
+                            SURFACE,
+                            Stroke::new(
+                                1.0,
+                                if button.hovered() || button.has_focus() {
+                                    TERRACOTTA
+                                } else {
+                                    BORDER
+                                },
+                            ),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
                     if let Some(reply) = &reply {
                         paint_icon(ui.painter(), reply.rect.shrink(5.0), NavIcon::Speech, MUTED);
                     }
@@ -8786,6 +9810,44 @@ impl CaperApp {
                 }
                 let active = message.pin.is_some();
                 egui::Popup::menu(&more).show(|ui| {
+                    // Web's quick reactions toggle your own; then the full picker.
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        for (emoji, mine) in quick_reactions(&reactions, author.as_deref()) {
+                            let Some(entry) = emoji::find(emoji) else {
+                                continue;
+                            };
+                            let image = self.reaction_textures.image(ui, entry, 20.0);
+                            if quick_reaction(ui, image, &format!("React with {emoji}"), mine)
+                                .clicked()
+                            {
+                                self.set_reaction(&message.id, emoji, !mine);
+                                ui.close();
+                            }
+                        }
+                        if let Some(entry) = emoji::find("🙂") {
+                            let image = self.reaction_textures.image(ui, entry, 16.0);
+                            let add = ui.add(
+                                egui::Button::image(image)
+                                    .min_size(egui::vec2(32.0, 32.0))
+                                    .frame(false),
+                            );
+                            add.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Button,
+                                    true,
+                                    "Add reaction",
+                                )
+                            });
+                            if add.on_hover_text("Add reaction").clicked() {
+                                self.reaction_picker = Some(message.id.clone());
+                                self.reaction_search.clear();
+                                self.reaction_search_focus = true;
+                                ui.close();
+                            }
+                        }
+                    });
+                    ui.separator();
                     if ui.button("Forward message").clicked()
                         && let Some(token) = self.token.clone()
                     {
@@ -8808,6 +9870,10 @@ impl CaperApp {
                         self.open_edit_history(message);
                         ui.close();
                     }
+                    if !reactions.is_empty() && ui.button("View reactions").clicked() {
+                        self.reactors_view = Some((message.id.clone(), reactions[0].emoji.clone()));
+                        ui.close();
+                    }
                     if ui
                         .add_enabled(
                             !self.pending_pins.contains(&message.id),
@@ -8818,6 +9884,7 @@ impl CaperApp {
                         self.set_pin(message, !active);
                         ui.close();
                     }
+                    copy_items(ui, message);
                     if let Some(account) = self.blockable_author(&message.author) {
                         let name = if account.username.is_empty() {
                             account.display_name.clone()
@@ -8845,78 +9912,58 @@ impl CaperApp {
                 bottom: 5,
             })
             .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    for reaction in &reactions {
-                        let owned = author
-                            .as_ref()
-                            .is_some_and(|id| reaction.author_ids.iter().any(|entry| entry == id));
-                        let Some(entry) = emoji::find(&reaction.emoji) else {
-                            continue;
-                        };
-                        let image = self.reaction_textures.image(ui, entry, 18.0);
-                        let label = format!(
-                            "{}, {} {}{}",
-                            entry.name,
-                            reaction.author_ids.len(),
-                            if reaction.author_ids.len() == 1 {
-                                "reaction"
-                            } else {
-                                "reactions"
-                            },
-                            if owned { ", including you" } else { "" }
-                        );
-                        let response = ui.add_enabled(
-                            can_react,
-                            egui::Button::image_and_text(
-                                image,
-                                RichText::new(reaction.author_ids.len().to_string()).size(11.0),
-                            )
-                            .fill(if owned {
-                                Color32::from_rgb(57, 35, 30)
-                            } else {
-                                RAISED
-                            })
-                            .stroke(Stroke::new(
-                                1.0,
-                                if owned { TERRACOTTA_BRIGHT } else { BORDER },
-                            ))
-                            .corner_radius(8),
-                        );
-                        response.widget_info(|| {
-                            egui::WidgetInfo::labeled(
-                                egui::WidgetType::Button,
+                if !in_pins || !reactions.is_empty() {
+                    ui.horizontal_wrapped(|ui| {
+                        for reaction in &reactions {
+                            let owned = author.as_ref().is_some_and(|id| {
+                                reaction.author_ids.iter().any(|entry| entry == id)
+                            });
+                            let Some(entry) = emoji::find(&reaction.emoji) else {
+                                continue;
+                            };
+                            let image = self.reaction_textures.image(ui, entry, 18.0);
+                            let label = format!(
+                                "{}, {} {}{}",
+                                entry.name,
+                                reaction.author_ids.len(),
+                                if reaction.author_ids.len() == 1 {
+                                    "reaction"
+                                } else {
+                                    "reactions"
+                                },
+                                if owned { ", including you" } else { "" }
+                            );
+                            let response = ui.add_enabled(
                                 can_react,
-                                label.clone(),
-                            )
-                        });
-                        self.reactor_tooltip(&response, message, reaction, entry);
-                        if response.clicked() {
-                            self.set_reaction(&message.id, &reaction.emoji, !owned);
+                                egui::Button::image_and_text(
+                                    image,
+                                    RichText::new(reaction.author_ids.len().to_string()).size(11.0),
+                                )
+                                .fill(if owned {
+                                    Color32::from_rgb(57, 35, 30)
+                                } else {
+                                    RAISED
+                                })
+                                .stroke(Stroke::new(
+                                    1.0,
+                                    if owned { TERRACOTTA_BRIGHT } else { BORDER },
+                                ))
+                                .corner_radius(8),
+                            );
+                            response.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Button,
+                                    can_react,
+                                    label.clone(),
+                                )
+                            });
+                            self.reactor_tooltip(&response, message, reaction, entry);
+                            if response.clicked() {
+                                self.set_reaction(&message.id, &reaction.emoji, !owned);
+                            }
                         }
-                    }
-                    if self.showing_pins
-                        && can_react
-                        && ui
-                            .add_enabled(
-                                !self.pending_pins.contains(&message.id),
-                                egui::Button::new("Unpin").small(),
-                            )
-                            .clicked()
-                    {
-                        self.set_pin(message, false);
-                    }
-                    if !in_thread
-                        && self.selected_request().is_none()
-                        && ui.small_button("Reply in thread").clicked()
-                    {
-                        self.open_thread(
-                            message
-                                .thread_root_id
-                                .clone()
-                                .unwrap_or_else(|| message.id.clone()),
-                        );
-                    }
-                });
+                    });
+                }
                 if let Some((active, error)) = self.pin_errors.get(&message.id).cloned() {
                     ui.horizontal(|ui| {
                         ui.colored_label(ERROR, error);
@@ -8988,6 +10035,122 @@ impl CaperApp {
                 0.0,
                 TERRACOTTA,
             );
+        }
+        if !in_pins && self.scroll_to_target && self.focused_message.as_deref() == Some(&message.id)
+        {
+            ui.scroll_to_rect(message_rect, Some(egui::Align::Center));
+            self.scroll_to_target = false;
+        }
+    }
+
+    fn pins_dialog(&mut self, context: &egui::Context) {
+        if !self.showing_pins {
+            return;
+        }
+        let pins = self.mutations.pinned(&self.timeline);
+        let mut close = false;
+        let card_was_open = self.mention_card.is_some();
+        let modal = egui::Modal::new(egui::Id::new("pinned-messages"))
+            .frame(
+                egui::Frame::popup(&context.style())
+                    .fill(SURFACE)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .corner_radius(8)
+                    .inner_margin(0),
+            )
+            .show(context, |ui| {
+                ui.set_width(560.0_f32.min(context.content_rect().width() - 48.0));
+                ui.spacing_mut().item_spacing.y = 0.0;
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(22, 18))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(bold("Pins").size(19.0));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    close = drawn_icon_button(ui, NavIcon::Close, "Close pins")
+                                        .clicked();
+                                },
+                            );
+                        });
+                    });
+                ui.separator();
+                egui::Frame::new().inner_margin(16).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 12.0;
+                    let list_height = (context.content_rect().height() - 128.0).max(1.0);
+                    egui::ScrollArea::vertical()
+                        .id_salt("pinned-messages-list")
+                        .max_height(list_height)
+                        // Reserve the bounded viewport before the auto-sized modal
+                        // settles; auto_shrink still fits short lists to their content.
+                        .min_scrolled_height(list_height)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            if let Some(error) = &self.error {
+                                ui.colored_label(ERROR, error);
+                            }
+                            if pins.is_empty() {
+                                ui.add_space(16.0);
+                                ui.vertical_centered(|ui| {
+                                    ui.label(bold("No pinned messages.").size(14.0));
+                                    ui.label(
+                                        RichText::new("Messages you pin will appear here.")
+                                            .size(12.0)
+                                            .color(MUTED),
+                                    );
+                                });
+                                ui.add_space(16.0);
+                            }
+                            for message in &pins {
+                                ui.push_id(&message.id, |ui| {
+                                    egui::Frame::new()
+                                        .fill(BLACKOUT)
+                                        .stroke(Stroke::new(1.0, BORDER))
+                                        .corner_radius(8)
+                                        .inner_margin(egui::Margin::symmetric(0, 8))
+                                        .show(ui, |ui| {
+                                            ui.spacing_mut().item_spacing.y = 0.0;
+                                            self.message_in(ui, message, false, true, false);
+                                            egui::Frame::new()
+                                                .inner_margin(egui::Margin {
+                                                    left: 62,
+                                                    right: 18,
+                                                    top: 6,
+                                                    bottom: 12,
+                                                })
+                                                .show(ui, |ui| {
+                                                    if ui.add_enabled(!self.context_loading,
+                                                        egui::Button::image_and_text(
+                                                            egui::Image::new(egui::include_image!("../resources/icons/arrow-right.svg")).tint(MUTED).fit_to_exact_size(egui::vec2(14.0, 14.0)),
+                                                            RichText::new(if self.context_loading { "Loading message…" } else { "Go to message" }).size(11.0).color(MUTED),
+                                                        ).frame(false).min_size(egui::vec2(0.0, 28.0)),
+                                                    )
+                                                    .clicked()
+                                                    {
+                                                        self.load_context(
+                                                            message.thread_root_id.clone(),
+                                                            message.id.clone(),
+                                                            false,
+                                                        );
+                                                    }
+                                                });
+                                        });
+                                });
+                            }
+                        });
+                });
+                context.set_sublayer(ui.layer_id(), egui::LayerId::new(egui::Order::Foreground, egui::Id::new("emoji-picker")));
+                self.emoji_picker(context);
+                context.set_sublayer(ui.layer_id(), egui::LayerId::new(egui::Order::Foreground, egui::Id::new("reactors")));
+                self.reactors_window(context);
+                context.set_sublayer(ui.layer_id(), egui::LayerId::new(egui::Order::Foreground, egui::Id::new("mention-card")));
+                self.mention_card(context);
+            });
+        if close || (!card_was_open && self.mention_card.is_none() && modal.should_close()) {
+            self.showing_pins = false;
+            self.mention_card = None;
+            self.reactors_view = None;
         }
     }
 
@@ -9522,41 +10685,200 @@ impl CaperApp {
             .reactors
             .get(&message.id)
             .map_or(&[][..], |cached| cached.groups.as_slice());
-        let mut authors: Vec<_> = groups
-            .iter()
-            .find(|group| group.emoji == reaction.emoji)
-            .into_iter()
-            .flat_map(|group| &group.authors)
-            .filter(|author| reaction.author_ids.contains(&author.id))
-            .cloned()
-            .collect();
-        for id in &reaction.author_ids {
-            if authors.iter().any(|author| author.id == *id) {
-                continue;
-            }
-            if Some(id.as_str()) == self_id {
-                authors.push(model::Reactor {
-                    id: id.clone(),
-                    username: None,
-                    display_name: None,
-                    avatar_id: None,
-                });
-            } else if let Some(author) = groups
-                .iter()
-                .flat_map(|group| &group.authors)
-                .find(|author| author.id == *id)
-            {
-                authors.push(author.clone());
-            } else {
-                return model::reactor_fallback(
-                    &reaction.author_ids,
-                    self_id,
-                    name,
-                    &reaction.emoji,
-                );
-            }
+        match model::reactor_list(groups, reaction, self_id) {
+            Some(authors) => model::reactor_summary(&authors, self_id, name, &reaction.emoji),
+            None => model::reactor_fallback(&reaction.author_ids, self_id, name, &reaction.emoji),
         }
-        model::reactor_summary(&authors, self_id, name, &reaction.emoji)
+    }
+
+    /// The reactions window's Retry: ask again now rather than after
+    /// `REACTOR_RETRY`, keeping the names already known.
+    fn retry_reactors(&mut self, message: &model::Message) {
+        if let Some(cached) = self.reactors.get_mut(&message.id) {
+            // No snapshot has an empty revision, so this always requests.
+            cached.revision.clear();
+        }
+        self.load_reactors(message);
+    }
+
+    /// Web's **View reactions** panel: who reacted, one tab per emoji. It
+    /// follows the live snapshot; a removed emoji moves the selection and
+    /// no reactions close it.
+    fn reactors_window(&mut self, context: &egui::Context) {
+        let Some((id, selected)) = self.reactors_view.clone() else {
+            return;
+        };
+        let Some(message) = self
+            .timeline
+            .messages()
+            .chain(self.timeline.pinned_messages())
+            .find(|message| message.id == id)
+            .cloned()
+        else {
+            self.reactors_view = None;
+            return;
+        };
+        let author = self
+            .session
+            .as_ref()
+            .map(|session| session.author.id.clone());
+        let reactions = projected_reactions(
+            &message.reactions,
+            &message.id,
+            author.as_deref(),
+            &self.pending_reactions,
+        );
+        let Some(current) = reactions
+            .iter()
+            .find(|reaction| reaction.emoji == selected)
+            .or_else(|| reactions.first())
+            .cloned()
+        else {
+            self.reactors_view = None;
+            return;
+        };
+        // Load on open and for each new snapshot; a failure waits for Retry.
+        let revision = message.reaction_seq.clone().unwrap_or_else(|| "0".into());
+        if !self.reactors.get(&message.id).is_some_and(|cached| {
+            cached.revision == revision && matches!(cached.state, ReactorState::Failed(_))
+        }) {
+            self.load_reactors(&message);
+        }
+        let self_id = self.reactor_self_id().map(str::to_owned);
+        let cached = self.reactors.get(&message.id);
+        let failed = cached.is_some_and(|cached| matches!(cached.state, ReactorState::Failed(_)));
+        let authors = model::reactor_list(
+            cached.map_or(&[][..], |cached| cached.groups.as_slice()),
+            &current,
+            self_id.as_deref(),
+        )
+        .map(|authors| {
+            // You may not be in the loaded list yet (a pending reaction).
+            authors
+                .into_iter()
+                .map(|author| match &self.account {
+                    Some(account)
+                        if author.id == account.id
+                            && author.username.is_none()
+                            && author.display_name.is_none() =>
+                    {
+                        model::Reactor {
+                            id: author.id,
+                            username: account.username.clone(),
+                            display_name: account.display_name.clone(),
+                            avatar_id: account.avatar_id,
+                        }
+                    }
+                    _ => author,
+                })
+                .collect::<Vec<_>>()
+        });
+        let mut open = true;
+        let mut chosen = None;
+        let mut retry = false;
+        egui::Window::new("Reactions")
+            .id(egui::Id::new("reactors"))
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(context.content_rect().center())
+            // Above the Pins overlay, as its sublayer, when opened from a pin.
+            .order(if self.showing_pins {
+                egui::Order::Foreground
+            } else {
+                egui::Order::Middle
+            })
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(320.0)
+            .show(context, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    for reaction in &reactions {
+                        let Some(entry) = emoji::find(&reaction.emoji) else {
+                            continue;
+                        };
+                        let image = self.reaction_textures.image(ui, entry, 20.0);
+                        let active = reaction.emoji == current.emoji;
+                        let count = reaction.author_ids.len();
+                        let tab = ui.add(
+                            egui::Button::image_and_text(
+                                image,
+                                RichText::new(count.to_string()).size(12.0),
+                            )
+                            .fill(if active {
+                                Color32::from_rgb(57, 35, 30)
+                            } else {
+                                Color32::TRANSPARENT
+                            })
+                            .stroke(Stroke::new(1.0, if active { TERRACOTTA } else { BORDER }))
+                            .corner_radius(8)
+                            .min_size(egui::vec2(0.0, 32.0)),
+                        );
+                        tab.widget_info(|| {
+                            egui::WidgetInfo::selected(
+                                egui::WidgetType::Button,
+                                true,
+                                active,
+                                format!("{}, {count}", reaction.emoji),
+                            )
+                        });
+                        if tab.clicked() {
+                            chosen = Some(reaction.emoji.clone());
+                        }
+                    }
+                });
+                ui.add_space(8.0);
+                let label = emoji::name(&current.emoji)
+                    .map_or_else(|| current.emoji.clone(), |name| format!(":{name}:"));
+                ui.label(bold(label).size(12.0).color(MUTED));
+                ui.add_space(6.0);
+                match &authors {
+                    Some(authors) => {
+                        egui::ScrollArea::vertical()
+                            .max_height(280.0)
+                            .show(ui, |ui| {
+                                for author in authors {
+                                    let name = model::reactor_name(author);
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 10.0;
+                                        avatar(ui, &name, author.avatar_id, 28.0, false);
+                                        ui.vertical(|ui| {
+                                            ui.spacing_mut().item_spacing.y = 0.0;
+                                            ui.label(bold(name.as_str()).size(13.0));
+                                            if let Some(username) = &author.username {
+                                                ui.label(
+                                                    RichText::new(format!("@{username}"))
+                                                        .size(11.0)
+                                                        .color(MUTED),
+                                                );
+                                            }
+                                        });
+                                    });
+                                    ui.add_space(6.0);
+                                }
+                            });
+                    }
+                    None if failed => {
+                        ui.horizontal(|ui| {
+                            ui.colored_label(ERROR, "Couldn’t load reactions.");
+                            retry = ui.button("Retry").clicked();
+                        });
+                    }
+                    None => {
+                        ui.label(RichText::new("Loading reactions…").color(MUTED));
+                    }
+                }
+            });
+        let escape =
+            context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        if !open || escape {
+            self.reactors_view = None;
+            return;
+        }
+        if retry {
+            self.retry_reactors(&message);
+        }
+        self.reactors_view = Some((id, chosen.unwrap_or(current.emoji)));
     }
 
     fn set_reaction(&mut self, message: &str, emoji: &str, active: bool) {
@@ -9658,10 +10980,18 @@ impl CaperApp {
             return;
         }
         let mut open = true;
-        let mut close_requested = context.input(|input| input.key_pressed(egui::Key::Escape));
+        // Consumed, so Pins or the thread behind the picker stays open.
+        let mut close_requested =
+            context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         let mut selected = None;
         egui::Window::new("Add reaction")
             .id(egui::Id::new("emoji-picker"))
+            // Above the Pins overlay, as its sublayer, when opened from a pin.
+            .order(if self.showing_pins {
+                egui::Order::Foreground
+            } else {
+                egui::Order::Middle
+            })
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
@@ -9768,6 +11098,171 @@ impl CaperApp {
         }
     }
 
+    /// A composer's `:`/`@` suggestions, before its editor (`id`) draws so the
+    /// popup takes the keys first: arrows move the highlight, Enter or Tab
+    /// accepts it without sending, and Escape dismisses it without leaving
+    /// the editor. IME composition never opens or accepts suggestions.
+    fn suggestion_keys(&mut self, ui: &egui::Ui, id: egui::Id, text: &str) -> SuggestionPass {
+        let ime = ui.input(|input| {
+            input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::Ime(_)))
+        });
+        ui.input(|input| {
+            for event in &input.events {
+                if let egui::Event::Ime(event) = event {
+                    self.ime_composing =
+                        matches!(event, egui::ImeEvent::Enabled | egui::ImeEvent::Preedit(_));
+                }
+            }
+        });
+        let cursor =
+            egui::TextEdit::load_state(ui.ctx(), id).and_then(|state| state.cursor.char_range());
+        let focused = ui.memory(|memory| memory.has_focus(id));
+        let mut state = self.composer_suggestions.remove(&id).unwrap_or_default();
+        if let Some((dismissed, caret)) = &state.dismissed
+            && (dismissed != text
+                || cursor.is_none_or(|range| !range.is_empty() || range.primary.index != *caret))
+        {
+            state.dismissed = None;
+        }
+        let active = cursor
+            .filter(|_| focused && !self.ime_composing && !ime)
+            .and_then(|range| state.token_at(text, range));
+        if active != state.token {
+            state.selected = 0;
+            state.token = active.clone();
+        }
+        let choices = active
+            .as_ref()
+            .map(|token| self.suggestions(token))
+            .unwrap_or_default();
+        let mut chosen = None;
+        if !choices.is_empty() {
+            let count = choices.len();
+            state.selected = state.selected.min(count - 1);
+            ui.input_mut(|input| {
+                if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
+                    state.selected = (state.selected + 1) % count;
+                }
+                if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) {
+                    state.selected = (state.selected + count - 1) % count;
+                }
+                if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+                    || input.consume_key(egui::Modifiers::NONE, egui::Key::Tab)
+                {
+                    chosen = Some(choices[state.selected].clone());
+                }
+                if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+                    state.dismissed = active.as_ref().map(|token| (text.to_owned(), token.end()));
+                }
+            });
+        }
+        self.composer_suggestions.insert(id, state);
+        SuggestionPass { id, ime, chosen }
+    }
+
+    /// After the editor drew: one popup above it serves `:` emoji and `@`
+    /// mention rows. Returns the text with an accepted suggestion inserted;
+    /// the caret moves after it.
+    fn suggestion_popup(
+        &mut self,
+        ui: &egui::Ui,
+        pass: &SuggestionPass,
+        text: &str,
+        output: &mut egui::text_edit::TextEditOutput,
+    ) -> Option<String> {
+        let id = pass.id;
+        let response = output.response.clone();
+        let mut state = self.composer_suggestions.remove(&id).unwrap_or_default();
+        let active = output
+            .cursor_range
+            .filter(|_| response.has_focus() && !self.ime_composing && !pass.ime)
+            .and_then(|range| state.token_at(text, range));
+        let choices = active
+            .as_ref()
+            .map(|token| self.suggestions(token))
+            .unwrap_or_default();
+        let mut chosen = pass.chosen.clone();
+        if !choices.is_empty() && chosen.is_none() {
+            egui::Area::new(id.with("suggestions"))
+                .order(egui::Order::Foreground)
+                .pivot(egui::Align2::LEFT_BOTTOM)
+                .fixed_pos(response.rect.left_top() - egui::vec2(0.0, 6.0))
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::new()
+                        .fill(COMPOSER)
+                        .stroke(Stroke::new(1.0, BORDER))
+                        .corner_radius(8)
+                        .inner_margin(4)
+                        .show(ui, |ui| {
+                            let width = response.rect.width().min(260.0) - 8.0;
+                            ui.set_width(width);
+                            ui.spacing_mut().icon_spacing = 12.0;
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            for (index, choice) in choices.iter().enumerate() {
+                                let fill = if index == state.selected {
+                                    Color32::from_rgb(67, 36, 30)
+                                } else {
+                                    Color32::TRANSPARENT
+                                };
+                                let clicked = match choice {
+                                    Suggestion::Emoji(entry) => {
+                                        let image = self.reaction_textures.image(ui, entry, 24.0);
+                                        let label = format!(":{}:", entry.name.replace(' ', "_"));
+                                        let button = egui::Button::image_and_text(image, label)
+                                            .min_size(egui::vec2(width, 44.0))
+                                            .truncate()
+                                            .stroke(Stroke::NONE)
+                                            .fill(fill);
+                                        ui.add(button).clicked()
+                                    }
+                                    Suggestion::Mention(candidate) => {
+                                        mention_suggestion(ui, candidate, width, fill).clicked()
+                                    }
+                                };
+                                if clicked {
+                                    chosen = Some(choice.clone());
+                                }
+                            }
+                        });
+                });
+        }
+        let mut inserted = None;
+        if let Some(choice) = &chosen
+            && let Some(token) = active.as_ref()
+            && let Some((value, caret)) = token.insert(text, choice)
+        {
+            output
+                .state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::one(
+                    egui::text::CCursor::new(caret),
+                )));
+            output.state.clone().store(ui.ctx(), id);
+            response.request_focus();
+            state.token = None;
+            inserted = Some(value);
+        }
+        // egui processes focus traversal before widgets handle keys.
+        // Keep Tab/Escape in the editor while suggestions are open.
+        let lock = chosen.is_none() && !choices.is_empty();
+        ui.memory_mut(|memory| {
+            memory.set_focus_lock_filter(
+                id,
+                egui::EventFilter {
+                    horizontal_arrows: true,
+                    vertical_arrows: true,
+                    tab: lock,
+                    escape: lock,
+                },
+            );
+        });
+        self.composer_suggestions.insert(id, state);
+        inserted
+    }
+
     /// Who `@` can suggest, never yourself, and whether `everyone`/`here` apply.
     /// Space channels use the members already loaded by
     /// `GET /api/spaces/{space}` (none yet leaves only the specials). Any DM,
@@ -9840,7 +11335,22 @@ impl CaperApp {
         let Some(card) = self.mention_card.clone() else {
             return;
         };
-        let Some(profile) = self.mention_profile(&card.pill.entry) else {
+        let profile = card
+            .author
+            .as_ref()
+            .map(|author| {
+                mentions::author_profile(
+                    author,
+                    self.account.as_ref().map(|account| account.id.as_str()),
+                    self.detail
+                        .as_ref()
+                        .map_or(&[][..], |detail| detail.members.as_slice()),
+                    self.people.as_deref().unwrap_or_default(),
+                    &self.directs,
+                )
+            })
+            .or_else(|| self.mention_profile(&card.pill.entry));
+        let Some(profile) = profile else {
             self.mention_card = None;
             return;
         };
@@ -9880,14 +11390,20 @@ impl CaperApp {
                         // 280px including the padding and the border.
                         ui.set_width(246.0);
                         ui.spacing_mut().item_spacing.y = 12.0;
-                        let initial = profile.display_name.as_ref().unwrap_or(&profile.username);
+                        let initial = profile
+                            .display_name
+                            .as_deref()
+                            .or(profile.username.as_deref())
+                            .unwrap_or("Profile");
                         avatar(ui, initial, profile.avatar_id, 48.0, false);
                         ui.vertical(|ui| {
                             ui.spacing_mut().item_spacing.y = 2.0;
                             ui.label(bold(profile.title()).size(15.0).color(TEXT));
-                            if profile.display_name.is_some() {
+                            if profile.display_name.is_some()
+                                && let Some(username) = &profile.username
+                            {
                                 ui.label(
-                                    RichText::new(format!("@{}", profile.username))
+                                    RichText::new(format!("@{username}"))
                                         .size(12.0)
                                         .color(MUTED),
                                 );
@@ -9895,6 +11411,9 @@ impl CaperApp {
                         });
                         if profile.me {
                             ui.label(RichText::new("You").size(12.0).color(MUTED));
+                            return;
+                        }
+                        if profile.username.is_none() {
                             return;
                         }
                         let opening = card.opening.is_some();
@@ -9914,7 +11433,7 @@ impl CaperApp {
                                 )
                             })
                             .inner;
-                        if card.fresh {
+                        if card.fresh && card.focus_on_open {
                             button.request_focus();
                         }
                         message = button.clicked();
@@ -9935,13 +11454,13 @@ impl CaperApp {
         if let Some(open) = &mut self.mention_card {
             open.fresh = false;
         }
-        if message {
-            self.message_from_card(&card.pill.entry, &profile.username);
+        if message && let Some(username) = &profile.username {
+            self.message_from_card(&card.pill.entry, username);
         }
     }
 
     /// **Message** opens the existing DM with this person, or creates one by
-    /// username through the same request as the Start conversation dialog.
+    /// username through the same request as the Open conversation dialog.
     fn message_from_card(&mut self, entry: &model::Mention, username: &str) {
         if let Some(direct) = self
             .directs
@@ -10037,8 +11556,12 @@ impl CaperApp {
 
     fn dialogs(&mut self, context: &egui::Context, dialog_was_open: bool) {
         let Some(dialog) = self.dialog.clone() else {
+            self.dialog_shown = None;
             return;
         };
+        // A dialog's first field takes focus once, in the frame it opens.
+        let kind = std::mem::discriminant(&dialog);
+        self.focus_dialog_field = self.dialog_shown.replace(kind) != Some(kind);
         if matches!(dialog, Dialog::SignIn) {
             return;
         }
@@ -10076,6 +11599,16 @@ impl CaperApp {
             Dialog::Block { account, .. } => {
                 leave_title.get_or_insert(format!("Block {}?", account.display_name))
             }
+            Dialog::RemoveMember {
+                channel,
+                name,
+                place,
+                ..
+            } => leave_title.get_or_insert(if channel.is_some() {
+                format!("Remove {name} from #{place}?")
+            } else {
+                format!("Remove {name}?")
+            }),
         };
         context
             .layer_painter(egui::LayerId::new(
@@ -10108,7 +11641,10 @@ impl CaperApp {
             560.0
         } else if matches!(
             dialog,
-            Dialog::ConfirmDelete { .. } | Dialog::LeaveSpace { .. } | Dialog::Block { .. }
+            Dialog::ConfirmDelete { .. }
+                | Dialog::LeaveSpace { .. }
+                | Dialog::Block { .. }
+                | Dialog::RemoveMember { .. }
         ) {
             300.0
         } else {
@@ -10116,13 +11652,25 @@ impl CaperApp {
         };
         let available = context.viewport_rect().size() - egui::vec2(32.0, 32.0);
         let return_to = match &dialog {
-            Dialog::ConfirmDelete { channel, .. } => Some(
+            Dialog::ConfirmDelete { channel, .. } | Dialog::RemoveMember { channel, .. } => Some(
                 channel
                     .clone()
                     .map_or(Dialog::ManageSpace, Dialog::ManageChannel),
             ),
             _ => None,
         };
+        // A member removal in flight can't be cancelled or closed.
+        let removing = self.loading && matches!(dialog, Dialog::RemoveMember { .. });
+        // These requests navigate when they finish, so their dialogs stay open
+        // (Cancel, close, Escape and backdrop do nothing) until then.
+        let hold_while_loading = return_to.is_some()
+            || matches!(
+                dialog,
+                Dialog::CreateSpace
+                    | Dialog::CreateChannel
+                    | Dialog::StartDirect
+                    | Dialog::LeaveSpace { .. }
+            );
         let mut close = context.input(|input| input.key_pressed(egui::Key::Escape))
             && !egui::Popup::is_any_open(context);
         let dismiss_on_backdrop = matches!(
@@ -10169,15 +11717,17 @@ impl CaperApp {
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::TOP),
                                         |ui| {
-                                            if drawn_icon_button(
-                                                ui,
-                                                NavIcon::Close,
-                                                &format!("Close {title}"),
-                                            )
-                                            .clicked()
-                                            {
-                                                close = true;
-                                            }
+                                            ui.add_enabled_ui(!removing, |ui| {
+                                                if drawn_icon_button(
+                                                    ui,
+                                                    NavIcon::Close,
+                                                    &format!("Close {title}"),
+                                                )
+                                                .clicked()
+                                                {
+                                                    close = true;
+                                                }
+                                            });
                                         },
                                     );
                                 });
@@ -10213,10 +11763,15 @@ impl CaperApp {
                                                 }
                                                 ui.add_space(16.0);
                                                 ui.horizontal(|ui| {
-                                                    if ui.add_enabled(!self.loading, egui::Button::new("Decline")).clicked() {
+                                                    // Only the clicked response says it is in progress.
+                                                    let declining = self.loading && self.invitation_declining;
+                                                    let accepting = self.loading && !self.invitation_declining;
+                                                    if ui.add_enabled(!self.loading, egui::Button::new(if declining { "Declining…" } else { "Decline" })).clicked() {
+                                                        self.invitation_declining = true;
                                                         self.admin(AdminOperation::DeclineInvitation { space: invitation.id.clone() });
                                                     }
-                                                    if primary_button(ui, if self.loading { "Accepting…" } else { "Accept invitation" }, !self.loading).clicked() {
+                                                    if primary_button(ui, if accepting { "Accepting…" } else { "Accept invitation" }, !self.loading).clicked() {
+                                                        self.invitation_declining = false;
                                                         self.admin(AdminOperation::AcceptInvitation { space: invitation.id });
                                                     }
                                                 });
@@ -10252,7 +11807,7 @@ impl CaperApp {
                                             Dialog::LeaveChannel { space, channel, .. } => {
                                                 let private_loss = !self.owner() && self.detail.as_ref().is_some_and(|detail| detail.channels.iter().any(|item| item.id == channel && item.private));
                                                 ui.label(if private_loss { "You’ll lose access and need another invitation to return. You’ll disconnect from this channel’s voice call." } else { "It will leave your sidebar. You can preview and rejoin from Browse channels. You’ll disconnect from this channel’s voice call." });
-                                                let (cancel, leave) = dialog_actions(ui, "Leave channel", !self.loading);
+                                                let (cancel, leave) = dialog_actions(ui, "Leave channel", !self.loading, false);
                                                 if cancel { self.dialog = None; }
                                                 if leave { self.admin(AdminOperation::LeaveChannel { space, channel }); }
                                             }
@@ -10274,12 +11829,37 @@ impl CaperApp {
                                                     ui.colored_label(ERROR, error);
                                                 }
                                             }
+                                            Dialog::RemoveMember { space, channel, member, place, .. } => {
+                                                ui.label(if channel.is_some() {
+                                                    "They’ll lose access to this private channel. You can add them again later.".to_owned()
+                                                } else {
+                                                    format!("They’ll lose access to {place} and its channels. You can invite them again later.")
+                                                });
+                                                ui.add_space(16.0);
+                                                ui.horizontal(|ui| {
+                                                    let cancel = ui.add_enabled(!self.loading, egui::Button::new("Cancel"));
+                                                    if self.focus_dialog_field {
+                                                        cancel.request_focus();
+                                                    }
+                                                    if cancel.clicked() { close = true; }
+                                                    let remove = ui.add_enabled(!self.loading, egui::Button::new(RichText::new(if self.loading { "Removing…" } else { "Remove" }).color(ERROR)));
+                                                    if remove.clicked() {
+                                                        self.admin(AdminOperation::RemoveMember { space, channel, member });
+                                                    }
+                                                });
+                                            }
                                             Dialog::StartDirect => {
                                                 ui.label("Enter an exact username.");
                                                 ui.add_space(12.0);
-                                                ui.add(egui::TextEdit::singleline(&mut self.member_username).hint_text("Username"));
+                                                let username = ui.add(egui::TextEdit::singleline(&mut self.member_username).hint_text("Username"));
+                                                if self.focus_dialog_field {
+                                                    username.request_focus();
+                                                }
+                                                if username.changed() {
+                                                    self.error = None;
+                                                }
                                                 ui.add_space(16.0);
-                                                if ui.add_enabled(!self.loading && !self.member_username.trim().is_empty(), egui::Button::new(if self.loading { "Starting…" } else { "Start conversation" })).clicked()
+                                                if ui.add_enabled(!self.loading && !self.member_username.trim().is_empty(), egui::Button::new(if self.loading { "Opening…" } else { "Open conversation" })).clicked()
                                                     && let Some(token) = self.token.clone() {
                                                     self.loading = true;
                                                     self.error = None;
@@ -10321,7 +11901,7 @@ impl CaperApp {
                         .is_some_and(|position| !modal.response.rect.contains(position))
             });
         }
-        if close && !(self.loading && return_to.is_some()) {
+        if close && !(self.loading && hold_while_loading) {
             self.dialog = return_to;
             self.error = None;
         }
@@ -10447,26 +12027,25 @@ impl CaperApp {
         ui.label(RichText::new("Notify me about").size(13.0).color(TEXT));
         let current = self.notifications.account_level();
         let mut chosen = None;
-        ui.add_enabled_ui(
-            current.is_some() && !self.notifications.saving(&Scope::Account),
-            |ui| {
-                for level in [
-                    NotificationLevel::All,
-                    NotificationLevel::Mentions,
-                    NotificationLevel::Nothing,
-                ] {
-                    if ui
-                        .radio(
-                            current == Some(level),
-                            notifications::account_level_label(level),
-                        )
-                        .clicked()
-                    {
-                        chosen = Some(level);
-                    }
+        // Only while loading: disabling during a save would drop focus from
+        // the chosen option. A save in flight ignores clicks (`begin`).
+        ui.add_enabled_ui(current.is_some(), |ui| {
+            for level in [
+                NotificationLevel::All,
+                NotificationLevel::Mentions,
+                NotificationLevel::Nothing,
+            ] {
+                if ui
+                    .radio(
+                        current == Some(level),
+                        notifications::account_level_label(level),
+                    )
+                    .clicked()
+                {
+                    chosen = Some(level);
                 }
-            },
-        );
+            }
+        });
         if let Some(level) = chosen {
             self.change_notifications(Scope::Account, Change::Level(Some(level)));
         }
@@ -10478,7 +12057,7 @@ impl CaperApp {
                 Some(error) => {
                     ui.horizontal(|ui| {
                         ui.colored_label(ERROR, error);
-                        if ui.small_button("Retry").clicked() {
+                        if ui.small_button("Try again").clicked() {
                             self.load_notifications();
                         }
                     });
@@ -10510,7 +12089,8 @@ impl CaperApp {
         ];
         let loaded = self.privacy.is_some();
         let mut chosen = None;
-        ui.add_enabled_ui(loaded && !self.privacy_saving, |ui| {
+        // Only while loading; a save in flight ignores clicks (`save_privacy`).
+        ui.add_enabled_ui(loaded, |ui| {
             for (value, label, detail) in options {
                 if ui
                     .radio(self.privacy.as_deref() == Some(value), label)
@@ -10532,7 +12112,7 @@ impl CaperApp {
         if let Some(error) = self.privacy_error.clone() {
             ui.horizontal(|ui| {
                 ui.colored_label(ERROR, error);
-                if !loaded && ui.small_button("Retry").clicked() {
+                if !loaded && ui.small_button("Try again").clicked() {
                     self.privacy_error = None;
                     self.account_op(AccountOperation::LoadPrivacy);
                 }
@@ -10544,15 +12124,19 @@ impl CaperApp {
         ui.label(bold("Blocked accounts").size(12.0).color(MUTED));
         ui.add_space(6.0);
         match self.blocks.clone() {
-            None => {
+            None if self.blocks_error.is_none() => {
                 ui.label(RichText::new("Loading…").size(12.0).color(MUTED));
             }
+            // Only a successful load can say the list is empty.
+            None => {}
             Some(blocks) if blocks.is_empty() => {
-                ui.label(
-                    RichText::new("You haven't blocked anyone.")
-                        .size(12.0)
-                        .color(MUTED),
-                );
+                if self.blocks_error.is_none() {
+                    ui.label(
+                        RichText::new("You haven't blocked anyone.")
+                            .size(12.0)
+                            .color(MUTED),
+                    );
+                }
             }
             Some(blocks) => {
                 for account in blocks {
@@ -10574,6 +12158,15 @@ impl CaperApp {
                     });
                 }
             }
+        }
+        if let Some(error) = self.blocks_error.clone() {
+            ui.horizontal(|ui| {
+                ui.colored_label(ERROR, error);
+                if ui.small_button("Try again").clicked() {
+                    self.blocks_error = None;
+                    self.account_op(AccountOperation::LoadBlocks);
+                }
+            });
         }
         if let Some(error) = &self.block_error {
             ui.colored_label(ERROR, error);
@@ -10638,7 +12231,13 @@ impl CaperApp {
     }
 
     fn space_dialog(&mut self, ui: &mut egui::Ui, manage: bool) {
-        name_field(ui, "Space name", &mut self.form_name, "Studio", None);
+        let name = name_field(ui, "Space name", &mut self.form_name, "Studio", None);
+        if !manage && self.focus_dialog_field {
+            name.request_focus();
+        }
+        if name.changed() {
+            self.error = None;
+        }
         if manage {
             let unchanged = self
                 .detail
@@ -10670,11 +12269,12 @@ impl CaperApp {
             let (cancel, submit) = dialog_actions(
                 ui,
                 if self.loading {
-                    "Saving…"
+                    "Creating…"
                 } else {
                     "Create space"
                 },
-                !self.loading,
+                !self.form_name.trim().is_empty(),
+                self.loading,
             );
             if cancel {
                 self.dialog = None;
@@ -10714,6 +12314,13 @@ impl CaperApp {
             });
             for invitation in self.managed_invitations.clone() {
                 ui.horizontal(|ui| {
+                    avatar(
+                        ui,
+                        &invitation.display_name,
+                        invitation.avatar_id,
+                        24.0,
+                        false,
+                    );
                     ui.label(format!("@{}", invitation.username));
                     if ui
                         .add_enabled(!self.loading, egui::Button::new("Cancel"))
@@ -10761,6 +12368,8 @@ impl CaperApp {
         self.managed_invitations.clear();
         self.member_username.clear();
         self.member_error = None;
+        self.member_refocus = false;
+        self.member_status = None;
         self.error = None;
         if private
             && let (Some(token), Some(space)) = (self.token.clone(), self.selected_space.clone())
@@ -10793,7 +12402,7 @@ impl CaperApp {
     }
 
     fn channel_dialog(&mut self, ui: &mut egui::Ui, channel: Option<String>) {
-        name_field(
+        let name = name_field(
             ui,
             "Channel name",
             &mut self.form_name,
@@ -10804,6 +12413,12 @@ impl CaperApp {
                 NavIcon::Hash
             }),
         );
+        if channel.is_none() && self.focus_dialog_field {
+            name.request_focus();
+        }
+        if name.changed() {
+            self.error = None;
+        }
         self.form_name = normalize_channel(&self.form_name);
         if channel.is_none() {
             ui.add_space(8.0);
@@ -10838,11 +12453,12 @@ impl CaperApp {
             let (cancel, submit) = dialog_actions(
                 ui,
                 if self.loading {
-                    "Saving…"
+                    "Creating…"
                 } else {
                     "Create channel"
                 },
-                !self.loading,
+                !self.form_name.trim().trim_end_matches('-').is_empty(),
+                self.loading,
             );
             if cancel {
                 self.dialog = None;
@@ -10886,6 +12502,13 @@ impl CaperApp {
             );
             for invitation in self.managed_invitations.clone() {
                 ui.horizontal(|ui| {
+                    avatar(
+                        ui,
+                        &invitation.display_name,
+                        invitation.avatar_id,
+                        24.0,
+                        false,
+                    );
                     ui.label(format!("@{}", invitation.username));
                     if ui.button("Cancel").clicked()
                         && let Some(space) = self.selected_space.clone()
@@ -10973,7 +12596,7 @@ impl CaperApp {
 
     fn members_dialog(&mut self, ui: &mut egui::Ui, channel: Option<String>) {
         ui.horizontal(|ui| {
-            ui.add_sized(
+            let field = ui.add_sized(
                 [(ui.available_width() - 80.0).max(1.0), 38.0],
                 egui::TextEdit::singleline(&mut self.member_username)
                     .vertical_align(egui::Align::Center)
@@ -10981,7 +12604,18 @@ impl CaperApp {
                     .hint_text(RichText::new("Exact username").color(MUTED.gamma_multiply(0.65))),
             );
             self.member_username = normalize_username(&self.member_username);
-            if ui
+            if field.changed() {
+                self.member_error = None;
+                self.member_status = None;
+            }
+            // Back to the field once an add or invite finishes, so several
+            // people can be added in a row.
+            if self.member_refocus && !self.loading {
+                self.member_refocus = false;
+                field.request_focus();
+            }
+            let enter = field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+            let clicked = ui
                 .add_enabled(
                     !self.loading,
                     egui::Button::new(
@@ -10989,11 +12623,20 @@ impl CaperApp {
                     )
                     .min_size(egui::vec2(64.0, 38.0)),
                 )
-                .clicked()
-            {
+                .clicked();
+            if (clicked || enter) && !self.loading {
+                self.member_refocus = true;
+                self.member_status = None;
                 if self.member_username.len() < 3 {
                     self.member_error =
                         Some("Use 3–32 lowercase letters, numbers, or underscores.");
+                } else if let Some(error) = invite_error(
+                    &self.member_username,
+                    &self.managed_members,
+                    &self.managed_invitations,
+                    channel.is_some(),
+                ) {
+                    self.member_error = Some(error);
                 } else if let Some(space) = self.selected_space.clone() {
                     self.member_error = None;
                     self.admin(AdminOperation::AddMember {
@@ -11006,6 +12649,8 @@ impl CaperApp {
         });
         if let Some(error) = self.member_error {
             ui.label(RichText::new(error).size(12.0).color(ERROR));
+        } else if let Some(status) = self.member_status {
+            ui.label(RichText::new(status).size(12.0).color(MUTED));
         }
         ui.separator();
         let members = self.managed_members.clone();
@@ -11042,10 +12687,25 @@ impl CaperApp {
                                     .clicked()
                                 && let Some(space) = self.selected_space.clone()
                             {
-                                self.admin(AdminOperation::RemoveMember {
+                                // Confirm first; "Cancel invite" stays one click.
+                                let place = match &channel {
+                                    Some(id) => self.saved_channel(id).map_or_else(
+                                        || "this channel".to_owned(),
+                                        |(name, _)| name,
+                                    ),
+                                    None => self
+                                        .detail
+                                        .as_ref()
+                                        .map_or("this space", |detail| detail.space.name.as_str())
+                                        .to_owned(),
+                                };
+                                self.error = None;
+                                self.dialog = Some(Dialog::RemoveMember {
                                     space,
                                     channel: channel.clone(),
                                     member: member.id.clone(),
+                                    name: member.display_name.clone(),
+                                    place,
                                 });
                             }
                         });
@@ -11159,6 +12819,31 @@ impl ConnectionReport {
         ]);
         rows
     }
+}
+
+/// Web's sign-in code cleanup: uppercase, drop anything outside the code
+/// alphabet (spaces, dashes), then keep six characters.
+fn clean_sign_in_code(code: &mut String) {
+    code.make_ascii_uppercase();
+    code.retain(|character| "ABCDEFGHJKMNPQRSTWXYZ23456789".contains(character));
+    code.truncate(6);
+}
+
+/// How long "Resend code" still waits, `elapsed` after the latest code.
+fn resend_wait(elapsed: Duration) -> Option<Duration> {
+    RESEND_COOLDOWN
+        .checked_sub(elapsed)
+        .filter(|wait| !wait.is_zero())
+}
+
+/// "Resend code in 0:42" (whole seconds rounded up), and how long until the
+/// shown second changes.
+fn resend_countdown(wait: Duration) -> (String, Duration) {
+    let seconds = wait.as_secs() + u64::from(wait.subsec_nanos() > 0);
+    (
+        format!("Resend code in {}:{:02}", seconds / 60, seconds % 60),
+        wait.saturating_sub(Duration::from_secs(seconds.saturating_sub(1))),
+    )
 }
 
 fn login_error_frame(ui: &mut egui::Ui, error: &str) {
@@ -11332,14 +13017,6 @@ fn voice_join_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     if hover {
         ui.painter().rect_filled(rect, 8.0, RAISED);
     }
-    if response.has_focus() {
-        ui.painter().rect_stroke(
-            rect,
-            8.0,
-            Stroke::new(1.0, TERRACOTTA_BRIGHT),
-            egui::StrokeKind::Inside,
-        );
-    }
     paint_icon(
         ui.painter(),
         egui::Rect::from_center_size(
@@ -11374,6 +13051,7 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::Hash => egui::include_image!("../resources/icons/hash.svg"),
         NavIcon::Lock => egui::include_image!("../resources/icons/lock.svg"),
         NavIcon::Users => egui::include_image!("../resources/icons/users.svg"),
+        NavIcon::Pin => egui::include_image!("../resources/icons/pin.svg"),
         NavIcon::Speech => egui::include_image!("../resources/icons/speech.svg"),
         NavIcon::Mic => egui::include_image!("../resources/icons/mic.svg"),
         NavIcon::MicOff => egui::include_image!("../resources/icons/mic-off.svg"),
@@ -11468,19 +13146,13 @@ fn channel_button(
         ui.painter().rect_filled(
             rect,
             6.0,
-            if active {
+            if response.has_focus() {
+                BORDER
+            } else if active {
                 Color32::from_rgba_unmultiplied(182, 77, 50, 40)
             } else {
                 RAISED
             },
-        );
-    }
-    if response.has_focus() {
-        ui.painter().rect_stroke(
-            rect,
-            6.0,
-            Stroke::new(1.0, TERRACOTTA_BRIGHT),
-            egui::StrokeKind::Inside,
         );
     }
     let dim = |color| {
@@ -11545,11 +13217,11 @@ fn channel_button(
     }
     ui.painter()
         .with_clip_rect(egui::Rect::from_min_max(
-            egui::pos2(rect.left() + 34.0, rect.top()),
+            egui::pos2(rect.left() + 31.0, rect.top()),
             egui::pos2(name_right, rect.bottom()),
         ))
         .text(
-            egui::pos2(rect.left() + 35.0, rect.center().y - 1.0),
+            egui::pos2(rect.left() + 32.0, rect.center().y - 1.0),
             egui::Align2::LEFT_CENTER,
             name,
             egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into())),
@@ -11566,17 +13238,9 @@ fn channel_button(
         let popup = egui::Popup::menu(&settings);
         let open = popup.is_open();
         opened = settings.clicked() && !open;
-        if !menu.on_hover || row_hovered || open || settings.has_focus() {
+        if !menu.on_hover || row_hovered || response.has_focus() || open || settings.has_focus() {
             if settings.hovered() || settings.has_focus() {
                 ui.painter().rect_filled(rect, 8.0, SURFACE);
-            }
-            if settings.has_focus() {
-                ui.painter().rect_stroke(
-                    rect,
-                    8.0,
-                    Stroke::new(1.0, TERRACOTTA_BRIGHT),
-                    egui::StrokeKind::Inside,
-                );
             }
             paint_icon(
                 ui.painter(),
@@ -11635,20 +13299,48 @@ fn users_button(ui: &mut egui::Ui, active: bool) -> egui::Response {
     })
 }
 
+/// A message row: avatar, then the name and time above the body. A grouped
+/// row (`grouped` is its short time, like "9:42") continues the row above
+/// instead: no avatar or header, 2px top padding, and the avatar column stays
+/// empty so the text lines up, showing the short time while hovered. Screen
+/// readers still get the author and `time` there.
+///
+/// Returns the header timestamp's rect (the edit-history target; `None` for
+/// grouped rows) and the body's result.
 fn message_row<R>(
     ui: &mut egui::Ui,
     author: &str,
     avatar_id: Option<i32>,
     time: &str,
     guest: bool,
+    grouped: Option<&str>,
     body: impl FnOnce(&mut egui::Ui) -> R,
-) -> (egui::Rect, R) {
-    // The timestamp's rect (the edit-history target) and the body's result.
-    egui::Frame::new()
-        .inner_margin(egui::Margin::symmetric(18, 10))
+) -> (Option<egui::Rect>, R) {
+    let shown = egui::Frame::new()
+        .inner_margin(egui::Margin {
+            left: 18,
+            right: 18,
+            top: if grouped.is_some() { 2 } else { 10 },
+            bottom: 10,
+        })
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(10.0, 4.0);
             ui.horizontal_top(|ui| {
+                if grouped.is_some() {
+                    let line =
+                        ui.fonts_mut(|fonts| fonts.row_height(&egui::FontId::proportional(14.0)));
+                    let (column, response) =
+                        ui.allocate_exact_size(egui::vec2(34.0, line), egui::Sense::hover());
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Label,
+                            true,
+                            format!("{author} {time}"),
+                        )
+                    });
+                    let result = ui.vertical(body).inner;
+                    return (Err(column), result);
+                }
                 avatar(ui, author, avatar_id, 34.0, false);
                 ui.vertical(|ui| {
                     let timestamp = ui
@@ -11660,13 +13352,30 @@ fn message_row<R>(
                             ui.label(RichText::new(time).size(10.0).color(MUTED)).rect
                         })
                         .inner;
-                    (timestamp, body(ui))
+                    (Ok(timestamp), body(ui))
                 })
                 .inner
             })
             .inner
-        })
-        .inner
+        });
+    let (head, result) = shown.inner;
+    match head {
+        Ok(timestamp) => (Some(timestamp), result),
+        Err(column) => {
+            if let Some(short) = grouped
+                && ui.rect_contains_pointer(shown.response.rect)
+            {
+                ui.painter().text(
+                    column.center(),
+                    egui::Align2::CENTER_CENTER,
+                    short,
+                    egui::FontId::proportional(10.0),
+                    MUTED,
+                );
+            }
+            (None, result)
+        }
+    }
 }
 
 /// "Processing…" with the media worker's latest percent, when known.
@@ -11795,31 +13504,105 @@ fn file_card(
         .clicked()
 }
 
-/// Message text with resolved mentions drawn as pills: one weight bolder,
-/// primary text color and a terracotta background (24%, or 32% while hovered
-/// or focused) with 2px side padding. egui `LayoutJob` backgrounds are plain
-/// rectangles, so pills have square corners rather than the 4px corners other
-/// clients draw.
-///
-/// The text stays one selectable label, so wrapping and drag-selection are
-/// unchanged. Person pills get click targets on top of it from the laid-out
-/// glyphs, one per wrapped row; only the first takes keyboard focus. The
-/// hover/focus state of the last pass picks each pill's fill.
+/// What a message body reports back to its row.
+#[derive(Default)]
+struct Body {
+    /// A person pill that was clicked or activated with Enter/Space.
+    pill: Option<PillClick>,
+    /// Where a grouped row's inline "(edited)" marker was drawn.
+    edited: Option<egui::Rect>,
+    /// The pointer is over a link, so the row's own menu stays closed.
+    link_hovered: bool,
+}
+
+/// One styled run of message text, by UTF-8 byte range.
+#[derive(Debug, PartialEq, Eq)]
+enum Run {
+    Plain(std::ops::Range<usize>),
+    /// The index of the resolved mention pill drawn here.
+    Pill(std::ops::Range<usize>, usize),
+    Link(std::ops::Range<usize>, String),
+}
+
+/// Message text split for drawing: resolved mentions first, then links found
+/// on the plain runs between them (`links::segments`, kept separate so a
+/// future Markdown renderer can reuse it for bare URLs).
+fn message_runs(text: &str, pills: &[std::ops::Range<usize>]) -> Vec<Run> {
+    let plain = |runs: &mut Vec<Run>, start: usize, end: usize| {
+        let mut offset = start;
+        for segment in links::segments(&text[start..end]) {
+            let range = offset..offset + segment.text.len();
+            offset = range.end;
+            runs.push(match segment.href {
+                Some(href) => Run::Link(range, href),
+                None => Run::Plain(range),
+            });
+        }
+    };
+    let mut runs = Vec::new();
+    let mut written = 0;
+    for (index, range) in pills.iter().enumerate() {
+        plain(&mut runs, written, range.start);
+        runs.push(Run::Pill(range.clone(), index));
+        written = range.end;
+    }
+    plain(&mut runs, written, text.len());
+    runs
+}
+
+/// Message text in the 14px message style; see `rich_text`.
 fn message_body(
     ui: &mut egui::Ui,
     message: &str,
     text: &str,
     mentions: &[model::Mention],
     describe: impl Fn(&model::Mention) -> String,
-) -> Option<PillClick> {
+    edited: bool,
+) -> Body {
     // File-only messages have no text row.
-    if text.is_empty() {
-        return None;
+    if text.is_empty() && !edited {
+        return Body::default();
     }
+    let plain = egui::TextFormat::simple(egui::FontId::proportional(14.0), MESSAGE_TEXT);
+    rich_text(ui, message, text, plain, mentions, describe, edited)
+}
+
+/// A forwarded original's text: the card's usual label, with clickable links.
+fn linked_text(ui: &mut egui::Ui, message: &str, text: &str) {
+    let plain = egui::TextFormat::simple(egui::TextStyle::Body.resolve(ui.style()), TEXT);
+    rich_text(ui, message, text, plain, &[], |_| String::new(), false);
+}
+
+/// Message text with resolved mentions drawn as pills and links drawn
+/// terracotta-bright and underlined. Pills are one weight bolder, primary
+/// text color and a terracotta background (24%, or 32% while hovered or
+/// focused) with 2px side padding. egui `LayoutJob` backgrounds are plain
+/// rectangles, so pills have square corners rather than the 4px corners other
+/// clients draw.
+///
+/// The text stays one selectable label, so wrapping and drag-selection are
+/// unchanged. Person pills and links get click targets on top of it from the
+/// laid-out glyphs, one per wrapped row; only the first takes keyboard focus.
+/// The hover/focus state of the last pass picks each pill's fill. A link opens
+/// in the system browser and takes the click, so the row does nothing else.
+///
+/// `edited` adds a grouped row's "(edited)" marker right after the text.
+fn rich_text(
+    ui: &mut egui::Ui,
+    message: &str,
+    text: &str,
+    plain: egui::TextFormat,
+    mentions: &[model::Mention],
+    describe: impl Fn(&model::Mention) -> String,
+    edited: bool,
+) -> Body {
     let pills = mentions::highlights(text, mentions);
-    if pills.is_empty() {
-        ui.label(RichText::new(text).size(14.0).color(MESSAGE_TEXT));
-        return None;
+    let ranges: Vec<_> = pills.iter().map(|(range, _)| range.clone()).collect();
+    let runs = message_runs(text, &ranges);
+    let linked = runs.iter().any(|run| matches!(run, Run::Link(..)));
+    if pills.is_empty() && !linked && !edited {
+        ui.label(RichText::new(text).font(plain.font_id).color(plain.color));
+        return Body::default();
     }
     let ids: Vec<_> = (0..pills.len())
         .map(|index| ui.make_persistent_id(("mention-pill", message, index)))
@@ -11828,27 +13611,34 @@ fn message_body(
         .iter()
         .map(|id| ui.data(|data| data.get_temp::<bool>(*id)).unwrap_or(false))
         .collect();
-    let plain = egui::TextFormat::simple(egui::FontId::proportional(14.0), MESSAGE_TEXT);
     let pill = |hot: bool| egui::TextFormat {
-        font_id: egui::FontId::new(14.0, egui::FontFamily::Name("Satoshi Medium".into())),
+        font_id: egui::FontId::new(
+            plain.font_id.size,
+            egui::FontFamily::Name("Satoshi Medium".into()),
+        ),
         color: TEXT,
         background: TERRACOTTA.gamma_multiply(if hot { 0.32 } else { 0.24 }),
         // Grow the background into the 2px gaps left on either side.
         expand_bg: 2.0,
         ..Default::default()
     };
+    let link = egui::TextFormat {
+        color: TERRACOTTA_BRIGHT,
+        underline: Stroke::new(1.0, TERRACOTTA_BRIGHT),
+        ..plain.clone()
+    };
     let mut job = egui::text::LayoutJob::default();
-    let mut written = 0;
-    for ((range, _), hot) in pills.iter().zip(&hot) {
-        if range.start > written {
-            let gap = if written == 0 { 0.0 } else { 2.0 };
-            job.append(&text[written..range.start], gap, plain.clone());
-        }
-        job.append(&text[range.clone()], 2.0, pill(*hot));
-        written = range.end;
-    }
-    if written < text.len() {
-        job.append(&text[written..], 2.0, plain);
+    let mut after_pill = false;
+    for run in &runs {
+        let (range, format, is_pill) = match run {
+            Run::Plain(range) => (range, plain.clone(), false),
+            Run::Link(range, _) => (range, link.clone(), false),
+            Run::Pill(range, index) => (range, pill(hot[*index]), true),
+        };
+        // Pills keep 2px on either side for their background.
+        let gap = if is_pill || after_pill { 2.0 } else { 0.0 };
+        job.append(&text[range.clone()], gap, format);
+        after_pill = is_pill;
     }
     let (position, galley, response) = egui::Label::new(job).layout_in_ui(ui);
     response.widget_info(|| {
@@ -11864,14 +13654,19 @@ fn message_body(
             Stroke::NONE,
         );
     }
-    let mut clicked = None;
+    let characters = |range: &std::ops::Range<usize>| {
+        text[..range.start].chars().count()..text[..range.end].chars().count()
+    };
+    let mut body = Body::default();
     for (((range, entry), id), was_hot) in pills.iter().zip(&ids).zip(&hot) {
         if entry.kind != "user" {
             continue;
         }
-        let characters = text[..range.start].chars().count()..text[..range.end].chars().count();
         let mut is_hot = false;
-        for (row, rect) in pill_rects(&galley, characters).into_iter().enumerate() {
+        for (row, rect) in pill_rects(&galley, characters(range))
+            .into_iter()
+            .enumerate()
+        {
             let rect = rect.translate(position.to_vec2()).expand(2.0);
             let (piece, sense) = if row == 0 {
                 (*id, egui::Sense::click())
@@ -11888,7 +13683,7 @@ fn message_body(
             }
             is_hot |= target.hovered() || target.has_focus();
             if target.clicked() {
-                clicked = Some(PillClick {
+                body.pill = Some(PillClick {
                     id: *id,
                     rect,
                     entry: (*entry).clone(),
@@ -11900,7 +13695,179 @@ fn message_body(
             ui.ctx().request_repaint();
         }
     }
-    clicked
+    let links = runs.iter().filter_map(|run| match run {
+        Run::Link(range, href) => Some((range, href)),
+        _ => None,
+    });
+    for (index, (range, href)) in links.enumerate() {
+        let id = ui.make_persistent_id(("message-link", message, index));
+        for (row, rect) in pill_rects(&galley, characters(range))
+            .into_iter()
+            .enumerate()
+        {
+            let rect = rect.translate(position.to_vec2());
+            let (piece, sense) = if row == 0 {
+                (id, egui::Sense::click())
+            } else {
+                (id.with(row), egui::Sense::CLICK)
+            };
+            let target = ui
+                .interact(rect, piece, sense)
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            if row == 0 {
+                target.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Link, true, &text[range.clone()])
+                });
+            }
+            if target.has_focus() {
+                ui.painter().rect_stroke(
+                    rect.expand(1.0),
+                    2.0,
+                    Stroke::new(1.0, TERRACOTTA_BRIGHT),
+                    egui::StrokeKind::Outside,
+                );
+            }
+            body.link_hovered |= target.hovered();
+            if target.clicked() {
+                ui.ctx().open_url(egui::OpenUrl::new_tab(href));
+            }
+        }
+    }
+    if edited {
+        let marker =
+            ui.painter()
+                .layout_no_wrap("(edited)".into(), egui::FontId::proportional(10.0), MUTED);
+        let size = marker.size();
+        // Right after the last line when it fits, else on its own line.
+        let rect = galley
+            .rows
+            .last()
+            .map(|row| row.rect().translate(position.to_vec2()))
+            .filter(|row| row.right() + 4.0 + size.x <= ui.max_rect().right())
+            .map_or_else(
+                || ui.allocate_exact_size(size, egui::Sense::hover()).0,
+                |row| {
+                    egui::Rect::from_min_size(
+                        egui::pos2(row.right() + 4.0, row.center().y - size.y / 2.0),
+                        size,
+                    )
+                },
+            );
+        ui.painter().galley(rect.min, marker, MUTED);
+        body.edited = Some(rect);
+    }
+    body
+}
+
+/// Web's confirmation after inviting someone to a space or a private channel.
+const INVITATION_SENT: &str = "Invitation sent. They must accept before joining.";
+
+/// Web's check before inviting: someone already a member or already invited.
+fn invite_error(
+    username: &str,
+    members: &[Member],
+    invitations: &[Member],
+    channel: bool,
+) -> Option<&'static str> {
+    if members.iter().any(|member| member.username == username) {
+        Some(if channel {
+            "This person already has access to this channel."
+        } else {
+            "This person is already in the space."
+        })
+    } else if invitations.iter().any(|member| member.username == username) {
+        Some("This person already has a pending invitation.")
+    } else {
+        None
+    }
+}
+
+/// Web's wording for the server's member and invitation errors.
+fn admin_error(error: String) -> String {
+    match error.as_str() {
+        "user not found" => "User not found. Check the username and try again.".into(),
+        "user already in space" => "This person is already in the space.".into(),
+        "user already in channel" => "This person already has access to this channel.".into(),
+        "user already invited" => "This person already has a pending invitation.".into(),
+        "invalid username" => "Use 3–32 lowercase letters, numbers, or underscores.".into(),
+        _ => error,
+    }
+}
+
+/// Web's quick reactions in the message actions menu.
+const QUICK_REACTIONS: [&str; 5] = ["👍", "❤️", "😂", "🎉", "👀"];
+
+/// Each quick reaction, and whether `author` already reacted with it.
+fn quick_reactions(
+    reactions: &[model::Reaction],
+    author: Option<&str>,
+) -> [(&'static str, bool); 5] {
+    QUICK_REACTIONS.map(|emoji| {
+        let mine = author.is_some_and(|author| {
+            reactions.iter().any(|reaction| {
+                reaction.emoji == emoji && reaction.author_ids.iter().any(|id| id == author)
+            })
+        });
+        (emoji, mine)
+    })
+}
+
+/// A quick reaction button, pressed (terracotta) when it is yours.
+fn quick_reaction(
+    ui: &mut egui::Ui,
+    image: egui::Image<'static>,
+    label: &str,
+    mine: bool,
+) -> egui::Response {
+    let response = ui.add(
+        egui::Button::image(image)
+            .min_size(egui::vec2(32.0, 32.0))
+            .fill(if mine {
+                Color32::from_rgb(57, 35, 30)
+            } else {
+                Color32::TRANSPARENT
+            })
+            .stroke(Stroke::new(
+                1.0,
+                if mine {
+                    TERRACOTTA
+                } else {
+                    Color32::TRANSPARENT
+                },
+            ))
+            .corner_radius(8),
+    );
+    response
+        .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, mine, label));
+    response
+}
+
+/// Web's **Copy text** and **Copy message ID** menu items.
+fn copy_items(ui: &mut egui::Ui, message: &model::Message) {
+    if ui.button("Copy text").clicked() {
+        ui.ctx().copy_text(message.content.text.clone());
+        ui.close();
+    }
+    if ui.button("Copy message ID").clicked() {
+        ui.ctx().copy_text(message.id.clone());
+        ui.close();
+    }
+}
+
+/// Web's link above a thread reply that was also sent to the channel.
+fn thread_context(ui: &mut egui::Ui) -> egui::Response {
+    ui.scope(|ui| {
+        ui.spacing_mut().button_padding = egui::Vec2::ZERO;
+        ui.add(
+            egui::Button::new(
+                RichText::new("Replied to a thread · View thread")
+                    .size(11.52)
+                    .color(MUTED),
+            )
+            .frame(false),
+        )
+    })
+    .inner
 }
 
 /// Galley-relative bounds of the characters in `range`, one rect per row.
@@ -12165,6 +14132,14 @@ fn display_time(timestamp: &str) -> String {
     timestamp_parts(timestamp, &Local).map_or_else(|| timestamp.to_owned(), |parts| parts.1)
 }
 
+/// A grouped row's hover time, like "9:42", without AM/PM.
+fn short_time(timestamp: &str) -> String {
+    DateTime::parse_from_rfc3339(timestamp).map_or_else(
+        |_| String::new(),
+        |date| date.with_timezone(&Local).format("%-I:%M").to_string(),
+    )
+}
+
 fn configure(context: &egui::Context) {
     egui_extras::install_image_loaders(context);
     let mut fonts = egui::FontDefinitions::default();
@@ -12381,7 +14356,7 @@ fn name_field(
     value: &mut String,
     placeholder: &str,
     icon: Option<NavIcon>,
-) {
+) -> egui::Response {
     ui.label(label);
     let response = ui.add_sized(
         [ui.available_width(), 42.0],
@@ -12407,6 +14382,7 @@ fn name_field(
             MUTED,
         );
     }
+    response
 }
 
 /// Web's `.secondary` dialog button.
@@ -12436,13 +14412,13 @@ fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Respons
 }
 
 /// Web's `SubmitRow`: Cancel, then the primary action, aligned to the end.
-/// Returns (cancel, submit).
-fn dialog_actions(ui: &mut egui::Ui, label: &str, enabled: bool) -> (bool, bool) {
+/// While `pending`, both are disabled. Returns (cancel, submit).
+fn dialog_actions(ui: &mut egui::Ui, label: &str, enabled: bool, pending: bool) -> (bool, bool) {
     ui.add_space(20.0);
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let submit = primary_button(ui, label, enabled).clicked();
-            let cancel = secondary_button(ui, "Cancel", true).clicked();
+            let submit = primary_button(ui, label, enabled && !pending).clicked();
+            let cancel = secondary_button(ui, "Cancel", !pending).clicked();
             (cancel, submit)
         })
         .inner
@@ -12714,10 +14690,11 @@ fn main() -> eframe::Result {
 mod tests {
     use super::{
         AccountOperation, CaperApp, ComposerToken, ConnectionReport, Dialog, GatewayEvent,
-        NavigationTarget, PendingReaction, PendingSend, Phase, SelfDirectTarget, Suggestion,
-        TERRACOTTA, TEXT, endpoint, media, member_page_ids, normalize_channel,
-        permanent_send_rejection, pill_rects, projected_reactions, take_date_divider,
-        timestamp_parts, voice,
+        MAX_RESENDS, MESSAGE_TEXT, NavigationTarget, PendingReaction, PendingSend, Phase,
+        RESEND_COOLDOWN, Run, SelfDirectTarget, Suggestion, TERRACOTTA, TERRACOTTA_BRIGHT, TEXT,
+        display_time, endpoint, media, member_page_ids, message_runs, normalize_channel,
+        permanent_send_rejection, pill_rects, projected_reactions, resend_countdown, resend_wait,
+        short_time, take_date_divider, timestamp_parts, voice,
     };
     use crate::{mentions, navigation};
     use std::time::{Duration, Instant};
@@ -12929,6 +14906,94 @@ mod tests {
     }
 
     #[test]
+    fn thread_and_channel_header_dividers_align_without_clipping_controls() {
+        for width in [1200.0, 840.0, 390.0] {
+            for name in ["general".to_owned(), "long-channel-name-".repeat(3)] {
+                let context = egui::Context::default();
+                let mut app = CaperApp::new(
+                    &context,
+                    crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                    Some("parity-channel"),
+                );
+                app.detail.as_mut().unwrap().channels[0].name = name;
+                app.thread_view = Some(super::ThreadView {
+                    root: "fixture-message-0".into(),
+                    loading: false,
+                    has_more: false,
+                    before: None,
+                    error: None,
+                    window: None,
+                    has_newer: false,
+                });
+                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 700.0));
+                let mut frame = || {
+                    context.run(
+                        egui::RawInput {
+                            screen_rect: Some(screen),
+                            ..Default::default()
+                        },
+                        |context| {
+                            egui::CentralPanel::default().frame(egui::Frame::NONE).show(
+                                context,
+                                |ui| {
+                                    app.conversation(ui, width <= 760.0);
+                                },
+                            );
+                        },
+                    )
+                };
+                for _ in 0..3 {
+                    frame();
+                }
+                let output = frame();
+                let dividers: Vec<_> = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| {
+                        if let egui::Shape::LineSegment { points, stroke } = &shape.shape
+                            && stroke.color == super::BORDER
+                            && points[0].y == 54.0
+                            && points[1].y == 54.0
+                            && points[1].x - points[0].x > 200.0
+                        {
+                            Some(points)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                assert_eq!(
+                    dividers.len(),
+                    if width > 760.0 { 2 } else { 1 },
+                    "{width}: header borders must be at y=54"
+                );
+                for label in ["Thread", "Back to channel"] {
+                    let shape = output
+                        .shapes
+                        .iter()
+                        .find(|shape| {
+                            matches!(&shape.shape,
+                        egui::Shape::Text(text) if text.galley.job.text == label)
+                        })
+                        .unwrap();
+                    let egui::Shape::Text(text) = &shape.shape else {
+                        unreachable!()
+                    };
+                    let rect = egui::Rect::from_min_size(text.pos, text.galley.size());
+                    assert!(
+                        screen.contains_rect(rect) && shape.clip_rect.contains_rect(rect),
+                        "{width}: {label} is clipped"
+                    );
+                    assert!(
+                        rect.bottom() < 54.0,
+                        "{width}: {label} extends below its header"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn rendering_history_restores_messages_reactions_and_cursor_after_each_frame() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -12961,7 +15026,68 @@ mod tests {
     }
 
     #[test]
-    fn pinned_message_has_gold_attribution_above_only_two_compact_hover_actions() {
+    fn pins_preserve_history_scroll_position_and_paging_anchors() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        let template = app.timeline.messages().next().unwrap().clone();
+        let messages = (1..=40)
+            .map(|index| {
+                let mut message = template.clone();
+                message.id = format!("scroll-{index}");
+                message.client_message_id = format!("scroll-command-{index}");
+                message.seq = index.to_string();
+                message.content.text = format!("Scroll fixture message {index}");
+                message
+            })
+            .collect();
+        app.timeline.reset(messages, "40").unwrap();
+        app.has_more = false;
+        for _ in 0..3 {
+            render(&mut app, &context, vec![]);
+        }
+        // Deliberately neither the top nor the bottom; an unconditional jump
+        // to latest or clamping to the empty Pins viewport must fail this test.
+        app.history_offset = Some(240.0);
+        render(&mut app, &context, vec![]);
+        let before = render(&mut app, &context, vec![]);
+        let anchor = before
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text)
+                    if text.galley.job.text.starts_with("Scroll fixture message ") =>
+                {
+                    Some(text.galley.job.text.clone())
+                }
+                _ => None,
+            })
+            .expect("a scrolled conversation paints message text");
+        let position = text_position(&before, &anchor);
+        let height = app.history_height;
+        app.showing_pins = true;
+        for _ in 0..3 {
+            render(&mut app, &context, vec![]);
+            assert_eq!(app.history_height, height);
+        }
+        app.showing_pins = false;
+        for _ in 0..3 {
+            let output = render(&mut app, &context, vec![]);
+            assert_eq!(text_position(&output, &anchor), position);
+        }
+        app.showing_pins = true;
+        app.history_offset = Some(260.0);
+        app.older_anchor = Some(height);
+        render(&mut app, &context, vec![]);
+        assert_eq!(app.history_offset, Some(260.0));
+        assert_eq!(app.older_anchor, Some(height));
+    }
+
+    #[test]
+    fn pins_use_normal_hover_actions_and_a_dismissible_navigation_dialog() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
             &context,
@@ -12984,32 +15110,14 @@ mod tests {
         render(&mut app, &context, vec![]);
         context.enable_accesskit();
         let output = render(&mut app, &context, vec![]);
-        assert!(
-            text_position(&output, "Pinned by Fixture Pinner").y
-                < text_position(&output, "Pinned original author").y
-        );
+        assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Pinned by Fixture Pinner")));
         assert!(
             text_position(&output, "Pinned original author").y
                 < text_position(&output, "Pinned original text").y
         );
-        let gold = output
-            .shapes
-            .iter()
-            .find_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) if text.galley.job.text == "Pinned by Fixture Pinner" => {
-                    Some(&text.galley.job)
-                }
-                _ => None,
-            })
-            .unwrap();
-        assert!(
-            gold.sections
-                .iter()
-                .all(|section| section.format.color == egui::Color32::from_rgb(228, 199, 106))
-        );
-        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+        assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
             egui::Shape::Rect(rect) if rect.fill == egui::Color32::from_rgba_unmultiplied(228, 199, 106, 15) && rect.rect.width() > 700.0
-        )), "a short pinned message must still highlight the full conversation row");
+        )), "pins must not add a highlight to the channel timeline");
         let nodes = &output
             .platform_output
             .accesskit_update
@@ -13082,8 +15190,247 @@ mod tests {
         egui::Popup::close_all(&context);
         app.showing_pins = true;
         app.timeline.reset_pins(vec![message]).unwrap();
+        render(&mut app, &context, vec![]);
         let pins = render(&mut app, &context, vec![]);
-        assert!(pins.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Unpin")), "pin list retains direct Unpin");
+        for label in ["Pinned by Fixture Pinner", "Go to message"] {
+            assert!(pins.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == label)));
+        }
+        assert!(!pins.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Unpin")), "unpin belongs only in the actions menu");
+        click(&mut app, &context, egui::pos2(20.0, 20.0));
+        assert!(!app.showing_pins, "clicking outside closes Pins");
+    }
+
+    #[test]
+    fn pinner_hover_preview_is_above_pins_and_dismisses_before_its_parent() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-pins"),
+        );
+        app.token = Some("fixture-only".into());
+        let mut message = app.timeline.pinned_messages().next().unwrap().clone();
+        assert_ne!(message.author.id, "fixture-maya");
+        let pinner = &mut message.pin.as_mut().unwrap().author;
+        pinner.id = "fixture-maya".into();
+        pinner.name = "Old pinner name".into();
+        app.timeline.reset(vec![message.clone()], "5").unwrap();
+        app.timeline.reset_pins(vec![message]).unwrap();
+        for _ in 0..3 {
+            render(&mut app, &context, vec![]);
+        }
+        let output = render(&mut app, &context, vec![]);
+        let anchor = text_position(&output, "Pinned by Old pinner name") + egui::vec2(30.0, 5.0);
+        render(&mut app, &context, vec![egui::Event::PointerMoved(anchor)]);
+        let output = render(&mut app, &context, vec![]);
+        assert_eq!(card_entry(&app), Some("fixture-maya"));
+        assert!(
+            shows(&output, "@maya") && shows(&output, "Message"),
+            "pinner profile, not the message author: {:?}",
+            text_shapes(&output)
+        );
+        assert!(!shows(&output, "You"));
+        click(
+            &mut app,
+            &context,
+            text_position(&output, "Message") + egui::vec2(20.0, 8.0),
+        );
+        assert!(
+            app.mention_card.as_ref().unwrap().opening.is_some(),
+            "the card's Message button is interactive above the modal"
+        );
+        render(&mut app, &context, press(egui::Key::Escape));
+        assert!(app.mention_card.is_none());
+        assert!(app.showing_pins, "Escape closes the child first");
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerMoved(egui::pos2(20.0, 20.0))],
+        );
+        render(&mut app, &context, vec![egui::Event::PointerMoved(anchor)]);
+        render(&mut app, &context, vec![]);
+        click(&mut app, &context, egui::pos2(20.0, 20.0));
+        assert!(app.mention_card.is_none());
+        assert!(app.showing_pins, "outside click dismisses the child first");
+        click(&mut app, &context, egui::pos2(20.0, 20.0));
+        assert!(!app.showing_pins);
+    }
+
+    #[test]
+    fn pins_modal_projects_pending_unpin_without_changing_confirmed_history() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-pins"),
+        );
+        let message = app.timeline.pinned_messages().next().unwrap().clone();
+        let id = message.id.clone();
+        app.mutations.pins.insert(id.clone(), (message, None));
+        for _ in 0..3 {
+            render(&mut app, &context, vec![]);
+        }
+        assert!(shows(
+            &render(&mut app, &context, vec![]),
+            "No pinned messages."
+        ));
+        assert_eq!(app.timeline.pinned_messages().count(), 1);
+        app.mutations.pins.remove(&id);
+        assert!(shows(&render(&mut app, &context, vec![]), "Go to message"));
+    }
+
+    #[test]
+    fn pins_fixtures_preserve_each_pin_and_include_the_empty_state() {
+        for (fixture, expected) in [
+            ("parity-pins", 1),
+            ("parity-pins-empty", 0),
+            ("parity-pins-long", 3),
+        ] {
+            let app = CaperApp::new(
+                &egui::Context::default(),
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some(fixture),
+            );
+            assert_eq!(
+                app.timeline.pinned_messages().count(),
+                expected,
+                "{fixture}"
+            );
+            assert!(app.showing_pins);
+        }
+    }
+
+    #[test]
+    fn pins_cards_align_navigation_and_keep_close_visible_in_small_windows() {
+        for size in [egui::vec2(840.0, 620.0), egui::vec2(390.0, 520.0)] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-pins"),
+            );
+            let frame = |app: &mut CaperApp, screen_size, events| {
+                context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen_size)),
+                        events,
+                        ..Default::default()
+                    },
+                    |context| app.page(context),
+                )
+            };
+            for _ in 0..3 {
+                frame(&mut app, egui::vec2(1440.0, 900.0), vec![]);
+            }
+            for _ in 0..3 {
+                frame(&mut app, size, vec![]);
+            }
+            context.enable_accesskit();
+            let output = frame(&mut app, size, vec![]);
+            let nodes = &output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes;
+            let bounds = |label| {
+                nodes
+                    .iter()
+                    .find_map(|(_, node)| {
+                        (node.label() == Some(label))
+                            .then(|| node.bounds())
+                            .flatten()
+                    })
+                    .unwrap_or_else(|| panic!("missing {label} at {size:?}"))
+            };
+            let close = bounds("Close pins");
+            let author = output
+                .shapes
+                .iter()
+                .rev()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == "Fixture Owner" => {
+                        Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            let go = bounds("Go to message");
+            assert!(
+                (go.x0 - f64::from(author.left())).abs() < 1.0,
+                "navigation aligns with message text"
+            );
+            assert!(
+                go.y0 > f64::from(author.bottom()),
+                "navigation follows the message"
+            );
+            assert!(
+                close.x0 > f64::from(author.right()) && close.y1 < f64::from(author.top()),
+                "close belongs in the top-right header"
+            );
+            for button in [close, go] {
+                assert!(button.x0 >= 0.0 && button.x1 <= f64::from(size.x));
+                assert!(button.y0 >= 0.0 && button.y1 <= f64::from(size.y));
+            }
+            let navigation_rect = egui::Rect::from_min_max(
+                egui::pos2(go.x0 as f32, go.y0 as f32),
+                egui::pos2(go.x1 as f32, go.y1 as f32),
+            );
+            let navigation_clip = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == "Go to message" => {
+                        Some(shape.clip_rect)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            assert!(
+                navigation_clip.contains_rect(navigation_rect),
+                "navigation is clipped at {size:?}: {navigation_rect:?} by {navigation_clip:?}"
+            );
+            assert!(
+                !output.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Text(text) if text.galley.job.text == "Reply in thread"
+                        && shape.clip_rect == navigation_clip
+                )),
+                "Pins must not show a redundant static reply button"
+            );
+            let navigation_center = egui::pos2(
+                ((go.x0 + go.x1) / 2.0) as f32,
+                ((go.y0 + go.y1) / 2.0) as f32,
+            );
+            assert!(
+                output.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Rect(rect) if rect.stroke.width == 1.0
+                        && f64::from(rect.rect.top()) > close.y1
+                        && rect.rect.contains(author.center())
+                        && rect.rect.contains(navigation_center)
+                        && shape.clip_rect.contains_rect(rect.rect)
+                )),
+                "each pin has a fully visible bordered card"
+            );
+            for pressed in [true, false] {
+                frame(
+                    &mut app,
+                    size,
+                    vec![
+                        egui::Event::PointerMoved(egui::pos2(
+                            (close.x0 + 14.0) as f32,
+                            (close.y0 + 14.0) as f32,
+                        )),
+                        egui::Event::PointerButton {
+                            pos: egui::pos2((close.x0 + 14.0) as f32, (close.y0 + 14.0) as f32),
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            }
+            assert!(!app.showing_pins, "header close works at {size:?}");
+        }
     }
 
     #[test]
@@ -13556,9 +15903,14 @@ mod tests {
         let labels = texts(&output);
         assert!(labels.contains(&"You blocked @maya."), "{labels:?}");
         assert!(!labels.contains(&"Message TEST FIXTURE Maya"));
+        assert!(
+            !app.selected_is_joined(),
+            "a block stops reactions, pins and edits as well as sending"
+        );
         click(&mut app, &context, last_text_position(&output, "Unblock"));
         receive_until(&mut app, |app| !app.is_blocked("fixture-maya"));
         assert!(!app.directs[0].blocked);
+        assert!(app.selected_is_joined());
         let output = render(&mut app, &context, vec![]);
         assert!(texts(&output).contains(&"Message TEST FIXTURE Maya"));
         assert!(
@@ -14464,6 +16816,166 @@ mod tests {
             app.dialog.is_none(),
             "outside click did not dismiss direct-message dialog"
         );
+    }
+
+    #[test]
+    fn create_and_direct_dialogs_focus_their_field_and_stay_open_while_pending() {
+        for dialog in [
+            Dialog::CreateSpace,
+            Dialog::CreateChannel,
+            Dialog::StartDirect,
+        ] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-desktop"),
+            );
+            app.form_name.clear();
+            app.member_username.clear();
+            app.dialog = Some(dialog);
+            render(&mut app, &context, vec![]);
+            app.error = Some("Enter a channel name.".into());
+            render(&mut app, &context, vec![egui::Event::Text("abc".into())]);
+            assert!(
+                app.form_name == "abc" || app.member_username == "abc",
+                "typing reaches the field without a click"
+            );
+            assert!(app.error.is_none(), "editing clears the error");
+            app.loading = true;
+            render(&mut app, &context, press(egui::Key::Escape));
+            assert!(app.dialog.is_some(), "Escape closed a pending dialog");
+            app.loading = false;
+            render(&mut app, &context, press(egui::Key::Escape));
+            assert!(app.dialog.is_none());
+        }
+    }
+
+    #[test]
+    fn message_editor_opens_with_the_caret_after_the_draft() {
+        let context = egui::Context::default();
+        // The editor's fixed id keeps an earlier session's caret at the start.
+        let id = egui::Id::new("edit-message-text");
+        let mut stale = egui::text_edit::TextEditState::default();
+        stale
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::one(
+                egui::text::CCursor::new(0),
+            )));
+        stale.store(&context, id);
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-edits-editor"),
+        );
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, vec![]);
+        let draft = app.message_editor.as_ref().unwrap().draft.chars().count();
+        let caret = egui::TextEdit::load_state(&context, id)
+            .unwrap()
+            .cursor
+            .char_range()
+            .unwrap()
+            .primary
+            .index;
+        assert!(draft > 0);
+        assert_eq!(caret, draft);
+        assert!(context.memory(|memory| memory.has_focus(id)));
+    }
+
+    #[test]
+    fn dm_threads_name_the_person_and_say_why_read_only_dms_cannot_reply() {
+        for (fixture, peer, can_reply) in [
+            ("parity-requests", "TEST FIXTURE Jordan", false),
+            ("parity-blocked-dm", "TEST FIXTURE Maya", false),
+            ("parity-requests-outgoing", "TEST FIXTURE Sam", true),
+        ] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some(fixture),
+            );
+            app.thread_view = Some(super::ThreadView {
+                root: app.timeline.messages().next().unwrap().id.clone(),
+                loading: false,
+                has_more: false,
+                before: None,
+                error: None,
+                window: None,
+                has_newer: false,
+            });
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            let labels = texts(&output);
+            assert!(
+                labels.contains(&format!("with {peer}").as_str()),
+                "{fixture}: {labels:?}"
+            );
+            if can_reply {
+                assert!(
+                    labels.contains(&"Also send to conversation"),
+                    "{fixture}: {labels:?}"
+                );
+            } else {
+                assert!(
+                    labels.contains(&"You can’t reply in this conversation."),
+                    "{fixture}: {labels:?}"
+                );
+                assert!(labels.contains(&"No replies yet."), "{fixture}: {labels:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn only_the_clicked_request_action_shows_progress() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-requests"),
+        );
+        app.token = Some("account-token".into());
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        click(&mut app, &context, text_position(&output, "Decline"));
+        let output = render(&mut app, &context, vec![]);
+        let labels = texts(&output);
+        assert!(labels.contains(&"Declining…"), "{labels:?}");
+        assert!(labels.contains(&"Accept") && !labels.contains(&"Accepting…"));
+    }
+
+    #[test]
+    fn blocked_accounts_load_failures_offer_try_again_and_never_claim_an_empty_list() {
+        use crate::worker::AccountResult;
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-settings"),
+        );
+        app.token = Some("account-token".into());
+        for loaded in [None, Some(Vec::new())] {
+            app.blocks = loaded;
+            app.account_result(AccountResult::Blocks(Err("Could not reach Caper.".into())));
+            render(&mut app, &context, vec![]);
+            let output = scroll_modal_to_bottom(&mut app, &context);
+            let labels = texts(&output);
+            assert!(labels.contains(&"Could not reach Caper."), "{labels:?}");
+            for hidden in ["Loading…", "You haven't blocked anyone."] {
+                assert!(!labels.contains(&hidden), "{hidden}: {labels:?}");
+            }
+            click(&mut app, &context, text_position(&output, "Try again"));
+            assert!(app.blocks_error.is_none(), "Try again reloads");
+        }
+        app.account_result(AccountResult::Blocks(Err("Could not reach Caper.".into())));
+        app.account_result(AccountResult::Blocks(Ok(Vec::new())));
+        assert!(
+            app.blocks_error.is_none(),
+            "a successful load clears the error"
+        );
+        let output = scroll_modal_to_bottom(&mut app, &context);
+        assert!(texts(&output).contains(&"You haven't blocked anyone."));
     }
 
     #[test]
@@ -15503,8 +18015,26 @@ mod tests {
             .collect();
         assert!(texts.contains(&"Message TEST FIXTURE Maya"));
         assert!(texts.contains(&"Only you and this person can read this conversation."));
+        assert!(texts.contains(&"No messages yet."));
         assert!(!texts.contains(&"Message #general"));
         assert!(!texts.contains(&"Members"));
+
+        // The same display name is not enough: only the peer's account ID changes.
+        app.directs[0].peer.id = app.account.as_ref().unwrap().id.clone();
+        let output = render(&mut app, &context, vec![]);
+        let texts: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts.contains(&"You can message yourself here to keep notes, reminders, and ideas.")
+        );
+        assert!(!texts.contains(&"No messages yet."));
+        assert!(!texts.contains(&"Only you and this person can read this conversation."));
     }
 
     #[test]
@@ -16554,7 +19084,7 @@ mod tests {
         for label in ["general", "design", "planning"] {
             assert_eq!(
                 text(label).pos.x,
-                106.0,
+                103.0,
                 "public/private labels must share one offset"
             );
         }
@@ -16578,6 +19108,21 @@ mod tests {
             1,
             "only one divider above the composer: {dividers:?}"
         );
+    }
+
+    #[test]
+    fn pasted_sign_in_codes_are_cleaned_before_keeping_six_characters() {
+        for (pasted, kept) in [
+            (" abc-234", "ABC234"),
+            ("ABC-234-XYZ", "ABC234"),
+            ("abc234", "ABC234"),
+            // I, O, 0 and 1 are not in the code alphabet.
+            ("IO01", ""),
+        ] {
+            let mut code = pasted.to_owned();
+            crate::clean_sign_in_code(&mut code);
+            assert_eq!(code, kept, "{pasted:?}");
+        }
     }
 
     #[test]
@@ -16803,7 +19348,7 @@ mod tests {
             "Escape must retain composer focus"
         );
         assert!(
-            app.suggestion_dismissed.is_some(),
+            app.composer_suggestions[&id].dismissed.is_some(),
             "Escape must dismiss the current token"
         );
         render(&mut app, &context, key(egui::Key::Enter));
@@ -16940,10 +19485,774 @@ mod tests {
         let output = render(&mut app, &context, vec![]);
         assert!(shows(&output, "Maya @maya"));
         render(&mut app, &context, press(egui::Key::Escape));
-        assert!(app.suggestion_dismissed.is_some());
+        assert!(app.composer_suggestions[&id].dismissed.is_some());
         assert!(context.memory(|memory| memory.has_focus(id)));
         render(&mut app, &context, press(egui::Key::Enter));
         assert_eq!(app.pending.as_ref().unwrap().text, "hi @ma");
+    }
+
+    fn open_loaded_thread(app: &mut CaperApp, root: &str) {
+        app.thread_view = Some(super::ThreadView {
+            root: root.into(),
+            loading: false,
+            has_more: false,
+            before: None,
+            error: None,
+            window: None,
+            has_newer: false,
+        });
+    }
+
+    #[test]
+    fn thread_composer_suggests_emoji_and_mentions_with_its_own_state() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.session = Some(session());
+        let root = app.timeline.messages().next().unwrap().id.clone();
+        open_loaded_thread(&mut app, &root);
+        render(&mut app, &context, vec![]);
+        let id = egui::Id::new(("thread-draft", &root));
+        context.memory_mut(|memory| memory.request_focus(id));
+        render(&mut app, &context, vec![egui::Event::Text("@ma".into())]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Maya @maya"), "{:?}", text_shapes(&output));
+        render(&mut app, &context, press(egui::Key::Enter));
+        assert_eq!(app.thread_drafts[&root].0, "@maya ");
+        assert!(app.pending.is_none(), "Accepting a mention must not send");
+
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::Text(":rocket".into())],
+        );
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, press(egui::Key::Tab));
+        assert_eq!(app.thread_drafts[&root].0, "@maya 🚀");
+        assert!(
+            context.memory(|memory| memory.has_focus(id)),
+            "Tab must stay in the thread composer"
+        );
+        assert!(app.draft.is_empty(), "the channel draft is untouched");
+
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::Text(" :thumbs_up".into())],
+        );
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, press(egui::Key::Escape));
+        assert!(
+            app.thread_view.is_some(),
+            "Escape dismisses the suggestions, not the thread"
+        );
+        assert!(app.composer_suggestions[&id].dismissed.is_some());
+        assert!(
+            app.composer_suggestions
+                .get(&egui::Id::new("message-composer"))
+                .is_none_or(|state| state.dismissed.is_none()),
+            "the channel composer keeps its own suggestion state"
+        );
+        assert!(context.memory(|memory| memory.has_focus(id)));
+        render(&mut app, &context, press(egui::Key::Enter));
+        let pending = app.pending.as_ref().expect("Enter sends the reply");
+        assert_eq!(pending.text, "@maya 🚀 :thumbs_up");
+        assert_eq!(pending.thread_root_id.as_deref(), Some(root.as_str()));
+    }
+
+    #[test]
+    fn escape_closes_the_thread_only_after_what_is_open_above_it() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.session = Some(session());
+        let root = app.timeline.messages().next().unwrap().id.clone();
+        open_loaded_thread(&mut app, &root);
+        render(&mut app, &context, vec![]);
+
+        app.reaction_picker = Some(root.clone());
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, press(egui::Key::Escape));
+        assert!(app.reaction_picker.is_none());
+        assert!(
+            app.thread_view.is_some(),
+            "the reaction picker closes first"
+        );
+
+        app.dialog = Some(Dialog::Settings);
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, press(egui::Key::Escape));
+        assert!(app.dialog.is_none());
+        assert!(app.thread_view.is_some(), "a dialog closes first");
+
+        app.showing_pins = true;
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, press(egui::Key::Escape));
+        assert!(!app.showing_pins);
+        assert!(app.thread_view.is_some(), "Pins closes first");
+
+        render(&mut app, &context, press(egui::Key::Escape));
+        assert!(app.thread_view.is_none(), "then Escape closes the thread");
+    }
+
+    #[test]
+    fn broadcast_replies_link_to_their_thread() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.session = Some(session());
+        let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+        let root = messages[0].id.clone();
+        messages[1].thread_root_id = Some(root.clone());
+        messages[1].broadcast = true;
+        messages[2].thread_root_id = Some(root.clone());
+        app.timeline.reset(messages, "4").unwrap();
+        let link = "Replied to a thread · View thread";
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert_eq!(
+            texts(&output).iter().filter(|text| **text == link).count(),
+            1,
+            "only the reply also sent to the channel shows in it, with the link"
+        );
+        click(&mut app, &context, text_position(&output, link));
+        assert_eq!(
+            app.thread_view.as_ref().map(|thread| thread.root.as_str()),
+            Some(root.as_str())
+        );
+        let output = render(&mut app, &context, vec![]);
+        assert_eq!(
+            texts(&output).iter().filter(|text| **text == link).count(),
+            1,
+            "replies inside the thread have no link back to it"
+        );
+    }
+
+    #[test]
+    fn quick_reactions_mark_your_own_and_exist_in_the_catalog() {
+        let reactions = [
+            model::Reaction {
+                emoji: "👍".into(),
+                author_ids: vec!["me".into(), "other".into()],
+            },
+            model::Reaction {
+                emoji: "🎉".into(),
+                author_ids: vec!["other".into()],
+            },
+        ];
+        assert_eq!(
+            super::quick_reactions(&reactions, Some("me")),
+            [
+                ("👍", true),
+                ("❤️", false),
+                ("😂", false),
+                ("🎉", false),
+                ("👀", false)
+            ]
+        );
+        assert!(
+            super::quick_reactions(&reactions, None)
+                .iter()
+                .all(|(_, mine)| !mine)
+        );
+        for emoji in super::QUICK_REACTIONS {
+            assert!(crate::emoji::find(emoji).is_some(), "{emoji}");
+        }
+    }
+
+    /// The ⋯ action (rightmost 24px hover control) on a message's row.
+    fn more_action(context: &egui::Context, output: &egui::FullOutput, text: &str) -> egui::Pos2 {
+        let text = text_position(output, text);
+        context.viewport(|viewport| {
+            viewport
+                .prev_pass
+                .widgets
+                .layers()
+                .flat_map(|(_, widgets)| widgets.iter())
+                .filter(|widget| {
+                    widget.rect.size() == egui::vec2(24.0, 24.0)
+                        && widget.sense.senses_click()
+                        && (text.y - 48.0..text.y).contains(&widget.rect.top())
+                })
+                .map(|widget| widget.rect.center())
+                .max_by(|a, b| a.x.total_cmp(&b.x))
+                .expect("the message's action row")
+        })
+    }
+
+    /// Centers of the clickable widgets of a `size` on `order` layers, left
+    /// to right: the menu's quick reactions or the window's tabs.
+    fn buttons(
+        context: &egui::Context,
+        order: egui::Order,
+        size: impl Fn(egui::Vec2) -> bool,
+    ) -> Vec<egui::Pos2> {
+        let mut buttons: Vec<_> = context.viewport(|viewport| {
+            viewport
+                .prev_pass
+                .widgets
+                .layers()
+                .filter(|(layer, _)| layer.order == order)
+                .flat_map(|(_, widgets)| widgets.iter())
+                .filter(|widget| widget.sense.senses_click() && size(widget.rect.size()))
+                .map(|widget| widget.rect.center())
+                .collect()
+        });
+        buttons.sort_by(|a, b| a.x.total_cmp(&b.x));
+        buttons
+    }
+
+    fn copied(output: &egui::FullOutput) -> Vec<String> {
+        output
+            .platform_output
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn message_actions_offer_quick_reactions_copy_and_who_reacted() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-reactions"),
+        );
+        let message = app.timeline.messages().nth(1).unwrap().clone();
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let more = more_action(&context, &output, &message.content.text);
+        click(&mut app, &context, more);
+        let output = render(&mut app, &context, vec![]);
+        for item in ["View reactions", "Copy text", "Copy message ID"] {
+            assert!(shows(&output, item), "{item}: {:?}", text_shapes(&output));
+        }
+        // 👍 ❤️ 😂 🎉 👀, then Add reaction.
+        // 32px wide in a menu row of 36px controls.
+        let quick = buttons(&context, egui::Order::Foreground, |size| size.x == 32.0);
+        assert_eq!(quick.len(), 6, "{quick:?}");
+        click(&mut app, &context, quick[0]);
+        assert!(
+            !app.pending_reactions[&(message.id.clone(), "👍".into())].desired,
+            "your 👍 toggles off"
+        );
+        let output = render(&mut app, &context, vec![]);
+        assert!(!shows(&output, "Copy text"), "reacting closes the menu");
+
+        click(&mut app, &context, more);
+        render(&mut app, &context, vec![]);
+        click(
+            &mut app,
+            &context,
+            buttons(&context, egui::Order::Foreground, |size| size.x == 32.0)[1],
+        );
+        assert!(app.pending_reactions[&(message.id.clone(), "❤️".into())].desired);
+
+        click(&mut app, &context, more);
+        let output = render(&mut app, &context, vec![]);
+        let position = text_position(&output, "Copy message ID");
+        let mut copied_id = Vec::new();
+        for pressed in [true, false] {
+            copied_id.extend(copied(&render(
+                &mut app,
+                &context,
+                vec![
+                    egui::Event::PointerMoved(position),
+                    egui::Event::PointerButton {
+                        pos: position,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            )));
+        }
+        assert_eq!(copied_id, vec![message.id.clone()]);
+
+        // The signed-in right-click menu offers the same read-only actions.
+        app.token = Some("fixture-token".into());
+        let output = render(&mut app, &context, vec![]);
+        let row = text_position(&output, &message.content.text);
+        for pressed in [true, false] {
+            render(
+                &mut app,
+                &context,
+                vec![
+                    egui::Event::PointerMoved(row),
+                    egui::Event::PointerButton {
+                        pos: row,
+                        button: egui::PointerButton::Secondary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        // New egui areas spend their first pass measuring, invisibly.
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Copy text"));
+        click(&mut app, &context, text_position(&output, "View reactions"));
+        assert_eq!(
+            app.reactors_view,
+            Some((message.id.clone(), "👍".into())),
+            "View reactions opens on the first emoji"
+        );
+    }
+
+    #[test]
+    fn reactions_window_opens_above_pins_and_takes_escape_first() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-reactions"),
+        );
+        let message = app.timeline.messages().nth(1).unwrap().clone();
+        app.showing_pins = true;
+        app.reactors_view = Some((message.id.clone(), "👍".into()));
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let label = text_position(&output, ":thumbs-up:");
+        let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("reactors"));
+        assert_eq!(context.layer_id_at(label), Some(layer), "drawn above Pins");
+        assert!(
+            context.memory(|memory| memory.is_above_modal_layer(layer)),
+            "and usable while Pins is open"
+        );
+        render(&mut app, &context, press(egui::Key::Escape));
+        assert!(app.reactors_view.is_none());
+        assert!(app.showing_pins, "Escape closes the reactions window first");
+
+        // The full picker (Add reaction on a pin) is usable above Pins too.
+        app.reaction_picker = Some(message.id.clone());
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let title = text_position(&output, "Add reaction");
+        let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("emoji-picker"));
+        assert_eq!(context.layer_id_at(title), Some(layer));
+        assert!(context.memory(|memory| memory.is_above_modal_layer(layer)));
+        render(&mut app, &context, press(egui::Key::Escape));
+        assert!(app.reaction_picker.is_none());
+        assert!(app.showing_pins, "Escape closes the picker first");
+    }
+
+    #[test]
+    fn channel_invitations_show_outside_browse_and_owners_manage_unjoined_channels() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-channel-directory"),
+        );
+        app.browse_channels = false;
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        for text in ["Invitations", "Private invitation · #planning", "Accept"] {
+            assert!(shows(&output, text), "{text}: {:?}", text_shapes(&output));
+        }
+
+        // Members see Join only; the owner can also open Channel settings.
+        app.browse_channels = true;
+        render(&mut app, &context, vec![]);
+        let settings = |context: &egui::Context, output: &egui::FullOutput| {
+            let join = text_position(output, "Join");
+            context.viewport(|viewport| {
+                viewport
+                    .prev_pass
+                    .widgets
+                    .layers()
+                    .flat_map(|(_, widgets)| widgets.iter())
+                    .filter(|widget| {
+                        widget.rect.size() == egui::vec2(28.0, 28.0)
+                            && widget.rect.left() > join.x
+                            && (widget.rect.center().y - join.y).abs() < 20.0
+                    })
+                    .map(|widget| widget.rect.center())
+                    .next()
+            })
+        };
+        let output = render(&mut app, &context, vec![]);
+        assert_eq!(settings(&context, &output), None, "not for members");
+        app.account.as_mut().unwrap().id = "fixture-owner".into();
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let button = settings(&context, &output).expect("owners get Channel settings");
+        click(&mut app, &context, button);
+        assert!(
+            matches!(&app.dialog, Some(Dialog::ManageChannel(id)) if id == "chan00000002"),
+            "the unjoined channel's settings open"
+        );
+        assert!(!app.browse_channels, "Browse closes, as on web");
+    }
+
+    #[test]
+    fn member_invites_check_first_confirm_and_keep_the_username_on_failure() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-admin-invitations"),
+        );
+        let (events, receiver) = std::sync::mpsc::channel();
+        app.worker.events = receiver;
+        app.token = Some("fixture-token".into());
+        let invite = |app: &mut CaperApp, username: &str| {
+            app.member_username = username.into();
+            render(app, &context, vec![]);
+            let output = render(app, &context, vec![]);
+            click(app, &context, text_position(&output, "Invite"));
+        };
+        invite(&mut app, "maya");
+        assert_eq!(
+            app.member_error,
+            Some("This person is already in the space.")
+        );
+        invite(&mut app, "fixture_invitee");
+        assert_eq!(
+            app.member_error,
+            Some("This person already has a pending invitation.")
+        );
+        assert!(!app.loading, "pre-checks send nothing");
+
+        invite(&mut app, "newperson");
+        assert!(app.loading, "a new username is invited");
+        assert_eq!(app.member_error, None);
+        events
+            .send(crate::worker::Event::Admin {
+                generation: app.generation,
+                result: Ok(crate::worker::AdminResult::InvitationCreated(Member {
+                    id: "invited00002".into(),
+                    avatar_id: None,
+                    username: "newperson".into(),
+                    display_name: "New Person".into(),
+                    owner: false,
+                })),
+            })
+            .unwrap();
+        app.receive();
+        assert!(app.member_username.is_empty());
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(
+            &output,
+            "Invitation sent. They must accept before joining."
+        ));
+
+        invite(&mut app, "ghost");
+        events
+            .send(crate::worker::Event::Admin {
+                generation: app.generation,
+                result: Err("user not found".into()),
+            })
+            .unwrap();
+        app.receive();
+        assert_eq!(
+            app.error.as_deref(),
+            Some("User not found. Check the username and try again.")
+        );
+        assert_eq!(app.member_username, "ghost", "the typed username stays");
+        assert_eq!(app.member_status, None);
+    }
+
+    #[test]
+    fn ctrl_comma_opens_settings() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        render(&mut app, &context, vec![]);
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::Key {
+                key: egui::Key::Comma,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            }],
+        );
+        assert!(matches!(app.dialog, Some(Dialog::Settings)));
+    }
+
+    #[test]
+    fn membership_refresh_moves_off_a_channel_deleted_elsewhere() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        let (events, receiver) = std::sync::mpsc::channel();
+        app.worker.events = receiver;
+        app.token = Some("fixture-token".into());
+        let mut changed = app.detail.clone().unwrap();
+        let deleted = app.selected_channel.clone().unwrap();
+        changed.channels.retain(|channel| channel.id != deleted);
+        app.refresh_membership();
+        events
+            .send(crate::worker::Event::MembershipRefreshed {
+                epoch: app.account_epoch,
+                request: app.membership_request,
+                revision: app.membership_revision,
+                navigation: app.navigation,
+                result: Ok((
+                    model::Spaces {
+                        spaces: app.spaces.clone(),
+                        invitations: Vec::new(),
+                        limits: None,
+                    },
+                    Some(changed),
+                )),
+            })
+            .unwrap();
+        app.receive();
+        assert_ne!(app.selected_channel.as_deref(), Some(deleted.as_str()));
+        assert_eq!(
+            app.navigation_target
+                .as_ref()
+                .and_then(|target| target.channel.as_deref()),
+            Some("chan00000002"),
+            "the first joined channel opens, as on web"
+        );
+    }
+
+    #[test]
+    fn membership_refresh_reconciles_spaces_invitations_and_the_open_space() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        let (events, receiver) = std::sync::mpsc::channel();
+        app.worker.events = receiver;
+        app.token = Some("fixture-token".into());
+        let open = app.detail.clone().unwrap();
+        let invited = Space {
+            id: "space0000002".into(),
+            name: "Invited Studio".into(),
+            owner_id: "someone".into(),
+            inviter: None,
+            demo: false,
+        };
+        let listed = |spaces: Vec<Space>| model::Spaces {
+            spaces,
+            invitations: vec![invited.clone()],
+            limits: None,
+        };
+        let answer =
+            |app: &CaperApp, spaces, detail, revision| crate::worker::Event::MembershipRefreshed {
+                epoch: app.account_epoch,
+                request: app.membership_request,
+                revision,
+                navigation: app.navigation,
+                result: Ok((spaces, detail)),
+            };
+
+        app.refresh_membership();
+        assert!(app.membership_refreshing);
+        app.refresh_membership();
+        assert_eq!(app.membership_request, 1, "one refresh at a time");
+
+        // A channel renamed and another created elsewhere; the open one stays.
+        let mut changed = open.clone();
+        changed.channels[1].name = "design-review".into();
+        changed.channels.push(model::Channel {
+            id: "chan00000009".into(),
+            space_id: open.space.id.clone(),
+            name: "launch".into(),
+            private: false,
+            joined: true,
+        });
+        let selected = app.selected_channel.clone();
+        events
+            .send(answer(
+                &app,
+                listed(app.spaces.clone()),
+                Some(changed.clone()),
+                app.membership_revision,
+            ))
+            .unwrap();
+        app.receive();
+        assert!(!app.membership_refreshing);
+        assert_eq!(app.invitations.len(), 1, "a new space invitation appears");
+        assert_eq!(app.detail.as_ref(), Some(&changed));
+        assert_eq!(app.selected_channel, selected, "the open channel stays");
+
+        // A change made here meanwhile wins over the older snapshot.
+        app.refresh_membership();
+        let revision = app.membership_revision;
+        app.membership_revision += 1;
+        events
+            .send(answer(&app, listed(Vec::new()), None, revision))
+            .unwrap();
+        app.receive();
+        assert_eq!(app.selected_space.as_deref(), Some(open.space.id.as_str()));
+
+        // An outage is not revocation.
+        app.refresh_membership();
+        events
+            .send(crate::worker::Event::MembershipRefreshed {
+                epoch: app.account_epoch,
+                request: app.membership_request,
+                revision: app.membership_revision,
+                navigation: app.navigation,
+                result: Err("offline".into()),
+            })
+            .unwrap();
+        app.receive();
+        assert_eq!(app.selected_space.as_deref(), Some(open.space.id.as_str()));
+
+        // Removed from the open space elsewhere.
+        app.refresh_membership();
+        let others: Vec<_> = app
+            .spaces
+            .iter()
+            .filter(|space| space.id != open.space.id)
+            .cloned()
+            .collect();
+        events
+            .send(answer(&app, listed(others), None, app.membership_revision))
+            .unwrap();
+        app.receive();
+        assert_eq!(app.selected_space, None);
+        assert!(app.detail.is_none());
+        assert_eq!(
+            app.space_notice.as_deref(),
+            Some("This space is no longer available.")
+        );
+        // New egui areas spend their first pass measuring, invisibly.
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "This space is no longer available."));
+    }
+
+    #[test]
+    fn reactions_window_lists_who_reacted_per_emoji_with_loading_and_retry() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-reactions"),
+        );
+        // Exercise the networked path: fixtures otherwise answer locally.
+        app.persist_preferences = true;
+        let (events, receiver) = std::sync::mpsc::channel();
+        app.worker.events = receiver;
+        let message = app.timeline.messages().nth(1).unwrap().clone();
+        let root = app.timeline.messages().next().unwrap().id.clone();
+        open_loaded_thread(&mut app, &root);
+        app.reactors_view = Some((message.id.clone(), "👍".into()));
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        for text in ["Reactions", ":thumbs-up:", "Loading reactions…"] {
+            assert!(shows(&output, text), "{text}: {:?}", text_shapes(&output));
+        }
+        let generation = app.generation;
+        let answer = |result| crate::worker::Event::Reactors {
+            generation,
+            channel: message.channel_id.clone(),
+            message: message.id.clone(),
+            revision: "4".into(),
+            result,
+        };
+        events.send(answer(Err("offline".into()))).unwrap();
+        app.receive();
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Couldn’t load reactions."));
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            matches!(
+                app.reactors[&message.id].state,
+                super::ReactorState::Failed(_)
+            ),
+            "a failure waits for Retry"
+        );
+        click(&mut app, &context, text_position(&output, "Retry"));
+        assert!(matches!(
+            app.reactors[&message.id].state,
+            super::ReactorState::Loading(_)
+        ));
+        let maya = model::Reactor {
+            id: "fixture-maya".into(),
+            username: Some("maya".into()),
+            display_name: Some("Maya B".into()),
+            avatar_id: Some(15),
+        };
+        events
+            .send(answer(Ok(model::Reactors {
+                message_id: message.id.clone(),
+                reaction_seq: "4".into(),
+                reactions: vec![
+                    model::ReactorGroup {
+                        emoji: "👍".into(),
+                        authors: vec![
+                            maya.clone(),
+                            model::Reactor {
+                                id: "fixture-owner".into(),
+                                username: Some("fixture_owner".into()),
+                                display_name: Some("Fixture Owner".into()),
+                                avatar_id: Some(0),
+                            },
+                        ],
+                    },
+                    model::ReactorGroup {
+                        emoji: "❤️".into(),
+                        authors: vec![maya],
+                    },
+                    model::ReactorGroup {
+                        emoji: "🎉".into(),
+                        authors: vec![model::Reactor {
+                            id: "fixture-alex".into(),
+                            username: Some("alex".into()),
+                            display_name: None,
+                            avatar_id: None,
+                        }],
+                    },
+                ],
+            })))
+            .unwrap();
+        app.receive();
+        let output = render(&mut app, &context, vec![]);
+        for text in ["Maya B", "@maya", "Fixture Owner", "@fixture_owner"] {
+            assert!(shows(&output, text), "{text}: {:?}", text_shapes(&output));
+        }
+        // One tab per emoji: 👍 ❤️ 🎉.
+        let mut tabs = buttons(&context, egui::Order::Middle, |size| size.y >= 32.0);
+        // Not the title bar's close control.
+        let row = tabs.iter().map(|tab| tab.y).fold(f32::MIN, f32::max);
+        tabs.retain(|tab| tab.y == row);
+        assert_eq!(tabs.len(), 3, "{tabs:?}");
+        click(&mut app, &context, tabs[2]);
+        let output = render(&mut app, &context, vec![]);
+        for text in [":party-popper:", "alex", "@alex"] {
+            assert!(shows(&output, text), "{text}: {:?}", text_shapes(&output));
+        }
+        assert!(!shows(&output, "@fixture_owner"), "only the 🎉 list shows");
+
+        render(&mut app, &context, press(egui::Key::Escape));
+        assert!(app.reactors_view.is_none());
+        assert!(
+            app.thread_view.is_some(),
+            "Escape closes the reactions window before the thread"
+        );
     }
 
     #[test]
@@ -17413,6 +20722,210 @@ mod tests {
     }
 
     #[test]
+    fn thread_skeletons_never_displace_loaded_replies() {
+        for size in [egui::vec2(1440.0, 900.0), egui::vec2(390.0, 844.0)] {
+            let context = egui::Context::default();
+            context.enable_accesskit();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-thread-loading"),
+            );
+            let frame = |app: &mut CaperApp| {
+                context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                        ..Default::default()
+                    },
+                    |context| app.page(context),
+                )
+            };
+            frame(&mut app);
+            let cold = frame(&mut app);
+            assert!(
+                cold.platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .any(|(_, node)| node.label() == Some("Loading messages"))
+            );
+            let root = app.thread_view.as_ref().unwrap().root.clone();
+            let mut reply = app.timeline.messages().nth(1).unwrap().clone();
+            reply.thread_root_id = Some(root);
+            reply.content.text = "TEST FIXTURE — Visible reply".into();
+            app.timeline.prepend(vec![reply]).unwrap();
+            app.thread_view.as_mut().unwrap().loading = false;
+            frame(&mut app);
+            let loaded = frame(&mut app);
+            let position = text_position(&loaded, "TEST FIXTURE — Visible reply");
+            app.thread_view.as_mut().unwrap().loading = true;
+            let refreshing = frame(&mut app);
+            assert_eq!(
+                text_position(&refreshing, "TEST FIXTURE — Visible reply"),
+                position
+            );
+            assert!(!refreshing.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.job.text == "Loading thread…")));
+            assert!(
+                !refreshing
+                    .platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .any(|(_, node)| node.label() == Some("Loading messages"))
+            );
+        }
+    }
+
+    #[test]
+    fn repeated_thread_opens_preserve_pending_requests_and_cached_pagination() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-mentions"),
+        );
+        let messages: Vec<_> = app.timeline.messages().cloned().collect();
+        let root = &messages[0];
+        let mut latest = messages[2].clone();
+        latest.thread_root_id = Some(root.id.clone());
+        let mut older = messages[1].clone();
+        older.thread_root_id = Some(root.id.clone());
+        let path = format!(
+            "GET /api/chat/channels/{}/messages/{}/thread",
+            root.channel_id, root.id
+        );
+        let latest_page =
+            serde_json::json!({"root":root,"messages":[latest],"cursor":"4","hasMore":true})
+                .to_string();
+        let older_page =
+            serde_json::json!({"root":root,"messages":[older],"cursor":"4","hasMore":false})
+                .to_string();
+        let (base, seen) = account_server(vec![
+            (
+                Box::leak(path.clone().into_boxed_str()),
+                200,
+                Box::leak(latest_page.into_boxed_str()),
+            ),
+            (
+                Box::leak(format!("{path}?before=3").into_boxed_str()),
+                200,
+                Box::leak(older_page.into_boxed_str()),
+            ),
+        ]);
+        // Fixture mode isolates this loopback worker from account credentials.
+        app.worker =
+            crate::worker::Worker::new(crate::api::Api::new(&base).unwrap(), context.clone());
+        app.open_thread(root.id.clone());
+        let pending_request = app.thread_request;
+        app.open_thread(root.id.clone());
+        assert_eq!(app.thread_request, pending_request);
+        receive_until(&mut app, |app| {
+            app.thread_view
+                .as_ref()
+                .is_some_and(|thread| !thread.loading)
+        });
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        app.load_thread(true);
+        let paging_request = app.thread_request;
+        app.open_thread(root.id.clone());
+        assert_eq!(app.thread_request, paging_request);
+        receive_until(&mut app, |app| {
+            app.thread_view
+                .as_ref()
+                .is_some_and(|thread| !thread.loading)
+        });
+        assert_eq!(seen.lock().unwrap().len(), 2);
+        app.thread_drafts
+            .insert(root.id.clone(), ("Keep this draft".into(), true));
+        app.thread_view = None;
+        app.open_thread(root.id.clone());
+        let thread = app.thread_view.as_ref().unwrap();
+        assert!(!thread.loading && !thread.has_more);
+        assert_eq!(thread.before.as_deref(), Some("2"));
+        assert_eq!(
+            app.thread_drafts[&root.id],
+            ("Keep this draft".into(), true)
+        );
+        assert_eq!(seen.lock().unwrap().len(), 2, "cached open must not fetch");
+        app.reload_channel();
+        assert!(
+            app.thread_pages.is_empty(),
+            "resync invalidates pagination caches"
+        );
+        app.clear_channel_state();
+        assert!(app.thread_view.is_none() && app.thread_pages.is_empty());
+    }
+
+    #[test]
+    fn cached_thread_context_retains_bounds_after_forward_paging() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-pins"),
+        );
+        let root = app.timeline.messages().next().unwrap().clone();
+        let reply = |seq: u64| {
+            let mut message = root.clone();
+            message.id = format!("context-reply-{seq}");
+            message.client_message_id = message.id.clone();
+            message.seq = seq.to_string();
+            message.thread_root_id = Some(root.id.clone());
+            message.pin = None;
+            message
+        };
+        app.timeline.prepend(vec![reply(100)]).unwrap();
+        app.accept_context(
+            Some(root.id.clone()),
+            "context-reply-11",
+            false,
+            Ok(model::MessageContext {
+                root: Some(root.clone()),
+                messages: (10..=12).map(reply).collect(),
+                has_more: true,
+                has_newer: true,
+            }),
+        );
+        assert!(app.error.is_none(), "valid pinned reply context");
+        app.thread_view = None;
+        app.open_thread(root.id.clone());
+        let thread = app.thread_view.as_ref().unwrap();
+        assert!(!thread.loading && thread.has_more && thread.has_newer);
+        let window = thread.window.unwrap();
+        assert_eq!((window.start, window.end), (10, Some(12)));
+        assert!(
+            !window.contains(&reply(100)),
+            "cached latest rows stay hidden"
+        );
+        app.accept_context(
+            Some(root.id.clone()),
+            "12",
+            true,
+            Ok(model::MessageContext {
+                root: Some(root.clone()),
+                messages: vec![reply(13)],
+                has_more: false,
+                has_newer: true,
+            }),
+        );
+        app.thread_view = None;
+        app.open_thread(root.id);
+        let thread = app.thread_view.as_ref().unwrap();
+        assert!(!thread.loading && thread.has_more && thread.has_newer);
+        assert_eq!(thread.before.as_deref(), Some("10"));
+        let window = thread.window.unwrap();
+        assert_eq!((window.start, window.end), (10, Some(13)));
+        app.load_thread(false);
+        let thread = app.thread_view.as_ref().unwrap();
+        assert!(thread.loading && thread.window.is_none() && !thread.has_newer);
+    }
+
+    #[test]
     fn thread_reply_pills_open_the_profile_card() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -17583,6 +21096,591 @@ mod tests {
         );
         assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
             egui::epaint::Shape::Rect(rect) if rect.fill == TERRACOTTA && rect.rect.width() == 2.0)));
+    }
+
+    /// The format of `token`'s run inside the drawn `text`.
+    fn section_format(output: &egui::FullOutput, text: &str, token: &str) -> egui::TextFormat {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(shape) if shape.galley.job.text == text => shape
+                    .galley
+                    .job
+                    .sections
+                    .iter()
+                    .find(|section| &text[section.byte_range.clone()] == token)
+                    .map(|section| section.format.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{token} is not its own run in {text}"))
+    }
+
+    fn opened_url(output: &egui::FullOutput) -> Option<&str> {
+        output
+            .platform_output
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                egui::OutputCommand::OpenUrl(url) => Some(url.url.as_str()),
+                _ => None,
+            })
+    }
+
+    #[test]
+    fn mentions_split_first_and_links_are_found_only_between_them() {
+        let text = "hi @alex: https://example.com/@alex (www.caper.example)";
+        assert_eq!(
+            message_runs(text, std::slice::from_ref(&(3..8))),
+            [
+                Run::Plain(0..3),
+                Run::Pill(3..8, 0),
+                Run::Plain(8..10),
+                Run::Link(10..35, "https://example.com/@alex".into()),
+                Run::Plain(35..37),
+                Run::Link(37..54, "https://www.caper.example".into()),
+                Run::Plain(54..55),
+            ]
+        );
+        // A pill never becomes part of a link, even with a URL-like name.
+        assert_eq!(
+            message_runs("@www.a.b", std::slice::from_ref(&(0..4))),
+            [Run::Pill(0..4, 0), Run::Plain(4..8)]
+        );
+        assert!(message_runs("", &[]).is_empty());
+    }
+
+    #[test]
+    fn message_links_open_in_the_browser_and_keep_the_row_menu_off() {
+        const LINKED: &str = "Notes at www.example.com/notes, and (https://caper.example/a_(b)).";
+        const ORIGINAL: &str = "Forwarded from https://example.com/original";
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        // Signed in, so rows carry the right-click forward menu.
+        app.token = Some("account-token".into());
+        let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+        messages[3].content.text = LINKED.into();
+        let mut original = messages[1].clone();
+        original.id = "fixture-original".into();
+        original.content.text = ORIGINAL.into();
+        messages[0].forward = Some(Box::new(crate::model::MessageForward {
+            message: Some(original),
+            seq: "4".into(),
+        }));
+        app.timeline.reset(messages, "4").unwrap();
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        for token in ["www.example.com/notes", "https://caper.example/a_(b)"] {
+            let format = section_format(&output, LINKED, token);
+            assert_eq!(format.color, TERRACOTTA_BRIGHT, "{token}");
+            assert_eq!(format.underline, egui::Stroke::new(1.0, TERRACOTTA_BRIGHT));
+        }
+        let plain = section_format(&output, LINKED, "Notes at ");
+        assert_eq!(plain.color, MESSAGE_TEXT);
+        assert_eq!(plain.underline, egui::Stroke::NONE);
+        assert_eq!(
+            section_format(&output, LINKED, ").").color,
+            MESSAGE_TEXT,
+            "trailing punctuation stays text"
+        );
+        assert_eq!(
+            section_format(&output, ORIGINAL, "https://example.com/original").color,
+            TERRACOTTA_BRIGHT,
+            "forwarded originals link too"
+        );
+
+        let link = pill_center(&output, LINKED, "www.example.com/notes");
+        let hovered = render(&mut app, &context, vec![egui::Event::PointerMoved(link)]);
+        assert_eq!(
+            hovered.platform_output.cursor_icon,
+            egui::CursorIcon::PointingHand
+        );
+        let clicked = click_at(&mut app, &context, link);
+        assert_eq!(opened_url(&clicked), Some("https://www.example.com/notes"));
+
+        // A right-click on a link belongs to the link, not the row's menu.
+        let right_click = |app: &mut CaperApp, pos: egui::Pos2| {
+            for pressed in [true, false] {
+                render(
+                    app,
+                    &context,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Secondary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            }
+            // New egui areas spend their first pass measuring, invisibly.
+            render(app, &context, vec![]);
+            render(app, &context, vec![])
+        };
+        let output = right_click(&mut app, link);
+        assert!(!texts(&output).contains(&"Forward message"));
+        let output = right_click(&mut app, pill_center(&output, LINKED, "Notes at "));
+        assert!(
+            texts(&output).contains(&"Forward message"),
+            "the row's text still offers forwarding"
+        );
+    }
+
+    #[test]
+    fn consecutive_rows_share_one_header_and_show_time_on_hover() {
+        const FIRST: &str = "The same conversation should feel familiar on every platform.";
+        const SECOND: &str =
+            "Keep the space rail, channel list, and audio controls in their usual places.";
+        const OTHER: &str = "Agreed. Let’s check the narrow layout and the management dialogs too.";
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        // Maya's two rows are a minute apart; the second was edited.
+        let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+        let created = messages[2].created_at.clone();
+        messages[2].revision = 2;
+        messages[2].edited_at = Some("2026-09-23T09:50:00Z".into());
+        messages[2].edit_seq = Some("4".into());
+        app.timeline.reset(messages, "4").unwrap();
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let first = text_position(&output, FIRST);
+        let second = text_position(&output, SECOND);
+        let other = text_position(&output, OTHER);
+        assert_eq!(
+            first.x, second.x,
+            "grouped text lines up with the row above"
+        );
+        let headers = |output: &egui::FullOutput, label: &str| {
+            output
+                .shapes
+                .iter()
+                .filter(|shape| {
+                    matches!(&shape.shape, egui::Shape::Text(text)
+                    if text.galley.job.text == label && (text.pos.x + 4.0 - first.x).abs() < 1.0)
+                })
+                .count()
+        };
+        assert_eq!(headers(&output, "Maya"), 1, "one header for Maya's run");
+        assert_eq!(headers(&output, "Alex"), 1, "another author keeps a header");
+        assert!(
+            second.y - first.y < other.y - second.y,
+            "the run reads as one block"
+        );
+        let full_time = display_time(&created);
+        assert!(!shows(&output, &full_time) && !shows(&output, &format!("{full_time} (edited)")));
+        // "(edited)" follows the text on its line, and opens the history.
+        let marker = text_position(&output, "(edited)");
+        assert!(marker.x > second.x && (marker.y - second.y).abs() < 12.0);
+        // Screen readers still hear who and when (egui labels carry a value).
+        let spoken = format!("Maya {full_time}");
+        assert!(
+            output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .any(|(_, node)| node.value() == Some(spoken.as_str()))
+        );
+
+        let short = short_time(&created);
+        assert!(!shows(&output, &short), "the short time waits for hover");
+        render(&mut app, &context, vec![egui::Event::PointerMoved(second)]);
+        let hovered = render(&mut app, &context, vec![]);
+        let time = text_position(&hovered, &short);
+        assert!(
+            time.x < second.x && (time.y - second.y).abs() < 12.0,
+            "in the empty avatar column, beside the text"
+        );
+        click(&mut app, &context, marker);
+        assert!(app.edit_history.is_some());
+    }
+
+    #[test]
+    fn thread_replies_group_but_never_with_the_root_or_under_a_jump_target() {
+        const FIRST: &str =
+            "Keep the space rail, channel list, and audio controls in their usual places.";
+        const SECOND: &str =
+            "Agreed. Let’s check the narrow layout and the management dialogs too.";
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        // Maya's root at 9:41, then her replies at 9:42 and 9:43.
+        let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+        let root = messages[1].id.clone();
+        let first_reply = messages[2].id.clone();
+        messages[2].thread_root_id = Some(root.clone());
+        messages[3].thread_root_id = Some(root.clone());
+        messages[3].author = messages[1].author.clone();
+        app.timeline.reset(messages, "4").unwrap();
+        app.open_thread(root);
+        // The thread panel is on the right; take the rightmost copy.
+        let rightmost = |output: &egui::FullOutput, label: &str| {
+            output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == label => Some(text.pos),
+                    _ => None,
+                })
+                .max_by(|left, right| left.x.total_cmp(&right.x))
+                .unwrap_or_else(|| panic!("missing {label}"))
+        };
+        let headers = |output: &egui::FullOutput| {
+            let column = rightmost(output, FIRST).x;
+            output
+                .shapes
+                .iter()
+                .filter(|shape| {
+                    matches!(&shape.shape, egui::Shape::Text(text)
+                    if text.galley.job.text == "Maya" && (text.pos.x - column).abs() < 1.0)
+                })
+                .count()
+        };
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert_eq!(rightmost(&output, FIRST).x, rightmost(&output, SECOND).x);
+        assert_eq!(
+            headers(&output),
+            2,
+            "the root and the first reply keep their headers; the second groups"
+        );
+        app.focused_message = Some(first_reply);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert_eq!(headers(&output), 3, "nothing groups under a jump target");
+    }
+
+    #[test]
+    fn pending_own_messages_group_under_your_earlier_row() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+        let now = chrono::Utc::now();
+        let mine = messages[0].author.clone();
+        messages[3].author = mine.clone();
+        messages[3].created_at = (now - chrono::Duration::seconds(10)).to_rfc3339();
+        app.timeline.reset(messages, "4").unwrap();
+        app.session = Some(crate::model::ChatSession {
+            token: "fixture-token".into(),
+            author: mine.clone(),
+        });
+        let mut pending = PendingSend::prepare(None, "still sending", Vec::new());
+        pending.created_at = now.to_rfc3339();
+        app.pending = Some(pending);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            !shows(&output, "Now"),
+            "no second header for your own unsent message"
+        );
+        assert_eq!(
+            text_position(&output, "still sending").x,
+            text_position(
+                &output,
+                "Agreed. Let’s check the narrow layout and the management dialogs too."
+            )
+            .x
+        );
+    }
+
+    #[test]
+    fn resend_countdown_shows_minutes_and_seconds_rounded_up() {
+        assert_eq!(resend_wait(Duration::ZERO), Some(RESEND_COOLDOWN));
+        assert_eq!(resend_wait(RESEND_COOLDOWN), None);
+        assert_eq!(resend_wait(Duration::from_secs(90)), None);
+        let (label, changes) = resend_countdown(RESEND_COOLDOWN);
+        assert_eq!(
+            (label.as_str(), changes),
+            ("Resend code in 1:00", Duration::from_secs(1))
+        );
+        let (label, changes) = resend_countdown(Duration::from_millis(41_250));
+        assert_eq!(
+            (label.as_str(), changes),
+            ("Resend code in 0:42", Duration::from_millis(250))
+        );
+        assert_eq!(
+            resend_countdown(Duration::from_millis(1)).0,
+            "Resend code in 0:01"
+        );
+    }
+
+    #[test]
+    fn resend_code_waits_a_minute_then_sends_a_new_code_at_most_twice() {
+        let (base, seen) = account_server(vec![(
+            "POST /api/auth/email/request",
+            200,
+            r#"{"challengeId":"next-challenge"}"#,
+        )]);
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new(&base).unwrap(),
+            Some("signed-out"),
+        );
+        app.email = "fixture@example.test".into();
+        app.challenge = Some("first-challenge".into());
+        app.code = "ABC2".into();
+        app.code_sent_at = Some(Instant::now() - Duration::from_secs(18));
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let waiting = text_position(&output, "Resend code in 0:42");
+        click(&mut app, &context, waiting);
+        assert!(!app.loading, "disabled during the first minute");
+
+        for resend in 1..=MAX_RESENDS {
+            app.code_sent_at = Some(Instant::now() - RESEND_COOLDOWN);
+            let output = render(&mut app, &context, vec![]);
+            click(&mut app, &context, text_position(&output, "Resend code"));
+            assert!(app.loading);
+            receive_until(&mut app, |app| !app.loading);
+            assert_eq!(app.challenge.as_deref(), Some("next-challenge"));
+            assert!(app.code.is_empty(), "the old code is cleared");
+            assert_eq!(app.resends, resend);
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            assert!(shows(
+                &output,
+                "We sent a new code. Earlier codes no longer work."
+            ));
+            assert!(
+                context.memory(|memory| memory.has_focus(egui::Id::new("sign-in-code"))),
+                "focus stays in the code field"
+            );
+            if resend < MAX_RESENDS {
+                assert!(
+                    texts(&output).iter().any(|text| [
+                        "Resend code in 1:00",
+                        "Resend code in 0:59"
+                    ]
+                    .contains(text)),
+                    "each code restarts the wait"
+                );
+            }
+        }
+        assert_eq!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|line| *line
+                    == r#"POST /api/auth/email/request {"email":"fixture@example.test"}"#)
+                .count(),
+            usize::from(MAX_RESENDS)
+        );
+        app.code_sent_at = Some(Instant::now() - RESEND_COOLDOWN);
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            !texts(&output)
+                .iter()
+                .any(|text| text.starts_with("Resend code")),
+            "no third resend"
+        );
+        assert!(shows(
+            &output,
+            "Still nothing? Check your spam folder, or try again in 15 minutes."
+        ));
+
+        click(
+            &mut app,
+            &context,
+            text_position(&output, "Use a different email"),
+        );
+        assert!(app.challenge.is_none());
+        assert_eq!(app.resends, 0);
+        assert!(app.code_sent_at.is_none() && app.login_status.is_none());
+    }
+
+    #[test]
+    fn used_up_attempts_offer_only_email_me_a_new_code_which_counts_as_a_resend() {
+        let (base, _) = account_server(vec![(
+            "POST /api/auth/email/request",
+            200,
+            r#"{"challengeId":"next-challenge"}"#,
+        )]);
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new(&base).unwrap(),
+            Some("signed-out"),
+        );
+        app.email = "fixture@example.test".into();
+        app.challenge = Some("first-challenge".into());
+        app.attempts_remaining = Some(0);
+        app.code_sent_at = Some(Instant::now() - RESEND_COOLDOWN);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            !texts(&output)
+                .iter()
+                .any(|text| text.starts_with("Resend code"))
+        );
+        click(
+            &mut app,
+            &context,
+            text_position(&output, "Email me a new code"),
+        );
+        receive_until(&mut app, |app| !app.loading);
+        assert_eq!(app.resends, 1);
+        assert_eq!(app.attempts_remaining, None);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            texts(&output)
+                .iter()
+                .any(|text| ["Resend code in 1:00", "Resend code in 0:59"].contains(text)),
+            "it starts the wait"
+        );
+
+        // With both resends used, the button is hidden.
+        app.attempts_remaining = Some(0);
+        app.resends = MAX_RESENDS;
+        // At the limit the API would send nothing, so the button is hidden (as on web).
+        let output = render(&mut app, &context, vec![]);
+        assert!(!shows(&output, "Email me a new code"));
+        assert!(!app.loading);
+        assert!(shows(
+            &output,
+            "Still nothing? Check your spam folder, or try again in 15 minutes."
+        ));
+    }
+
+    #[test]
+    fn removing_a_member_asks_first_and_cancel_keeps_them() {
+        for (fixture, title, body) in [
+            (
+                "parity-admin",
+                "Remove Maya?",
+                "They’ll lose access to Fixture Studio and its channels. You can invite them again later.",
+            ),
+            (
+                "parity-channel",
+                "Remove Maya from #planning?",
+                "They’ll lose access to this private channel. You can add them again later.",
+            ),
+        ] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some(fixture),
+            );
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            // The owner has no Remove; the first belongs to Maya.
+            click(&mut app, &context, text_position(&output, "Remove"));
+            assert!(
+                matches!(&app.dialog, Some(Dialog::RemoveMember { member, .. }) if member == "fixture-maya"),
+                "{fixture}"
+            );
+            assert!(!app.loading, "opening the confirmation removes nobody");
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            assert!(
+                shows(&output, title),
+                "{fixture}: {:?}",
+                text_shapes(&output)
+            );
+            assert!(shows(&output, body), "{fixture}");
+            assert!(shows(&output, "Remove") && shows(&output, "Cancel"));
+            // Cancel has the initial focus, so Enter keeps the member.
+            render(&mut app, &context, press(egui::Key::Enter));
+            assert!(
+                matches!(
+                    app.dialog,
+                    Some(Dialog::ManageSpace | Dialog::ManageChannel(_))
+                ),
+                "{fixture}"
+            );
+            assert!(!app.loading);
+            assert!(
+                app.managed_members
+                    .iter()
+                    .any(|member| member.id == "fixture-maya")
+            );
+        }
+    }
+
+    #[test]
+    fn confirmed_removal_returns_to_settings_and_errors_stay_in_the_confirmation() {
+        for (fixture, route) in [
+            (
+                "parity-admin",
+                "DELETE /api/spaces/space0000001/members/fixture-maya",
+            ),
+            (
+                "parity-channel",
+                "DELETE /api/spaces/space0000001/channels/chan00000003/members/fixture-maya",
+            ),
+        ] {
+            for status in [200, 500] {
+                let (base, seen) = account_server(vec![(route, status, "{}")]);
+                let context = egui::Context::default();
+                let mut app = CaperApp::new(
+                    &context,
+                    crate::api::Api::new(&base).unwrap(),
+                    Some(fixture),
+                );
+                app.token = Some("account-token".into());
+                render(&mut app, &context, vec![]);
+                let output = render(&mut app, &context, vec![]);
+                click(&mut app, &context, text_position(&output, "Remove"));
+                render(&mut app, &context, vec![]);
+                let output = render(&mut app, &context, vec![]);
+                click(&mut app, &context, text_position(&output, "Remove"));
+                assert!(app.loading);
+                let output = render(&mut app, &context, vec![]);
+                assert!(shows(&output, "Removing…"));
+                // Nothing cancels a removal in flight.
+                render(&mut app, &context, press(egui::Key::Escape));
+                assert!(matches!(app.dialog, Some(Dialog::RemoveMember { .. })));
+                receive_until(&mut app, |app| !app.loading);
+                assert!(seen.lock().unwrap().iter().any(|line| line == route));
+                let kept = app
+                    .managed_members
+                    .iter()
+                    .any(|member| member.id == "fixture-maya");
+                if status == 200 {
+                    assert!(
+                        matches!(
+                            app.dialog,
+                            Some(Dialog::ManageSpace | Dialog::ManageChannel(_))
+                        ),
+                        "{fixture}: the settings dialog stays open"
+                    );
+                    assert!(!kept, "{fixture}: the member is gone");
+                } else {
+                    assert!(matches!(app.dialog, Some(Dialog::RemoveMember { .. })));
+                    assert!(kept);
+                    let error = app.error.clone().expect("an inline error");
+                    render(&mut app, &context, vec![]);
+                    let output = render(&mut app, &context, vec![]);
+                    assert!(
+                        shows(&output, &error),
+                        "{fixture}: {:?}",
+                        text_shapes(&output)
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -18106,6 +22204,77 @@ mod tests {
     }
 
     #[test]
+    fn channel_menu_reveals_on_hover_or_focus_without_rings_or_layout_shift() {
+        let context = egui::Context::default();
+        let _app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        let frame = |events| {
+            let mut row = None;
+            let output = context.run(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |context| {
+                    egui::CentralPanel::default().show(context, |ui| {
+                        row = Some(
+                            super::channel_button(
+                                ui,
+                                egui::vec2(280.0, 32.0),
+                                "general",
+                                Some(super::NavIcon::Hash),
+                                true,
+                                super::RowExtras {
+                                    menu: Some(super::RowMenu {
+                                        label: "Channel options for general".into(),
+                                        on_hover: true,
+                                        content: Box::new(|ui| {
+                                            ui.label("Options");
+                                        }),
+                                    }),
+                                    ..Default::default()
+                                },
+                            )
+                            .0,
+                        );
+                    });
+                },
+            );
+            (output, row.unwrap())
+        };
+        let (_, row) = frame(vec![]);
+        let menu_id = row.id.with("settings");
+        let menu = context.read_response(menu_id).unwrap().rect;
+        let painted = |output: &egui::FullOutput| {
+            output.shapes.iter().any(|shape|
+            matches!(&shape.shape, egui::Shape::Mesh(mesh) if menu.contains_rect(mesh.calc_bounds())))
+        };
+        frame(vec![egui::Event::PointerMoved(row.rect.left_center())]);
+        assert!(painted(&frame(vec![]).0), "hover reveals the menu icon");
+        let (resting, unchanged) = frame(vec![egui::Event::PointerMoved(egui::pos2(700.0, 400.0))]);
+        assert!(
+            !painted(&resting),
+            "the menu icon hides when the pointer leaves"
+        );
+        assert_eq!(
+            unchanged.rect, row.rect,
+            "the hidden menu reserves its space"
+        );
+        for id in [row.id, menu_id] {
+            context.memory_mut(|memory| memory.request_focus(id));
+            let (focused, unchanged) = frame(vec![]);
+            assert!(painted(&focused), "keyboard focus reveals channel options");
+            assert_eq!(unchanged.rect, row.rect);
+            assert!(!focused.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Rect(rect) if rect.stroke.color == super::TERRACOTTA_BRIGHT && rect.stroke.width > 0.0
+            )), "keyboard focus must not paint an orange ring");
+        }
+    }
+
+    #[test]
     fn direct_heading_plus_is_hidden_until_heading_hover_or_keyboard_focus() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -18388,16 +22557,6 @@ mod tests {
             .unwrap_or_else(|| panic!("missing {label}"))
     }
 
-    fn opened_url(output: &egui::FullOutput) -> Option<String> {
-        output.platform_output.commands.iter().find_map(|command| {
-            if let egui::OutputCommand::OpenUrl(url) = command {
-                Some(url.url.clone())
-            } else {
-                None
-            }
-        })
-    }
-
     fn click_opening(
         app: &mut CaperApp,
         context: &egui::Context,
@@ -18418,7 +22577,7 @@ mod tests {
                     },
                 ],
             );
-            opened = opened.or_else(|| opened_url(&output));
+            opened = opened.or_else(|| opened_url(&output).map(str::to_owned));
         }
         opened
     }
@@ -19057,6 +23216,50 @@ mod tests {
     }
 
     #[test]
+    fn login_field_keeps_focus_through_a_request_and_edits_clear_its_error() {
+        for verifying in [false, true] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("signed-out"),
+            );
+            app.email = "fixture@example.test".into();
+            app.challenge = verifying.then(|| "fixture-challenge".into());
+            let field = egui::Id::new(if verifying {
+                "sign-in-code"
+            } else {
+                "sign-in-email"
+            });
+            let focused =
+                |context: &egui::Context| context.memory(|memory| memory.has_focus(field));
+            render(&mut app, &context, vec![]);
+            assert!(focused(&context), "focused when the page opens");
+            app.loading = true;
+            render(&mut app, &context, vec![]);
+            assert!(focused(&context), "read-only, not disabled, while pending");
+            // Enter gives up focus; the finished request returns it.
+            context.memory_mut(|memory| memory.surrender_focus(field));
+            render(&mut app, &context, vec![]);
+            app.loading = false;
+            app.error = Some("That code is incorrect or expired.".into());
+            render(&mut app, &context, vec![]);
+            assert!(focused(&context), "refocused when the request ends");
+            render(&mut app, &context, vec![egui::Event::Text("A".into())]);
+            assert!(app.error.is_none(), "editing clears the error");
+            if verifying {
+                app.code.clear();
+                render(
+                    &mut app,
+                    &context,
+                    vec![egui::Event::Paste(" abc-234".into())],
+                );
+                assert_eq!(app.code, "ABC234", "cleaned before the six-character limit");
+            }
+        }
+    }
+
+    #[test]
     fn login_spacing_does_not_add_automatic_gaps_to_explicit_spacers() {
         for (width, verifying) in [
             (1440.0, false),
@@ -19088,6 +23291,15 @@ mod tests {
                 )
             };
             frame();
+            // The field takes focus when the page opens, as on web. Measure its
+            // resting frame, without egui's 1px focus expansion.
+            context.memory_mut(|memory| {
+                memory.surrender_focus(egui::Id::new(if verifying {
+                    "sign-in-code"
+                } else {
+                    "sign-in-email"
+                }))
+            });
             let output = frame();
             let text_rect = |label: &str| {
                 output

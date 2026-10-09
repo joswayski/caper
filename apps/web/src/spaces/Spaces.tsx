@@ -1,5 +1,15 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
+import {
+  ArrowLeft,
   Ban,
   BellOff,
   ChevronDown,
@@ -36,6 +46,7 @@ import {
 } from "./notifications";
 import Tooltip from "../components/Tooltip";
 import { createSpaceNavigation, type PreparedSpace } from "./navigation";
+import { transitionBrowse, useBrowseLayout } from "./browseTransition";
 import {
   acceptChannelInvitation,
   acceptDirectRequest,
@@ -80,18 +91,32 @@ import {
   type SpaceDetail,
   type SpaceLimits,
 } from "./client";
+import { friendlyError } from "./errors";
 import "./spaces.css";
 
-function errorMessage(error: unknown) {
-  if (error instanceof SpacesApiError) {
-    if (error.message === "user not found") return "User not found. Check the username and try again.";
-    if (error.message === "user already in space") return "This person is already in the space.";
-    if (error.message === "user already in channel") return "This person already has access to this channel.";
-    if (error.message === "user already invited") return "This person already has a pending invitation.";
-    if (error.message === "invalid username") return "Use 3–32 lowercase letters, numbers, or underscores.";
-  }
-  return error instanceof Error ? error.message : "That request did not work.";
+/** Readable text for server and network failures; native clients share the same sentences. */
+const errorMessage = friendlyError;
+
+/** Closes a disclosure menu and focuses its summary, so a dialog opened from it returns focus there. */
+function closeMenu(menu: HTMLDetailsElement) {
+  menu.open = false;
+  menu.querySelector("summary")?.focus();
 }
+
+/** Row menus open upward when the scrolling sidebar has no room below them. */
+function placeMenu(menu: HTMLDetailsElement) {
+  delete menu.dataset.placement;
+  const panel = menu.querySelector<HTMLElement>(".space-actions");
+  const scroller = menu.closest<HTMLElement>(".channel-navigation");
+  if (!menu.open || !panel || !scroller) return;
+  const area = scroller.getBoundingClientRect();
+  const row = menu.getBoundingClientRect();
+  const below = Math.min(area.bottom, window.innerHeight) - row.bottom;
+  const above = row.top - Math.max(area.top, 0);
+  if (panel.offsetHeight + 8 > below && above > below) menu.dataset.placement = "above";
+}
+
+const INACCESSIBLE_DIRECT = "This conversation is not accessible.";
 
 function selectedFromUrl() {
   if (typeof window === "undefined") return {};
@@ -269,6 +294,7 @@ function NameField({
   channel = false,
   privateChannel = false,
   showIcon = false,
+  focus = true,
 }: {
   label: string;
   value: string;
@@ -276,6 +302,7 @@ function NameField({
   channel?: boolean;
   privateChannel?: boolean;
   showIcon?: boolean;
+  focus?: boolean;
 }) {
   return (
     <label className="space-field">
@@ -283,7 +310,8 @@ function NameField({
       <span className={showIcon ? "channel-name-input" : undefined}>
         {showIcon && (privateChannel ? <LockKeyhole aria-hidden="true" /> : <Hash aria-hidden="true" />)}
         <input
-          autoFocus
+          autoFocus={focus}
+          data-initial-focus={focus || undefined}
           value={value}
           maxLength={80}
           autoComplete="off"
@@ -346,21 +374,25 @@ function ChannelPrivacy({
 function SubmitRow({
   pending,
   label,
+  pendingLabel = "Saving…",
   onCancel,
   destructive = false,
+  disabled = false,
 }: {
   pending: boolean;
   label: string;
+  pendingLabel?: string;
   onCancel: () => void;
   destructive?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <div className="space-dialog-actions">
-      <button type="button" className="secondary" onClick={onCancel}>
+      <button type="button" className="secondary" disabled={pending} onClick={onCancel}>
         Cancel
       </button>
-      <button type="submit" className={destructive ? "danger" : "primary"} disabled={pending}>
-        {pending ? "Saving…" : label}
+      <button type="submit" className={destructive ? "danger" : "primary"} disabled={pending || disabled}>
+        {pending ? pendingLabel : label}
       </button>
     </div>
   );
@@ -394,7 +426,14 @@ function CreateSpaceForm({
   };
   const form = (
     <form onSubmit={(event) => void submit(event)}>
-      <NameField label="Space name" value={name} onChange={setName} />
+      <NameField
+        label="Space name"
+        value={name}
+        onChange={(value) => {
+          setName(value);
+          setError(undefined);
+        }}
+      />
       {error && (
         <p className="space-form-error" role="alert">
           {error}
@@ -461,7 +500,10 @@ function CreateChannelDialog({
           privateChannel={privateChannel}
           label="Channel name"
           value={name}
-          onChange={setName}
+          onChange={(value) => {
+            setName(value);
+            setError(undefined);
+          }}
         />
         <p className="channel-name-guidance">
           Channels are where conversations happen around a topic. Use a name that is easy to find and understand.
@@ -472,7 +514,7 @@ function CreateChannelDialog({
             {error}
           </p>
         )}
-        <SubmitRow pending={pending} label="Create channel" onCancel={onClose} />
+        <SubmitRow pending={pending} label="Create channel" pendingLabel="Creating…" onCancel={onClose} />
       </form>
     </Dialog>
   );
@@ -495,6 +537,7 @@ function LeaveSpaceDialog({
     <Dialog
       title={`Leave ${space.name}?`}
       description="You will lose access to its channels and conversations. An owner can add you again later."
+      dismissOnBackdrop={!pending}
       onClose={onClose}
     >
       <form
@@ -515,8 +558,67 @@ function LeaveSpaceDialog({
             {error}
           </p>
         )}
-        <SubmitRow pending={pending} label="Leave space" destructive onCancel={onClose} />
+        <SubmitRow pending={pending} label="Leave space" pendingLabel="Leaving…" destructive onCancel={onClose} />
       </form>
+    </Dialog>
+  );
+}
+
+/** Removing someone is easy to do by accident and hard for them to undo. */
+function RemoveMemberDialog({
+  title,
+  description,
+  onClose,
+  onRemove,
+}: {
+  title: string;
+  description: string;
+  onClose: () => void;
+  onRemove: () => Promise<void>;
+}) {
+  const [error, setError] = useState<string>();
+  const [pending, setPending] = useState(false);
+  const submitting = useRef(false);
+  return (
+    <Dialog
+      title={title}
+      onClose={() => {
+        if (!submitting.current) onClose();
+      }}
+    >
+      <div className="delete-confirmation">
+        <p>{description}</p>
+        {error && (
+          <p className="space-form-error" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="space-dialog-actions">
+          <button type="button" className="secondary" data-initial-focus disabled={pending} onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="danger"
+            disabled={pending}
+            onClick={() => {
+              if (submitting.current) return;
+              submitting.current = true;
+              setPending(true);
+              setError(undefined);
+              void onRemove()
+                .then(onClose)
+                .catch((reason) => {
+                  setError(errorMessage(reason));
+                  submitting.current = false;
+                  setPending(false);
+                });
+            }}
+          >
+            {pending ? "Removing…" : "Remove"}
+          </button>
+        </div>
+      </div>
     </Dialog>
   );
 }
@@ -524,27 +626,45 @@ function LeaveSpaceDialog({
 function MemberManager({
   members,
   invitations,
+  channel = false,
   onCancel,
   onAdd,
   onRemove,
+  removalCopy,
   pending,
+  loading = false,
 }: {
   members: Member[];
   invitations?: Member[];
+  /** A private channel's grants rather than the space's members. */
+  channel?: boolean;
   onCancel?: (member: Member) => Promise<void>;
   onAdd: (username: string) => Promise<void>;
   onRemove: (member: Member) => Promise<void>;
+  /** Confirmation title and body for removing this member. */
+  removalCopy: (member: Member) => { title: string; description: string };
   pending: boolean;
+  loading?: boolean;
 }) {
   const [username, setUsername] = useState("");
   const [error, setError] = useState<string>();
   const [success, setSuccess] = useState<string>();
+  const [removing, setRemoving] = useState<Member>();
   const submitting = useRef(false);
+  const input = useRef<HTMLInputElement>(null);
+  // The input is disabled while a request runs, so it loses focus. Return focus
+  // once it is enabled again so several people can be invited in a row.
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (pending || !refocus.current) return;
+    refocus.current = false;
+    input.current?.focus();
+  });
   return (
     <section className="member-manager">
       <div className="dialog-section-heading">
         <h3>Members</h3>
-        <span>{members.length}</span>
+        {!loading && <span>{members.length}</span>}
       </div>
       <form
         className="member-add"
@@ -554,10 +674,13 @@ function MemberManager({
           const invalid = usernameError(username);
           if (invalid) return setError(invalid);
           if (invitations && members.some((member) => member.username === username))
-            return setError("This person is already in the space.");
+            return setError(
+              channel ? "This person already has access to this channel." : "This person is already in the space.",
+            );
           if (invitations?.some((member) => member.username === username))
             return setError("This person already has a pending invitation.");
           submitting.current = true;
+          refocus.current = true;
           setError(undefined);
           setSuccess(undefined);
           void onAdd(username)
@@ -575,6 +698,7 @@ function MemberManager({
           Exact username
         </label>
         <input
+          ref={input}
           id="member-username"
           value={username}
           autoComplete="off"
@@ -610,6 +734,11 @@ function MemberManager({
           {error}
         </p>
       )}
+      {loading && (
+        <p className="channel-name-guidance" role="status">
+          Loading members…
+        </p>
+      )}
       <ul>
         {members.map((member) => (
           <li key={member.id}>
@@ -625,18 +754,25 @@ function MemberManager({
               </small>
             </span>
             {!member.owner && (
-              <button
-                type="button"
-                disabled={pending}
-                onClick={() => void onRemove(member).catch((reason) => setError(errorMessage(reason)))}
-              >
+              <button type="button" disabled={pending} onClick={() => setRemoving(member)}>
                 Remove
               </button>
             )}
           </li>
         ))}
       </ul>
-      {invitations && (
+      {removing && (
+        <RemoveMemberDialog
+          {...removalCopy(removing)}
+          onClose={() => setRemoving(undefined)}
+          onRemove={async () => {
+            await onRemove(removing);
+            // The removed row (and its button) is gone; continue in the username field.
+            refocus.current = true;
+          }}
+        />
+      )}
+      {!!invitations?.length && (
         <>
           <div className="dialog-section-heading">
             <h3>Pending invitations</h3>
@@ -646,7 +782,7 @@ function MemberManager({
             {invitations.map((member) => (
               <li key={member.id}>
                 <span className="member-avatar" aria-hidden="true">
-                  {member.displayName.slice(0, 1).toUpperCase()}
+                  <Avatar avatarId={member.avatarId} name={member.displayName} />
                 </span>
                 <span>
                   <strong>{member.displayName}</strong>
@@ -728,7 +864,15 @@ function ManageSpaceDialog({
         }}
       >
         <fieldset disabled={pending}>
-          <NameField label="Space name" value={name} onChange={setName} />
+          <NameField
+            label="Space name"
+            focus={false}
+            value={name}
+            onChange={(value) => {
+              setName(value);
+              setError(undefined);
+            }}
+          />
           <div className="inline-save">
             <button className="secondary" disabled={pending || name.trim() === detail.space.name} type="submit">
               Save name
@@ -757,6 +901,10 @@ function ManageSpaceDialog({
             setInvitations((current) => current.filter((item) => item.id !== member.id));
           })
         }
+        removalCopy={(member) => ({
+          title: `Remove ${member.displayName}?`,
+          description: `They’ll lose access to ${detail.space.name} and its channels. You can invite them again later.`,
+        })}
         onRemove={async (member) =>
           run(async () => {
             await removeSpaceMember(detail.space.id, member.id);
@@ -805,6 +953,7 @@ function ManageChannelDialog({
   const [privateChannel, setPrivateChannel] = useState(channel.private);
   const [members, setMembers] = useState<Member[]>([]);
   const [invitations, setInvitations] = useState<Member[]>([]);
+  const [membersLoaded, setMembersLoaded] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string>();
   const [pending, setPending] = useState(false);
@@ -819,13 +968,23 @@ function ManageChannelDialog({
     }
   };
   useEffect(() => {
-    if (channel.private)
-      void listChannelMembers(detail.space.id, channel.id)
-        .then((value) => {
-          setMembers(value.members);
-          setInvitations(value.invitations ?? []);
-        })
-        .catch((reason) => setError(errorMessage(reason)));
+    if (!channel.private) return;
+    let current = true;
+    void listChannelMembers(detail.space.id, channel.id)
+      .then((value) => {
+        if (!current) return;
+        setMembers(value.members);
+        setInvitations(value.invitations ?? []);
+      })
+      .catch((reason) => {
+        if (current) setError(errorMessage(reason));
+      })
+      .finally(() => {
+        if (current) setMembersLoaded(true);
+      });
+    return () => {
+      current = false;
+    };
   }, [channel.id, channel.private, detail.space.id]);
   return (
     <Dialog title="Overview" onClose={onClose} width="wide" dismissOnBackdrop>
@@ -845,7 +1004,16 @@ function ManageChannelDialog({
         }}
       >
         <fieldset disabled={pending}>
-          <NameField channel label="Channel name" value={name} onChange={setName} />
+          <NameField
+            channel
+            focus={false}
+            label="Channel name"
+            value={name}
+            onChange={(value) => {
+              setName(value);
+              setError(undefined);
+            }}
+          />
           <ChannelPrivacy spaceName={detail.space.name} checked={privateChannel} onChange={setPrivateChannel} />
         </fieldset>
       </form>
@@ -856,8 +1024,10 @@ function ManageChannelDialog({
       )}
       {channel.private && (
         <MemberManager
+          loading={!membersLoaded}
           members={members}
           invitations={invitations}
+          channel
           pending={pending}
           onAdd={async (username) =>
             run(async () => {
@@ -871,6 +1041,10 @@ function ManageChannelDialog({
               setInvitations((items) => items.filter((item) => item.id !== member.id));
             })
           }
+          removalCopy={(member) => ({
+            title: `Remove ${member.displayName} from #${channel.name}?`,
+            description: "They’ll lose access to this private channel. You can add them again later.",
+          })}
           onRemove={async (member) =>
             run(async () => {
               await removeChannelMember(detail.space.id, channel.id, member.id);
@@ -935,7 +1109,7 @@ function StartDirectDialog({
     <Dialog
       title="New direct message"
       description="Enter an exact username. Conversations stay private across all your spaces."
-      dismissOnBackdrop
+      dismissOnBackdrop={!pending}
       onClose={onClose}
     >
       <form
@@ -956,11 +1130,15 @@ function StartDirectDialog({
           Username
           <input
             autoFocus
+            data-initial-focus
             autoComplete="off"
             value={username}
             maxLength={33}
             placeholder="@username"
-            onChange={(event) => setUsername(event.target.value)}
+            onChange={(event) => {
+              setUsername(event.target.value);
+              setError(undefined);
+            }}
           />
         </label>
         {error && (
@@ -968,7 +1146,13 @@ function StartDirectDialog({
             {error}
           </p>
         )}
-        <SubmitRow pending={pending} label="Open conversation" onCancel={onClose} />
+        <SubmitRow
+          pending={pending}
+          label="Open conversation"
+          pendingLabel="Opening…"
+          disabled={!username.trim()}
+          onCancel={onClose}
+        />
       </form>
     </Dialog>
   );
@@ -1134,13 +1318,13 @@ function InvitationDialog({
   onAccepted: (space: Space) => void;
   onDeclined: () => void;
 }) {
-  const [pending, setPending] = useState(false);
+  const [pending, setPending] = useState<"accept" | "decline">();
   const [error, setError] = useState<string>();
   const submitting = useRef(false);
   const respond = async (accept: boolean) => {
     if (submitting.current) return;
     submitting.current = true;
-    setPending(true);
+    setPending(accept ? "accept" : "decline");
     setError(undefined);
     try {
       if (accept) onAccepted(await acceptSpaceInvitation(space.id));
@@ -1154,7 +1338,7 @@ function InvitationDialog({
       } else setError(errorMessage(reason));
     } finally {
       submitting.current = false;
-      setPending(false);
+      setPending(undefined);
     }
   };
   return (
@@ -1182,13 +1366,13 @@ function InvitationDialog({
             className="secondary"
             type="button"
             data-initial-focus
-            disabled={pending}
+            disabled={!!pending}
             onClick={() => void respond(false)}
           >
-            Decline
+            {pending === "decline" ? "Declining…" : "Decline"}
           </button>
-          <button className="primary" type="button" disabled={pending} onClick={() => void respond(true)}>
-            {pending ? "Saving…" : "Accept invitation"}
+          <button className="primary" type="button" disabled={!!pending} onClick={() => void respond(true)}>
+            {pending === "accept" ? "Accepting…" : "Accept invitation"}
           </button>
         </div>
       </div>
@@ -1208,13 +1392,16 @@ function BrowseChannelsDialog({
   onManage?: (channel: Channel) => void;
 }) {
   const [query, setQuery] = useState("");
-  const channels = detail.channels.filter((item) => item.name.includes(query.trim().toLowerCase()));
+  // People often type the name as it is shown, with its `#`.
+  const search = query.trim().replace(/^#+/, "").trim().toLowerCase();
+  const channels = detail.channels.filter((item) => item.name.includes(search));
   return (
     <Dialog
       title="Browse channels"
       description={`Find conversations in ${detail.space.name}. Previewing a channel doesn’t join it.`}
       onClose={onClose}
       width="wide"
+      dismissOnBackdrop
     >
       <div className="channel-directory">
         <label className="space-field">
@@ -1249,7 +1436,9 @@ function BrowseChannelsDialog({
             </li>
           ))}
         </ul>
-        {!channels.length && <p role="status">No channels match your search.</p>}
+        {!channels.length && (
+          <p role="status">{query.trim() ? "No channels match your search." : "This space has no channels yet."}</p>
+        )}
       </div>
     </Dialog>
   );
@@ -1266,13 +1455,13 @@ function ChannelInvitationDialog({
   onClose: () => void;
   onRespond: (accept: boolean) => Promise<void>;
 }) {
-  const [pending, setPending] = useState(false);
+  const [pending, setPending] = useState<"accept" | "decline">();
   const [error, setError] = useState<string>();
   const submitting = useRef(false);
   const respond = async (accept: boolean) => {
     if (submitting.current) return;
     submitting.current = true;
-    setPending(true);
+    setPending(accept ? "accept" : "decline");
     setError(undefined);
     try {
       await onRespond(accept);
@@ -1280,7 +1469,7 @@ function ChannelInvitationDialog({
       setError(errorMessage(reason));
     } finally {
       submitting.current = false;
-      setPending(false);
+      setPending(undefined);
     }
   };
   return (
@@ -1311,13 +1500,13 @@ function ChannelInvitationDialog({
             type="button"
             className="secondary"
             data-initial-focus
-            disabled={pending}
+            disabled={!!pending}
             onClick={() => void respond(false)}
           >
-            Decline
+            {pending === "decline" ? "Declining…" : "Decline"}
           </button>
-          <button type="button" className="primary" disabled={pending} onClick={() => void respond(true)}>
-            {pending ? "Saving…" : "Accept invitation"}
+          <button type="button" className="primary" disabled={!!pending} onClick={() => void respond(true)}>
+            {pending === "accept" ? "Accepting…" : "Accept invitation"}
           </button>
         </div>
       </div>
@@ -1342,6 +1531,7 @@ function LeaveChannelDialog({
   return (
     <Dialog
       title="Leave channel"
+      dismissOnBackdrop={!pending}
       onClose={() => {
         if (!submitting.current) onClose();
       }}
@@ -1411,7 +1601,7 @@ export default function Spaces({
   const [directs, setDirects] = useState<DirectConversation[]>([]);
   const [directError, setDirectError] = useState<string>();
   const [selfDirectPending, setSelfDirectPending] = useState(false);
-  const [requestsOpen, setRequestsOpen] = useState(false);
+  const [requestsOpen, setRequestsOpen] = useState<boolean>();
   const [blockTarget, setBlockTarget] = useState<BlockedAccount>();
   const blockedIds = useBlockedIds();
   const notifications = useNotificationSettings();
@@ -1453,6 +1643,11 @@ export default function Spaces({
       ? { space: { id: "", name: "Direct messages", ownerId: "" }, channels: [], members: [] }
       : undefined);
   const navigation = useRef(createSpaceNavigation());
+  // The rendered detail, for the poll below whose effect tracks only the space id.
+  const shownDetail = useRef(detail);
+  useEffect(() => {
+    shownDetail.current = detail;
+  });
   const [selected, setSelected] = useState<{ spaceId?: string; channelId?: string; dmId?: string }>(() =>
     embedded ? {} : selectedFromUrl(),
   );
@@ -1473,7 +1668,21 @@ export default function Spaces({
   const invitation = invitations.find((item) => item.id === selected.spaceId);
   const [dialog, setDialog] = useState<"space" | "channel" | "manage-space" | "leave-space" | "direct">();
   const [manageChannel, setManageChannel] = useState<Channel>();
-  const [navigationOpen, setNavigationOpen] = useState(false);
+  const [navigationOpen, showNavigation] = useState(false);
+  // Where Browse is headed: it changes inside a slide's view transition, after the request.
+  const navigationTarget = useRef(false);
+  const changeNavigation = useCallback((open: boolean) => {
+    navigationTarget.current = open;
+    showNavigation(open);
+  }, []);
+  const setNavigationOpen = useCallback((next: boolean | ((open: boolean) => boolean)) => {
+    const open = typeof next === "function" ? next(navigationTarget.current) : next;
+    if (open === navigationTarget.current) return;
+    navigationTarget.current = open;
+    transitionBrowse(open, () => showNavigation(open));
+  }, []);
+  const emptyRoomRef = useRef<HTMLElement>(null);
+  useBrowseLayout(emptyRoomRef, navigationOpen);
   const spaceMenu = useRef<HTMLDetailsElement>(null);
   const channelMenu = useRef<HTMLDetailsElement>(null);
   const channelNavigationRef = useRef<HTMLElement>(null);
@@ -1508,6 +1717,8 @@ export default function Spaces({
     // intentionally cancels that navigation.
     if (spaceId === selected.spaceId && channelId === selected.channelId && dmId === selected.dmId) {
       setNavigationOpen(false);
+      // Previewing the channel already on screen from Browse still closes it.
+      setBrowseOpen(false);
       return;
     }
     activeSpace.current = spaceId;
@@ -1589,16 +1800,22 @@ export default function Spaces({
 
   const directAccessible = directs.some((item) => item.id === selected.dmId);
   useEffect(() => {
+    // The "not accessible" notice belongs to the DM that was asked for; leaving it clears it.
+    const clearInaccessible = () =>
+      setDirectError((current) => (current === INACCESSIBLE_DIRECT ? undefined : current));
     if (loading || !selected.dmId) {
       setDirectView(undefined);
+      clearInaccessible();
       return;
     }
     const conversation = directs.find((item) => item.id === selected.dmId);
     if (!conversation) {
       setDirectView(undefined);
-      setDirectError("This conversation is not accessible.");
+      setDirectError(INACCESSIBLE_DIRECT);
       return;
     }
+    // A deep link checks before the list loads; drop that error once it arrives.
+    clearInaccessible();
     // ChatClient owns the history read, its cancellation, and explicit retries.
     // Mounting it while also fetching here issued two reads for every DM open.
     setDirectView({ conversation });
@@ -1636,6 +1853,13 @@ export default function Spaces({
     if (embedded) return;
     const pop = () => {
       navigationRevision.current++;
+      // Space and channel dialogs belong to the view being left; closing them
+      // keeps a save from applying stale state to the space Back opens.
+      setDialog(undefined);
+      setManageChannel(undefined);
+      setBrowseOpen(false);
+      setChannelInvitation(undefined);
+      setLeavingChannel(undefined);
       setSelected(selectedFromUrl());
     };
     window.addEventListener("popstate", pop);
@@ -1771,7 +1995,14 @@ export default function Spaces({
           choose(result.spaces[0]?.id, undefined, true, selected.dmId);
         if (!selected.dmId && detail?.space.id && available.has(detail.space.id) && !membershipSubmitting.current) {
           const next = await getSpace(detail.space.id);
-          if (current && revision === membershipRevision.current && activeSpace.current === next.space.id)
+          // Replacing forgets every visited channel's saved history in the
+          // space, so an unchanged poll result must not cost a refetch later.
+          if (
+            current &&
+            revision === membershipRevision.current &&
+            activeSpace.current === next.space.id &&
+            JSON.stringify(next) !== JSON.stringify(shownDetail.current)
+          )
             replaceDetail(next);
         }
       } catch {
@@ -1901,7 +2132,7 @@ export default function Spaces({
 
   const incomingRequests = directs.filter((conversation) => directStatus(conversation) === "incoming");
   const requestsShown =
-    requestsOpen || incomingRequests.some((conversation) => conversation.id === directView?.conversation.id);
+    requestsOpen ?? incomingRequests.some((conversation) => conversation.id === directView?.conversation.id);
   const leaveRequest = (request: DirectConversation) => {
     const next = incomingRequests.find((conversation) => conversation.id !== request.id);
     if (directView?.conversation.id === request.id) {
@@ -2029,8 +2260,11 @@ export default function Spaces({
                   </button>
                   <details
                     className="channel-menu direct-menu"
+                    onToggle={(event) => placeMenu(event.currentTarget)}
                     onKeyDown={(event) => {
-                      if (event.key === "Escape") {
+                      if (event.key === "Escape" && event.currentTarget.open) {
+                        // Handled here, so an open thread does not also close.
+                        event.preventDefault();
                         event.currentTarget.open = false;
                         event.currentTarget.querySelector("summary")?.focus();
                       }
@@ -2322,15 +2556,16 @@ export default function Spaces({
           Opening {spaces.find((space) => space.id === selected.spaceId)?.name}…
         </span>
       )}
-      {notice && (
-        <p className="space-access-notice" role="status">
-          {notice}
-          <button type="button" aria-label="Dismiss notice" onClick={() => setNotice(undefined)}>
-            <X aria-hidden="true" />
-          </button>
-        </p>
-      )}
     </nav>
+  );
+  // Outside the rail: phones hide the rail, and its tile styles must not apply.
+  const accessNotice = notice && (
+    <p className="space-access-notice" role="status">
+      {notice}
+      <button type="button" aria-label="Dismiss notice" onClick={() => setNotice(undefined)}>
+        <X aria-hidden="true" />
+      </button>
+    </p>
   );
   const channelNavigation = (voiceFor: (channelId: string) => VoiceSlot | null) => (
     <nav
@@ -2347,7 +2582,9 @@ export default function Spaces({
               ref={spaceMenu}
               className="space-menu"
               onKeyDown={(event) => {
-                if (event.key === "Escape") {
+                if (event.key === "Escape" && event.currentTarget.open) {
+                  // Handled here, so an open thread does not also close.
+                  event.preventDefault();
                   event.currentTarget.open = false;
                   event.currentTarget.querySelector("summary")?.focus();
                 }
@@ -2369,7 +2606,7 @@ export default function Spaces({
                 <button
                   type="button"
                   onClick={() => {
-                    spaceMenu.current!.open = false;
+                    closeMenu(spaceMenu.current!);
                     setBrowseOpen(true);
                   }}
                 >
@@ -2392,7 +2629,7 @@ export default function Spaces({
                     <button
                       type="button"
                       onClick={() => {
-                        spaceMenu.current!.open = false;
+                        closeMenu(spaceMenu.current!);
                         setDialog("manage-space");
                       }}
                     >
@@ -2405,7 +2642,7 @@ export default function Spaces({
                     type="button"
                     className="leave-space"
                     onClick={() => {
-                      spaceMenu.current!.open = false;
+                      closeMenu(spaceMenu.current!);
                       setDialog("leave-space");
                     }}
                   >
@@ -2453,7 +2690,9 @@ export default function Spaces({
                 ref={channelMenu}
                 className="channel-section-menu"
                 onKeyDown={(event) => {
-                  if (event.key === "Escape") {
+                  if (event.key === "Escape" && event.currentTarget.open) {
+                    // Handled here, so an open thread does not also close.
+                    event.preventDefault();
                     event.currentTarget.open = false;
                     event.currentTarget.querySelector("summary")?.focus();
                   }
@@ -2470,7 +2709,7 @@ export default function Spaces({
                     type="button"
                     disabled={!canCreateChannel}
                     onClick={() => {
-                      channelMenu.current!.open = false;
+                      closeMenu(channelMenu.current!);
                       setDialog("channel");
                     }}
                   >
@@ -2480,7 +2719,7 @@ export default function Spaces({
                   <button
                     type="button"
                     onClick={() => {
-                      channelMenu.current!.open = false;
+                      closeMenu(channelMenu.current!);
                       setChannelsExpanded((value) => !value);
                     }}
                   >
@@ -2522,8 +2761,11 @@ export default function Spaces({
                 {!detail.space.demo && (
                   <details
                     className="channel-menu"
+                    onToggle={(event) => placeMenu(event.currentTarget)}
                     onKeyDown={(event) => {
-                      if (event.key === "Escape") {
+                      if (event.key === "Escape" && event.currentTarget.open) {
+                        // Handled here, so an open thread does not also close.
+                        event.preventDefault();
                         event.currentTarget.open = false;
                         event.currentTarget.querySelector("summary")?.focus();
                       }
@@ -2628,7 +2870,10 @@ export default function Spaces({
           <header className="call-header">
             <Wordmark />
           </header>
-          <section className={`call-room spaces-room empty-channel-room${navigationOpen ? " navigation-open" : ""}`}>
+          <section
+            ref={emptyRoomRef}
+            className={`call-room spaces-room empty-channel-room${navigationOpen ? " navigation-open" : ""}`}
+          >
             {rail}
             <ChannelSidebar>
               <div className="sidebar-channels">{channelNavigation(() => null)}</div>
@@ -2643,14 +2888,14 @@ export default function Spaces({
               <button
                 className="navigation-toggle"
                 type="button"
+                aria-label="Back to Browse"
                 aria-expanded={navigationOpen}
                 onClick={() => setNavigationOpen((open) => !open)}
               >
-                <Hash aria-hidden="true" />
-                Browse spaces
+                <ArrowLeft aria-hidden="true" />
               </button>
               <Hash aria-hidden="true" />
-              <h2>{spaces.length ? "No joined channels" : "Start a conversation."}</h2>
+              <h2>{spaces.length ? "No joined channels" : "Start a conversation"}</h2>
               <p>
                 {!spaces.length
                   ? "Create a space for your people, or start a direct message."
@@ -2658,23 +2903,36 @@ export default function Spaces({
                     ? "Browse channels or create one to start a conversation."
                     : "Browse channels to find a conversation, or accept a private channel invitation."}
               </p>
-              <button type="button" onClick={() => setBrowseOpen(true)}>
-                Browse channels
-              </button>
-              {owner && (
-                <button type="button" onClick={() => setDialog("channel")}>
-                  Create channel
+              {/* One primary action; the rest are secondary. */}
+              <div className="empty-channel-actions">
+                {spaces.length > 0 && (
+                  <button type="button" className={owner ? "secondary" : "primary"} onClick={() => setBrowseOpen(true)}>
+                    Browse channels
+                  </button>
+                )}
+                {owner && (
+                  <button type="button" className="primary" onClick={() => setDialog("channel")}>
+                    Create channel
+                  </button>
+                )}
+                {!spaces.length && (
+                  <button type="button" className="primary" onClick={() => setDialog("space")}>
+                    Create your first space
+                  </button>
+                )}
+                <button type="button" className="secondary" onClick={() => setDialog("direct")}>
+                  New direct message
                 </button>
-              )}
-              {!spaces.length && (
-                <button type="button" onClick={() => setDialog("space")}>
-                  Create your first space
-                </button>
-              )}
-              <button type="button" onClick={() => setDialog("direct")}>
-                New direct message
-              </button>
+              </div>
             </div>
+            {navigationOpen && (
+              <button
+                type="button"
+                className="browse-peek"
+                aria-label="Back to conversation"
+                onClick={() => setNavigationOpen(false)}
+              />
+            )}
           </section>
         </main>
         {dialog === "space" && (
@@ -2695,6 +2953,7 @@ export default function Spaces({
               replaceDetail({ ...detail, channels: [...detail.channels, created] });
               setDialog(undefined);
               choose(detail.space.id, created.id);
+              if (created.private) setManageChannel(created);
             }}
           />
         )}
@@ -2715,6 +2974,7 @@ export default function Spaces({
           />
         )}
         {channelDialogs}
+        {accessNotice}
         {manageChannel && (
           <ManageChannelDialog
             detail={detail}
@@ -2749,10 +3009,11 @@ export default function Spaces({
           spaceId: detail.space.id,
           demo: detail.space.demo,
           direct: !!directView,
+          directPeerId: currentDirect?.peer.id,
           // An open request or a blocked DM replaces the composer.
           joined: currentDirect ? !directLocked : channel.joined,
         }}
-        voiceChannels={directView ? [] : joinedChannels.map((item) => ({ id: item.id, name: item.name }))}
+        voiceChannels={joinedChannels.map((item) => ({ id: item.id, name: item.name }))}
         channelActions={
           currentDirect ? (
             directActions
@@ -2829,6 +3090,7 @@ export default function Spaces({
         }
         navigationOpen={navigationOpen}
         onNavigationToggle={() => setNavigationOpen((open) => !open)}
+        onNavigationChange={changeNavigation}
       />
       {dialog === "space" && (
         <CreateSpaceDialog
@@ -2887,11 +3149,14 @@ export default function Spaces({
             const remaining = detail.channels.filter((item) => item.id !== manageChannel.id);
             replaceDetail({ ...detail, channels: remaining });
             setManageChannel(undefined);
-            choose(detail.space.id, remaining.find((item) => item.joined !== false)?.id, true);
+            // Deleting another channel keeps you where you are.
+            if (manageChannel.id === channel.id)
+              choose(detail.space.id, remaining.find((item) => item.joined !== false)?.id, true);
           }}
         />
       )}
       {channelDialogs}
+      {accessNotice}
     </>
   );
 }

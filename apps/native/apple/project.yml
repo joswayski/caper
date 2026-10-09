@@ -324,6 +324,10 @@ targets:
       - Tests/CaperCoreTests/MentionCardTests.swift
       - Tests/CaperCoreTests/MessageRequestsTests.swift
       - Tests/CaperCoreTests/NotificationSettingsTests.swift
+      - Tests/CaperCoreTests/FriendlyErrorTests.swift
+      - Tests/CaperCoreTests/MessageLinksTests.swift
+      - Tests/CaperCoreTests/MessageGroupingTests.swift
+      - Tests/CaperCoreTests/CodeResendTests.swift
     dependencies:
       - target: CaperCoreIOS
       - target: CaperRTCBridgeIOS

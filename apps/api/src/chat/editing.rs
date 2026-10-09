@@ -37,7 +37,7 @@ async fn locked_channel(
     channel: &str,
     user: Option<i64>,
     writing: bool,
-) -> Result<(i64, i64), ApiError> {
+) -> Result<(i64, i64, bool), ApiError> {
     let space: Option<i64> =
         sqlx::query_scalar("SELECT space_id FROM public.channels WHERE external_id=$1")
             .bind(channel)
@@ -45,16 +45,14 @@ async fn locked_channel(
             .await
             .map_err(database_error)?
             .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
+    // Shared for writers too: the channel lock below orders this channel, and
+    // membership changes still wait for (and block) every holder.
     if let Some(space) = space {
-        sqlx::query(if writing {
-            "SELECT id FROM public.spaces WHERE id=$1 FOR UPDATE"
-        } else {
-            "SELECT id FROM public.spaces WHERE id=$1 FOR SHARE"
-        })
-        .bind(space)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(database_error)?;
+        sqlx::query("SELECT id FROM public.spaces WHERE id=$1 FOR SHARE")
+            .bind(space)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(database_error)?;
     }
     // Lock first; a subsequent statement gets the post-wait permissions snapshot.
     let row: Option<(i64, i64)> = sqlx::query_as(if writing {
@@ -87,7 +85,8 @@ async fn locked_channel(
     if !allowed {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "channel not found"));
     }
-    Ok(row)
+    // A channel never moves between a space and DMs, so the unlocked read holds.
+    Ok((row.0, row.1, space.is_none()))
 }
 
 async fn persist_edit(
@@ -110,7 +109,10 @@ async fn persist_edit(
     let (_, _, name, user, avatar) = authorize_sender(&mut tx, token).await?;
     // The editor is the author, so their session already carries the current name.
     let current_name = user.map(|_| name.as_str());
-    let (channel_id, head) = locked_channel(&mut tx, channel, user, true).await?;
+    let (channel_id, head, direct) = locked_channel(&mut tx, channel, user, true).await?;
+    if let (true, Some(user)) = (direct, user) {
+        crate::direct::authorize_interaction(&mut tx, channel_id, user).await?;
+    }
     let row: Option<(i64, Value, Option<i64>)> = sqlx::query_as(
         "SELECT m.id,m.payload,cs.user_id FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id WHERE m.channel_id=$1 AND m.external_id=$2 AND m.forward_source_id IS NULL FOR UPDATE OF m",
     )
@@ -173,13 +175,7 @@ async fn persist_edit(
         .execute(&mut *tx).await.map_err(database_error)?;
     // Edited text is re-resolved like a new message, so added or removed
     // `@mentions` follow the latest revision.
-    let in_space: bool =
-        sqlx::query_scalar("SELECT space_id IS NOT NULL FROM public.channels WHERE id=$1")
-            .bind(channel_id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(database_error)?;
-    let content = with_mentions(&mut tx, content, &mentions::parse(text, in_space)).await?;
+    let content = with_mentions(&mut tx, content, &mentions::parse(text, !direct)).await?;
     let now = Utc::now();
     payload["content"] = content;
     payload["revision"] = json!(revision + 1);
@@ -234,13 +230,16 @@ pub(super) async fn message(
     let chat = enabled(&state)?;
     let user = request_user(&chat.pool, &headers).await?;
     let mut tx = chat.pool.begin().await.map_err(database_error)?;
-    let (channel_id, _) = locked_channel(&mut tx, &channel, user, false).await?;
+    let (channel_id, _, _) = locked_channel(&mut tx, &channel, user, false).await?;
     let (payload, avatar, name): (Value, Option<i16>, Option<String>) = sqlx::query_as(
         "SELECT m.payload,u.avatar_id,u.display_name FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.channel_id=$1 AND m.external_id=$2",
     ).bind(channel_id).bind(message).fetch_optional(&mut *tx).await.map_err(database_error)?
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "message not found"))?;
-    drop(tx);
+    // Like history, never serve a forward's stored snapshot: its source may
+    // since have been deleted.
     let mut messages = [enrich_author(payload, avatar, name.as_deref())];
+    forwarding::hydrate(&mut tx, &mut messages).await?;
+    drop(tx);
     deliver(&chat.pool, chat.cdn.as_deref(), &mut messages).await?;
     let [message] = messages;
     Ok(Json(message))
@@ -260,7 +259,7 @@ async fn versions_page(
         ));
     }
     let mut tx = pool.begin().await.map_err(database_error)?;
-    let (channel_id, _) = locked_channel(&mut tx, channel, user, false).await?;
+    let (channel_id, _, _) = locked_channel(&mut tx, channel, user, false).await?;
     let (id, payload): (i64, Value) = sqlx::query_as(
         "SELECT id,payload FROM public.messages WHERE channel_id=$1 AND external_id=$2",
     )

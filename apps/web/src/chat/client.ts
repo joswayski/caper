@@ -1,3 +1,4 @@
+import { CHAT_SESSION_KEY } from "../account/client.ts";
 import { ChatConnection } from "./connection.ts";
 import { playSound } from "../audio/effects.ts";
 import { directMessageErrors } from "../spaces/direct-errors.ts";
@@ -22,7 +23,7 @@ import {
   type MessageVersion,
 } from "./types.ts";
 
-const SESSION_KEY = "caper.chat.session";
+const SESSION_KEY = CHAT_SESSION_KEY;
 
 export interface PendingChatMessage {
   clientMessageId: string;
@@ -40,6 +41,12 @@ export interface ThreadViewState {
   loading: boolean;
   loadingOlder: boolean;
   hasMore: boolean;
+  hasNewer?: boolean;
+  loadingNewer?: boolean;
+  after?: string;
+  windowStart?: string;
+  windowEnd?: string;
+  focusMessageId?: string;
   before?: string;
   error?: string;
 }
@@ -55,6 +62,9 @@ export interface ChatViewState {
   channelMessages?: ChatMessage[];
   typingAuthors: ChatAuthor[];
   hasMore: boolean;
+  hasNewer?: boolean;
+  loadingNewer?: boolean;
+  newerError?: string;
   loadingOlder: boolean;
   olderError?: string;
   author?: ChatAuthor;
@@ -101,6 +111,7 @@ export function initialChatView(history?: GeneralChatHistory, error?: string): C
         messages: history.messages,
         pinnedMessages: history.pinnedMessages ?? [],
         hasMore: history.hasMore,
+        hasNewer: history.hasNewer,
       }
     : initialState;
 }
@@ -109,8 +120,8 @@ export function apiError(response: Response, fallback: string) {
   return response
     .json()
     .catch(() => undefined)
-    .then(
-      (body: { error?: unknown; code?: unknown } | undefined) =>
+    .then((body: { error?: unknown; code?: unknown } | undefined) =>
+      Object.assign(
         new Error(
           typeof body?.code === "string" && directMessageErrors[body.code]
             ? directMessageErrors[body.code]
@@ -118,6 +129,8 @@ export function apiError(response: Response, fallback: string) {
               ? body.error
               : fallback,
         ),
+        { code: typeof body?.code === "string" ? body.code : undefined },
+      ),
     );
 }
 
@@ -140,6 +153,7 @@ function validHistory(value: unknown, general: boolean): value is ChatHistory | 
         history.pinnedMessages.length <= 100 &&
         history.pinnedMessages.every(isChatMessage))) &&
     typeof history.hasMore === "boolean" &&
+    (history.hasNewer === undefined || typeof history.hasNewer === "boolean") &&
     (!general ||
       (!!history.space &&
         typeof history.space.id === "string" &&
@@ -190,7 +204,11 @@ export async function loadMessageVersions(
     },
   );
   if (!response.ok) throw await apiError(response, "Message history could not be loaded.");
-  const page = (await response.json()) as { messageId?: string; versions?: MessageVersion[]; hasMore?: boolean };
+  const page = (await response.json()) as {
+    messageId?: string;
+    versions?: MessageVersion[];
+    hasMore?: boolean;
+  };
   if (
     page.messageId !== messageId ||
     typeof page.hasMore !== "boolean" ||
@@ -232,6 +250,70 @@ function storedSession(): ChatSession | undefined {
   return undefined;
 }
 
+async function mintSession(name: string, signal: AbortSignal): Promise<ChatSession> {
+  const response = await fetch("/api/chat/session", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name }),
+    signal,
+  });
+  if (!response.ok) throw await apiError(response, "Guest messaging is unavailable.");
+  const session = (await response.json()) as Partial<ChatSession>;
+  if (
+    typeof session.token !== "string" ||
+    !session.token ||
+    !session.author ||
+    typeof session.author.id !== "string" ||
+    typeof session.author.name !== "string" ||
+    typeof session.author.isGuest !== "boolean"
+  )
+    throw new Error("The chat service returned an invalid session.");
+  return session as ChatSession;
+}
+
+// A signed-in capability is bound to the account session, not a conversation:
+// mint one per account for this page and share it across channel switches,
+// like the native clients. Logout reloads the page, which drops it.
+// A rename mints a fresh one, so its author name stays current.
+let accountSession:
+  | {
+      accountId: string;
+      name: string;
+      session: Promise<ChatSession>;
+      token?: string;
+    }
+  | undefined;
+
+function sharedAccountSession(accountId: string, name: string): Promise<ChatSession> {
+  if (accountSession?.accountId === accountId && accountSession.name === name) return accountSession.session;
+  const entry: NonNullable<typeof accountSession> = {
+    accountId,
+    name,
+    // Not tied to one client's lifetime: another conversation may be waiting.
+    session: mintSession(name, AbortSignal.timeout(10_000)).then((minted) => {
+      if (minted.author.id !== accountId || minted.author.isGuest)
+        throw new Error("The chat service returned another identity.");
+      entry.token = minted.token;
+      return minted;
+    }),
+  };
+  accountSession = entry;
+  void entry.session.catch(() => {
+    if (accountSession === entry) accountSession = undefined;
+  });
+  return entry.session;
+}
+
+/** The server refused this capability; the next conversation mints a new one. */
+function forgetAccountSession(token: string) {
+  if (accountSession?.token === token) accountSession = undefined;
+}
+
+/** For tests: each starts with no shared capability. */
+export function resetChatSessionsForTests() {
+  accountSession = undefined;
+}
+
 export class ChatClient {
   private state = initialState;
   private readonly timeline = new ChatTimeline();
@@ -241,6 +323,7 @@ export class ChatClient {
   private sessionGeneration = 0;
   private loadingHistory = false;
   private name = "Guest";
+  private accountId?: string;
   private session?: ChatSession;
   private sending = false;
   private confirmSend?: (message: ChatMessage) => void;
@@ -266,7 +349,10 @@ export class ChatClient {
   private readonly reactionRequests = new Map<string, Promise<void>>();
   private readonly pinIntents = new Map<string, { pin: ChatMessage["pin"]; message?: ChatMessage }>();
   private readonly editIntents = new Map<string, { text: string; expectedRevision: number }>();
-  private threadRequest?: AbortController;
+  private historyAnchorGeneration = 0;
+  private contextWindow?: { start: bigint; end?: bigint };
+  private readonly threadPages = new Map<string, ThreadViewState>();
+  private readonly threadRequests = new Map<string, { promise: Promise<void>; controller: AbortController }>();
   // Fetching a thread's older rows must not insert them into the channel page
   // or move the channel's exclusive pagination boundary past a history gap.
   private readonly threadOnlyRows = new Set<string>();
@@ -292,23 +378,30 @@ export class ChatClient {
     this.silenced = ids;
   }
 
+  /** The committed replay cursor, without building a whole history snapshot. */
+  readCursor(): string | undefined {
+    if (this.state.phase !== "ready" || this.spaceId === undefined || !this.channel) return;
+    return this.timeline.cursor;
+  }
+
   snapshotHistory(): GeneralChatHistory | undefined {
     if (this.state.phase !== "ready" || this.spaceId === undefined || !this.channel) return;
     const pinnedMessages = this.timeline.pinnedMessages;
+    const visible = new Set(this.state.channelMessages?.map((message) => message.id));
     return {
       space: { id: this.spaceId, name: this.state.spaceName },
       channel: this.channel,
-      messages: this.timeline.messages.filter(
-        (message) => isChannelMessage(message) && !this.threadOnlyRows.has(message.id),
-      ),
+      messages: this.timeline.messages.filter((message) => visible.has(message.id)),
       cursor: this.timeline.cursor,
       hasMore: this.state.hasMore,
+      ...(this.state.hasNewer ? { hasNewer: true } : {}),
       ...(pinnedMessages.length ? { pinnedMessages } : {}),
     };
   }
 
-  identify(name: string, signedIn = false) {
+  identify(name: string, signedIn = false, accountId?: string) {
     this.name = name;
+    this.accountId = signedIn ? accountId : undefined;
     const saved = storedSession();
     // Guest identity may persist. Account names are not unique: mint a fresh
     // capability from the current account cookie rather than matching by name.
@@ -385,11 +478,21 @@ export class ChatClient {
     const now = Date.now();
     for (const [id, entry] of this.typers) if (entry.expires <= now) this.typers.delete(id);
     const entries = [...this.typers.values()];
-    this.update({
-      typingAuthors: entries
-        .filter((entry) => entry.typing && entry.author.id !== this.state.author?.id)
-        .map((entry) => entry.author),
-    });
+    const typingAuthors = entries
+      .filter((entry) => entry.typing && entry.author.id !== this.state.author?.id)
+      .map((entry) => entry.author);
+    // Typers refresh every 500ms; re-render only when who is shown changes.
+    const shown = this.state.typingAuthors;
+    if (
+      typingAuthors.length !== shown.length ||
+      typingAuthors.some(
+        (author, index) =>
+          author.id !== shown[index].id ||
+          author.name !== shown[index].name ||
+          author.avatarId !== shown[index].avatarId,
+      )
+    )
+      this.update({ typingAuthors });
     if (entries.length)
       this.typingExpiryTimer = setTimeout(
         () => this.refreshTypers(),
@@ -406,96 +509,173 @@ export class ChatClient {
   }
 
   closeThread() {
-    this.threadRequest?.abort();
     this.update({ thread: undefined });
   }
 
-  async openThread(rootId: string) {
-    this.threadRequest?.abort();
-    this.update({ thread: { rootId, loading: true, loadingOlder: false, hasMore: false } });
-    await this.loadThreadPage();
+  async openThread(rootId: string, around?: string) {
+    if (around) {
+      this.update({
+        thread: { rootId, loading: true, loadingOlder: false, hasMore: false },
+      });
+      await this.retryThread(around);
+      return;
+    }
+    if (this.state.thread?.rootId === rootId) {
+      await this.threadRequests.get(rootId)?.promise;
+      return;
+    }
+    const cached = this.threadPages.get(rootId);
+    this.update({
+      thread: cached ?? {
+        rootId,
+        loading: true,
+        loadingOlder: false,
+        hasMore: false,
+      },
+    });
+    if (!cached) await this.loadThreadPage(rootId);
+  }
+
+  async prefetchThread(rootId: string) {
+    if (!this.threadPages.has(rootId)) await this.loadThreadPage(rootId);
+  }
+
+  async retryThread(around?: string) {
+    const rootId = this.state.thread?.rootId;
+    if (!rootId) return;
+    this.threadRequests.get(rootId)?.controller.abort();
+    this.threadRequests.delete(rootId);
+    this.threadPages.delete(rootId);
+    await this.loadThreadPage(rootId, false, around);
   }
 
   async loadOlderThread() {
     if (this.state.thread?.hasMore && !this.state.thread.loading && !this.state.thread.loadingOlder)
-      await this.loadThreadPage(true);
+      await this.loadThreadPage(this.state.thread.rootId, true);
   }
 
-  private async loadThreadPage(older = false) {
-    const thread = this.state.thread;
+  async loadNewerThread() {
+    if (this.state.thread?.hasNewer && !this.state.thread.loading && !this.state.thread.loadingNewer)
+      await this.loadThreadPage(this.state.thread.rootId, false, undefined, true);
+  }
+
+  private loadThreadPage(rootId: string, older = false, around?: string, newer = false): Promise<void> {
+    const pending = this.threadRequests.get(rootId);
+    if (pending) return pending.promise;
     const channelId = this.state.channelId;
-    if (!thread || !channelId || this.controller.signal.aborted) return;
+    if (!channelId || this.controller.signal.aborted || this.loadingHistory) return Promise.resolve();
+    const thread = this.threadPages.get(rootId) ?? {
+      rootId,
+      loading: false,
+      loadingOlder: false,
+      hasMore: false,
+    };
     const controller = new AbortController();
-    this.threadRequest = controller;
     const generation = this.generation;
     const current = () =>
-      !controller.signal.aborted &&
-      !this.controller.signal.aborted &&
-      generation === this.generation &&
-      this.state.thread?.rootId === thread.rootId;
-    this.update({ thread: { ...thread, error: undefined, loading: !older, loadingOlder: older } });
-    try {
-      const response = await fetch(
-        `/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(thread.rootId)}/thread${older && thread.before ? `?before=${thread.before}` : ""}`,
-        {
-          cache: "no-store",
-          signal: AbortSignal.any([controller.signal, this.controller.signal, AbortSignal.timeout(10_000)]),
-        },
-      );
-      if (!response.ok) {
-        const error = await apiError(response, "Thread could not be loaded.");
-        if (current() && [401, 403, 404].includes(response.status)) {
-          this.closeThread();
-          this.retryLoad();
-          return;
-        }
-        throw error;
-      }
-      const page: unknown = await response.json();
-      if (!current()) return;
-      const history = page as ChatThreadHistory;
-      if (
-        !validHistory(page, false) ||
-        !isChatMessage(history.root) ||
-        history.root.id !== thread.rootId ||
-        history.root.channelId !== channelId ||
-        history.root.threadRootId ||
-        history.messages.some((message) => message.channelId !== channelId || message.threadRootId !== thread.rootId)
-      )
-        throw new Error("The chat service returned an invalid thread.");
-      // Merge instead of replacing: live replies/reactions may arrive during GET.
-      const loaded = new Set(this.timeline.messages.map((message) => message.id));
-      const rows = [history.root, ...history.messages];
-      for (const message of rows)
-        if (isChannelMessage(message) && !loaded.has(message.id)) this.threadOnlyRows.add(message.id);
-      this.timeline.prepend(rows);
+      !controller.signal.aborted && !this.controller.signal.aborted && generation === this.generation;
+    const visible = () => current() && this.state.thread?.rootId === rootId;
+    if (visible())
       this.update({
-        messages: this.timeline.messages,
         thread: {
-          rootId: thread.rootId,
-          loading: false,
-          loadingOlder: false,
-          hasMore: history.hasMore,
-          before: history.messages[0]?.seq ?? thread.before,
+          ...thread,
+          error: undefined,
+          loading: !older && !newer,
+          loadingOlder: older,
+          loadingNewer: newer,
         },
       });
-    } catch (error) {
-      if (current())
-        this.update({
-          thread: {
-            ...this.state.thread!,
-            loading: false,
-            loadingOlder: false,
-            error: error instanceof Error ? error.message : "Thread could not be loaded.",
+    const promise = (async () => {
+      try {
+        const query = around
+          ? `?around=${encodeURIComponent(around)}`
+          : newer && thread.after
+            ? `?after=${thread.after}`
+            : older && thread.before
+              ? `?before=${thread.before}`
+              : "";
+        const response = await fetch(
+          `/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(rootId)}/thread${query}`,
+          {
+            cache: "no-store",
+            signal: AbortSignal.any([controller.signal, this.controller.signal, AbortSignal.timeout(10_000)]),
           },
+        );
+        if (!response.ok) {
+          const error = await apiError(response, "Thread could not be loaded.");
+          if (visible() && [401, 403, 404].includes(response.status)) {
+            this.closeThread();
+            this.retryLoad();
+            return;
+          }
+          throw error;
+        }
+        const page: unknown = await response.json();
+        if (!current()) return;
+        const history = page as ChatThreadHistory;
+        if (
+          !validHistory(page, false) ||
+          !isChatMessage(history.root) ||
+          history.root.id !== rootId ||
+          history.root.channelId !== channelId ||
+          history.root.threadRootId ||
+          history.messages.some((message) => message.channelId !== channelId || message.threadRootId !== rootId) ||
+          (around && !history.messages.some((message) => message.id === around))
+        )
+          throw new Error("The chat service returned an invalid thread.");
+        // Merge instead of replacing: live replies/reactions may arrive during GET.
+        const loaded = new Set(this.timeline.messages.map((message) => message.id));
+        const rows = [history.root, ...history.messages];
+        for (const message of rows)
+          if (isChannelMessage(message) && !loaded.has(message.id)) this.threadOnlyRows.add(message.id);
+        this.timeline.prepend(rows);
+        const pageState: ThreadViewState = {
+          rootId,
+          loading: false,
+          loadingOlder: false,
+          loadingNewer: false,
+          hasMore: newer ? thread.hasMore : history.hasMore,
+          hasNewer: older ? thread.hasNewer : history.hasNewer,
+          before: newer ? thread.before : (history.messages[0]?.seq ?? (older ? thread.before : undefined)),
+          after: older ? thread.after : (history.messages.at(-1)?.seq ?? (newer ? thread.after : undefined)),
+          windowStart: newer
+            ? thread.windowStart
+            : (history.messages[0]?.seq ?? (older ? thread.windowStart : undefined)),
+          windowEnd: older ? thread.windowEnd : history.hasNewer ? history.messages.at(-1)?.seq : undefined,
+          focusMessageId: around ?? (older || newer ? thread.focusMessageId : undefined),
+        };
+        this.threadPages.set(rootId, pageState);
+        this.update({
+          messages: this.timeline.messages,
+          ...(visible() ? { thread: pageState } : {}),
         });
-    }
+      } catch (error) {
+        if (visible())
+          this.update({
+            thread: {
+              ...this.state.thread!,
+              loading: false,
+              loadingOlder: false,
+              loadingNewer: false,
+              error: error instanceof Error ? error.message : "Thread could not be loaded.",
+            },
+          });
+      }
+    })().finally(() => {
+      if (this.threadRequests.get(rootId)?.controller === controller) this.threadRequests.delete(rootId);
+    });
+    this.threadRequests.set(rootId, { promise, controller });
+    return promise;
   }
 
   discardRejected(): string | undefined {
     if (this.sending || !this.state.sendRejected) return;
     const text = this.state.pendingSend?.text;
-    this.update({ pendingSend: undefined, sendError: undefined, sendRejected: undefined });
+    this.update({
+      pendingSend: undefined,
+      sendError: undefined,
+      sendRejected: undefined,
+    });
     return text;
   }
 
@@ -511,6 +691,7 @@ export class ChatClient {
     )
       return;
     const generation = this.generation;
+    const anchorGeneration = this.historyAnchorGeneration;
     const channelId = this.state.channelId;
     this.update({ loadingOlder: true, olderError: undefined });
     try {
@@ -529,14 +710,23 @@ export class ChatClient {
       if (!response.ok) throw await apiError(response, "Older messages could not be loaded.");
       const history: unknown = await response.json();
       if (!validHistory(history, false)) throw new Error("The chat service returned invalid history.");
-      if (generation !== this.generation) return;
+      if (generation !== this.generation || anchorGeneration !== this.historyAnchorGeneration) return;
       if (history.messages.some((message) => message.channelId !== channelId))
         throw new Error("The chat service returned messages from another channel.");
       for (const message of history.messages) this.threadOnlyRows.delete(message.id);
       this.timeline.prepend(history.messages);
-      this.update({ messages: this.timeline.messages, hasMore: history.hasMore, loadingOlder: false });
+      if (this.contextWindow && history.messages[0]) this.contextWindow.start = sequence(history.messages[0].seq);
+      this.update({
+        messages: this.timeline.messages,
+        hasMore: history.hasMore,
+        loadingOlder: false,
+      });
     } catch (error) {
-      if (!this.controller.signal.aborted && generation === this.generation)
+      if (
+        !this.controller.signal.aborted &&
+        generation === this.generation &&
+        anchorGeneration === this.historyAnchorGeneration
+      )
         this.update({
           loadingOlder: false,
           olderError: error instanceof Error ? error.message : "Older messages could not be loaded.",
@@ -544,9 +734,105 @@ export class ChatClient {
     }
   }
 
+  async loadMessageContext(message: ChatMessage): Promise<boolean> {
+    if (this.loadingHistory || this.controller.signal.aborted || message.channelId !== this.state.channelId)
+      return false;
+    if (message.threadRootId) {
+      await this.openThread(message.threadRootId, message.id);
+      return this.state.thread?.focusMessageId === message.id && !this.state.thread.error;
+    }
+    const generation = this.generation;
+    const anchorGeneration = ++this.historyAnchorGeneration;
+    this.update({ loadingOlder: false, loadingNewer: false });
+    const response = await fetch(
+      `/api/chat/channels/${encodeURIComponent(message.channelId)}/messages?around=${encodeURIComponent(message.id)}`,
+      {
+        cache: "no-store",
+        signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
+      },
+    );
+    if (!response.ok) throw await apiError(response, "Message could not be found.");
+    const history: unknown = await response.json();
+    if (generation !== this.generation || anchorGeneration !== this.historyAnchorGeneration) return false;
+    if (
+      !validHistory(history, true) ||
+      history.channel.id !== message.channelId ||
+      history.messages.some((row) => row.channelId !== message.channelId || !isChannelMessage(row)) ||
+      !history.messages.some((row) => row.id === message.id)
+    )
+      throw new Error("The chat service returned invalid message context.");
+    // Merge snapshots without advancing replay; expose only the contiguous
+    // context window, not retained latest rows beyond a history gap.
+    this.contextWindow = {
+      start: sequence(history.messages[0].seq),
+      end: history.hasNewer ? sequence(history.messages.at(-1)!.seq) : undefined,
+    };
+    for (const row of history.messages) this.threadOnlyRows.delete(row.id);
+    this.timeline.prepend(history.messages);
+    this.closeThread();
+    this.update({
+      messages: this.timeline.messages,
+      hasMore: history.hasMore,
+      hasNewer: history.hasNewer,
+      loadingOlder: false,
+      olderError: undefined,
+      loadingNewer: false,
+      newerError: undefined,
+    });
+    return true;
+  }
+
+  async loadNewer() {
+    const after = this.state.channelMessages?.at(-1)?.seq;
+    if (!after || !this.state.hasNewer || this.state.loadingNewer || this.loadingHistory) return;
+    const generation = this.generation;
+    const anchorGeneration = this.historyAnchorGeneration;
+    this.update({ loadingNewer: true, newerError: undefined });
+    try {
+      const response = await fetch(
+        `/api/chat/channels/${encodeURIComponent(this.state.channelId!)}/messages?after=${after}`,
+        {
+          cache: "no-store",
+          signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
+        },
+      );
+      if (!response.ok) throw await apiError(response, "Newer messages could not be loaded.");
+      const history: unknown = await response.json();
+      if (generation !== this.generation || anchorGeneration !== this.historyAnchorGeneration) return;
+      if (
+        !validHistory(history, false) ||
+        history.messages.some((row) => row.channelId !== this.state.channelId || sequence(row.seq) <= sequence(after))
+      )
+        throw new Error("The chat service returned invalid newer messages.");
+      if (this.contextWindow)
+        this.contextWindow.end = history.hasNewer ? sequence(history.messages.at(-1)?.seq ?? after) : undefined;
+      for (const row of history.messages) this.threadOnlyRows.delete(row.id);
+      this.timeline.prepend(history.messages);
+      this.update({
+        messages: this.timeline.messages,
+        hasNewer: history.hasNewer,
+        loadingNewer: false,
+      });
+    } catch (error) {
+      if (
+        !this.controller.signal.aborted &&
+        generation === this.generation &&
+        anchorGeneration === this.historyAnchorGeneration
+      )
+        this.update({
+          loadingNewer: false,
+          newerError: error instanceof Error ? error.message : "Newer messages could not be loaded.",
+        });
+    }
+  }
+
   async send(
     text: string,
-    options: { threadRootId?: string; broadcast?: boolean; attachments?: ChatAttachment[] } = {},
+    options: {
+      threadRootId?: string;
+      broadcast?: boolean;
+      attachments?: ChatAttachment[];
+    } = {},
   ): Promise<boolean> {
     if (this.controller.signal.aborted || this.sending || this.state.sendRejected) return false;
     if (this.state.pendingSend && this.state.pendingSend.threadRootId !== options.threadRootId) return false;
@@ -589,7 +875,11 @@ export class ChatClient {
     const confirmation = new Promise<ChatMessage>((resolve) => {
       this.confirmSend = resolve;
     });
-    this.update({ pendingSend: pending, sendError: undefined, sendRejected: undefined });
+    this.update({
+      pendingSend: pending,
+      sendError: undefined,
+      sendRejected: undefined,
+    });
     let rejected = false;
     try {
       // Either transport can prove acceptance. A late HTTP failure must not
@@ -597,22 +887,32 @@ export class ChatClient {
       const request = (async () => {
         const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages`, {
           method: "POST",
-          headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
+          headers: {
+            "content-type": "application/json",
+            "x-caper-chat-token": session.token,
+          },
           body: JSON.stringify({
             clientMessageId: pending.clientMessageId,
             text: pending.text,
             ...(attachmentIds.length ? { attachmentIds } : {}),
             ...(pending.threadRootId
-              ? { threadRootId: pending.threadRootId, broadcast: pending.broadcast ?? false }
+              ? {
+                  threadRootId: pending.threadRootId,
+                  broadcast: pending.broadcast ?? false,
+                }
               : {}),
           }),
           signal: AbortSignal.any([this.controller.signal, controller.signal, AbortSignal.timeout(10_000)]),
         });
         if (!response.ok) {
-          rejected = [400, 404, 409, 413, 422].includes(response.status);
+          const error = await apiError(response, "Message could not be sent.");
+          // A block or DM privacy refusal is final, as on the native clients.
+          rejected =
+            [400, 404, 409, 413, 422].includes(response.status) ||
+            (response.status === 403 && !!error.code && error.code in directMessageErrors);
           if (
             current() &&
-            (response.status === 401 || response.status === 403) &&
+            response.status === 401 &&
             this.state.pendingSend?.clientMessageId === pending.clientMessageId
           ) {
             try {
@@ -620,10 +920,9 @@ export class ChatClient {
             } catch {
               /* Storage is optional. */
             }
-            this.session = undefined;
-            void this.createSession();
+            this.replaceSession(session);
           }
-          throw await apiError(response, "Message could not be sent.");
+          throw error;
         }
         const message: unknown = await response.json();
         if (
@@ -646,6 +945,9 @@ export class ChatClient {
         sendError: undefined,
         sendRejected: undefined,
       });
+      if (message.threadRootId && this.state.thread?.rootId === message.threadRootId && this.state.thread.hasNewer)
+        void this.retryThread();
+      else if (!message.threadRootId && this.state.hasNewer) void this.loadInitial();
       return true;
     } catch (error) {
       if (!current()) return false;
@@ -687,7 +989,10 @@ export class ChatClient {
           `/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/reactions`,
           {
             method: "PUT",
-            headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
+            headers: {
+              "content-type": "application/json",
+              "x-caper-chat-token": session.token,
+            },
             body: JSON.stringify({ emoji, active }),
             signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
           },
@@ -695,10 +1000,7 @@ export class ChatClient {
         if (!current()) return;
         if (!response.ok) {
           const error = await apiError(response, "Reaction could not be saved. Try again.");
-          if (response.status === 401 || response.status === 403) {
-            this.session = undefined;
-            void this.createSession();
-          }
+          if (response.status === 401) this.replaceSession(session);
           throw error;
         }
         const event: unknown = await response.json();
@@ -740,7 +1042,12 @@ export class ChatClient {
     if (attachment?.status !== "processing") return;
     const percent = Math.round(event.percent);
     if (this.state.attachmentProgress[attachment.id] === percent) return;
-    this.update({ attachmentProgress: { ...this.state.attachmentProgress, [attachment.id]: percent } });
+    this.update({
+      attachmentProgress: {
+        ...this.state.attachmentProgress,
+        [attachment.id]: percent,
+      },
+    });
   }
 
   async setPin(messageId: string, active: boolean): Promise<void> {
@@ -763,7 +1070,10 @@ export class ChatClient {
         `/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/pin`,
         {
           method: "PUT",
-          headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
+          headers: {
+            "content-type": "application/json",
+            "x-caper-chat-token": session.token,
+          },
           body: JSON.stringify({ active }),
           signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
         },
@@ -789,15 +1099,21 @@ export class ChatClient {
       throw new Error("Your chat session is unavailable. Retry the session, then try again.");
     const response = await fetch(`/api/chat/channels/${encodeURIComponent(destination)}/forwards`, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
-      body: JSON.stringify({ sourceChannelId: channelId, sourceMessageId: messageId, clientMessageId, text }),
+      headers: {
+        "content-type": "application/json",
+        "x-caper-chat-token": session.token,
+      },
+      body: JSON.stringify({
+        sourceChannelId: channelId,
+        sourceMessageId: messageId,
+        clientMessageId,
+        text,
+      }),
       signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
     });
-    if (!response.ok)
-      throw new ChatHistoryError(
-        response.status,
-        (await apiError(response, "Forward could not be confirmed. Retry to check the same forward.")).message,
-      );
+    // Without a server error, leave the message empty: the picker words it by status
+    // ("Not sent." or "Not confirmed yet.") and explains Retry itself.
+    if (!response.ok) throw new ChatHistoryError(response.status, (await apiError(response, "")).message);
     const message: unknown = await response.json();
     if (
       !isChatMessage(message) ||
@@ -829,7 +1145,10 @@ export class ChatClient {
         `/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}`,
         {
           method: "PUT",
-          headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
+          headers: {
+            "content-type": "application/json",
+            "x-caper-chat-token": session.token,
+          },
           body: JSON.stringify({ text, expectedRevision }),
           signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
         },
@@ -871,7 +1190,10 @@ export class ChatClient {
     if (generation !== this.generation || this.controller.signal.aborted)
       throw new Error("The conversation changed. Reopen the message to edit it.");
     this.timeline.mergeEdit(message);
-    this.update({ messages: this.timeline.messages, pinnedMessages: this.timeline.pinnedMessages });
+    this.update({
+      messages: this.timeline.messages,
+      pinnedMessages: this.timeline.pinnedMessages,
+    });
     return message;
   }
 
@@ -905,6 +1227,10 @@ export class ChatClient {
   private async loadInitial(prepared?: GeneralChatHistory) {
     if (this.controller.signal.aborted) return;
     const generation = ++this.generation;
+    ++this.historyAnchorGeneration;
+    for (const request of this.threadRequests.values()) request.controller.abort();
+    this.threadRequests.clear();
+    this.threadPages.clear();
     const hadMutations = this.pinIntents.size || this.editIntents.size;
     this.pinIntents.clear();
     this.editIntents.clear();
@@ -942,6 +1268,7 @@ export class ChatClient {
       let accounted = applied;
       const contiguous =
         previous &&
+        !previous.hasNewer &&
         history.messages.length > 0 &&
         history.messages.every((message) => {
           const next = sequence(message.seq);
@@ -964,6 +1291,13 @@ export class ChatClient {
           (contiguous && isChannelMessage(message) && !this.threadOnlyRows.has(message.id)) || freshIds.has(message.id),
       );
       this.threadOnlyRows.clear();
+      this.contextWindow =
+        prepared?.hasNewer && prepared.messages.length
+          ? {
+              start: sequence(prepared.messages[0].seq),
+              end: sequence(prepared.messages.at(-1)!.seq),
+            }
+          : undefined;
       this.timeline.reset([...history.messages, ...retained], history.cursor, history.pinnedMessages ?? []);
       this.update({
         phase: "ready",
@@ -973,6 +1307,9 @@ export class ChatClient {
         messages: this.timeline.messages,
         pinnedMessages: this.timeline.pinnedMessages,
         hasMore: retainedOlder ? previous.hasMore : history.hasMore,
+        hasNewer: history.hasNewer,
+        loadingNewer: false,
+        newerError: undefined,
       });
       this.connection = new ChatConnection(history.channel.id, {
         cursor: () => this.timeline.cursor,
@@ -996,7 +1333,8 @@ export class ChatClient {
         },
       });
       this.connection.start();
-      if (this.state.thread) void this.openThread(this.state.thread.rootId);
+      this.loadingHistory = false;
+      if (this.state.thread) void this.retryThread();
     } catch (error) {
       if (!this.controller.signal.aborted && generation === this.generation) {
         const denied = error instanceof ChatHistoryError && [401, 403, 404].includes(error.status);
@@ -1007,7 +1345,14 @@ export class ChatClient {
         this.update({
           phase: previous && !denied ? "ready" : "error",
           online: false,
-          ...(denied ? { messages: [], pinnedMessages: [], channelId: undefined, thread: undefined } : {}),
+          ...(denied
+            ? {
+                messages: [],
+                pinnedMessages: [],
+                channelId: undefined,
+                thread: undefined,
+              }
+            : {}),
           error: error instanceof Error ? error.message : "Messages are unavailable.",
         });
       }
@@ -1021,25 +1366,11 @@ export class ChatClient {
     const generation = ++this.sessionGeneration;
     this.update({ sessionError: undefined });
     try {
-      const response = await fetch("/api/chat/session", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: this.name }),
-        signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
-      });
-      if (!response.ok) throw await apiError(response, "Guest messaging is unavailable.");
-      const session = (await response.json()) as Partial<ChatSession>;
-      if (
-        typeof session.token !== "string" ||
-        !session.token ||
-        !session.author ||
-        typeof session.author.id !== "string" ||
-        typeof session.author.name !== "string" ||
-        typeof session.author.isGuest !== "boolean"
-      )
-        throw new Error("The chat service returned an invalid session.");
+      const session = this.accountId
+        ? await sharedAccountSession(this.accountId, this.name)
+        : await mintSession(this.name, AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]));
       if (this.controller.signal.aborted || generation !== this.sessionGeneration) return;
-      this.session = session as ChatSession;
+      this.session = session;
       try {
         localStorage.setItem(SESSION_KEY, JSON.stringify(session));
       } catch {
@@ -1048,8 +1379,19 @@ export class ChatClient {
       this.update({ author: session.author, sessionError: undefined });
     } catch (error) {
       if (!this.controller.signal.aborted && generation === this.sessionGeneration)
-        this.update({ sessionError: error instanceof Error ? error.message : "Guest messaging is unavailable." });
+        this.update({
+          sessionError: error instanceof Error ? error.message : "Guest messaging is unavailable.",
+        });
     }
+  }
+
+  /** Only 401 means the capability itself is invalid. A 403 is a refusal
+   * (for example a block) that a new session would not change. */
+  private replaceSession(session: ChatSession) {
+    if (this.session !== session) return;
+    forgetAccountSession(session.token);
+    this.session = undefined;
+    void this.createSession();
   }
 
   private update(change: Partial<ChatViewState>) {
@@ -1063,7 +1405,13 @@ export class ChatClient {
             ...message,
             ...(pin ? { pin: pin.pin } : {}),
             ...(edit && (message.revision ?? 1) <= edit.expectedRevision
-              ? { content: { ...message.content, text: edit.text, mentions: [] } }
+              ? {
+                  content: {
+                    ...message.content,
+                    text: edit.text,
+                    mentions: [],
+                  },
+                }
               : {}),
           };
         const intents = this.reactionIntents.get(message.id);
@@ -1086,12 +1434,21 @@ export class ChatClient {
           if (message) pinned.set(id, message);
         }
       }
-      change = { ...change, messages: change.messages.map(project), pinnedMessages: [...pinned.values()].map(project) };
+      change = {
+        ...change,
+        messages: change.messages.map(project),
+        pinnedMessages: [...pinned.values()].map(project),
+      };
     }
     this.state = { ...this.state, ...change };
     if (change.messages)
       this.state.channelMessages = change.messages.filter(
-        (message) => isChannelMessage(message) && !this.threadOnlyRows.has(message.id),
+        (message) =>
+          isChannelMessage(message) &&
+          !this.threadOnlyRows.has(message.id) &&
+          (!this.contextWindow ||
+            (sequence(message.seq) >= this.contextWindow.start &&
+              (this.contextWindow.end === undefined || sequence(message.seq) <= this.contextWindow.end))),
       );
     if ((change.messages || change.pinnedMessages) && Object.keys(this.state.attachmentProgress).length) {
       const processing = processingIds([...this.state.messages, ...this.state.pinnedMessages]);
@@ -1120,7 +1477,12 @@ export class ChatClient {
       );
       if (accepted) {
         this.confirmSend?.(accepted);
-        this.state = { ...this.state, pendingSend: undefined, sendError: undefined, sendRejected: undefined };
+        this.state = {
+          ...this.state,
+          pendingSend: undefined,
+          sendError: undefined,
+          sendRejected: undefined,
+        };
       }
     }
     this.changed(this.state);

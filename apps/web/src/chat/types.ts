@@ -137,6 +137,7 @@ export interface ChatHistory {
   messages: ChatMessage[];
   cursor: string;
   hasMore: boolean;
+  hasNewer?: boolean;
   pinnedMessages?: ChatMessage[];
 }
 

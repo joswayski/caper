@@ -295,15 +295,15 @@
   .live-app .sidebar-channels {
     padding-top: 10px;
   }
-  .live-app .chat-heading {
-    min-height: 61px;
+  .live-app .chat-layout {
+    --chat-header-height: 61px;
   }
   /* Spaces already provide their own aligned 54px navigation header. */
   .live-app .spaces-room .sidebar-channels {
     padding-top: 0;
   }
-  .live-app .spaces-room .chat-heading {
-    min-height: 54px;
+  .live-app .spaces-room .chat-layout {
+    --chat-header-height: 54px;
   }
   /* A wide saved app sidebar must not overwhelm the homepage room. */
   .live-app .people-panel {
@@ -420,7 +420,7 @@
   background: #f3f4f5;
   box-shadow: 0 16px 36px rgb(0 0 0 / 0.5);
   font-size: 15px;
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: -0.01em;
   transform: scale(var(--counter-scale));
   transform-origin: 50% 50%;
@@ -527,7 +527,7 @@
   border-radius: 8px;
   background: #39231e;
   font-size: 0.8rem;
-  font-weight: 850;
+  font-weight: 700;
 }
 .sim-rail > .sim-add-space {
   margin-top: 10px;
@@ -551,7 +551,7 @@
   justify-content: space-between;
   padding: 6px 8px;
   font-size: 0.94rem;
-  font-weight: 750;
+  font-weight: 700;
   letter-spacing: -0.02em;
 }
 .sim-brand svg {
@@ -566,7 +566,7 @@
   padding: 4px 6px;
   color: var(--text-muted);
   font-size: 0.76rem;
-  font-weight: 750;
+  font-weight: 700;
 }
 .sim-section-toggle .section-count {
   margin-left: 0;

@@ -178,6 +178,13 @@ enum BlockedMessages {
         return !author.isGuest && author.id != viewerID && !blocked.contains(author.id)
     }
 
+    /// Whether message actions offer Unblock: an author you already blocked,
+    /// on a message you chose to show.
+    static func canUnblock(_ author: ChatAuthor, viewerID: String?, blocked: Set<String>) -> Bool {
+        guard let viewerID, !viewerID.isEmpty else { return false }
+        return !author.isGuest && author.id != viewerID && blocked.contains(author.id)
+    }
+
     /// Groups each run of consecutive hidden messages. A run is revealed when
     /// any of its messages is in `revealed`, so a run that grows stays open.
     static func entries(_ messages: [ChatMessage], blocked: Set<String>, viewerID: String?,

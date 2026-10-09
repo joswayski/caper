@@ -19,20 +19,26 @@
   margin: 0 0 6px;
   padding: 0;
   font-size: 0.86rem;
-  font-weight: 750;
+  font-weight: 700;
 }
 .privacy-settings label {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 10px;
   min-height: 44px;
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
   cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease;
 }
 .privacy-settings label:has(input:checked) {
   border-color: var(--terracotta);
+}
+.privacy-settings fieldset:not(:disabled) label:hover {
+  background: rgb(255 255 255 / 4%);
 }
 .privacy-settings fieldset:disabled label {
   cursor: wait;
@@ -40,7 +46,7 @@
 }
 .privacy-settings input[type="radio"] {
   flex: 0 0 auto;
-  margin: 3px 0 0;
+  margin: 0;
   accent-color: var(--terracotta);
 }
 .privacy-settings label > span,
@@ -86,17 +92,34 @@
   min-height: 36px;
   padding: 0 12px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 8px;
   color: var(--text);
   background: var(--surface-raised);
   font: inherit;
   font-size: 0.75rem;
-  font-weight: 750;
+  font-weight: 700;
   cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease;
+}
+.privacy-settings li button:hover:not(:disabled) {
+  border-color: var(--text-muted);
+  background: var(--border);
+}
+.privacy-settings li button:hover:not(:disabled) {
+  border-color: var(--text-muted);
+  background: var(--border);
 }
 .privacy-settings li button:disabled {
   cursor: wait;
   opacity: 0.6;
+}
+@media (prefers-reduced-motion: reduce) {
+  .privacy-settings label,
+  .privacy-settings li button {
+    transition: none;
+  }
 }
 .privacy-settings :is(label, button):focus-visible,
 .privacy-settings input:focus-visible {
@@ -112,6 +135,16 @@
   margin: 0;
   color: #ff9b82;
   font-size: 0.76rem;
+}
+.privacy-error button {
+  margin-left: 6px;
+  padding: 0;
+  border: 0;
+  color: var(--text);
+  background: none;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
 }
 /* A section title, then a quieter label for its one question. */
 .notification-settings {

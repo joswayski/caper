@@ -10,6 +10,7 @@ import {
 } from "@floating-ui/react";
 import { Forward, X } from "lucide-react";
 import Avatar from "../components/Avatar";
+import LinkedText from "./LinkedText.tsx";
 import { apiError, ChatHistoryError } from "./client.ts";
 import { emojiAsset, emojiCode } from "./emoji.ts";
 import { attachmentsOf, isChatMessage, sequence, type ChatMessage } from "./types.ts";
@@ -30,6 +31,14 @@ interface Conversation {
   messages: ChatMessage[];
   cursor: string;
   hasMore: boolean;
+}
+
+// fetch rejects with a TypeError when offline and a TimeoutError after AbortSignal.timeout;
+// neither message ("Failed to fetch", "signal timed out") is meant for people.
+function failureText(reason: unknown, fallback: string) {
+  if (reason instanceof TypeError || (reason instanceof DOMException && reason.name === "TimeoutError"))
+    return "Couldn’t reach Caper. Check your connection.";
+  return reason instanceof Error && reason.message ? reason.message : fallback;
 }
 
 function ForwardDialog({
@@ -78,14 +87,21 @@ function OriginalMessage({ message }: { message: ChatMessage }) {
           <Avatar avatarId={message.author.avatarId} name={message.author.name} />
         </span>
         <strong>{message.author.name}</strong>
-        {message.editedAt && <small title={message.editedAt}>edited</small>}
+        {message.editedAt && <small title={`Edited ${new Date(message.editedAt).toLocaleString()}`}>edited</small>}
       </header>
-      {message.content.text && <p>{message.content.text}</p>}
+      {message.content.text && (
+        <p>
+          <LinkedText text={message.content.text} />
+        </p>
+      )}
       <MessageAttachments attachments={attachmentsOf(message)} />
       {!!message.reactions?.length && (
         <div className="chat-forward-reactions" aria-label="Original reactions">
           {message.reactions.map(({ emoji, authorIds }) => (
-            <span key={emoji} aria-label={`${emoji}, ${authorIds.length} reactions`}>
+            <span
+              key={emoji}
+              aria-label={`${emoji}, ${authorIds.length} ${authorIds.length === 1 ? "reaction" : "reactions"}`}
+            >
               <img src={emojiAsset(emojiCode(emoji))} width={18} height={18} alt={emoji} />
               <span>{authorIds.length}</span>
             </span>
@@ -133,16 +149,20 @@ export function ForwardPicker({
   target: ForwardTarget;
   onClose: () => void;
   onForward: (destination: string, messageId: string, key: string, text: string) => Promise<ChatMessage>;
-  onSent: (destination: Destination) => void;
+  onSent: (count: number) => void;
 }) {
   const [destinations, setDestinations] = useState<Destination[]>();
   const [search, setSearch] = useState("");
-  const [destination, setDestination] = useState<Destination>();
+  const [selected, setSelected] = useState<Destination[]>([]);
   const [note, setNote] = useState("");
   const [attempt, setAttempt] = useState(0);
   const [error, setError] = useState<string>();
   const [sending, setSending] = useState(false);
-  const [command, setCommand] = useState<{ destination: Destination; key: string; text: string }>();
+  const [sent, setSent] = useState(0);
+  const [command, setCommand] = useState<{
+    pending: { destination: Destination; key: string }[];
+    text: string;
+  }>();
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -160,7 +180,9 @@ export function ForwardPicker({
           signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]),
         });
         if (!response.ok) throw await apiError(response, "Destinations are unavailable.");
-        const data = (await response.json()) as { destinations?: Destination[] };
+        const data = (await response.json()) as {
+          destinations?: Destination[];
+        };
         if (
           !Array.isArray(data.destinations) ||
           !data.destinations.every(
@@ -172,41 +194,69 @@ export function ForwardPicker({
               typeof item.direct === "boolean",
           )
         )
-          throw new Error("Invalid forward destinations.");
+          throw new Error("Destinations are unavailable.");
         if (!controller.signal.aborted)
           setDestinations(
             data.destinations.sort((a, b) => `${a.spaceName} ${a.name}`.localeCompare(`${b.spaceName} ${b.name}`)),
           );
       } catch (reason) {
-        if (!controller.signal.aborted)
-          setError(reason instanceof Error ? reason.message : "Destinations are unavailable.");
+        if (!controller.signal.aborted) setError(failureText(reason, "Destinations are unavailable."));
       }
     })();
     return () => controller.abort();
   }, [attempt]);
   const send = async () => {
-    if (sending || !destination) return;
-    const intent = command ?? { destination, key: crypto.randomUUID(), text: note.trim() };
+    if (sending || !selected.length) return;
+    const intent = command ?? {
+      pending: selected.map((destination) => ({
+        destination,
+        key: crypto.randomUUID(),
+      })),
+      text: note.trim(),
+    };
+    let pending = intent.pending;
+    let confirmed = sent;
     setCommand(intent);
     setSending(true);
     setError(undefined);
     try {
-      await onForward(intent.destination.id, message.id, intent.key, intent.text);
-      if (mounted.current) onSent(intent.destination);
+      while (pending.length) {
+        const next = pending[0]!;
+        await onForward(next.destination.id, message.id, next.key, intent.text);
+        if (!mounted.current) return;
+        pending = pending.slice(1);
+        confirmed += 1;
+        setSent(confirmed);
+        setSelected((values) => values.filter((item) => item.id !== next.destination.id));
+        setCommand({ ...intent, pending });
+      }
+      onSent(confirmed);
     } catch (reason) {
       if (mounted.current) {
         const rejected = reason instanceof ChatHistoryError && [400, 401, 403, 404, 409, 422].includes(reason.status);
         if (rejected) setCommand(undefined);
+        // The client leaves the message empty when the response has no error body.
+        const detail = failureText(reason, "");
         setError(
-          `${rejected ? "Not sent." : "Not confirmed yet. Retry checks the same forward."} ${reason instanceof Error ? reason.message : "Try again."}`,
+          // Multi-destination progress (main) with user-facing detail, never a raw error.
+          `${confirmed ? `Forwarded to ${confirmed} ${confirmed === 1 ? "destination" : "destinations"}. ` : ""}${
+            rejected
+              ? `${confirmed ? "Remaining forwards not sent." : "Not sent."} ${detail || "Try again."}`
+              : `${confirmed ? "Remaining forwards not confirmed yet." : "Not confirmed yet."}${detail ? ` ${detail}` : ""} Retry checks the same ${pending.length === 1 ? "forward" : "forwards"}.`
+          }`,
         );
       }
     } finally {
       if (mounted.current) setSending(false);
     }
   };
+  const terms = search
+    .toLocaleLowerCase()
+    .trim()
+    .split(/\s+/)
+    .map((term) => term.replace(/^#/, ""));
   const visible = destinations?.filter((item) =>
-    `${item.spaceName} ${item.name}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()),
+    terms.every((term) => `${item.spaceName} ${item.name}`.toLocaleLowerCase().includes(term)),
   );
   return (
     <ForwardDialog title="Forward message" anchor={target.anchor} onClose={onClose}>
@@ -220,22 +270,15 @@ export function ForwardPicker({
           Send to
           <input
             type="search"
-            placeholder="Find a channel or DM"
+            placeholder="Find a space, channel or DM"
             value={search}
             disabled={!!command}
             onChange={(event) => setSearch(event.target.value)}
           />
         </label>
-        <div className="chat-forward-destinations" role="radiogroup" aria-label="Forward destination">
+        <div className="chat-forward-destinations" role="group" aria-label="Forward destinations">
           {visible?.map((item) => (
             <label key={item.id}>
-              <input
-                type="radio"
-                name="forward-destination"
-                checked={destination?.id === item.id}
-                disabled={!!command}
-                onChange={() => setDestination(item)}
-              />
               <span>
                 <strong>
                   {item.direct ? "" : "# "}
@@ -243,11 +286,30 @@ export function ForwardPicker({
                 </strong>
                 <small>{item.spaceName}</small>
               </span>
+              <input
+                type="checkbox"
+                value={item.id}
+                checked={selected.some((destination) => destination.id === item.id)}
+                disabled={!!command}
+                onChange={(event) =>
+                  setSelected((values) =>
+                    event.target.checked
+                      ? [...values, item]
+                      : values.filter((destination) => destination.id !== item.id),
+                  )
+                }
+              />
             </label>
           ))}
-          {!destinations && !error && <p role="status">Loading destinations…</p>}
+          {!destinations && !error && (
+            <p className="chat-forward-status" role="status">
+              Loading destinations…
+            </p>
+          )}
           {visible?.length === 0 && (
-            <p>{destinations?.length ? "No matching destination." : "Join a channel or start a DM to forward here."}</p>
+            <p className="chat-forward-status">
+              {destinations?.length ? "No matching destination." : "Join a channel or start a DM to forward here."}
+            </p>
           )}
         </div>
         <label>
@@ -267,10 +329,10 @@ export function ForwardPicker({
         <button
           type="button"
           className="chat-forward-send"
-          disabled={!destination || sending || Array.from(note).length > 4000}
+          disabled={!selected.length || sending || Array.from(note).length > 4000}
           onClick={() => void send()}
         >
-          {sending ? "Forwarding…" : command ? "Retry forward" : "Forward"}
+          {sending ? "Forwarding…" : command ? `Retry forwards (${selected.length})` : `Forward (${selected.length})`}
         </button>
       </div>
     </ForwardDialog>
@@ -308,8 +370,12 @@ export function ForwardConversation({
       typeof data.hasMore !== "boolean" ||
       typeof data.cursor !== "string"
     )
-      throw new Error("Invalid forwarded conversation.");
-    sequence(data.cursor);
+      throw new Error("Conversation is unavailable.");
+    try {
+      sequence(data.cursor);
+    } catch {
+      throw new Error("Conversation is unavailable.");
+    }
     return data;
   };
   useEffect(() => {
@@ -344,7 +410,7 @@ export function ForwardConversation({
       } catch (reason) {
         if (!request.signal.aborted) {
           setConversation(undefined);
-          setError(reason instanceof Error ? reason.message : "Conversation is unavailable.");
+          setError(failureText(reason, "Conversation is unavailable."));
         }
       } finally {
         if (!request.signal.aborted) setLoading(false);
@@ -368,8 +434,7 @@ export function ForwardConversation({
         });
       }
     } catch (reason) {
-      if (!request.signal.aborted)
-        setError(reason instanceof Error ? reason.message : "Older replies are unavailable.");
+      if (!request.signal.aborted) setError(failureText(reason, "Older replies are unavailable."));
     } finally {
       if (!request.signal.aborted) setLoading(false);
     }
@@ -395,12 +460,16 @@ export function ForwardConversation({
             {conversation.messages.map((reply) => (
               <OriginalMessage key={reply.id} message={reply} />
             ))}
-            {!conversation.messages.length && <p>No replies yet.</p>}
+            {!conversation.messages.length && <p className="chat-forward-status">No replies yet.</p>}
           </>
         ) : (
-          !loading && !error && <p>Original conversation unavailable.</p>
+          !loading && !error && <p className="chat-forward-status">Original conversation unavailable.</p>
         )}
-        {loading && <p role="status">Updating conversation…</p>}
+        {loading && (
+          <p className="chat-forward-status" role="status">
+            {conversation ? "Updating conversation…" : "Loading conversation…"}
+          </p>
+        )}
         {error && (
           <p role="alert" className="chat-forward-error">
             {error}

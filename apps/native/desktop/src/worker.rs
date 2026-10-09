@@ -23,6 +23,18 @@ pub enum Command {
         generation: u64,
         token: String,
     },
+    /// Web's background membership reconcile: `GET /api/spaces`, then the
+    /// open space's detail while it is still listed. `revision` and
+    /// `navigation` come back unchanged so the app can discard a snapshot
+    /// that a change made meanwhile has overtaken.
+    RefreshMembership {
+        epoch: u64,
+        request: u64,
+        revision: u64,
+        navigation: u64,
+        token: String,
+        space: Option<String>,
+    },
     /// `GET /api/people`, for `@` suggestions in DMs.
     LoadPeople {
         generation: u64,
@@ -94,9 +106,19 @@ pub enum Command {
     },
     LoadOlder {
         generation: u64,
+        request: u64,
         token: Option<String>,
         channel: String,
         before: String,
+    },
+    LoadContext {
+        generation: u64,
+        request: u64,
+        token: Option<String>,
+        channel: String,
+        root: Option<String>,
+        anchor: String,
+        newer: bool,
     },
     LoadThread {
         generation: u64,
@@ -416,6 +438,15 @@ pub enum Event {
         generation: u64,
         result: Result<Vec<DirectConversation>, String>,
     },
+    MembershipRefreshed {
+        epoch: u64,
+        request: u64,
+        revision: u64,
+        navigation: u64,
+        /// The open space's detail; `None` when not requested, no longer
+        /// listed, or unreadable (the list still applies).
+        result: Result<(Spaces, Option<SpaceDetail>), String>,
+    },
     PeopleLoaded {
         generation: u64,
         result: Result<Vec<Person>, String>,
@@ -471,8 +502,18 @@ pub enum Event {
     },
     OlderLoaded {
         generation: u64,
+        request: u64,
         channel: String,
         result: Result<History, LoadError>,
+    },
+    ContextLoaded {
+        generation: u64,
+        request: u64,
+        channel: String,
+        root: Option<String>,
+        anchor: String,
+        newer: bool,
+        result: Result<crate::model::MessageContext, LoadError>,
     },
     ThreadLoaded {
         generation: u64,
@@ -980,6 +1021,28 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             token,
             ids,
         },
+        Command::RefreshMembership {
+            epoch,
+            request,
+            revision,
+            navigation,
+            token,
+            space,
+        } => Event::MembershipRefreshed {
+            epoch,
+            request,
+            revision,
+            navigation,
+            result: api
+                .spaces(&token)
+                .map(|spaces| {
+                    let detail = space
+                        .filter(|id| spaces.spaces.iter().any(|item| item.id == *id))
+                        .and_then(|id| api.space(&token, &id).ok());
+                    (spaces, detail)
+                })
+                .map_err(|error| error.to_string()),
+        },
         Command::LoadDirects { generation, token } => Event::DirectsLoaded {
             generation,
             result: api
@@ -1197,14 +1260,35 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
         }
         Command::LoadOlder {
             generation,
+            request,
             token,
             channel,
             before,
         } => Event::OlderLoaded {
             generation,
+            request,
             channel: channel.clone(),
             result: api
                 .history(token.as_deref(), &channel, Some(&before))
+                .map_err(LoadError::from),
+        },
+        Command::LoadContext {
+            generation,
+            request,
+            token,
+            channel,
+            root,
+            anchor,
+            newer,
+        } => Event::ContextLoaded {
+            generation,
+            request,
+            channel: channel.clone(),
+            root: root.clone(),
+            anchor: anchor.clone(),
+            newer,
+            result: api
+                .message_context(token.as_deref(), &channel, root.as_deref(), &anchor, newer)
                 .map_err(LoadError::from),
         },
         Command::LoadThread {

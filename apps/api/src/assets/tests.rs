@@ -448,12 +448,12 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
         Some(pool.clone()),
     );
     state.assets = Some(assets.clone());
-    state.chat = Some(Chat {
-        pool: pool.clone(),
-        broker: redis::Client::open("redis://127.0.0.1:1").unwrap(),
-        wake: Arc::new(tokio::sync::Notify::new()),
-        cdn: Some(signer.clone()),
-    });
+    let mut chat = Chat::new(
+        pool.clone(),
+        redis::Client::open("redis://127.0.0.1:1").unwrap(),
+    );
+    chat.cdn = Some(signer.clone());
+    state.chat = Some(chat);
     let input = |name: &str, content_type: &str, size: i64, preview: Option<i64>| {
         serde_json::from_value::<CreateInput>(json!({
             "channelId": channel, "filename": name, "contentType": content_type,

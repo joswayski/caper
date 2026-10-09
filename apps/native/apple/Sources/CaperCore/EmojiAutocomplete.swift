@@ -33,6 +33,8 @@ enum EmojiAutocomplete {
             guard before.isWhitespace || "([{".contains(before) else { return nil }
         }
         let raw = String(text[start..<caret])
+        // One character is an emoticon (":D", ":P", ":3"), not a search; Return sends it as typed.
+        guard raw.count != 1 else { return nil }
         let query = normalize(raw)
         let selectable = catalog.filter(\.selectable)
         let choices: [EmojiCatalogEntry]

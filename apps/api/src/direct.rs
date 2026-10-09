@@ -122,6 +122,13 @@ async fn create(
     Extension(principal): Extension<Principal>,
     Json(input): Json<CreateInput>,
 ) -> Result<Json<Value>, ApiError> {
+    // Recipients identify a sender by @username; nobody may write anonymously.
+    if !principal.user.onboarded() {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "complete profile required",
+        ));
+    }
     let id = create_conversation(pool(&state)?, principal.user.id, &input.username).await?;
     conversation(pool(&state)?, principal.user.id, &id).await
 }
@@ -178,7 +185,9 @@ async fn create_conversation(pool: &PgPool, user: i64, username: &str) -> Result
         }
         shared
     };
-    let (total,recent,requests): (i64,i64,i64)=sqlx::query_as("SELECT count(*),count(*) FILTER (WHERE created_at>now()-interval '1 minute'),count(*) FILTER (WHERE requested_by=$1 AND accepted_at IS NULL AND created_at>now()-interval '1 hour') FROM public.direct_conversations WHERE $1 IN (low_user_id,high_user_id)")
+    // Only conversations this account started count, so strangers' requests
+    // can't use up someone else's quota.
+    let (total,recent,requests): (i64,i64,i64)=sqlx::query_as("SELECT count(*),count(*) FILTER (WHERE created_at>now()-interval '1 minute'),count(*) FILTER (WHERE accepted_at IS NULL AND created_at>now()-interval '1 hour') FROM public.direct_conversations WHERE $1 IN (low_user_id,high_user_id) AND requested_by=$1")
         .bind(user).fetch_one(&mut *tx).await.map_err(|_|chat::unavailable())?;
     if total >= 1000 || recent >= 20 {
         return Err(ApiError::new(
@@ -214,12 +223,14 @@ async fn accept_request(
 
 /// Called with the channel row locked before a message is stored in a DM.
 /// Either side's block stops sending; the recipient replying accepts a request.
-pub(crate) async fn authorize_send(
+/// Whether `user` blocked the other person, whether they blocked `user`, and
+/// whether the conversation is a request still waiting on `user`.
+async fn block_state(
     connection: &mut sqlx::PgConnection,
     channel: i64,
     user: i64,
-) -> Result<(), ApiError> {
-    let (you_blocked, they_blocked, pending_for_you): (bool, bool, bool) = sqlx::query_as(
+) -> Result<(bool, bool, bool), ApiError> {
+    sqlx::query_as(
         "SELECT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=$2 AND b.blocked_id=peer AND b.deleted_at IS NULL),
                 EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=peer AND b.blocked_id=$2 AND b.deleted_at IS NULL),
                 pending_for_you
@@ -229,15 +240,29 @@ pub(crate) async fn authorize_send(
     )
     .bind(channel)
     .bind(user)
-    .fetch_one(&mut *connection)
+    .fetch_one(connection)
     .await
-    .map_err(|_| chat::unavailable())?;
+    .map_err(|_| chat::unavailable())
+}
+
+fn refuse_blocked(you_blocked: bool, they_blocked: bool) -> Result<(), ApiError> {
     if you_blocked {
         return Err(blocked_by_you());
     }
     if they_blocked {
         return Err(not_accepting());
     }
+    Ok(())
+}
+
+pub(crate) async fn authorize_send(
+    connection: &mut sqlx::PgConnection,
+    channel: i64,
+    user: i64,
+) -> Result<(), ApiError> {
+    let (you_blocked, they_blocked, pending_for_you) =
+        block_state(&mut *connection, channel, user).await?;
+    refuse_blocked(you_blocked, they_blocked)?;
     if pending_for_you {
         sqlx::query("UPDATE public.direct_conversations SET accepted_at=now(),declined_at=NULL WHERE channel_id=$1 AND accepted_at IS NULL")
             .bind(channel)
@@ -246,6 +271,18 @@ pub(crate) async fn authorize_send(
             .map_err(|_| chat::unavailable())?;
     }
     Ok(())
+}
+
+/// Reactions, pins, edits and typing in a DM. A block in either direction
+/// stops every interaction, like sending; unlike a reply, none of these
+/// accepts a pending request.
+pub(crate) async fn authorize_interaction(
+    connection: &mut sqlx::PgConnection,
+    channel: i64,
+    user: i64,
+) -> Result<(), ApiError> {
+    let (you_blocked, they_blocked, _) = block_state(connection, channel, user).await?;
+    refuse_blocked(you_blocked, they_blocked)
 }
 
 async fn accept(

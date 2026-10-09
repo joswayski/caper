@@ -36,6 +36,36 @@ const demoSpace = { id: ids.demoSpace, name: "Caper", ownerId: ids.owner, demo: 
 const demoChannel = { id: ids.demo, spaceId: ids.demoSpace, name: "general", private: false };
 const clone = (value) => structuredClone(value);
 
+function historyWindow(messages, url) {
+  const before = url.searchParams.get("before"),
+    after = url.searchParams.get("after"),
+    around = url.searchParams.get("around");
+  if (
+    [before, after, around].filter((value) => value !== null).length > 1 ||
+    [before, after].some((value) => value !== null && !/^(0|[1-9]\d*)$/.test(value))
+  )
+    return { status: 400, error: "invalid history anchor" };
+  if (around !== null) {
+    const index = messages.findIndex((message) => message.id === around);
+    if (index < 0) return { status: 404, error: "Message not found." };
+    return {
+      messages: messages.slice(Math.max(0, index - 30), index + 31),
+      hasMore: index > 30,
+      hasNewer: index + 31 < messages.length,
+    };
+  }
+  const rows = messages.filter(
+    (message) =>
+      (before === null || BigInt(message.seq) < BigInt(before)) &&
+      (after === null || BigInt(message.seq) > BigInt(after)),
+  );
+  return {
+    messages: after === null ? rows.slice(-50) : rows.slice(0, 50),
+    hasMore: after === null && rows.length > 50,
+    hasNewer: after !== null && rows.length > 50,
+  };
+}
+
 function initialState() {
   const account = clone(initialAccount);
   const space = { id: ids.space, name: "Fixture Studio", ownerId: ids.owner };
@@ -181,6 +211,8 @@ function socketFrame(value, opcode = 1) {
 export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
   let state = initialState();
   const sockets = new Set();
+  let holdSends = false;
+  const heldSends = new Set();
   const identity = (request) =>
     request.headers.authorization === "Bearer fixture-owner-token" ||
     /(?:^|;\s*)caper_fixture=owner(?:;|$)/.test(request.headers.cookie ?? "")
@@ -407,6 +439,10 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         return json(response, 200, { devices: state.pushDevices, requests: state.pushRequests });
       if (path === "/__fixture/control" && method === "POST") {
         if (body.reset) state = initialState();
+        if (body.reset || typeof body.holdSends === "boolean") {
+          holdSends = !body.reset && body.holdSends;
+          if (!holdSends) for (const release of heldSends) release();
+        }
         if (body.pushPlatforms !== undefined) {
           if (
             !Array.isArray(body.pushPlatforms) ||
@@ -511,10 +547,12 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           projectForwards(reply);
         }
         if (body.incomingPin) {
-          const { channelId, messageId, active = true } = body.incomingPin;
+          const { channelId, messageId, active = true, userId = ids.other } = body.incomingPin;
           const message = state.messages.get(channelId)?.find((message) => message.id === messageId);
           if (!message) return reject(response, 404, "Fixture message not found.");
-          pin(channelId, message, author(members[2]), active);
+          const pinner = members.find((member) => member.id === userId);
+          if (!pinner) return reject(response, 404, "Fixture pinner not found.");
+          pin(channelId, message, author(pinner), active);
         }
         if (body.media) {
           const channelId = body.media.channelId ?? ids.demo;
@@ -551,7 +589,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
               }
           }
         }
-        return json(response, 200, { fixture: true });
+        return json(response, 200, { fixture: true, heldSends: heldSends.size });
       }
       const failureIndex = state.failures.findIndex(
         (failure) => failure.path === path && (!failure.method || failure.method === method),
@@ -1035,15 +1073,14 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         const messages = state.messages.get(thread[1]) ?? [];
         const root = messages.find((message) => message.id === thread[2] && !message.threadRootId);
         if (!root) return reject(response, 404, "Thread not found.");
-        const before = url.searchParams.get("before");
-        if (before !== null && !/^(0|[1-9]\d*)$/.test(before)) return reject(response, 400, "invalid cursor");
-        const replies = messages.filter(
-          (message) => message.threadRootId === root.id && (before === null || BigInt(message.seq) < BigInt(before)),
+        const page = historyWindow(
+          messages.filter((message) => message.threadRootId === root.id),
+          url,
         );
+        if (page.error) return reject(response, page.status, page.error);
         return json(response, 200, {
           root,
-          messages: replies.slice(-50),
-          hasMore: replies.length > 50,
+          ...page,
           cursor: channelHead(channel.id),
         });
       }
@@ -1054,6 +1091,19 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         if (channel.id !== ids.demo && !user) return reject(response, 401, "Sign in required.");
         if (!canRead(channel, user) || (method === "POST" && !canParticipate(channel, user)))
           return reject(response, 404, "resource not found");
+        // Pause before persistence and gateway fanout, not just the HTTP ack.
+        if (method === "POST" && holdSends) {
+          await new Promise((resolve) => {
+            const release = () => {
+              heldSends.delete(release);
+              response.off("close", release);
+              resolve();
+            };
+            heldSends.add(release);
+            response.once("close", release);
+          });
+          if (response.destroyed) return;
+        }
         const messages = state.messages.get(channel.id) ?? [];
         if (method === "POST") {
           const who = state.chatSessions.get(request.headers["x-caper-chat-token"]);
@@ -1115,22 +1165,20 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           created(message);
           return json(response, 200, message);
         }
-        const before = url.searchParams.get("before");
-        if (before !== null && !/^(0|[1-9]\d*)$/.test(before)) return reject(response, 400, "invalid cursor");
-        const available = messages.filter(
-          (message) =>
-            (!message.threadRootId || message.broadcast) && (before === null || BigInt(message.seq) < BigInt(before)),
+        const page = historyWindow(
+          messages.filter((message) => !message.threadRootId || message.broadcast),
+          url,
         );
+        if (page.error) return reject(response, page.status, page.error);
         const pinnedMessages = messages
           .filter((message) => message.pin)
           .sort((a, b) => (BigInt(a.pinSeq) > BigInt(b.pinSeq) ? -1 : 1));
         return json(response, 200, {
           space: spaceFor(channel.spaceId),
           channel,
-          messages: available.slice(-50),
+          ...page,
           pinnedMessages,
           cursor: channelHead(channel.id),
-          hasMore: available.length > 50,
         });
       }
       const spacePath =
@@ -1523,6 +1571,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
     gatewayPort: servers.at(-1).address().port,
     async close() {
       for (const client of sockets) client.socket.destroy();
+      for (const release of heldSends) release();
       await Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))));
     },
   };

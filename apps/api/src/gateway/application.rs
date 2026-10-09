@@ -32,6 +32,8 @@ struct PersonFeed {
 #[derive(Default)]
 pub(super) struct Application {
     state: Option<AppState>,
+    /// Built from `state` on first command, not per typing pulse or media call.
+    router: std::sync::OnceLock<axum::Router>,
     presence: Option<Presence>,
     broker: Mutex<Option<redis::aio::MultiplexedConnection>>,
     idle_seconds: u64,
@@ -237,6 +239,25 @@ impl Identity {
         }
         Ok(())
     }
+
+    /// `check` then `channel_access`, in one round trip: chat subscribers run
+    /// this for every delivered event, so it is the gateway's hottest query.
+    async fn check_channel(&self, state: &Gateway, channel: &str) -> Result<(), ApiError> {
+        let (session, access) = crate::spaces::session_channel_access(
+            &state.chat.pool,
+            self.hash.as_deref(),
+            self.user,
+            channel,
+        )
+        .await?;
+        if !session {
+            return Err(unauthorized());
+        }
+        if !access {
+            return Err(crate::spaces::not_found());
+        }
+        Ok(())
+    }
 }
 
 fn unauthorized() -> ApiError {
@@ -283,26 +304,22 @@ pub(super) async fn upgrade(
             "cross-origin socket refused",
         ));
     }
-    let hash = account_token(&headers).map(|token| Sha256::digest(token.as_bytes()).to_vec());
-    let user = match &hash {
-        Some(hash) => Some(session_user(&state.chat.pool, hash).await?),
-        None => None,
-    };
-    let external_id = match user {
-        Some(user) => Some(
-            sqlx::query_scalar("SELECT external_id FROM public.users WHERE id=$1")
-                .bind(user)
-                .fetch_one(&state.chat.pool)
-                .await
-                .map_err(|_| chat::unavailable())?,
-        ),
-        None => None,
-    };
+    // Every subscription and command needs an account, so anonymous sockets
+    // would only hold connection slots. Refuse them before taking one.
+    let hash = account_token(&headers)
+        .map(|token| Sha256::digest(token.as_bytes()).to_vec())
+        .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "sign in required"))?;
+    let user = session_user(&state.chat.pool, &hash).await?;
+    let external_id = sqlx::query_scalar("SELECT external_id FROM public.users WHERE id=$1")
+        .bind(user)
+        .fetch_one(&state.chat.pool)
+        .await
+        .map_err(|_| chat::unavailable())?;
     let identity = Identity {
         headers,
-        hash,
-        user,
-        external_id,
+        hash: Some(hash),
+        user: Some(user),
+        external_id: Some(external_id),
     };
     let slot = state
         .slots
@@ -509,9 +526,12 @@ async fn replay(
         event(out, &sub.id, json!({"type":"resync_required"})).await?;
         return Err(invalid());
     }
+    // Access was just checked for the first batch; recheck before each later one.
+    let mut checked = true;
     while *after < access.last_seq {
-        identity.check(state).await?;
-        channel_access(&state.chat.pool, channel, identity.user).await?;
+        if !std::mem::take(&mut checked) {
+            identity.check_channel(state, channel).await?;
+        }
         let rows: Vec<(i64, Value, Option<i16>, Option<String>)> = sqlx::query_as("SELECT e.seq,e.payload,u.avatar_id,u.display_name FROM public.channel_events e LEFT JOIN public.messages m ON m.channel_id=e.channel_id AND m.external_id=e.payload->'message'->>'id' LEFT JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE e.channel_id=$1 AND e.seq>$2 AND e.seq<=$3 ORDER BY e.seq LIMIT 128")
             .bind(access.id).bind(*after).bind(access.last_seq).fetch_all(&state.chat.pool).await.map_err(|_| chat::unavailable())?;
         if rows.is_empty() {
@@ -549,8 +569,7 @@ async fn chat_subscription(
     out: &mpsc::Sender<Value>,
 ) -> Result<(), ApiError> {
     let channel = sub.channel_id.as_deref().ok_or_else(invalid)?;
-    identity.check(state).await?;
-    channel_access(&state.chat.pool, channel, identity.user).await?;
+    identity.check_channel(state, channel).await?;
     let feed = state.application.channel(channel);
     let mut events = feed.events.subscribe();
     let mut heads = feed.head.subscribe();
@@ -567,8 +586,7 @@ async fn chat_subscription(
         tokio::select! {
             incoming = events.recv() => match incoming {
                 Ok(payload) => {
-                    identity.check(state).await?;
-                    channel_access(&state.chat.pool, channel, identity.user).await?;
+                    identity.check_channel(state, channel).await?;
                     if chat::ephemeral(&payload) { event(out, &sub.id, payload).await?; }
                     else if let Some(seq) = payload["seq"].as_str().and_then(|s| s.parse::<i64>().ok()) {
                         if seq == after + 1 { event(out, &sub.id, crate::assets::sign_attachments(payload, state.chat.cdn.as_deref())).await?; after = seq; }
@@ -582,7 +600,7 @@ async fn chat_subscription(
                 let head = *heads.borrow_and_update();
                 if head > after { replay(state, identity, sub, out, &mut after).await?; }
             }
-            _ = check.tick() => { identity.check(state).await?; channel_access(&state.chat.pool, channel, identity.user).await?; }
+            _ = check.tick() => identity.check_channel(state, channel).await?,
         }
     }
 }
@@ -855,7 +873,14 @@ async fn execute(
     let app = state
         .application
         .state
-        .clone()
+        .as_ref()
+        .map(|app| {
+            state
+                .application
+                .router
+                .get_or_init(|| crate::app(app.clone()))
+                .clone()
+        })
         .ok_or_else(chat::unavailable)?;
     let mut headers = identity.headers.clone();
     headers.insert("content-type", "application/json".parse().unwrap());
@@ -896,7 +921,7 @@ async fn execute(
     *request.headers_mut() = headers;
     // Fixed operations dispatch into the SAME authorization/state-machine handlers
     // as HTTP, not a provider proxy or a second implementation of media rules.
-    let response = tokio::time::timeout(Duration::from_secs(25), crate::app(app).oneshot(request))
+    let response = tokio::time::timeout(Duration::from_secs(25), app.oneshot(request))
         .await
         .map_err(|_| chat::unavailable())?
         .unwrap();

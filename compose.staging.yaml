@@ -120,6 +120,8 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 3000
+      # Server-side account lookups send the session cookie only here.
+      CAPER_API_ORIGIN: http://api:3001
 
   gateway:
     image: caddy:2.10-alpine

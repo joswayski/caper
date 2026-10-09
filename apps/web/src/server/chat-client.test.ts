@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { test, type TestContext, vi } from "vitest";
-import { ChatClient, initialChatView, loadChatHistory, type ChatViewState } from "../chat/client.ts";
+import {
+  ChatClient,
+  initialChatView,
+  loadChatHistory,
+  resetChatSessionsForTests,
+  type ChatViewState,
+} from "../chat/client.ts";
 import { AppGateway, setAppGatewayForTests } from "../gateway/client.ts";
 import type { ChatEvent, ChatMessage, ChatTypingEvent, GeneralChatHistory } from "../chat/types.ts";
 
@@ -70,6 +76,8 @@ class TestSocket extends EventTarget {
 }
 
 function installBrowser(t: TestContext) {
+  resetChatSessionsForTests();
+  t.onTestFinished(resetChatSessionsForTests);
   const originals = {
     window: globalThis.window,
     localStorage: globalThis.localStorage,
@@ -1250,6 +1258,89 @@ async function paginationFixture(t: TestContext) {
   };
 }
 
+test("pin context fences older pages, hides history gaps and never advances gateway replay", async (t) => {
+  const f = await paginationFixture(t);
+  const older = f.client.loadOlder();
+  const target = f.message(-99);
+  const jump = f.client.loadMessageContext(target);
+  assert.equal(f.requests[1].url, `/api/chat/channels/general/messages?around=${target.id}`);
+  const context = {
+    ...f.client.snapshotHistory(),
+    messages: [f.message(-100), target, f.message(-98)],
+    cursor: f.message(20).seq,
+    hasMore: true,
+    hasNewer: true,
+  };
+  f.requests[1].resolve(Response.json(context));
+  assert.equal(await jump, true);
+  f.requests[0].resolve(
+    Response.json({ messages: [f.message(2), f.message(3)], cursor: f.history.cursor, hasMore: false }),
+  );
+  await older;
+  assert.deepEqual(
+    f.state.channelMessages?.map((m) => m.seq),
+    [-100, -99, -98].map((i) => f.message(i).seq),
+  );
+  assert.equal(f.state.hasMore, true, "obsolete older request cannot change context flags");
+  assert.equal(f.state.loadingOlder, false);
+  assert.equal(
+    f.client.snapshotHistory()?.cursor,
+    f.history.cursor,
+    "HTTP context cursor is not an applied event cursor",
+  );
+  f.sockets[0].message(f.message(6));
+  assert.equal(f.client.snapshotHistory()?.cursor, f.message(6).seq);
+  assert.equal(
+    f.state.channelMessages?.some((m) => m.id === f.message(6).id),
+    false,
+    "live rows beyond the gap stay hidden",
+  );
+  const next = f.client.loadNewer();
+  assert.equal(f.requests[2].url, `/api/chat/channels/general/messages?after=${f.message(-98).seq}`);
+  f.requests[2].resolve(
+    Response.json({ messages: [f.message(-97)], cursor: f.message(20).seq, hasMore: false, hasNewer: true }),
+  );
+  await next;
+  assert.deepEqual(
+    f.state.channelMessages?.map((m) => m.seq),
+    [-100, -99, -98, -97].map((i) => f.message(i).seq),
+  );
+  const latest = f.client.loadNewer();
+  f.requests[3].resolve(
+    Response.json({
+      messages: [f.message(4), f.message(5), f.message(6)],
+      cursor: f.message(20).seq,
+      hasMore: false,
+      hasNewer: false,
+    }),
+  );
+  await latest;
+  assert.equal(f.state.hasNewer, false);
+  assert.equal(f.client.snapshotHistory()?.cursor, f.message(6).seq);
+  assert.equal(f.state.channelMessages?.at(-1)?.id, f.message(6).id);
+});
+
+test("the newest pin jump wins even when context responses arrive out of order", async (t) => {
+  const f = await paginationFixture(t);
+  const first = f.client.loadMessageContext(f.message(-20));
+  const second = f.client.loadMessageContext(f.message(-10));
+  const context = (offset: number) => ({
+    ...f.client.snapshotHistory(),
+    messages: [f.message(offset - 1), f.message(offset), f.message(offset + 1)],
+    hasMore: true,
+    hasNewer: true,
+  });
+  f.requests[1].resolve(Response.json(context(-10)));
+  assert.equal(await second, true);
+  f.requests[0].resolve(Response.json(context(-20)));
+  assert.equal(await first, false);
+  assert.deepEqual(
+    f.state.channelMessages?.map((m) => m.id),
+    [-11, -10, -9].map((i) => f.message(i).id),
+  );
+  assert.equal(f.client.snapshotHistory()?.cursor, f.history.cursor);
+});
+
 test("history gaps discard older rows without erasing concurrent HTTP reaction snapshots", async (t) => {
   const f = await sendingFixture(t);
   const message = (seq: string) => committed({ clientMessageId: `command-${seq}`, text: `Message ${seq}` }, seq);
@@ -1882,6 +1973,211 @@ test("late thread responses cannot reopen a closed or different thread", async (
   assert.equal(f.client.snapshotHistory()?.cursor, f.history.cursor);
 });
 
+test("repeated thread clicks share the pending request and leave a loaded view untouched", async (t) => {
+  const f = await paginationFixture(t);
+  const root = f.message(4);
+  const first = f.client.openThread(root.id);
+  const loadingState = f.state;
+  const second = f.client.openThread(root.id);
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.state, loadingState, "a repeated click must not publish a new loading state");
+  f.requests[0].resolve(Response.json({ root, messages: [], cursor: f.history.cursor, hasMore: false }));
+  await Promise.all([first, second]);
+  const loadedState = f.state;
+  await f.client.openThread(root.id);
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.state, loadedState);
+});
+
+test("cached thread reopening preserves older-page boundaries and receives live replies", async (t) => {
+  const f = await paginationFixture(t);
+  const root = f.message(1);
+  const reply = (offset: number) => ({ ...f.message(offset), threadRootId: root.id, broadcast: false });
+  const open = f.client.openThread(root.id);
+  f.requests[0].resolve(Response.json({ root, messages: [reply(3)], cursor: f.history.cursor, hasMore: true }));
+  await open;
+  const older = f.client.loadOlderThread();
+  const repeated = f.client.openThread(root.id);
+  assert.equal(f.state.thread?.loadingOlder, true, "reopening cannot reset a pending older page");
+  f.requests[1].resolve(Response.json({ root, messages: [reply(2)], cursor: f.history.cursor, hasMore: true }));
+  await Promise.all([older, repeated]);
+  f.client.closeThread();
+  f.sockets[0].message(reply(6));
+  await f.client.openThread(root.id);
+  assert.equal(f.requests.length, 2, "reopening uses loaded data, including live updates");
+  assert.equal(f.state.thread?.loading, false);
+  assert.deepEqual(
+    f.state.messages.filter((message) => message.threadRootId === root.id),
+    [2, 3, 6].map(reply),
+  );
+  const next = f.client.loadOlderThread();
+  assert.equal(f.requests[2].url, `/api/chat/channels/general/messages/${root.id}/thread?before=${reply(2).seq}`);
+  f.requests[2].resolve(Response.json({ root, messages: [], cursor: f.history.cursor, hasMore: false }));
+  await next;
+});
+
+test("pin jumps supersede a pending prefetch and cache both context paging boundaries", async (t) => {
+  const f = await paginationFixture(t);
+  const root = f.message(-200);
+  const reply = (offset: number) => ({ ...f.message(offset), threadRootId: root.id, broadcast: false });
+  const prefetch = f.client.prefetchThread(root.id);
+  const jump = f.client.loadMessageContext(reply(-99));
+  assert.equal(f.requests[1].url, `/api/chat/channels/general/messages/${root.id}/thread?around=${reply(-99).id}`);
+  f.requests[1].resolve(
+    Response.json({
+      root,
+      messages: [-100, -99, -98].map(reply),
+      cursor: f.history.cursor,
+      hasMore: true,
+      hasNewer: true,
+    }),
+  );
+  assert.equal(await jump, true);
+  f.requests[0].resolve(Response.json({ root, messages: [reply(3)], cursor: f.history.cursor, hasMore: true }));
+  await prefetch;
+  assert.equal(f.state.thread?.focusMessageId, reply(-99).id);
+  assert.equal(f.state.thread?.windowStart, reply(-100).seq);
+  assert.equal(f.state.thread?.windowEnd, reply(-98).seq);
+  assert.equal(
+    f.state.messages.some((message) => message.id === reply(3).id),
+    false,
+    "superseded prefetch cannot merge or overwrite the context",
+  );
+
+  const older = f.client.loadOlderThread();
+  assert.equal(f.requests[2].url, `/api/chat/channels/general/messages/${root.id}/thread?before=${reply(-100).seq}`);
+  f.requests[2].resolve(
+    Response.json({
+      root,
+      messages: [-102, -101].map(reply),
+      cursor: f.history.cursor,
+      hasMore: false,
+      hasNewer: false,
+    }),
+  );
+  await older;
+  assert.equal(f.state.thread?.hasNewer, true, "older paging must retain the newer boundary");
+  assert.equal(f.state.thread?.windowEnd, reply(-98).seq);
+
+  const newer = f.client.loadNewerThread();
+  assert.equal(f.requests[3].url, `/api/chat/channels/general/messages/${root.id}/thread?after=${reply(-98).seq}`);
+  f.requests[3].resolve(
+    Response.json({ root, messages: [reply(-97)], cursor: f.history.cursor, hasMore: true, hasNewer: true }),
+  );
+  await newer;
+  f.client.closeThread();
+  await f.client.openThread(root.id);
+  assert.equal(f.requests.length, 4, "reopening retains the cached contiguous context");
+  assert.equal(f.state.thread?.before, reply(-102).seq);
+  assert.equal(f.state.thread?.after, reply(-97).seq);
+  assert.equal(f.state.thread?.windowStart, reply(-102).seq);
+  assert.equal(f.state.thread?.windowEnd, reply(-97).seq);
+  assert.equal(f.state.thread?.hasMore, false, "newer paging must retain the older boundary");
+  assert.equal(f.state.thread?.hasNewer, true);
+  assert.equal(f.state.thread?.focusMessageId, reply(-99).id);
+  assert.equal(f.client.snapshotHistory()?.cursor, f.history.cursor);
+});
+
+test("cached and already open threads do not short-circuit newer pin jumps", async (t) => {
+  const f = await paginationFixture(t);
+  const root = f.message(-200);
+  const reply = (offset: number) => ({ ...f.message(offset), threadRootId: root.id, broadcast: false });
+  const open = f.client.openThread(root.id);
+  f.requests[0].resolve(Response.json({ root, messages: [reply(3)], cursor: f.history.cursor, hasMore: true }));
+  await open;
+  const first = f.client.loadMessageContext(reply(-50));
+  const second = f.client.loadMessageContext(reply(-20));
+  assert.equal(f.requests.length, 3, "explicit anchors bypass the same-root guard and cache");
+  f.requests[2].resolve(
+    Response.json({
+      root,
+      messages: [-21, -20, -19].map(reply),
+      cursor: f.history.cursor,
+      hasMore: true,
+      hasNewer: true,
+    }),
+  );
+  assert.equal(await second, true);
+  f.requests[1].resolve(
+    Response.json({
+      root,
+      messages: [-51, -50, -49].map(reply),
+      cursor: f.history.cursor,
+      hasMore: false,
+      hasNewer: false,
+    }),
+  );
+  assert.equal(await first, false);
+  assert.equal(f.state.thread?.focusMessageId, reply(-20).id);
+  f.client.closeThread();
+  await f.client.openThread(root.id);
+  assert.equal(f.requests.length, 3);
+  assert.equal(f.state.thread?.windowStart, reply(-21).seq);
+  assert.equal(f.state.thread?.windowEnd, reply(-19).seq);
+  assert.equal(f.state.thread?.hasNewer, true);
+});
+
+test("hover prefetch and click share a request without opening or replacing another thread", async (t) => {
+  const f = await paginationFixture(t);
+  const first = f.message(4);
+  const second = f.message(5);
+  const prefetch = f.client.prefetchThread(first.id);
+  const duplicate = f.client.prefetchThread(first.id);
+  assert.equal(Boolean(f.state.thread), false);
+  const click = f.client.openThread(first.id);
+  assert.equal(f.requests.length, 1);
+  const other = f.client.openThread(second.id);
+  f.requests[0].resolve(Response.json({ root: first, messages: [], cursor: f.history.cursor, hasMore: false }));
+  await Promise.all([prefetch, duplicate, click]);
+  assert.equal(f.state.thread?.rootId, second.id);
+  assert.equal(f.state.thread?.loading, true);
+  f.requests[1].resolve(Response.json({ root: second, messages: [], cursor: f.history.cursor, hasMore: false }));
+  await other;
+  await f.client.openThread(first.id);
+  assert.equal(f.requests.length, 2, "completed background fetch is cached for an instant open");
+  assert.equal(f.state.thread?.loading, false);
+});
+
+test("failed prefetch is silent and does not prevent explicit load and retry", async (t) => {
+  const f = await paginationFixture(t);
+  const root = f.message(4);
+  const prefetch = f.client.prefetchThread(root.id);
+  f.requests[0].resolve(Response.json({ error: "temporary" }, { status: 503 }));
+  await prefetch;
+  assert.equal(Boolean(f.state.thread), false);
+  assert.equal(f.state.error, undefined);
+  const open = f.client.openThread(root.id);
+  f.requests[1].resolve(Response.json({ error: "try again" }, { status: 503 }));
+  await open;
+  assert.equal(f.state.thread?.error, "try again");
+  const retry = f.client.retryThread();
+  f.requests[2].resolve(Response.json({ root, messages: [], cursor: f.history.cursor, hasMore: false }));
+  await retry;
+  assert.equal(f.state.thread?.error, undefined);
+  assert.equal(f.state.thread?.loading, false);
+});
+
+test("resync invalidates thread pages and discards prefetches from the previous generation", async (t) => {
+  const f = await paginationFixture(t);
+  const root = f.message(4);
+  const oldPrefetch = f.client.prefetchThread(root.id);
+  f.client.retryLoad();
+  await tick();
+  f.requests[0].resolve(Response.json({ root, messages: [], cursor: f.history.cursor, hasMore: false }));
+  await oldPrefetch;
+  const open = f.client.openThread(root.id);
+  assert.equal(f.requests.length, 2, "a stale response cannot restore the invalidated cache");
+  f.requests[1].resolve(Response.json({ root, messages: [], cursor: f.history.cursor, hasMore: false }));
+  await open;
+  f.client.closeThread();
+  f.client.retryLoad();
+  await tick();
+  const reopened = f.client.openThread(root.id);
+  assert.equal(f.requests.length, 3, "completed pages are also invalidated on resync");
+  f.requests[2].resolve(Response.json({ root, messages: [], cursor: f.history.cursor, hasMore: false }));
+  await reopened;
+});
+
 test("thread send retry freezes root and broadcast and confirms one shared reply", async (t) => {
   const f = await sendingFixture(t);
   const bodies: Array<{ clientMessageId: string; text: string; threadRootId: string; broadcast: boolean }> = [];
@@ -2115,4 +2411,97 @@ test("failed optimistic edit reveals a newer remote revision while keeping indep
   assert.equal(f.state.pinnedMessages[0].content.text, "Other tab");
   assert.deepEqual(f.state.pinnedMessages[0].pin, pinned.pin);
   assert.equal(f.client.snapshotHistory()?.cursor, "2");
+});
+
+test("typing refreshes from the same people do not re-render the chat", async (t) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "Date", "clearTimeout"], now: 1_000 });
+  const f = await sendingFixture(t);
+  f.sockets[0].frame(typingEvent("a"));
+  const shown = f.state;
+  assert.deepEqual(
+    shown.typingAuthors.map((author) => author.id),
+    ["a"],
+  );
+  vi.advanceTimersByTime(500);
+  f.sockets[0].frame(typingEvent("a", "9007199254740993"));
+  assert.equal(f.state, shown, "an unchanged typer list publishes no new state");
+  f.sockets[0].frame(typingEvent("a", "9007199254740994", false));
+  assert.deepEqual(f.state.typingAuthors, []);
+});
+
+test("signed-in conversations share one chat session per account and replace it only on 401", async (t) => {
+  installBrowser(t);
+  let sessions = 0;
+  const reactions: number[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
+    const path = String(input);
+    if (path === "/api/chat/session") {
+      sessions++;
+      return Response.json({
+        token: `token-${sessions}`,
+        author: { id: "account", name: "Person", isGuest: false },
+      });
+    }
+    if (path.endsWith("/reactions")) {
+      const status = reactions.shift()!;
+      return Response.json(
+        { error: "this person isn't accepting direct messages", code: "dm_not_accepted" },
+        { status },
+      );
+    }
+    return Response.json({
+      space: { id: "space", name: "Caper" },
+      channel: { id: "general", name: "General" },
+      messages: [],
+      cursor: "0",
+      hasMore: false,
+    });
+  });
+  const open = () => {
+    let state!: ChatViewState;
+    const client = new ChatClient((next) => {
+      state = next;
+    });
+    t.onTestFinished(() => client.stop());
+    client.start();
+    client.identify("Person", true, "account");
+    return { client, state: () => state };
+  };
+  const first = open();
+  const second = open();
+  await tick();
+  await tick();
+  assert.equal(sessions, 1, "switching conversations reuses the account's session");
+  assert.equal(first.state().author?.id, "account");
+  assert.equal(second.state().author?.id, "account");
+
+  // A refusal such as a block is not an invalid session.
+  reactions.push(403);
+  await assert.rejects(first.client.setReaction("message", "👍", true), /accepting direct messages/);
+  await tick();
+  assert.equal(sessions, 1);
+
+  reactions.push(401);
+  await assert.rejects(first.client.setReaction("message", "👍", true));
+  await tick();
+  await tick();
+  assert.equal(sessions, 2, "an expired capability is replaced once");
+  const third = open();
+  await tick();
+  await tick();
+  assert.equal(sessions, 2, "later conversations reuse the replacement");
+  assert.equal(third.state().author?.id, "account");
+});
+
+test("a DM send refused by a block is final, like on the native clients", async (t) => {
+  const f = await sendingFixture(t);
+  const sending = f.client.send("are you there?");
+  await tick();
+  f.posts[0].resolve(
+    Response.json({ error: "this person isn't accepting direct messages", code: "dm_not_accepted" }, { status: 403 }),
+  );
+  await sending.catch(() => undefined);
+  await tick();
+  assert.equal(f.state.sendRejected, true);
+  assert.equal(f.state.sendError, "This person isn’t accepting direct messages.");
 });

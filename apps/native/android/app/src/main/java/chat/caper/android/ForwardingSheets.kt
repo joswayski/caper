@@ -3,16 +3,24 @@ package chat.caper.android
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import chat.caper.android.data.ApiException
 import chat.caper.android.data.withFreshUrls
+import chat.caper.android.data.friendlyError
+import chat.caper.android.data.linkRanges
 import chat.caper.android.model.*
 import chat.caper.android.ui.Border
 import chat.caper.android.ui.EmojiImage
@@ -35,7 +43,7 @@ import java.util.UUID
             if (message.editedAt != null) Text("edited", color = TextMuted, fontSize = 10.sp)
         }
         // A file-only original has empty text: show just its files, in their processing state.
-        if (message.content.text.isNotEmpty()) Text(message.content.text, fontSize = 14.sp)
+        if (message.content.text.isNotEmpty()) LinkedText(message.content.text, fontSize = 14.sp)
         MessageAttachments(
             message.content.attachments.map { it.withFreshUrls(state?.freshAttachmentUrls?.get(it.id)) }, false, onAttachmentFailed,
             state?.attachmentProgress.orEmpty(),
@@ -47,6 +55,20 @@ import java.util.UUID
             } }
         }
     }
+}
+
+/** The original's text with its `http(s)://` and `www.` links (`data/Links.kt`); like web, no mention pills here. */
+@Composable private fun LinkedText(text: String, fontSize: TextUnit) {
+    val links = remember(text) { linkRanges(text) }
+    if (links.isEmpty()) return Text(text, fontSize = fontSize)
+    val uriHandler = LocalUriHandler.current
+    val annotated = remember(text, links, uriHandler) {
+        buildAnnotatedString {
+            append(text)
+            links.forEach { link -> addLink(LinkAnnotation.Url(link.href, MessageLink) { openExternalLink(uriHandler, link.href) }, link.start, link.end) }
+        }
+    }
+    Text(annotated, fontSize = fontSize)
 }
 
 @Composable internal fun ForwardCard(
@@ -70,53 +92,72 @@ import java.util.UUID
 @Composable internal fun ForwardPickerSheet(message: ChatMessage, viewModel: CaperViewModel, onDismiss: () -> Unit) {
     val scope = rememberCoroutineScope()
     var destinations by remember { mutableStateOf<List<ForwardDestination>?>(null) }
-    var selected by remember { mutableStateOf<ForwardDestination?>(null) }
+    var selected by remember { mutableStateOf(setOf<String>()) }
     var search by remember { mutableStateOf("") }
     var note by remember { mutableStateOf("") }
-    var key by remember { mutableStateOf<UUID?>(null) }
+    var pending by remember { mutableStateOf<List<Pair<ForwardDestination, UUID>>?>(null) }
+    var confirmed by remember { mutableIntStateOf(0) }
     var sending by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var attempt by remember { mutableIntStateOf(0) }
     LaunchedEffect(attempt) {
         error = null
         try { destinations = viewModel.forwardDestinations().sortedBy { "${it.spaceName} ${it.name}" } }
-        catch (reason: Throwable) { if (reason is CancellationException) throw reason; error = reason.message }
+        catch (reason: Throwable) { if (reason is CancellationException) throw reason; error = friendlyError(reason, "Destinations are unavailable.") }
     }
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = SurfaceRaised) {
         Column(Modifier.fillMaxWidth().heightIn(max = 660.dp).verticalScroll(rememberScrollState()).padding(18.dp).imePadding(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Forward message", fontWeight = FontWeight.Bold, fontSize = 16.sp)
             Text("Shares this conversation live, including future edits, reactions and replies. People in the destination can read and forward it.", color = TextMuted, fontSize = 12.sp)
             SharedOriginal(message.forward?.message ?: message)
-            OutlinedTextField(search, { search = it }, label = { Text("Find a channel or DM") }, singleLine = true, enabled = key == null, modifier = Modifier.fillMaxWidth())
-            val visible = destinations?.filter { "${it.spaceName} ${it.name}".contains(search, ignoreCase = true) }
+            OutlinedTextField(search, { search = it }, label = { Text("Find a space, channel or DM") }, singleLine = true, enabled = pending == null, modifier = Modifier.fillMaxWidth())
+            val terms = search.trim().split(Regex("\\s+")).map { it.removePrefix("#") }
+            val visible = destinations?.filter { destination -> terms.all { "${destination.spaceName} ${destination.name}".contains(it, ignoreCase = true) } }
             visible?.forEach { destination ->
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    RadioButton(selected?.id == destination.id, onClick = { selected = destination }, enabled = key == null)
-                    TextButton({ selected = destination }, enabled = key == null) { Column(horizontalAlignment = Alignment.Start) {
-                        Text("${if (destination.direct) "" else "# "}${destination.name}")
+                Row(Modifier.fillMaxWidth().toggleable(value = destination.id in selected, enabled = pending == null, role = Role.Checkbox, onValueChange = { checked -> selected = if (checked) selected + destination.id else selected - destination.id }).padding(vertical = 8.dp, horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("${if (destination.direct) "" else "# "}${destination.name}", fontWeight = FontWeight.Bold)
                         Text(destination.spaceName, color = TextMuted, fontSize = 11.sp)
-                    } }
+                    }
+                    Checkbox(destination.id in selected, onCheckedChange = null, enabled = pending == null)
                 }
             }
             if (destinations == null && error == null) Text("Loading destinations…", color = TextMuted)
             if (visible?.isEmpty() == true) Text("No matching destinations. Join a channel or start a DM.", color = TextMuted)
-            OutlinedTextField(note, { note = it }, label = { Text("Add a note (optional)") }, enabled = key == null, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(note, { note = it }, label = { Text("Add a note (optional)") }, enabled = pending == null, modifier = Modifier.fillMaxWidth())
             error?.let { Text(it, color = Terracotta); if (destinations == null) TextButton({ attempt++ }) { Text("Retry loading") } }
             Button({
-                val destination = selected ?: return@Button
-                if (sending) return@Button
-                val intent = key ?: UUID.randomUUID().also { key = it }
+                if (sending || selected.isEmpty()) return@Button
+                val intent = pending ?: destinations.orEmpty().filter { it.id in selected }.map { it to UUID.randomUUID() }
+                pending = intent
+                val text = note.trim()
                 sending = true; error = null
                 scope.launch {
-                    try { viewModel.forward(message, destination.id, intent, note.trim()); onDismiss() }
+                    try {
+                        for ((destination, key) in intent) {
+                            viewModel.forward(message, destination.id, key, text)
+                            confirmed++
+                            selected = selected - destination.id
+                            pending = pending?.drop(1)
+                        }
+                        onDismiss()
+                    }
                     catch (reason: Throwable) {
                         if (reason is CancellationException) throw reason
                         val rejected = reason is ApiException && reason.status in listOf(400, 401, 403, 404, 409, 422)
-                        if (rejected) key = null
-                        error = "${if (rejected) "Not sent." else "Not confirmed. Retry checks the same forward."} ${reason.message.orEmpty()}"
+                        if (rejected) pending = null
+                        // Multi-destination progress with a readable reason, never raw exception text.
+                        val done = if (confirmed > 0) "Forwarded to $confirmed ${if (confirmed == 1) "destination" else "destinations"}. " else ""
+                        val status = when {
+                            rejected && confirmed > 0 -> "Remaining forwards not sent."
+                            rejected -> "Not sent."
+                            confirmed > 0 -> "Remaining forwards not confirmed. Retry checks the same forwards."
+                            else -> "Not confirmed. Retry checks the same forward."
+                        }
+                        error = "$done$status ${friendlyError(reason, "Try again.")}"
                     } finally { sending = false }
                 }
-            }, enabled = selected != null && !sending && note.codePointCount(0, note.length) <= 4000) { Text(if (sending) "Forwarding…" else if (key != null) "Retry forward" else "Forward") }
+            }, enabled = selected.isNotEmpty() && !sending && note.codePointCount(0, note.length) <= 4000) { Text(if (sending) "Forwarding…" else if (pending != null) "Retry forwards (${selected.size})" else "Forward (${selected.size})") }
         }
     }
 }
@@ -140,7 +181,7 @@ import java.util.UUID
                 fresh = fresh.copy(messages = earlier.messages + fresh.messages, hasMore = earlier.hasMore); loadedPages++
             }
             oldest = fresh.messages.firstOrNull()?.seq; conversation = fresh
-        } catch (reason: Throwable) { if (reason is CancellationException) throw reason; conversation = null; error = reason.message }
+        } catch (reason: Throwable) { if (reason is CancellationException) throw reason; conversation = null; error = friendlyError(reason, "Conversation is unavailable.") }
         finally { loading = false }
     }
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = SurfaceRaised) {

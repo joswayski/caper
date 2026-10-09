@@ -70,6 +70,67 @@ final class APIClientTests: XCTestCase {
         return APIClient(baseURL: URL(string: "https://caper.invalid")!, session: URLSession(configuration: configuration), tokenStore: MemoryTokenStore(token))
     }
 
+    @MainActor
+    func testRepeatThreadOpenKeepsPendingLoadAndReusesPaginationUntilHistoryReset() async throws {
+        let channel = "chan00000001"
+        let author = ChatAuthor(id: "other", name: "Other", isGuest: false)
+        let root = ChatMessage(id: "Message00000001", channelId: channel, seq: "1", author: author,
+                               content: ChatContent(version: 1, type: "text", text: "Parent"), createdAt: "now", clientMessageId: "root")
+        let latest = ChatMessage(id: "Message00000003", channelId: channel, seq: "3", author: author,
+                                 content: ChatContent(version: 1, type: "text", text: "Latest reply"), createdAt: "now", clientMessageId: "latest", threadRootId: root.id)
+        let older = ChatMessage(id: "Message00000002", channelId: channel, seq: "2", author: author,
+                                content: ChatContent(version: 1, type: "text", text: "Older reply"), createdAt: "now", clientMessageId: "older", threadRootId: root.id)
+        let history = ChatHistory(space: HistoryIdentity(id: "space0000001", name: "Space"),
+                                  channel: HistoryIdentity(id: channel, name: "general"), messages: [root], cursor: "3", hasMore: false)
+        let started = expectation(description: "initial thread request started")
+        var held: MockURLProtocol?
+        var threadRequests = 0
+        MockURLProtocol.deferred = { request, urlRequest in
+            guard urlRequest.url?.path.hasSuffix("/thread") == true, held == nil else { return false }
+            threadRequests += 1; held = request; started.fulfill(); return true
+        }
+        MockURLProtocol.handler = { request in
+            if request.url?.path == "/api/chat/session" {
+                return (200, Data(#"{"token":"chat-secret","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+            }
+            guard request.url?.path.hasSuffix("/thread") == true else { throw URLError(.badURL) }
+            threadRequests += 1
+            XCTAssertEqual(request.url?.query, "before=3")
+            return (200, try JSONEncoder().encode(ThreadHistory(root: root, messages: [older], cursor: "3", hasMore: false, hasNewer: false)))
+        }
+        let chat = ChatModel(api: client())
+        await chat.open(history: history, displayName: "Me")
+        let opening = Task { await chat.openThread(root.id) }
+        await fulfillment(of: [started], timeout: 2)
+        await chat.openThread(root.id)
+        XCTAssertEqual(threadRequests, 1)
+        XCTAssertTrue(chat.threadLoading)
+        held?.respond(status: 200, data: try JSONEncoder().encode(ThreadHistory(root: root, messages: [latest], cursor: "3", hasMore: true, hasNewer: false)))
+        await opening.value
+        chat.threadDraft = "Keep this draft"
+        await chat.openThread(root.id)
+        XCTAssertEqual(threadRequests, 1)
+        await chat.loadThread(older: true)
+        XCTAssertEqual(threadRequests, 2)
+        chat.closeThread()
+        await chat.openThread(root.id)
+        XCTAssertEqual(threadRequests, 2)
+        XCTAssertFalse(chat.threadLoading)
+        XCTAssertFalse(chat.threadHasMore)
+        XCTAssertEqual(chat.threadDraft, "Keep this draft")
+        XCTAssertEqual(chat.messages.filter { $0.threadRootId == root.id }.map(\.id), [older.id, latest.id])
+        // A new authorized history replaces reply rows and must discard their cache.
+        await chat.preview(history: history)
+        MockURLProtocol.handler = { _ in
+            threadRequests += 1
+            return (200, try JSONEncoder().encode(ThreadHistory(root: root, messages: [], cursor: "3", hasMore: false, hasNewer: false)))
+        }
+        await chat.openThread(root.id)
+        XCTAssertEqual(threadRequests, 3)
+        XCTAssertTrue(chat.messages.allSatisfy { $0.threadRootId == nil })
+        await chat.stop()
+    }
+
     func testReactionPUTUsesChatTokenBodyAndFifteenCharacterMessageID() async throws {
         let channel = "Channel12345"
         let message = "Message00000001"
@@ -188,6 +249,47 @@ final class APIClientTests: XCTestCase {
         XCTAssertNil(chat.requestReactors(messageID: messageID), "a stopped chat has no message to load")
     }
 
+    func testChatSessionIsReusedPerSignInAndReplacedOnlyAfter401OrRename() async throws {
+        var sessions = 0
+        var reactionStatus = 403
+        MockURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/api/chat/session":
+                sessions += 1
+                return (200, Data(#"{"token":"chat-\#(sessions)","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+            case "/api/chat/channels/Channel12345/messages/Message00000001/reactions":
+                return (reactionStatus, Data(#"{"error":"this person isn't accepting direct messages","code":"dm_not_accepted"}"#.utf8))
+            case "/api/account/profile":
+                return (200, Data(#"{"id":"self","username":"me","displayName":"Renamed"}"#.utf8))
+            default: throw URLError(.badURL)
+            }
+        }
+        let api = client()
+        let react = { () async -> APIError? in
+            do {
+                _ = try await api.setReaction(channelID: "Channel12345", messageID: "Message00000001",
+                                              sessionToken: "chat-1", emoji: "👍", active: true)
+                return nil
+            } catch { return error as? APIError }
+        }
+        let first = try await api.chatSession(name: "Me")
+        let forward = try await api.chatSession(name: "Forward")
+        XCTAssertEqual(first.token, "chat-1")
+        XCTAssertEqual(forward.token, "chat-1", "opening another conversation reuses the session")
+        let refusal = await react()
+        XCTAssertEqual(refusal?.code, "dm_not_accepted")
+        let kept = try await api.chatSession(name: "Me")
+        XCTAssertEqual(kept.token, "chat-1", "a block refusal is not an invalid session")
+        reactionStatus = 401
+        _ = await react()
+        let replaced = try await api.chatSession(name: "Me")
+        XCTAssertEqual(replaced.token, "chat-2")
+        _ = try await api.updateProfile(username: "me", displayName: "Renamed")
+        let renamed = try await api.chatSession(name: "Renamed")
+        XCTAssertEqual(renamed.token, "chat-3", "a rename mints a session with the new author name")
+        XCTAssertEqual(sessions, 3)
+    }
+
     func testPinPUTUsesChatTokenAndDecodesMessagePayload() async throws {
         let channel = "Channel12345", message = "Message00000001"
         MockURLProtocol.handler = { request in
@@ -294,6 +396,26 @@ final class APIClientTests: XCTestCase {
         XCTAssertNil(WorkspaceValidation.usernameError("alice_123"))
         XCTAssertNotNil(WorkspaceValidation.usernameError("Alice"))
         XCTAssertNotNil(WorkspaceValidation.usernameError("ab"))
+    }
+
+    func testInviteChecksAndWordingMatchWeb() {
+        let sam = Member(id: "member000003", username: "sam", displayName: "Sam", owner: false)
+        let kai = Member(id: "member000004", username: "kai", displayName: "Kai", owner: false)
+        XCTAssertEqual(WorkspaceValidation.invitationSent, "Invitation sent. They must accept before joining.")
+        XCTAssertEqual(WorkspaceValidation.inviteError(username: "sam", members: [sam], invited: [kai], channel: false),
+                       "This person is already in the space.")
+        XCTAssertEqual(WorkspaceValidation.inviteError(username: "sam", members: [sam], invited: [], channel: true),
+                       "This person already has access to this channel.")
+        XCTAssertEqual(WorkspaceValidation.inviteError(username: "kai", members: [sam], invited: [kai], channel: false),
+                       "This person already has a pending invitation.")
+        XCTAssertNil(WorkspaceValidation.inviteError(username: "alex", members: [sam], invited: [kai], channel: false))
+        XCTAssertEqual(WorkspaceValidation.memberMessage(APIError(status: 404, message: "user not found")),
+                       "User not found. Check the username and try again.")
+        XCTAssertEqual(WorkspaceValidation.memberMessage(APIError(status: 409, message: "user already invited")),
+                       "This person already has a pending invitation.")
+        XCTAssertEqual(WorkspaceValidation.memberMessage(APIError(status: 409, message: "user already in channel")),
+                       "This person already has access to this channel.")
+        XCTAssertEqual(WorkspaceValidation.memberMessage(APIError(status: 500, message: "Something else.")), "Something else.")
     }
 
     @MainActor
@@ -1825,7 +1947,7 @@ final class APIClientTests: XCTestCase {
 
         await model.refreshDirectMessages()
         XCTAssertEqual(model.directMessages, [previous], "a failed refresh keeps the last list")
-        XCTAssertEqual(model.directMessagesError, URLError(.cannotFindHost).localizedDescription)
+        XCTAssertEqual(model.directMessagesError, "Couldn’t reach Caper. Check your connection.", "network failures read as web's sentence")
         XCTAssertEqual(model.error, "Your profile could not be saved.", "DM failures must not replace operation errors")
 
         failure = false
@@ -1844,6 +1966,29 @@ final class APIClientTests: XCTestCase {
         XCTAssertTrue(model.directMessages.isEmpty)
         XCTAssertNil(model.directMessagesError, "an empty successful list also clears the error")
         XCTAssertEqual(model.error, "Your profile could not be saved.")
+    }
+
+    /// Web's `requestsOpen ?? viewingRequest`: the section follows the open
+    /// request until the person toggles it, and their choice wins.
+    @MainActor
+    func testMessageRequestsFollowTheOpenRequestUntilToggled() {
+        let model = AppModel(api: client())
+        let request = DirectMessageConversation(id: "dm0000000003", peer: DirectMessagePeer(id: "peer", username: "jordan", displayName: "Jordan"),
+                                                lastSeq: "1", readSeq: "0", status: .incoming)
+        let accepted = DirectMessageConversation(id: "dm0000000001", peer: DirectMessagePeer(id: "maya", username: "maya", displayName: "Maya"),
+                                                 lastSeq: "1", readSeq: "0")
+        model.directMessages = [request, accepted]
+        XCTAssertFalse(model.showingMessageRequests, "closed by default")
+        model.selectedDirectMessageID = accepted.id
+        XCTAssertFalse(model.showingMessageRequests, "an accepted conversation leaves it closed")
+        model.selectedDirectMessageID = request.id
+        XCTAssertTrue(model.showingMessageRequests, "viewing a request opens it")
+        model.showingMessageRequests.toggle()
+        XCTAssertFalse(model.showingMessageRequests, "the toggle closes it while the request stays open")
+        XCTAssertEqual(model.selectedDirectMessageID, request.id)
+        model.selectedDirectMessageID = nil
+        model.showingMessageRequests.toggle()
+        XCTAssertTrue(model.showingMessageRequests, "an explicit choice wins over the view")
     }
 
     @MainActor

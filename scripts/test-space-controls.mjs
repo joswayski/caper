@@ -1,5 +1,6 @@
 // Browser regression using explicitly mocked API responses. Never writes real data.
 // Run with the dev server: SPACES_TEST_WEB_URL=http://localhost:3000/spaces node scripts/test-space-controls.mjs
+// Focus on notification/DM privacy alignment with SETTINGS_ONLY=1.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
@@ -121,6 +122,10 @@ function fixture() {
   window.fetch = async (input, options = {}) => {
     const path = new URL(typeof input === "string" ? input : input.url, location.href).pathname;
     if (!path.startsWith("/api/")) return originalFetch(input, options);
+    if (path === "/api/notifications/settings")
+      return Response.json({ level: "all", mobile: "whenInactive", overrides: [] });
+    if (path === "/api/account/privacy") return Response.json({ directMessages: "anyone" });
+    if (path === "/api/blocks") return Response.json({ blocks: [] });
     if (path.endsWith("/members") && options.method === "POST") {
       const body = JSON.parse(options.body);
       control.memberAdds.push({ path, body });
@@ -258,6 +263,37 @@ function stableShell(selector) {
   evaluate('document.querySelector("[data-layout-probe]").remove()');
   assert.deepEqual(geometry(selector), before);
 }
+function testSettingRows(width, height) {
+  wait('document.querySelectorAll(".profile-dialog .privacy-settings input:checked").length === 2');
+  const settingRows = evaluate(`(() => {
+    const center = element => { const r = element.getBoundingClientRect(); return r.top + r.height / 2; };
+    return [...document.querySelectorAll('.profile-dialog .privacy-settings label')].map(row => ({
+      label: row.querySelector('strong').textContent,
+      textOffset: center(row.querySelector('span')) - center(row),
+      radioOffset: center(row.querySelector('input')) - center(row),
+      hintHeight: row.querySelector('small')?.getBoundingClientRect().height,
+      hintLineHeight: row.querySelector('small') && parseFloat(getComputedStyle(row.querySelector('small')).lineHeight),
+    }));
+  })()`);
+  assert.equal(settingRows.length, 6, "Both settings groups must render all choices");
+  for (const row of settingRows) {
+    assert.ok(Math.abs(row.textOffset) < 1, `${row.label}: text must be vertically centered`);
+    assert.ok(Math.abs(row.radioOffset) < 1, `${row.label}: radio must be vertically centered`);
+  }
+  if (width < 760)
+    assert.ok(
+      settingRows.some((row) => row.hintHeight > row.hintLineHeight),
+      "Narrow centering checks must cover a wrapped description",
+    );
+  assert.ok(evaluate("document.documentElement.scrollWidth <= innerWidth"), "Settings overflowed viewport");
+  evaluate(`(() => {
+    const dialog = document.querySelector('.profile-dialog');
+    const section = dialog.querySelector('.notification-settings');
+    const heading = dialog.querySelector('.audio-dialog-heading');
+    dialog.scrollTop += section.getBoundingClientRect().top - heading.getBoundingClientRect().bottom - 12;
+  })()`);
+  if (artifacts) browser("screenshot", ".profile-dialog", `${artifacts}/settings-centered-${width}-${height}.png`);
+}
 function testModalGeometry() {
   for (const [width, height] of [
     [1280, 900],
@@ -288,6 +324,13 @@ function testModalGeometry() {
         "Account controls must align below the channel surface and clear the bottom edge",
       );
       screenshot(`navigation-inset-${width}-${height}`);
+    }
+    if (process.env.SETTINGS_ONLY) {
+      browser("click", ".account-profile");
+      wait('!!document.querySelector(".profile-dialog[open] form")');
+      testSettingRows(width, height);
+      browser("press", "Escape");
+      continue;
     }
     browser("focus", '[aria-label="Manage fixture-channel"]');
     browser("press", "Enter");
@@ -400,6 +443,7 @@ function testModalGeometry() {
     screenshot(`modal-profile-saving-${width}-${height}`);
     evaluate("spaceControlFixture.profileRelease()");
     wait('!!document.querySelector(".profile-dialog [role=alert]")');
+    testSettingRows(width, height);
     stableShell(".profile-dialog[open]");
     browser("press", "Escape");
     browser("click", '[aria-label="User Settings"]');
@@ -442,14 +486,16 @@ function testModalGeometry() {
     assert.ok(evaluate("document.documentElement.scrollWidth <= innerWidth"), "Modal overflowed viewport");
   }
   console.log(
-    "PASS: desktop/narrow/short modal geometry, editable exact-username add/Enter/pending guard, mobile inset navigation/account alignment, and member Close/outside dismissal (mock API/gateway).",
+    process.env.SETTINGS_ONLY
+      ? "PASS: all six notification/privacy radio and text blocks centered at desktop/narrow/short viewports, including wrapped descriptions (mock API/gateway)."
+      : "PASS: desktop/narrow/short modal geometry, centered settings, editable exact-username add/Enter/pending guard, mobile inset navigation/account alignment, and member Close/outside dismissal (mock API/gateway).",
   );
 }
 try {
   browser("open", "about:blank");
   browser("set", "viewport", "1280", "900", "2");
   testModalGeometry();
-  if (!process.env.MODALS_ONLY) {
+  if (!process.env.MODALS_ONLY && !process.env.SETTINGS_ONLY) {
     if (!process.env.HOMEPAGE_ONLY) {
       for (const [viewport, saved, expected] of [
         [1280, "240", 240],

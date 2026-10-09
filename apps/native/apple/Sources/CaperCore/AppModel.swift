@@ -11,10 +11,10 @@ public final class AppModel {
     public var pendingMembers: [Member] = []
     public var detail: SpaceDetail?
     public var selectedSpaceID: String?
-    public var selectedChannelID: String?
+    public var selectedChannelID: String? { didSet { if selectedChannelID != oldValue { removeShownNotifications() } } }
     public var directMessages: [DirectMessageConversation] = []
     public private(set) var directMessagesError: String?
-    public var selectedDirectMessageID: String?
+    public var selectedDirectMessageID: String? { didSet { if selectedDirectMessageID != oldValue { removeShownNotifications() } } }
     /// `GET /api/people` for `@` suggestions in DMs; nil until the first load
     /// succeeds. A refresh keeps the previous list until it completes.
     public private(set) var people: [Person]?
@@ -25,9 +25,16 @@ public final class AppModel {
     public var selectedDirectMessage: DirectMessageConversation? {
         selectedDirectMessageID.flatMap { id in directMessages.first { $0.id == id } }
     }
+    /// The person's own open/closed choice for the requests list; nil until they
+    /// toggle it. Web's `requestsOpen`.
+    public var messageRequestsOpen: Bool?
     /// The requests list is open: a pushed page on narrow layouts, an expanded
-    /// sidebar section otherwise.
-    public var showingMessageRequests = false
+    /// sidebar section otherwise. As on web, it follows the view (open while an
+    /// incoming request is shown) until the person toggles it; their choice wins.
+    public var showingMessageRequests: Bool {
+        get { messageRequestsOpen ?? (selectedDirectMessage?.status == .incoming) }
+        set { messageRequestsOpen = newValue }
+    }
     /// Accounts you blocked, newest first, and their ids for every timeline.
     public private(set) var blockedAccounts: [BlockedAccount] = []
     public private(set) var blockedIDs: Set<String> = []
@@ -40,6 +47,9 @@ public final class AppModel {
     public var pushEnabled = false
     @ObservationIgnored public var setPushEnabled: ((Bool) async -> Void)?
     @ObservationIgnored public var disablePushLocally: (() -> Void)?
+    /// Removes a conversation's delivered pushes, by its channel or DM id (the
+    /// APNs `thread-id`), once it is on screen in the foreground.
+    @ObservationIgnored public var removeDeliveredNotifications: ((String) -> Void)?
     /// `GET /api/notifications/settings`; nil until the first load, so menus
     /// never show a guessed level.
     public private(set) var notificationSettings: NotificationSettings?
@@ -61,9 +71,20 @@ public final class AppModel {
     public var selectedChannel: Channel? { detail?.channels.first { $0.id == selectedChannelID } }
     public var error: String?
     public var busy = false
-    public var challengeID: String? { didSet { if challengeID != oldValue { loginAttemptsRemaining = nil } } }
+    public var challengeID: String? {
+        didSet {
+            if challengeID != oldValue { loginAttemptsRemaining = nil }
+            // "Use a different email" (or signing out) starts the resend allowance over.
+            if challengeID == nil { codesSent = 0; codeSentAt = nil }
+        }
+    }
     /// Remaining code attempts reported by the last rejected verification, as on web.
     public var loginAttemptsRemaining: Int?
+    /// Codes emailed for the current email entry: the first plus up to
+    /// `CodeResend.maximumResends` resends (see `CodeResend`).
+    public private(set) var codesSent = 0
+    /// When the latest code was emailed; Resend code waits a minute after each.
+    public private(set) var codeSentAt: Date?
     public var limits: SpaceLimits?
     /// The account's space list has loaded at least once. With no spaces,
     /// the workspace shows web's "Name your space" first-space form.
@@ -107,6 +128,11 @@ public final class AppModel {
     private var lastChannelBySpace: [String: String] = [:]
     private var directMessageRefreshTask: Task<Void, Never>?
     private var foreground = false
+    /// Web's membershipRevision: a background reconcile never applies a
+    /// snapshot taken while a space or channel change here was running.
+    @ObservationIgnored private var membershipChanges = 0
+    @ObservationIgnored private var membershipRevision = 0
+    @ObservationIgnored private var membershipRefreshing = false
 
     public init(api: APIClient = APIClient(), preferredInitialSpaceID: String? = nil) {
         self.api = api
@@ -120,6 +146,7 @@ public final class AppModel {
         chatModel.onReadCursor = { [weak self] in self?.markSelectedDirectRead() }
         chatModel.viewerAccountID = { [weak self] in self?.account?.id }
         chatModel.blockAccount = { [weak self] target in try await self?.block(target) }
+        chatModel.unblockAccount = { [weak self] accountID in try await self?.unblock(accountID: accountID) }
         chatModel.onDirectMessageBlocked = { [weak self] in
             let refresh = Task { await self?.refreshBlocks(); await self?.refreshDirectMessages() }
             _ = refresh
@@ -150,7 +177,7 @@ public final class AppModel {
             if phase == .ready { await loadSpaces(); startDirectMessageRefresh() }
         } catch {
             guard generation == attempt else { return }
-            self.error = error.localizedDescription; phase = .signedOut
+            self.error = FriendlyError.message(for: error); phase = .signedOut
         }
     }
 
@@ -163,6 +190,8 @@ public final class AppModel {
             guard self.generation == attempt else { return }
             self.challengeID = challengeID
             self.loginAttemptsRemaining = nil
+            self.codesSent += 1
+            self.codeSentAt = Date()
         }
     }
 
@@ -233,7 +262,7 @@ public final class AppModel {
         voice.leaveImmediately()
         directMessageRefreshTask?.cancel(); directMessageRefreshTask = nil
         account = nil; spaces = []; invitations = []; pendingMembers = []; detail = nil
-        directMessages = []; directMessagesError = nil; selectedDirectMessageID = nil; people = nil; showingMessageRequests = false
+        directMessages = []; directMessagesError = nil; selectedDirectMessageID = nil; people = nil; messageRequestsOpen = nil
         blockedAccounts = []; blockedIDs = []; blocksLoaded = false; blocksError = nil
         directMessagePrivacy = nil; privacyError = nil; chat.setBlockedAuthors([])
         clearNotificationState()
@@ -248,7 +277,7 @@ public final class AppModel {
         await chat.stop()
         await presence.stop()
         await voicePresence.stop()
-        do { try await revoke } catch { self.error = error.localizedDescription }
+        do { try await revoke } catch { self.error = FriendlyError.message(for: error) }
     }
 
     public func loadSpaces() async {
@@ -259,7 +288,7 @@ public final class AppModel {
             let response: SpacesResponse
             do { response = try await self.api.spaces() }
             catch {
-                if self.generation == attempt { self.spacesError = error.localizedDescription }
+                if self.generation == attempt { self.spacesError = FriendlyError.message(for: error) }
                 throw error
             }
             guard self.generation == attempt else { return }
@@ -326,7 +355,7 @@ public final class AppModel {
             }
         } catch is CancellationError {} catch {
             guard generation == attempt else { return }
-            directMessagesError = error.localizedDescription
+            directMessagesError = FriendlyError.message(for: error)
         }
     }
 
@@ -359,7 +388,7 @@ public final class AppModel {
             else { directMessages.append(conversation) }
             if navigationGeneration == navigation { await select(directMessage: conversation) }
             return generation == attempt
-        } catch { if generation == attempt { self.error = error.localizedDescription }; return false }
+        } catch { if generation == attempt { self.error = FriendlyError.message(for: error) }; return false }
     }
 
     /// Opens the account's notes conversation, creating it through the normal DM
@@ -393,11 +422,12 @@ public final class AppModel {
             // An incoming request opens read-only: no chat session, no composer,
             // no read cursor and no chimes. Opening it never accepts it.
             let current = directMessages.first { $0.id == conversation.id } ?? conversation
+            chat.directPeerID = current.peer.id == account?.id ? nil : current.peer.id
             if current.status == .incoming { await chat.preview(history: history) }
             else { await chat.open(history: history, displayName: account?.displayName ?? "") }
             guard generation == attempt, navigationGeneration == navigation else { return }
             markSelectedDirectRead()
-        } catch { if generation == attempt, navigationGeneration == navigation { navigationError = error.localizedDescription } }
+        } catch { if generation == attempt, navigationGeneration == navigation { navigationError = FriendlyError.message(for: error) } }
     }
 
     public func openDirectMessage(id: String) async {
@@ -426,7 +456,8 @@ public final class AppModel {
         let accepted = try await api.acceptDirectMessage(id: conversation.id)
         guard generation == attempt else { return }
         replaceDirectMessage(accepted)
-        if messageRequests.isEmpty { showingMessageRequests = false }
+        // Closed with none left; the next request opened follows the view again.
+        if messageRequests.isEmpty { messageRequestsOpen = nil }
         if selectedDirectMessageID == conversation.id { await select(directMessage: accepted) }
     }
 
@@ -478,7 +509,7 @@ public final class AppModel {
             blockedAccounts = blocks; blockedIDs = Set(blocks.map(\.id)); blocksLoaded = true; blocksError = nil
             chat.setBlockedAuthors(blockedIDs)
         } catch is CancellationError {} catch {
-            if generation == attempt { blocksError = error.localizedDescription }
+            if generation == attempt { blocksError = FriendlyError.message(for: error) }
         }
     }
 
@@ -490,7 +521,7 @@ public final class AppModel {
             guard generation == attempt else { return }
             directMessagePrivacy = settings.directMessages; privacyError = nil
         } catch is CancellationError {} catch {
-            if generation == attempt { privacyError = error.localizedDescription }
+            if generation == attempt { privacyError = FriendlyError.message(for: error) }
         }
     }
 
@@ -506,7 +537,7 @@ public final class AppModel {
             directMessagePrivacy = settings.directMessages
         } catch {
             guard generation == attempt else { return }
-            directMessagePrivacy = previous; privacyError = error.localizedDescription
+            directMessagePrivacy = previous; privacyError = FriendlyError.message(for: error)
         }
     }
 
@@ -519,7 +550,7 @@ public final class AppModel {
     /// requests, or to the DM list when none are left.
     private func leaveRequest() async {
         selectedDirectMessageID = nil
-        showingMessageRequests = !messageRequests.isEmpty
+        messageRequestsOpen = messageRequests.isEmpty ? nil : true
         if let space = detail?.space, detail?.channels.contains(where: \.joined) == true {
             await navigate(space: space, channelID: nil)
         } else {
@@ -532,9 +563,17 @@ public final class AppModel {
         foreground = active
         if active, account != nil {
             markSelectedDirectRead()
+            removeShownNotifications()
             Task { await refreshDirectMessages() }
             refreshNotificationSettingsIfStale()
+            refreshMembership()
         }
+    }
+
+    /// Android clears the open conversation's notifications; so does iOS.
+    private func removeShownNotifications() {
+        guard foreground, account != nil, let id = selectedDirectMessageID ?? selectedChannelID else { return }
+        removeDeliveredNotifications?(id)
     }
 
     private func markSelectedDirectRead() {
@@ -570,11 +609,70 @@ public final class AppModel {
         // After sign-in (every path starts here), like the block list.
         Task { [weak self] in await self?.loadNotificationSettings() }
         directMessageRefreshTask = Task { [weak self] in
+            // Sign-in has just loaded the spaces; membership waits for the next pass.
+            var reconcile = false
             while !Task.isCancelled {
                 await self?.refreshDirectMessages()
+                if reconcile { self?.refreshMembership() }
+                reconcile = true
                 try? await Task.sleep(for: .seconds(15))
                 guard self?.generation == attempt else { return }
             }
+        }
+    }
+
+    /// Web's membership reconcile, every 15 seconds and on returning to the
+    /// app: invitations, and spaces or channels changed elsewhere, appear
+    /// without a restart. Runs outside the refresh loop, which removing the
+    /// open space restarts.
+    private func refreshMembership() {
+        guard account != nil, spacesLoaded, !busy, !membershipRefreshing, membershipChanges == 0 else { return }
+        membershipRefreshing = true
+        Task { [weak self] in
+            await self?.reconcileMembership()
+            self?.membershipRefreshing = false
+        }
+    }
+
+    /// A change made here meanwhile wins over the older snapshot, and a failed
+    /// read keeps what is shown: an outage is not revocation.
+    private func reconcileMembership() async {
+        let attempt = generation
+        let revision = membershipRevision
+        let knownSpaces = spaces, knownInvitations = invitations
+        guard let response = try? await api.spaces(), generation == attempt, account != nil,
+              membershipChanges == 0, membershipRevision == revision,
+              spaces == knownSpaces, invitations == knownInvitations else { return }
+        let available = Set(response.spaces.map(\.id))
+        for space in spaces where !available.contains(space.id) { invalidateNavigation(spaceID: space.id) }
+        limits = response.limits
+        spaces = response.spaces
+        invitations = response.invitations
+        guard let current = detail, openingSpaceID == nil else { return }
+        guard available.contains(current.space.id) else {
+            // Removed from the open space elsewhere (or it was deleted).
+            if voice.isActive(spaceID: current.space.id) { voice.leaveImmediately() }
+            await removeCurrentSpace(id: current.space.id)
+            navigationError = "This space is no longer available."
+            return
+        }
+        guard selectedDirectMessageID == nil else { return }
+        let navigation = navigationGeneration
+        guard let refreshed = try? await api.space(current.space.id), refreshed.space.id == current.space.id,
+              generation == attempt, navigationGeneration == navigation, openingSpaceID == nil,
+              membershipChanges == 0, membershipRevision == revision,
+              detail?.space.id == current.space.id, selectedDirectMessageID == nil else { return }
+        replace(detail: refreshed)
+        guard let channelID = selectedChannelID else { return }
+        if let channel = refreshed.channels.first(where: { $0.id == channelID }) {
+            // Joined or left elsewhere: reopen with or without the composer.
+            if chat.isPreview == channel.joined { await select(channel: channel) }
+        } else {
+            // Deleted, or private access removed, elsewhere: as deleteChannel does.
+            if voice.isActive(channelID: channelID) { voice.leaveImmediately() }
+            invalidateNavigation(channelID: channelID)
+            if let first = refreshed.channels.first(where: \.joined) { await select(channel: first) }
+            else { selectedChannelID = nil; await chat.stop() }
         }
     }
 
@@ -690,6 +788,7 @@ public final class AppModel {
             navigationTarget = nil
             if let history {
                 remember(PreparedNavigation(detail: detail, channelID: channel?.id, history: history))
+                chat.directPeerID = nil
                 if channel?.joined == true { await chat.open(history: history, displayName: account?.displayName ?? "Guest") }
                 else { await chat.preview(history: history) }
             }
@@ -709,7 +808,7 @@ public final class AppModel {
         } catch {
             guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
             let missingSpace = (error as? APIError)?.status == 404 && !spaceVerified
-            navigationError = missingSpace ? "This space is no longer available." : error.localizedDescription
+            navigationError = missingSpace ? "This space is no longer available." : FriendlyError.message(for: error)
             if missingSpace {
                 spaces.removeAll { $0.id == space.id }
                 invitations.removeAll { $0.id == space.id }
@@ -784,6 +883,7 @@ public final class AppModel {
     }
 
     public func createSpace(name: String) async throws {
+        membershipChanges += 1; defer { membershipChanges -= 1; membershipRevision += 1 }
         clearNavigationCache()
         let attempt = generation
         if let error = WorkspaceValidation.spaceNameError(name) { throw APIError(status: 400, message: error) }
@@ -794,6 +894,7 @@ public final class AppModel {
     }
 
     public func renameSpace(_ name: String) async throws {
+        membershipChanges += 1; defer { membershipChanges -= 1; membershipRevision += 1 }
         guard let detail else { return }
         clearNavigationCache()
         let attempt = generation
@@ -804,6 +905,7 @@ public final class AppModel {
     }
 
     public func deleteCurrentSpace() async throws {
+        membershipChanges += 1; defer { membershipChanges -= 1; membershipRevision += 1 }
         guard let id = detail?.space.id else { return }
         clearNavigationCache()
         let attempt = generation
@@ -814,6 +916,7 @@ public final class AppModel {
     }
 
     public func leaveCurrentSpace() async throws {
+        membershipChanges += 1; defer { membershipChanges -= 1; membershipRevision += 1 }
         guard let account, let id = detail?.space.id else { return }
         clearNavigationCache()
         let attempt = generation
@@ -850,6 +953,7 @@ public final class AppModel {
     }
 
     public func acceptInvitation(_ invitation: Space) async throws {
+        membershipChanges += 1; defer { membershipChanges -= 1; membershipRevision += 1 }
         let attempt = generation
         let accepted = try await api.acceptSpaceInvitation(spaceID: invitation.id)
         guard generation == attempt else { throw CancellationError() }
@@ -859,6 +963,7 @@ public final class AppModel {
     }
 
     public func declineInvitation(_ invitation: Space) async throws {
+        membershipChanges += 1; defer { membershipChanges -= 1; membershipRevision += 1 }
         let attempt = generation
         try await api.declineSpaceInvitation(spaceID: invitation.id)
         guard generation == attempt else { throw CancellationError() }
@@ -866,6 +971,7 @@ public final class AppModel {
     }
 
     public func removeSpaceMember(_ member: Member) async throws {
+        membershipChanges += 1; defer { membershipChanges -= 1; membershipRevision += 1 }
         guard var detail else { return }
         clearNavigationCache()
         let attempt = generation
@@ -877,6 +983,7 @@ public final class AppModel {
 
     @discardableResult
     public func createChannel(name: String, privateChannel: Bool) async throws -> Channel? {
+        membershipChanges += 1; defer { membershipChanges -= 1; membershipRevision += 1 }
         guard var detail else { return nil }
         clearNavigationCache()
         let attempt = generation
@@ -891,6 +998,7 @@ public final class AppModel {
     }
 
     public func updateChannel(_ channel: Channel, name: String, privateChannel: Bool) async throws -> Channel {
+        membershipChanges += 1; defer { membershipChanges -= 1; membershipRevision += 1 }
         guard var detail else { return channel }
         clearNavigationCache()
         let attempt = generation
@@ -904,6 +1012,7 @@ public final class AppModel {
     }
 
     public func deleteChannel(_ channel: Channel) async throws {
+        membershipChanges += 1; defer { membershipChanges -= 1; membershipRevision += 1 }
         guard var detail else { return }
         clearNavigationCache()
         let attempt = generation
@@ -954,6 +1063,7 @@ public final class AppModel {
     }
 
     public func joinChannel(_ channel: Channel) async throws {
+        membershipChanges += 1; defer { membershipChanges -= 1; membershipRevision += 1 }
         guard let spaceID = detail?.space.id else { return }
         let attempt = generation
         clearNavigationCache()
@@ -963,6 +1073,7 @@ public final class AppModel {
     }
 
     public func leaveChannel(_ channel: Channel) async throws {
+        membershipChanges += 1; defer { membershipChanges -= 1; membershipRevision += 1 }
         guard let spaceID = detail?.space.id else { return }
         let attempt = generation
         let navigation = navigationGeneration
@@ -986,6 +1097,7 @@ public final class AppModel {
     }
 
     public func acceptChannelInvitation(_ invitation: ChannelInvitation) async throws {
+        membershipChanges += 1; defer { membershipChanges -= 1; membershipRevision += 1 }
         guard let spaceID = detail?.space.id else { return }
         let attempt = generation
         clearNavigationCache()
@@ -995,6 +1107,7 @@ public final class AppModel {
     }
 
     public func declineChannelInvitation(_ invitation: ChannelInvitation) async throws {
+        membershipChanges += 1; defer { membershipChanges -= 1; membershipRevision += 1 }
         guard let spaceID = detail?.space.id else { return }
         let attempt = generation
         clearNavigationCache()
@@ -1137,7 +1250,7 @@ public final class AppModel {
         } catch {
             guard voiceJoinGeneration == joinAttempt, generation == accountGeneration else { return }
             voicePresence.revoke(channelID: channel.id)
-            navigationError = error.localizedDescription
+            navigationError = FriendlyError.message(for: error)
         }
     }
 
@@ -1159,9 +1272,35 @@ public final class AppModel {
         do { try await operation() }
         catch {
             guard expectedGeneration == nil || generation == expectedGeneration else { return }
-            self.error = error.localizedDescription
+            self.error = FriendlyError.message(for: error)
         }
         if expectedGeneration == nil || generation == expectedGeneration { busy = false }
+    }
+}
+
+/// "Resend code" on the sign-in code step, as on web.
+enum CodeResend {
+    /// Each code, the first included, starts a one-minute wait.
+    static let wait: TimeInterval = 60
+    /// Three codes per email entry: the server silently stops sending after
+    /// three in 15 minutes, so a fourth would never arrive.
+    static let maximumResends = 2
+
+    /// Whole seconds until Resend code is available, rounded up; 0 when it is.
+    static func secondsRemaining(sentAt: Date?, now: Date) -> Int {
+        guard let sentAt else { return 0 }
+        return max(0, Int((wait - now.timeIntervalSince(sentAt)).rounded(.up)))
+    }
+
+    /// The wait as m:ss, e.g. "0:42".
+    static func countdown(_ seconds: Int) -> String {
+        let seconds = max(0, seconds)
+        return "\(seconds / 60):" + (seconds % 60 < 10 ? "0" : "") + "\(seconds % 60)"
+    }
+
+    /// The button's label while waiting, then "Resend code".
+    static func label(secondsRemaining: Int) -> String {
+        secondsRemaining > 0 ? "Resend code in \(countdown(secondsRemaining))" : "Resend code"
     }
 }
 
@@ -1365,6 +1504,15 @@ public final class ChatModel {
     public var liveState: GatewayState = .disconnected
     public var error: String?
     public var hasMore = false
+    public var hasNewer = false
+    public var loadingNewer = false
+    public var focusedMessageID: String?
+    public var focusRevision = 0
+    public var jumpingToMessage = false
+    public var jumpError: String?
+    private var historyAnchorRequest = 0
+    private var windowStart: String?
+    private var windowEnd: String?
     public var typingNames: [String] = []
     public var reactionErrors: [String: String] = [:]
     /// `GET /api/assets/usage` succeeded; otherwise the attach control stays hidden.
@@ -1389,14 +1537,25 @@ public final class ChatModel {
     public var threadRootID: String?
     public var threadLoading = false
     public var threadHasMore = false
+    public var threadHasNewer = false
+    private var threadAfter: String?
+    private var threadWindowStart: String?
+    private var threadWindowEnd: String?
     public var threadError: String?
     private var threadBefore: String?
     private var threadRequest = 0
+    private var threadPages: [String: (hasMore: Bool, before: String?, hasNewer: Bool, after: String?, windowStart: String?, windowEnd: String?)] = [:]
     private var threadOnlyRows: Set<String> = []
     private var threadDrafts: [String: String] = [:]
     private var threadBroadcasts: [String: Bool] = [:]
-    public var channelMessages: [ChatMessage] { messages.filter { $0.isChannelMessage && !threadOnlyRows.contains($0.id) } }
+    public var channelMessages: [ChatMessage] { messages.filter { $0.isChannelMessage && !threadOnlyRows.contains($0.id) && Self.inWindow($0, start: windowStart, end: windowEnd) } }
     public var displayedChannelMessages: [ChatMessage] { channelMessages.map(mutations.project) }
+    public var threadMessages: [ChatMessage] { messages.filter { $0.threadRootId != nil && $0.threadRootId == threadRootID && Self.inWindow($0, start: threadWindowStart, end: threadWindowEnd) } }
+    public var displayedThreadMessages: [ChatMessage] { threadMessages.map(mutations.project) }
+    private static func inWindow(_ message: ChatMessage, start: String?, end: String?) -> Bool {
+        (start == nil || (try? Sequence.compare(message.seq, start!)) != .orderedAscending) &&
+        (end == nil || (try? Sequence.compare(message.seq, end!)) != .orderedDescending)
+    }
     public var threadDraft: String {
         get { threadRootID.flatMap { threadDrafts[$0] } ?? "" }
         set { if let threadRootID { threadDrafts[threadRootID] = newValue } }
@@ -1423,10 +1582,20 @@ public final class ChatModel {
     /// Accounts you blocked: their messages collapse in every timeline, and
     /// they never chime or show as typing. Kept in step by `AppModel`.
     public private(set) var blockedAuthorIDs: Set<String> = []
+    /// The other person in the open DM, kept by `AppModel`. Blocking them stops
+    /// reactions, pins and edits as well as sending; the server refuses them too.
+    public var directPeerID: String?
+    /// Reacting, pinning and editing need a chat session (not a preview), and
+    /// never reach someone you blocked.
+    public var canInteract: Bool {
+        !isPreview && currentAuthor != nil && !(directPeerID.map { blockedAuthorIDs.contains($0) } ?? false)
+    }
     /// The signed-in account, also while previewing without a chat session.
     @ObservationIgnored public var viewerAccountID: () -> String? = { nil }
     /// Blocks from message actions in panels that only hold the chat model.
     @ObservationIgnored public var blockAccount: ((BlockTarget) async throws -> Void)?
+    /// Unblocks from message actions, by account id.
+    @ObservationIgnored public var unblockAccount: ((String) async throws -> Void)?
     /// A DM send refused with `dm_blocked`: the block list needs a refresh.
     @ObservationIgnored public var onDirectMessageBlocked: (() -> Void)?
     public var viewerID: String? { session?.author.id ?? viewerAccountID() }
@@ -1488,11 +1657,18 @@ public final class ChatModel {
 
     /// Blocks from a message action; a failure shows as the conversation error.
     public func block(_ target: BlockTarget) async {
-        do { try await blockAccount?(target) } catch { self.error = error.localizedDescription }
+        do { try await blockAccount?(target) } catch { self.error = FriendlyError.message(for: error) }
+    }
+
+    /// Unblocks a message's author; a failure shows web's wording as the conversation error.
+    public func unblock(_ author: ChatAuthor) {
+        Task {
+            do { try await unblockAccount?(author.id) } catch { self.error = "Couldn’t unblock \(author.name). Try again." }
+        }
     }
 
     func canEdit(_ message: ChatMessage) -> Bool {
-        message.forward == nil && !isPreview && channelID == message.channelId && currentAuthor?.isGuest == false && currentAuthor?.id == message.author.id
+        message.forward == nil && canInteract && channelID == message.channelId && currentAuthor?.isGuest == false && currentAuthor?.id == message.author.id
     }
 
     func editMessage(_ message: ChatMessage, text: String) async throws {
@@ -1557,10 +1733,10 @@ public final class ChatModel {
         return ChatHistory(
             space: HistoryIdentity(id: spaceID, name: spaceName),
             channel: HistoryIdentity(id: channelID, name: channelName),
-            messages: messages.map { attachmentSnapshots.overlay(forwardSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) },
+            messages: channelMessages.map { attachmentSnapshots.overlay(forwardSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) },
             pinnedMessages: pinnedMessages.map { attachmentSnapshots.overlay(forwardSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) },
             cursor: delivery.cursor,
-            hasMore: hasMore
+            hasMore: hasMore, hasNewer: hasNewer
         )
     }
 
@@ -1618,6 +1794,7 @@ public final class ChatModel {
         isPreview = false
         let preservingTimeline = preservingPending && self.channelID == channelID
         generation += 1
+        threadPages = [:]
         mutations = MessageMutations(); pendingPins = []
         let requestGeneration = generation
         let oldSubscription = subscriptionID
@@ -1626,6 +1803,9 @@ public final class ChatModel {
         let preservedMessages = channelMessages
         let preservedCursor = delivery.cursor
         let preservedHasMore = hasMore
+        let preservedHasNewer = hasNewer
+        historyAnchorRequest += 1
+        loadingNewer = false; jumpingToMessage = false
         if preservingTimeline {
             pendingReactions = [:]; reactionWorkers = []
             renderReactions()
@@ -1649,6 +1829,9 @@ public final class ChatModel {
             messages = prepared.messages.map { overlaySnapshots($0) }
             pinnedMessages = prepared.pinnedMessages.map { overlayPinned($0) }
             delivery.reset(cursor: prepared.cursor); hasMore = prepared.hasMore
+            hasNewer = prepared.hasNewer
+            windowStart = prepared.hasNewer ? prepared.messages.first?.seq : nil
+            windowEnd = prepared.hasNewer ? prepared.messages.last?.seq : nil
             channelName = prepared.channel?.name ?? "general"
             spaceName = prepared.space?.name ?? "Caper"
         }
@@ -1676,7 +1859,7 @@ public final class ChatModel {
             spaceID = history.space?.id
             self.channelID = resolvedChannelID
             let firstRefreshed = history.messages.first?.seq
-            let canRetain = preservingTimeline && Self.refreshAccountsForMissingEvents(
+            let canRetain = preservingTimeline && !preservedHasNewer && Self.refreshAccountsForMissingEvents(
                 messages: history.messages,
                 after: preservedCursor,
                 through: history.cursor
@@ -1712,6 +1895,7 @@ public final class ChatModel {
                     preservedMessages.contains { (try? Sequence.compare($0.seq, first)) == .orderedAscending }
                 } == true
                 hasMore = retainedOlderPrefix ? preservedHasMore : history.hasMore
+                hasNewer = false; windowStart = nil; windowEnd = nil; focusedMessageID = nil
             }
             channelName = history.channel?.name ?? "general"
             spaceName = history.space?.name ?? "Caper"
@@ -1795,16 +1979,18 @@ public final class ChatModel {
     public func loadOlder() async {
         guard !loading, !loadingOlder, hasMore, let channelID, let before = channelMessages.first?.seq else { return }
         let requestGeneration = generation
+        let anchorRequest = historyAnchorRequest
         loadingOlder = true; olderError = nil
         defer { if generation == requestGeneration { loadingOlder = false } }
         do {
             let page = try await api.history(channelID: channelID, before: before)
-            guard generation == requestGeneration, self.channelID == channelID else { return }
+            guard generation == requestGeneration, anchorRequest == historyAnchorRequest, self.channelID == channelID else { return }
             threadOnlyRows.subtract(page.messages.map(\.id))
             merge(page.messages)
+            if windowStart != nil { windowStart = page.messages.first?.seq ?? windowStart }
             hasMore = page.hasMore
         } catch {
-            guard generation == requestGeneration, self.channelID == channelID else { return }
+            guard generation == requestGeneration, anchorRequest == historyAnchorRequest, self.channelID == channelID else { return }
             if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status) {
                 onAccessRevoked?(channelID)
                 await stop()
@@ -1816,24 +2002,82 @@ public final class ChatModel {
 
     public func closeThread() { threadRequest += 1; threadRootID = nil; threadLoading = false }
 
-    public func openThread(_ rootID: String) async {
-        threadRootID = rootID; threadBefore = nil; threadHasMore = false
-        await loadThread()
+    public func goToMessage(_ message: ChatMessage) async -> Bool {
+        guard !loading, !jumpingToMessage, message.channelId == channelID else { return false }
+        let requestGeneration = generation
+        historyAnchorRequest += 1
+        let request = historyAnchorRequest
+        jumpingToMessage = true; jumpError = nil
+        loadingNewer = false; loadingOlder = false
+        defer { if generation == requestGeneration && request == historyAnchorRequest { jumpingToMessage = false } }
+        do {
+            if let root = message.threadRootId {
+                await openThread(root, around: message.id)
+                guard generation == requestGeneration, request == historyAnchorRequest else { return false }
+                if let error = threadError { throw APIError(status: 502, message: error) }
+                guard threadMessages.contains(where: { $0.id == message.id }) else { return false }
+            } else {
+                let page = try await api.history(channelID: message.channelId, around: message.id)
+                guard generation == requestGeneration, request == historyAnchorRequest else { return false }
+                guard page.messages.contains(where: { $0.id == message.id }) else { throw APIError(status: 502, message: "Message context is unavailable.") }
+                windowStart = page.messages.first?.seq; windowEnd = page.hasNewer ? page.messages.last?.seq : nil
+                threadOnlyRows.subtract(page.messages.map(\.id)); merge(page.messages)
+                hasMore = page.hasMore; hasNewer = page.hasNewer; closeThread()
+            }
+            focusedMessageID = message.id; focusRevision += 1
+            return true
+        } catch {
+            if generation == requestGeneration && request == historyAnchorRequest { jumpError = error.localizedDescription }
+            return false
+        }
     }
 
-    public func loadThread(older: Bool = false) async {
+    public func loadNewer() async {
+        guard hasNewer, !loadingNewer, let channelID, let after = channelMessages.last?.seq else { return }
+        let requestGeneration = generation; let request = historyAnchorRequest
+        loadingNewer = true
+        defer { if generation == requestGeneration && request == historyAnchorRequest { loadingNewer = false } }
+        do {
+            let page = try await api.history(channelID: channelID, after: after)
+            guard generation == requestGeneration, request == historyAnchorRequest else { return }
+            threadOnlyRows.subtract(page.messages.map(\.id)); merge(page.messages)
+            hasNewer = page.hasNewer; windowEnd = page.hasNewer ? page.messages.last?.seq ?? windowEnd : nil
+        } catch {
+            if generation == requestGeneration && request == historyAnchorRequest { self.error = error.localizedDescription }
+        }
+    }
+
+    public func openThread(_ rootID: String, around: String? = nil) async {
+        guard around != nil || threadRootID != rootID else { return }
+        threadRequest += 1
+        threadRootID = rootID; threadError = nil
+        let cached = around == nil ? threadPages[rootID] : nil
+        threadBefore = cached?.before; threadHasMore = cached?.hasMore ?? false
+        threadAfter = cached?.after; threadHasNewer = cached?.hasNewer ?? false
+        threadWindowStart = cached?.windowStart; threadWindowEnd = cached?.windowEnd
+        threadLoading = false
+        if cached == nil { await loadThread(around: around) }
+    }
+
+    public func loadThread(older: Bool = false, newer: Bool = false, around: String? = nil) async {
         guard let rootID = threadRootID, let channelID else { return }
         threadRequest += 1
         let request = threadRequest; let channelGeneration = generation
+        if !older && !newer {
+            threadBefore = nil; threadAfter = nil; threadHasNewer = false
+            threadWindowStart = nil; threadWindowEnd = nil
+        }
         threadLoading = true; threadError = nil
         do {
-            let page = try await api.thread(channelID: channelID, rootID: rootID, before: older ? threadBefore : nil)
+            let page = try await api.thread(channelID: channelID, rootID: rootID, before: older ? threadBefore : nil, after: newer ? threadAfter : nil, around: around)
             guard request == threadRequest, generation == channelGeneration, threadRootID == rootID else { return }
             let loaded = Set(messages.map(\.id))
             let rows = [page.root] + page.messages
             threadOnlyRows.formUnion(rows.filter { $0.isChannelMessage && !loaded.contains($0.id) }.map(\.id))
             merge(rows)
-            threadHasMore = page.hasMore; threadBefore = page.messages.first?.seq ?? threadBefore
+            if !newer { threadHasMore = page.hasMore; threadBefore = page.messages.first?.seq ?? threadBefore; threadWindowStart = threadBefore }
+            if !older { threadHasNewer = page.hasNewer ?? false; threadAfter = page.messages.last?.seq ?? threadAfter; threadWindowEnd = threadHasNewer ? threadAfter : nil }
+            threadPages[rootID] = (threadHasMore, threadBefore, threadHasNewer, threadAfter, threadWindowStart, threadWindowEnd)
         } catch {
             guard request == threadRequest, generation == channelGeneration else { return }
             if let denied = error as? APIError, [401, 403, 404].contains(denied.status) {
@@ -1874,7 +2118,8 @@ public final class ChatModel {
         } : []
         let command = delivery.begin(text: text, attachments: localAttachments, threadRootId: rootID, broadcast: inThread && threadBroadcast)
         if newSubmission {
-            if inThread { threadDraft = "" } else {
+            // "Also send to channel" applies to one reply, so it resets with the draft.
+            if inThread { threadDraft = ""; threadBroadcast = false } else {
                 // Kept for the pending row and the processing placeholder; removed
                 // when the file is ready or failed, or when the conversation closes.
                 for item in attachmentDrafts { if let id = item.attachment?.id { localAttachmentCopies[id] = item.localURL } }
@@ -1883,6 +2128,17 @@ public final class ChatModel {
         }
         let requestGeneration = generation
         sending = true; error = nil
+        defer {
+            sending = false
+            if delivery.pending == nil, self.channelID == channelID, generation == requestGeneration {
+                if inThread, let rootID, threadHasNewer {
+                    focusedMessageID = nil
+                    Task { if self.channelID == channelID, generation == requestGeneration, threadRootID == rootID { await loadThread() } }
+                } else if !inThread, hasNewer {
+                    Task { if self.channelID == channelID, generation == requestGeneration { await retryLoad() } }
+                }
+            }
+        }
         await gateway.reportActivity()
         do {
             let message = try await api.send(channelID: channelID, sessionToken: session.token, clientMessageID: command.id, text: command.text,
@@ -1898,7 +2154,6 @@ public final class ChatModel {
                   generation == requestGeneration || delivery.pending?.id == command.id else { return }
             if delivery.pending?.id != command.id {
                 self.error = nil
-                sending = false
                 return
             }
             if let apiError = error as? APIError, [400, 404, 409, 413, 422].contains(apiError.status)
@@ -1910,7 +2165,6 @@ public final class ChatModel {
                 self.error = "Send outcome is unknown. Retry to safely resend the same message. \(error.localizedDescription)"
             }
         }
-        sending = false
     }
 
     public func setReaction(messageID: String, emoji: String, active: Bool) async {
@@ -2038,11 +2292,15 @@ public final class ChatModel {
             applyPin(event.message)
         } catch {
             guard generation == requestGeneration, self.channelID == channelID else { return }
-            if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status) {
+            let apiError = error as? APIError
+            // A DM block refusal keeps the conversation open with the reason inline.
+            if let apiError, [401, 403, 404].contains(apiError.status),
+               !DirectMessageErrors.isRefusal(status: apiError.status, code: apiError.code) {
                 onAccessRevoked?(channelID); await stop(); return
             }
             failedPinActions[messageID] = active
-            pinErrors[messageID] = "Couldn’t \(active ? "pin" : "unpin") message. Try again."
+            pinErrors[messageID] = DirectMessageErrors.message(code: apiError?.code)
+                ?? "Couldn’t \(active ? "pin" : "unpin") message. Try again."
         }
     }
 
@@ -2282,9 +2540,11 @@ public final class ChatModel {
         canForward = false; forwardTarget = nil; forwardConversationTarget = nil
         editSnapshots.reset()
         failedPinActions = [:]
-        closeThread(); threadOnlyRows = []; threadDrafts = [:]; threadBroadcasts = [:]
+        closeThread(); threadPages = [:]; threadOnlyRows = []; threadDrafts = [:]; threadBroadcasts = [:]
         isPreview = false
         session = nil; channelID = nil; spaceID = nil; messages = []; draft = ""; hasMore = false
+        hasNewer = false; loadingNewer = false; windowStart = nil; windowEnd = nil
+        focusedMessageID = nil; jumpingToMessage = false; jumpError = nil; historyAnchorRequest += 1
         channelName = "general"; spaceName = "Caper"; error = nil
         loadingOlder = false; olderError = nil
         loading = false; sending = false; liveState = .disconnected
@@ -2413,7 +2673,10 @@ public final class ChatModel {
                 renderReactions()
             } catch {
                 guard generation == requestGeneration, self.channelID == channelID else { return }
-                if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status) {
+                let apiError = error as? APIError
+                // A DM block refusal keeps the conversation open with the reason inline.
+                if let apiError, [401, 403, 404].contains(apiError.status),
+                   !DirectMessageErrors.isRefusal(status: apiError.status, code: apiError.code) {
                     onAccessRevoked?(channelID)
                     await stop()
                     return
@@ -2421,7 +2684,7 @@ public final class ChatModel {
                 if pendingReactions[messageID]?[emoji] == desired {
                     pendingReactions[messageID]?[emoji] = nil
                     if pendingReactions[messageID]?.isEmpty == true { pendingReactions[messageID] = nil }
-                    reactionErrors[messageID] = "Couldn’t save reaction. Retry."
+                    reactionErrors[messageID] = DirectMessageErrors.message(code: apiError?.code) ?? "Couldn’t save reaction. Retry."
                     failedReactions[messageID] = (emoji, desired.active)
                     renderReactions()
                 }

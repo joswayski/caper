@@ -46,6 +46,10 @@ const MAX_PARTICIPANTS: usize = 12;
 const MAX_TRACKS: usize = 1;
 const MAX_SUBSCRIPTIONS: usize = MAX_PARTICIPANTS - 1;
 const JOIN_LIMIT_PER_MINUTE: usize = 30;
+/// One account's share of a room: a device plus its two microphone-test
+/// monitors, and room for one reconnect overlapping an expiring lease.
+const MAX_ACCOUNT_SLOTS: usize = 4;
+const ACCOUNT_JOIN_LIMIT_PER_MINUTE: usize = 10;
 const OP_LIMIT_PER_MINUTE: usize = 120;
 const MAX_CLEANUP_BACKLOG: usize = 512;
 const CLEANUP_RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
@@ -859,6 +863,10 @@ struct Registry {
     /// Recent warm session issues, only to rate-limit them per account.
     #[serde(default)]
     warmed: Vec<WarmIssue>,
+    /// Recent accepted joins by account, so one account can't spend the
+    /// room's whole join budget.
+    #[serde(default)]
+    account_joins: VecDeque<(i64, Timestamp)>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct WarmIssue {
@@ -887,6 +895,8 @@ impl PreparedJoin {
 struct JoinReservation {
     started: Timestamp,
     monitor: Option<Monitor>,
+    #[serde(default)]
+    user: Option<i64>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Participant {
@@ -894,6 +904,10 @@ struct Participant {
     token: String,
     #[serde(default)]
     account_session: Option<Vec<u8>>,
+    /// The account's internal ID, for per-account room limits. Never sent to
+    /// clients. Absent for guests and older stored state.
+    #[serde(default)]
+    user_id: Option<i64>,
     /// Stable saved account avatar. Absent for guests and older stored state.
     #[serde(default)]
     avatar_id: Option<i16>,
@@ -1474,6 +1488,19 @@ struct EventStreamState {
     revision: Option<u64>,
     handoff: bool,
     handoff_deadline: Option<tokio::time::Instant>,
+    /// Consecutive transient (5xx) access-check failures on live events.
+    transient_failures: u8,
+}
+
+/// About 30s of heartbeats: a blip skips emissions; an outage still ends streams.
+const MAX_TRANSIENT_STREAM_FAILURES: u8 = 3;
+
+/// Whether a failed access check skips one live emission instead of ending the
+/// stream. Only transient (5xx) failures after setup qualify; denials never do.
+fn skips_transient_failure(status: StatusCode, event: &str, failures: u8) -> bool {
+    status.is_server_error()
+        && matches!(event, "changed" | "heartbeat")
+        && failures < MAX_TRANSIENT_STREAM_FAILURES
 }
 
 #[derive(Deserialize, Default)]
@@ -1563,6 +1590,7 @@ async fn event_stream(
             revision: None,
             handoff,
             handoff_deadline: None,
+            transient_failures: 0,
         },
         |mut stream| async move {
             loop {
@@ -1617,8 +1645,26 @@ async fn event_stream(
                 }
                 // Heartbeats do not renew the lease. They do bound expiry/revocation detection
                 // even when the cleanup sweep is not running.
-                stream.state.check_media_access().await.ok()?;
-                let snapshot = stream
+                // A database blip (for example an exhausted pool) must not end every
+                // voice stream at once: disclose nothing until a later check succeeds,
+                // and the next heartbeat delivers any missed revision. Denials, setup
+                // events and a sustained outage still end it.
+                match stream.state.check_media_access().await {
+                    Ok(()) => stream.transient_failures = 0,
+                    Err(error)
+                        if skips_transient_failure(
+                            error.status,
+                            event,
+                            stream.transient_failures,
+                        ) =>
+                    {
+                        stream.transient_failures += 1;
+                        continue;
+                    }
+                    Err(_) => return None,
+                }
+                // A shared-store outage fails closed, so clients see it and reconnect.
+                let (revision, snapshot) = stream
                     .state
                     .read(|r| {
                         if let Some(token) = &stream.token {
@@ -1642,7 +1688,6 @@ async fn event_stream(
                     })
                     .await
                     .ok()?;
-                let (revision, snapshot) = snapshot;
                 // A delayed/lost Pub/Sub wake must not let a heartbeat acknowledge
                 // a new revision without delivering it. Heartbeats also repair state.
                 let event = if event == "heartbeat" && stream.revision != Some(revision) {
@@ -1756,26 +1801,29 @@ async fn join(
     ensure_enabled(&s)?;
     let submitted_name = input.name.as_deref().unwrap_or_default().trim();
     let account = if let Some(token) = account_token(&headers) {
-        s.auth
-            .authenticate(token, s.database.as_ref())
-            .await
-            .ok()
-            .map(|principal| {
-                (
-                    principal.user.display_name,
-                    principal.user.avatar_id,
-                    Sha256::digest(token.as_bytes()).to_vec(),
-                )
-            })
+        match s.auth.authenticate(token, s.database.as_ref()).await {
+            Ok(principal) => Some((
+                principal.user.display_name,
+                principal.user.avatar_id,
+                Sha256::digest(token.as_bytes()).to_vec(),
+                principal.user.id,
+            )),
+            // Account channels already verified this session. If this lookup
+            // fails (e.g. a database outage), never fall back to a roster name
+            // the client chose.
+            Err(error) if s.media_channel.is_some() => return Err(error),
+            Err(_) => None,
+        }
     } else {
         None
     };
     let name = account
         .as_ref()
-        .and_then(|(name, _, _)| name.as_deref())
+        .and_then(|(name, _, _, _)| name.as_deref())
         .unwrap_or(submitted_name)
         .trim();
-    let avatar_id = account.as_ref().map(|(_, avatar_id, _)| *avatar_id);
+    let avatar_id = account.as_ref().map(|(_, avatar_id, _, _)| *avatar_id);
+    let user_id = account.as_ref().map(|(_, _, _, user)| *user);
     if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid name"));
     }
@@ -1796,7 +1844,7 @@ async fn join(
             let identity = s
                 .media_session
                 .as_ref()
-                .or_else(|| account.as_ref().map(|(_, _, hash)| hash));
+                .or_else(|| account.as_ref().map(|(_, _, hash, _)| hash));
             let verified = match (identity, &input.monitor, &input.publish) {
                 (Some(account), None, Some(_)) => verify_warm(&s.config, account, ticket),
                 _ => None,
@@ -1829,6 +1877,35 @@ async fn join(
                     StatusCode::TOO_MANY_REQUESTS,
                     "rate limit exceeded",
                 ));
+            }
+            r.account_joins
+                .retain(|(_, at)| now.duration_since(*at) < Duration::from_secs(60));
+            if let Some(user) = user_id {
+                // Per-account shares, so one member can't hold every slot or
+                // spend the room's join budget (including through mic tests).
+                if r.account_joins.iter().filter(|(u, _)| *u == user).count()
+                    >= ACCOUNT_JOIN_LIMIT_PER_MINUTE
+                {
+                    return Err(ApiError::new(
+                        StatusCode::TOO_MANY_REQUESTS,
+                        "rate limit exceeded",
+                    ));
+                }
+                let held = r
+                    .participants
+                    .values()
+                    .filter(|p| p.user_id == Some(user))
+                    .count()
+                    + r.reservations
+                        .values()
+                        .filter(|j| j.user == Some(user))
+                        .count();
+                if held >= MAX_ACCOUNT_SLOTS {
+                    return Err(ApiError::new(
+                        StatusCode::CONFLICT,
+                        "already in this call on too many devices",
+                    ));
+                }
             }
             if r.participants.len() + r.reservations.len() >= MAX_PARTICIPANTS {
                 return Err(ApiError::new(StatusCode::CONFLICT, "lobby full"));
@@ -1870,11 +1947,15 @@ async fn join(
                 );
             }
             r.joins.push_back(now);
+            if let Some(user) = user_id {
+                r.account_joins.push_back((user, now));
+            }
             r.reservations.insert(
                 reservation,
                 JoinReservation {
                     started: now,
                     monitor,
+                    user: user_id,
                 },
             );
             let pulls = if input.receive && input.publish.is_some() && monitor.is_none() {
@@ -1993,6 +2074,7 @@ async fn join(
         id,
         token: token_hash(&token),
         account_session: s.media_session.clone(),
+        user_id,
         avatar_id,
         name: name.into(),
         session,
@@ -2335,7 +2417,12 @@ async fn warm(
     }
     s.update(|r| {
         r.warmed.retain(|w| w.issued.elapsed() < WARM_MIN_INTERVAL);
-        if r.warmed.len() >= 4 * MAX_PARTICIPANTS || r.warmed.iter().any(|w| w.account == account) {
+        // Each warm parks a revocation for half an hour. Keep those to half the
+        // backlog so removing a participant always has room for its cleanup.
+        if r.cleanup.len() >= MAX_CLEANUP_BACKLOG / 2
+            || r.warmed.len() >= 4 * MAX_PARTICIPANTS
+            || r.warmed.iter().any(|w| w.account == account)
+        {
             return Err(ApiError::new(
                 StatusCode::TOO_MANY_REQUESTS,
                 "rate limit exceeded",

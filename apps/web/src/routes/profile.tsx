@@ -6,7 +6,10 @@ import NotificationSettings from "../account/NotificationSettings";
 import PrivacySettings from "../account/PrivacySettings";
 import Wordmark from "../components/Wordmark";
 
-export const Route = createFileRoute("/profile")({ component: Profile });
+export const Route = createFileRoute("/profile")({
+  head: () => ({ meta: [{ title: "Profile - Caper" }] }),
+  component: Profile,
+});
 
 function Profile() {
   const navigate = useNavigate();
@@ -42,7 +45,7 @@ function Profile() {
         {account.username && <PrivacySettings />}
         <div className="mt-5 flex items-center justify-end text-[.85rem]">
           <button
-            className="cursor-pointer border-0 bg-transparent p-0 text-content-muted focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
+            className="cursor-pointer border-0 bg-transparent p-0 text-content-muted hover:text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
             type="button"
             onClick={() => void logout().then(() => window.location.assign("/"))}
           >
