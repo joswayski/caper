@@ -62,6 +62,10 @@ public actor APIClient {
     private var token: String?
     public var isSignedIn: Bool { token != nil }
     private var authGeneration: UInt64 = 0
+    /// The signed-in chat capability and the account token that minted it. It is
+    /// bound to the account session, not a conversation, so opening channels
+    /// reuses it (like web, Android and desktop) until the server refuses it.
+    private var cachedChatSession: (account: String, session: ChatSession)?
     private let decoder = JSONDecoder()
     private let encoder = JSONEncoder()
 
@@ -100,17 +104,22 @@ public actor APIClient {
         guard generation == authGeneration else { throw CancellationError() }
         try tokenStore.save(result.token)
         token = result.token
+        cachedChatSession = nil
         return result.account
     }
 
     public func updateProfile(username: String, displayName: String) async throws -> Account {
-        try await request("api/account/profile", method: "POST", body: ProfileInput(username: username, displayName: displayName))
+        let account: Account = try await request("api/account/profile", method: "POST", body: ProfileInput(username: username, displayName: displayName))
+        // The next conversation mints a session carrying the new author name.
+        cachedChatSession = nil
+        return account
     }
 
     public func logout() async throws {
         authGeneration &+= 1
         let revokedToken = token
         token = nil
+        cachedChatSession = nil
         try tokenStore.clear()
         guard let revokedToken else { return }
         let _: Empty = try await request("api/auth/logout", method: "POST", extraHeaders: ["authorization": "Bearer \(revokedToken)"])
@@ -277,9 +286,11 @@ public actor APIClient {
         let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/channels/\(try pathID(channelID))/invitation", method: "DELETE")
     }
 
-    public func history(channelID: String? = nil, before: String? = nil) async throws -> ChatHistory {
+    public func history(channelID: String? = nil, before: String? = nil, after: String? = nil, around: String? = nil) async throws -> ChatHistory {
         var path = channelID.map { "api/chat/channels/\($0)/messages" } ?? "api/chat/general"
         if let before { path += "?before=\(before.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? before)" }
+        else if let after { path += "?after=\(after.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? after)" }
+        else if let around { path += "?around=\(try messagePathID(around))" }
         let history: ChatHistory = try await request(path)
         guard history.cursor == "0" || (try? Sequence.compare(history.cursor, "0")) != nil,
               channelID == nil || history.channel?.id == channelID,
@@ -298,11 +309,19 @@ public actor APIClient {
     }
 
     public func chatSession(name: String) async throws -> ChatSession {
-        try await request("api/chat/session", method: "POST", body: SessionInput(name: name))
+        if let token, let cached = cachedChatSession, cached.account == token { return cached.session }
+        let account = token
+        let minted: ChatSession = try await request("api/chat/session", method: "POST", body: SessionInput(name: name))
+        // The actor may have signed out or in while this request was in flight.
+        if let account, account == token, !minted.author.isGuest { cachedChatSession = (account, minted) }
+        return minted
     }
 
-    public func thread(channelID: String, rootID: String, before: String? = nil) async throws -> ThreadHistory {
-        let path = "api/chat/channels/\(try pathID(channelID))/messages/\(try messagePathID(rootID))/thread" + (before.map { "?before=\($0)" } ?? "")
+    public func thread(channelID: String, rootID: String, before: String? = nil, after: String? = nil, around: String? = nil) async throws -> ThreadHistory {
+        var path = "api/chat/channels/\(try pathID(channelID))/messages/\(try messagePathID(rootID))/thread"
+        if let before { path += "?before=\(before)" }
+        else if let after { path += "?after=\(after)" }
+        else if let around { path += "?around=\(try messagePathID(around))" }
         let page: ThreadHistory = try await request(path)
         guard page.root.id == rootID, page.root.channelId == channelID, page.root.threadRootId == nil,
               page.messages.allSatisfy({ $0.channelId == channelID && $0.threadRootId == rootID && $0.content.version == 1 && $0.content.type == "text" && (try? Sequence.compare($0.seq, "0")) != nil }) else {
@@ -461,6 +480,12 @@ public actor APIClient {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
         guard (200..<300).contains(http.statusCode) else {
+            // Only 401 means the chat capability itself is invalid; a 403 is a
+            // refusal (such as a block) that a new session would not change.
+            if http.statusCode == 401, let chatToken = extraHeaders["x-caper-chat-token"],
+               cachedChatSession?.session.token == chatToken {
+                cachedChatSession = nil
+            }
             let detail = try? decoder.decode(ErrorBody.self, from: data)
             // DM privacy and block refusals use the client's own wording.
             throw APIError(status: http.statusCode,

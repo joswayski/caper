@@ -695,3 +695,22 @@ test("forward updates reject replay gaps before delivering to the consumer", (t)
   assert.equal(f.sockets[0].closed, true, "forward updates obey the same gap check as messages");
   assert.deepEqual(delivered, []);
 });
+
+test("reconnect backoff restarts after a stream stays healthy", (t) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  const f = setup(t);
+  const subscription = f.gateway.subscribe({ kind: "chat", channelId: "general" }, { event: () => undefined });
+  void subscription.ready.catch(() => undefined);
+  t.onTestFinished(() => subscription.unsubscribe());
+  // Repeated drops before any heartbeat back off to the 5s ceiling.
+  for (let drop = 0; drop < 6; drop++) {
+    f.sockets[drop].fail();
+    vi.advanceTimersByTime(6_250);
+  }
+  const healthy = f.sockets.length - 1;
+  f.hello(healthy);
+  f.sockets[healthy].frame({ type: "heartbeat" });
+  f.sockets[healthy].fail();
+  vi.advanceTimersByTime(200);
+  assert.equal(f.sockets.length, healthy + 2, "a drop after a healthy stream reconnects with the base delay");
+});

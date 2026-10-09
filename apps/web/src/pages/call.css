@@ -1291,9 +1291,8 @@
   overflow-wrap: anywhere;
 }
 
-/* Names/actions have their own row; voice activity and a fixed-width action
-   always sit below. Hover, roster updates and connection state never move
-   the name, channel menu or voice action. */
+/* Chat navigation and voice are distinct targets. Quiet voice actions sit
+   beneath the name; the active roster is grouped with its channel. */
 .channel-row,
 .channel-line {
   position: relative;
@@ -1361,6 +1360,11 @@
   gap: 6px;
   padding: 0 6px 4px var(--voice-indent);
 }
+.channel-voice[data-active] {
+  margin-left: calc(var(--voice-indent) - 6px);
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
 .channel-navigation li {
   --voice-indent: 35px;
 }
@@ -1397,24 +1401,24 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.channel-join-slot {
-  width: 96px;
+.channel-join.voice-button,
+.voice-leave {
+  width: 84px;
   min-height: 28px;
+  height: auto;
   flex: none;
-  margin-left: auto;
-}
-.channel-join.voice-button {
-  width: 96px;
-  min-height: 28px;
+  display: flex;
+  align-items: center;
   margin-left: auto;
   justify-content: center;
   gap: 4px;
   padding: 0 6px;
-  border-color: transparent;
+  border: 1px solid transparent;
   color: var(--text-muted);
   background: transparent;
+  font: inherit;
   font-size: 0.72rem;
-  font-weight: 600;
+  font-weight: 500;
 }
 .channel-join.voice-button:hover:not([aria-disabled="true"]),
 .channel-join.voice-button:focus-visible {
@@ -1422,7 +1426,7 @@
   color: var(--text);
   background: var(--surface-raised);
 }
-.channel-join.voice-button > svg {
+.voice-leave > svg {
   width: 14px;
   height: 14px;
   flex: none;
@@ -1442,7 +1446,12 @@
   height: 10px;
   transition: transform 0.2s ease;
 }
-.voice-stack[aria-expanded="false"] > svg {
+.voice-stack > .voice-connected-icon {
+  width: 16px;
+  height: 16px;
+  color: #8cb262;
+}
+.voice-stack[aria-expanded="false"] > .lucide-chevron-down {
   transform: rotate(-90deg);
 }
 .voice-stack:focus-visible {
@@ -1493,13 +1502,16 @@
     padding-block: 12px;
   }
   .channel-join.voice-button,
-  .channel-join-slot,
+  .voice-leave,
   .voice-stack {
     min-height: 44px;
   }
   .voice-hangup {
     width: 44px;
     height: 44px;
+  }
+  .voice-hangup.voice-leave {
+    width: 84px;
   }
 }
 .voice-occupants {
@@ -1530,6 +1542,26 @@
 .people-panel .voice-occupants .voice-occupants-inner > ul.volume-menu-open {
   max-height: none;
   overflow: visible;
+}
+.people-panel .voice-occupants[data-active] .voice-occupants-inner > ul {
+  margin-top: 0;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
+.people-panel .voice-pinned[data-active] .voice-occupants-inner > ul {
+  max-height: 180px;
+  margin: 0;
+  padding: 0;
+  border-left: 0;
+  overflow-y: auto;
+}
+.people-panel .voice-pinned[data-active] .voice-occupants-inner > ul.volume-menu-open {
+  max-height: none;
+  overflow: visible;
+}
+.voice-occupants.voice-pinned .participant-volume {
+  top: auto;
+  bottom: calc(100% + 4px);
 }
 .voice-occupants .participant {
   gap: 8px;
@@ -1573,9 +1605,6 @@
 }
 .voice-occupants .participant-volume {
   top: 34px;
-}
-.voice-elsewhere .voice-roster-label {
-  margin-top: 16px;
 }
 @media (max-width: 760px) {
   .people-panel .voice-occupants .voice-occupants-inner > ul {

@@ -12,7 +12,10 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -20,10 +23,14 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
@@ -35,6 +42,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.GenericShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -48,12 +56,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.CustomAccessibilityAction
@@ -119,6 +131,8 @@ import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import java.util.Locale
 import kotlin.math.abs
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -371,29 +385,53 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
                 Modifier.fillMaxSize(),
                 color = Surface,
             ) {
-                if (narrow) Box {
-                    if (navigationOpen) Column(Modifier.fillMaxSize().background(Blackout)) {
-                        Row(Modifier.weight(1f)) {
-                            SpaceRail(state, viewModel, show, Modifier.width(60.dp))
-                            ChannelSidebar(state, voice, viewModel, show,
-                                Modifier.weight(1f).padding(top = 8.dp, end = 8.dp).clip(RoundedCornerShape(16.dp))
-                                    .browseSwipe(open = true, enabled = state.selectedChannel != null) { setNavigationOpen(it) },
-                                channelsExpanded, { channelsExpanded = it }, joinVoice, pendingVoiceJoin, voicePermissionError,
-                                { voicePermissionError = null }, showAccountBar = false) { setNavigationOpen(false) }
+                if (narrow) {
+                    val drawer = rememberBrowseDrawer(navigationOpen)
+                    val latestSetNavigationOpen by rememberUpdatedState(setNavigationOpen)
+                    LaunchedEffect(navigationOpen) { if (!drawer.dragging) drawer.settle(navigationOpen) }
+                    // How much of the conversation stays in view beside Browse.
+                    val peek = (maxWidth * 0.2f).coerceIn(56.dp, 96.dp)
+                    drawer.peek = with(LocalDensity.current) { peek.toPx() }
+                    var barHeight by remember { mutableIntStateOf(0) }
+                    // Browse is composed only while it shows or the conversation moves.
+                    val browseUncovered by remember { derivedStateOf { drawer.progress.value > 0f } }
+                    CompositionLocalProvider(LocalBrowseDrawer provides drawer) {
+                        Box(Modifier.fillMaxSize().clipToBounds().background(Blackout).browseDrag(drawer) { latestSetNavigationOpen(it) }) {
+                            if (navigationOpen || browseUncovered) Column(Modifier.fillMaxSize()) {
+                                Row(Modifier.weight(1f).padding(end = peek)) {
+                                    SpaceRail(state, viewModel, show, Modifier.width(60.dp))
+                                    ChannelSidebar(state, voice, viewModel, show,
+                                        Modifier.weight(1f).padding(top = 8.dp, end = 8.dp).clip(RoundedCornerShape(16.dp))
+                                            .browseSwipeRegion(drawer, enabled = state.selectedChannel != null),
+                                        channelsExpanded, { channelsExpanded = it }, joinVoice, pendingVoiceJoin, voicePermissionError,
+                                        { voicePermissionError = null }, showAccountBar = false) { setNavigationOpen(false) }
+                                }
+                                // The account bar keeps the full width, below the conversation's edge.
+                                Box(Modifier.onSizeChanged { barHeight = it.height }) { AccountBar(state, voice, viewModel, show) }
+                            }
+                            Box(Modifier.fillMaxSize().conversationLayer(drawer, barHeight).background(Surface)
+                                .then(if (navigationOpen) Modifier.clearAndSetSemantics {} else Modifier)) {
+                                conversationState.SaveableStateProvider(state.selectedChannel?.id ?: "empty") {
+                                    Conversation(state, voice, viewModel, show, true, membersVisible, { membersVisible = !membersVisible }, voicePermissionError) { setNavigationOpen(true) }
+                                }
+                                if (membersVisible && !navigationOpen && state.selectedChannel?.joined == true && state.selectedDirectId == null) {
+                                    Box(Modifier.fillMaxSize().padding(top = 54.dp).clickable(
+                                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                                        indication = null,
+                                    ) { membersVisible = false })
+                                    MemberPresencePanel(state, viewModel,
+                                        Modifier.padding(top = 62.dp, end = 8.dp, bottom = 8.dp).widthIn(max = 280.dp).fillMaxHeight().align(Alignment.CenterEnd)
+                                            .clip(RoundedCornerShape(16.dp)).pointerInput(Unit) { detectTapGestures {} },
+                                        close = { membersVisible = false })
+                                }
+                            }
+                            // Beside Browse the conversation's edge is inert: tapping or dragging it returns.
+                            if (navigationOpen) Box(Modifier.align(Alignment.TopEnd).width(peek).fillMaxHeight()
+                                .padding(bottom = with(LocalDensity.current) { barHeight.toDp() })
+                                .browseSwipeRegion(drawer, enabled = true)
+                                .clickable(onClickLabel = "Back to conversation") { setNavigationOpen(false) }
+                                .semantics { contentDescription = "Back to conversation" })
                         }
-                        AccountBar(state, voice, viewModel, show)
-                    } else conversationState.SaveableStateProvider(state.selectedChannel?.id ?: "empty") {
-                        Conversation(state, voice, viewModel, show, true, membersVisible, { membersVisible = !membersVisible }, voicePermissionError) { setNavigationOpen(true) }
-                    }
-                    if (membersVisible && !navigationOpen && state.selectedChannel?.joined == true && state.selectedDirectId == null) {
-                        Box(Modifier.fillMaxSize().padding(top = 54.dp).clickable(
-                            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                            indication = null,
-                        ) { membersVisible = false })
-                        MemberPresencePanel(state, viewModel,
-                            Modifier.padding(top = 62.dp, end = 8.dp, bottom = 8.dp).widthIn(max = 280.dp).fillMaxHeight().align(Alignment.CenterEnd)
-                                .clip(RoundedCornerShape(16.dp)).pointerInput(Unit) { detectTapGestures {} },
-                            close = { membersVisible = false })
                     }
                 } else Row {
                     SpaceRail(state, viewModel, show, Modifier.width(60.dp))
@@ -411,29 +449,118 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
     }
 }
 
-// Only the timeline/sidebar uses this gesture; the composer and audio controls
-// keep their native drags. Consumed moves belong to scrolling, selection or a slider.
-private fun Modifier.browseSwipe(open: Boolean, enabled: Boolean, onOpenChange: (Boolean) -> Unit): Modifier =
-    if (!enabled) this else pointerInput(open) {
-        val threshold = 64.dp.toPx()
+/**
+ * Phones show the conversation, or Browse (spaces and channels) with the
+ * conversation's edge still in view. The conversation slides over the still
+ * Browse, following a finger from the timeline, channel list or that edge.
+ * Buttons, Back and channel choices animate the same slide.
+ */
+@Stable
+private class BrowseDrawer(private val scope: CoroutineScope, open: Boolean) {
+    /** How much of Browse is uncovered: 0 shows the conversation, 1 shows Browse. */
+    val progress = Animatable(if (open) 1f else 0f)
+    var dragging = false
+    /** Set when a touch lands on the timeline, channel list or the conversation's edge; elsewhere keeps its own drags. */
+    var regionTouched = false
+    /** The conversation's edge kept in view beside Browse, in pixels. */
+    var peek = 0f
+
+    fun drag(value: Float) {
+        scope.launch(start = CoroutineStart.UNDISPATCHED) { progress.snapTo(value.coerceIn(0f, 1f)) }
+    }
+
+    /** Animates to Browse or the conversation, carrying on at `velocity` (progress per second). */
+    fun settle(open: Boolean, velocity: Float = 0f) {
+        val target = if (open) 1f else 0f
+        if (progress.targetValue == target && (progress.isRunning || progress.value == target)) return
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            progress.animateTo(target, spring(Spring.DampingRatioNoBouncy, Spring.StiffnessMediumLow), velocity)
+        }
+    }
+}
+
+@Composable private fun rememberBrowseDrawer(open: Boolean): BrowseDrawer {
+    val scope = rememberCoroutineScope()
+    return remember(scope) { BrowseDrawer(scope, open) }
+}
+
+private val LocalBrowseDrawer = staticCompositionLocalOf<BrowseDrawer?> { null }
+
+/** Moves the conversation over Browse, lifting its bottom edge off Browse's account bar on the way. */
+private fun Modifier.conversationLayer(drawer: BrowseDrawer, barHeight: Int): Modifier = graphicsLayer {
+    val uncovered = drawer.progress.value
+    translationX = uncovered * (size.width - drawer.peek)
+    // A clipped layer also clips touches, so the bar's controls stay reachable.
+    val inset = uncovered * barHeight
+    clip = uncovered > 0f
+    shape = GenericShape { size, _ -> addRect(Rect(0f, 0f, size.width, size.height - inset)) }
+    shadowElevation = if (uncovered > 0f) 16.dp.toPx() else 0f
+}
+
+// Only the timeline/sidebar starts this gesture; the composer and audio controls
+// keep their native drags.
+private fun Modifier.browseSwipeRegion(drawer: BrowseDrawer?, enabled: Boolean): Modifier =
+    if (drawer == null || !enabled) this else pointerInput(drawer) {
+        awaitEachGesture {
+            awaitFirstDown(requireUnconsumed = false)
+            drawer.regionTouched = true
+        }
+    }
+
+// Tracks the finger on the unmoving container, since the layers it moves would
+// otherwise move their own touch coordinates. Consumed moves belong to
+// scrolling, selection or a slider.
+private fun Modifier.browseDrag(drawer: BrowseDrawer, setOpen: (Boolean) -> Unit): Modifier =
+    pointerInput(drawer) {
+        val tracker = VelocityTracker()
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
-            var rejected = false
-            var horizontal = false
-            do {
-                val event = awaitPointerEvent()
-                val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                val dx = change.position.x - down.position.x
-                val dy = change.position.y - down.position.y
-                if (event.changes.size != 1 || change.isConsumed || change.uptimeMillis - down.uptimeMillis > 600 ||
-                    abs(dy) > maxOf(viewConfiguration.touchSlop, abs(dx))) rejected = true
-                if (!rejected && abs(dx) > viewConfiguration.touchSlop && abs(dx) > abs(dy) * 2 &&
-                    (if (open) dx < 0 else dx > 0)) horizontal = true
-                if (horizontal && !rejected) {
+            val allowed = drawer.regionTouched
+            drawer.regionTouched = false
+            if (!allowed) return@awaitEachGesture
+            val opening = drawer.progress.targetValue < 0.5f
+            val width = (size.width - drawer.peek).coerceAtLeast(1f)
+            val start = drawer.progress.value
+            var dragging = false
+            var dx = 0f
+            var velocity = 0f
+            tracker.resetTracking()
+            try {
+                while (true) {
+                    val event = awaitPointerEvent()
+                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                    dx = change.position.x - down.position.x
+                    val dy = change.position.y - down.position.y
+                    if (!dragging) {
+                        if (!change.pressed || event.changes.size != 1 || change.isConsumed ||
+                            (abs(dy) > viewConfiguration.touchSlop && abs(dy) > abs(dx))) break
+                        if (abs(dx) <= viewConfiguration.touchSlop) continue
+                        if ((dx > 0) != opening || abs(dx) < abs(dy) * 1.5f) break
+                        dragging = true
+                        drawer.dragging = true
+                    }
+                    tracker.addPosition(change.uptimeMillis, change.position)
+                    // Lifting flings; a second finger settles where the slide is.
+                    if (!change.pressed || event.changes.size != 1) {
+                        if (!change.pressed) velocity = tracker.calculateVelocity().x
+                        break
+                    }
                     change.consume() // Cancel a channel row's release click after a drag.
-                    if (!change.pressed && abs(dx) >= threshold && abs(dx) > abs(dy) * 2) onOpenChange(!open)
+                    drawer.drag(start + dx / width)
                 }
-            } while (event.changes.any { it.pressed })
+            } finally {
+                if (dragging) {
+                    drawer.dragging = false
+                    val toward = if (opening) velocity else -velocity
+                    val travelled = abs(drawer.progress.value - start)
+                    val flingSpeed = 300.dp.toPx()
+                    val commit = toward > -flingSpeed &&
+                        (travelled >= 0.5f || (toward >= flingSpeed && abs(dx) >= 40.dp.toPx()))
+                    val target = if (commit) opening else !opening
+                    drawer.settle(target, velocity / width)
+                    setOpen(target)
+                }
+            }
         }
     }
 
@@ -636,7 +763,7 @@ private fun Modifier.browseSwipe(open: Boolean, enabled: Boolean, onOpenChange: 
                             .clickable { viewModel.selectChannel(channel); closeNavigation?.invoke() }
                             .semantics { if (channelMuted) stateDescription = "Muted" }, verticalAlignment = Alignment.CenterVertically) {
                             Icon(if (channel.private) painterResource(R.drawable.lucide_lock_keyhole) else painterResource(R.drawable.lucide_hash), null, Modifier.size(17.dp), tint = if (selected) TerracottaBright else TextMuted)
-                            Spacer(Modifier.width(9.dp)); Text(channel.name, Modifier.weight(1f), color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Spacer(Modifier.width(6.dp)); Text(channel.name, Modifier.weight(1f), color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             if (ownMute) MutedBell(Modifier.padding(horizontal = 6.dp))
                             sessionStartedAt?.let { VoiceSessionTimer(it) }
                         }
@@ -1067,7 +1194,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         HorizontalDivider(color = Border)
         thread.error?.let { Text(it, Modifier.padding(12.dp), color = ErrorText); TextButton({ viewModel.loadThread() }) { Text("Retry") } }
         if (thread.hasMore) TextButton({ viewModel.loadThread(older = true) }, enabled = !thread.loading) { Text("Load older replies") }
-        val rows = state.messages.filter { it.id == thread.rootId || it.threadRootId == thread.rootId }
+        val rows = state.messages.filter { it.id == thread.rootId || it.threadRootId == thread.rootId &&
+            (thread.windowStart == null || it.seq.toBigInteger() >= thread.windowStart.toBigInteger()) &&
+            (thread.windowEnd == null || it.seq.toBigInteger() <= thread.windowEnd.toBigInteger()) }
         MessageTimeline(state.copy(messages = rows, pendingMessage = pending, messagesLoading = false, messagesError = null), viewModel, Modifier.weight(1f), inThread = true) {
             pending?.error?.let { error ->
                 Text(error, color = ErrorText)
@@ -1077,6 +1206,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 } else TextButton(::send) { Text("Retry send") }
             }
         }
+        if (thread.hasNewer) TextButton({ viewModel.loadThread(newer = true) }, enabled = !thread.loading) { Text("Load newer replies") }
         if (!thread.loading && rows.none { it.threadRootId == thread.rootId })
             Text(if (state.canParticipate) "No replies yet. Start the thread." else "No replies yet.", Modifier.padding(18.dp), color = TextMuted)
         if (state.canParticipate) Column(Modifier.padding(12.dp)) {
@@ -1131,8 +1261,6 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     Icon(painterResource(R.drawable.lucide_chevron_down), null, Modifier.size(16.dp), tint = TextMuted)
                 }
                 DropdownMenu(channelMenuOpen, { channelMenuOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
-                    DropdownMenuItem(text = { Text(if (showingPins) "Messages" else "Pins (${state.displayedPins.size})") },
-                        onClick = { channelMenuOpen = false; showingPins = !showingPins })
                     if (!channel.direct && joined) DropdownMenuItem(text = { Text(if (membersVisible) "Hide member list" else "Members") },
                         leadingIcon = { Icon(painterResource(R.drawable.lucide_users), null) },
                         onClick = { channelMenuOpen = false; toggleMembers() })
@@ -1140,8 +1268,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         onClick = { channelMenuOpen = false; toggleBlock() })
                 }
             } else Text(if (channel.direct) channel.name else "# ${channel.name}", Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (!narrow) TextButton({ showingPins = !showingPins }, Modifier.heightIn(min = 48.dp)) {
-                Text(if (showingPins) "Messages" else "Pins (${state.displayedPins.size})", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            IconButton({ showingPins = !showingPins }, Modifier.sizeIn(minWidth = 44.dp, minHeight = 44.dp)) {
+                Icon(painterResource(R.drawable.lucide_pin), "Pins", Modifier.size(20.dp), tint = TextMuted)
             }
             if (!narrow && direct != null) TextButton(::toggleBlock, Modifier.heightIn(min = 48.dp)) {
                 Text(if (direct.blocked) "Unblock" else "Block", color = if (direct.blocked) TextMuted else ErrorText, fontSize = 11.sp, fontWeight = FontWeight.Bold)
@@ -1173,8 +1301,18 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         }
         // Web shows a pending message's status inline, under the message itself.
         val channelPending = state.pendingMessage?.takeIf { it.threadRootId == null }
-        if (showingPins) PinnedMessages(state, viewModel, Modifier.weight(1f))
-        else MessageTimeline(state, viewModel, Modifier.weight(1f).browseSwipe(open = false, enabled = narrow && !membersVisible && !channelMenuOpen, onOpenChange = { openNavigation() }), listState = timelineState) {
+        if (showingPins) Dialog(onDismissRequest = { showingPins = false }) {
+            Surface(shape = MaterialTheme.shapes.medium, color = SurfaceConversation, border = BorderStroke(1.dp, Border)) {
+                Column(Modifier.heightIn(max = 560.dp)) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Pins", Modifier.weight(1f), fontWeight = FontWeight.Bold)
+                        TextButton({ showingPins = false }) { Text("Close") }
+                    }
+                    PinnedMessages(state, viewModel, Modifier.weight(1f, fill = false)) { showingPins = false }
+                }
+            }
+        }
+        MessageTimeline(state, viewModel, Modifier.weight(1f).browseSwipeRegion(LocalBrowseDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen), listState = timelineState) {
             channelPending?.error?.let { pending ->
                 val editable = canEditRejectedMessage(draft.text, channelPending.text)
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1376,13 +1514,24 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     var reactorsTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
     // The tapped person's `user` mention entry; another pill replaces it.
     var mentionTarget by remember { mutableStateOf<MessageMention?>(null) }
-    val messages = if (inThread) state.displayedMessages else state.displayedMessages.filter { (it.threadRootId == null || it.broadcast) && it.id !in state.threadOnlyRows }
+    val messages = if (inThread) state.displayedMessages else state.displayedChannelMessages
     // Runs of blocked authors' messages collapse; Show reveals one run, in memory only.
     var revealedRuns by remember { mutableStateOf(emptySet<String>()) }
     var blockTarget by remember { mutableStateOf<BlockedAccount?>(null) }
     val selfId = state.chatAuthorId ?: state.account?.id
     val blocked = state.blockedIds
     val rows = remember(messages, blocked, selfId, revealedRuns) { timelineRows(groupBlocked(messages, blocked, selfId, revealedRuns)) }
+    LaunchedEffect(state.focusRevision, state.selectedChannel?.id) {
+        val target = state.focusedMessageId ?: return@LaunchedEffect
+        val run = rows.filterIsInstance<TimelineRow.Blocked>().firstOrNull { it.run.messages.any { message -> message.id == target } }
+        if (run != null && !run.run.revealed) {
+            revealedRuns = revealedRuns + run.run.key
+            withFrameNanos { }
+        }
+        val focusedRows = timelineRows(groupBlocked(messages, blocked, selfId, revealedRuns))
+        val index = focusedRows.indexOfFirst { row -> row is TimelineRow.Message && row.message.id == target }
+        if (index >= 0) listState.scrollToItem(index + if (inThread) 0 else 1, -listState.layoutInfo.viewportSize.height / 3)
+    }
     LaunchedEffect(state.account?.id, state.selectedSpace?.space?.id, state.selectedChannel?.id, state.selectedDirectId) {
         actionTarget = null
         pickerTarget = null
@@ -1431,7 +1580,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             }
             if (row is TimelineRow.Blocked) BlockedRunRow(row.run.messages.size, row.run.revealed) {
                 revealedRuns = if (row.run.revealed) revealedRuns - row.run.key else revealedRuns + row.run.key
-            } else Column(Modifier.background(if (!inThread && state.thread?.rootId == message.id) Color(0xFFE4C76A).copy(alpha = 0.1f) else Color.Transparent)) {
+            } else Column(Modifier.background(if (state.focusedMessageId == message.id) TerracottaWash else if (!inThread && state.thread?.rootId == message.id) Color(0xFFE4C76A).copy(alpha = 0.1f) else Color.Transparent)) {
               ReactionMessageRow(
                 message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
                 openReactors = { target, emoji -> reactorsTarget = target.id to emoji },
@@ -1472,11 +1621,21 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         } }
         if (messages.isEmpty() && state.pendingMessage == null && !(inThread && state.thread?.loading == true)) item { Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                Text("No messages yet.", color = TextMuted)
-                val name = state.selectedChannel?.name.orEmpty()
-                Text(if (state.selectedChannel?.direct == true) "Only you and $name can read this conversation." else "Start the conversation in #$name.", color = TextMuted, fontSize = 12.sp)
+                if (state.selectedDirect?.let { it.peer.id == state.account?.id } == true) {
+                    Text("You can message yourself here to keep notes, reminders, and ideas.", color = TextMuted, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                } else {
+                    Text("No messages yet.", color = TextMuted)
+                    val name = state.selectedChannel?.name.orEmpty()
+                    Text(if (state.selectedChannel?.direct == true) "Only you and $name can read this conversation." else "Start the conversation in #$name.", color = TextMuted, fontSize = 12.sp)
+                }
             }
         } }
+        if (!inThread && state.hasNewerMessages) item {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                TextButton(viewModel::loadNewer, enabled = !state.loadingNewer) { Text(if (state.loadingNewer) "Loading…" else "Load newer messages") }
+                TextButton(viewModel::retryMessages) { Text("Back to latest") }
+            }
+        }
     }
     actionTarget?.let { target ->
         val presented = state.displayedMessages.firstOrNull { it.id == target.id } ?: target
@@ -1524,7 +1683,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     mentionTarget?.let { target ->
         val card = mentionCard(target.id, target.username.orEmpty(), state)
         key(target) {
-            MentionCardSheet(card, { done, failed -> viewModel.messageMentioned(card.id, card.username, done, failed) }) { mentionTarget = null }
+            MentionCardSheet(card, { done, failed -> card.username?.let { viewModel.messageMentioned(card.id, it, done, failed) } }) { mentionTarget = null }
         }
     }
     pickerTarget?.let { target ->
@@ -1597,15 +1756,12 @@ private fun timelineRows(entries: List<TimelineEntry>): List<TimelineRow> = buil
     val own = state.chatAuthorId ?: state.account?.id
     val canReact = state.canParticipate && own != null
     val saves = state.reactionSaves.filterKeys { it.startsWith("${message.id}:") }.values
-    // A message that mentions you: terracotta wash with a 2dp leading edge (over a pinned message's gold wash).
+    // A message that mentions you: terracotta wash with a 2dp leading edge.
     val mentioned = mentionsMe(message.content.mentions, message.author.id, state.account?.id ?: state.chatAuthorId)
-    Column(Modifier.background(if (message.pin != null) PinGoldWash else Color.Transparent).then(if (!mentioned) Modifier else Modifier.background(Terracotta.copy(alpha = 0.08f)).drawBehind {
+    Column(if (!mentioned) Modifier else Modifier.background(Terracotta.copy(alpha = 0.08f)).drawBehind {
         val edge = 2.dp.toPx()
         drawRect(Terracotta, topLeft = Offset(if (layoutDirection == LayoutDirection.Rtl) size.width - edge else 0f, 0f), size = Size(edge, size.height))
-    })) {
-        message.pin?.let { pin ->
-            Text("Pinned by ${pin.author.name}", Modifier.padding(start = 62.dp, end = 18.dp, top = 6.dp), color = PinGold, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-        }
+    }) {
         Box(Modifier.heightIn(min = 48.dp).combinedClickable(
             onClick = {},
             onLongClick = { openActions(message) },
@@ -1716,39 +1872,75 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     }
 }
 
-@Composable private fun PinnedMessages(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier) {
+@Composable private fun PinnedMessages(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, close: () -> Unit) {
     var conversationTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var editTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var historyTarget by remember { mutableStateOf<ChatMessage?>(null) }
-    LaunchedEffect(state.account?.id, state.selectedChannel?.id, state.selectedDirectId) { conversationTarget = null; editTarget = null; historyTarget = null }
+    var actionTarget by remember { mutableStateOf<ChatMessage?>(null) }
+    var pickerTarget by remember { mutableStateOf<ChatMessage?>(null) }
+    var forwardTarget by remember { mutableStateOf<ChatMessage?>(null) }
+    var reactorsTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var pinnerTarget by remember { mutableStateOf<ChatAuthor?>(null) }
+    LaunchedEffect(state.account?.id, state.selectedChannel?.id, state.selectedDirectId) { conversationTarget = null; editTarget = null; historyTarget = null; pinnerTarget = null }
     LazyColumn(modifier.fillMaxWidth(), contentPadding = PaddingValues(vertical = 10.dp)) {
         item {
-            Text("Pinned messages", Modifier.padding(horizontal = 18.dp, vertical = 8.dp), fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            state.messageContextError?.let { Text(it, Modifier.padding(18.dp), color = ErrorText) }
         }
         if (state.displayedPins.isEmpty()) item {
             Text("No pinned messages.", Modifier.fillMaxWidth().padding(24.dp), color = TextMuted, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
         }
         items(state.displayedPins, key = { "pin:${it.id}" }) { message ->
             Column(Modifier.background(PinGoldWash)) {
-                message.pin?.let { Text("Pinned by ${it.author.name}", Modifier.padding(start = 62.dp, end = 18.dp, top = 4.dp), color = PinGold, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
-                Text(fullDateLabel(message.createdAt), Modifier.padding(start = 62.dp, end = 18.dp), color = TextMuted, fontSize = 10.sp)
-                MessageRow(message) { if (message.forward == null) historyTarget = message }
-                ForwardCard(message) { conversationTarget = message }
-                if (viewModel.canEdit(message)) TextButton({ editTarget = message }, Modifier.padding(start = 62.dp)) { Text("Edit message") }
-                if (state.canParticipate && (state.chatAuthorId ?: state.account?.id) != null) {
-                    val saving = state.pinSaves[message.id]?.saving == true
-                    TextButton({ viewModel.setPin(message.id, false) }, enabled = !saving, modifier = Modifier.padding(start = 62.dp).heightIn(min = 48.dp)) {
-                        Text(if (saving) "Unpinning…" else "Unpin")
-                    }
+                message.pin?.let { pin ->
+                    val interaction = remember(message.id) { MutableInteractionSource() }
+                    val hovered by interaction.collectIsHoveredAsState()
+                    LaunchedEffect(hovered) { if (hovered) pinnerTarget = pin.author }
+                    Text("Pinned by ${pin.author.name}", Modifier.padding(start = 62.dp, end = 18.dp)
+                        .heightIn(min = 44.dp).wrapContentHeight()
+                        .hoverable(interaction)
+                        .combinedClickable(role = Role.Button, onClick = { pinnerTarget = pin.author }, onLongClick = { pinnerTarget = pin.author })
+                        .semantics { contentDescription = "Open profile for ${pin.author.name}" },
+                        color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                 }
-                state.pinSaves[message.id]?.takeIf { it.error != null }?.let { save ->
-                    Row(Modifier.padding(start = 62.dp, end = 18.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text(save.error ?: "Pin could not be saved.", Modifier.weight(1f), color = Terracotta, fontSize = 11.sp)
-                        TextButton({ viewModel.retryPin(message.id) }) { Text("Retry") }
-                        TextButton({ viewModel.dismissPinError(message.id) }) { Text("Dismiss") }
+                Text(fullDateLabel(message.createdAt), Modifier.padding(start = 62.dp, end = 18.dp), color = TextMuted, fontSize = 10.sp)
+                ReactionMessageRow(message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
+                    openReactors = { target, emoji -> reactorsTarget = target.id to emoji }, openActions = { actionTarget = it },
+                    openConversation = { conversationTarget = it }, openHistory = { historyTarget = it },
+                    retryPin = viewModel::retryPin, dismissPinError = viewModel::dismissPinError)
+                Row(Modifier.fillMaxWidth().padding(start = 62.dp, end = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+                    TextButton({ pinnerTarget = null; viewModel.goToMessage(message, close) }, enabled = !state.loadingMessageContext,
+                        colors = ButtonDefaults.textButtonColors(contentColor = TextMuted), contentPadding = PaddingValues(vertical = 8.dp)) {
+                        Text(if (state.loadingMessageContext) "Loading message…" else "Go to message")
+                        Spacer(Modifier.width(6.dp))
+                        Icon(painterResource(R.drawable.lucide_arrow_right), null, Modifier.size(14.dp))
                     }
+                    Spacer(Modifier.weight(1f))
+                    IconButton({ actionTarget = message }) { Icon(painterResource(R.drawable.lucide_ellipsis), "Message actions for ${message.author.name}", tint = TextMuted) }
                 }
             }
+        }
+    }
+    pinnerTarget?.let { author ->
+        val card = authorCard(author, state)
+        key(author.id) {
+            MentionCardSheet(card, { done, failed -> card.username?.let { viewModel.messageMentioned(card.id, it, { pinnerTarget = null; close(); done() }, failed) } }) { pinnerTarget = null }
+        }
+    }
+    actionTarget?.let { target ->
+        val current = state.pinnedMessages.find { it.id == target.id } ?: target
+        MessageActionsSheet(current, state, onDismiss = { actionTarget = null }, setReaction = viewModel::setReaction,
+            openPicker = { actionTarget = null; pickerTarget = current },
+            setPin = { id, active -> actionTarget = null; viewModel.setPin(id, active) },
+            onReply = { actionTarget = null; close(); viewModel.openThread(current.threadRootId ?: current.id) },
+            forward = { actionTarget = null; forwardTarget = current },
+            onEdit = if (viewModel.canEdit(current)) ({ actionTarget = null; editTarget = current }) else null,
+            onHistory = { actionTarget = null; historyTarget = current })
+    }
+    pickerTarget?.let { target -> EmojiPicker({ pickerTarget = null }) { emoji -> pickerTarget = null; viewModel.setReaction(target.id, emoji, true) } }
+    forwardTarget?.let { target -> key(target.id) { ForwardPickerSheet(target, viewModel) { forwardTarget = null } } }
+    reactorsTarget?.let { (id, emoji) ->
+        state.pinnedMessages.find { it.id == id }?.let { current ->
+            ReactorsSheet(current, emoji, state.chatAuthorId ?: state.account?.id, viewModel::reactors) { reactorsTarget = null }
         }
     }
     conversationTarget?.let { target ->

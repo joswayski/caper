@@ -400,6 +400,7 @@ public final class AppModel {
             // An incoming request opens read-only: no chat session, no composer,
             // no read cursor and no chimes. Opening it never accepts it.
             let current = directMessages.first { $0.id == conversation.id } ?? conversation
+            chat.directPeerID = current.peer.id == account?.id ? nil : current.peer.id
             if current.status == .incoming { await chat.preview(history: history) }
             else { await chat.open(history: history, displayName: account?.displayName ?? "") }
             guard generation == attempt, navigationGeneration == navigation else { return }
@@ -698,6 +699,7 @@ public final class AppModel {
             navigationTarget = nil
             if let history {
                 remember(PreparedNavigation(detail: detail, channelID: channel?.id, history: history))
+                chat.directPeerID = nil
                 if channel?.joined == true { await chat.open(history: history, displayName: account?.displayName ?? "Guest") }
                 else { await chat.preview(history: history) }
             }
@@ -1373,6 +1375,15 @@ public final class ChatModel {
     public var liveState: GatewayState = .disconnected
     public var error: String?
     public var hasMore = false
+    public var hasNewer = false
+    public var loadingNewer = false
+    public var focusedMessageID: String?
+    public var focusRevision = 0
+    public var jumpingToMessage = false
+    public var jumpError: String?
+    private var historyAnchorRequest = 0
+    private var windowStart: String?
+    private var windowEnd: String?
     public var typingNames: [String] = []
     public var reactionErrors: [String: String] = [:]
     public var pinErrors: [String: String] = [:]
@@ -1380,15 +1391,25 @@ public final class ChatModel {
     public var threadRootID: String?
     public var threadLoading = false
     public var threadHasMore = false
+    public var threadHasNewer = false
+    private var threadAfter: String?
+    private var threadWindowStart: String?
+    private var threadWindowEnd: String?
     public var threadError: String?
     private var threadBefore: String?
     private var threadRequest = 0
-    private var threadPages: [String: (hasMore: Bool, before: String?)] = [:]
+    private var threadPages: [String: (hasMore: Bool, before: String?, hasNewer: Bool, after: String?, windowStart: String?, windowEnd: String?)] = [:]
     private var threadOnlyRows: Set<String> = []
     private var threadDrafts: [String: String] = [:]
     private var threadBroadcasts: [String: Bool] = [:]
-    public var channelMessages: [ChatMessage] { messages.filter { $0.isChannelMessage && !threadOnlyRows.contains($0.id) } }
+    public var channelMessages: [ChatMessage] { messages.filter { $0.isChannelMessage && !threadOnlyRows.contains($0.id) && Self.inWindow($0, start: windowStart, end: windowEnd) } }
     public var displayedChannelMessages: [ChatMessage] { channelMessages.map(mutations.project) }
+    public var threadMessages: [ChatMessage] { messages.filter { $0.threadRootId != nil && $0.threadRootId == threadRootID && Self.inWindow($0, start: threadWindowStart, end: threadWindowEnd) } }
+    public var displayedThreadMessages: [ChatMessage] { threadMessages.map(mutations.project) }
+    private static func inWindow(_ message: ChatMessage, start: String?, end: String?) -> Bool {
+        (start == nil || (try? Sequence.compare(message.seq, start!)) != .orderedAscending) &&
+        (end == nil || (try? Sequence.compare(message.seq, end!)) != .orderedDescending)
+    }
     public var threadDraft: String {
         get { threadRootID.flatMap { threadDrafts[$0] } ?? "" }
         set { if let threadRootID { threadDrafts[threadRootID] = newValue } }
@@ -1415,6 +1436,14 @@ public final class ChatModel {
     /// Accounts you blocked: their messages collapse in every timeline, and
     /// they never chime or show as typing. Kept in step by `AppModel`.
     public private(set) var blockedAuthorIDs: Set<String> = []
+    /// The other person in the open DM, kept by `AppModel`. Blocking them stops
+    /// reactions, pins and edits as well as sending; the server refuses them too.
+    public var directPeerID: String?
+    /// Reacting, pinning and editing need a chat session (not a preview), and
+    /// never reach someone you blocked.
+    public var canInteract: Bool {
+        !isPreview && currentAuthor != nil && !(directPeerID.map { blockedAuthorIDs.contains($0) } ?? false)
+    }
     /// The signed-in account, also while previewing without a chat session.
     @ObservationIgnored public var viewerAccountID: () -> String? = { nil }
     /// Blocks from message actions in panels that only hold the chat model.
@@ -1473,7 +1502,7 @@ public final class ChatModel {
     }
 
     func canEdit(_ message: ChatMessage) -> Bool {
-        message.forward == nil && !isPreview && channelID == message.channelId && currentAuthor?.isGuest == false && currentAuthor?.id == message.author.id
+        message.forward == nil && canInteract && channelID == message.channelId && currentAuthor?.isGuest == false && currentAuthor?.id == message.author.id
     }
 
     func editMessage(_ message: ChatMessage, text: String) async throws {
@@ -1538,10 +1567,10 @@ public final class ChatModel {
         return ChatHistory(
             space: HistoryIdentity(id: spaceID, name: spaceName),
             channel: HistoryIdentity(id: channelID, name: channelName),
-            messages: messages.map { forwardSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0))) },
+            messages: channelMessages.map { forwardSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0))) },
             pinnedMessages: pinnedMessages.map { forwardSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0))) },
             cursor: delivery.cursor,
-            hasMore: hasMore
+            hasMore: hasMore, hasNewer: hasNewer
         )
     }
 
@@ -1608,6 +1637,9 @@ public final class ChatModel {
         let preservedMessages = channelMessages
         let preservedCursor = delivery.cursor
         let preservedHasMore = hasMore
+        let preservedHasNewer = hasNewer
+        historyAnchorRequest += 1
+        loadingNewer = false; jumpingToMessage = false
         if preservingTimeline {
             pendingReactions = [:]; reactionWorkers = []
             renderReactions()
@@ -1631,6 +1663,9 @@ public final class ChatModel {
             messages = prepared.messages.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) }
             pinnedMessages = prepared.pinnedMessages.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) }
             delivery.reset(cursor: prepared.cursor); hasMore = prepared.hasMore
+            hasNewer = prepared.hasNewer
+            windowStart = prepared.hasNewer ? prepared.messages.first?.seq : nil
+            windowEnd = prepared.hasNewer ? prepared.messages.last?.seq : nil
             channelName = prepared.channel?.name ?? "general"
             spaceName = prepared.space?.name ?? "Caper"
         }
@@ -1658,7 +1693,7 @@ public final class ChatModel {
             spaceID = history.space?.id
             self.channelID = resolvedChannelID
             let firstRefreshed = history.messages.first?.seq
-            let canRetain = preservingTimeline && Self.refreshAccountsForMissingEvents(
+            let canRetain = preservingTimeline && !preservedHasNewer && Self.refreshAccountsForMissingEvents(
                 messages: history.messages,
                 after: preservedCursor,
                 through: history.cursor
@@ -1693,6 +1728,7 @@ public final class ChatModel {
                     preservedMessages.contains { (try? Sequence.compare($0.seq, first)) == .orderedAscending }
                 } == true
                 hasMore = retainedOlderPrefix ? preservedHasMore : history.hasMore
+                hasNewer = false; windowStart = nil; windowEnd = nil; focusedMessageID = nil
             }
             channelName = history.channel?.name ?? "general"
             spaceName = history.space?.name ?? "Caper"
@@ -1776,16 +1812,18 @@ public final class ChatModel {
     public func loadOlder() async {
         guard !loading, !loadingOlder, hasMore, let channelID, let before = channelMessages.first?.seq else { return }
         let requestGeneration = generation
+        let anchorRequest = historyAnchorRequest
         loadingOlder = true; olderError = nil
         defer { if generation == requestGeneration { loadingOlder = false } }
         do {
             let page = try await api.history(channelID: channelID, before: before)
-            guard generation == requestGeneration, self.channelID == channelID else { return }
+            guard generation == requestGeneration, anchorRequest == historyAnchorRequest, self.channelID == channelID else { return }
             threadOnlyRows.subtract(page.messages.map(\.id))
             merge(page.messages)
+            if windowStart != nil { windowStart = page.messages.first?.seq ?? windowStart }
             hasMore = page.hasMore
         } catch {
-            guard generation == requestGeneration, self.channelID == channelID else { return }
+            guard generation == requestGeneration, anchorRequest == historyAnchorRequest, self.channelID == channelID else { return }
             if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status) {
                 onAccessRevoked?(channelID)
                 await stop()
@@ -1797,30 +1835,82 @@ public final class ChatModel {
 
     public func closeThread() { threadRequest += 1; threadRootID = nil; threadLoading = false }
 
-    public func openThread(_ rootID: String) async {
-        guard threadRootID != rootID else { return }
-        threadRequest += 1
-        threadRootID = rootID; threadError = nil
-        let cached = threadPages[rootID]
-        threadBefore = cached?.before; threadHasMore = cached?.hasMore ?? false
-        threadLoading = false
-        if cached == nil { await loadThread() }
+    public func goToMessage(_ message: ChatMessage) async -> Bool {
+        guard !loading, !jumpingToMessage, message.channelId == channelID else { return false }
+        let requestGeneration = generation
+        historyAnchorRequest += 1
+        let request = historyAnchorRequest
+        jumpingToMessage = true; jumpError = nil
+        loadingNewer = false; loadingOlder = false
+        defer { if generation == requestGeneration && request == historyAnchorRequest { jumpingToMessage = false } }
+        do {
+            if let root = message.threadRootId {
+                await openThread(root, around: message.id)
+                guard generation == requestGeneration, request == historyAnchorRequest else { return false }
+                if let error = threadError { throw APIError(status: 502, message: error) }
+                guard threadMessages.contains(where: { $0.id == message.id }) else { return false }
+            } else {
+                let page = try await api.history(channelID: message.channelId, around: message.id)
+                guard generation == requestGeneration, request == historyAnchorRequest else { return false }
+                guard page.messages.contains(where: { $0.id == message.id }) else { throw APIError(status: 502, message: "Message context is unavailable.") }
+                windowStart = page.messages.first?.seq; windowEnd = page.hasNewer ? page.messages.last?.seq : nil
+                threadOnlyRows.subtract(page.messages.map(\.id)); merge(page.messages)
+                hasMore = page.hasMore; hasNewer = page.hasNewer; closeThread()
+            }
+            focusedMessageID = message.id; focusRevision += 1
+            return true
+        } catch {
+            if generation == requestGeneration && request == historyAnchorRequest { jumpError = error.localizedDescription }
+            return false
+        }
     }
 
-    public func loadThread(older: Bool = false) async {
+    public func loadNewer() async {
+        guard hasNewer, !loadingNewer, let channelID, let after = channelMessages.last?.seq else { return }
+        let requestGeneration = generation; let request = historyAnchorRequest
+        loadingNewer = true
+        defer { if generation == requestGeneration && request == historyAnchorRequest { loadingNewer = false } }
+        do {
+            let page = try await api.history(channelID: channelID, after: after)
+            guard generation == requestGeneration, request == historyAnchorRequest else { return }
+            threadOnlyRows.subtract(page.messages.map(\.id)); merge(page.messages)
+            hasNewer = page.hasNewer; windowEnd = page.hasNewer ? page.messages.last?.seq ?? windowEnd : nil
+        } catch {
+            if generation == requestGeneration && request == historyAnchorRequest { self.error = error.localizedDescription }
+        }
+    }
+
+    public func openThread(_ rootID: String, around: String? = nil) async {
+        guard around != nil || threadRootID != rootID else { return }
+        threadRequest += 1
+        threadRootID = rootID; threadError = nil
+        let cached = around == nil ? threadPages[rootID] : nil
+        threadBefore = cached?.before; threadHasMore = cached?.hasMore ?? false
+        threadAfter = cached?.after; threadHasNewer = cached?.hasNewer ?? false
+        threadWindowStart = cached?.windowStart; threadWindowEnd = cached?.windowEnd
+        threadLoading = false
+        if cached == nil { await loadThread(around: around) }
+    }
+
+    public func loadThread(older: Bool = false, newer: Bool = false, around: String? = nil) async {
         guard let rootID = threadRootID, let channelID else { return }
         threadRequest += 1
         let request = threadRequest; let channelGeneration = generation
+        if !older && !newer {
+            threadBefore = nil; threadAfter = nil; threadHasNewer = false
+            threadWindowStart = nil; threadWindowEnd = nil
+        }
         threadLoading = true; threadError = nil
         do {
-            let page = try await api.thread(channelID: channelID, rootID: rootID, before: older ? threadBefore : nil)
+            let page = try await api.thread(channelID: channelID, rootID: rootID, before: older ? threadBefore : nil, after: newer ? threadAfter : nil, around: around)
             guard request == threadRequest, generation == channelGeneration, threadRootID == rootID else { return }
             let loaded = Set(messages.map(\.id))
             let rows = [page.root] + page.messages
             threadOnlyRows.formUnion(rows.filter { $0.isChannelMessage && !loaded.contains($0.id) }.map(\.id))
             merge(rows)
-            threadHasMore = page.hasMore; threadBefore = page.messages.first?.seq ?? threadBefore
-            threadPages[rootID] = (threadHasMore, threadBefore)
+            if !newer { threadHasMore = page.hasMore; threadBefore = page.messages.first?.seq ?? threadBefore; threadWindowStart = threadBefore }
+            if !older { threadHasNewer = page.hasNewer ?? false; threadAfter = page.messages.last?.seq ?? threadAfter; threadWindowEnd = threadHasNewer ? threadAfter : nil }
+            threadPages[rootID] = (threadHasMore, threadBefore, threadHasNewer, threadAfter, threadWindowStart, threadWindowEnd)
         } catch {
             guard request == threadRequest, generation == channelGeneration else { return }
             if let denied = error as? APIError, [401, 403, 404].contains(denied.status) {
@@ -1844,6 +1934,17 @@ public final class ChatModel {
         if newSubmission { if inThread { threadDraft = "" } else { draft = "" } }
         let requestGeneration = generation
         sending = true; error = nil
+        defer {
+            sending = false
+            if delivery.pending == nil, self.channelID == channelID, generation == requestGeneration {
+                if inThread, let rootID, threadHasNewer {
+                    focusedMessageID = nil
+                    Task { if self.channelID == channelID, generation == requestGeneration, threadRootID == rootID { await loadThread() } }
+                } else if !inThread, hasNewer {
+                    Task { if self.channelID == channelID, generation == requestGeneration { await retryLoad() } }
+                }
+            }
+        }
         await gateway.reportActivity()
         do {
             let message = try await api.send(channelID: channelID, sessionToken: session.token, clientMessageID: command.id, text: command.text, threadRootId: command.threadRootId, broadcast: command.broadcast)
@@ -1858,7 +1959,6 @@ public final class ChatModel {
                   generation == requestGeneration || delivery.pending?.id == command.id else { return }
             if delivery.pending?.id != command.id {
                 self.error = nil
-                sending = false
                 return
             }
             if let apiError = error as? APIError, [400, 404, 409, 413, 422].contains(apiError.status)
@@ -1870,7 +1970,6 @@ public final class ChatModel {
                 self.error = "Send outcome is unknown. Retry to safely resend the same message. \(error.localizedDescription)"
             }
         }
-        sending = false
     }
 
     public func setReaction(messageID: String, emoji: String, active: Bool) async {
@@ -1998,11 +2097,15 @@ public final class ChatModel {
             applyPin(event.message)
         } catch {
             guard generation == requestGeneration, self.channelID == channelID else { return }
-            if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status) {
+            let apiError = error as? APIError
+            // A DM block refusal keeps the conversation open with the reason inline.
+            if let apiError, [401, 403, 404].contains(apiError.status),
+               !DirectMessageErrors.isRefusal(status: apiError.status, code: apiError.code) {
                 onAccessRevoked?(channelID); await stop(); return
             }
             failedPinActions[messageID] = active
-            pinErrors[messageID] = "Couldn’t \(active ? "pin" : "unpin") message. Try again."
+            pinErrors[messageID] = DirectMessageErrors.message(code: apiError?.code)
+                ?? "Couldn’t \(active ? "pin" : "unpin") message. Try again."
         }
     }
 
@@ -2210,6 +2313,8 @@ public final class ChatModel {
         closeThread(); threadPages = [:]; threadOnlyRows = []; threadDrafts = [:]; threadBroadcasts = [:]
         isPreview = false
         session = nil; channelID = nil; spaceID = nil; messages = []; draft = ""; hasMore = false
+        hasNewer = false; loadingNewer = false; windowStart = nil; windowEnd = nil
+        focusedMessageID = nil; jumpingToMessage = false; jumpError = nil; historyAnchorRequest += 1
         channelName = "general"; spaceName = "Caper"; error = nil
         loadingOlder = false; olderError = nil
         loading = false; sending = false; liveState = .disconnected
@@ -2296,7 +2401,10 @@ public final class ChatModel {
                 renderReactions()
             } catch {
                 guard generation == requestGeneration, self.channelID == channelID else { return }
-                if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status) {
+                let apiError = error as? APIError
+                // A DM block refusal keeps the conversation open with the reason inline.
+                if let apiError, [401, 403, 404].contains(apiError.status),
+                   !DirectMessageErrors.isRefusal(status: apiError.status, code: apiError.code) {
                     onAccessRevoked?(channelID)
                     await stop()
                     return
@@ -2304,7 +2412,7 @@ public final class ChatModel {
                 if pendingReactions[messageID]?[emoji] == desired {
                     pendingReactions[messageID]?[emoji] = nil
                     if pendingReactions[messageID]?.isEmpty == true { pendingReactions[messageID] = nil }
-                    reactionErrors[messageID] = "Couldn’t save reaction. Retry."
+                    reactionErrors[messageID] = DirectMessageErrors.message(code: apiError?.code) ?? "Couldn’t save reaction. Retry."
                     failedReactions[messageID] = (emoji, desired.active)
                     renderReactions()
                 }

@@ -10,6 +10,8 @@ const names = {
   "chevron-down": "ChevronDown",
   "chevron-right": "ChevronRight",
   "arrow-left": "ArrowLeft",
+  "arrow-right": "ArrowRight",
+  pin: "Pin",
   x: "X",
   plus: "Plus",
   ellipsis: "Ellipsis",

@@ -451,6 +451,13 @@
 .spaces-room .channel-navigation ul[data-collapsed] {
   display: none;
 }
+/* Collapsing navigation must not hide the active call's only Leave action. */
+.spaces-room #space-channel-list[data-collapsed]:has(.channel-voice[data-active]) {
+  display: grid;
+}
+.spaces-room #space-channel-list[data-collapsed] > li:not(:has(.channel-voice[data-active])) {
+  display: none;
+}
 .spaces-room .channel-navigation[data-demo] > ul {
   min-height: 54px;
   align-content: center;
@@ -473,7 +480,7 @@
   flex: 1;
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 6px;
   padding: 0 34px 0 9px;
   border: 0;
   border-radius: 6px;
@@ -697,15 +704,24 @@
 .direct-section .direct-line .direct-select {
   padding-right: 4px;
 }
-/* With a mouse the DM options button appears on hover or focus; touch always shows it. */
+/* Reserve the menu's space; reveal it on hover, keyboard focus or while open.
+   Touch always shows the action because there is no hover. */
 @media (min-width: 761px) and (hover: hover) and (pointer: fine) {
   .direct-menu .channel-manage {
     width: 28px;
     height: 28px;
   }
-  .direct-line:not(:hover, :focus-within) .direct-menu:not([open]) .channel-manage {
+  :is(.channel-line, .direct-line):not(:hover, :has(:focus-visible)) .channel-menu:not([open]) .channel-manage {
     opacity: 0;
   }
+}
+/* Quiet keyboard feedback, without the oversized orange sidebar rings. */
+.call-page :is(.people-panel, .space-rail) :is(button, summary):focus {
+  outline: none;
+}
+.call-page :is(.people-panel, .space-rail) :is(button, summary):focus-visible {
+  color: var(--text);
+  background: var(--border);
 }
 .space-sidebar-error {
   margin: 14px 5px;
@@ -1844,8 +1860,44 @@
   }
 }
 
+/* Browse slides on phones (browseTransition.ts poses the snapshots). Only the
+   room is captured; the rest of the page stays live. */
+@property --browse-peek {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+html[data-browse-transition] {
+  view-transition-name: none;
+}
+.browse-peek {
+  display: none;
+}
+html[data-browse-transition] .call-room.spaces-room {
+  view-transition-name: browse-room;
+}
+html[data-browse-transition]::view-transition-group(browse-room) {
+  animation: none;
+  overflow: clip;
+}
+html[data-browse-transition]::view-transition-old(browse-room),
+html[data-browse-transition]::view-transition-new(browse-room) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+/* The conversation is always the top layer. */
+html[data-browse-transition="open"]::view-transition-old(browse-room) {
+  z-index: 1;
+}
+html[data-browse-transition="open"]::view-transition-old(browse-room),
+html[data-browse-transition="close"]::view-transition-new(browse-room) {
+  box-shadow: -12px 0 32px rgb(0 0 0 / 0.45);
+}
+
 @media (max-width: 760px) {
   .call-room.spaces-room {
+    /* How much of the conversation stays in view beside Browse. */
+    --browse-peek: clamp(56px, 20vw, 96px);
     position: relative;
     grid-template: minmax(0, 1fr) / 1fr;
     touch-action: pan-y pinch-zoom;
@@ -1906,6 +1958,7 @@
     border: 0;
     background: var(--blackout);
     padding-top: 8px;
+    padding-right: var(--browse-peek);
     padding-bottom: env(safe-area-inset-bottom, 0px);
   }
   .spaces-room.navigation-open > :is(.space-member-presence, .member-list-backdrop) {
@@ -1925,12 +1978,38 @@
     border-radius: 16px;
     background: var(--surface-sidebar);
   }
+  /* The account and voice bar keeps the full width, below the conversation's edge. */
   .spaces-room.navigation-open > .people-panel > :is(.voice-panel, .empty-channel-account) {
     grid-area: 2 / 1 / 3 / -1;
-    margin: 12px;
+    margin: 12px calc(12px - var(--browse-peek)) 12px 12px;
   }
+  /* Beside Browse the conversation stays in view at the edge, still laid out
+     where it was (so it keeps its scroll position), and is inert. Tapping or
+     dragging the edge returns to it. */
   .spaces-room.navigation-open > .stage {
-    display: none;
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 100%;
+    padding-top: var(--browse-stage-top, 0px);
+    transform: translateX(calc(100% - var(--browse-peek)));
+    box-shadow: -12px 0 32px rgb(0 0 0 / 0.45);
+    clip-path: inset(0 0 var(--browse-bar, 0px) -48px);
+    pointer-events: none;
+  }
+  .browse-peek {
+    display: block;
+    position: absolute;
+    z-index: 9;
+    inset: 0 0 var(--browse-bar, 0px) auto;
+    width: var(--browse-peek);
+    padding: 0;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+  }
+  .browse-peek:focus-visible {
+    outline: 2px solid var(--terracotta-bright);
+    outline-offset: -4px;
   }
   .spaces-room .people-panel {
     border-right: 0;
@@ -2001,6 +2080,11 @@
   /* A collapsed channel section still shows the channel being viewed. */
   .spaces-room:not(.navigation-open) .channel-navigation > ul[data-collapsed] {
     display: grid;
+  }
+  .spaces-room:not(.navigation-open)
+    #space-channel-list[data-collapsed]
+    > li:has(.channel-select[aria-current="page"]) {
+    display: flex;
   }
   .navigation-toggle {
     display: inline-flex;

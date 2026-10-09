@@ -115,3 +115,26 @@ test("profile cards prefer the most specific local match and flag yourself", () 
   assert.equal(mentionCardPerson({ id: "u-me", username: "me" }, directory, "u-me").self, true);
   assert.equal(mentionCardPerson({ id: "u-me", username: "me" }, directory, undefined).self, false);
 });
+
+test("pinner profiles match IDs, use canonical identities, and preserve unknown author metadata", () => {
+  const author = { id: "pinner", name: "Same Name", avatarId: 7 };
+  const directory = [
+    { id: "message-author", username: "wrong_person", displayName: "Same Name", avatarId: 2 },
+    { id: "pinner", username: "renamed_pinner", displayName: "Current Name", avatarId: null },
+  ];
+  assert.deepEqual(mentionCardPerson(author, directory, "message-author"), {
+    id: "pinner",
+    username: "renamed_pinner",
+    displayName: "Current Name",
+    avatarId: null,
+    self: false,
+  });
+  assert.deepEqual(mentionCardPerson(author, directory.slice(0, 1), "message-author"), {
+    id: "pinner",
+    username: undefined,
+    displayName: "Same Name",
+    avatarId: 7,
+    self: false,
+  });
+  assert.equal(mentionCardPerson(author, [], "pinner").self, true);
+});

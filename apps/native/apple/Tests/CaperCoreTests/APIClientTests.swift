@@ -249,6 +249,47 @@ final class APIClientTests: XCTestCase {
         XCTAssertNil(chat.requestReactors(messageID: messageID), "a stopped chat has no message to load")
     }
 
+    func testChatSessionIsReusedPerSignInAndReplacedOnlyAfter401OrRename() async throws {
+        var sessions = 0
+        var reactionStatus = 403
+        MockURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/api/chat/session":
+                sessions += 1
+                return (200, Data(#"{"token":"chat-\#(sessions)","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+            case "/api/chat/channels/Channel12345/messages/Message00000001/reactions":
+                return (reactionStatus, Data(#"{"error":"this person isn't accepting direct messages","code":"dm_not_accepted"}"#.utf8))
+            case "/api/account/profile":
+                return (200, Data(#"{"id":"self","username":"me","displayName":"Renamed"}"#.utf8))
+            default: throw URLError(.badURL)
+            }
+        }
+        let api = client()
+        let react = { () async -> APIError? in
+            do {
+                _ = try await api.setReaction(channelID: "Channel12345", messageID: "Message00000001",
+                                              sessionToken: "chat-1", emoji: "👍", active: true)
+                return nil
+            } catch { return error as? APIError }
+        }
+        let first = try await api.chatSession(name: "Me")
+        let forward = try await api.chatSession(name: "Forward")
+        XCTAssertEqual(first.token, "chat-1")
+        XCTAssertEqual(forward.token, "chat-1", "opening another conversation reuses the session")
+        let refusal = await react()
+        XCTAssertEqual(refusal?.code, "dm_not_accepted")
+        let kept = try await api.chatSession(name: "Me")
+        XCTAssertEqual(kept.token, "chat-1", "a block refusal is not an invalid session")
+        reactionStatus = 401
+        _ = await react()
+        let replaced = try await api.chatSession(name: "Me")
+        XCTAssertEqual(replaced.token, "chat-2")
+        _ = try await api.updateProfile(username: "me", displayName: "Renamed")
+        let renamed = try await api.chatSession(name: "Renamed")
+        XCTAssertEqual(renamed.token, "chat-3", "a rename mints a session with the new author name")
+        XCTAssertEqual(sessions, 3)
+    }
+
     func testPinPUTUsesChatTokenAndDecodesMessagePayload() async throws {
         let channel = "Channel12345", message = "Message00000001"
         MockURLProtocol.handler = { request in
