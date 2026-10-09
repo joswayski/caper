@@ -129,6 +129,7 @@ import chat.caper.android.data.override
 import chat.caper.android.data.spaceKey
 import chat.caper.android.data.spaceMuted
 import chat.caper.android.data.directUnread
+import chat.caper.android.data.collapsesFor
 import chat.caper.android.data.groupBlocked
 import chat.caper.android.data.groupsWithPrevious
 import chat.caper.android.data.linkRanges
@@ -292,7 +293,9 @@ internal data class VoiceJoinIntent(
             // Web opens a new private channel's settings so people can be added.
             viewModel.createChannel(name, private) { created -> overlay = if (created.private) Overlay.ManageChannel(created) else null }
         } }
-        Overlay.StartDirect -> StartDirectDialog(state.busy, state.error, viewModel::clearError, { overlay = null }) { username -> viewModel.startDirect(username) { overlay = null } }
+        Overlay.StartDirect -> StartDirectDialog(state.busy, { overlay = null }) { username, failed ->
+            viewModel.startDirect(username, done = { overlay = null }, failed = failed)
+        }
         is Overlay.ManageChannel -> ManageChannelDialog(state, state.selectedSpace?.channels?.find { it.id == shown.channel.id } ?: shown.channel, viewModel) { overlay = null }
         is Overlay.LeaveChannel -> {
             val owner = state.selectedSpace?.space?.ownerId == state.account?.id
@@ -1645,27 +1648,38 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         items(rows, key = { it.key }) { row ->
             val message = row.first
             val previous = row.previous
-            if (previous == null || !sameLocalDay(previous.createdAt, message.createdAt)) {
-                DateDivider(message.createdAt)
-            }
-            if (row is TimelineRow.Blocked) BlockedRunRow(row.run.messages.size, row.run.revealed) {
-                revealedRuns = if (row.run.revealed) revealedRuns - row.run.key else revealedRuns + row.run.key
-            } else Column(Modifier.background(if (state.focusedMessageId == message.id) TerracottaWash else if (!inThread && state.thread?.rootId == message.id) Color(0xFFE4C76A).copy(alpha = 0.1f) else Color.Transparent)) {
-              ReactionMessageRow(
-                message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
-                openReactors = { target, emoji -> reactorsTarget = target.id to emoji },
-                openMention = { mentionTarget = it },
-                openActions = { actionTarget = it },
-                openConversation = { conversationTarget = it },
-                openHistory = { historyTarget = it },
-                retryPin = viewModel::retryPin,
-                dismissPinError = viewModel::dismissPinError,
-                grouped = row is TimelineRow.Message && groupsWithPrevious(row.above, message, inThread, state.focusedMessageId),
-            )
-              if (!inThread && (message.threadRootId != null || (message.thread?.replyCount ?: 0) > 0)) Row(Modifier.padding(start = 62.dp), verticalAlignment = Alignment.CenterVertically) {
-                  message.thread?.takeIf { message.threadRootId == null }?.participants?.forEach { Avatar(it.name, 24.dp, avatarId = it.avatarId) }
-                  TextButton({ viewModel.openThread(message.threadRootId ?: message.id) }) { Text(message.thread?.takeIf { message.threadRootId == null }?.let { "${it.replyCount} ${if (it.replyCount == 1) "reply" else "replies"} · View thread" } ?: "Replied to a thread · View thread") }
-              }
+            val divider = previous == null || !sameLocalDay(previous.createdAt, message.createdAt)
+            val revealed = if (row is TimelineRow.Blocked) row.run.revealed else collapsesFor(message, blocked, selfId)
+            // The initial date stays outside the group; later dates stay within it.
+            if (divider && row is TimelineRow.Blocked) DateDivider(message.createdAt)
+            Column(Modifier.fillMaxWidth().drawBehind {
+                if (revealed) {
+                    drawRect(chat.caper.android.ui.Surface)
+                    drawRect(Border, size = Size(2.dp.toPx(), size.height))
+                }
+            }) {
+                if (divider && row !is TimelineRow.Blocked) DateDivider(message.createdAt)
+                if (row is TimelineRow.Blocked) {
+                    BlockedRunRow(row.run.messages.size, row.run.revealed) {
+                        revealedRuns = if (row.run.revealed) revealedRuns - row.run.key else revealedRuns + row.run.key
+                    }
+                } else Column(Modifier.background(if (state.focusedMessageId == message.id) TerracottaWash else if (!inThread && state.thread?.rootId == message.id) Color(0xFFE4C76A).copy(alpha = 0.1f) else Color.Transparent)) {
+                    ReactionMessageRow(
+                        message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
+                        openReactors = { target, emoji -> reactorsTarget = target.id to emoji },
+                        openMention = { mentionTarget = it },
+                        openActions = { actionTarget = it },
+                        openConversation = { conversationTarget = it },
+                        openHistory = { historyTarget = it },
+                        retryPin = viewModel::retryPin,
+                        dismissPinError = viewModel::dismissPinError,
+                        grouped = row is TimelineRow.Message && groupsWithPrevious(row.above, message, inThread, state.focusedMessageId),
+                    )
+                    if (!inThread && (message.threadRootId != null || (message.thread?.replyCount ?: 0) > 0)) Row(Modifier.padding(start = 62.dp), verticalAlignment = Alignment.CenterVertically) {
+                        message.thread?.takeIf { message.threadRootId == null }?.participants?.forEach { Avatar(it.name, 24.dp, avatarId = it.avatarId) }
+                        TextButton({ viewModel.openThread(message.threadRootId ?: message.id) }) { Text(message.thread?.takeIf { message.threadRootId == null }?.let { "${it.replyCount} ${if (it.replyCount == 1) "reply" else "replies"} · View thread" } ?: "Replied to a thread · View thread") }
+                    }
+                }
             }
         }
         if (skeleton) item("thread-loading") {
@@ -2478,19 +2492,29 @@ internal fun counterTone(count: Int): Color = when {
     }
 }
 
-@Composable private fun StartDirectDialog(busy: Boolean, serverError: String?, clearError: () -> Unit, close: () -> Unit, start: (String) -> Unit) {
+@Composable private fun StartDirectDialog(busy: Boolean, close: () -> Unit, start: (String, (String) -> Unit) -> Unit) {
     var username by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
-    var submitted by remember { mutableStateOf(false) }
     CaperDialog("New direct message", close, busy = busy) {
         val field = remember { FocusRequester() }
         LaunchedEffect(Unit) { runCatching { field.requestFocus() } }
         Text("Enter an account’s exact username.", color = TextMuted, fontSize = 12.sp)
-        OutlinedTextField(username, { username = normalizeUsername(it); error = null; if (submitted && serverError != null) clearError() }, label = { Text("Username") }, placeholder = { Text("username") },
+        OutlinedTextField(username, { username = normalizeUsername(it); error = null }, label = { Text("Username") }, placeholder = { Text("username") }, readOnly = busy,
             modifier = Modifier.fillMaxWidth().focusRequester(field), singleLine = true)
-        (error ?: serverError?.takeIf { submitted })?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
-        DialogActions(close, "Start conversation", busy, pendingLabel = "Opening…", canSubmit = username.isNotBlank()) {
-            if (!Regex("^[a-z0-9_]{3,32}$").matches(username)) error = "Enter an exact valid username." else { submitted = true; start(username) }
+        Box(Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+            error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton(close, enabled = !busy) { Text("Cancel") }; Spacer(Modifier.width(8.dp))
+            Button({
+                if (!Regex("^[a-z0-9_]{3,32}$").matches(username)) error = "Enter an exact valid username."
+                else { error = null; start(username) { error = it } }
+            }, enabled = !busy && username.isNotBlank(), shape = MaterialTheme.shapes.small) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text("Start conversation", Modifier.alpha(0f).clearAndSetSemantics {})
+                    Text(if (busy) "Opening…" else "Start conversation")
+                }
+            }
         }
     }
 }

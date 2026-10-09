@@ -762,6 +762,7 @@ export default function Chat({
               type="button"
               onClick={() => toggleRun(run.first, true)}
               aria-label={`Show ${blockedLabel(run.count)}`}
+              aria-expanded={false}
             >
               Show
             </button>
@@ -771,251 +772,259 @@ export default function Chat({
     }
     return (
       <div key={message.clientMessageId}>
-        {divider && (
+        {divider && (!run || run.first === message.clientMessageId) && (
           <div className="chat-date-divider">
             <time dateTime={message.createdAt}>{divider}</time>
           </div>
         )}
-        {run?.first === message.clientMessageId && (
-          <div className="chat-blocked-run">
-            <Ban size={16} aria-hidden="true" />
-            <span>{blockedLabel(run.count)}</span>
-            <span aria-hidden="true">—</span>
-            <button
-              type="button"
-              onClick={() => toggleRun(run.first, false)}
-              aria-label={`Hide ${blockedLabel(run.count)}`}
-            >
-              Hide
-            </button>
-          </div>
-        )}
-        <article
-          className={`chat-message${grouped ? " chat-message-grouped" : ""}${continued ? " chat-message-continued" : ""}${pending ? " chat-message-pending" : ""}${"id" in message && jumpMessage === message.id ? " chat-message-jump-target" : ""}${!pending && mentionsAccount(message, state.author?.id) ? " chat-message-mentioned" : ""}${!inThread && "id" in message && state.thread?.rootId === message.id ? " chat-message-thread-active" : ""}`}
-          data-message-key={message.clientMessageId}
-          data-message-id={"id" in message ? message.id : undefined}
-          onPointerDown={(event) => {
-            cancelPress();
-            if (
-              !("content" in message) ||
-              event.pointerType === "mouse" ||
-              !event.isPrimary ||
-              (event.target as HTMLElement).closest("button, a")
-            )
-              return;
-            const anchor = event.currentTarget;
-            press.current = {
-              x: event.clientX,
-              y: event.clientY,
-              pointerId: event.pointerId,
-              timer: setTimeout(() => {
-                suppressClick.current = true;
-                window.getSelection()?.removeAllRanges();
-                openActions(message.id, anchor, inThread);
-              }, 500),
-            };
-          }}
-          onPointerMove={(event) => {
-            const current = press.current;
-            if (
-              current &&
-              (event.pointerId !== current.pointerId ||
-                Math.hypot(event.clientX - current.x, event.clientY - current.y) > 10)
-            )
-              cancelPress();
-          }}
-          onPointerUp={cancelPress}
-          onPointerCancel={cancelPress}
-          onContextMenu={(event) => {
-            if (!("content" in message) || !isTouchLayout() || (event.target as HTMLElement).closest("button, a"))
-              return;
-            event.preventDefault();
-            cancelPress();
-            suppressClick.current = true;
-            openActions(message.id, event.currentTarget, inThread);
-          }}
-          tabIndex={pending ? undefined : -1}
-        >
-          {grouped ? (
-            // The run's avatar is above; show the time here on hover instead.
-            <div className="chat-grouped-time" aria-hidden="true">
-              {compactTime(message.createdAt)}
-            </div>
-          ) : (
-            <div className="chat-avatar">
-              <Avatar avatarId={author?.avatarId} name={author?.name ?? name} />
+        <div className={run ? "chat-blocked-revealed" : undefined}>
+          {divider && run && run.first !== message.clientMessageId && (
+            <div className="chat-date-divider">
+              <time dateTime={message.createdAt}>{divider}</time>
             </div>
           )}
-          <div>
-            <header className={grouped ? "sr-only" : undefined}>
-              <strong>{author?.name ?? name}</strong>
-              {author?.isGuest && <span className="chat-guest-badge">Guest</span>}
-              <time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt, timeFormatter) : ""}</time>
-              {!grouped && edited}
-            </header>
-            {!inThread && message.threadRootId && (
+          {run?.first === message.clientMessageId && (
+            <div className="chat-blocked-run">
+              <Ban size={16} aria-hidden="true" />
+              <span>{blockedLabel(run.count)}</span>
+              <span aria-hidden="true">—</span>
               <button
                 type="button"
-                className="chat-thread-context"
-                onMouseEnter={() => prefetchThread(message.threadRootId!)}
-                onFocus={() => prefetchThread(message.threadRootId!)}
-                onClick={() => openThread(message.threadRootId!)}
+                onClick={() => toggleRun(run.first, false)}
+                aria-label={`Hide ${blockedLabel(run.count)}`}
+                aria-expanded={true}
               >
-                Replied to a thread · View thread
+                Hide
               </button>
-            )}
-            {(!("content" in message) || message.content.text) && (
-              <p>
-                {"content" in message
-                  ? mentionSegments(message.content.text, message.content.mentions).map((segment, part) => {
-                      if (!segment.mention) return <LinkedText key={part} text={segment.text} />;
-                      const user = segment.user;
-                      if (!user)
-                        return (
-                          <span key={part} className="chat-mention">
-                            {segment.text}
-                          </span>
-                        );
-                      const known = mentionDirectory.find((candidate) => candidate.id === user.id);
-                      return (
-                        <button
-                          type="button"
-                          key={part}
-                          className="chat-mention chat-mention-person"
-                          aria-haspopup="dialog"
-                          aria-label={`Open profile for ${known?.displayName ?? `@${user.username}`}`}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setActionTarget(undefined);
-                            setMentionCard({
-                              person: mentionCardPerson(user, mentionDirectory, state.author?.id),
-                              anchor: event.currentTarget,
-                              drawer: isTouchLayout(),
-                            });
-                          }}
-                        >
-                          {segment.text}
-                        </button>
-                      );
-                    })
-                  : message.text}
-                {/* Compact rows have no header, so the marker follows the text. */}
-                {grouped && edited && <> {edited}</>}
-              </p>
-            )}
-            {"content" in message && (
-              <>
-                <ForwardCard
-                  message={message}
-                  onOpen={(anchor) => setConversationTarget({ messageId: message.id, anchor })}
-                />
-                <button
-                  type="button"
-                  className="chat-message-actions-trigger"
-                  aria-label={`Message actions for ${message.author.name}`}
-                  title="More actions"
-                  aria-haspopup="dialog"
-                  aria-expanded={actionTarget?.messageId === message.id && actionTarget.mode === "actions"}
-                  onClick={(event) =>
-                    // A second click on the open menu's own trigger closes it, like a toggle.
-                    actionTarget?.messageId === message.id && actionTarget.mode === "actions"
-                      ? setActionTarget(undefined)
-                      : openActions(message.id, event.currentTarget, inThread)
-                  }
-                >
-                  <MoreHorizontal size={14} aria-hidden="true" />
-                </button>
-                {!inThread && (
-                  <button
-                    type="button"
-                    className="chat-reply-thread"
-                    aria-label={`Reply in thread to ${message.author.name}`}
-                    title="Reply in thread"
-                    onMouseEnter={() => prefetchThread(message.threadRootId ?? message.id)}
-                    onFocus={() => prefetchThread(message.threadRootId ?? message.id)}
-                    onClick={() => openThread(message.threadRootId ?? message.id)}
-                  >
-                    <MessageSquare size={14} aria-hidden="true" />
-                  </button>
-                )}
-                <MessageReactions
-                  message={message}
-                  channelId={state.channelId}
-                  authorId={viewerId}
-                  readOnly={readOnly || !state.author}
-                  save={reactionSaves[message.id]}
-                  onReact={react}
-                  onShowReactors={(emoji, anchor) => showReactors(message.id, emoji, anchor)}
-                  pickerOpen={actionTarget?.messageId === message.id && actionTarget.mode === "emoji"}
-                  onOpenPicker={(anchor) =>
-                    actionTarget?.messageId === message.id && actionTarget.mode === "emoji"
-                      ? setActionTarget(undefined)
-                      : setActionTarget({
-                          messageId: message.id,
-                          anchor,
-                          anchorRect: anchor.getBoundingClientRect(),
-                          mode: "emoji",
-                          drawer: isTouchLayout(),
-                          inThread,
-                        })
-                  }
-                  onDismissError={() => setReactionSaves((current) => ({ ...current, [message.id]: undefined }))}
-                />
-                {!inThread && !message.threadRootId && !!message.thread?.replyCount && (
-                  <button
-                    type="button"
-                    className="chat-thread-summary"
-                    onMouseEnter={() => prefetchThread(message.id)}
-                    onFocus={() => prefetchThread(message.id)}
-                    onClick={() => openThread(message.id)}
-                    aria-label={`View thread with ${message.thread.replyCount} ${message.thread.replyCount === 1 ? "reply" : "replies"}`}
-                  >
-                    <span className="chat-thread-avatars">
-                      {message.thread.participants.map((person) => (
-                        <span key={person.id} title={person.name}>
-                          <Avatar avatarId={person.avatarId} name={person.name} />
-                        </span>
-                      ))}
-                    </span>
-                    <strong>
-                      {message.thread.replyCount} {message.thread.replyCount === 1 ? "reply" : "replies"}
-                    </strong>
-                    <span>View thread</span>
-                  </button>
-                )}
-              </>
-            )}
-            {pending && state.sendError && (
-              <div className="chat-send-status chat-send-error" role="alert">
-                <span>
-                  {state.sendRejected ? "Not sent." : "Not confirmed yet."} {state.sendError}
-                </span>
-                {state.sendRejected ? (
-                  <>
-                    <button
-                      type="button"
-                      disabled={hasDraft}
-                      title={hasDraft ? "Clear your current draft to edit this message." : undefined}
-                      onClick={() => {
-                        const text = clientRef.current?.discardRejected();
-                        if (text !== undefined) composerRef.current?.restore(text);
-                      }}
-                    >
-                      Edit
-                    </button>
-                    <button type="button" onClick={() => clientRef.current?.discardRejected()}>
-                      Dismiss
-                    </button>
-                  </>
-                ) : (
-                  <button type="button" onClick={() => composerRef.current?.submit()}>
-                    Retry send
-                  </button>
-                )}
+            </div>
+          )}
+          <article
+            className={`chat-message${grouped ? " chat-message-grouped" : ""}${continued ? " chat-message-continued" : ""}${pending ? " chat-message-pending" : ""}${"id" in message && jumpMessage === message.id ? " chat-message-jump-target" : ""}${!pending && mentionsAccount(message, state.author?.id) ? " chat-message-mentioned" : ""}${!inThread && "id" in message && state.thread?.rootId === message.id ? " chat-message-thread-active" : ""}`}
+            data-message-key={message.clientMessageId}
+            data-message-id={"id" in message ? message.id : undefined}
+            onPointerDown={(event) => {
+              cancelPress();
+              if (
+                !("content" in message) ||
+                event.pointerType === "mouse" ||
+                !event.isPrimary ||
+                (event.target as HTMLElement).closest("button, a")
+              )
+                return;
+              const anchor = event.currentTarget;
+              press.current = {
+                x: event.clientX,
+                y: event.clientY,
+                pointerId: event.pointerId,
+                timer: setTimeout(() => {
+                  suppressClick.current = true;
+                  window.getSelection()?.removeAllRanges();
+                  openActions(message.id, anchor, inThread);
+                }, 500),
+              };
+            }}
+            onPointerMove={(event) => {
+              const current = press.current;
+              if (
+                current &&
+                (event.pointerId !== current.pointerId ||
+                  Math.hypot(event.clientX - current.x, event.clientY - current.y) > 10)
+              )
+                cancelPress();
+            }}
+            onPointerUp={cancelPress}
+            onPointerCancel={cancelPress}
+            onContextMenu={(event) => {
+              if (!("content" in message) || !isTouchLayout() || (event.target as HTMLElement).closest("button, a"))
+                return;
+              event.preventDefault();
+              cancelPress();
+              suppressClick.current = true;
+              openActions(message.id, event.currentTarget, inThread);
+            }}
+            tabIndex={pending ? undefined : -1}
+          >
+            {grouped ? (
+              // The run's avatar is above; show the time here on hover instead.
+              <div className="chat-grouped-time" aria-hidden="true">
+                {compactTime(message.createdAt)}
+              </div>
+            ) : (
+              <div className="chat-avatar">
+                <Avatar avatarId={author?.avatarId} name={author?.name ?? name} />
               </div>
             )}
-          </div>
-        </article>
+            <div>
+              <header className={grouped ? "sr-only" : undefined}>
+                <strong>{author?.name ?? name}</strong>
+                {author?.isGuest && <span>Guest</span>}
+                <time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt, timeFormatter) : ""}</time>
+                {!grouped && edited}
+              </header>
+              {!inThread && message.threadRootId && (
+                <button
+                  type="button"
+                  className="chat-thread-context"
+                  onMouseEnter={() => prefetchThread(message.threadRootId!)}
+                  onFocus={() => prefetchThread(message.threadRootId!)}
+                  onClick={() => openThread(message.threadRootId!)}
+                >
+                  Replied to a thread · View thread
+                </button>
+              )}
+              {(!("content" in message) || message.content.text) && (
+                <p>
+                  {"content" in message
+                    ? mentionSegments(message.content.text, message.content.mentions).map((segment, part) => {
+                        if (!segment.mention) return <LinkedText key={part} text={segment.text} />;
+                        const user = segment.user;
+                        if (!user)
+                          return (
+                            <span key={part} className="chat-mention">
+                              {segment.text}
+                            </span>
+                          );
+                        const known = mentionDirectory.find((candidate) => candidate.id === user.id);
+                        return (
+                          <button
+                            type="button"
+                            key={part}
+                            className="chat-mention chat-mention-person"
+                            aria-haspopup="dialog"
+                            aria-label={`Open profile for ${known?.displayName ?? `@${user.username}`}`}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setActionTarget(undefined);
+                              setMentionCard({
+                                person: mentionCardPerson(user, mentionDirectory, state.author?.id),
+                                anchor: event.currentTarget,
+                                drawer: isTouchLayout(),
+                              });
+                            }}
+                          >
+                            {segment.text}
+                          </button>
+                        );
+                      })
+                    : message.text}
+                  {/* Compact rows have no header, so the marker follows the text. */}
+                  {grouped && edited && <> {edited}</>}
+                </p>
+              )}
+              {"content" in message && (
+                <>
+                  <ForwardCard
+                    message={message}
+                    onOpen={(anchor) => setConversationTarget({ messageId: message.id, anchor })}
+                  />
+                  <button
+                    type="button"
+                    className="chat-message-actions-trigger"
+                    aria-label={`Message actions for ${message.author.name}`}
+                    title="More actions"
+                    aria-haspopup="dialog"
+                    aria-expanded={actionTarget?.messageId === message.id && actionTarget.mode === "actions"}
+                    onClick={(event) =>
+                      // A second click on the open menu's own trigger closes it, like a toggle.
+                      actionTarget?.messageId === message.id && actionTarget.mode === "actions"
+                        ? setActionTarget(undefined)
+                        : openActions(message.id, event.currentTarget, inThread)
+                    }
+                  >
+                    <MoreHorizontal size={14} aria-hidden="true" />
+                  </button>
+                  {!inThread && (
+                    <button
+                      type="button"
+                      className="chat-reply-thread"
+                      aria-label={`Reply in thread to ${message.author.name}`}
+                      title="Reply in thread"
+                      onMouseEnter={() => prefetchThread(message.threadRootId ?? message.id)}
+                      onFocus={() => prefetchThread(message.threadRootId ?? message.id)}
+                      onClick={() => openThread(message.threadRootId ?? message.id)}
+                    >
+                      <MessageSquare size={14} aria-hidden="true" />
+                    </button>
+                  )}
+                  <MessageReactions
+                    message={message}
+                    channelId={state.channelId}
+                    authorId={viewerId}
+                    readOnly={readOnly || !state.author}
+                    save={reactionSaves[message.id]}
+                    onReact={react}
+                    onShowReactors={(emoji, anchor) => showReactors(message.id, emoji, anchor)}
+                    pickerOpen={actionTarget?.messageId === message.id && actionTarget.mode === "emoji"}
+                    onOpenPicker={(anchor) =>
+                      actionTarget?.messageId === message.id && actionTarget.mode === "emoji"
+                        ? setActionTarget(undefined)
+                        : setActionTarget({
+                            messageId: message.id,
+                            anchor,
+                            anchorRect: anchor.getBoundingClientRect(),
+                            mode: "emoji",
+                            drawer: isTouchLayout(),
+                            inThread,
+                          })
+                    }
+                    onDismissError={() => setReactionSaves((current) => ({ ...current, [message.id]: undefined }))}
+                  />
+                  {!inThread && !message.threadRootId && !!message.thread?.replyCount && (
+                    <button
+                      type="button"
+                      className="chat-thread-summary"
+                      onMouseEnter={() => prefetchThread(message.id)}
+                      onFocus={() => prefetchThread(message.id)}
+                      onClick={() => openThread(message.id)}
+                      aria-label={`View thread with ${message.thread.replyCount} ${message.thread.replyCount === 1 ? "reply" : "replies"}`}
+                    >
+                      <span className="chat-thread-avatars">
+                        {message.thread.participants.map((person) => (
+                          <span key={person.id} title={person.name}>
+                            <Avatar avatarId={person.avatarId} name={person.name} />
+                          </span>
+                        ))}
+                      </span>
+                      <strong>
+                        {message.thread.replyCount} {message.thread.replyCount === 1 ? "reply" : "replies"}
+                      </strong>
+                      <span>View thread</span>
+                    </button>
+                  )}
+                </>
+              )}
+              {pending && state.sendError && (
+                <div className="chat-send-status chat-send-error" role="alert">
+                  <span>
+                    {state.sendRejected ? "Not sent." : "Not confirmed yet."} {state.sendError}
+                  </span>
+                  {state.sendRejected ? (
+                    <>
+                      <button
+                        type="button"
+                        disabled={hasDraft}
+                        title={hasDraft ? "Clear your current draft to edit this message." : undefined}
+                        onClick={() => {
+                          const text = clientRef.current?.discardRejected();
+                          if (text !== undefined) composerRef.current?.restore(text);
+                        }}
+                      >
+                        Edit
+                      </button>
+                      <button type="button" onClick={() => clientRef.current?.discardRejected()}>
+                        Dismiss
+                      </button>
+                    </>
+                  ) : (
+                    <button type="button" onClick={() => composerRef.current?.submit()}>
+                      Retry send
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          </article>
+        </div>
       </div>
     );
   };

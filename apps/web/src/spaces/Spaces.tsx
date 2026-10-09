@@ -1113,6 +1113,7 @@ function StartDirectDialog({
       onClose={onClose}
     >
       <form
+        className="start-direct-form"
         onSubmit={(event) => {
           event.preventDefault();
           if (pending || !username.trim()) return;
@@ -1133,6 +1134,7 @@ function StartDirectDialog({
             data-initial-focus
             autoComplete="off"
             value={username}
+            readOnly={pending}
             maxLength={33}
             placeholder="@username"
             onChange={(event) => {
@@ -1141,11 +1143,9 @@ function StartDirectDialog({
             }}
           />
         </label>
-        {error && (
-          <p className="space-form-error" role="alert">
-            {error}
-          </p>
-        )}
+        <div className="start-direct-error" aria-live="polite" aria-atomic="true">
+          {error && <p className="space-form-error">{error}</p>}
+        </div>
         <SubmitRow
           pending={pending}
           label="Open conversation"

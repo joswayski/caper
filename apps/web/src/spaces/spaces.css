@@ -1516,6 +1516,16 @@
   font-size: 0.72rem;
   line-height: 1.4;
 }
+.start-direct-error {
+  min-height: 48px;
+  padding-top: 12px;
+}
+.start-direct-error .space-form-error {
+  margin: 0;
+}
+.start-direct-form .primary {
+  min-width: 140px;
+}
 .member-manager,
 .danger-zone {
   margin: 0 22px;
