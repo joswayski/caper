@@ -179,11 +179,11 @@ final class CaperParityUITests: XCTestCase {
         #endif
     }
 
-    private func staticTexts(_ text: String, in app: XCUIApplication) -> XCUIElementQuery {
+    private func staticTexts(_ text: String, in root: XCUIElement) -> XCUIElementQuery {
         #if os(macOS)
-        app.staticTexts.matching(NSPredicate(format: "value == %@", text))
+        root.staticTexts.matching(NSPredicate(format: "value == %@", text))
         #else
-        app.staticTexts.matching(NSPredicate(format: "label == %@", text))
+        root.staticTexts.matching(NSPredicate(format: "label == %@", text))
         #endif
     }
 
@@ -980,6 +980,9 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(overrides, ["chan00000002:forever"], "The fixture stored the channel mute")
         capture("channel-muted", app: app)
 
+        #if os(macOS)
+        design.hover() // Row options appear on hover (#404); hidden ones aren't in the tree.
+        #endif
         options.tap()
         let unmute = app.descendants(matching: .any)["Unmute channel"].firstMatch
         XCTAssertTrue(unmute.waitForExistence(timeout: 3), "A muted channel's menu offers Unmute channel")
@@ -989,6 +992,7 @@ final class CaperParityUITests: XCTestCase {
         overrides = try await Self.fixtureNotificationOverrides()
         XCTAssertEqual(overrides, [], "Unmuting clears the override on the server")
         #if os(macOS)
+        design.hover()
         options.tap()
         XCTAssertTrue(mute.waitForExistence(timeout: 3), "An unmuted channel's menu offers Mute channel again")
         app.typeKey(.escape, modifierFlags: [])
@@ -1377,7 +1381,9 @@ final class CaperParityUITests: XCTestCase {
                 // nor broadcast this send. Inspect the local pending row now.
                 let pending = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "pending-message-")).firstMatch
                 XCTAssertTrue(pending.exists, "Clearing the composer must leave a visible pending message")
-                let text = pending.staticTexts[message].firstMatch
+                // A predicate, not `staticTexts[message]`: keying a query by the long
+                // message trips XCUIElementQuery's identifier assertion and aborts the run.
+                let text = staticTexts(message, in: pending).firstMatch
                 XCTAssertTrue(text.exists)
                 XCTAssertTrue(timeline.frame.contains(text.frame), "Pending text must be in the visible timeline")
                 // The row's own frame can't be checked: accessibility reports a
@@ -1895,6 +1901,33 @@ final class CaperParityUITests: XCTestCase {
     }
     #endif
 
+    func testNewDirectMessageRefusalStaysInStableDialog() async throws {
+        try await Self.fixtureControl(["reset": true])
+        addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+        let message = "This person isn't accepting direct messages."
+        try await Self.fixtureControl(["failure": ["path": "/api/dms", "method": "POST", "status": 403, "error": message]])
+        let app = launch(fixture: "new-direct-message")
+        let username = try require(app.textFields["dm-username"], timeout: 30, "The new-DM dialog must open")
+        type("jordan", into: username)
+        let submit = app.buttons["dm-create-submit"]
+        let fieldFrame = username.frame, buttonFrame = submit.frame
+        submit.tap()
+        let failure = try require(app.staticTexts["dm-create-error"], timeout: 10, "The refusal must appear in the dialog")
+        assertElement("dm-create-error", label: message, in: app)
+        XCTAssertEqual(username.value as? String, "jordan")
+        XCTAssertTrue(submit.isEnabled, "A refusal must leave the form retryable")
+        XCTAssertEqual(username.frame, fieldFrame, "The error must not move the username field")
+        XCTAssertEqual(submit.frame, buttonFrame, "The error must not move or resize the action")
+        capture("new-dm-refused", app: app)
+        type("_other", into: username)
+        let cleared = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: failure)
+        XCTAssertEqual(XCTWaiter.wait(for: [cleared], timeout: 3), .completed)
+        XCTAssertEqual(submit.frame, buttonFrame, "Editing must not collapse the error's space")
+        app.buttons["Close"].firstMatch.tap()
+        XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label == %@ OR value == %@", message, message)).firstMatch.exists,
+                       "The refusal must not leak into the sidebar after closing")
+    }
+
     func testManageSpace() {
         let app = launch(fixture: "manage-space")
         assertStaticText("Manage space", in: app)
@@ -1974,7 +2007,8 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertGreaterThan(channel.frame.minX, navigation.frame.maxX, "Back arrow leads the channel menu")
         XCTAssertGreaterThanOrEqual(navigation.frame.width, 44, "Keep the back touch target accessible")
         XCTAssertFalse(app.buttons["Show member list"].exists, "Mobile Members belongs in the channel dropdown")
-        XCTAssertFalse(app.buttons["channel-pins"].exists, "Mobile Pins belongs in the channel dropdown")
+        // Since #363 Pins is a header button on every width, as on web.
+        XCTAssertTrue(app.buttons["channel-pins"].isHittable, "Pins sits in the phone header")
         let composer = app.descendants(matching: .any)["message-composer"]
         composer.tap(); composer.typeText("Draft survives Browse")
         let timeline = app.descendants(matching: .any)["chat-timeline"]
@@ -1998,7 +2032,6 @@ final class CaperParityUITests: XCTestCase {
         capture("narrow-members", app: app)
         app.buttons["Close member list"].tap()
         XCTAssertEqual(staticTexts("Members", in: app).count, 0)
-        channel.tap()
         let pins = app.buttons["channel-pins"]
         XCTAssertTrue(pins.waitForExistence(timeout: 2))
         pins.tap()
@@ -2007,7 +2040,7 @@ final class CaperParityUITests: XCTestCase {
         capture("narrow-empty-pins", app: app)
         app.buttons["Messages"].tap()
         XCTAssertTrue(navigation.waitForExistence(timeout: 3))
-        XCTAssertFalse(app.buttons["channel-pins"].exists, "Dismissing Pins restores the clean header")
+        XCTAssertTrue(pins.waitForExistence(timeout: 3), "Dismissing Pins restores the header")
         XCTAssertEqual(composer.value as? String, "Draft survives Browse")
         channel.tap()
         members.tap()

@@ -397,7 +397,14 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun startDirect(username: String, done: () -> Unit = {}) = launchAction { request -> openDirectByUsername(username, request, done) }
+    fun startDirect(username: String, done: () -> Unit = {}, failed: ((String) -> Unit)? = null) = launchAction { request ->
+        try { openDirectByUsername(username, request, done) }
+        catch (error: CancellationException) { throw error }
+        catch (error: Throwable) {
+            if (failed == null) throw error
+            if (request == accountGeneration) failed(message(error))
+        }
+    }
 
     /** `POST /api/dms` by username (it returns an existing DM), then opens it unless you navigated meanwhile. */
     private suspend fun openDirectByUsername(username: String, request: Long, done: () -> Unit) {

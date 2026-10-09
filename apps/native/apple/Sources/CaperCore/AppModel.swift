@@ -373,13 +373,13 @@ public final class AppModel {
         } catch {}
     }
 
-    public func createDirectMessage(username: String) async -> Bool {
+    public func createDirectMessage(username: String) async throws -> Bool {
         let exact = username.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !exact.isEmpty, account != nil, !busy else { return false }
         let attempt = generation
         navigationGeneration += 1
         let navigation = navigationGeneration
-        busy = true; error = nil
+        busy = true
         defer { if generation == attempt { busy = false } }
         do {
             let conversation = try await api.createDirectMessage(username: exact)
@@ -388,7 +388,10 @@ public final class AppModel {
             else { directMessages.append(conversation) }
             if navigationGeneration == navigation { await select(directMessage: conversation) }
             return generation == attempt
-        } catch { if generation == attempt { self.error = FriendlyError.message(for: error) }; return false }
+        } catch {
+            guard generation == attempt else { return false }
+            throw error
+        }
     }
 
     /// Opens the account's notes conversation, creating it through the normal DM
@@ -398,7 +401,9 @@ public final class AppModel {
         if let conversation = directMessages.first(where: { $0.peer.id == account.id }) {
             await select(directMessage: conversation)
         } else {
-            _ = await createDirectMessage(username: username)
+            error = nil
+            do { _ = try await createDirectMessage(username: username) }
+            catch { self.error = FriendlyError.message(for: error) }
         }
     }
 

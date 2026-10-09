@@ -6989,6 +6989,39 @@ impl CaperApp {
         self.revealed_blocked.contains(key)
     }
 
+    /// Paint one shared surface behind the notice and every revealed message.
+    fn blocked_run(
+        &mut self,
+        ui: &mut egui::Ui,
+        key: &str,
+        count: usize,
+        messages: impl FnOnce(&mut Self, &mut egui::Ui),
+    ) {
+        let background = ui.painter().add(egui::Shape::Noop);
+        let group = ui.scope(|ui| {
+            let shown = self.blocked_row(ui, key, count);
+            if shown {
+                messages(self, ui);
+            }
+            shown
+        });
+        if group.inner {
+            let rect =
+                egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), group.response.rect.y_range());
+            ui.painter().set(
+                background,
+                egui::Shape::Vec(vec![
+                    egui::Shape::rect_filled(rect, 0.0, SURFACE),
+                    egui::Shape::rect_filled(
+                        egui::Rect::from_min_size(rect.min, egui::vec2(2.0, rect.height())),
+                        0.0,
+                        BORDER,
+                    ),
+                ]),
+            );
+        }
+    }
+
     /// Thread rows (root or replies), collapsing blocked authors' runs. Each
     /// call is its own list for grouping, so the root never groups and the
     /// first reply never groups with it.
@@ -6996,8 +7029,8 @@ impl CaperApp {
         let me = self.account.as_ref().map(|account| account.id.clone());
         let mut previous: Option<grouping::Row> = None;
         for row in blocking::rows(messages, &self.blocked_ids(), me.as_deref()) {
-            let range = match row {
-                blocking::Row::Message(index) => index..index + 1,
+            let (range, blocked) = match row {
+                blocking::Row::Message(index) => (index..index + 1, None),
                 blocking::Row::Blocked { range, key } => {
                     // The placeholder separates the rows on either side.
                     previous = None;
@@ -7008,19 +7041,25 @@ impl CaperApp {
                     {
                         self.revealed_blocked.insert(key.clone());
                     }
-                    if !self.blocked_row(ui, &key, range.len()) {
-                        continue;
-                    }
-                    range
+                    (range, Some(key))
                 }
             };
-            for message in &messages[range] {
-                let current = grouping::Row::new(&message.author.id, &message.created_at, false);
-                let grouped = grouping::grouped(previous.as_ref(), &current);
-                // Nothing groups under a highlighted jump target.
-                previous =
-                    (self.focused_message.as_deref() != Some(&message.id)).then_some(current);
-                self.message(ui, message, true, grouped);
+            let count = range.len();
+            let draw = |app: &mut Self, ui: &mut egui::Ui| {
+                for message in &messages[range] {
+                    let current =
+                        grouping::Row::new(&message.author.id, &message.created_at, false);
+                    let grouped = grouping::grouped(previous.as_ref(), &current);
+                    // Nothing groups under a highlighted jump target.
+                    previous =
+                        (app.focused_message.as_deref() != Some(&message.id)).then_some(current);
+                    app.message(ui, message, true, grouped);
+                }
+            };
+            if let Some(key) = blocked {
+                self.blocked_run(ui, &key, count, draw);
+            } else {
+                draw(self, ui);
             }
         }
     }
@@ -9152,7 +9191,7 @@ impl CaperApp {
                             blocking::Row::Message(index) => (index..index + 1, None),
                             blocking::Row::Blocked { range, key } => (range, Some(key)),
                         };
-                        if let Some(key) = blocked {
+                        if let Some(key) = &blocked {
                             previous = None;
                             if let Some(date) = display_date(&messages[range.start].created_at)
                                 && take_date_divider(&mut last_date, &date.key)
@@ -9162,10 +9201,9 @@ impl CaperApp {
                             if self.scroll_to_target && messages[range.clone()].iter().any(|message| self.focused_message.as_deref() == Some(&message.id)) {
                                 self.revealed_blocked.insert(key.clone());
                             }
-                            if !self.blocked_row(ui, &key, range.len()) {
-                                continue;
-                            }
                         }
+                        let count = range.len();
+                        let draw = |app: &mut Self, ui: &mut egui::Ui| {
                         for message in &messages[range] {
                             if let Some(date) = display_date(&message.created_at)
                                 && take_date_divider(&mut last_date, &date.key)
@@ -9177,8 +9215,14 @@ impl CaperApp {
                             let current = grouping::Row::new(&message.author.id, &message.created_at, message.thread_root_id.is_some());
                             let grouped = grouping::grouped(previous.as_ref(), &current);
                             // Nothing groups under a highlighted jump target.
-                            previous = (self.focused_message.as_deref() != Some(&message.id)).then_some(current);
-                            self.message(ui, message, false, grouped);
+                            previous = (app.focused_message.as_deref() != Some(&message.id)).then_some(current);
+                            app.message(ui, message, false, grouped);
+                        }
+                        };
+                        if let Some(key) = blocked {
+                            self.blocked_run(ui, &key, count, draw);
+                        } else {
+                            draw(self, ui);
                         }
                     }
                     self.timeline = timeline;
