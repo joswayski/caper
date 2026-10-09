@@ -145,6 +145,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun resendCode() = launchAccountAction { request ->
         val screen = mutable.value.screen as? SessionScreen.Verify ?: return@launchAccountAction
+        if (screen.resends >= MAX_CODE_RESENDS) return@launchAccountAction
         val challenge = api.requestCode(screen.email)
         if (request == accountGeneration && mutable.value.screen == screen) mutable.value = mutable.value.copy(
             screen = SessionScreen.Verify(challenge.challengeId, screen.email, resends = screen.resends + 1, sentAt = android.os.SystemClock.elapsedRealtime()),

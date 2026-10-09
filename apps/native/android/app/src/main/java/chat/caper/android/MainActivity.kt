@@ -2245,10 +2245,11 @@ internal fun counterTone(count: Int): Color = when {
         // Shown after a resend, announced politely; the new challenge also cleared the field and the attempts.
         if (screen.resends > 0) Text(RESENT_CODE_STATUS, Modifier.padding(top = 12.dp).semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 14.sp)
         // "Email me a new code" counts as a resend too, and restarts the wait.
-        if (exhausted) Button(sendNewCode, enabled = !busy, modifier = Modifier.fillMaxWidth().padding(top = 12.dp), shape = MaterialTheme.shapes.small, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)) {
+        // At the resend limit the API would send nothing, so the button is hidden (as on web).
+        if (exhausted) { if (screen.resends < MAX_CODE_RESENDS) Button(sendNewCode, enabled = !busy, modifier = Modifier.fillMaxWidth().padding(top = 12.dp), shape = MaterialTheme.shapes.small, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)) {
             Text(if (busy) "Sending…" else "Email me a new code", Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Start)
             if (!busy) Icon(painterResource(R.drawable.lucide_arrow_right), null, Modifier.size(20.dp))
-        } else Button({ submit(screen.challengeId, code) }, enabled = code.length == 6 && !busy, modifier = Modifier.fillMaxWidth().padding(top = 12.dp), shape = MaterialTheme.shapes.small, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)) {
+        } } else Button({ submit(screen.challengeId, code) }, enabled = code.length == 6 && !busy, modifier = Modifier.fillMaxWidth().padding(top = 12.dp), shape = MaterialTheme.shapes.small, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)) {
             Text(if (busy && !resending) "Checking…" else "Continue", Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Start)
             if (!busy || resending) Icon(painterResource(R.drawable.lucide_arrow_right), null, Modifier.size(20.dp))
         }
