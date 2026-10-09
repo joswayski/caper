@@ -139,9 +139,8 @@ export function useComposerSuggestions({
               tabIndex={-1}
               aria-selected={index === activeOption}
               aria-label={`Insert ${entry.name} emoji`}
-              // The pointer moves the highlight, so Enter inserts the row under it.
-              onMouseMove={() => index !== activeOption && setSelected(index)}
               onPointerDown={(event) => event.preventDefault()}
+              onMouseMove={() => setSelected(index)}
               onClick={() => chooseEmoji(entry)}
             >
               <img src={emojiAsset(entry.id)} alt="" width="24" height="24" />
@@ -177,8 +176,8 @@ export function useComposerSuggestions({
                   ? `Mention ${option.member.displayName}, @${name}`
                   : `Mention @${name}, ${specialMentionLabels[option.kind].toLowerCase()}`
               }
-              onMouseMove={() => index !== activeOption && setSelected(index)}
               onPointerDown={(event) => event.preventDefault()}
+              onMouseMove={() => setSelected(index)}
               onClick={() => chooseMention(option)}
             >
               {option.kind === "member" ? (

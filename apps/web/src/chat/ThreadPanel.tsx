@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Send, X } from "lucide-react";
+import Avatar from "../components/Avatar";
 import type { ChatClient, ChatViewState } from "./client.ts";
+import { COUNTER_START, counterTone } from "./counter.ts";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import type { MentionCandidate } from "./mentions.ts";
 import { sequence, type ChatMessage } from "./types.ts";
@@ -19,13 +21,18 @@ export default function ThreadPanel({
   state: ChatViewState;
   client?: ChatClient;
   channelName: string;
-  /** A DM thread: its conversation is a person, not a #channel. */
   direct?: boolean;
   readOnly: boolean;
   /** People `@` can suggest, without the author; undefined until loaded. */
   mentionPeople?: MentionCandidate[];
   specialMentions: boolean;
-  renderMessage: (index: number, message: ChatMessage, inThread: boolean) => ReactNode;
+  renderMessage: (
+    index: number,
+    message: ChatMessage,
+    inThread: boolean,
+    previous?: ChatMessage,
+    next?: ChatMessage,
+  ) => ReactNode;
   onClose: () => void;
 }) {
   const [drafts, setDrafts] = useState<Record<string, { text: string; broadcast: boolean }>>({});
@@ -116,12 +123,16 @@ export default function ThreadPanel({
     follow.current = true;
     composer.current?.focus();
     const escape = (event: KeyboardEvent) => {
+      // Escape closes the innermost layer first: a menu, popover or dialog
+      // over the thread (including sidebar menus and space dialogs) keeps it open.
       if (
         event.key === "Escape" &&
         !event.defaultPrevented &&
         // Escape that cancels an input-method composition must not also close the thread.
         !event.isComposing &&
-        !document.querySelector(".chat-reaction-picker, .chat-message-actions, .chat-reactors, .chat-edit-dialog[open]")
+        !document.querySelector(
+          ".chat-reaction-picker, .chat-message-actions, .chat-reactors, .chat-mention-card, .chat-forward-dialog, dialog[open], details[open], [popover]:popover-open",
+        )
       )
         onClose();
     };
@@ -139,7 +150,10 @@ export default function ThreadPanel({
     if (!pending) return;
     setDrafts((current) => {
       const old = current[pending.threadRootId!] ?? { text: "", broadcast: false };
-      return old.text === pending.text ? { ...current, [pending.threadRootId!]: { ...old, text: "" } } : current;
+      // "Also send to channel" applies to one reply, so it resets with the draft.
+      return old.text === pending.text
+        ? { ...current, [pending.threadRootId!]: { text: "", broadcast: false } }
+        : current;
     });
   }, [pending?.clientMessageId]);
   useEffect(() => {
@@ -166,10 +180,13 @@ export default function ThreadPanel({
   // Typing a reply changes only this panel's draft; keep the rendered messages.
   const renderedRoot = useMemo(() => root && renderMessage(0, root, true), [root, renderMessage]);
   const renderedReplies = useMemo(
-    () => replies.map((message, index) => renderMessage(index + 1, message, true)),
+    // Replies group with the reply above them; the root never groups.
+    () =>
+      replies.map((message, index) => renderMessage(index + 1, message, true, replies[index - 1], replies[index + 1])),
     [replies, renderMessage],
   );
   if (!state.thread) return null;
+  const count = Array.from(draft.text).length;
   const sending = !!state.pendingSend && !state.sendError;
   const blocked = !!state.pendingSend && !pending;
   const submit = async () => {
@@ -200,7 +217,7 @@ export default function ThreadPanel({
         </button>
         <div>
           <h2 id="chat-thread-heading">Thread</h2>
-          <span>in {direct ? channelName : `#${channelName}`}</span>
+          <span>{direct ? `with ${channelName}` : `in #${channelName}`}</span>
         </div>
         <button type="button" className="chat-thread-close" onClick={onClose} aria-label="Close thread">
           <X size={20} />
@@ -263,7 +280,7 @@ export default function ThreadPanel({
           </button>
         )}
         {!state.thread.loading && !state.thread.error && !replies.length && (
-          <p className="chat-thread-status">No replies yet. Start the thread.</p>
+          <p className="chat-thread-status">{readOnly ? "No replies yet." : "No replies yet. Start the thread."}</p>
         )}
         {renderedReplies}
         {state.thread.hasNewer && (
@@ -278,7 +295,9 @@ export default function ThreadPanel({
         )}
         {pending && (
           <article className="chat-message chat-message-pending">
-            <div />
+            <div className="chat-avatar">
+              <Avatar avatarId={pending.author?.avatarId} name={pending.author?.name ?? ""} />
+            </div>
             <div>
               <header>
                 <strong>{pending.author?.name}</strong>
@@ -290,7 +309,9 @@ export default function ThreadPanel({
       </div>
       <div className="chat-composer chat-thread-composer">
         {readOnly ? (
-          <p>Join the channel to reply.</p>
+          <p className="chat-thread-readonly">
+            {direct ? "You can’t reply in this conversation." : "Join the channel to reply."}
+          </p>
         ) : (
           <>
             {state.sessionError && (
@@ -315,8 +336,9 @@ export default function ThreadPanel({
                       type="button"
                       disabled={!!draft.text}
                       onClick={() => {
+                        const broadcast = pending.broadcast ?? false;
                         const text = client?.discardRejected();
-                        if (text !== undefined) update({ text });
+                        if (text !== undefined) update({ text, broadcast });
                       }}
                     >
                       Edit
@@ -380,7 +402,7 @@ export default function ThreadPanel({
                     disabled={!!pending}
                     onChange={(event) => update({ broadcast: event.target.checked })}
                   />
-                  {direct ? "Also send to the conversation" : `Also send to #${channelName}`}
+                  {direct ? "Also send to conversation" : `Also send to #${channelName}`}
                 </label>
                 <button
                   type="submit"
@@ -392,8 +414,10 @@ export default function ThreadPanel({
                   <Send size={18} />
                 </button>
               </div>
-              {Array.from(draft.text).length >= 3000 && (
-                <small>{Array.from(draft.text).length.toLocaleString()} / 4,000</small>
+              {count >= COUNTER_START && (
+                <small className="chat-counter" data-tone={counterTone(count)}>
+                  {count.toLocaleString()} / 4,000
+                </small>
               )}
             </form>
           </>

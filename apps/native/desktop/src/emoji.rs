@@ -76,6 +76,10 @@ pub fn token(text: &str, caret: usize) -> Option<Token> {
     {
         return None;
     }
+    // One character is an emoticon (":D", ":P", ":3"), not a search; Enter sends it as typed.
+    if caret - start == 1 {
+        return None;
+    }
     Some(Token {
         start: colon,
         end: caret,
@@ -247,6 +251,10 @@ mod tests {
         assert!(token(":tomato", 4).is_none());
         assert!(token(":tom:", 4).is_none());
         assert!(token("hi (:tom", 8).is_some());
+        for text in [":D", "ok :P", "hi (:3"] {
+            assert!(token(text, text.chars().count()).is_none(), "{text}");
+        }
+        assert!(token(":", 1).is_some_and(|token| token.query.is_empty()));
         assert!(suggestions("tom").iter().any(|entry| entry.emoji == "🍅"));
         assert_eq!(suggestions("tomato")[0].emoji, "🍅");
         assert_eq!(suggestions("thumbs_up")[0].emoji, "👍");
@@ -269,7 +277,7 @@ mod tests {
             insert(text, &active, "🚀"),
             Some(("👩‍💻 hi 🚀 suffix 🚀".into(), "👩‍💻 hi 🚀".chars().count()))
         );
-        let text = format!("{} :x", "😀".repeat(3998));
+        let text = format!("{} :xy", "😀".repeat(3998));
         let active = token(&text, text.chars().count()).unwrap();
         assert!(insert(&text, &active, "🚀").is_some());
         assert!(insert(&text, &active, "👩‍💻").is_none());

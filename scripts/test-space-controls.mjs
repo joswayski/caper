@@ -398,9 +398,8 @@ function testModalGeometry() {
     assert.deepEqual(evaluate("spaceControlFixture.memberAdds"), [
       { path: "/api/spaces/space1234567/members", body: { username: "fixture_new" } },
     ]);
-    // Read-only rather than disabled, so the focused field keeps focus.
     assert.ok(
-      evaluate('document.querySelector("#member-username").readOnly'),
+      evaluate('document.querySelector("#member-username").disabled'),
       "Pending add must not accept edits that will be cleared",
     );
     evaluate('document.querySelector(".member-add").requestSubmit()');

@@ -19,7 +19,10 @@ export function emojiToken(text: string, start: number, end = start): EmojiToken
   let colon = start - 1;
   while (colon >= 0 && queryCharacter.test(text[colon])) colon--;
   if (text[colon] !== ":" || (colon > 0 && !/[\s([{]/u.test(text[colon - 1]))) return;
-  return { start: colon, end: start, query: text.slice(colon + 1, start) };
+  const query = text.slice(colon + 1, start);
+  // One character is an emoticon (":D", ":P", ":3"), not a search; Enter sends it as typed.
+  if (query.length === 1) return;
+  return { start: colon, end: start, query };
 }
 
 export function emojiSuggestions(catalog: EmojiChoice[], query: string): EmojiChoice[] {

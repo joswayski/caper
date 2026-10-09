@@ -287,38 +287,38 @@ export default function LiveWindow() {
 
   useEffect(() => {
     if (reducedMotion) return;
-    // Sample elapsed time rather than snapping every effect to a shared beat.
-    let previous = performance.now();
-    // Pause (without a jump on return) while the window is off-screen or the tab
-    // is hidden: re-rendering the whole room ~13 times a second costs frames
-    // in the page that is being read instead.
-    let onScreen = true;
     const stage = stageRef.current;
-    const visibility = stage
+    // Pause off screen or in a hidden tab: the clock simply stops, so the demo
+    // resumes where it was instead of re-rendering the whole room 13 times a second.
+    let visible = true;
+    const observer = stage
       ? new IntersectionObserver(([entry]) => {
-          onScreen = entry.isIntersecting;
+          visible = entry?.isIntersecting ?? true;
         })
       : undefined;
-    if (stage) visibility?.observe(stage);
+    if (stage) observer?.observe(stage);
+    // Sample elapsed time rather than snapping every effect to a shared beat.
+    let previous = performance.now();
     const timer = window.setInterval(() => {
       const now = performance.now();
       const seconds = (now - previous) / 1000;
       previous = now;
-      if (!onScreen || document.hidden) return;
+      if (!visible || document.hidden) return;
       setDemo((current) => {
         const elapsed = current.phase + seconds;
         const loops = Math.floor(elapsed / cycleLength);
         return {
           phase: elapsed % cycleLength,
           cycle: current.cycle + loops,
-          // Keep one previous loop to scroll back through, not every loop since load.
-          history: loops > 0 ? [...current.history, ...timedMessages].slice(-timedMessages.length) : current.history,
+          // Keep one earlier loop for scrollback; unbounded history slowly made
+          // a long-open homepage heavier and the animation janky.
+          history: loops > 0 ? [...current.history, ...timedMessages].slice(-messages.length) : current.history,
         };
       });
     }, 75);
     return () => {
       window.clearInterval(timer);
-      visibility?.disconnect();
+      observer?.disconnect();
     };
   }, [reducedMotion, timedMessages]);
 
@@ -342,6 +342,22 @@ export default function LiveWindow() {
         .map((message) => people[message.person].name),
     ),
   ];
+  // Same wording and fade-out as the real conversation's typing line (Chat.tsx).
+  const typingLabel =
+    typingPeople.length > 2
+      ? "Several people are typing…"
+      : typingPeople.length
+        ? `${typingPeople.join(" and ")} ${typingPeople.length === 1 ? "is" : "are"} typing…`
+        : "";
+  const [displayedTypingLabel, setDisplayedTypingLabel] = useState("");
+  useEffect(() => {
+    if (typingLabel) {
+      setDisplayedTypingLabel(typingLabel);
+      return;
+    }
+    const timer = setTimeout(() => setDisplayedTypingLabel(""), 180);
+    return () => clearTimeout(timer);
+  }, [typingLabel]);
 
   return (
     <div className="live-stage" ref={stageRef} suppressHydrationWarning data-ready={ready ? "" : undefined}>
@@ -668,17 +684,15 @@ export default function LiveWindow() {
                 </div>
               </div>
               <div className="sim-typing chat-typing">
-                <span className="chat-typing-content" data-visible={typingPeople.length > 0}>
-                  {typingPeople.length > 0 && (
+                <span className="chat-typing-content" data-visible={!!typingLabel}>
+                  {displayedTypingLabel && (
                     <>
                       <span className="chat-typing-dots" aria-hidden="true">
                         <i />
                         <i />
                         <i />
                       </span>
-                      <span>
-                        {typingPeople.join(" and ")} {typingPeople.length === 1 ? "is" : "are"} typing
-                      </span>
+                      <span>{displayedTypingLabel}</span>
                     </>
                   )}
                 </span>

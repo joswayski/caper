@@ -9,11 +9,17 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import chat.caper.android.data.ApiException
+import chat.caper.android.data.friendlyError
+import chat.caper.android.data.linkRanges
 import chat.caper.android.model.*
 import chat.caper.android.ui.Border
 import chat.caper.android.ui.EmojiImage
@@ -33,7 +39,7 @@ import java.util.UUID
             Text(message.author.name, fontWeight = FontWeight.Bold, fontSize = 13.sp)
             if (message.editedAt != null) Text("edited", color = TextMuted, fontSize = 10.sp)
         }
-        Text(message.content.text, fontSize = 14.sp)
+        LinkedText(message.content.text, fontSize = 14.sp)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             message.reactions.forEach { reaction -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 EmojiImage(reaction.emoji, reaction.emoji, Modifier.size(18.dp))
@@ -41,6 +47,20 @@ import java.util.UUID
             } }
         }
     }
+}
+
+/** The original's text with its `http(s)://` and `www.` links (`data/Links.kt`); like web, no mention pills here. */
+@Composable private fun LinkedText(text: String, fontSize: TextUnit) {
+    val links = remember(text) { linkRanges(text) }
+    if (links.isEmpty()) return Text(text, fontSize = fontSize)
+    val uriHandler = LocalUriHandler.current
+    val annotated = remember(text, links, uriHandler) {
+        buildAnnotatedString {
+            append(text)
+            links.forEach { link -> addLink(LinkAnnotation.Url(link.href, MessageLink) { openExternalLink(uriHandler, link.href) }, link.start, link.end) }
+        }
+    }
+    Text(annotated, fontSize = fontSize)
 }
 
 @Composable internal fun ForwardCard(message: ChatMessage, open: () -> Unit) {
@@ -73,7 +93,7 @@ import java.util.UUID
     LaunchedEffect(attempt) {
         error = null
         try { destinations = viewModel.forwardDestinations().sortedBy { "${it.spaceName} ${it.name}" } }
-        catch (reason: Throwable) { if (reason is CancellationException) throw reason; error = reason.message }
+        catch (reason: Throwable) { if (reason is CancellationException) throw reason; error = friendlyError(reason, "Destinations are unavailable.") }
     }
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = SurfaceRaised) {
         Column(Modifier.fillMaxWidth().heightIn(max = 660.dp).verticalScroll(rememberScrollState()).padding(18.dp).imePadding(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -116,7 +136,15 @@ import java.util.UUID
                         if (reason is CancellationException) throw reason
                         val rejected = reason is ApiException && reason.status in listOf(400, 401, 403, 404, 409, 422)
                         if (rejected) pending = null
-                        error = "${if (confirmed > 0) "Forwarded to $confirmed ${if (confirmed == 1) "destination" else "destinations"}. " else ""}${if (rejected) "Remaining forwards not sent." else "Remaining forwards not confirmed. Retry checks the same forwards."} ${reason.message.orEmpty()}"
+                        // Multi-destination progress with a readable reason, never raw exception text.
+                        val done = if (confirmed > 0) "Forwarded to $confirmed ${if (confirmed == 1) "destination" else "destinations"}. " else ""
+                        val status = when {
+                            rejected && confirmed > 0 -> "Remaining forwards not sent."
+                            rejected -> "Not sent."
+                            confirmed > 0 -> "Remaining forwards not confirmed. Retry checks the same forwards."
+                            else -> "Not confirmed. Retry checks the same forward."
+                        }
+                        error = "$done$status ${friendlyError(reason, "Try again.")}"
                     } finally { sending = false }
                 }
             }, enabled = selected.isNotEmpty() && !sending && note.codePointCount(0, note.length) <= 4000) { Text(if (sending) "Forwarding…" else if (pending != null) "Retry forwards (${selected.size})" else "Forward (${selected.size})") }
@@ -143,7 +171,7 @@ import java.util.UUID
                 fresh = fresh.copy(messages = earlier.messages + fresh.messages, hasMore = earlier.hasMore); loadedPages++
             }
             oldest = fresh.messages.firstOrNull()?.seq; conversation = fresh
-        } catch (reason: Throwable) { if (reason is CancellationException) throw reason; conversation = null; error = reason.message }
+        } catch (reason: Throwable) { if (reason is CancellationException) throw reason; conversation = null; error = friendlyError(reason, "Conversation is unavailable.") }
         finally { loading = false }
     }
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = SurfaceRaised) {

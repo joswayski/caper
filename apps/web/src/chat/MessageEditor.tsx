@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { focusReturn } from "./focus-return.ts";
 import type { ChatMessage } from "./types.ts";
 
 export default function MessageEditor({
@@ -20,12 +21,16 @@ export default function MessageEditor({
   const [error, setError] = useState<string>();
   const count = Array.from(draft).length;
   useEffect(() => {
-    // Unmounting an open modal does not restore focus; return it to the opener.
-    const opener = document.activeElement as HTMLElement | null;
+    const restore = focusReturn(message.clientMessageId);
     dialog.current?.showModal();
-    return () => {
-      if (opener?.isConnected) opener.focus();
-    };
+    // Continue editing where the message ends, not before its first character.
+    const input = textarea.current;
+    if (input) {
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+      input.scrollTop = input.scrollHeight;
+    }
+    return restore;
   }, []);
   const save = async () => {
     if (saving || !draft.trim() || count > 4_000) return;
@@ -77,7 +82,6 @@ export default function MessageEditor({
         <textarea
           ref={textarea}
           id="chat-edit-text"
-          autoFocus
           value={draft}
           disabled={saving}
           rows={5}

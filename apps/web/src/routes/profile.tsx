@@ -6,7 +6,10 @@ import NotificationSettings from "../account/NotificationSettings";
 import PrivacySettings from "../account/PrivacySettings";
 import Wordmark from "../components/Wordmark";
 
-export const Route = createFileRoute("/profile")({ component: Profile });
+export const Route = createFileRoute("/profile")({
+  head: () => ({ meta: [{ title: "Profile - Caper" }] }),
+  component: Profile,
+});
 
 function Profile() {
   const navigate = useNavigate();

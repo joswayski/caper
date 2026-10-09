@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { NotificationLevel } from "../spaces/client.ts";
 import { refreshNotificationSettings, setNotificationLevel, useNotificationSettings } from "../spaces/notifications.ts";
 import "./privacy.css";
@@ -15,14 +15,21 @@ export default function NotificationSettings() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
   const name = useId();
+  // Only the latest load (initial or a retry) may report an error; unmounting invalidates it.
+  const loadRequest = useRef(0);
+
+  const load = () => {
+    const request = ++loadRequest.current;
+    setError(undefined);
+    void refreshNotificationSettings().catch(() => {
+      if (request === loadRequest.current) setError("Your notification setting couldn’t load.");
+    });
+  };
 
   useEffect(() => {
-    let current = true;
-    void refreshNotificationSettings().catch(() => {
-      if (current) setError("Your notification setting couldn’t load. Reload to try again.");
-    });
+    load();
     return () => {
-      current = false;
+      loadRequest.current++;
     };
   }, []);
 
@@ -38,7 +45,7 @@ export default function NotificationSettings() {
   return (
     <section className="privacy-settings notification-settings" aria-labelledby={`${name}-title`}>
       <h3 id={`${name}-title`}>Notifications</h3>
-      {/* Not disabled while saving: that would drop keyboard focus mid-choice; choose() ignores it. */}
+      {/* Only while loading: disabling during a save would drop focus from the chosen radio. */}
       <fieldset disabled={!settings.loaded} aria-busy={saving}>
         <legend>Notify me about</legend>
         {choices.map((choice) => (
@@ -59,6 +66,11 @@ export default function NotificationSettings() {
       {error && (
         <p className="privacy-error" role="alert">
           {error}
+          {!settings.loaded && (
+            <button type="button" onClick={load}>
+              Try again
+            </button>
+          )}
         </p>
       )}
     </section>

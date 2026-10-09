@@ -18,6 +18,10 @@ test("colon autocomplete respects boundaries, selections and complete tokens", (
   assert.equal(emojiToken(":tom:", 4), undefined);
   assert.equal(emojiToken(":tom", 0, 4), undefined);
   assert.deepEqual(emojiToken("ok :tom suffix", 7), { start: 3, end: 7, query: "tom" });
+  for (const text of [":D", "ok :P", "hi (:3", ":o"]) {
+    assert.equal(emojiToken(text, text.length), undefined, text);
+  }
+  assert.deepEqual(emojiToken(":sm", 3), { start: 0, end: 3, query: "sm" });
 });
 
 test("catalog search matches names, aliases and stable ranked results", () => {
@@ -80,7 +84,7 @@ test("insertion preserves Unicode prefix/suffix and enforces scalar boundary", (
     value: "👩‍💻 hi 🚀 suffix 🚀",
     caret: "👩‍💻 hi 🚀".length,
   });
-  const nearLimit = "😀".repeat(3998) + " :x";
+  const nearLimit = "😀".repeat(3998) + " :xy";
   assert.ok(insertEmoji(nearLimit, emojiToken(nearLimit, nearLimit.length)!, "🚀"));
   assert.equal(insertEmoji(nearLimit, emojiToken(nearLimit, nearLimit.length)!, "👩‍💻"), undefined);
 });

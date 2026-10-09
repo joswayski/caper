@@ -6,7 +6,7 @@ import { levelLabels, muteLabel, mutePresets, muteUntil, refreshNotificationSett
 type Submenu = "level" | "mute";
 
 // Like the menu's other actions: close it and return focus to its button.
-export function closeMenu(event: MouseEvent<HTMLElement>) {
+function closeMenu(event: MouseEvent<HTMLElement>) {
   const menu = event.currentTarget.closest("details");
   if (!menu) return;
   menu.open = false;
@@ -119,7 +119,8 @@ export function LevelNotificationItems({
         <Bell aria-hidden="true" />
         <span className="notification-item">
           Notifications
-          <small>{name(level)}</small>
+          {/* Until settings load, `level` and `inherited` are guesses. */}
+          <small>{loaded ? name(level) : "Loading…"}</small>
         </span>
         <ChevronRight className="notification-chevron" aria-hidden="true" />
       </button>

@@ -22,6 +22,7 @@ import {
   PhoneOff,
   Settings,
   Users,
+  Volume2,
   VolumeX,
   X,
 } from "lucide-react";
@@ -253,17 +254,19 @@ function AudioMenu({
         }
       }}
     >
-      <button
-        type="button"
-        className="call-settings-trigger"
-        title={label}
-        aria-label={label}
-        aria-expanded={open}
-        aria-controls={open ? panelId : undefined}
-        onClick={() => onOpenChange(!open)}
-      >
-        {settings ? <Settings aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}
-      </button>
+      {/* The same styled tooltip as Mute/Deafen beside it, not the slower native title. */}
+      <Tooltip content={open ? undefined : label}>
+        <button
+          type="button"
+          className="call-settings-trigger"
+          aria-label={label}
+          aria-expanded={open}
+          aria-controls={open ? panelId : undefined}
+          onClick={() => onOpenChange(!open)}
+        >
+          {settings ? <Settings aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}
+        </button>
+      </Tooltip>
       {open && (
         <div
           ref={panelRef}
@@ -376,12 +379,15 @@ function AudioOutput({
       <audio ref={ref} autoPlay muted={muted} />
       {blocked && (
         <button
+          type="button"
+          className="voice-button audio-unblock"
           onClick={() =>
             void Promise.all([contextRef.current?.resume(), ref.current?.play()])
               .then(() => setBlocked(false))
               .catch(() => setBlocked(true))
           }
         >
+          <Volume2 aria-hidden="true" />
           Play {name} audio
         </button>
       )}

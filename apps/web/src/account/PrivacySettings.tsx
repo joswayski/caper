@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import Avatar from "../components/Avatar";
 import { refreshBlocks, unblock, useBlocks } from "../spaces/blocks.ts";
 import { getDirectPrivacy, setDirectPrivacy, type DirectPrivacy } from "../spaces/client.ts";
@@ -15,30 +15,44 @@ export default function PrivacySettings() {
   const [privacy, setPrivacy] = useState<DirectPrivacy>();
   const [saving, setSaving] = useState(false);
   const [privacyError, setPrivacyError] = useState<string>();
+  const [blocksLoaded, setBlocksLoaded] = useState(false);
   const [blocksError, setBlocksError] = useState<string>();
   const [unblocking, setUnblocking] = useState<string>();
-  const [blocksLoaded, setBlocksLoaded] = useState(false);
   const blocks = useBlocks();
   const name = useId();
+  // Only the latest load (initial or a retry) may update state; unmounting invalidates both.
+  const privacyRequest = useRef(0);
+  const blocksRequest = useRef(0);
 
-  useEffect(() => {
-    let current = true;
+  const loadPrivacy = () => {
+    const request = ++privacyRequest.current;
+    setPrivacyError(undefined);
     void getDirectPrivacy()
       .then((result) => {
-        if (current) setPrivacy(result.directMessages);
+        if (request === privacyRequest.current) setPrivacy(result.directMessages);
       })
       .catch(() => {
-        if (current) setPrivacyError("Your DM setting couldn’t load. Reload to try again.");
+        if (request === privacyRequest.current) setPrivacyError("Your DM setting couldn’t load.");
       });
+  };
+  const loadBlocks = () => {
+    const request = ++blocksRequest.current;
+    setBlocksError(undefined);
     void refreshBlocks()
       .then(() => {
-        if (current) setBlocksLoaded(true);
+        if (request === blocksRequest.current) setBlocksLoaded(true);
       })
       .catch(() => {
-        if (current) setBlocksError("Blocked accounts couldn’t load. Reload to try again.");
+        if (request === blocksRequest.current) setBlocksError("Blocked accounts couldn’t load.");
       });
+  };
+
+  useEffect(() => {
+    loadPrivacy();
+    loadBlocks();
     return () => {
-      current = false;
+      privacyRequest.current++;
+      blocksRequest.current++;
     };
   }, []);
 
@@ -59,7 +73,7 @@ export default function PrivacySettings() {
 
   return (
     <div className="privacy-settings">
-      {/* Not disabled while saving: that would drop keyboard focus mid-choice; choose() ignores it. */}
+      {/* Only while loading: disabling during a save would drop focus from the chosen radio. */}
       <fieldset disabled={!privacy} aria-busy={saving}>
         <legend>Who can start a DM with you</legend>
         {choices.map((choice) => (
@@ -81,6 +95,11 @@ export default function PrivacySettings() {
       {privacyError && (
         <p className="privacy-error" role="alert">
           {privacyError}
+          {!privacy && (
+            <button type="button" onClick={loadPrivacy}>
+              Try again
+            </button>
+          )}
         </p>
       )}
       <section aria-labelledby={`${name}-blocked`}>
@@ -113,12 +132,17 @@ export default function PrivacySettings() {
               </li>
             ))}
           </ul>
-        ) : blocksLoaded ? (
-          <p>You haven’t blocked anyone.</p>
-        ) : null}
+        ) : (
+          blocksLoaded && <p>You haven’t blocked anyone.</p>
+        )}
         {blocksError && (
           <p className="privacy-error" role="alert">
             {blocksError}
+            {!blocksLoaded && (
+              <button type="button" onClick={loadBlocks}>
+                Try again
+              </button>
+            )}
           </p>
         )}
       </section>

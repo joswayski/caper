@@ -16,7 +16,10 @@ internal fun emojiToken(value: TextFieldValue): EmojiToken? {
     while (colon >= 0 && text[colon].isEmojiQueryChar()) colon--
     if (colon < 0 || text[colon] != ':') return null
     if (colon > 0 && !text[colon - 1].isWhitespace() && text[colon - 1] !in "([{") return null
-    return EmojiToken(colon, caret, text.substring(colon + 1, caret))
+    val query = text.substring(colon + 1, caret)
+    // One character is an emoticon (":D", ":P", ":3"), not a search; Send sends it as typed.
+    if (query.length == 1) return null
+    return EmojiToken(colon, caret, query)
 }
 
 private fun Char.isEmojiQueryChar(): Boolean =

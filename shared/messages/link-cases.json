@@ -1,0 +1,522 @@
+{
+  "description": "Shared link detection cases. Every client's tests must produce exactly these segments. See apps/web/src/chat/links.ts and docs/media.md#message-links.",
+  "cases": [
+    {
+      "note": "no link",
+      "text": "plain text",
+      "segments": [
+        {
+          "text": "plain text"
+        }
+      ]
+    },
+    {
+      "note": "whole message",
+      "text": "https://example.com",
+      "segments": [
+        {
+          "text": "https://example.com",
+          "href": "https://example.com"
+        }
+      ]
+    },
+    {
+      "note": "path, query and fragment",
+      "text": "see https://example.com/a/b?c=d#e now",
+      "segments": [
+        {
+          "text": "see "
+        },
+        {
+          "text": "https://example.com/a/b?c=d#e",
+          "href": "https://example.com/a/b?c=d#e"
+        },
+        {
+          "text": " now"
+        }
+      ]
+    },
+    {
+      "note": "scheme is case-insensitive and lowercased in href only",
+      "text": "HTTPS://Example.com/Path",
+      "segments": [
+        {
+          "text": "HTTPS://Example.com/Path",
+          "href": "https://Example.com/Path"
+        }
+      ]
+    },
+    {
+      "note": "http",
+      "text": "http://example.com",
+      "segments": [
+        {
+          "text": "http://example.com",
+          "href": "http://example.com"
+        }
+      ]
+    },
+    {
+      "note": "www gets https",
+      "text": "www.example.com",
+      "segments": [
+        {
+          "text": "www.example.com",
+          "href": "https://www.example.com"
+        }
+      ]
+    },
+    {
+      "note": "trailing period",
+      "text": "visit www.example.com.",
+      "segments": [
+        {
+          "text": "visit "
+        },
+        {
+          "text": "www.example.com",
+          "href": "https://www.example.com"
+        },
+        {
+          "text": "."
+        }
+      ]
+    },
+    {
+      "note": "trailing question mark",
+      "text": "is it https://example.com?",
+      "segments": [
+        {
+          "text": "is it "
+        },
+        {
+          "text": "https://example.com",
+          "href": "https://example.com"
+        },
+        {
+          "text": "?"
+        }
+      ]
+    },
+    {
+      "note": "repeated trailing punctuation",
+      "text": "wow https://example.com!!!",
+      "segments": [
+        {
+          "text": "wow "
+        },
+        {
+          "text": "https://example.com",
+          "href": "https://example.com"
+        },
+        {
+          "text": "!!!"
+        }
+      ]
+    },
+    {
+      "note": "trailing comma",
+      "text": "a https://example.com, b",
+      "segments": [
+        {
+          "text": "a "
+        },
+        {
+          "text": "https://example.com",
+          "href": "https://example.com"
+        },
+        {
+          "text": ", b"
+        }
+      ]
+    },
+    {
+      "note": "unbalanced closing paren",
+      "text": "(see https://example.com)",
+      "segments": [
+        {
+          "text": "(see "
+        },
+        {
+          "text": "https://example.com",
+          "href": "https://example.com"
+        },
+        {
+          "text": ")"
+        }
+      ]
+    },
+    {
+      "note": "balanced parens stay",
+      "text": "https://en.wikipedia.org/wiki/Caper_(plant)",
+      "segments": [
+        {
+          "text": "https://en.wikipedia.org/wiki/Caper_(plant)",
+          "href": "https://en.wikipedia.org/wiki/Caper_(plant)"
+        }
+      ]
+    },
+    {
+      "note": "one extra paren dropped",
+      "text": "https://en.wikipedia.org/wiki/Caper_(plant))",
+      "segments": [
+        {
+          "text": "https://en.wikipedia.org/wiki/Caper_(plant)",
+          "href": "https://en.wikipedia.org/wiki/Caper_(plant)"
+        },
+        {
+          "text": ")"
+        }
+      ]
+    },
+    {
+      "note": "unbalanced closing bracket",
+      "text": "[https://example.com]",
+      "segments": [
+        {
+          "text": "["
+        },
+        {
+          "text": "https://example.com",
+          "href": "https://example.com"
+        },
+        {
+          "text": "]"
+        }
+      ]
+    },
+    {
+      "note": "quotes",
+      "text": "\"https://example.com\"",
+      "segments": [
+        {
+          "text": "\""
+        },
+        {
+          "text": "https://example.com",
+          "href": "https://example.com"
+        },
+        {
+          "text": "\""
+        }
+      ]
+    },
+    {
+      "note": "single quotes",
+      "text": "'https://example.com'",
+      "segments": [
+        {
+          "text": "'"
+        },
+        {
+          "text": "https://example.com",
+          "href": "https://example.com"
+        },
+        {
+          "text": "'"
+        }
+      ]
+    },
+    {
+      "note": "angle brackets",
+      "text": "<https://example.com>",
+      "segments": [
+        {
+          "text": "<"
+        },
+        {
+          "text": "https://example.com",
+          "href": "https://example.com"
+        },
+        {
+          "text": ">"
+        }
+      ]
+    },
+    {
+      "note": "emphasis markers",
+      "text": "*https://example.com*",
+      "segments": [
+        {
+          "text": "*"
+        },
+        {
+          "text": "https://example.com",
+          "href": "https://example.com"
+        },
+        {
+          "text": "*"
+        }
+      ]
+    },
+    {
+      "note": "trailing entity",
+      "text": "https://example.com/a&amp;",
+      "segments": [
+        {
+          "text": "https://example.com/a",
+          "href": "https://example.com/a"
+        },
+        {
+          "text": "&amp;"
+        }
+      ]
+    },
+    {
+      "note": "trailing semicolon",
+      "text": "https://example.com/?a=1;",
+      "segments": [
+        {
+          "text": "https://example.com/?a=1",
+          "href": "https://example.com/?a=1"
+        },
+        {
+          "text": ";"
+        }
+      ]
+    },
+    {
+      "note": "port",
+      "text": "https://example.com:8080/x",
+      "segments": [
+        {
+          "text": "https://example.com:8080/x",
+          "href": "https://example.com:8080/x"
+        }
+      ]
+    },
+    {
+      "note": "IP address",
+      "text": "https://192.168.0.1/admin",
+      "segments": [
+        {
+          "text": "https://192.168.0.1/admin",
+          "href": "https://192.168.0.1/admin"
+        }
+      ]
+    },
+    {
+      "note": "not at a word boundary",
+      "text": "xhttps://example.com",
+      "segments": [
+        {
+          "text": "xhttps://example.com"
+        }
+      ]
+    },
+    {
+      "note": "www after @ is not a link",
+      "text": "email@www.example.com",
+      "segments": [
+        {
+          "text": "email@www.example.com"
+        }
+      ]
+    },
+    {
+      "note": "needs a dot in the host",
+      "text": "https://localhost:3000",
+      "segments": [
+        {
+          "text": "https://localhost:3000"
+        }
+      ]
+    },
+    {
+      "note": "www needs a name and a TLD",
+      "text": "www.example",
+      "segments": [
+        {
+          "text": "www.example"
+        }
+      ]
+    },
+    {
+      "note": "bare www",
+      "text": "www.",
+      "segments": [
+        {
+          "text": "www."
+        }
+      ]
+    },
+    {
+      "note": "bare scheme",
+      "text": "https://",
+      "segments": [
+        {
+          "text": "https://"
+        }
+      ]
+    },
+    {
+      "note": "underscore in the last two labels",
+      "text": "https://ex_ample.com",
+      "segments": [
+        {
+          "text": "https://ex_ample.com"
+        }
+      ]
+    },
+    {
+      "note": "underscore allowed earlier",
+      "text": "https://sub_domain.example.com",
+      "segments": [
+        {
+          "text": "https://sub_domain.example.com",
+          "href": "https://sub_domain.example.com"
+        }
+      ]
+    },
+    {
+      "note": "empty label",
+      "text": "https://a..b.com",
+      "segments": [
+        {
+          "text": "https://a..b.com"
+        }
+      ]
+    },
+    {
+      "note": "only http, https and www",
+      "text": "ftp://example.com",
+      "segments": [
+        {
+          "text": "ftp://example.com"
+        }
+      ]
+    },
+    {
+      "note": "never javascript",
+      "text": "javascript:alert(1)",
+      "segments": [
+        {
+          "text": "javascript:alert(1)"
+        }
+      ]
+    },
+    {
+      "note": "two links",
+      "text": "two https://a.com and www.b.org links",
+      "segments": [
+        {
+          "text": "two "
+        },
+        {
+          "text": "https://a.com",
+          "href": "https://a.com"
+        },
+        {
+          "text": " and "
+        },
+        {
+          "text": "www.b.org",
+          "href": "https://www.b.org"
+        },
+        {
+          "text": " links"
+        }
+      ]
+    },
+    {
+      "note": "newline separates links",
+      "text": "https://a.com\nhttps://b.com",
+      "segments": [
+        {
+          "text": "https://a.com",
+          "href": "https://a.com"
+        },
+        {
+          "text": "\n"
+        },
+        {
+          "text": "https://b.com",
+          "href": "https://b.com"
+        }
+      ]
+    },
+    {
+      "note": "non-ASCII path, ends at space",
+      "text": "https://example.com/Straße café",
+      "segments": [
+        {
+          "text": "https://example.com/Straße",
+          "href": "https://example.com/Straße"
+        },
+        {
+          "text": " café"
+        }
+      ]
+    },
+    {
+      "note": "emoji around",
+      "text": "😀 https://example.com 😀",
+      "segments": [
+        {
+          "text": "😀 "
+        },
+        {
+          "text": "https://example.com",
+          "href": "https://example.com"
+        },
+        {
+          "text": " 😀"
+        }
+      ]
+    },
+    {
+      "note": "emoji inside path",
+      "text": "https://example.com/😀/x",
+      "segments": [
+        {
+          "text": "https://example.com/😀/x",
+          "href": "https://example.com/😀/x"
+        }
+      ]
+    },
+    {
+      "note": "non-ASCII host is not linked",
+      "text": "https://münchen.de",
+      "segments": [
+        {
+          "text": "https://münchen.de"
+        }
+      ]
+    },
+    {
+      "note": "no-break space ends the link",
+      "text": "https://example.com next",
+      "segments": [
+        {
+          "text": "https://example.com",
+          "href": "https://example.com"
+        },
+        {
+          "text": " next"
+        }
+      ]
+    },
+    {
+      "note": "trailing underscore dropped",
+      "text": "https://example.com/a_b_",
+      "segments": [
+        {
+          "text": "https://example.com/a_b",
+          "href": "https://example.com/a_b"
+        },
+        {
+          "text": "_"
+        }
+      ]
+    },
+    {
+      "note": "ellipsis is not an opener",
+      "text": "…https://example.com",
+      "segments": [
+        {
+          "text": "…https://example.com"
+        }
+      ]
+    }
+  ]
+}

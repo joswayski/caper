@@ -157,7 +157,7 @@ export default function MessageActions({
         }
         ref={refs.setFloating}
         style={target.drawer ? undefined : floatingStyles}
-        aria-label={mode === "actions" ? "Message actions" : "Choose a reaction"}
+        aria-label={mode === "actions" ? "Message actions" : "Add a reaction"}
         {...getFloatingProps()}
       >
         {target.drawer && <div className="chat-drawer-handle" aria-hidden="true" />}

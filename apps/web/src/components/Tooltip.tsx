@@ -11,12 +11,13 @@ import {
 } from "react";
 import "./tooltip.css";
 
-/** Hover intent before the first tooltip; moving between triggers then shows the next at once. */
-const OPEN_DELAY = 350;
-const WARM_WINDOW = 400;
-/** One tooltip at a time: showing one hides the previous immediately. */
-let visible: { hide: () => void } | undefined;
-let lastHidden = 0;
+// Pointers wait briefly before a tooltip appears, so sweeping across a row of
+// controls doesn't flash each label. Once one is showing (or just was), the
+// next opens at once. Only one tooltip is visible at a time.
+const SHOW_DELAY_MS = 300;
+const WARM_MS = 300;
+let closeOpenTooltip: (() => void) | undefined;
+let lastHiddenAt = -Infinity;
 
 type TriggerProps = {
   "aria-describedby"?: string;
@@ -50,19 +51,21 @@ export default function Tooltip({
   const touchPointerRef = useRef(false);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const showTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const self = useRef<{ hide: () => void }>({ hide: () => undefined });
+  // Stable identity for the module-level "currently open" slot.
+  const hideRef = useRef<() => void>(() => {});
+  const close = useRef(() => hideRef.current()).current;
 
   const hide = () => {
     clearTimeout(hideTimer.current);
     clearTimeout(showTimer.current);
+    if (closeOpenTooltip === close) closeOpenTooltip = undefined;
     const tooltip = tooltipRef.current;
     if (tooltip?.matches(":popover-open")) {
       tooltip.hidePopover();
-      lastHidden = performance.now();
+      lastHiddenAt = performance.now();
     }
-    if (visible === self.current) visible = undefined;
   };
-  self.current.hide = hide;
+  hideRef.current = hide;
   const position = () => {
     const tooltip = tooltipRef.current;
     const anchor = anchorRef.current;
@@ -100,20 +103,20 @@ export default function Tooltip({
     anchorRef.current = anchor;
     const tooltip = tooltipRef.current;
     if (!tooltip) return;
-    if (visible && visible !== self.current) visible.hide();
-    visible = self.current;
+    if (closeOpenTooltip !== close) closeOpenTooltip?.();
+    closeOpenTooltip = close;
     if (!tooltip.matches(":popover-open")) tooltip.showPopover();
     position();
   };
-  /** Pointer hover waits briefly, unless a tooltip was just showing (warm). */
-  const showAfterHover = (anchor: HTMLElement) => {
+  const showAfterDelay = (anchor: HTMLElement) => {
     clearTimeout(hideTimer.current);
     clearTimeout(showTimer.current);
-    const warm = visible !== undefined || performance.now() - lastHidden < WARM_WINDOW;
-    if (warm) return show(anchor);
-    showTimer.current = setTimeout(() => {
-      if (hoveredRef.current) show(anchor);
-    }, OPEN_DELAY);
+    const warm = !!closeOpenTooltip || performance.now() - lastHiddenAt < WARM_MS;
+    if (warm || tooltipRef.current?.matches(":popover-open")) show(anchor);
+    else
+      showTimer.current = setTimeout(() => {
+        if (hoveredRef.current) show(anchor);
+      }, SHOW_DELAY_MS);
   };
 
   useEffect(() => {
@@ -141,7 +144,7 @@ export default function Tooltip({
     return () => {
       clearTimeout(hideTimer.current);
       clearTimeout(showTimer.current);
-      if (visible === self.current) visible = undefined;
+      if (closeOpenTooltip === close) closeOpenTooltip = undefined;
       window.removeEventListener("resize", onResize);
       window.visualViewport?.removeEventListener("resize", onResize);
       window.visualViewport?.removeEventListener("scroll", onScroll);
@@ -167,7 +170,7 @@ export default function Tooltip({
       children.props.onMouseEnter?.(event);
       if (matchMedia("(hover: none)").matches) return;
       hoveredRef.current = true;
-      showAfterHover(event.currentTarget);
+      showAfterDelay(event.currentTarget);
     },
     onMouseLeave: (event) => {
       children.props.onMouseLeave?.(event);
@@ -180,8 +183,7 @@ export default function Tooltip({
     },
     onFocus: (event) => {
       children.props.onFocus?.(event);
-      // Keyboard focus only: focus returned to a trigger after a mouse action
-      // (closing a menu or dialog) must not pop a tooltip under the pointer.
+      // Visible (keyboard) focus only: not touch, clicks, or focus a script restores after pointer use.
       if (touchPointerRef.current || !event.currentTarget.matches(":focus-visible")) return;
       focusedRef.current = true;
       show(event.currentTarget);

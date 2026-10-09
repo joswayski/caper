@@ -12,6 +12,9 @@ pub struct Editor {
     pub error: Option<String>,
     pub request: u64,
     pub focus: bool,
+    /// Place the caret after the draft's last character: the editor's fixed
+    /// id would otherwise restore the previous session's caret.
+    pub caret_end: bool,
 }
 
 pub struct History {
@@ -76,6 +79,7 @@ impl CaperApp {
             error: None,
             request: self.edit_request,
             focus: true,
+            caret_end: true,
         });
     }
 
@@ -188,6 +192,7 @@ impl CaperApp {
                     editor.draft = snapshot.content.text.clone();
                     editor.original = *snapshot.clone();
                     editor.focus = true;
+                    editor.caret_end = true;
                 } else {
                     self.message_editor = None;
                 }
@@ -256,10 +261,22 @@ impl CaperApp {
                     MUTED,
                     "Previous versions remain visible to people who can read this message.",
                 );
+                let text_id = egui::Id::new("edit-message-text");
+                if std::mem::take(&mut editor.caret_end) {
+                    // Continue editing where the message ends, as on web.
+                    let mut state =
+                        egui::TextEdit::load_state(ui.ctx(), text_id).unwrap_or_default();
+                    state
+                        .cursor
+                        .set_char_range(Some(egui::text::CCursorRange::one(
+                            egui::text::CCursor::new(editor.draft.chars().count()),
+                        )));
+                    state.store(ui.ctx(), text_id);
+                }
                 let input = ui.add_enabled(
                     !editor.busy,
                     egui::TextEdit::multiline(&mut editor.draft)
-                        .id(egui::Id::new("edit-message-text"))
+                        .id(text_id)
                         .desired_width(f32::INFINITY)
                         .desired_rows(7),
                 );

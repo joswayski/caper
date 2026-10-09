@@ -88,8 +88,12 @@
   align-items: center;
   justify-content: space-between;
 }
-.site-header > .wordmark,
-.call-header > .wordmark {
+/* The signed-in header shares the room's width, so the wordmark lines up with
+   the room's left edge instead of floating 40px inside it. */
+.call-header {
+  width: min(1400px, calc(100% - 56px));
+}
+.site-header > .wordmark {
   margin-left: clamp(0px, 2vw, 32px);
 }
 .site-header-actions {
@@ -161,9 +165,11 @@
   top: 32.971014%;
   width: 12.667946%;
   aspect-ratio: 1;
+  /* Fades in once the client picks the day's character. */
   transition: opacity 160ms ease-out;
 }
 .wordmark .wordmark-character[data-pending] {
+  visibility: hidden;
   opacity: 0;
 }
 @media (prefers-reduced-motion: reduce) {
@@ -362,6 +368,15 @@
 .experimental-note a {
   color: var(--text);
   text-underline-offset: 4px;
+  transition: color 0.2s ease;
+}
+.made-by a:hover {
+  color: var(--terracotta-bright);
+}
+:is(.made-by a, .latest-changes li a, .not-found a):focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 4px;
+  border-radius: 2px;
 }
 .made-by a:hover,
 .experimental-note a:hover,
@@ -390,6 +405,7 @@
   align-items: center;
   gap: 5px;
   min-height: 28px;
+  margin-block: -4px;
   vertical-align: middle;
   padding: 0 4px;
   border: 0;
@@ -403,8 +419,10 @@
   width: 14px;
   height: 14px;
 }
-.contact-action:hover {
-  color: var(--terracotta-bright);
+@media (hover: hover) {
+  .contact-action:hover {
+    color: var(--terracotta-bright);
+  }
 }
 .contact-action:focus-visible {
   outline: 2px solid var(--terracotta);
@@ -429,17 +447,32 @@
   color: var(--terracotta);
   font-weight: 700;
 }
+/* Match the other standalone pages' bold, tightly tracked headings. */
 .not-found h1 {
+  margin: 0 0 28px;
   font-size: clamp(3rem, 8vw, 6rem);
+  font-weight: 700;
+  letter-spacing: -0.055em;
+  line-height: 1.08;
 }
 .not-found a {
+  justify-self: center;
   color: var(--text);
+  text-decoration: underline;
   text-underline-offset: 5px;
+  transition: color 0.2s ease;
 }
+.not-found a:hover {
+  color: var(--terracotta-bright);
+}
+/* Full shell width with the list on the hero copy's left edge, instead of a
+   centred 680px column that lined up with nothing above it. */
 .latest-changes {
-  max-width: 680px;
-  padding: 0 0 96px;
+  padding: 0 0 96px clamp(0px, 2vw, 32px);
   border-top: 1px solid var(--border);
+}
+.latest-changes > * {
+  max-width: 680px;
 }
 .latest-changes h2 {
   margin: 40px 0 0;
@@ -501,9 +534,11 @@
 /* Below the expand breakpoint (LiveWindow EXPAND_MIN_WIDTH) the window stacks
    under the copy and opens as a full-screen sheet. */
 @media (max-width: 1023px) {
-  .site-header > .wordmark,
-  .call-header > .wordmark {
+  .site-header > .wordmark {
     margin-left: 0;
+  }
+  .latest-changes {
+    padding-left: 0;
   }
   /* The window follows the tagline so it is on screen early; the rest of the
      copy continues below it. */
@@ -544,6 +579,9 @@
 }
 
 @media (max-width: 760px) {
+  .call-header {
+    width: calc(100% - 24px);
+  }
   /* The stacked navigation still needs room for a complete forwarded message,
      including at 320px with all six voice participants present. */
   .hero .live-stage {
@@ -556,8 +594,7 @@
     overflow: visible;
   }
   .shell,
-  .site-header,
-  .call-header {
+  .site-header {
     width: min(100% - 36px, 1200px);
   }
   .site-header,

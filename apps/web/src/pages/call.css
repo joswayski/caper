@@ -129,10 +129,15 @@
   background: var(--surface-composer);
   cursor: pointer;
 }
-.voice-hangup:hover,
 .voice-hangup:focus-visible {
   color: #ff7182;
   background: rgb(212 67 85 / 0.18);
+}
+@media (hover: hover) {
+  .voice-hangup:hover {
+    color: #ff7182;
+    background: rgb(212 67 85 / 0.18);
+  }
 }
 .voice-hangup svg {
   width: 17px;
@@ -162,9 +167,11 @@
   text-align: left;
   cursor: pointer;
 }
-.account-profile:hover {
-  --presence-ring: var(--surface-composer);
-  background: var(--surface-composer);
+@media (hover: hover) {
+  .account-profile:hover {
+    --presence-ring: var(--surface-composer);
+    background: var(--surface-composer);
+  }
 }
 .account-avatar {
   position: relative;
@@ -175,7 +182,7 @@
   place-items: center;
   border-radius: var(--radius-avatar);
   font-size: 0.8rem;
-  font-weight: 800;
+  font-weight: 700;
 }
 .account-name {
   min-width: 0;
@@ -188,7 +195,7 @@
 }
 .call-account .voice-icon-button {
   width: 28px;
-  height: 30px;
+  height: 32px;
   border: 0;
   border-radius: 4px 0 0 4px;
   color: var(--text-muted);
@@ -200,7 +207,7 @@
 }
 .call-settings-trigger {
   width: 28px;
-  height: 30px;
+  height: 32px;
   display: grid;
   place-items: center;
   padding: 0;
@@ -210,9 +217,15 @@
   background: transparent;
   cursor: pointer;
 }
-.call-settings-trigger:is(:hover, :focus-visible, [aria-expanded="true"]) {
+.call-settings-trigger:is(:focus-visible, [aria-expanded="true"]) {
   background: var(--surface-composer);
   color: #fff;
+}
+@media (hover: hover) {
+  .call-settings-trigger:hover {
+    background: var(--surface-composer);
+    color: #fff;
+  }
 }
 .call-settings-trigger svg {
   width: 19px;
@@ -228,7 +241,7 @@
   gap: 12px;
   padding: 14px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   color: var(--text);
   background: var(--surface);
   box-shadow: 0 12px 30px rgb(0 0 0 / 0.35);
@@ -243,9 +256,6 @@
 }
 .device-menu .call-settings-trigger[aria-expanded="true"] svg {
   transform: rotate(180deg);
-}
-.device-menu .call-settings-panel {
-  border-radius: 8px;
 }
 .call-settings-panel > div {
   display: grid;
@@ -272,8 +282,10 @@
   text-decoration: none;
   cursor: pointer;
 }
-.call-settings-panel :is(button, a):hover {
-  background: var(--surface-raised);
+@media (hover: hover) {
+  .call-settings-panel :is(button:not(:disabled), a):hover {
+    background: var(--surface-raised);
+  }
 }
 .call-settings-panel button:disabled {
   opacity: 0.5;
@@ -287,7 +299,7 @@
   margin: 0 0 8px;
   color: var(--text-muted);
   font-size: 0.7rem;
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
@@ -391,7 +403,7 @@
   color: color-mix(in srgb, var(--terracotta-bright) 65%, var(--text));
   background: rgb(182 77 50 / 0.14);
   font-size: 0.78rem;
-  font-weight: 750;
+  font-weight: 700;
   white-space: nowrap;
   cursor: pointer;
 }
@@ -564,6 +576,12 @@
 .stage > .noise-status {
   margin: 12px 18px;
 }
+/* Shown only when the browser blocks autoplay; previously a bare UA button
+   stretched across the stage above the conversation. */
+.stage > .audio-unblock {
+  align-self: center;
+  margin: 12px 18px 0;
+}
 .sr-only {
   position: absolute;
   width: 1px;
@@ -641,7 +659,7 @@
   border-radius: 8px;
   color: #fff;
   background: var(--terracotta);
-  font-weight: 800;
+  font-weight: 700;
   cursor: pointer;
 }
 .primary-button:disabled {
@@ -691,6 +709,23 @@
 .audio-dialog-heading h2 {
   margin: 0;
   font-size: 1rem;
+  font-weight: 700;
+}
+/* Profile and audio dialogs close like the space dialogs: borderless, neutral. */
+.audio-dialog-heading > .voice-icon-button {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  color: var(--text-muted);
+  background: transparent;
+}
+.audio-dialog-heading > .voice-icon-button:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--border);
+}
+.audio-dialog-heading > .voice-icon-button svg {
+  width: 18px;
+  height: 18px;
 }
 .audio-test-devices {
   display: grid;
@@ -724,6 +759,7 @@
 .mic-test-heading h3 {
   margin: 0;
   font-size: 1rem;
+  font-weight: 700;
 }
 .mic-test-copy {
   max-width: 580px;
@@ -748,7 +784,7 @@
 }
 .voice-processing-heading {
   font-size: 0.82rem;
-  font-weight: 800;
+  font-weight: 700;
 }
 .voice-processing-control output {
   color: var(--terracotta-bright);
@@ -765,7 +801,7 @@
   gap: 8px;
   margin: 0;
   font-variant-numeric: tabular-nums;
-  font-weight: 800;
+  font-weight: 700;
 }
 .recording-clock i {
   width: 10px;
@@ -798,7 +834,7 @@
   gap: 12px;
   color: var(--text-muted);
   font-size: 0.7rem;
-  font-weight: 750;
+  font-weight: 700;
 }
 .mic-meter-label small {
   font-size: 0.65rem;
@@ -819,7 +855,6 @@
   min-width: 0;
   flex: 0 1 3px;
   background: radial-gradient(circle, var(--border) 1.4px, transparent 1.6px) center / 3px 4px;
-  transition: height 80ms linear;
 }
 .mic-meter i.lit {
   background-image: radial-gradient(circle, #91ab78 1.4px, transparent 1.6px);
@@ -831,12 +866,16 @@
   border-radius: 8px;
   color: #fff;
   background: var(--terracotta);
-  font-weight: 800;
+  font-weight: 700;
   cursor: pointer;
 }
 .mic-test-button:disabled {
   opacity: 0.55;
   cursor: wait;
+}
+.mic-test-button:hover:not(:disabled) {
+  border-color: var(--terracotta-bright);
+  background: var(--terracotta-bright);
 }
 .mic-comparison {
   display: grid;
@@ -910,7 +949,7 @@
   color: var(--text-muted);
   background: transparent;
   font-size: 0.6rem;
-  font-weight: 800;
+  font-weight: 700;
   cursor: help;
 }
 .call-diagnostics {
@@ -952,18 +991,25 @@
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  border-radius: 5px;
+  border-radius: 4px;
 }
 .call-account .voice-icon-button.active {
   color: var(--terracotta-bright);
 }
-/* Same hover as the mic/headphone half, so the split button reads as one control. */
-.voice-action-group .call-settings-trigger:is(:hover, :focus-visible, [aria-expanded="true"]) {
+/* The chevron half matches its icon half's hover. */
+.voice-action-group .call-settings-trigger:is(:focus-visible, [aria-expanded="true"]) {
   background: var(--surface-composer);
   color: #fff;
 }
+@media (hover: hover) {
+  .voice-action-group .call-settings-trigger:hover {
+    background: var(--surface-composer);
+    color: #fff;
+  }
+}
 .call-account .voice-icon-button[aria-disabled="true"] {
   opacity: 0.5;
+  cursor: default;
 }
 .voice-icon-button {
   width: 40px;
@@ -983,16 +1029,30 @@
   height: 19px;
   stroke-width: 2.25;
 }
-.voice-icon-button:hover:not(:disabled),
 .voice-icon-button.active {
   border-color: #805143;
   color: #fff;
   background: #39231e;
 }
-.call-account .voice-icon-button:is(:hover, :focus-visible) {
+/* Mute and deafen stay dimmed while a mic test makes them unavailable. */
+.call-account .voice-icon-button:not([aria-disabled="true"]):focus-visible {
   color: #fff;
   background: var(--surface-composer);
   opacity: 1;
+}
+/* A tap leaves :hover applied on touch screens, which made Mute/Deafen look
+   pressed after toggling. Hover fills only apply with a real pointer. */
+@media (hover: hover) {
+  .voice-icon-button:hover:not(:disabled, [aria-disabled="true"]) {
+    border-color: #805143;
+    color: #fff;
+    background: #39231e;
+  }
+  .call-account .voice-icon-button:not([aria-disabled="true"]):hover {
+    color: #fff;
+    background: var(--surface-composer);
+    opacity: 1;
+  }
 }
 .call-account .voice-action-group.active {
   background: rgb(212 67 85 / 0.14);
@@ -1001,10 +1061,20 @@
   color: #ed5265;
   background: transparent;
 }
-.call-account .voice-action-group.active :is(.voice-icon-button, .call-settings-trigger):is(:hover, :focus-visible),
+.call-account
+  .voice-action-group.active
+  :is(.voice-icon-button:not([aria-disabled="true"]), .call-settings-trigger):focus-visible,
 .call-account .voice-action-group.active .call-settings-trigger[aria-expanded="true"] {
   color: #ff7182;
   background: rgb(212 67 85 / 0.18);
+}
+@media (hover: hover) {
+  .call-account
+    .voice-action-group.active
+    :is(.voice-icon-button:not([aria-disabled="true"]), .call-settings-trigger):hover {
+    color: #ff7182;
+    background: rgb(212 67 85 / 0.18);
+  }
 }
 .device-select {
   display: grid;
@@ -1048,9 +1118,13 @@
   font-size: 0.8rem;
   cursor: pointer;
 }
-.device-options label:hover,
-.device-options label:has(:checked) {
+.device-options label:has(input[type="radio"]:checked) {
   background: var(--surface-raised);
+}
+@media (hover: hover) {
+  .device-options label:hover {
+    background: var(--surface-raised);
+  }
 }
 .device-options input {
   flex: 0 0 auto;
@@ -1070,7 +1144,8 @@
   cursor: pointer;
   transition:
     background-color 150ms ease,
-    border-color 150ms ease;
+    border-color 150ms ease,
+    box-shadow 150ms ease;
 }
 .device-options input[role="switch"]::after {
   position: absolute;
@@ -1089,6 +1164,23 @@
 }
 .device-options input[role="switch"]:checked::after {
   transform: translateX(16px);
+}
+/* Same hover as the channel privacy switch in spaces.css. */
+.device-options label:hover input[role="switch"]:not(:disabled) {
+  border-color: var(--text-muted);
+  background: #484d51;
+  box-shadow: 0 0 0 3px rgb(255 255 255 / 0.06);
+}
+.device-options label:hover input[role="switch"]:checked:not(:disabled) {
+  border-color: var(--terracotta-bright);
+  background: var(--terracotta-bright);
+  box-shadow: 0 0 0 3px rgb(182 77 50 / 0.18);
+}
+@media (prefers-reduced-motion: reduce) {
+  .device-options input[role="switch"],
+  .device-options input[role="switch"]::after {
+    transition: none;
+  }
 }
 .device-options span {
   overflow-wrap: anywhere;
@@ -1216,6 +1308,12 @@
   .call-diagnostics dl {
     grid-template-columns: 1fr;
   }
+  /* 44px touch targets on phones. */
+  .voice-error button,
+  .audio-dialog-heading > .voice-icon-button {
+    width: 44px;
+    height: 44px;
+  }
 }
 
 @media (max-width: 350px) {
@@ -1295,8 +1393,10 @@
 .channel-line:has(.channel-select[aria-current="page"]) {
   background: rgb(182 77 50 / 0.16);
 }
-.channel-line:hover:not(:has(.channel-select[aria-current="page"])) {
-  background: var(--surface-raised);
+@media (hover: hover) {
+  .channel-line:hover:not(:has(.channel-select[aria-current="page"])) {
+    background: var(--surface-raised);
+  }
 }
 .channel-line .channel-select,
 .channel-line .channel-select:hover,
@@ -1388,9 +1488,11 @@
 .channel-join.voice-button[aria-busy="true"] {
   cursor: progress;
 }
-.voice-stack:hover {
-  color: var(--text);
-  background: var(--surface-raised);
+@media (hover: hover) {
+  .voice-stack:hover {
+    color: var(--text);
+    background: var(--surface-raised);
+  }
 }
 .voice-stack > svg {
   flex: none;
@@ -1431,7 +1533,7 @@
 .voice-stack-faces small {
   margin-left: 4px;
   font-size: 0.7rem;
-  font-weight: 750;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
 @container channels (max-width: 259px) {
@@ -1520,8 +1622,10 @@
   padding: 4px 6px;
   border-radius: 6px;
 }
-.voice-occupants .participant:hover {
-  background: var(--surface-raised);
+@media (hover: hover) {
+  .voice-occupants .participant:hover {
+    background: var(--surface-raised);
+  }
 }
 .voice-occupants .participant {
   min-height: 30px;
