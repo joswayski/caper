@@ -149,11 +149,10 @@ async fn live_forwards_are_destination_authorized_flattened_and_replayable(pool:
         reqwest::Url::parse(&broker_url).unwrap().host_str(),
         Some("127.0.0.1" | "localhost")
     ));
-    state.chat = Some(Chat {
-        pool: pool.clone(),
-        broker: redis::Client::open(broker_url).unwrap(),
-        wake: Arc::new(Notify::new()),
-    });
+    state.chat = Some(Chat::new(
+        pool.clone(),
+        redis::Client::open(broker_url).unwrap(),
+    ));
     let chat = state.chat.clone().unwrap();
     let app = crate::app(state);
     let key = Uuid::new_v4();

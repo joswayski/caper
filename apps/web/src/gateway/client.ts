@@ -286,9 +286,18 @@ export class AppGateway {
     this.subscriptions.delete(id);
     clearTimeout(subscription.retryTimer);
     if (!subscription.readySettled) subscription.reject(new DOMException("Subscription cancelled.", "AbortError"));
-    if (this.active?.hello) this.send(this.active, { type: "unsubscribe", id });
-    if (this.candidate?.hello) this.send(this.candidate, { type: "unsubscribe", id });
+    this.forget(id);
     this.scheduleIdleClose();
+  }
+
+  /** Unsubscribes on both sockets and drops their per-ID state, which would
+   * otherwise grow with every channel switch for the socket's lifetime. */
+  private forget(id: string) {
+    for (const stream of [this.active, this.candidate]) {
+      if (!stream) continue;
+      if (stream.hello) this.send(stream, { type: "unsubscribe", id });
+      stream.subscriptions.delete(id);
+    }
   }
 
   private ensureConnected() {
@@ -346,6 +355,9 @@ export class AppGateway {
     if (!stream.hello) throw new Error("Gateway frame received before hello.");
     if (frame.type === "heartbeat") {
       this.armWatchdog(stream);
+      // A server heartbeat proves the connection stayed up, so later drops
+      // start backoff again instead of waiting the maximum for the page's life.
+      if (stream === this.active) this.reconnects = 0;
       return;
     }
     if (frame.type === "migrating") {
@@ -490,8 +502,7 @@ export class AppGateway {
     if (!this.subscriptions.delete(subscription.id)) return;
     clearTimeout(subscription.retryTimer);
     subscription.retryTimer = undefined;
-    if (this.active?.hello) this.send(this.active, { type: "unsubscribe", id: subscription.id });
-    if (this.candidate?.hello) this.send(this.candidate, { type: "unsubscribe", id: subscription.id });
+    this.forget(subscription.id);
     subscription.callbacks.error?.(error);
     if (!subscription.readySettled) {
       subscription.readySettled = true;

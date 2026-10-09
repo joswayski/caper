@@ -31,21 +31,23 @@
 .chat-pins-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  min-height: 34px;
-  padding: 6px 9px;
-  border: 1px solid var(--border);
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
   border-radius: 8px;
   background: transparent;
   color: var(--text-muted);
-  font: inherit;
-  font-size: 0.72rem;
-  font-weight: 750;
   cursor: pointer;
 }
 .chat-pins-toggle:hover {
   color: var(--text);
-  border-color: var(--text-muted);
+  background: var(--surface);
+}
+.chat-pins-toggle:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
 }
 .chat-channel-title {
   min-width: 0;
@@ -101,7 +103,6 @@
   inset: 0;
 }
 .chat-timeline[inert] {
-  opacity: 0;
   pointer-events: none;
 }
 /* Brief confirmations ("Text copied.") float above the newest messages. */
@@ -150,6 +151,16 @@
 }
 .chat-scroller {
   overflow-anchor: none;
+}
+/* Live follow must not flash the platform's overlay scrollbar on every post.
+   Keep overflow scrolling and the timeline's keyboard controls available. */
+.chat-scroller,
+.chat-thread-messages {
+  scrollbar-width: none;
+}
+.chat-scroller::-webkit-scrollbar,
+.chat-thread-messages::-webkit-scrollbar {
+  display: none;
 }
 .chat-history {
   height: 44px;
@@ -246,17 +257,9 @@
 .chat-message:has(:focus-visible) {
   background: rgb(255 255 255 / 2%);
 }
-.chat-message-pinned {
-  row-gap: 4px;
-  background: var(--pin-wash);
-}
-.chat-message-pinned:hover,
-.chat-message-pinned:has(:focus-visible) {
-  background: rgb(228 199 106 / 9%);
-}
-.chat-message-pinned > .chat-avatar,
-.chat-message-pinned > .chat-avatar + div {
-  grid-row: 2;
+.chat-message-jump-target {
+  background: rgb(182 77 50 / 12%);
+  box-shadow: inset 3px 0 var(--terracotta);
 }
 .chat-message header {
   padding-right: 82px;
@@ -748,23 +751,22 @@
   flex: 0 0 12px;
 }
 .chat-pins {
-  position: absolute;
-  inset: 0;
   overflow-y: auto;
-  padding: 16px 18px;
+  padding: 16px;
   background: var(--surface-conversation);
 }
-.chat-pins h3 {
-  margin: 0 0 14px;
-  font-size: 0.9rem;
-  font-weight: 700;
+.chat-forward-overlay.chat-pins-overlay {
+  z-index: 999;
+}
+.chat-pins-dialog {
+  width: min(580px, 100%);
 }
 .chat-pinned-message {
   position: relative;
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr);
   column-gap: 10px;
-  padding: 12px 70px 12px 12px;
+  padding: 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--pin-wash);
@@ -799,25 +801,25 @@
 .chat-pinned-message .chat-pin-marker {
   margin-bottom: 6px;
   padding-right: 0;
-}
-.chat-pinned-message > button {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: transparent;
   color: var(--text-muted);
+}
+.chat-pin-author {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
   font: inherit;
-  font-size: 0.68rem;
+  text-align: left;
   cursor: pointer;
 }
-.chat-pinned-message > button:disabled {
-  opacity: 0.55;
-  cursor: wait;
+.chat-pin-author:hover {
+  text-decoration: underline;
 }
-.chat-pinned-edit-actions {
+.chat-pin-author:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
+}
+.chat-pinned-navigation {
   grid-column: 2;
   display: flex;
   flex-wrap: wrap;
@@ -825,17 +827,24 @@
   gap: 8px;
   margin-top: 4px;
 }
-.chat-pinned-edit-actions > button:not(.chat-edited) {
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: transparent;
+.chat-pinned-navigation > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 4px 0;
+  border: 0;
+  background: none;
   color: var(--text-muted);
   font: inherit;
   font-size: 0.68rem;
   cursor: pointer;
 }
-.chat-pinned-edit-actions > button:focus-visible {
+.chat-pinned-navigation > button:hover:not(:disabled) {
+  color: var(--text);
+  text-decoration: underline;
+}
+.chat-pinned-navigation > button:focus-visible {
   outline: 2px solid var(--terracotta);
   outline-offset: 2px;
 }
@@ -1739,13 +1748,16 @@
   resize: vertical;
 }
 .chat-forward-destinations {
-  display: grid;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
   gap: 4px;
   max-height: 220px;
   overflow-y: auto;
 }
 .chat-forward-destinations label {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   gap: 12px;
   min-height: 48px;
@@ -1760,12 +1772,19 @@
   background: rgb(255 255 255 / 4%);
 }
 .chat-forward-destinations input {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  margin: 0;
   accent-color: var(--terracotta);
 }
 .chat-forward-destinations label > span {
-  display: grid;
-  gap: 3px;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
   min-width: 0;
+  line-height: 1.3;
 }
 .chat-forward-destinations strong {
   font-size: 0.85rem;

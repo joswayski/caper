@@ -134,16 +134,20 @@ export function ForwardPicker({
   target: ForwardTarget;
   onClose: () => void;
   onForward: (destination: string, messageId: string, key: string, text: string) => Promise<ChatMessage>;
-  onSent: (destination: Destination) => void;
+  onSent: (count: number) => void;
 }) {
   const [destinations, setDestinations] = useState<Destination[]>();
   const [search, setSearch] = useState("");
-  const [destination, setDestination] = useState<Destination>();
+  const [selected, setSelected] = useState<Destination[]>([]);
   const [note, setNote] = useState("");
   const [attempt, setAttempt] = useState(0);
   const [error, setError] = useState<string>();
   const [sending, setSending] = useState(false);
-  const [command, setCommand] = useState<{ destination: Destination; key: string; text: string }>();
+  const [sent, setSent] = useState(0);
+  const [command, setCommand] = useState<{
+    pending: { destination: Destination; key: string }[];
+    text: string;
+  }>();
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -186,28 +190,47 @@ export function ForwardPicker({
     return () => controller.abort();
   }, [attempt]);
   const send = async () => {
-    if (sending || !destination) return;
-    const intent = command ?? { destination, key: crypto.randomUUID(), text: note.trim() };
+    if (sending || !selected.length) return;
+    const intent = command ?? {
+      pending: selected.map((destination) => ({ destination, key: crypto.randomUUID() })),
+      text: note.trim(),
+    };
+    let pending = intent.pending;
+    let confirmed = sent;
     setCommand(intent);
     setSending(true);
     setError(undefined);
     try {
-      await onForward(intent.destination.id, message.id, intent.key, intent.text);
-      if (mounted.current) onSent(intent.destination);
+      while (pending.length) {
+        const next = pending[0]!;
+        await onForward(next.destination.id, message.id, next.key, intent.text);
+        if (!mounted.current) return;
+        pending = pending.slice(1);
+        confirmed += 1;
+        setSent(confirmed);
+        setSelected((values) => values.filter((item) => item.id !== next.destination.id));
+        setCommand({ ...intent, pending });
+      }
+      onSent(confirmed);
     } catch (reason) {
       if (mounted.current) {
         const rejected = reason instanceof ChatHistoryError && [400, 401, 403, 404, 409, 422].includes(reason.status);
         if (rejected) setCommand(undefined);
         setError(
-          `${rejected ? "Not sent." : "Not confirmed yet. Retry checks the same forward."} ${reason instanceof Error ? reason.message : "Try again."}`,
+          `${confirmed ? `Forwarded to ${confirmed} ${confirmed === 1 ? "destination" : "destinations"}. ` : ""}${rejected ? "Remaining forwards not sent." : "Remaining forwards not confirmed yet. Retry checks the same forwards."} ${reason instanceof Error ? reason.message : "Try again."}`,
         );
       }
     } finally {
       if (mounted.current) setSending(false);
     }
   };
+  const terms = search
+    .toLocaleLowerCase()
+    .trim()
+    .split(/\s+/)
+    .map((term) => term.replace(/^#/, ""));
   const visible = destinations?.filter((item) =>
-    `${item.spaceName} ${item.name}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()),
+    terms.every((term) => `${item.spaceName} ${item.name}`.toLocaleLowerCase().includes(term)),
   );
   return (
     <ForwardDialog title="Forward message" anchor={target.anchor} onClose={onClose}>
@@ -221,22 +244,15 @@ export function ForwardPicker({
           Send to
           <input
             type="search"
-            placeholder="Find a channel or DM"
+            placeholder="Find a space, channel or DM"
             value={search}
             disabled={!!command}
             onChange={(event) => setSearch(event.target.value)}
           />
         </label>
-        <div className="chat-forward-destinations" role="radiogroup" aria-label="Forward destination">
+        <div className="chat-forward-destinations" role="group" aria-label="Forward destinations">
           {visible?.map((item) => (
             <label key={item.id}>
-              <input
-                type="radio"
-                name="forward-destination"
-                checked={destination?.id === item.id}
-                disabled={!!command}
-                onChange={() => setDestination(item)}
-              />
               <span>
                 <strong>
                   {item.direct ? "" : "# "}
@@ -244,6 +260,19 @@ export function ForwardPicker({
                 </strong>
                 <small>{item.spaceName}</small>
               </span>
+              <input
+                type="checkbox"
+                value={item.id}
+                checked={selected.some((destination) => destination.id === item.id)}
+                disabled={!!command}
+                onChange={(event) =>
+                  setSelected((values) =>
+                    event.target.checked
+                      ? [...values, item]
+                      : values.filter((destination) => destination.id !== item.id),
+                  )
+                }
+              />
             </label>
           ))}
           {!destinations && !error && <p role="status">Loading destinations…</p>}
@@ -268,10 +297,10 @@ export function ForwardPicker({
         <button
           type="button"
           className="chat-forward-send"
-          disabled={!destination || sending || Array.from(note).length > 4000}
+          disabled={!selected.length || sending || Array.from(note).length > 4000}
           onClick={() => void send()}
         >
-          {sending ? "Forwarding…" : command ? "Retry forward" : "Forward"}
+          {sending ? "Forwarding…" : command ? `Retry forwards (${selected.length})` : `Forward (${selected.length})`}
         </button>
       </div>
     </ForwardDialog>

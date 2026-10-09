@@ -45,13 +45,21 @@ struct ForwardPickerView: View {
     let chat: ChatModel
     let message: ChatMessage
     @State private var destinations: [ForwardDestination]?
-    @State private var selected: String?
+    @State private var selected: Set<String> = []
     @State private var search = ""
     @State private var note = ""
-    @State private var key: String?
+    @State private var pending: [(destination: String, key: String)]?
+    @State private var confirmed = 0
     @State private var sending = false
+    @State private var sendTask: Task<Void, Never>?
     @State private var error: String?
     @State private var attempt = 0
+    private var visible: [ForwardDestination] {
+        let terms = search.split(whereSeparator: { $0.isWhitespace }).map { $0.hasPrefix("#") ? String($0.dropFirst()) : String($0) }
+        return (destinations ?? []).filter { destination in
+            terms.allSatisfy { "\(destination.spaceName) \(destination.name)".localizedCaseInsensitiveContains($0) || $0.isEmpty }
+        }
+    }
     var body: some View {
         VStack(spacing: 0) {
             HStack { Text("Forward message").font(CaperTheme.font(16, weight: .bold)); Spacer(); Button("Close") { dismiss() } }.padding(16)
@@ -60,48 +68,62 @@ struct ForwardPickerView: View {
                     Text("Shares this conversation live, including future edits, reactions and replies. People in the destination can read and forward it.")
                         .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                     SharedOriginalView(message: message.forward?.message ?? message)
-                    TextField("Find a channel or DM", text: $search).textFieldStyle(.roundedBorder).disabled(key != nil)
-                    ForEach((destinations ?? []).filter { search.isEmpty || "\($0.spaceName) \($0.name)".localizedCaseInsensitiveContains(search) }) { destination in
-                        Button { selected = destination.id } label: {
-                            HStack {
-                                Image(systemName: selected == destination.id ? "largecircle.fill.circle" : "circle")
-                                VStack(alignment: .leading) {
-                                    Text("\(destination.direct ? "" : "# ")\(destination.name)")
+                    TextField("Find a space, channel or DM", text: $search).textFieldStyle(.roundedBorder).disabled(pending != nil)
+                    ForEach(visible) { destination in
+                        Button {
+                            if selected.contains(destination.id) { selected.remove(destination.id) }
+                            else { selected.insert(destination.id) }
+                        } label: {
+                            HStack(spacing: 12) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("\(destination.direct ? "" : "# ")\(destination.name)").fontWeight(.bold)
                                     Text(destination.spaceName).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
                                 }
                                 Spacer()
+                                Image(systemName: selected.contains(destination.id) ? "checkmark.square.fill" : "square")
+                                    .foregroundStyle(selected.contains(destination.id) ? CaperTheme.terracottaBright : CaperTheme.muted)
                             }.frame(minHeight: 44)
-                        }.buttonStyle(.plain).disabled(key != nil)
+                        }.buttonStyle(.plain).disabled(pending != nil)
+                            .accessibilityValue(selected.contains(destination.id) ? "Selected" : "Not selected")
                             .modifier(ControlPointer())
                     }
                     if destinations == nil && error == nil { ProgressView("Loading destinations…") }
                     if destinations?.isEmpty == true { Text("Join a channel or start a DM to forward here.") }
-                    TextField("Add a note (optional)", text: $note, axis: .vertical).lineLimit(2...5).textFieldStyle(.roundedBorder).disabled(key != nil)
+                    else if destinations != nil && visible.isEmpty { Text("No matching destinations.") }
+                    TextField("Add a note (optional)", text: $note, axis: .vertical).lineLimit(2...5).textFieldStyle(.roundedBorder).disabled(pending != nil)
                     if let error {
                         Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
                         if destinations == nil { Button("Retry loading") { attempt += 1 } }
                     }
-                    Button(sending ? "Forwarding…" : key == nil ? "Forward" : "Retry forward") {
-                        guard let selected, !sending else { return }
-                        let intent = key ?? UUID().uuidString.lowercased()
-                        key = intent; sending = true; error = nil
-                        Task { @MainActor in
+                    Button(sending ? "Forwarding…" : pending == nil ? "Forward (\(selected.count))" : "Retry forwards (\(selected.count))") {
+                        guard !selected.isEmpty, !sending else { return }
+                        let intent = pending ?? (destinations ?? []).filter { selected.contains($0.id) }.map { (destination: $0.id, key: UUID().uuidString.lowercased()) }
+                        let text = note.trimmingCharacters(in: .whitespacesAndNewlines)
+                        pending = intent; sending = true; error = nil
+                        sendTask = Task { @MainActor in
                             defer { sending = false }
                             do {
-                                try await chat.forward(message: message, destinationID: selected, key: intent, text: note.trimmingCharacters(in: .whitespacesAndNewlines))
+                                for next in intent {
+                                    try Task.checkCancellation()
+                                    try await chat.forward(message: message, destinationID: next.destination, key: next.key, text: text)
+                                    confirmed += 1
+                                    selected.remove(next.destination)
+                                    pending?.removeFirst()
+                                }
                                 dismiss()
                             } catch is CancellationError { }
                             catch {
                                 let rejected = (error as? APIError).map { [400, 401, 403, 404, 409, 422].contains($0.status) } ?? false
-                                if rejected { key = nil }
-                                self.error = "\(rejected ? "Not sent." : "Not confirmed. Retry checks the same forward.") \(error.localizedDescription)"
+                                if rejected { pending = nil }
+                                self.error = "\(confirmed > 0 ? "Forwarded to \(confirmed) \(confirmed == 1 ? "destination" : "destinations"). " : "")\(rejected ? "Remaining forwards not sent." : "Remaining forwards not confirmed. Retry checks the same forwards.") \(error.localizedDescription)"
                             }
                         }
-                    }.buttonStyle(CaperSecondaryButton()).disabled(selected == nil || sending || note.unicodeScalars.count > 4000)
+                    }.buttonStyle(CaperSecondaryButton()).disabled(selected.isEmpty || sending || note.unicodeScalars.count > 4000)
                 }.padding(16)
             }
         }.background(CaperTheme.raised).foregroundStyle(CaperTheme.text)
             .frame(idealWidth: 460, idealHeight: 560)
+            .onDisappear { sendTask?.cancel() }
             .task(id: attempt) {
                 do { destinations = try await chat.forwardDestinations().sorted { "\($0.spaceName) \($0.name)" < "\($1.spaceName) \($1.name)" }; error = nil }
                 catch is CancellationError { }

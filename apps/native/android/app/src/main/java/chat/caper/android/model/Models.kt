@@ -166,8 +166,9 @@ object MentionListSerializer : JsonTransformingSerializer<List<MessageMention>>(
     val editSeq: String? = null,
 )
 @Serializable data class ThreadSummary(val replyCount: Int, val participants: List<ChatAuthor>, val seq: String)
-@Serializable data class ThreadHistory(val root: ChatMessage, val messages: List<ChatMessage>, val cursor: String, val hasMore: Boolean)
-data class ThreadUi(val rootId: String, val loading: Boolean = true, val hasMore: Boolean = false, val before: String? = null, val error: String? = null)
+@Serializable data class ThreadHistory(val root: ChatMessage, val messages: List<ChatMessage>, val cursor: String, val hasMore: Boolean, val hasNewer: Boolean = false)
+data class ThreadUi(val rootId: String, val loading: Boolean = true, val hasMore: Boolean = false, val before: String? = null, val error: String? = null,
+    val hasNewer: Boolean = false, val after: String? = null, val windowStart: String? = null, val windowEnd: String? = null)
 @Serializable data class ChatHistory(
     val messages: List<ChatMessage>,
     val cursor: String,
@@ -175,6 +176,7 @@ data class ThreadUi(val rootId: String, val loading: Boolean = true, val hasMore
     val pinnedMessages: List<ChatMessage> = emptyList(),
     val space: ChatRoom? = null,
     val channel: ChatRoom? = null,
+    val hasNewer: Boolean = false,
 )
 @Serializable data class ChatRoom(val id: String, val name: String, val direct: Boolean = false)
 @Serializable data class ChatSession(val token: String, val author: ChatAuthor)
@@ -283,6 +285,14 @@ data class AppUiState(
     val thread: ThreadUi? = null,
     val threadOnlyRows: Set<String> = emptySet(),
     val hasMoreMessages: Boolean = false,
+    val hasNewerMessages: Boolean = false,
+    val loadingNewer: Boolean = false,
+    val contextStart: String? = null,
+    val contextEnd: String? = null,
+    val focusedMessageId: String? = null,
+    val focusRevision: Long = 0,
+    val loadingMessageContext: Boolean = false,
+    val messageContextError: String? = null,
     val loadingOlder: Boolean = false,
     val olderError: String? = null,
     /** Web's chat phases: first history page loading, or failed with no messages to show. */
@@ -345,8 +355,18 @@ data class AppUiState(
 
     val blockedIds: Set<String> get() = blocks.mapTo(HashSet()) { it.id }
 
-    /** You can write here: a joined channel, and not a message request still waiting for your answer. */
-    val canParticipate: Boolean get() = selectedChannel?.joined == true && selectedDirect?.incoming != true
+    val channelMessages: List<ChatMessage> get() = messages.filter {
+        (it.threadRootId == null || it.broadcast) && it.id !in threadOnlyRows &&
+            (contextStart == null || it.seq.toBigInteger() >= contextStart.toBigInteger()) &&
+            (contextEnd == null || it.seq.toBigInteger() <= contextEnd.toBigInteger())
+    }
+    val displayedChannelMessages: List<ChatMessage> get() = channelMessages.map(::project)
+
+    /** You can write, react, pin and edit here: a joined channel, not a message request still waiting
+     * for your answer, and not a DM with someone you blocked (the server refuses those too). */
+    val canParticipate: Boolean get() = selectedChannel?.joined == true && selectedDirect?.let {
+        it.incoming || it.blocked || it.peer.id in blockedIds
+    } != true
 
     /** The open DM, when one is selected. */
     val selectedDirect: DirectConversation? get() = selectedDirectId?.let { id -> directConversations.firstOrNull { it.id == id } }

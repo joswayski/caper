@@ -199,35 +199,109 @@ private struct CaperIcon: View {
     }
 }
 
+/// Phones show the conversation, or Browse (spaces and channels) with the
+/// conversation's edge still in view. The conversation slides over the still
+/// Browse, following a finger from the screen edge or that edge view. Buttons,
+/// Back and channel choices animate the same slide.
+@Observable private final class BrowseDrawer {
+    /// While a finger drags: how much of Browse is uncovered, from 0 (conversation) to 1 (Browse).
+    var drag: CGFloat?
+    /// How far the conversation moves: the width, less the edge kept in view.
+    var travel: CGFloat = 1
+    static let settle = Animation.interpolatingSpring(duration: 0.35, bounce: 0)
+}
+
+/// The conversation's outline, lifted off Browse's account bar at the bottom
+/// and widened to the left for its edge shadow.
+private struct BrowseEdge: Shape {
+    var inset: CGFloat
+    var animatableData: CGFloat {
+        get { inset }
+        set { inset = newValue }
+    }
+    func path(in rect: CGRect) -> Path {
+        Path(CGRect(x: rect.minX - 48, y: rect.minY, width: rect.width + 48, height: max(0, rect.height - inset)))
+    }
+}
+
+/// Poses the conversation over Browse on phones. Only this reads the drag, so a
+/// moving finger re-renders the pose rather than the conversation itself.
+private struct BrowseLayer: ViewModifier {
+    let showsBrowse: Bool
+    let travel: CGFloat
+    let bar: CGFloat
+    @Environment(BrowseDrawer.self) private var drawer: BrowseDrawer?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        let drag = drawer?.drag
+        let uncovered = drag ?? (showsBrowse ? 1 : 0)
+        let reduceMotion = self.reduceMotion
+        // Follow the finger while dragged and spring into place otherwise,
+        // keeping a release's own spring (and speed).
+        content.transaction { transaction in
+            if drag != nil || reduceMotion { transaction.animation = nil }
+            else if transaction.animation == nil { transaction.animation = BrowseDrawer.settle }
+        } body: { layer in
+            layer.clipShape(BrowseEdge(inset: uncovered * bar)).offset(x: uncovered * travel)
+        }
+    }
+}
+
 // Native edge swipes leave text selection and inline controls in the center
 // alone. Attach only to scrolling content, never the composer or account dock.
 private struct BrowseSwipe: ViewModifier {
     let open: Bool
     let enabled: Bool
+    /// Starts anywhere on the view, not just at its edge.
+    var anywhere = false
     let navigate: () -> Void
-    @State private var width: CGFloat = 0
-    @State private var startedAt: Date?
-    @State private var vertical = false
+    @Environment(BrowseDrawer.self) private var drawer: BrowseDrawer?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var frame: CGRect = .zero
+    /// Undecided until the first move; then following the finger, or not this gesture's.
+    @State private var tracking: Bool?
     @GestureState private var dragging = false
 
     func body(content: Content) -> some View {
-        content.onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
-            .simultaneousGesture(DragGesture(minimumDistance: 12)
+        // Global coordinates: the view itself moves with the finger.
+        content.onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { if tracking != true { frame = $0 } }
+            .simultaneousGesture(DragGesture(minimumDistance: 12, coordinateSpace: .global)
                 .updating($dragging) { _, active, _ in active = true }
                 .onChanged { value in
-                    if startedAt == nil { startedAt = value.time }
-                    if abs(value.translation.height) > max(12, abs(value.translation.width)) { vertical = true }
+                    let dx = value.translation.width, dy = value.translation.height
+                    if tracking == nil {
+                        let edge = anywhere || (open ? value.startLocation.x >= frame.maxX - 24 : value.startLocation.x <= frame.minX + 24)
+                        tracking = enabled && drawer != nil && edge && abs(dx) > abs(dy) && (open ? dx < 0 : dx > 0)
+                    }
+                    guard tracking == true, let drawer else { return }
+                    drawer.drag = min(1, max(0, (open ? 1 : 0) + dx / drawer.travel))
                 }
                 .onEnded { value in
-                    defer { startedAt = nil; vertical = false }
-                    guard enabled, !vertical, value.time.timeIntervalSince(startedAt ?? value.time) < 0.6,
-                          open ? value.startLocation.x >= width - 24 : value.startLocation.x <= 24,
-                          abs(value.translation.width) >= 64,
-                          abs(value.translation.width) > abs(value.translation.height) * 2,
-                          open ? value.translation.width < 0 : value.translation.width > 0 else { return }
-                    navigate()
+                    defer { tracking = nil }
+                    guard tracking == true, let drawer, let uncovered = drawer.drag else { return }
+                    // Toward the other view, in points per second.
+                    let toward = (open ? -1 : 1) * value.velocity.width
+                    let travelled = abs(uncovered - (open ? 1 : 0))
+                    let commit = toward > -300 && (travelled >= 0.5 || (toward >= 300 && abs(value.translation.width) >= 40))
+                    let target: CGFloat = commit != open ? 1 : 0
+                    // Carry the finger's speed into the spring, relative to the distance left.
+                    let remaining = target - uncovered
+                    let velocity = abs(remaining) > 0.01 ? value.velocity.width / drawer.travel / remaining : 0
+                    withAnimation(reduceMotion ? nil : .interpolatingSpring(duration: 0.35, bounce: 0, initialVelocity: min(max(velocity, -20), 20))) {
+                        drawer.drag = nil
+                        if commit { navigate() }
+                    }
                 }, including: enabled ? .all : .subviews)
-            .onChange(of: dragging) { _, active in if !active { startedAt = nil; vertical = false } }
+            .onChange(of: dragging) { _, active in
+                guard !active else { return }
+                // After onEnded, if it runs: a cancelled drag (by a scroll, or the system) slides back.
+                DispatchQueue.main.async {
+                    guard tracking == true else { return }
+                    tracking = nil
+                    withAnimation(reduceMotion ? nil : BrowseDrawer.settle) { drawer?.drag = nil }
+                }
+            }
     }
 }
 
@@ -262,6 +336,8 @@ private struct WorkspaceView: View {
     @FocusState private var sidebarFocused: Bool
     @State private var membersPreference = false
     @State private var modalDismissDisabled = false
+    @State private var browseDrawer = BrowseDrawer()
+    @State private var browseBarHeight: CGFloat = 0
     private let parityFixture: String?
     private let parityMode: Bool
 
@@ -290,25 +366,13 @@ private struct WorkspaceView: View {
                             .disabled(model.openingSpaceID != nil)
                     }.padding(12).background(CaperTheme.surface)
                 }
-                Group {
-                    if narrow && !model.navigationOpen && (!model.spaces.isEmpty || model.selectedDirectMessageID != nil) {
-                        ZStack(alignment: .trailing) {
-                            ConversationStage(model: model, narrow: true, browse: { model.navigationOpen = true }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
-                                membersPreference = !membersVisible
-                            }
-                            if membersVisible && model.selectedDirectMessageID == nil {
-                                Color.black.opacity(0.25)
-                                    .contentShape(Rectangle())
-                                    .onTapGesture { membersPreference = false }
-                                    .padding(.top, 50)
-                                    .accessibilityHidden(true)
-                                MemberPresenceView(model: model, close: { membersPreference = false })
-                                    .frame(width: min(280, geometry.size.width - 64))
-                                    .clipShape(RoundedRectangle(cornerRadius: 16))
-                                    .padding(.top, 58).padding(.trailing, 8).padding(.bottom, 8)
-                            }
-                        }
-                    } else {
+                // Phones slide the conversation over Browse; wider windows show both.
+                let conversationAvailable = !model.spaces.isEmpty || model.selectedDirectMessageID != nil
+                let showsBrowse = !narrow || model.navigationOpen || !conversationAvailable
+                // How much of the conversation stays in view beside Browse.
+                let peek = min(96, max(56, geometry.size.width * 0.2))
+                ZStack(alignment: .leading) {
+                    VStack(spacing: 0) {
                         HStack(spacing: 0) {
                             SpaceRail(model: model, narrow: narrow, showLogin: { sheet = .login }, create: { sheet = .createSpace }, openInvitation: { sheet = .invitation($0) })
                                 .frame(width: 60)
@@ -391,16 +455,75 @@ private struct WorkspaceView: View {
                                 }
                             }
                         }
+                        .padding(.trailing, narrow ? peek : 0)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        // The account bar keeps the full width, below the conversation's edge.
+                        if narrow {
+                            AccountBar(model: model, sheet: $sheet)
+                                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { browseBarHeight = $0 }
+                        }
+                    }
+                    .allowsHitTesting(showsBrowse)
+                    .accessibilityHidden(!showsBrowse)
+                    if narrow && conversationAvailable {
+                        ZStack(alignment: .trailing) {
+                            ConversationStage(model: model, narrow: true, browse: { model.navigationOpen = true }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
+                                membersPreference = !membersVisible
+                            }
+                            if membersVisible && model.selectedDirectMessageID == nil {
+                                Color.black.opacity(0.25)
+                                    .contentShape(Rectangle())
+                                    .onTapGesture { membersPreference = false }
+                                    .padding(.top, 50)
+                                    .accessibilityHidden(true)
+                                MemberPresenceView(model: model, close: { membersPreference = false })
+                                    .frame(width: min(280, geometry.size.width - 64))
+                                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                                    .padding(.top, 58).padding(.trailing, 8).padding(.bottom, 8)
+                            }
+                        }
+                        .background(CaperTheme.blackout)
+                        .overlay(alignment: .leading) {
+                            LinearGradient(colors: [.clear, .black.opacity(0.35)], startPoint: .trailing, endPoint: .leading)
+                                .frame(width: 16).offset(x: -16).allowsHitTesting(false).accessibilityHidden(true)
+                        }
+                        .modifier(BrowseLayer(showsBrowse: showsBrowse, travel: geometry.size.width - peek, bar: browseBarHeight))
+                        .allowsHitTesting(!showsBrowse)
+                        .accessibilityHidden(showsBrowse)
+                    }
+                    // Beside Browse the conversation's edge is inert: tapping or dragging it returns.
+                    if narrow && conversationAvailable && showsBrowse {
+                        Color.clear
+                            .frame(width: peek)
+                            .contentShape(Rectangle())
+                            .onTapGesture { model.navigationOpen = false }
+                            .modifier(BrowseSwipe(open: true, enabled: true, anywhere: true, navigate: { model.navigationOpen = false }))
+                            .accessibilityElement()
+                            .accessibilityLabel("Back to conversation")
+                            .accessibilityAddTraits(.isButton)
+                            .accessibilityAction { model.navigationOpen = false }
+                            .padding(.bottom, browseBarHeight)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                if narrow && model.navigationOpen {
-                    AccountBar(model: model, sheet: $sheet)
-                }
+                .clipped()
+                .onChange(of: geometry.size.width - peek, initial: true) { _, travel in browseDrawer.travel = max(travel, 1) }
+                .onChange(of: showsBrowse) { _, _ in endEditing() }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(CaperTheme.blackout)
+            .environment(browseDrawer)
         }
+    }
+
+    /// The hidden view stays in place to slide back, so it must not keep the keyboard.
+    private func endEditing() {
+        #if os(iOS)
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        #elseif os(macOS)
+        NSApp.keyWindow?.makeFirstResponder(nil)
+        #endif
     }
 
     private var workspace: some View {
@@ -852,6 +975,10 @@ private struct ChannelSidebarItem: View {
     @Binding var sheet: WorkspaceSheet?
     let channel: Channel
     @State private var confirmLeave = false
+    #if os(macOS)
+    @State private var hovered = false
+    @FocusState private var optionsFocused: Bool
+    #endif
 
     private var sessionStartedAt: Double? {
         let shared = model.voicePresence.sessionStartedAt(for: channel.id)
@@ -887,7 +1014,7 @@ private struct ChannelSidebarItem: View {
         VStack(spacing: 0) {
             HStack(spacing: 2) {
                 Button { Task { await model.select(channel: channel) } } label: {
-                    HStack(spacing: 9) {
+                    HStack(spacing: 6) {
                         CaperIcon(name: channel.private ? "lock" : "hash", size: 18)
                             .foregroundStyle(model.selectedChannelID == channel.id ? CaperTheme.terracottaBright : CaperTheme.muted)
                             .opacity(nameOpacity)
@@ -932,6 +1059,9 @@ private struct ChannelSidebarItem: View {
                         .frame(width: 44, height: 44)
                         #else
                         .frame(width: 32, height: 32)
+                        .focused($optionsFocused)
+                        .opacity(hovered || optionsFocused ? 1 : 0)
+                        .allowsHitTesting(hovered || optionsFocused)
                         #endif
                         .contentShape(Rectangle()).modifier(ControlHover())
                         .help("Channel options for \(channel.name)")
@@ -941,6 +1071,9 @@ private struct ChannelSidebarItem: View {
             }
             ChannelVoiceSlot(model: model, channel: channel)
         }
+        #if os(macOS)
+        .onHover { hovered = $0 }
+        #endif
         .sheet(isPresented: $confirmLeave) {
             ConfirmationSheet(title: "Leave #\(channel.name)?", detail: channel.private && !model.isOwner ? "You’ll lose access and need another invitation to return. You’ll disconnect from this channel’s voice call." : "It will leave your sidebar. You can preview and rejoin from Browse channels. You’ll disconnect from this channel’s voice call.", action: "Leave channel", close: { confirmLeave = false }) { try await model.leaveChannel(channel) }
         }
@@ -1727,8 +1860,6 @@ private struct ChatView: View {
                 }
                 if narrow {
                     Menu {
-                        Button(chat.displayedPins.isEmpty ? "Pins" : "Pins \(chat.displayedPins.count)") { showingPins = true }
-                            .accessibilityIdentifier("channel-pins")
                         if model.selectedDirectMessageID == nil && !model.previewingChannel {
                             Button(membersVisible ? "Hide member list" : "Members", action: toggleMembers)
                         }
@@ -1748,13 +1879,9 @@ private struct ChatView: View {
                         .accessibilityIdentifier("selected-channel-name")
                 }
                 Spacer()
-                if !narrow {
-                    Button { showingPins = true } label: {
-                        Label(chat.displayedPins.isEmpty ? "Pins" : "Pins \(chat.displayedPins.count)", systemImage: "pin").font(CaperTheme.font(11, weight: .bold))
-                    }
-                    .buttonStyle(.plain).foregroundStyle(CaperTheme.muted).frame(minHeight: 44).modifier(ControlHover())
+                Button { showingPins = true } label: { CaperIcon(name: "pin", size: 20) }
+                    .buttonStyle(SidebarIconButton()).help("Pins").accessibilityLabel("Pins")
                     .accessibilityIdentifier("channel-pins")
-                }
                 if chat.liveState != .connected && showConnectionStatus {
                     Text(chat.liveState == .disconnected ? "Offline" : "Connecting…").font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.muted)
                         .accessibilityIdentifier("chat-connection-status")
@@ -1784,7 +1911,7 @@ private struct ChatView: View {
                 #endif
 
             ScrollViewReader { proxy in
-                ScrollView {
+                ScrollView(showsIndicators: false) {
                     VStack(spacing: 0) {
                         LazyVStack(spacing: 0) {
                             if !chat.loadFailed { HStack(spacing: 6) {
@@ -1842,8 +1969,13 @@ private struct ChatView: View {
                             }.padding(.top, 80).padding(.horizontal, 24)
                         } else if chat.messages.isEmpty && !chat.loading && chat.pendingMessage == nil {
                             VStack(spacing: 7) {
-                                Text("No messages yet.").font(CaperTheme.font(14, weight: .medium))
-                                Text(model.selectedDirectMessageID == nil ? "Start the conversation in #\(chat.channelName.lowercased())." : "Only you and \(chat.channelName) can read this conversation.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                                if let conversation = model.selectedDirectMessage, conversation.peer.id == model.account?.id {
+                                    Text("You can message yourself here to keep notes, reminders, and ideas.")
+                                        .font(CaperTheme.font(14, weight: .medium)).foregroundStyle(CaperTheme.muted).multilineTextAlignment(.center)
+                                } else {
+                                    Text("No messages yet.").font(CaperTheme.font(14, weight: .medium))
+                                    Text(model.selectedDirectMessageID == nil ? "Start the conversation in #\(chat.channelName.lowercased())." : "Only you and \(chat.channelName) can read this conversation.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                                }
                             }.padding(.top, 80)
                         }
                     }
@@ -1867,7 +1999,16 @@ private struct ChatView: View {
                 #endif
                 .onChange(of: chat.channelMessages.last?.id) { _, id in
                     if chat.pendingMessage != nil { revealPending(proxy) }
-                    else if let id { proxy.scrollTo(id, anchor: .bottom) }
+                    else if chat.focusedMessageID == nil, let id { proxy.scrollTo(id, anchor: .bottom) }
+                }
+                .onChange(of: chat.focusRevision) { _, _ in
+                    if let id = chat.focusedMessageID, chat.channelMessages.contains(where: { $0.id == id }) {
+                        revealedBlocked.insert(id)
+                        Task { @MainActor in
+                            await Task.yield()
+                            if chat.focusedMessageID == id { proxy.scrollTo(id, anchor: .center) }
+                        }
+                    }
                 }
                 .onChange(of: chat.pendingMessage?.id, initial: true) { _, _ in revealPending(proxy) }
                 // A rejection adds the "Not sent" line with Edit and Dismiss after
@@ -1876,6 +2017,12 @@ private struct ChatView: View {
                 .onChange(of: chat.error) { _, _ in revealPending(proxy) }
             }
 
+            if chat.hasNewer {
+                HStack {
+                    Button(chat.loadingNewer ? "Loading…" : "Load newer messages") { Task { await chat.loadNewer() } }.disabled(chat.loadingNewer)
+                    Button("Back to latest") { Task { await chat.retryLoad() } }
+                }.font(CaperTheme.font(11)).padding(10)
+            }
             HStack(spacing: 7) {
                 if !chat.typingNames.isEmpty {
                     TypingDots()
@@ -2002,8 +2149,8 @@ private struct ChatView: View {
             #if os(iOS)
             .sheet(item: $reactionMessage) { message in
                 MessageActionsSheet(message: message, chat: chat, showingEmojiPicker: $showingEmojiPicker,
-                                    canReact: !chat.isPreview && chat.currentAuthor != nil,
-                                    canPin: !chat.isPreview && chat.currentAuthor != nil && !chat.pendingPins.contains(message.id),
+                                    canReact: chat.canInteract,
+                                    canPin: chat.canInteract && !chat.pendingPins.contains(message.id),
                                     togglePin: {
                                         reactionMessage = nil
                                         Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
@@ -2012,13 +2159,13 @@ private struct ChatView: View {
                                     canForward: chat.canForward,
                                     forward: { reactionMessage = nil; chat.forwardTarget = message },
                                     quickReaction: { emoji in
-                                        guard !chat.isPreview, let author = chat.currentAuthor,
+                                        guard chat.canInteract, let author = chat.currentAuthor,
                                               let current = chat.messages.first(where: { $0.id == message.id }) else { return }
                                         let own = current.reactions?.first(where: { $0.emoji == emoji })?.authorIds.contains(author.id) == true
                                         reactionMessage = nil
                                         Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: !own) }
                                     }, selectReaction: { emoji in
-                                        guard !chat.isPreview, chat.currentAuthor != nil else { return }
+                                        guard chat.canInteract else { return }
                                         reactionMessage = nil
                                         Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) }
                                     },
@@ -2026,9 +2173,15 @@ private struct ChatView: View {
                                         ? { blockTarget = BlockTarget(author: message.author) } : nil)
             }
             #endif
-            .sheet(isPresented: $showingPins) {
-                PinnedMessagesView(chat: chat, close: { showingPins = false })
+            #if os(macOS)
+            .popover(isPresented: $showingPins, attachmentAnchor: .point(.center), arrowEdge: .top) {
+                PinnedMessagesView(chat: chat, model: model, close: { showingPins = false }).frame(width: 470, height: 360)
             }
+            #else
+            .sheet(isPresented: $showingPins) {
+                PinnedMessagesView(chat: chat, model: model, close: { showingPins = false })
+            }
+            #endif
             .modifier(BlockConfirmation(target: $blockTarget) { target in
                 do { try await model.block(target) } catch { chat.error = error.localizedDescription }
             })
@@ -2117,7 +2270,7 @@ private struct NativeThreadView: View {
             }
         }
     }
-    private var replies: [ChatMessage] { chat.displayedMessages.filter { $0.threadRootId == chat.threadRootID && $0.threadRootId != nil } }
+    private var replies: [ChatMessage] { chat.displayedThreadMessages }
     private var reactors: ReactorContext {
         ReactorContext(viewerID: chat.currentAuthor?.id, sheetOpen: reactorsTarget != nil) { messageID, emoji in
             reactorsTarget = ReactorsTarget(messageID: messageID, emoji: emoji)
@@ -2132,7 +2285,7 @@ private struct NativeThreadView: View {
             }.padding(.horizontal, 18).frame(height: 50)
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
             ScrollViewReader { proxy in
-                ScrollView {
+                ScrollView(showsIndicators: false) {
                     LazyVStack(spacing: 0) {
                         if let root = chat.displayedMessages.first(where: { $0.id == chat.threadRootID }) {
                             threadEntries([root])
@@ -2157,6 +2310,7 @@ private struct NativeThreadView: View {
                         if let error = chat.threadError { Text(error).padding(12); Button("Retry") { Task { await chat.loadThread() } } }
                         if chat.threadHasMore { Button("Load older replies") { Task { await chat.loadThread(older: true) } }.disabled(chat.threadLoading).padding(12) }
                         threadEntries(replies)
+                        if chat.threadHasNewer { Button("Load newer replies") { Task { await chat.loadThread(newer: true) } }.disabled(chat.threadLoading).padding(12) }
                         if replies.isEmpty && !chat.threadLoading && chat.threadError == nil { Text("No replies yet. Start the thread.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).padding(18) }
                         if let pending = chat.pendingMessage, pending.threadRootId == chat.threadRootID {
                             PendingMessageRow(pending: pending, author: chat.currentAuthor, error: chat.error, rejected: chat.sendRejected, canEdit: chat.threadDraft.isEmpty,
@@ -2167,7 +2321,16 @@ private struct NativeThreadView: View {
                 }
                 .coordinateSpace(.named(MentionCard.timelineSpace))
                 .modifier(MentionCardHost(target: $mentionCard, model: model, viewerID: viewerID))
-                .onChange(of: replies.last?.id) { _, id in if let id { proxy.scrollTo(id, anchor: .bottom) } }
+                .onChange(of: replies.last?.id) { _, id in if chat.focusedMessageID == nil, let id { proxy.scrollTo(id, anchor: .bottom) } }
+                    .onChange(of: chat.focusRevision, initial: true) { _, _ in
+                        if let id = chat.focusedMessageID, replies.contains(where: { $0.id == id }) {
+                            revealedBlocked.insert(id)
+                            Task { @MainActor in
+                                await Task.yield()
+                                if chat.focusedMessageID == id { proxy.scrollTo(id, anchor: .center) }
+                            }
+                        }
+                    }
             }
             if chat.isPreview { Text("Join the channel to reply.").font(CaperTheme.font(12)).padding(18) }
             else { VStack(alignment: .leading, spacing: 8) {
@@ -2195,8 +2358,8 @@ private struct NativeThreadView: View {
             .sheet(item: $reactionMessage) { message in
                 #if os(iOS)
                 MessageActionsSheet(message: message, chat: chat, showingEmojiPicker: $showingEmojiPicker,
-                    canReact: !chat.isPreview && chat.currentAuthor != nil,
-                    canPin: !chat.isPreview && chat.currentAuthor != nil && !chat.pendingPins.contains(message.id),
+                    canReact: chat.canInteract,
+                    canPin: chat.canInteract && !chat.pendingPins.contains(message.id),
                     togglePin: { reactionMessage = nil; Task { await chat.setPin(messageID: message.id, active: message.pin == nil) } },
                     reply: nil,
                     // Thread actions don't forward: the forward sheets belong to the conversation under this cover.
@@ -2303,6 +2466,7 @@ private struct MessageRow: View {
     let reactors: ReactorContext
     let mentionCards: MentionCardContext
     var inThread = false
+    var inPins = false
     /// Asks the containing view to confirm blocking this message's author.
     var requestBlock: ((ChatAuthor) -> Void)? = nil
     let showReactionPicker: () -> Void
@@ -2322,12 +2486,26 @@ private struct MessageRow: View {
         let mentionsMe = MentionAutocomplete.mentionsCurrentUser(message, currentUserID: currentUserID)
         let pills = MentionAutocomplete.pills(in: message.content.text, mentions: message.content.mentions)
         let row = VStack(alignment: .leading, spacing: 5) {
-            if let pin = message.pin {
-                Label("Pinned by \(pin.author.name)", systemImage: "pin.fill")
-                    .font(CaperTheme.font(10, weight: .medium)).foregroundStyle(CaperTheme.pinGold)
+            if inPins, let pin = message.pin {
+                Button { mentionCards.openAuthor?(pin.author) } label: {
+                    HStack(spacing: 4) {
+                        CaperIcon(name: "pin", size: 12)
+                        Text("Pinned by \(pin.author.name)")
+                    }.contentShape(Rectangle())
+                }
+                    .buttonStyle(.plain).font(CaperTheme.font(10, weight: .medium)).foregroundStyle(CaperTheme.muted)
+                    .accessibilityLabel("Open profile for \(pin.author.name)")
                     .padding(.leading, 44)
                     #if os(macOS)
                     .padding(.trailing, 56)
+                    .onContinuousHover(coordinateSpace: CoordinateSpace.named(MentionCard.timelineSpace)) { phase in
+                        if case .active(let point) = phase {
+                            mentionCards.pointer.location = point
+                            mentionCards.openAuthor?(pin.author)
+                        }
+                    }
+                    #else
+                    .highPriorityGesture(LongPressGesture(minimumDuration: 0.5).onEnded { _ in mentionCards.openAuthor?(pin.author) })
                     #endif
                     .accessibilityIdentifier("pinned-by-\(message.id)")
             }
@@ -2337,7 +2515,7 @@ private struct MessageRow: View {
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
                     Text(message.author.name).font(CaperTheme.font(13, weight: .bold))
                     if message.author.isGuest { Text("GUEST").font(CaperTheme.font(9, weight: .bold)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 5).overlay(RoundedRectangle(cornerRadius: 4).stroke(CaperTheme.border)) }
-                    Text(timeLabel(message.createdAt)).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
+                    Text(inPins ? ChatDateDivider.date(message.createdAt)?.formatted(date: .abbreviated, time: .shortened) ?? timeLabel(message.createdAt) : timeLabel(message.createdAt)).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
                     if message.forward == nil && (message.revision ?? 1) > 1 { Button("(edited)") { history = true }.buttonStyle(.plain).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).modifier(ControlHover()).accessibilityLabel("View edit history") }
                 }
                 #if os(macOS)
@@ -2354,7 +2532,7 @@ private struct MessageRow: View {
                     HStack(spacing: 8) {
                         Text(error)
                         Button("Retry") { Task { await chat.retryPin(messageID: message.id) } }
-                            .disabled(chat.isPreview || chat.currentAuthor == nil || chat.pendingPins.contains(message.id))
+                            .disabled(!chat.canInteract || chat.pendingPins.contains(message.id))
                     }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.terracottaBright)
                 }
                 if !inThread && (message.threadRootId != nil || (message.thread?.replyCount ?? 0) > 0) {
@@ -2377,14 +2555,12 @@ private struct MessageRow: View {
                     HStack(spacing: 8) {
                         Text(error)
                         Button("Retry") { Task { await chat.retryReaction(messageID: message.id) } }
-                            .disabled(chat.isPreview || chat.currentAuthor == nil)
+                            .disabled(!chat.canInteract)
                     }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.terracottaBright)
                 }
             }
             }
         }.padding(.horizontal, 18).padding(.vertical, 10)
-            // The open thread's root, then a message that mentions the signed-in
-            // account (8% terracotta with a 2pt terracotta leading edge), then a pin.
             .background(rowBackground(mentionsMe: mentionsMe))
             .overlay(alignment: .leading) {
                 if mentionsMe { Rectangle().fill(CaperTheme.terracotta).frame(width: 2).accessibilityHidden(true) }
@@ -2416,7 +2592,7 @@ private struct MessageRow: View {
                     }.buttonStyle(.plain).frame(width: 24, height: 24)
                         .focused($reactionFocused).accessibilityLabel("Add reaction")
                         .modifier(ControlHover(isFocused: reactionFocused))
-                        .disabled(chat.isPreview || chat.currentAuthor == nil)
+                        .disabled(!chat.canInteract)
                         .accessibilityIdentifier("add-reaction-\(message.id)")
                     Menu {
                         if chat.canForward { Button("Forward message") { chat.forwardTarget = message } }
@@ -2424,7 +2600,7 @@ private struct MessageRow: View {
                         if message.forward == nil && (message.revision ?? 1) > 1 { Button("View edit history") { history = true } }
                         Button(message.pin == nil ? "Pin message" : "Unpin message") {
                             Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
-                        }.disabled(chat.isPreview || chat.currentAuthor == nil || chat.pendingPins.contains(message.id))
+                        }.disabled(!chat.canInteract || chat.pendingPins.contains(message.id))
                         Button("Copy message") {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(message.content.text, forType: .string)
@@ -2455,7 +2631,7 @@ private struct MessageRow: View {
                 if message.forward == nil && (message.revision ?? 1) > 1 { Button("View edit history") { history = true } }
                 Button(message.pin == nil ? "Pin message" : "Unpin message") {
                     Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
-                }.disabled(chat.isPreview || chat.currentAuthor == nil || chat.pendingPins.contains(message.id))
+                }.disabled(!chat.canInteract || chat.pendingPins.contains(message.id))
                 Button("Copy message") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(message.content.text, forType: .string)
@@ -2468,9 +2644,10 @@ private struct MessageRow: View {
         #endif
     }
     private func rowBackground(mentionsMe: Bool) -> Color {
+        if !inPins && chat.focusedMessageID == message.id { return CaperTheme.terracotta.opacity(0.15) }
         if !inThread && chat.threadRootID == message.id { return CaperTheme.pinGold.opacity(0.1) }
         if mentionsMe { return CaperTheme.terracotta.opacity(0.08) }
-        return message.pin == nil ? .clear : CaperTheme.pinGold.opacity(0.06)
+        return inPins && message.pin != nil ? CaperTheme.pinGold.opacity(0.06) : .clear
     }
     /// Resolved `@mention` tokens render as pills: #F3F4F5 medium text on 24%
     /// terracotta. SwiftUI `Text` styles an inline run's background but cannot
@@ -2508,6 +2685,7 @@ private struct MentionCardContext {
     /// "Open profile for <display name or @username>".
     let name: (MentionPill) -> String
     let open: (MentionPill) -> Void
+    var openAuthor: ((ChatAuthor) -> Void)? = nil
 }
 
 /// The pointer over message text, in the timeline's space, read only when a
@@ -2517,14 +2695,26 @@ private final class MentionPointer {
 }
 
 private struct MentionCardTarget: Identifiable {
+    enum Reference {
+        case mention(MentionPill)
+        case author(ChatAuthor)
+    }
     let id = UUID()
-    let pill: MentionPill
+    let reference: Reference
     /// macOS: the click point; nil (keyboard or VoiceOver) centres the popover.
     let anchor: CGRect?
 
     /// The click point becomes a pill-high rect, so the popover sits below the pill.
     init(pill: MentionPill, pointer: CGPoint?) {
-        self.pill = pill
+        self.init(reference: .mention(pill), pointer: pointer)
+    }
+
+    init(author: ChatAuthor, pointer: CGPoint?) {
+        self.init(reference: .author(author), pointer: pointer)
+    }
+
+    private init(reference: Reference, pointer: CGPoint?) {
+        self.reference = reference
         anchor = pointer.map { CGRect(x: $0.x - 1, y: $0.y - 9, width: 2, height: 18) }
     }
 }
@@ -2534,6 +2724,14 @@ private extension AppModel {
     func mentionPerson(_ pill: MentionPill, viewerID: String?) -> MentionCardPerson {
         MentionCard.resolve(pill, members: detail?.members ?? [], people: people,
                             peers: directMessages.map(\.peer), account: account, viewerID: viewerID)
+    }
+
+    func mentionPerson(_ target: MentionCardTarget, viewerID: String?) -> MentionCardPerson {
+        switch target.reference {
+        case .mention(let pill): mentionPerson(pill, viewerID: viewerID)
+        case .author(let author): MentionCard.resolve(author, members: detail?.members ?? [], people: people,
+            peers: directMessages.map(\.peer), account: account, viewerID: viewerID)
+        }
     }
 }
 
@@ -2549,11 +2747,11 @@ private struct MentionCardHost: ViewModifier {
     @ViewBuilder func body(content: Content) -> some View {
         #if os(macOS)
         content.popover(item: $target, attachmentAnchor: anchor, arrowEdge: .bottom) { target in
-            MentionCardView(model: model, person: model.mentionPerson(target.pill, viewerID: viewerID)) { self.target = nil }
+            MentionCardView(model: model, person: model.mentionPerson(target, viewerID: viewerID)) { self.target = nil }
         }
         #else
         content.sheet(item: $target) { target in
-            MentionCardView(model: model, person: model.mentionPerson(target.pill, viewerID: viewerID)) { self.target = nil }
+            MentionCardView(model: model, person: model.mentionPerson(target, viewerID: viewerID)) { self.target = nil }
         }
         #endif
     }
@@ -2629,7 +2827,7 @@ private struct MentionCardView: View {
             if person.isSelf {
                 Text("You").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
                     .accessibilityIdentifier("mention-card-you")
-            } else {
+            } else if person.username != nil {
                 Button(opening ? "Opening…" : "Message") { Task { await message() } }
                     .buttonStyle(CaperPrimaryButton())
                     .disabled(opening)
@@ -2658,10 +2856,10 @@ private struct MentionCardView: View {
     }
 
     private func message() async {
-        guard !opening else { return }
+        guard !opening, let username = person.username else { return }
         opening = true; error = nil
         model.error = nil
-        let opened = await model.createDirectMessage(username: person.username)
+        let opened = await model.createDirectMessage(username: username)
         opening = false
         if opened { close(); return }
         // Shown in the card, which stays open, rather than in the sidebar.
@@ -2742,7 +2940,7 @@ private struct ReactionChip: View {
         #else
         .modifier(ControlHover())
         #endif
-        .disabled(chat.isPreview || chat.currentAuthor == nil)
+        .disabled(!chat.canInteract)
         .accessibilityLabel("\(reaction.emoji) reaction, \(reaction.authorIds.count), \(own ? "selected by you" : "not selected by you")")
         .accessibilityAddTraits(own ? .isSelected : [])
         // Outside .disabled: read-only previews can still see who reacted.
@@ -3157,9 +3355,24 @@ private struct MessageActionsSheet: View {
 
 private struct PinnedMessagesView: View {
     @Bindable var chat: ChatModel
+    let model: AppModel
     let close: () -> Void
-    @State private var editTarget: ChatMessage?
-    @State private var historyTarget: ChatMessage?
+    @State private var actionTarget: ChatMessage?
+    @State private var showingEmojiPicker = false
+    @State private var reactorsTarget: ReactorsTarget?
+    @State private var mentionCard: MentionCardTarget?
+    @State private var mentionPointer = MentionPointer()
+    private var viewerID: String? { chat.currentAuthor?.id ?? model.account?.id }
+    private var mentionCards: MentionCardContext {
+        MentionCardContext(pointer: mentionPointer, name: { model.mentionPerson($0, viewerID: viewerID).title }, open: { pill in
+            actionTarget = nil; showingEmojiPicker = false; reactorsTarget = nil
+            mentionCard = MentionCardTarget(pill: pill, pointer: mentionPointer.location)
+        }, openAuthor: { author in
+            if case .author(let shown)? = mentionCard?.reference, shown.id == author.id { return }
+            actionTarget = nil; showingEmojiPicker = false; reactorsTarget = nil
+            mentionCard = MentionCardTarget(author: author, pointer: mentionPointer.location)
+        })
+    }
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -3167,9 +3380,10 @@ private struct PinnedMessagesView: View {
                 Spacer()
                 Text("Pins").font(CaperTheme.font(15, weight: .bold))
                 Spacer()
-                Button("Close", action: close).buttonStyle(.plain).opacity(0)
+                Button("Close", action: close).buttonStyle(.plain)
             }.padding(.horizontal, 18).frame(height: 50)
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+            if let error = chat.jumpError { Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright).padding(12) }
             if chat.displayedPins.isEmpty {
                 ContentUnavailableView("No pinned messages", systemImage: "pin", description: Text("Pinned messages in this channel will appear here."))
             } else {
@@ -3177,43 +3391,22 @@ private struct PinnedMessagesView: View {
                     LazyVStack(spacing: 0) {
                         ForEach(chat.displayedPins) { message in
                             VStack(alignment: .leading, spacing: 5) {
-                                if let pin = message.pin {
-                                    Label("Pinned by \(pin.author.name)", systemImage: "pin.fill")
-                                        .font(CaperTheme.font(10, weight: .medium)).foregroundStyle(CaperTheme.pinGold)
-                                        .padding(.leading, 44)
-                                        .accessibilityIdentifier("pinned-by-\(message.id)")
-                                }
-                                HStack(alignment: .top, spacing: 10) {
-                                    Avatar(name: message.author.name, size: 34, avatarID: message.author.avatarId)
-                                    VStack(alignment: .leading, spacing: 5) {
-                                        Text(message.author.name).font(CaperTheme.font(13, weight: .bold))
-                                        if let date = ChatDateDivider.date(message.createdAt) {
-                                            Text(date.formatted(date: .abbreviated, time: .shortened))
-                                                .font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
-                                        }
-                                        if message.forward == nil && (message.revision ?? 1) > 1 { Button("(edited)") { historyTarget = message }.buttonStyle(.plain).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).modifier(ControlHover()).accessibilityLabel("View edit history") }
-                                        Text(message.content.text).font(CaperTheme.font(14))
-                                        ForwardCardView(message: message) { chat.forwardConversationTarget = message }
-                                        if chat.canEdit(message) { Button("Edit message") { editTarget = message }.buttonStyle(.plain).font(CaperTheme.font(11)).modifier(ControlHover()) }
-                                        if let error = chat.pinErrors[message.id] {
-                                            HStack {
-                                                Text(error)
-                                                Button("Retry") { Task { await chat.retryPin(messageID: message.id) } }
-                                                    .disabled(chat.pendingPins.contains(message.id))
-                                            }.font(CaperTheme.font(11)).foregroundStyle(CaperTheme.terracottaBright)
-                                        }
-                                    }.frame(maxWidth: .infinity, alignment: .leading)
-                                    if !chat.isPreview && chat.currentAuthor != nil {
-                                        Button(chat.pendingPins.contains(message.id) ? "Unpinning…" : "Unpin") {
-                                            Task { await chat.setPin(messageID: message.id, active: false) }
-                                        }.buttonStyle(.plain).font(CaperTheme.font(11, weight: .medium))
-                                            .modifier(ControlHover())
-                                            .disabled(chat.pendingPins.contains(message.id))
-                                            .frame(minHeight: 44)
+                                MessageRow(message: message, chat: chat, currentUserID: viewerID,
+                                    reactors: ReactorContext(viewerID: chat.currentAuthor?.id, sheetOpen: reactorsTarget != nil) { id, emoji in reactorsTarget = ReactorsTarget(messageID: id, emoji: emoji) },
+                                    mentionCards: mentionCards, inThread: true, inPins: true) { actionTarget = message }
+                                Button {
+                                    mentionCard = nil
+                                    Task { if await chat.goToMessage(message) { close() } }
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Text(chat.jumpingToMessage ? "Loading message…" : "Go to message")
+                                        CaperIcon(name: "arrow-right", size: 14)
                                     }
-                                }
-                            }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 18).padding(.vertical, 12)
-                                .background(CaperTheme.pinGold.opacity(0.06))
+                                }.buttonStyle(.plain).font(CaperTheme.font(12, weight: .medium))
+                                    .foregroundStyle(CaperTheme.muted).disabled(chat.jumpingToMessage)
+                                    .frame(minHeight: 44).padding(.leading, 62).padding(.bottom, 8)
+                                    .accessibilityIdentifier("go-to-message-\(message.id)")
+                            }.frame(maxWidth: .infinity, alignment: .leading)
                                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
                                 .accessibilityIdentifier("pinned-message-\(message.id)")
                         }
@@ -3221,9 +3414,26 @@ private struct PinnedMessagesView: View {
                 }
             }
         }.background(CaperTheme.conversation)
-            .sheet(item: $editTarget) { target in MessageEditorView(chat: chat, message: target) { editTarget = nil } }
-            .sheet(item: $historyTarget) { target in MessageHistoryView(chat: chat, message: target) { historyTarget = nil } }
-            .onChange(of: chat.editingContext) { _, _ in editTarget = nil; historyTarget = nil; close() }
+            .coordinateSpace(.named(MentionCard.timelineSpace))
+            .modifier(MentionCardHost(target: $mentionCard, model: model, viewerID: viewerID))
+            .sheet(item: $reactorsTarget) { target in ReactorsSheet(chat: chat, messageID: target.messageID, emoji: target.emoji, viewerID: chat.currentAuthor?.id) }
+            #if os(iOS)
+            .sheet(item: $actionTarget) { message in
+                MessageActionsSheet(message: message, chat: chat, showingEmojiPicker: $showingEmojiPicker,
+                    canReact: chat.canInteract,
+                    canPin: chat.canInteract && !chat.pendingPins.contains(message.id),
+                    togglePin: { actionTarget = nil; Task { await chat.setPin(messageID: message.id, active: message.pin == nil) } },
+                    reply: { actionTarget = nil; close(); Task { await chat.openThread(message.threadRootId ?? message.id) } },
+                    canForward: chat.canForward, forward: { actionTarget = nil; close(); chat.forwardTarget = message },
+                    quickReaction: { emoji in
+                        let active = !(message.reactions?.first(where: { $0.emoji == emoji })?.authorIds.contains(chat.currentAuthor?.id ?? "") ?? false)
+                        actionTarget = nil; Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: active) }
+                    }, selectReaction: { emoji in actionTarget = nil; Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) } })
+            }
+            #else
+            .popover(item: $actionTarget) { message in ReactionPicker { emoji in actionTarget = nil; Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) } } }
+            #endif
+            .onChange(of: chat.editingContext) { _, _ in actionTarget = nil; reactorsTarget = nil; close() }
             .accessibilityIdentifier("pinned-messages")
     }
 }
@@ -4322,10 +4532,10 @@ private struct ControlHover: ViewModifier {
     func body(content: Content) -> some View {
         content.overlay {
             RoundedRectangle(cornerRadius: 8)
-                .fill(Color.white.opacity(hovered && enabled ? 0.06 : 0))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.terracottaBright.opacity((isFocused ?? focused) && enabled ? 0.9 : 0), lineWidth: 2))
+                .fill(Color.white.opacity((isFocused ?? focused) && enabled ? 0.12 : hovered && enabled ? 0.06 : 0))
                 .allowsHitTesting(false)
         }
+        .focusEffectDisabled()
         .onHover { hovered = $0 }
         .modifier(ControlPointer())
     }

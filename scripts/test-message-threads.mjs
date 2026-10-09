@@ -89,6 +89,14 @@ const open = (id) => {
   wait(
     '!!document.querySelector(".chat-thread-panel") && !document.querySelector(".chat-thread-messages[aria-busy=true]")',
   );
+  assert.deepEqual(
+    evaluate(`(() => {
+      const replies = document.querySelector('.chat-thread-messages');
+      return [getComputedStyle(replies).scrollbarWidth, getComputedStyle(replies, '::-webkit-scrollbar').display];
+    })()`),
+    ["none", "none"],
+    "Thread replies keep scrolling without revealing a scrollbar",
+  );
 };
 const reply = (text) => {
   browser("fill", "#chat-thread-reply", text);
@@ -358,11 +366,11 @@ try {
     window.pinsScrollTop = pinsChannel.scrollTop;
   })()`);
   browser("click", ".chat-pins-toggle");
-  wait('!!document.querySelector(".chat-pins")');
+  wait('!!document.querySelector(".chat-pins-dialog")');
   evaluate(`(() => {
     window.threadPinFrames = [];
     const sample = () => {
-      if (!document.querySelector('.chat-pins')) {
+      if (!document.querySelector('.chat-pins-dialog')) {
         const scroller = document.querySelector('.chat-scroller');
         const bounds = scroller.getBoundingClientRect();
         threadPinFrames.push(scroller === pinsChannel && document.querySelector('.chat-thread-panel') === pinsThread
@@ -374,7 +382,7 @@ try {
     };
     requestAnimationFrame(sample);
   })()`);
-  browser("click", ".chat-pins-toggle");
+  browser("find", "role", "button", "click", "--name", "Close pins", "--exact");
   wait("threadPinFrames.length === 30");
   assert.equal(
     evaluate("threadPinFrames.every(Boolean)"),
