@@ -122,6 +122,13 @@ async fn create(
     Extension(principal): Extension<Principal>,
     Json(input): Json<CreateInput>,
 ) -> Result<Json<Value>, ApiError> {
+    // Recipients identify a sender by @username; nobody may write anonymously.
+    if !principal.user.onboarded() {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "complete profile required",
+        ));
+    }
     let id = create_conversation(pool(&state)?, principal.user.id, &input.username).await?;
     conversation(pool(&state)?, principal.user.id, &id).await
 }
@@ -178,7 +185,9 @@ async fn create_conversation(pool: &PgPool, user: i64, username: &str) -> Result
         }
         shared
     };
-    let (total,recent,requests): (i64,i64,i64)=sqlx::query_as("SELECT count(*),count(*) FILTER (WHERE created_at>now()-interval '1 minute'),count(*) FILTER (WHERE requested_by=$1 AND accepted_at IS NULL AND created_at>now()-interval '1 hour') FROM public.direct_conversations WHERE $1 IN (low_user_id,high_user_id)")
+    // Only conversations this account started count, so strangers' requests
+    // can't use up someone else's quota.
+    let (total,recent,requests): (i64,i64,i64)=sqlx::query_as("SELECT count(*),count(*) FILTER (WHERE created_at>now()-interval '1 minute'),count(*) FILTER (WHERE accepted_at IS NULL AND created_at>now()-interval '1 hour') FROM public.direct_conversations WHERE $1 IN (low_user_id,high_user_id) AND requested_by=$1")
         .bind(user).fetch_one(&mut *tx).await.map_err(|_|chat::unavailable())?;
     if total >= 1000 || recent >= 20 {
         return Err(ApiError::new(

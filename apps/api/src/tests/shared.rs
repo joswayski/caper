@@ -534,6 +534,7 @@ async fn shared_capacity_operations_and_abandoned_work() {
             JoinReservation {
                 started: Timestamp::now() - Duration::from_secs(31),
                 monitor: None,
+                user: None,
             },
         );
         Ok(())

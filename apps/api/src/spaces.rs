@@ -327,6 +327,8 @@ async fn list_spaces(
          JOIN public.spaces s ON s.id=i.space_id JOIN public.users o ON o.id=s.owner_id
          WHERE i.user_id=$1 AND i.status='pending' AND i.updated_at > now()-interval '7 days'
            AND s.deleted_at IS NULL AND NOT s.demo
+           -- Blocking an owner hides their invitations, as it declines their DM requests.
+           AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=$1 AND b.blocked_id=s.owner_id AND b.deleted_at IS NULL)
          ORDER BY i.updated_at DESC,s.id",
     )
     .bind(principal.user.id)
@@ -447,6 +449,7 @@ async fn get_space(
          JOIN public.users u ON u.id=s.owner_id
          WHERE c.space_id=$1 AND i.user_id=$2 AND c.private AND c.deleted_at IS NULL
            AND i.status='pending' AND i.updated_at > now()-interval '7 days'
+           AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=$2 AND b.blocked_id=s.owner_id AND b.deleted_at IS NULL)
          ORDER BY i.updated_at,c.id"
     ).bind(row.0).bind(principal.user.id).fetch_all(pool).await.map_err(database_error)?
         .into_iter().map(|(id,name,username,display_name)|json!({"channel":Channel{id,space_id:space.clone(),name,private:true,joined:false},"inviter":{"username":username,"displayName":display_name}})).collect();
@@ -621,6 +624,7 @@ async fn add_space_member(
     let mut tx = pool.begin().await.map_err(database_error)?;
     let space_id = owner_space(&mut tx, &space, principal.user.id).await?;
     let member = find_user_for_update(&mut tx, &input.username).await?;
+    ensure_invitee_allows(&mut tx, member.0, principal.user.id).await?;
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM public.space_members WHERE space_id=$1 AND user_id=$2 AND deleted_at IS NULL)",
     )
@@ -650,7 +654,8 @@ async fn add_space_member(
         }
     }
     let (received,sent): (i64,i64) = sqlx::query_as(
-        "SELECT count(*) FILTER (WHERE i.user_id=$1),count(*) FILTER (WHERE i.space_id=$2)
+        "SELECT count(*) FILTER (WHERE i.user_id=$1 AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=$1 AND b.blocked_id=s.owner_id AND b.deleted_at IS NULL)),
+                count(*) FILTER (WHERE i.space_id=$2)
          FROM public.space_invitations i JOIN public.spaces s ON s.id=i.space_id
          WHERE i.status='pending' AND i.updated_at > now()-interval '7 days' AND s.deleted_at IS NULL
            AND (i.user_id=$1 OR i.space_id=$2)",
@@ -742,12 +747,14 @@ async fn accept_invitation(
         "SELECT s.id,s.name,o.external_id FROM public.spaces s JOIN public.users o ON o.id=s.owner_id
          WHERE s.external_id=$1 AND s.deleted_at IS NULL AND NOT s.demo FOR UPDATE OF s",
     ).bind(&space).fetch_optional(&mut *tx).await.map_err(database_error)?.ok_or_else(not_found)?;
-    lock_onboarded_user(&mut tx, principal.user.id).await?;
+    // Invitation changes are serialized on the space row held above. Check for
+    // one before the profile so uninvited callers can't probe space existence.
     let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM public.space_invitations WHERE space_id=$1 AND user_id=$2 AND status='pending' AND updated_at > now()-interval '7 days')")
         .bind(id).bind(principal.user.id).fetch_one(&mut *tx).await.map_err(database_error)?;
     if !pending {
         return Err(not_found());
     }
+    lock_onboarded_user(&mut tx, principal.user.id).await?;
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM public.space_members sm JOIN public.spaces s ON s.id=sm.space_id WHERE sm.user_id=$1 AND sm.deleted_at IS NULL AND s.deleted_at IS NULL")
         .bind(principal.user.id).fetch_one(&mut *tx).await.map_err(database_error)?;
     if count >= state.config.space_limits.total_spaces {
@@ -835,11 +842,12 @@ async fn remove_space_member(
     .await
     .map_err(database_error)?;
     let target = target.ok_or_else(not_found)?;
-    if target == owner_id {
-        return Err(conflict("owner cannot be removed"));
-    }
+    // Authorize first so outsiders can't learn whether a space exists or who owns it.
     if principal.user.id != owner_id && principal.user.id != target {
         return Err(not_found());
+    }
+    if target == owner_id {
+        return Err(conflict("owner cannot be removed"));
     }
     sqlx::query("UPDATE public.channel_members cm SET deleted_at=now() FROM public.channels c WHERE cm.channel_id=c.id AND c.space_id=$1 AND cm.user_id=$2 AND cm.deleted_at IS NULL")
         .bind(space_id).bind(target).execute(&mut *tx).await.map_err(database_error)?;
@@ -972,6 +980,27 @@ async fn find_user_for_update(
     sqlx::query_as("SELECT id,external_id,avatar_id,username,display_name FROM public.users WHERE username=$1 AND deleted_at IS NULL AND display_name IS NOT NULL FOR UPDATE")
         .bind(username).fetch_optional(&mut **tx).await.map_err(database_error)?
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "user not found"))
+}
+
+/// Someone who blocked the owner never receives their space or channel
+/// invitations. Refuse as an unknown account rather than confirming the block.
+async fn ensure_invitee_allows(
+    tx: &mut Transaction<'_, Postgres>,
+    invitee: i64,
+    owner: i64,
+) -> Result<(), ApiError> {
+    let blocked: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM public.user_blocks WHERE blocker_id=$1 AND blocked_id=$2 AND deleted_at IS NULL)",
+    )
+    .bind(invitee)
+    .bind(owner)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(database_error)?;
+    if blocked {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "user not found"));
+    }
+    Ok(())
 }
 
 async fn members(pool: &PgPool, space: i64) -> Result<Vec<Member>, ApiError> {
@@ -1887,6 +1916,198 @@ mod tests {
             one.err().or_else(|| two.err()).unwrap().message,
             "pending invitation limit reached"
         );
+
+        pool.close().await;
+        admin
+            .execute(format!("DROP DATABASE {database} WITH (FORCE)").as_str())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires disposable loopback CHAT_TEST_DATABASE_URL"]
+    async fn blocks_stop_invitations_and_outsiders_cannot_probe_spaces() {
+        let url = std::env::var("CHAT_TEST_DATABASE_URL")
+            .expect("CHAT_TEST_DATABASE_URL must point at disposable Postgres");
+        let options = PgConnectOptions::from_str(&url).unwrap();
+        assert!(matches!(options.get_host(), "127.0.0.1" | "localhost"));
+        let mut admin = sqlx::PgConnection::connect_with(&options).await.unwrap();
+        let database = format!("spaces_block_test_{}", Uuid::new_v4().simple());
+        admin
+            .execute(format!("CREATE DATABASE {database}").as_str())
+            .await
+            .unwrap();
+        let pool = PgPoolOptions::new()
+            .max_connections(4)
+            .connect_with(options.database(&database))
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        let mut users = Vec::new();
+        for username in ["owner", "invitee", "outsider"] {
+            let external = random_id(12);
+            let id: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name) VALUES($1,$2,$2) RETURNING id")
+                .bind(&external).bind(username).fetch_one(&pool).await.unwrap();
+            users.push(principal(id, &external, username));
+        }
+        let (owner, invitee, outsider) = (&users[0], &users[1], &users[2]);
+        let state = AppState::with_database(
+            Config::test(true),
+            Arc::new(Cloudflare::new()),
+            Some(pool.clone()),
+        );
+        let space = |name: &'static str| {
+            let pool = pool.clone();
+            let owner = owner.user.id;
+            async move {
+                let external = random_id(12);
+                let id: i64 = sqlx::query_scalar("INSERT INTO public.spaces(external_id,name,owner_id) VALUES($1,$2,$3) RETURNING id")
+                    .bind(&external).bind(name).bind(owner).fetch_one(&pool).await.unwrap();
+                sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+                    .bind(id)
+                    .bind(owner)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                (id, external)
+            }
+        };
+        let invite = |space: String| {
+            add_space_member(
+                State(state.clone()),
+                Extension(owner.clone()),
+                Path(space),
+                Json(MemberInput {
+                    username: "invitee".into(),
+                }),
+            )
+        };
+        let block = |active: bool| {
+            let pool = pool.clone();
+            let (blocker, blocked) = (invitee.user.id, owner.user.id);
+            async move {
+                if active {
+                    sqlx::query(
+                        "INSERT INTO public.user_blocks(blocker_id,blocked_id) VALUES($1,$2)",
+                    )
+                    .bind(blocker)
+                    .bind(blocked)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                } else {
+                    sqlx::query("UPDATE public.user_blocks SET deleted_at=now() WHERE blocker_id=$1 AND blocked_id=$2 AND deleted_at IS NULL")
+                        .bind(blocker).bind(blocked).execute(&pool).await.unwrap();
+                }
+            }
+        };
+        let pending_spaces = || async {
+            list_spaces(State(state.clone()), Extension(invitee.clone()))
+                .await
+                .unwrap()
+                .0["invitations"]
+                .as_array()
+                .unwrap()
+                .len()
+        };
+
+        // A pending invitation is hidden while its sender is blocked, and the
+        // blocked owner can't send another one through a fresh space.
+        let (_, first) = space("First").await;
+        assert_eq!(invite(first.clone()).await.unwrap().0, StatusCode::CREATED);
+        assert_eq!(pending_spaces().await, 1);
+        block(true).await;
+        assert_eq!(pending_spaces().await, 0);
+        let (_, second) = space("Second").await;
+        let refused = invite(second.clone()).await.err().unwrap();
+        assert_eq!(
+            (refused.status, refused.message),
+            (StatusCode::NOT_FOUND, "user not found")
+        );
+        block(false).await;
+        assert_eq!(pending_spaces().await, 1);
+        assert_eq!(invite(second).await.unwrap().0, StatusCode::CREATED);
+        assert_eq!(pending_spaces().await, 2);
+
+        // Private channel invitations inside a shared space follow the same rule.
+        let (shared_id, shared) = space("Shared").await;
+        sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+            .bind(shared_id)
+            .bind(invitee.user.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let channel = random_id(12);
+        sqlx::query("INSERT INTO public.channels(external_id,space_id,name,private) VALUES($1,$2,'quiet',true)")
+            .bind(&channel).bind(shared_id).execute(&pool).await.unwrap();
+        let invite_channel = || {
+            add_channel_member(
+                State(state.clone()),
+                Extension(owner.clone()),
+                Path((shared.clone(), channel.clone())),
+                Json(MemberInput {
+                    username: "invitee".into(),
+                }),
+            )
+        };
+        let pending_channels = || async {
+            get_space(
+                State(state.clone()),
+                Extension(invitee.clone()),
+                Path(shared.clone()),
+            )
+            .await
+            .unwrap()
+            .0["channelInvitations"]
+                .as_array()
+                .unwrap()
+                .len()
+        };
+        block(true).await;
+        assert_eq!(
+            invite_channel().await.err().unwrap().status,
+            StatusCode::NOT_FOUND
+        );
+        block(false).await;
+        assert_eq!(invite_channel().await.unwrap().0, StatusCode::CREATED);
+        assert_eq!(pending_channels().await, 1);
+        block(true).await;
+        assert_eq!(pending_channels().await, 0);
+
+        // Outsiders get the same 404 for real and missing spaces.
+        for space in [first.clone(), random_id(12)] {
+            let removal = remove_space_member(
+                State(state.clone()),
+                Extension(outsider.clone()),
+                Path((space.clone(), owner.user.external_id.clone())),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(removal.status, StatusCode::NOT_FOUND, "{space}");
+        }
+        sqlx::query("UPDATE public.users SET username=NULL,display_name=NULL WHERE id=$1")
+            .bind(outsider.user.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let accepted = accept_invitation(
+            State(state.clone()),
+            Extension(outsider.clone()),
+            Path(first.clone()),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert_eq!(accepted.status, StatusCode::NOT_FOUND);
+        // The owner still can't remove themselves.
+        let own = remove_space_member(
+            State(state.clone()),
+            Extension(owner.clone()),
+            Path((first, owner.user.external_id.clone())),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(own.status, StatusCode::CONFLICT);
 
         pool.close().await;
         admin

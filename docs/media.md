@@ -564,9 +564,12 @@ HTTP contract (same origin, no cache):
 
 - `GET /api/chat/general`: retired; returns 404.
 - `POST /api/chat/session {name}`: opaque sender token and public author. Login
-  is required; a valid account supplies the authoritative name.
-  Tokens are stored hashed in Postgres and expire after 30 days.
-  Account-linked chat tokens also stop working after parent logout/expiry.
+  and a completed profile are required (403 `complete profile required`
+  otherwise); the account's display name is always the author name and the
+  submitted `name` is ignored. Tokens are stored hashed in Postgres and expire
+  after 30 days. Account-linked chat tokens also stop working after parent
+  logout/expiry, or if the account has no username and display name. The web
+  client forgets its stored token on logout.
 - `POST /api/chat/channels/{id}/messages {clientMessageId,text}` with
   `X-Caper-Chat-Token`: returns the committed message. The browser retries the
   same UUID and original text after ambiguous errors, using Enter or Retry send.
@@ -656,11 +659,14 @@ Delivery and recovery:
    not a per-recipient payload fetch. Session/membership authorization is still
    checked per subscription; this is not a claim of zero per-recipient SQL work.
 
-Limits: 30 new messages/guest/minute, 120/channel/minute, and 60 new sender
+Limits: 30 new messages/account/minute in a channel (shared by all of that
+account's chat sessions), 120/channel/minute, and 60 new sender
 sessions/minute per account (a site-wide budget let a few accounts block
 everyone). Signed-in clients reuse one sender session per account across
 conversations (web per page, Apple/Android/Rust desktop per sign-in) and mint a
-new one only after a 401 or a profile rename; a 403 refusal never replaces it. `GATEWAY_MAX_CONNECTIONS` defaults to 4096
+new one only after a 401 or a profile rename; a 403 refusal never replaces it.
+Gateway sockets require a signed-in account; anonymous upgrades get 401 before
+taking a connection slot. `GATEWAY_MAX_CONNECTIONS` defaults to 4096
 per pod (an admission limit, **not measured capacity**). Each channel has a bounded
 256-event ring. A lagging receiver replays from Postgres in batches of 128.
 Application sockets use 4 KiB read buffers, a 256-frame outgoing queue, and a
@@ -1719,7 +1725,13 @@ their retained history. Individual message deletion is not implemented.
   readable and the destination writable. Same-session retries reuse the exact
   UUID and note; ambiguous failures freeze that intent. Conflicting UUID reuse
   returns 409. Shared payloads are always loaded by the server, never accepted
-  from client input.
+  from client input. Every change to an original rewrites each of its forwards,
+  so one original accepts at most 100 forwards, 10 per account; beyond that a
+  new forward returns 409 `this message can't be forwarded again` (retries of
+  committed forwards still succeed). Sends and forwards share the per-account
+  rate limit.
+- `GET /api/chat/channels/{destination}/messages/{wrapper}` hydrates the forward
+  like history, so a deleted source is never served from the stored snapshot.
 - The returned message has `forward:{message,seq}` (original or null and source
   snapshot cursor) and `forwardSeq` (destination projection revision).
 - `GET /api/chat/channels/{destination}/forwards/{wrapper}/thread?before={seq}`
@@ -2401,7 +2413,8 @@ Keep this temporary test separate from any future production app/key.
 | `AUTH_EMAIL_DAILY_LIMIT` | Code requests accepted per email in 24 hours; default `5` |
 | `AUTH_IP_HOURLY_LIMIT` | Code requests accepted per source-IP hash in one hour; default `10` |
 | `AUTH_GLOBAL_HOURLY_LIMIT` | Code requests accepted across the service in one hour; default `500` |
-| `NOTIFICATIONS_WEBHOOK_URL` | Optional server-only HTTPS URL for best-effort application notifications. The current event is `user.created`; URLs with credentials, query strings, or fragments are rejected and leave notifications disabled. |
+| `NOTIFICATIONS_WEBHOOK_URL` | Optional server-only HTTPS URL for best-effort application notifications. The current event is `user.created`; URLs with credentials, query strings, or fragments are rejected and leave notifications disabled. Redirects are never followed. |
+| `CAPER_API_ORIGIN` | Web-only. Origin the web server uses for server-rendered account lookups, e.g. `http://caper-api:3001` in-cluster or `http://api:3001` in Compose. It is the only place the server sends a visitor's session cookie. Unset outside development, the homepage renders a placeholder and the browser looks the account up itself. |
 | `NOTIFICATIONS_ENABLED` | `true` starts the phone-push workers in the API role (requires `CHAT_ENABLED`). Default off: `GET /api/push/config` lists no platform and nothing is sent. Notification settings and mutes work either way. |
 | `PUSH_PLATFORMS` | Comma-separated `apns`, `apnsSandbox`, `fcm`. A platform is advertised only when listed here and its credentials load; add one only after physical-device validation. |
 | `APNS_TEAM_ID`, `APNS_TOPIC` | Apple team ID; topic defaults to `chat.caper.ios`. |
@@ -2543,6 +2556,13 @@ live ingestion into the user's dataset has not been verified.
 - Web-only deployments do not reload already-open tabs; production media control
   requests route straight to Rust. Keep API/gateway changes compatible with old
   tabs and native clients, which will not all update at deployment time.
+- Web server responses send `Strict-Transport-Security: max-age=31536000` (no
+  `includeSubDomains`), refuse framing (`frame-ancestors 'none'`,
+  `X-Frame-Options: DENY`), and set `nosniff` and
+  `Referrer-Policy: strict-origin-when-cross-origin`. HSTS only helps once plain
+  HTTP redirects to HTTPS at the edge (Cloudflare "Always Use HTTPS").
+  Server-rendered account lookups go only to `CAPER_API_ORIGIN`, never to an
+  address derived from the request's Host header.
 - The production infrastructure manifests configure **both API and gateway** with
   two replicas, `RollingUpdate`, `maxUnavailable: 0`, `maxSurge: 1`, `/readyz`, a
   five-second `preStop`, and 65-second termination grace. This is the desired
@@ -2602,8 +2622,11 @@ live ingestion into the user's dataset has not been verified.
 
 - 12 registered sessions total, one microphone publication each, 11 subscriptions.
   A running Mic test uses two additional private sessions within that same cap.
-- 30 joins/minute globally; 120 provider mutations/minute per participant;
-  256 KiB request bodies. These are **not a spending cap or DDoS defense**.
+- 30 joins/minute per room, at most 10 of them by one account; 120 provider
+  mutations/minute per participant; 256 KiB request bodies. One account holds
+  at most 4 of a room's 12 slots (participants, microphone-test monitors and
+  in-flight joins on any of its devices) and gets 409 `already in this call on
+  too many devices` beyond that. These are **not a spending cap or DDoS defense**.
 - No fixed call-age limit; 48-hour TURN credentials renewed at 24 hours;
   45-second presence lease, sweep every five seconds. Background browser
   throttling can force a reconnect.
@@ -3124,7 +3147,9 @@ Lifecycle and cost:
   issuing channel's registry; adoption cancels that job there, even from
   another channel.
 - A room accepts one warm request per account per 10 seconds, and at most 48
-  per 10 seconds in total.
+  per 10 seconds in total. It refuses warms (429) while its cleanup backlog is
+  half full, so parked revocations never crowd out the immediate cleanup that
+  removing a participant needs.
 - Cloudflare bills egress only, and an idle connected session carries only
   connectivity checks, so a warm pair costs no media. Cloudflare documents that
   its media inactivity timeout does not define the lifetime of a connected
@@ -4834,7 +4859,9 @@ API contracts (account authentication required):
 Lists refresh every 15 seconds; the open conversation receives live gateway
 messages. Unread means the durable head is beyond the account's read cursor.
 Read state is account-wide, not device-wide. New conversations are limited to
-20/minute and 1,000 per initiating account. Exact usernames are discoverable by
+20/minute and 1,000 per initiating account; requests other people start with you
+don't count. Starting one requires a completed profile (403 `complete profile
+required`). Exact usernames are discoverable by
 starting a conversation; membership in a shared space is not required, but a
 stranger's first DM is a message request.
 
@@ -4865,6 +4892,9 @@ account's message, and from a request. Clients confirm first. A block:
   refusal on the message and keeps the conversation open, treats a refused send as
   final (Edit or Dismiss), and hides reactions, pins and edits in a DM you blocked.
 - declines any pending request from them.
+- stops their space and private-channel invitations to you: inviting you returns
+  the same 404 as an unknown username, and invitations sent before the block are
+  hidden while it lasts.
 - hides their messages wherever you share a conversation. Each run of consecutive
   messages becomes one row, "⊘ N blocked messages — Show", in channels, threads and
   DMs. **Show** reveals that run until you hide it or leave. Their messages don't

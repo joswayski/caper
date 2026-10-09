@@ -51,8 +51,10 @@ impl NotificationsWebhook {
                 }
             });
         Self {
+            // Never follow redirects: they could resend account emails elsewhere.
             client: Client::builder()
                 .timeout(DELIVERY_TIMEOUT)
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .expect("reqwest client configuration is valid"),
             url,

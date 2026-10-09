@@ -2309,7 +2309,7 @@ async fn durable_account_delivery_replay_handoff_and_demo_retirement() {
         typing_command(&app, &channel, Some("account-chat"), json!({"typing":true})).await,
         StatusCode::UNAUTHORIZED
     );
-    // Boundary: 30 new sends/minute per chat session; an already committed retry still
+    // Boundary: 30 new sends/minute per account; an already committed retry still
     // succeeds at the limit and does not consume another rate-limit slot.
     for index in 5..30 {
         persist(
@@ -2333,6 +2333,19 @@ async fn durable_account_delivery_replay_handoff_and_demo_retirement() {
         persist(&pool, &channel, token, id, "one").await.unwrap(),
         one
     );
+    // Another chat session of the same account shares that budget.
+    assert_eq!(
+        persist(&pool, &channel, other_token, Uuid::new_v4(), "over limit")
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    sqlx::query("UPDATE public.messages SET created_at = created_at - interval '1 minute' WHERE channel_id = (SELECT id FROM public.channels WHERE external_id = $1)")
+        .bind(&channel)
+        .execute(&pool)
+        .await
+        .unwrap();
     for index in 0..22 {
         persist(
             &pool,
