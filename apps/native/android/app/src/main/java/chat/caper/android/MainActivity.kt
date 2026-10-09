@@ -2323,8 +2323,15 @@ internal fun counterTone(count: Int): Color = when {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable private fun AuthFrame(content: @Composable ColumnScope.() -> Unit) {
-    BoxWithConstraints(Modifier.fillMaxSize().background(Blackout)) {
+    // The keyboard shrinks this frame (the root pads for it), and sign-in keeps the field focused
+    // after a failed request. Scroll rather than clip, and keep the end of the form (its error and
+    // primary button) above the keyboard; otherwise the button sits hidden behind it.
+    val scroll = rememberScrollState()
+    val keyboard = WindowInsets.isImeVisible
+    LaunchedEffect(keyboard, scroll.maxValue) { if (keyboard) scroll.scrollTo(scroll.maxValue) }
+    BoxWithConstraints(Modifier.fillMaxSize().background(Blackout).verticalScroll(scroll)) {
         val narrow = maxWidth <= 480.dp
         Column(
             Modifier.padding(horizontal = if (narrow) 20.dp else 0.dp).widthIn(max = 440.dp).fillMaxWidth()
