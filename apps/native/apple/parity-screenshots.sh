@@ -22,7 +22,8 @@ curl --silent --fail http://127.0.0.1:3001/api/spaces -H 'authorization: Bearer 
 rm -rf "$ROOT/ParityResults.xcresult" "$ROOT/parity-artifacts"
 if [[ "$PLATFORM" == macos ]]; then
   scheme=CaperMacOSParityTests
-  destination='platform=macOS'
+  # CAPER_MACOS_ARCH=x86_64 on Apple silicon runs the Intel app under Rosetta.
+  destination="platform=macOS,arch=${CAPER_MACOS_ARCH:-$(uname -m)}"
 else
   scheme=CaperIOSParityTests
   destination='platform=iOS Simulator,name=iPhone 16,OS=latest'
