@@ -9,7 +9,12 @@ struct SharedOriginalView: View {
                 Text(message.author.name).font(CaperTheme.font(13, weight: .bold))
                 if message.editedAt != nil { Text("edited").font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted) }
             }
-            Text(message.content.text).font(CaperTheme.font(14)).textSelection(.enabled)
+            // Links open in the system browser; selection would take their clicks on macOS.
+            if let linked = MessageLinks.attributed(message.content.text) {
+                Text(linked).font(CaperTheme.font(14)).tint(CaperTheme.terracottaBright)
+            } else {
+                Text(message.content.text).font(CaperTheme.font(14)).textSelection(.enabled)
+            }
             ReactionFlowLayout(spacing: 8) {
                 ForEach(message.reactions ?? []) { reaction in
                     HStack(spacing: 4) {

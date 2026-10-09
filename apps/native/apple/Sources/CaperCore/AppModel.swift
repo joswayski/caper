@@ -68,9 +68,20 @@ public final class AppModel {
     public var selectedChannel: Channel? { detail?.channels.first { $0.id == selectedChannelID } }
     public var error: String?
     public var busy = false
-    public var challengeID: String? { didSet { if challengeID != oldValue { loginAttemptsRemaining = nil } } }
+    public var challengeID: String? {
+        didSet {
+            if challengeID != oldValue { loginAttemptsRemaining = nil }
+            // "Use a different email" (or signing out) starts the resend allowance over.
+            if challengeID == nil { codesSent = 0; codeSentAt = nil }
+        }
+    }
     /// Remaining code attempts reported by the last rejected verification, as on web.
     public var loginAttemptsRemaining: Int?
+    /// Codes emailed for the current email entry: the first plus up to
+    /// `CodeResend.maximumResends` resends (see `CodeResend`).
+    public private(set) var codesSent = 0
+    /// When the latest code was emailed; Resend code waits a minute after each.
+    public private(set) var codeSentAt: Date?
     public var limits: SpaceLimits?
     /// The account's space list has loaded at least once. With no spaces,
     /// the workspace shows web's "Name your space" first-space form.
@@ -170,6 +181,8 @@ public final class AppModel {
             guard self.generation == attempt else { return }
             self.challengeID = challengeID
             self.loginAttemptsRemaining = nil
+            self.codesSent += 1
+            self.codeSentAt = Date()
         }
     }
 
@@ -1172,6 +1185,32 @@ public final class AppModel {
             self.error = FriendlyError.message(for: error)
         }
         if expectedGeneration == nil || generation == expectedGeneration { busy = false }
+    }
+}
+
+/// "Resend code" on the sign-in code step, as on web.
+enum CodeResend {
+    /// Each code, the first included, starts a one-minute wait.
+    static let wait: TimeInterval = 60
+    /// Three codes per email entry: the server silently stops sending after
+    /// three in 15 minutes, so a fourth would never arrive.
+    static let maximumResends = 2
+
+    /// Whole seconds until Resend code is available, rounded up; 0 when it is.
+    static func secondsRemaining(sentAt: Date?, now: Date) -> Int {
+        guard let sentAt else { return 0 }
+        return max(0, Int((wait - now.timeIntervalSince(sentAt)).rounded(.up)))
+    }
+
+    /// The wait as m:ss, e.g. "0:42".
+    static func countdown(_ seconds: Int) -> String {
+        let seconds = max(0, seconds)
+        return "\(seconds / 60):" + (seconds % 60 < 10 ? "0" : "") + "\(seconds % 60)"
+    }
+
+    /// The button's label while waiting, then "Resend code".
+    static func label(secondsRemaining: Int) -> String {
+        secondsRemaining > 0 ? "Resend code in \(countdown(secondsRemaining))" : "Resend code"
     }
 }
 

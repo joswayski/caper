@@ -1790,8 +1790,9 @@ private struct ChatView: View {
     private var timelineEntries: [TimelineEntry] {
         BlockedMessages.entries(chat.displayedChannelMessages, blocked: chat.blockedAuthorIDs, viewerID: viewerID, revealed: revealedBlocked)
     }
-    private func channelRow(_ message: ChatMessage) -> some View {
+    private func channelRow(_ message: ChatMessage, grouping: MessageGrouping.Layout) -> some View {
         MessageRow(message: message, chat: chat, currentUserID: viewerID, reactors: reactorContext, mentionCards: mentionCards,
+                   grouped: grouping.grouped.contains(message.id), continued: grouping.continued.contains(message.id),
                    requestBlock: { blockTarget = BlockTarget(author: $0) }) {
             // Holding a chip opens who reacted, not message actions.
             guard reactorsTarget == nil else { return }
@@ -1912,6 +1913,10 @@ private struct ChatView: View {
 
             ScrollViewReader { proxy in
                 ScrollView(showsIndicators: false) {
+                    let entries = timelineEntries
+                    // The channel's own pending message; a thread reply's shows in the thread.
+                    let pending: PendingMessage? = chat.pendingMessage.flatMap { $0.threadRootId == nil ? $0 : nil }
+                    let grouping = MessageGrouping.layout(entries, inThread: false, pending: pending, author: chat.currentAuthor)
                     VStack(spacing: 0) {
                         LazyVStack(spacing: 0) {
                             if !chat.loadFailed { HStack(spacing: 6) {
@@ -1930,30 +1935,29 @@ private struct ChatView: View {
                             if chat.loading && chat.messages.isEmpty {
                                 Text("Loading messages…").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).padding(.top, 80)
                             }
-                            let entries = timelineEntries
                             ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
                                 VStack(spacing: 0) {
                                     if index == 0 || !ChatDateDivider.sameLocalDay(entries[index - 1].lastCreatedAt, entry.firstCreatedAt) {
                                         ChatDateDivider(createdAt: entry.firstCreatedAt)
                                     }
                                     switch entry {
-                                    case let .message(message): channelRow(message)
+                                    case let .message(message): channelRow(message, grouping: grouping)
                                     case let .blocked(run):
                                         BlockedRunRow(run: run) { revealedBlocked = BlockedMessages.toggling(run, in: revealedBlocked) }
-                                        if run.revealed { ForEach(run.messages) { channelRow($0) } }
+                                        if run.revealed { ForEach(run.messages) { channelRow($0, grouping: grouping) } }
                                     }
                                 }.id(entry.scrollID)
                             }
                         }
                         // Keep the scroll target eager even when lazy history
                         // has not yet resolved the heights of preceding rows.
-                        if let pending = chat.pendingMessage, pending.threadRootId == nil {
+                        if let pending {
                             VStack(spacing: 0) {
                                 if chat.channelMessages.last.map({ ChatDateDivider.sameLocalDay($0.createdAt, pending.createdAt) }) != true {
                                     ChatDateDivider(createdAt: pending.createdAt)
                                 }
                                 PendingMessageRow(pending: pending, author: chat.currentAuthor, error: chat.error,
-                                                  rejected: chat.sendRejected, canEdit: chat.draft.isEmpty,
+                                                  rejected: chat.sendRejected, canEdit: chat.draft.isEmpty, grouped: grouping.pendingGrouped,
                                                   retry: { Task { await chat.send() } },
                                                   edit: { _ = chat.discardRejected(edit: true) },
                                                   dismiss: { _ = chat.discardRejected() })
@@ -2253,19 +2257,21 @@ private struct NativeThreadView: View {
     private func entries(_ messages: [ChatMessage]) -> [TimelineEntry] {
         BlockedMessages.entries(messages, blocked: chat.blockedAuthorIDs, viewerID: chat.viewerID, revealed: revealedBlocked)
     }
-    private func threadRow(_ message: ChatMessage) -> some View {
+    private func threadRow(_ message: ChatMessage, grouping: MessageGrouping.Layout) -> some View {
         MessageRow(message: message, chat: chat, currentUserID: viewerID, reactors: reactors, mentionCards: mentionCards, inThread: true,
+                   grouped: grouping.grouped.contains(message.id), continued: grouping.continued.contains(message.id),
                    requestBlock: { blockTarget = BlockTarget(author: $0) }) { reactionMessage = message }
     }
     /// The root and replies collapse like the channel: blocked runs show "Show".
-    @ViewBuilder private func threadEntries(_ messages: [ChatMessage]) -> some View {
-        ForEach(entries(messages)) { entry in
+    /// Replies group among themselves; the root never groups (empty `grouping`).
+    @ViewBuilder private func threadEntries(_ rows: [TimelineEntry], grouping: MessageGrouping.Layout = .init()) -> some View {
+        ForEach(rows) { entry in
             switch entry {
-            case let .message(message): threadRow(message).id(message.id)
+            case let .message(message): threadRow(message, grouping: grouping).id(message.id)
             case let .blocked(run):
                 VStack(spacing: 0) {
                     BlockedRunRow(run: run) { revealedBlocked = BlockedMessages.toggling(run, in: revealedBlocked) }
-                    if run.revealed { ForEach(run.messages) { threadRow($0) } }
+                    if run.revealed { ForEach(run.messages) { threadRow($0, grouping: grouping) } }
                 }.id(entry.scrollID)
             }
         }
@@ -2290,8 +2296,11 @@ private struct NativeThreadView: View {
             ScrollViewReader { proxy in
                 ScrollView(showsIndicators: false) {
                     LazyVStack(spacing: 0) {
+                        let replyRows = entries(replies)
+                        let threadPending: PendingMessage? = chat.pendingMessage.flatMap { $0.threadRootId == chat.threadRootID ? $0 : nil }
+                        let grouping = MessageGrouping.layout(replyRows, inThread: true, pending: threadPending, author: chat.currentAuthor)
                         if let root = chat.displayedMessages.first(where: { $0.id == chat.threadRootID }) {
-                            threadEntries([root])
+                            threadEntries(entries([root]))
                             if let summary = root.thread, summary.replyCount > 0 {
                                 Text("\(summary.replyCount) \(summary.replyCount == 1 ? "reply" : "replies")").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).padding(12)
                             }
@@ -2312,11 +2321,12 @@ private struct NativeThreadView: View {
                         }
                         if let error = chat.threadError { Text(error).padding(12); Button("Retry") { Task { await chat.loadThread() } } }
                         if chat.threadHasMore { Button("Load older replies") { Task { await chat.loadThread(older: true) } }.disabled(chat.threadLoading).padding(12) }
-                        threadEntries(replies)
+                        threadEntries(replyRows, grouping: grouping)
                         if chat.threadHasNewer { Button("Load newer replies") { Task { await chat.loadThread(newer: true) } }.disabled(chat.threadLoading).padding(12) }
                         if replies.isEmpty && !chat.threadLoading && chat.threadError == nil { Text(chat.isPreview ? "No replies yet." : "No replies yet. Start the thread.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).padding(18) }
-                        if let pending = chat.pendingMessage, pending.threadRootId == chat.threadRootID {
+                        if let pending = threadPending {
                             PendingMessageRow(pending: pending, author: chat.currentAuthor, error: chat.error, rejected: chat.sendRejected, canEdit: chat.threadDraft.isEmpty,
+                                grouped: grouping.pendingGrouped,
                                 retry: { Task { await chat.send(inThread: true) } },
                                 edit: { if chat.discardRejected() { chat.threadDraft = pending.text } }, dismiss: { _ = chat.discardRejected() })
                         }
@@ -2470,12 +2480,18 @@ private struct MessageRow: View {
     let mentionCards: MentionCardContext
     var inThread = false
     var inPins = false
+    /// Compact, under the same person's previous row (see `MessageGrouping`):
+    /// no avatar or header, presentation only.
+    var grouped = false
+    /// A grouped row follows: this row gives up its bottom padding.
+    var continued = false
     /// Asks the containing view to confirm blocking this message's author.
     var requestBlock: ((ChatAuthor) -> Void)? = nil
     let showReactionPicker: () -> Void
     private var canBlockAuthor: Bool {
         requestBlock != nil && BlockedMessages.canBlock(message.author, viewerID: chat.viewerID, blocked: chat.blockedAuthorIDs)
     }
+    private var edited: Bool { message.forward == nil && (message.revision ?? 1) > 1 }
     @State private var editing = false
     @State private var history = false
     #if os(macOS)
@@ -2488,6 +2504,7 @@ private struct MessageRow: View {
     var body: some View {
         let mentionsMe = MentionAutocomplete.mentionsCurrentUser(message, currentUserID: currentUserID)
         let pills = MentionAutocomplete.pills(in: message.content.text, mentions: message.content.mentions)
+        let rendered = messageText
         let row = VStack(alignment: .leading, spacing: 5) {
             if inPins, let pin = message.pin {
                 Button { mentionCards.openAuthor?(pin.author) } label: {
@@ -2512,23 +2529,34 @@ private struct MessageRow: View {
                     #endif
                     .accessibilityIdentifier("pinned-by-\(message.id)")
             }
-            HStack(alignment: .top, spacing: 10) {
-                Avatar(name: message.author.name, size: 34, avatarID: message.author.avatarId)
+            // A grouped row lines its text up with the avatar column's time.
+            HStack(alignment: grouped ? .firstTextBaseline : .top, spacing: 10) {
+                if grouped { groupedGutter } else { Avatar(name: message.author.name, size: 34, avatarID: message.author.avatarId) }
                 VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline, spacing: 7) {
-                    Text(message.author.name).font(CaperTheme.font(13, weight: .bold))
-                    if message.author.isGuest { Text("GUEST").font(CaperTheme.font(9, weight: .bold)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 5).overlay(RoundedRectangle(cornerRadius: 4).stroke(CaperTheme.border)) }
-                    Text(inPins ? ChatDateDivider.date(message.createdAt)?.formatted(date: .abbreviated, time: .shortened) ?? timeLabel(message.createdAt) : timeLabel(message.createdAt)).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
-                    if message.forward == nil && (message.revision ?? 1) > 1 { Button("(edited)") { history = true }.buttonStyle(.plain).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).modifier(ControlHover()).accessibilityLabel("View edit history") }
+                if !grouped {
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        Text(message.author.name).font(CaperTheme.font(13, weight: .bold))
+                        if message.author.isGuest { Text("GUEST").font(CaperTheme.font(9, weight: .bold)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 5).overlay(RoundedRectangle(cornerRadius: 4).stroke(CaperTheme.border)) }
+                        Text(inPins ? ChatDateDivider.date(message.createdAt)?.formatted(date: .abbreviated, time: .shortened) ?? timeLabel(message.createdAt) : timeLabel(message.createdAt)).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
+                        if edited { editedMarker }
+                    }
+                    #if os(macOS)
+                    .padding(.trailing, 56)
+                    #endif
                 }
+                HStack(alignment: .lastTextBaseline, spacing: 7) {
+                    rendered.text.font(CaperTheme.font(14)).foregroundStyle(Color(red: 222/255, green: 223/255, blue: 224/255))
+                        // Links take the tint. Person pills are links too: keep them in
+                        // the pill text colour, not the accent, when the text has any.
+                        .tint(pills.isEmpty ? CaperTheme.terracottaBright : CaperTheme.text)
+                        .modifier(MentionPillInteraction(pills: pills, hasLinks: rendered.hasLinks, cards: mentionCards))
+                    if grouped && edited { editedMarker }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 #if os(macOS)
-                .padding(.trailing, 56)
+                // Without a header, the first line sits beside the hover actions.
+                .padding(.trailing, grouped ? 56 : 0)
                 #endif
-                messageText.font(CaperTheme.font(14)).foregroundStyle(Color(red: 222/255, green: 223/255, blue: 224/255))
-                    // Person pills are links: keep them in the pill text colour, not the accent.
-                    .tint(CaperTheme.text)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .modifier(MentionPillInteraction(pills: pills, cards: mentionCards))
                 ForwardCardView(message: message) { chat.forwardConversationTarget = message }
                 ReactionRow(message: message, chat: chat, reactors: reactors)
                 if let error = chat.pinErrors[message.id] {
@@ -2563,7 +2591,8 @@ private struct MessageRow: View {
                 }
             }
             }
-        }.padding(.horizontal, 18).padding(.vertical, 10)
+        // As on web, a run reads as one block: 2pt instead of 10 between its rows.
+        }.padding(.horizontal, 18).padding(.top, grouped ? 2 : 10).padding(.bottom, continued ? 2 : 10)
             .background(rowBackground(mentionsMe: mentionsMe))
             .overlay(alignment: .leading) {
                 if mentionsMe { Rectangle().fill(CaperTheme.terracotta).frame(width: 2).accessibilityHidden(true) }
@@ -2656,29 +2685,84 @@ private struct MessageRow: View {
     /// terracotta. SwiftUI `Text` styles an inline run's background but cannot
     /// pad or round it, so the pill is a square-cornered span tight to its
     /// glyphs (spec: 2pt padding, 4pt corners). Unresolved names stay plain.
-    private var messageText: Text {
+    /// Links are found after mentions, in the text between pills only.
+    private var messageText: (text: Text, hasLinks: Bool) {
         let content = message.content
         let segments = MentionAutocomplete.segments(in: content.text, mentions: content.mentions)
-        guard segments.contains(where: { $0.highlighted }) else { return Text(content.text) }
         var attributed = AttributedString()
+        var styled = false
+        var hasLinks = false
         for segment in segments {
-            var part = AttributedString(segment.text)
-            if segment.highlighted {
-                part.font = CaperTheme.font(14, weight: .medium)
-                part.foregroundColor = CaperTheme.text
-                part.backgroundColor = CaperTheme.terracotta.opacity(0.24)
-                // A person's pill opens the mention card; @everyone/@here stay inert.
-                if let user = segment.user { part.link = MentionCard.url(for: user) }
+            guard segment.highlighted else {
+                if let linked = MessageLinks.attributed(segment.text) {
+                    attributed.append(linked)
+                    hasLinks = true
+                } else {
+                    attributed.append(AttributedString(segment.text))
+                }
+                continue
             }
+            var part = AttributedString(segment.text)
+            part.font = CaperTheme.font(14, weight: .medium)
+            part.foregroundColor = CaperTheme.text
+            part.backgroundColor = CaperTheme.terracotta.opacity(0.24)
+            // A person's pill opens the mention card; @everyone/@here stay inert.
+            if let user = segment.user { part.link = MentionCard.url(for: user) }
             attributed.append(part)
+            styled = true
         }
-        return Text(attributed)
+        guard styled || hasLinks else { return (Text(content.text), false) }
+        return (Text(attributed), hasLinks)
+    }
+    /// "(edited)": opens the edit history, in the header or, on a grouped row, after the text.
+    private var editedMarker: some View {
+        Button("(edited)") { history = true }.buttonStyle(.plain).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).modifier(ControlHover()).accessibilityLabel("View edit history")
+    }
+    /// A grouped row's empty avatar column. With a pointer (macOS) it shows
+    /// the short time ("8:28") while the row is hovered or one of its controls
+    /// has keyboard focus; on touch it stays empty. VoiceOver always gets the
+    /// author and time from it, as from the header it replaces.
+    private var groupedGutter: some View {
+        #if os(macOS)
+        let visible = controlsHovered || replyFocused || reactionFocused || actionsFocused || threadLinkFocused
+        #else
+        let visible = false
+        #endif
+        let time = ChatDateDivider.date(message.createdAt)?.formatted(.dateTime.hour(.defaultDigits(amPM: .omitted)).minute()) ?? ""
+        // A clear colour, not opacity or `hidden()`, so VoiceOver keeps the element.
+        return Text(time).font(CaperTheme.font(10)).monospacedDigit().lineLimit(1).fixedSize()
+            .foregroundStyle(visible ? CaperTheme.muted : Color.clear)
+            .frame(width: 34, alignment: .trailing)
+            .accessibilityLabel("\(message.author.name), \(timeLabel(message.createdAt))")
     }
     private func timeLabel(_ value: String) -> String {
         let fractional = ISO8601DateFormatter()
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         guard let date = fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value) else { return "" }
         return date.formatted(date: .omitted, time: .shortened)
+    }
+}
+
+extension MessageLinks {
+    /// `text` with its links in terracotta-bright, underlined, and opening in
+    /// the system browser (the default `openURL`); nil when it has none. The
+    /// visible text is never shortened. Hosts set `.tint` to the same colour:
+    /// SwiftUI may draw link runs in the tint rather than their own colour.
+    static func attributed(_ text: String) -> AttributedString? {
+        let runs = segments(in: text)
+        guard runs.contains(where: { $0.href != nil }) else { return nil }
+        var attributed = AttributedString()
+        for run in runs {
+            var part = AttributedString(run.text)
+            // iOS 17/macOS 14 URL parsing percent-encodes what a URL can't hold, e.g. a non-ASCII path.
+            if let href = run.href, let url = URL(string: href) {
+                part.link = url
+                part.foregroundColor = CaperTheme.terracottaBright
+                part.underlineStyle = Text.LineStyle(pattern: .solid, color: CaperTheme.terracottaBright)
+            }
+            attributed.append(part)
+        }
+        return attributed
     }
 }
 
@@ -2768,18 +2852,20 @@ private struct MentionCardHost: ViewModifier {
 }
 
 /// Routes pill links (`caper-mention:`) to the mention card instead of the
-/// system. A tap on a link is handled by the Text itself; the row's message
-/// actions still need a long press. macOS keeps text selection only for
-/// messages without person pills, so a click on a pill is never taken as a
-/// selection. VoiceOver gets one "Open profile for …" action per person.
+/// system; web links (`http(s)`) open in the system browser. A tap on a link
+/// is handled by the Text itself; the row's message actions still need a
+/// long press. macOS keeps text selection only for messages without person
+/// pills or web links, so a click on a link is never taken as a selection.
+/// VoiceOver gets one "Open profile for …" action per person.
 private struct MentionPillInteraction: ViewModifier {
     let pills: [MentionPill]
+    var hasLinks = false
     let cards: MentionCardContext
 
     @ViewBuilder func body(content: Content) -> some View {
         if pills.isEmpty {
             #if os(macOS)
-            content.textSelection(.enabled)
+            if hasLinks { content } else { content.textSelection(.enabled) }
             #else
             content
             #endif
@@ -3521,12 +3607,21 @@ private struct ReactionPicker: View {
 
 private struct PendingMessageRow: View {
     let pending: PendingMessage; let author: ChatAuthor?; let error: String?
-    let rejected: Bool; let canEdit: Bool; let retry: () -> Void; let edit: () -> Void; let dismiss: () -> Void
+    let rejected: Bool; let canEdit: Bool
+    /// Under the author's own previous row: no avatar or name, as `MessageRow`.
+    var grouped = false
+    let retry: () -> Void; let edit: () -> Void; let dismiss: () -> Void
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Avatar(name: author?.name ?? "Guest", size: 34, avatarID: author?.avatarId)
+            if grouped {
+                // Keep the avatar column empty; a clear name still reaches VoiceOver.
+                Text(author?.name ?? "Guest").font(CaperTheme.font(10)).lineLimit(1)
+                    .foregroundStyle(Color.clear).frame(width: 34)
+            } else {
+                Avatar(name: author?.name ?? "Guest", size: 34, avatarID: author?.avatarId)
+            }
             VStack(alignment: .leading, spacing: 4) {
-                Text(author?.name ?? "Guest").font(CaperTheme.font(13, weight: .bold))
+                if !grouped { Text(author?.name ?? "Guest").font(CaperTheme.font(13, weight: .bold)) }
                 Text(pending.text).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if let error {
@@ -3544,7 +3639,7 @@ private struct PendingMessageRow: View {
                 }
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 18).padding(.vertical, 10)
+            .padding(.horizontal, 18).padding(.top, grouped ? 2 : 10).padding(.bottom, 10)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("pending-message-\(pending.id)")
     }
@@ -4135,6 +4230,8 @@ private struct LoginPage: View {
     let close: () -> Void
     @State private var email = ""
     @State private var code = ""
+    /// A resend succeeded: "We sent a new code…" shows while there is no error.
+    @State private var resent = false
     @FocusState private var emailFocused: Bool
     @FocusState private var codeFocused: Bool
     var body: some View {
@@ -4174,16 +4271,35 @@ private struct LoginPage: View {
                     if model.loginAttemptsRemaining == 1 {
                         Text("One attempt left. Check the code carefully.").font(CaperTheme.font(14, weight: .bold)).padding(.top, 12)
                     }
+                    if resent && model.error == nil {
+                        Text("We sent a new code. Earlier codes no longer work.").font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
+                            .fixedSize(horizontal: false, vertical: true).padding(.top, 12)
+                            .accessibilityIdentifier("login-code-resent")
+                    }
                     if model.loginAttemptsRemaining == 0 {
-                        Button { code = ""; Task { await model.requestCode(email: email) } } label: {
-                            HStack { Text(model.busy ? "Sending…" : "Email me a new code"); Spacer(); Image(systemName: "arrow.right") }
-                        }.buttonStyle(LoginActionButton()).disabled(model.busy).padding(.top, 12)
+                        // Also a resend: it counts toward the limit and starts the wait. Past
+                        // the limit no code would arrive, so only the note below remains.
+                        if model.codesSent <= CodeResend.maximumResends {
+                            Button { code = ""; sendNewCode() } label: {
+                                HStack { Text(model.busy ? "Sending…" : "Email me a new code"); Spacer(); Image(systemName: "arrow.right") }
+                            }.buttonStyle(LoginActionButton()).disabled(model.busy).padding(.top, 12)
+                        }
                     } else {
                         Button { Task { await model.verify(code: code); if model.account != nil && model.phase != .onboarding { close() } } } label: {
                             HStack { Text(model.busy ? "Checking…" : "Continue"); Spacer(); Image(systemName: "arrow.right") }
                         }.buttonStyle(LoginActionButton()).disabled(model.busy || code.count != 6).padding(.top, 12)
                     }
-                    Button("Use a different email") { model.challengeID = nil; model.error = nil }.buttonStyle(.plain).foregroundStyle(CaperTheme.muted).padding(.top, 18).modifier(ControlHover()).disabled(model.busy)
+                    // Side by side when they fit; otherwise Resend code goes below.
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .firstTextBaseline, spacing: 24) { differentEmailButton; resendButton }
+                        VStack(alignment: .leading, spacing: 14) { differentEmailButton; resendButton }
+                    }.padding(.top, 18)
+                    if model.codesSent > CodeResend.maximumResends {
+                        // In place of Resend code: the server sends no more codes for now.
+                        Text("Still nothing? Check your spam folder, or try again in 15 minutes.").foregroundStyle(CaperTheme.muted)
+                            .fixedSize(horizontal: false, vertical: true).padding(.top, 14)
+                            .accessibilityIdentifier("login-resend-limit")
+                    }
                 }
             }
             .frame(maxWidth: 440)
@@ -4203,6 +4319,49 @@ private struct LoginPage: View {
     private func focusField() {
         if model.challengeID == nil { emailFocused = true }
         else if model.loginAttemptsRemaining != 0 { codeFocused = true }
+    }
+
+    private var differentEmailButton: some View {
+        Button("Use a different email") { resent = false; model.challengeID = nil; model.error = nil }
+            .buttonStyle(.plain).foregroundStyle(CaperTheme.muted).modifier(ControlHover()).disabled(model.busy)
+    }
+
+    /// Web's Resend code: unavailable for a minute after each code, with an
+    /// m:ss countdown, and at most two resends per email entry. Hidden once the
+    /// code's attempts are used up, where Email me a new code does the same.
+    @ViewBuilder private var resendButton: some View {
+        if model.codesSent <= CodeResend.maximumResends && model.loginAttemptsRemaining != 0 {
+            TimelineView(.periodic(from: model.codeSentAt ?? .now, by: 1)) { context in
+                let remaining = CodeResend.secondsRemaining(sentAt: model.codeSentAt, now: context.date)
+                let label = CodeResend.label(secondsRemaining: remaining)
+                Button(action: sendNewCode) {
+                    // Sized for the countdown, so the row never re-wraps as it ticks.
+                    ZStack(alignment: .leading) {
+                        Text(CodeResend.label(secondsRemaining: 60)).hidden()
+                        Text(label)
+                    }.monospacedDigit()
+                }
+                .buttonStyle(.plain).foregroundStyle(CaperTheme.muted).modifier(ControlHover())
+                .disabled(model.busy || remaining > 0)
+                .accessibilityLabel(label)
+                .accessibilityIdentifier("login-resend-code")
+            }
+        }
+    }
+
+    /// Requests another code for the same email, as the first request did.
+    private func sendNewCode() {
+        guard !model.busy, model.challengeID != nil, model.codesSent <= CodeResend.maximumResends else { return }
+        let sent = model.codesSent
+        resent = false
+        Task {
+            // On success the model switches to the new challenge and resets attempts.
+            await model.requestCode(email: email)
+            // Errors keep the sign-in mapping; focus returns to the code field when the request ends.
+            guard model.codesSent > sent, model.challengeID != nil, model.error == nil else { return }
+            code = ""
+            resent = true
+        }
     }
 
     /// While a request runs, a field keeps focus but takes no edits, like web's
@@ -4335,6 +4494,8 @@ private struct SpaceEditor: View {
     @Bindable var model: AppModel; let close: () -> Void; let managing: Bool
     @State private var name = ""; @State private var username = ""; @State private var error: String?; @State private var pending = false
     @State private var confirmDelete = false
+    /// The member whose removal is being confirmed.
+    @State private var removing: Member?
     @FocusState private var nameFocused: Bool
     @FocusState private var memberFocused: Bool
     /// An invite finished: return focus to the field so several people can be invited in a row.
@@ -4368,7 +4529,7 @@ private struct SpaceEditor: View {
                                 .disabled(pending || WorkspaceValidation.usernameError(username) != nil)
                         }
                         ForEach(model.detail?.members ?? []) { member in
-                            HStack { Avatar(name: member.displayName, size: 30, avatarID: member.avatarId); VStack(alignment: .leading) { Text(member.displayName); Text("@\(member.username)\(member.owner ? " · Owner" : "")").foregroundStyle(CaperTheme.muted) }; Spacer(); if !member.owner { Button("Remove") { run { try await model.removeSpaceMember(member) } } } }.font(CaperTheme.font(12))
+                            HStack { Avatar(name: member.displayName, size: 30, avatarID: member.avatarId); VStack(alignment: .leading) { Text(member.displayName); Text("@\(member.username)\(member.owner ? " · Owner" : "")").foregroundStyle(CaperTheme.muted) }; Spacer(); if !member.owner { Button("Remove") { removing = member }.disabled(pending) } }.font(CaperTheme.font(12))
                         }
                         Text("Pending invitations  \(model.pendingMembers.count)").font(CaperTheme.font(14, weight: .bold))
                         ForEach(model.pendingMembers) { member in
@@ -4394,6 +4555,13 @@ private struct SpaceEditor: View {
             }
             .modifier(ConfirmationPresentation())
         }
+        // Removing a member asks first; the dialog stays open with them gone.
+        .sheet(item: $removing) { member in
+            ConfirmationSheet(title: "Remove \(member.displayName)?", detail: "They’ll lose access to \(model.detail?.space.name ?? name) and its channels. You can invite them again later.", action: "Remove", pendingLabel: "Removing…", close: { removing = nil }) {
+                try await model.removeSpaceMember(member)
+            }
+            .modifier(ConfirmationPresentation())
+        }
     }
     private func addMember() {
         guard !pending, WorkspaceValidation.usernameError(username) == nil else { return }
@@ -4409,6 +4577,8 @@ private struct ChannelEditor: View {
     @Bindable var model: AppModel; @State var channel: Channel?; let close: () -> Void
     @State private var name = ""; @State private var privateChannel = false; @State private var members: [Member] = []; @State private var username = ""; @State private var error: String?; @State private var pending = false
     @State private var confirmDelete = false
+    /// The member whose removal is being confirmed.
+    @State private var removing: Member?
     @State private var membersError: String?
     @State private var invitations: [Member] = []
     @State private var memberError: String?
@@ -4479,7 +4649,7 @@ private struct ChannelEditor: View {
                                     Text("@\(member.username)\(member.owner ? " · Owner" : "")").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
                                 }
                                 Spacer()
-                                if !member.owner { Button("Remove") { run { try await model.removeChannelMember(channel, member: member); members.removeAll { $0.id == member.id } } } }
+                                if !member.owner { Button("Remove") { removing = member } }
                             }.font(CaperTheme.font(12))
                         }.disabled(pending || loadingMembers || membersError != nil)
                         Text("Pending invitations  \(invitations.count)").font(CaperTheme.font(14, weight: .bold))
@@ -4526,6 +4696,16 @@ private struct ChannelEditor: View {
                     try await model.deleteChannel(channel)
                     CaperEffects.shared.play(.delete)
                     close()
+                }
+                .modifier(ConfirmationPresentation())
+            }
+        }
+        // Removing a member asks first; the overview stays open with them gone.
+        .sheet(item: $removing) { member in
+            if let channel {
+                ConfirmationSheet(title: "Remove \(member.displayName) from #\(channel.name)?", detail: "They’ll lose access to this private channel. You can add them again later.", action: "Remove", pendingLabel: "Removing…", close: { removing = nil }) {
+                    try await model.removeChannelMember(channel, member: member)
+                    members.removeAll { $0.id == member.id }
                 }
                 .modifier(ConfirmationPresentation())
             }

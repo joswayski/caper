@@ -1252,6 +1252,10 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(staticTexts("WELCOME TO CAPER", in: app).count, 0)
         assertStaticText("Enter the six-character code sent to owner@example.test. It expires in 10 minutes.", in: app)
         XCTAssertTrue(app.buttons["Use a different email"].exists)
+        let resend = app.buttons["login-resend-code"]
+        XCTAssertTrue(resend.exists, "The code step offers Resend code")
+        XCTAssertFalse(resend.isEnabled, "Resend code waits a minute after each code")
+        XCTAssertTrue(resend.label.hasPrefix("Resend code in 0:") || resend.label == "Resend code in 1:00", resend.label)
         capture("login-code", app: app)
         let code = app.textFields["Sign-in code"]
         // Separate bursts: the field rewrites itself between keystrokes, as it does for a person typing.
@@ -1877,6 +1881,15 @@ final class CaperParityUITests: XCTestCase {
         let username = app.textFields["Exact username"]
         XCTAssertTrue(username.isEnabled, "The dialog must not inherit the disabled workspace")
         app.buttons["Remove"].firstMatch.tap()
+        // Removal asks first, naming the person and the space.
+        let confirmRemove = app.buttons["confirm-destructive-action"]
+        XCTAssertTrue(confirmRemove.waitForExistence(timeout: 5), "Remove must ask for confirmation")
+        assertStaticText("Remove Maya?", in: app)
+        assertStaticText("They’ll lose access to Fixture Studio and its channels. You can invite them again later.", in: app)
+        capture("remove-member-confirmation", app: app)
+        confirmRemove.tap()
+        let confirmClosed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: confirmRemove)
+        XCTAssertEqual(XCTWaiter.wait(for: [confirmClosed], timeout: 5), .completed, "The confirmation closes after removing")
         #if os(macOS)
         let headingProperty = "value"
         #else
