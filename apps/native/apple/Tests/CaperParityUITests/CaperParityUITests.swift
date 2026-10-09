@@ -837,8 +837,9 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertFalse(app.buttons["voice-stack-chan00000001"].exists, "Empty channels expose no voice count or status")
         XCTAssertGreaterThanOrEqual(generalVoice.frame.minY, general.frame.maxY, "Voice stays below the channel name")
         XCTAssertLessThanOrEqual(generalVoice.frame.minY - general.frame.maxY, 2, "No extra gap separates the voice action from its channel")
-        XCTAssertEqual(generalVoice.frame.width, designVoice.frame.width, "Actions share one stable slot")
-        XCTAssertEqual(generalVoice.frame.width, 108, "The whole reserved action slot is accessible, not just its text")
+        // Layout widths are fractional on iOS (107.99999999999997 for 108).
+        XCTAssertEqual(generalVoice.frame.width, designVoice.frame.width, accuracy: 0.5, "Actions share one stable slot")
+        XCTAssertEqual(generalVoice.frame.width, 108, accuracy: 0.5, "The whole reserved action slot is accessible, not just its text")
         #if os(iOS)
         XCTAssertGreaterThanOrEqual(general.frame.height, 44)
         XCTAssertGreaterThanOrEqual(design.frame.height, 44)
