@@ -240,7 +240,14 @@ sealed interface SessionScreen {
     data object Loading : SessionScreen
     data object Home : SessionScreen
     data object SignedOut : SessionScreen
-    data class Verify(val challengeId: String, val email: String, val attemptsRemaining: Int? = null) : SessionScreen
+    /**
+     * The code step. [resends] counts new codes for this email entry (see `data/CodeResend.kt`);
+     * [sentAt] is when the current code was sent, on the `SystemClock.elapsedRealtime` clock.
+     */
+    data class Verify(
+        val challengeId: String, val email: String, val attemptsRemaining: Int? = null,
+        val resends: Int = 0, val sentAt: Long = 0,
+    ) : SessionScreen
     data class Profile(val account: Account) : SessionScreen
     data class Spaces(val account: Account) : SessionScreen
 }
@@ -272,8 +279,13 @@ data class AppUiState(
     /** Accounts you blocked, newest first; their messages collapse everywhere. */
     val blocks: List<BlockedAccount> = emptyList(),
     val blocksError: String? = null,
-    /** The sidebar's "Message requests" list is expanded. */
-    val requestsOpen: Boolean = false,
+    /** The blocked-accounts list loaded at least once, so an empty list means none. */
+    val blocksLoaded: Boolean = false,
+    /**
+     * The sidebar's "Message requests" list is expanded. Null follows the view (open
+     * while a request is shown); a tap stores the explicit choice, which wins.
+     */
+    val requestsOpen: Boolean? = null,
     /** Notification settings with unsaved changes applied; null until they load. */
     val notificationSettings: NotificationSettings? = null,
     /** Why notification settings could not load, while none are shown. */

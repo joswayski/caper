@@ -140,6 +140,7 @@ export function useComposerSuggestions({
               aria-selected={index === activeOption}
               aria-label={`Insert ${entry.name} emoji`}
               onPointerDown={(event) => event.preventDefault()}
+              onMouseMove={() => setSelected(index)}
               onClick={() => chooseEmoji(entry)}
             >
               <img src={emojiAsset(entry.id)} alt="" width="24" height="24" />
@@ -176,6 +177,7 @@ export function useComposerSuggestions({
                   : `Mention @${name}, ${specialMentionLabels[option.kind].toLowerCase()}`
               }
               onPointerDown={(event) => event.preventDefault()}
+              onMouseMove={() => setSelected(index)}
               onClick={() => chooseMention(option)}
             >
               {option.kind === "member" ? (

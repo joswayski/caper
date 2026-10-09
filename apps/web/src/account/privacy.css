@@ -19,7 +19,7 @@
   margin: 0 0 6px;
   padding: 0;
   font-size: 0.86rem;
-  font-weight: 750;
+  font-weight: 700;
 }
 .privacy-settings label {
   display: flex;
@@ -97,11 +97,15 @@
   background: var(--surface-raised);
   font: inherit;
   font-size: 0.75rem;
-  font-weight: 750;
+  font-weight: 700;
   cursor: pointer;
   transition:
     background-color 140ms ease,
     border-color 140ms ease;
+}
+.privacy-settings li button:hover:not(:disabled) {
+  border-color: var(--text-muted);
+  background: var(--border);
 }
 .privacy-settings li button:hover:not(:disabled) {
   border-color: var(--text-muted);
@@ -131,6 +135,16 @@
   margin: 0;
   color: #ff9b82;
   font-size: 0.76rem;
+}
+.privacy-error button {
+  margin-left: 6px;
+  padding: 0;
+  border: 0;
+  color: var(--text);
+  background: none;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
 }
 /* A section title, then a quieter label for its one question. */
 .notification-settings {

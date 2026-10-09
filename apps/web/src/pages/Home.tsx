@@ -127,7 +127,7 @@ export default function Home({ account, initialNow, latestChanges, downloadPlatf
             ))}
           </ol>
         ) : (
-          <p className="latest-changes-empty">Recent work will appear here after the next build.</p>
+          <p className="latest-changes-empty">No recent changes to show.</p>
         )}
       </section>
     </main>
@@ -193,7 +193,8 @@ function formatRelativeTime(committedAt: string, now: number) {
 
   let duration = (new Date(committedAt).getTime() - now) / 1_000;
   for (const division of divisions) {
-    if (Math.abs(duration) < division.amount) {
+    // Compare the rounded value so 59.6 minutes reads "1 hour ago", not "60 minutes ago".
+    if (Math.abs(Math.round(duration)) < division.amount) {
       return relativeTimeFormatter.format(Math.round(duration), division.unit);
     }
     duration /= division.amount;

@@ -10,6 +10,7 @@ import {
 } from "@floating-ui/react";
 import { Forward, X } from "lucide-react";
 import Avatar from "../components/Avatar";
+import LinkedText from "./LinkedText.tsx";
 import { apiError, ChatHistoryError } from "./client.ts";
 import { emojiAsset, emojiCode } from "./emoji.ts";
 import { isChatMessage, sequence, type ChatMessage } from "./types.ts";
@@ -29,6 +30,14 @@ interface Conversation {
   messages: ChatMessage[];
   cursor: string;
   hasMore: boolean;
+}
+
+// fetch rejects with a TypeError when offline and a TimeoutError after AbortSignal.timeout;
+// neither message ("Failed to fetch", "signal timed out") is meant for people.
+function failureText(reason: unknown, fallback: string) {
+  if (reason instanceof TypeError || (reason instanceof DOMException && reason.name === "TimeoutError"))
+    return "Couldn’t reach Caper. Check your connection.";
+  return reason instanceof Error && reason.message ? reason.message : fallback;
 }
 
 function ForwardDialog({
@@ -79,7 +88,9 @@ function OriginalMessage({ message }: { message: ChatMessage }) {
         <strong>{message.author.name}</strong>
         {message.editedAt && <small title={`Edited ${new Date(message.editedAt).toLocaleString()}`}>edited</small>}
       </header>
-      <p>{message.content.text}</p>
+      <p>
+        <LinkedText text={message.content.text} />
+      </p>
       {!!message.reactions?.length && (
         <div className="chat-forward-reactions" aria-label="Original reactions">
           {message.reactions.map(({ emoji, authorIds }) => (
@@ -177,14 +188,13 @@ export function ForwardPicker({
               typeof item.direct === "boolean",
           )
         )
-          throw new Error("Invalid forward destinations.");
+          throw new Error("Destinations are unavailable.");
         if (!controller.signal.aborted)
           setDestinations(
             data.destinations.sort((a, b) => `${a.spaceName} ${a.name}`.localeCompare(`${b.spaceName} ${b.name}`)),
           );
       } catch (reason) {
-        if (!controller.signal.aborted)
-          setError(reason instanceof Error ? reason.message : "Destinations are unavailable.");
+        if (!controller.signal.aborted) setError(failureText(reason, "Destinations are unavailable."));
       }
     })();
     return () => controller.abort();
@@ -216,8 +226,15 @@ export function ForwardPicker({
       if (mounted.current) {
         const rejected = reason instanceof ChatHistoryError && [400, 401, 403, 404, 409, 422].includes(reason.status);
         if (rejected) setCommand(undefined);
+        // The client leaves the message empty when the response has no error body.
+        const detail = failureText(reason, "");
         setError(
-          `${confirmed ? `Forwarded to ${confirmed} ${confirmed === 1 ? "destination" : "destinations"}. ` : ""}${rejected ? "Remaining forwards not sent." : "Remaining forwards not confirmed yet. Retry checks the same forwards."} ${reason instanceof Error ? reason.message : "Try again."}`,
+          // Multi-destination progress (main) with user-facing detail, never a raw error.
+          `${confirmed ? `Forwarded to ${confirmed} ${confirmed === 1 ? "destination" : "destinations"}. ` : ""}${
+            rejected
+              ? `${confirmed ? "Remaining forwards not sent." : "Not sent."} ${detail || "Try again."}`
+              : `${confirmed ? "Remaining forwards not confirmed yet." : "Not confirmed yet."}${detail ? ` ${detail}` : ""} Retry checks the same ${pending.length === 1 ? "forward" : "forwards"}.`
+          }`,
         );
       }
     } finally {
@@ -275,9 +292,15 @@ export function ForwardPicker({
               />
             </label>
           ))}
-          {!destinations && !error && <p role="status">Loading destinations…</p>}
+          {!destinations && !error && (
+            <p className="chat-forward-status" role="status">
+              Loading destinations…
+            </p>
+          )}
           {visible?.length === 0 && (
-            <p>{destinations?.length ? "No matching destination." : "Join a channel or start a DM to forward here."}</p>
+            <p className="chat-forward-status">
+              {destinations?.length ? "No matching destination." : "Join a channel or start a DM to forward here."}
+            </p>
           )}
         </div>
         <label>
@@ -338,8 +361,12 @@ export function ForwardConversation({
       typeof data.hasMore !== "boolean" ||
       typeof data.cursor !== "string"
     )
-      throw new Error("Invalid forwarded conversation.");
-    sequence(data.cursor);
+      throw new Error("Conversation is unavailable.");
+    try {
+      sequence(data.cursor);
+    } catch {
+      throw new Error("Conversation is unavailable.");
+    }
     return data;
   };
   useEffect(() => {
@@ -374,7 +401,7 @@ export function ForwardConversation({
       } catch (reason) {
         if (!request.signal.aborted) {
           setConversation(undefined);
-          setError(reason instanceof Error ? reason.message : "Conversation is unavailable.");
+          setError(failureText(reason, "Conversation is unavailable."));
         }
       } finally {
         if (!request.signal.aborted) setLoading(false);
@@ -398,8 +425,7 @@ export function ForwardConversation({
         });
       }
     } catch (reason) {
-      if (!request.signal.aborted)
-        setError(reason instanceof Error ? reason.message : "Older replies are unavailable.");
+      if (!request.signal.aborted) setError(failureText(reason, "Older replies are unavailable."));
     } finally {
       if (!request.signal.aborted) setLoading(false);
     }
@@ -425,12 +451,16 @@ export function ForwardConversation({
             {conversation.messages.map((reply) => (
               <OriginalMessage key={reply.id} message={reply} />
             ))}
-            {!conversation.messages.length && <p>No replies yet.</p>}
+            {!conversation.messages.length && <p className="chat-forward-status">No replies yet.</p>}
           </>
         ) : (
-          !loading && !error && <p>Original conversation unavailable.</p>
+          !loading && !error && <p className="chat-forward-status">Original conversation unavailable.</p>
         )}
-        {loading && <p role="status">Updating conversation…</p>}
+        {loading && (
+          <p className="chat-forward-status" role="status">
+            {conversation ? "Updating conversation…" : "Loading conversation…"}
+          </p>
+        )}
         {error && (
           <p role="alert" className="chat-forward-error">
             {error}

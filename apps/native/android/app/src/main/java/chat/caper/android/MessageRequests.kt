@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import chat.caper.android.data.blockedRunLabel
 import chat.caper.android.data.directPrivacyOptions
+import chat.caper.android.data.friendlyError
 import chat.caper.android.model.*
 import chat.caper.android.ui.*
 import kotlinx.coroutines.CancellationException
@@ -157,7 +158,7 @@ import kotlinx.coroutines.launch
         settingError = null
         try { setting = viewModel.directPrivacy() }
         catch (error: CancellationException) { throw error }
-        catch (error: Throwable) { settingError = error.message ?: "Couldn’t load this setting." }
+        catch (error: Throwable) { settingError = friendlyError(error, "Couldn’t load this setting.") }
     }
     LaunchedEffect(Unit) { viewModel.refreshBlocks() }
 
@@ -165,21 +166,22 @@ import kotlinx.coroutines.launch
     Column(Modifier.selectableGroup()) {
         directPrivacyOptions.forEach { (value, label, detail) ->
             Row(
-                Modifier.fillMaxWidth().heightIn(min = 48.dp).selectable(setting == value, enabled = setting != null && !saving, role = Role.RadioButton) {
+                // Only disabled while loading: disabling during a save would drop focus from the chosen option.
+                Modifier.fillMaxWidth().heightIn(min = 48.dp).selectable(setting == value, enabled = setting != null, role = Role.RadioButton) {
                     val previous = setting
-                    if (previous == value) return@selectable
+                    if (saving || previous == value) return@selectable
                     setting = value; saving = true; settingError = null
                     scope.launch {
                         try { setting = viewModel.setDirectPrivacy(value) }
                         catch (error: CancellationException) { throw error }
                         // Revert and explain when the save fails.
-                        catch (error: Throwable) { setting = previous; settingError = error.message ?: "Couldn’t save this setting." }
+                        catch (error: Throwable) { setting = previous; settingError = friendlyError(error, "Couldn’t save this setting.") }
                         finally { saving = false }
                     }
                 },
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                RadioButton(setting == value, null, enabled = setting != null && !saving)
+                RadioButton(setting == value, null, enabled = setting != null)
                 Spacer(Modifier.width(8.dp))
                 Column(Modifier.weight(1f)) {
                     Text(label, fontSize = 13.sp)
@@ -197,7 +199,12 @@ import kotlinx.coroutines.launch
     HorizontalDivider(color = Border)
     Text("Blocked accounts", Modifier.semantics { heading() }, fontWeight = FontWeight.Bold, fontSize = 14.sp)
     var unblockError by remember { mutableStateOf<String?>(null) }
-    if (state.blocks.isEmpty()) Text(if (state.blocksError != null) "Couldn’t load blocked accounts." else "You haven't blocked anyone.", color = TextMuted, fontSize = 12.sp)
+    // "None" only once the list has loaded, and never alongside a load error.
+    if (state.blocks.isEmpty()) Text(when {
+        state.blocksError != null -> "Couldn’t load blocked accounts."
+        state.blocksLoaded -> "You haven't blocked anyone."
+        else -> "Loading…"
+    }, color = TextMuted, fontSize = 12.sp)
     state.blocks.forEach { account ->
         Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
             Avatar(account.displayName.ifBlank { account.username }, 28.dp, avatarId = account.avatarId)

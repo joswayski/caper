@@ -13,8 +13,9 @@ const MessageDiff = lazy<typeof import("./MessageDiff.tsx").default>(() =>
         return module;
       }),
 );
+const versionName = (revision: number) => (revision === 1 ? "Original version" : `Version ${revision}`);
 const at = (version: MessageVersion) =>
-  `${version.revision === 1 ? "Original version" : `Version ${version.revision}`} · ${new Date(version.createdAt).toLocaleString()}`;
+  `${versionName(version.revision)} · ${new Date(version.createdAt).toLocaleString()}`;
 
 // The optional renderer can fail to download or initialize. Keep history and
 // the surrounding conversation usable even when highlighting is unavailable.
@@ -172,15 +173,14 @@ export default function MessageHistory({ message, onClose }: { message: ChatMess
             <option value="">Choose an earlier version…</option>
             {versions.slice(1).map((item) => (
               <option value={item.revision} key={item.revision}>
-                {item.revision === 1 ? "Original version" : `Version ${item.revision}`} ·{" "}
-                {new Date(item.createdAt).toLocaleString()}
+                {at(item)}
               </option>
             ))}
           </select>
           {version && previous && <Comparison messageId={message.id} before={previous} after={version} />}
           {version && !previous && (
             <>
-              <h3>{version.revision === 1 ? "Original version" : `Version ${version.revision}`}</h3>
+              <h3>{versionName(version.revision)}</h3>
               <p className="chat-version-text chat-version-original">{version.content.text}</p>
             </>
           )}
@@ -189,7 +189,11 @@ export default function MessageHistory({ message, onClose }: { message: ChatMess
           )}
         </div>
       )}
-      {loading && <p role="status">Loading versions…</p>}
+      {loading && (
+        <p className="chat-version-status" role="status">
+          Loading versions…
+        </p>
+      )}
       {error && (
         <p role="alert" className="chat-action-error">
           {error}{" "}

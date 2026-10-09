@@ -7,10 +7,14 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -26,41 +30,52 @@ import java.time.format.FormatStyle
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
+/** The draft with the caret after its last character, where editing continues. */
+private fun draftAtEnd(text: String) = TextFieldValue(text, TextRange(text.length))
+
 @Composable internal fun MessageEditorDialog(message: ChatMessage, viewModel: CaperViewModel, close: () -> Unit) {
     var baseline by remember(message.id) { mutableStateOf(message) }
-    var draft by remember(message.id) { mutableStateOf(message.content.text) }
+    var draft by remember(message.id) { mutableStateOf(draftAtEnd(message.content.text)) }
     var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+    val field = remember { FocusRequester() }
     fun save() {
-        if (saving || !validEditText(draft)) return
+        if (saving || !validEditText(draft.text)) return
         saving = true; error = null
         scope.launch {
-            try { viewModel.editMessage(baseline, draft); close() }
+            try { viewModel.editMessage(baseline, draft.text); close() }
             catch (failure: CancellationException) { throw failure }
-            catch (failure: Exception) { error = failure.message ?: "Edit could not be saved. Your draft is kept." }
+            catch (failure: Exception) { error = friendlyError(failure, "Edit could not be saved. Your draft is kept.") }
             finally { saving = false }
         }
     }
     Dialog(onDismissRequest = { if (!saving) close() }) {
+        // Runs in the dialog's own composition, once the field is attached.
+        LaunchedEffect(Unit) { runCatching { field.requestFocus() } }
         Surface(color = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
             Column(Modifier.padding(20.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("Edit message", style = MaterialTheme.typography.titleLarge)
                 Text("Previous versions remain visible to people who can read this message.", color = TextMuted, fontSize = 12.sp)
-                OutlinedTextField(draft, { draft = it }, Modifier.fillMaxWidth().heightIn(min = 140.dp, max = 300.dp), label = { Text("Message") }, enabled = !saving)
-                Text("${draft.codePointCount(0, draft.length)} / 4,000", color = TextMuted, fontSize = 12.sp)
+                // Read-only, not disabled, while saving: focus and the caret survive a failed save.
+                OutlinedTextField(draft, { draft = it }, Modifier.fillMaxWidth().heightIn(min = 140.dp, max = 300.dp).focusRequester(field), label = { Text("Message") }, readOnly = saving)
+                Text("${draft.text.codePointCount(0, draft.text.length)} / 4,000", color = TextMuted, fontSize = 12.sp)
                 error?.let { Text(it, color = Terracotta); TextButton(enabled = !saving, onClick = {
                     saving = true; error = null
                     scope.launch {
-                        try { baseline = viewModel.reloadMessage(baseline); draft = baseline.content.text }
+                        try {
+                            baseline = viewModel.reloadMessage(baseline)
+                            draft = draftAtEnd(baseline.content.text)
+                            runCatching { field.requestFocus() }
+                        }
                         catch (failure: CancellationException) { throw failure }
-                        catch (failure: Exception) { error = failure.message ?: "Couldn’t load the latest version." }
+                        catch (failure: Exception) { error = friendlyError(failure, "Couldn’t load the latest version.") }
                         finally { saving = false }
                     }
                 }) { Text("Discard draft and load latest") } }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     TextButton(close, enabled = !saving) { Text("Cancel") }
-                    Button(::save, enabled = !saving && validEditText(draft)) { Text(if (saving) "Saving…" else "Save changes") }
+                    Button(::save, enabled = !saving && validEditText(draft.text)) { Text(if (saving) "Saving…" else "Save changes") }
                 }
             }
         }
@@ -86,7 +101,7 @@ import kotlinx.coroutines.launch
             more = page.hasMore
             if (!older) selected = null
         } catch (failure: CancellationException) { throw failure }
-        catch (failure: Exception) { if (currentRequest == request) error = failure.message ?: "Message history could not be loaded." }
+        catch (failure: Exception) { if (currentRequest == request) error = friendlyError(failure, "Message history could not be loaded.") }
         finally { if (currentRequest == request) loading = false }
     }
     LaunchedEffect(message.id, message.revision) { load(false) }

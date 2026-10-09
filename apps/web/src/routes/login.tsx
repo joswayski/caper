@@ -1,9 +1,35 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { AccountApiError, getAccount, requestEmailCode, verifyEmailCode } from "../account/client";
 import Wordmark from "../components/Wordmark";
 
-export const Route = createFileRoute("/login")({ component: Login });
+export const Route = createFileRoute("/login")({
+  head: () => ({ meta: [{ title: "Sign in - Caper" }] }),
+  component: Login,
+});
+
+const primaryButton =
+  "mt-3 flex cursor-pointer items-center gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content transition-colors duration-150 enabled:hover:border-terracotta-bright enabled:hover:bg-terracotta-bright disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4";
+/** The API sends at most 3 codes per email every 15 minutes; past that it silently sends none. */
+const RESEND_COOLDOWN_MS = 60_000;
+const MAX_RESENDS = 2;
+
+function countdown(milliseconds: number) {
+  const seconds = Math.max(0, Math.ceil(milliseconds / 1000));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+const fieldClass =
+  "w-full rounded-control border border-border bg-surface px-3.5 py-[13px] text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4 read-only:opacity-55 disabled:cursor-not-allowed disabled:opacity-55";
+
+function Spinner() {
+  return (
+    <span
+      className="size-[1em] animate-spin rounded-full border-2 border-current border-r-transparent"
+      aria-hidden="true"
+    />
+  );
+}
 
 function loginError(error: unknown) {
   if (error instanceof AccountApiError) {
@@ -24,6 +50,24 @@ function Login() {
   const [attemptsRemaining, setAttemptsRemaining] = useState<number>();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
+  const [resends, setResends] = useState(0);
+  const [resendAt, setResendAt] = useState(0);
+  const [now, setNow] = useState(() => Date.now());
+  const [notice, setNotice] = useState<string>();
+  const emailInput = useRef<HTMLInputElement>(null);
+  const codeInput = useRef<HTMLInputElement>(null);
+
+  // Requests keep the field focused (read-only, not disabled) so a retry needs no extra click.
+  useEffect(() => {
+    if (!pending) (challengeId ? codeInput : emailInput).current?.focus();
+  }, [pending, challengeId]);
+
+  // Tick only while the resend countdown is visible.
+  useEffect(() => {
+    if (!challengeId || resendAt <= Date.now()) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [challengeId, resendAt]);
 
   useEffect(() => {
     void getAccount()
@@ -33,15 +77,22 @@ function Login() {
       .catch(() => undefined);
   }, [navigate]);
 
-  async function sendCode() {
+  async function sendCode(resend = false) {
     if (pending) return;
     setPending(true);
     setError(undefined);
+    setNotice(undefined);
     try {
       const result = await requestEmailCode(email);
       setChallengeId(result.challengeId);
       setCode("");
       setAttemptsRemaining(undefined);
+      setResendAt(Date.now() + RESEND_COOLDOWN_MS);
+      setNow(Date.now());
+      if (resend) {
+        setResends((count) => count + 1);
+        setNotice("We sent a new code. Earlier codes no longer work.");
+      }
     } catch (requestError) {
       setError(loginError(requestError));
     } finally {
@@ -91,11 +142,13 @@ function Login() {
                 Sign-in code
               </label>
               <input
-                className="w-full rounded-control border border-border bg-surface px-3.5 py-[13px] text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4 disabled:cursor-not-allowed disabled:opacity-55"
+                ref={codeInput}
+                className={fieldClass}
                 id="code"
                 name="code"
                 value={code}
                 onChange={(event) => {
+                  // No maxLength: it would truncate a pasted " ABC-123" before it is cleaned up.
                   setCode(
                     event.target.value
                       .toUpperCase()
@@ -108,8 +161,8 @@ function Login() {
                 autoCapitalize="characters"
                 spellCheck={false}
                 pattern="[A-HJKMNPQRSTWXYZ2-9]{6}"
-                maxLength={6}
-                disabled={pending || attemptsRemaining === 0}
+                readOnly={pending}
+                disabled={attemptsRemaining === 0}
                 required
                 autoFocus
               />
@@ -123,15 +176,23 @@ function Login() {
                   One attempt left. Check the code carefully.
                 </p>
               )}
-              {attemptsRemaining === 0 ? (
+              {notice && !error && (
+                <p className="mt-3 text-[.9rem] leading-[1.5] text-content-muted" role="status">
+                  {notice}
+                </p>
+              )}
+              {attemptsRemaining === 0 && resends >= MAX_RESENDS ? null : attemptsRemaining === 0 ? (
                 <button
-                  className="mt-3 flex w-full cursor-pointer items-center justify-between gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content hover:enabled:border-terracotta-bright hover:enabled:bg-terracotta-bright disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
+                  className={`${primaryButton} w-full ${pending ? "justify-center" : "justify-between"}`}
                   type="button"
                   disabled={pending}
-                  onClick={() => void sendCode()}
+                  onClick={() => void sendCode(true)}
                 >
                   {pending ? (
-                    "Sending…"
+                    <>
+                      <Spinner />
+                      Sending…
+                    </>
                   ) : (
                     <>
                       Email me a new code <span aria-hidden="true">→</span>
@@ -140,16 +201,13 @@ function Login() {
                 </button>
               ) : (
                 <button
-                  className={`mt-3 flex w-full cursor-pointer items-center gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content hover:enabled:border-terracotta-bright hover:enabled:bg-terracotta-bright disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4 ${pending ? "justify-center" : "justify-between"}`}
+                  className={`${primaryButton} w-full ${pending ? "justify-center" : "justify-between"}`}
                   type="submit"
                   disabled={pending || code.length !== 6}
                 >
                   {pending ? (
                     <>
-                      <span
-                        className="size-[1em] animate-spin rounded-full border-2 border-current border-r-transparent"
-                        aria-hidden="true"
-                      />
+                      <Spinner />
                       Checking…
                     </>
                   ) : (
@@ -160,7 +218,7 @@ function Login() {
                 </button>
               )}
               <button
-                className="cursor-pointer border-0 bg-transparent py-4 text-[.85rem] text-content-muted hover:enabled:text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
+                className="cursor-pointer border-0 bg-transparent py-4 text-[.85rem] text-content-muted transition-colors duration-150 enabled:hover:text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
                 type="button"
                 disabled={pending}
                 onClick={() => {
@@ -168,10 +226,29 @@ function Login() {
                   setCode("");
                   setError(undefined);
                   setAttemptsRemaining(undefined);
+                  setNotice(undefined);
+                  setResends(0);
+                  setResendAt(0);
                 }}
               >
                 Use a different email
               </button>
+              {resends >= MAX_RESENDS ? (
+                <p className="text-[.85rem] leading-[1.5] text-content-muted">
+                  Still nothing? Check your spam folder, or try again in 15 minutes.
+                </p>
+              ) : (
+                attemptsRemaining !== 0 && (
+                  <button
+                    className="ml-5 cursor-pointer border-0 bg-transparent py-4 text-[.85rem] text-content-muted tabular-nums transition-colors duration-150 enabled:hover:text-content disabled:cursor-default disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
+                    type="button"
+                    disabled={pending || resendAt > now}
+                    onClick={() => void sendCode(true)}
+                  >
+                    {resendAt > now ? `Resend code in ${countdown(resendAt - now)}` : "Resend code"}
+                  </button>
+                )
+              )}
             </form>
           </>
         ) : (
@@ -184,7 +261,8 @@ function Login() {
                 Email address
               </label>
               <input
-                className="w-full rounded-control border border-border bg-surface px-3.5 py-[13px] text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4 disabled:cursor-not-allowed disabled:opacity-55"
+                ref={emailInput}
+                className={fieldClass}
                 id="email"
                 name="email"
                 type="email"
@@ -195,7 +273,7 @@ function Login() {
                 }}
                 autoComplete="email"
                 placeholder="you@example.com"
-                disabled={pending}
+                readOnly={pending}
                 required
                 autoFocus
               />
@@ -205,17 +283,14 @@ function Login() {
                 </p>
               )}
               <button
-                className="mt-3 ml-auto flex w-fit min-w-[11.5rem] cursor-pointer items-center justify-between gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content hover:enabled:border-terracotta-bright hover:enabled:bg-terracotta-bright disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
+                className={`${primaryButton} ml-auto min-w-[12.5rem] ${pending ? "justify-center" : "justify-between"}`}
                 type="submit"
                 disabled={pending}
               >
                 {pending ? (
                   <>
+                    <Spinner />
                     Sending…
-                    <span
-                      className="size-[1em] animate-spin rounded-full border-2 border-current border-r-transparent"
-                      aria-hidden="true"
-                    />
                   </>
                 ) : (
                   <>

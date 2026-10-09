@@ -1,3 +1,8 @@
+:root {
+  /* A neutral wash that stays visible on every dark surface; --surface-raised
+     is too close to the sidebar and conversation backgrounds to read as hover. */
+  --surface-hover: rgb(255 255 255 / 6%);
+}
 .call-room.spaces-room {
   --channel-sidebar-inset: 12px;
   grid-template-columns: 60px auto minmax(0, 1fr);
@@ -43,7 +48,7 @@
   background: var(--surface);
   font: inherit;
   font-size: 0.8rem;
-  font-weight: 850;
+  font-weight: 700;
   text-decoration: none;
   cursor: pointer;
   transition:
@@ -84,7 +89,7 @@
   margin: 0;
   padding: 6px 8px;
   font-size: 0.94rem;
-  font-weight: 750;
+  font-weight: 700;
   letter-spacing: -0.02em;
 }
 .space-rail .add-space,
@@ -99,6 +104,12 @@
 .space-rail button:disabled {
   opacity: 0.35;
   cursor: not-allowed;
+}
+/* A space or channel that is opening on a slow network. */
+.space-rail button[aria-busy="true"],
+.channel-select[aria-busy="true"] {
+  opacity: 0.7;
+  cursor: progress;
 }
 .channel-navigation {
   margin: -4px -4px 0;
@@ -177,7 +188,7 @@
   padding-left: 9px;
   color: var(--text-muted);
   font-size: 0.76rem;
-  font-weight: 750;
+  font-weight: 700;
 }
 /* Match the account dock's 30px avatar column and 6px label gap. SVG viewBoxes
    keep the smaller action glyphs centered within the same leading column. */
@@ -192,8 +203,10 @@
   padding-right: 9px;
 }
 .direct-select > small {
+  flex: none;
   color: var(--text-muted);
   font-size: 0.72rem;
+  white-space: nowrap;
 }
 .direct-self:disabled {
   opacity: 0.5;
@@ -263,7 +276,7 @@
   overflow: hidden;
   margin: 0;
   font-size: 0.94rem;
-  font-weight: 750;
+  font-weight: 700;
   letter-spacing: -0.02em;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -305,8 +318,8 @@
   text-align: left;
   cursor: pointer;
 }
-.space-actions button:hover {
-  background: var(--surface-raised);
+.space-actions button:hover:not(:disabled) {
+  background: var(--surface-hover);
 }
 .space-actions button:disabled {
   opacity: 0.45;
@@ -363,14 +376,14 @@
   background: transparent;
   font: inherit;
   font-size: 0.76rem;
-  font-weight: 750;
+  font-weight: 700;
   cursor: pointer;
 }
-.channel-section-heading button:hover,
+.channel-section-heading button:hover:not(:disabled),
 .channel-section-menu summary:hover,
 .channel-section-menu[open] > summary {
   color: var(--text);
-  background: var(--surface-raised);
+  background: var(--surface-hover);
 }
 .channel-section-heading button:disabled {
   opacity: 0.45;
@@ -500,7 +513,11 @@
 }
 .channel-select:hover {
   color: var(--text);
-  background: var(--surface-raised);
+  background: var(--surface-hover);
+}
+/* Overrides call.css: the raised surface barely differs from the sidebar. */
+.spaces-room .channel-line:hover:not(:has(.channel-select[aria-current="page"])) {
+  background: var(--surface-hover);
 }
 .channel-select[aria-current="page"] {
   color: var(--text);
@@ -537,6 +554,11 @@
   right: 6px;
   width: 220px;
 }
+/* Set when the sidebar has no room below the row (see placeMenu). */
+.channel-menu[data-placement="above"] .space-actions {
+  top: auto;
+  bottom: calc(100% + 4px);
+}
 @media (max-width: 760px), (hover: none), (pointer: coarse) {
   .channel-select {
     min-height: 44px;
@@ -544,7 +566,9 @@
   .direct-section .channel-section-heading {
     min-height: 44px;
   }
-  .direct-section .channel-section-actions button {
+  .channel-section-actions > button,
+  .channel-section-menu > summary,
+  .channel-navigation > header > button {
     min-width: 44px;
     min-height: 44px;
   }
@@ -552,7 +576,7 @@
     width: 44px;
     height: 44px;
   }
-  .channel-menu .space-actions button {
+  .space-actions button {
     min-height: 44px;
   }
 }
@@ -683,7 +707,7 @@
   background: rgb(182 77 50 / 0.16);
 }
 .direct-line:hover:not(:has(.direct-select[aria-current="page"])) {
-  background: var(--surface-raised);
+  background: var(--surface-hover);
 }
 .direct-section .direct-line .direct-select {
   padding-right: 4px;
@@ -846,6 +870,10 @@
   font: inherit;
   cursor: pointer;
 }
+.member-presence-pages button:hover:not(:disabled) {
+  border-color: var(--text-muted);
+  background: var(--surface-hover);
+}
 .member-presence-pages button:disabled {
   opacity: 0.4;
   cursor: default;
@@ -877,7 +905,7 @@
   background: transparent;
   font: inherit;
   font-size: 0.7rem;
-  font-weight: 750;
+  font-weight: 700;
   cursor: pointer;
 }
 .navigation-toggle svg {
@@ -959,20 +987,44 @@
   border-radius: 8px;
   color: #fff;
   background: var(--terracotta);
-  font-weight: 800;
+  font-weight: 700;
   cursor: pointer;
 }
 .spaces-empty > section {
   width: min(560px, 100%);
   margin: 18vh auto 0;
 }
-/* Matches the login and profile page headings. */
+.spaces-empty .direct-section {
+  margin-top: 40px;
+}
+/* Matches the sign-in and profile onboarding headings. */
 .spaces-empty h1 {
   margin: 10px 0 14px;
   font-size: clamp(2.2rem, 7vw, 3.1rem);
   font-weight: 700;
   line-height: 1.08;
   letter-spacing: -0.055em;
+}
+/* These pages sit outside .call-page and its focus ring. */
+:is(.spaces-state, .spaces-empty) :focus-visible {
+  outline: 2px solid var(--terracotta-bright);
+  outline-offset: 3px;
+}
+/* The first-run page shows the DM list outside the sidebar's list resets.
+   :where() keeps these below the message-request group's own rules. */
+.spaces-empty :where(.direct-section ul) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.spaces-empty :where(.direct-section li) {
+  position: relative;
+  min-width: 0;
+  display: flex;
+  align-items: center;
 }
 .spaces-empty > section > p:not(.eyebrow) {
   color: var(--text-muted);
@@ -1037,22 +1089,47 @@
   color: var(--text-muted);
   font-size: 0.82rem;
 }
-.empty-channel > button {
-  min-height: 38px;
+.empty-channel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  max-width: 420px;
   margin-top: 18px;
+}
+.empty-channel-actions > button {
+  min-height: 38px;
   padding: 0 13px;
-  border: 1px solid var(--terracotta);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  color: #fff;
-  background: var(--terracotta);
-  font-weight: 750;
+  color: var(--text);
+  background: var(--surface-raised);
+  font-weight: 700;
   cursor: pointer;
 }
+.empty-channel-actions > .primary {
+  border-color: var(--terracotta);
+  color: #fff;
+  background: var(--terracotta);
+}
+/* On phones the stage has no header; the Browse toggle takes its place. */
+.empty-channel {
+  position: relative;
+}
+.empty-channel > .navigation-toggle {
+  position: absolute;
+  top: 5px;
+  left: 12px;
+}
 
+/* Dialogs fit their content and hang from a fixed top edge instead of being
+   centered, so async errors, member loading and save bars only extend them
+   downward; nothing above the change moves. */
 .space-dialog {
+  --dialog-top: max(16px, 10vh);
   width: min(460px, calc(100vw - 32px));
-  max-height: calc(100dvh - 32px);
-  margin: auto;
+  max-height: calc(100dvh - var(--dialog-top) - 16px);
+  margin: var(--dialog-top) auto auto;
   padding: 0;
   overflow-y: auto;
   border: 1px solid var(--border);
@@ -1063,14 +1140,6 @@
 }
 .space-dialog-wide {
   width: min(600px, calc(100vw - 32px));
-}
-/* Stable shells: async errors, member loading and save bars must not recenter a modal. */
-.space-dialog {
-  height: min(520px, calc(100dvh - 32px));
-  scrollbar-gutter: stable;
-}
-.space-dialog:has(> .delete-confirmation) {
-  height: min(320px, calc(100dvh - 32px));
 }
 .space-dialog[open] {
   display: flex;
@@ -1127,6 +1196,7 @@
 }
 .pending-space-invites h2 {
   font-size: 1.1rem;
+  font-weight: 700;
   margin: 0 0 4px;
 }
 .pending-space-invite {
@@ -1175,18 +1245,29 @@
   font-size: 0.84rem;
   box-shadow: 0 6px 24px rgb(0 0 0 / 0.3);
 }
-/* The notice lives inside the rail's nav; don't inherit space-tile styling. */
-.space-rail .space-access-notice button {
-  width: 28px;
-  height: 28px;
+.space-access-notice button {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  padding: 0;
   border: 0;
   border-radius: 8px;
   color: var(--text-muted);
   background: transparent;
+  cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
 }
-.space-rail .space-access-notice button:hover:not(:disabled) {
+.space-access-notice button:hover {
   color: var(--text);
   background: var(--border);
+}
+.space-access-notice button:focus-visible {
+  outline: 2px solid var(--terracotta-bright);
+  outline-offset: 2px;
 }
 .space-access-notice svg {
   width: 16px;
@@ -1259,8 +1340,9 @@
   display: grid;
   gap: 7px;
   font-size: 0.76rem;
-  font-weight: 750;
+  font-weight: 700;
 }
+/* Typed text is regular weight at one size, not the label's bold. */
 .space-field input,
 .member-add input {
   width: 100%;
@@ -1322,7 +1404,7 @@
   align-items: center;
   gap: 7px;
   font-size: 0.8rem;
-  font-weight: 750;
+  font-weight: 700;
 }
 .channel-privacy svg {
   width: 16px;
@@ -1407,7 +1489,7 @@
   background: var(--surface-raised);
   font: inherit;
   font-size: 0.75rem;
-  font-weight: 750;
+  font-weight: 700;
   cursor: pointer;
 }
 .space-dialog .primary {
@@ -1491,7 +1573,7 @@
   place-items: center;
   border-radius: var(--radius-avatar);
   font-size: 0.7rem;
-  font-weight: 850;
+  font-weight: 700;
 }
 .member-manager li > span:nth-child(2) {
   min-width: 0;
@@ -1511,16 +1593,23 @@
   font-size: 0.66rem;
 }
 .member-manager li button {
-  padding: 5px 7px;
+  min-height: 30px;
+  padding: 5px 9px;
   border: 0;
+  border-radius: var(--radius);
   color: var(--text-muted);
   background: transparent;
   font: inherit;
   font-size: 0.68rem;
   cursor: pointer;
 }
-.member-manager li button:hover {
-  color: #ff9b82;
+.member-manager ul + .dialog-section-heading {
+  margin-top: 18px;
+}
+.member-manager-empty {
+  margin: 10px 0 0;
+  color: var(--text-muted);
+  font-size: 0.72rem;
 }
 .danger-zone {
   margin-bottom: 5px;
@@ -1598,7 +1687,7 @@
   height: 16px;
 }
 .pending-channel-invite:hover {
-  background: var(--surface-raised);
+  background: var(--surface-hover);
   color: var(--text);
 }
 .pending-channel-invites {
@@ -1650,7 +1739,7 @@
   cursor: pointer;
 }
 .channel-directory li button:hover {
-  background: var(--surface-raised);
+  background: var(--surface-hover);
 }
 .channel-directory li svg {
   flex: none;
@@ -1714,7 +1803,7 @@
   background: var(--terracotta);
   font: inherit;
   font-size: 0.76rem;
-  font-weight: 750;
+  font-weight: 700;
   cursor: pointer;
 }
 .channel-preview .primary:hover:not(:disabled) {
@@ -1742,7 +1831,8 @@
     opacity 140ms ease;
 }
 .space-dialog .secondary:hover:not(:disabled),
-.member-add button:hover:not(:disabled) {
+.member-add button:hover:not(:disabled),
+.empty-channel-actions > .secondary:hover:not(:disabled) {
   border-color: var(--text-muted);
   background: var(--border);
 }
@@ -1753,7 +1843,7 @@
 .space-dialog .primary:hover:not(:disabled),
 .spaces-state button:hover:not(:disabled),
 .spaces-empty .primary:hover:not(:disabled),
-.empty-channel > button:hover:not(:disabled) {
+.empty-channel-actions > .primary:hover:not(:disabled) {
   border-color: var(--terracotta-bright);
   background: var(--terracotta-bright);
 }
@@ -1773,7 +1863,7 @@
 .space-sidebar-error button:hover:not(:disabled),
 .navigation-toggle:hover:not(:disabled) {
   color: var(--text);
-  background: var(--surface-raised);
+  background: var(--surface-hover);
 }
 .space-dialog button:focus-visible,
 .delete-confirmation [data-initial-focus]:focus {
@@ -1782,6 +1872,16 @@
 }
 .space-dialog :is(.danger, .danger-outline):focus-visible {
   outline-color: #ff8c9a;
+}
+/* Scrolling lists clip an outside ring at their edges; draw it inside instead. */
+.call-page .channel-navigation :focus-visible,
+.space-dialog :is(.channel-directory ul, .member-manager ul) :focus-visible {
+  outline-offset: -2px;
+}
+/* Radix marks a disabled slider's thumb too; it can't be dragged. */
+.range-slider[data-disabled],
+.range-slider-thumb[data-disabled] {
+  cursor: not-allowed;
 }
 /* Browse channels rows fill a scroll container that clips an outside ring,
    so draw it inside them instead. */
@@ -1799,6 +1899,8 @@
     :is(button, summary),
   .navigation-toggle,
   .channel-section-actions,
+  .space-actions .notification-chevron,
+  .space-access-notice button,
   .space-menu summary > svg,
   .channel-section-heading svg,
   .chat-channel-menu > summary > svg {
@@ -2065,7 +2167,8 @@ html[data-browse-transition="close"]::view-transition-new(browse-room) {
   .member-add input {
     font-size: 16px;
   }
-  .space-dialog > header > button {
+  .space-dialog > header > button,
+  .space-access-notice button {
     width: 44px;
     height: 44px;
   }
@@ -2107,7 +2210,7 @@ html[data-browse-transition="close"]::view-transition-new(browse-room) {
   background: var(--terracotta);
   color: var(--text);
   font-size: 0.66rem;
-  font-weight: 800;
+  font-weight: 700;
   line-height: 18px;
   text-align: center;
 }
@@ -2175,7 +2278,7 @@ html[data-browse-transition="close"]::view-transition-new(browse-room) {
   background: var(--surface-raised);
   font: inherit;
   font-size: 0.76rem;
-  font-weight: 750;
+  font-weight: 700;
   cursor: pointer;
 }
 .direct-request-bar .primary {

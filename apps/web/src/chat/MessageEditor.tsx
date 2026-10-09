@@ -23,6 +23,13 @@ export default function MessageEditor({
   useEffect(() => {
     const restore = focusReturn(message.clientMessageId);
     dialog.current?.showModal();
+    // Continue editing where the message ends, not before its first character.
+    const input = textarea.current;
+    if (input) {
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+      input.scrollTop = input.scrollHeight;
+    }
     return restore;
   }, []);
   const save = async () => {
@@ -75,7 +82,6 @@ export default function MessageEditor({
         <textarea
           ref={textarea}
           id="chat-edit-text"
-          autoFocus
           value={draft}
           disabled={saving}
           rows={5}

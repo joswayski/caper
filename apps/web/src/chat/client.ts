@@ -1002,11 +1002,9 @@ export class ChatClient {
       body: JSON.stringify({ sourceChannelId: channelId, sourceMessageId: messageId, clientMessageId, text }),
       signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
     });
-    if (!response.ok)
-      throw new ChatHistoryError(
-        response.status,
-        (await apiError(response, "Forward could not be confirmed. Retry to check the same forward.")).message,
-      );
+    // Without a server error, leave the message empty: the picker words it by status
+    // ("Not sent." or "Not confirmed yet.") and explains Retry itself.
+    if (!response.ok) throw new ChatHistoryError(response.status, (await apiError(response, "")).message);
     const message: unknown = await response.json();
     if (
       !isChatMessage(message) ||

@@ -20,6 +20,8 @@ import MessageHistory from "./MessageHistory.tsx";
 import { MessageSquare } from "lucide-react";
 import { ForwardCard, ForwardConversation, ForwardPicker, type ForwardTarget } from "./Forwarding.tsx";
 import { dateDivider } from "./dates.ts";
+import { groupsWithPrevious } from "./grouping.ts";
+import LinkedText from "./LinkedText.tsx";
 import { isChannelMessage, type ChatAuthor, type GeneralChatHistory } from "./types.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
 import Avatar from "../components/Avatar";
@@ -630,12 +632,55 @@ export default function Chat({
   // Share the formatter across visible rows, but refresh locale/timezone on render.
   const timeFormatter = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
   const pinTimeFormatter = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
-  const renderMessage = (index: number, message: (typeof messages)[number], inThread = false) => {
+  // Same person, within five minutes, same day, and no blocked-run bar in between.
+  const joinsPrevious = (
+    previous: (typeof messages)[number] | undefined,
+    message: (typeof messages)[number] | undefined,
+    inThread: boolean,
+  ) => {
+    if (!hydrated || !previous || !message) return false;
+    const runs = inThread ? threadRuns : channelRuns;
+    const run = "content" in message ? runs.get(message.clientMessageId) : undefined;
+    if (run && (run.first === message.clientMessageId || !revealedRuns.has(run.first))) return false;
+    const previousRun = "content" in previous ? runs.get(previous.clientMessageId) : undefined;
+    if (previousRun && !revealedRuns.has(previousRun.first)) return false;
+    return groupsWithPrevious(previous, message, { inThread });
+  };
+  // "8:28" for the narrow gutter beside compact rows (no AM/PM).
+  const compactTime = (value: string) =>
+    timeFormatter
+      .formatToParts(new Date(value))
+      .filter((part) => part.type !== "dayPeriod")
+      .map((part) => part.value)
+      .join("")
+      .trim();
+  const renderMessage = (
+    index: number,
+    message: (typeof messages)[number],
+    inThread = false,
+    previousInThread?: (typeof messages)[number],
+    nextInThread?: (typeof messages)[number],
+  ) => {
     const pending = !("content" in message);
     const author = message.author;
     const divider = hydrated && !inThread ? dateDivider(message.createdAt, messages[index - 1]?.createdAt) : undefined;
     const run = pending ? undefined : (inThread ? threadRuns : channelRuns).get(message.clientMessageId);
     const runShown = !!run && revealedRuns.has(run.first);
+    const grouped = joinsPrevious(inThread ? previousInThread : messages[index - 1], message, inThread);
+    // The row above a follow-up gives up its bottom padding so the run reads as one block.
+    const continued = joinsPrevious(message, inThread ? nextInThread : messages[index + 1], inThread);
+    const edited =
+      "content" in message && !message.forward && (message.revision ?? 1) > 1 ? (
+        <button
+          type="button"
+          className="chat-edited"
+          title={message.editedAt ? `Edited ${new Date(message.editedAt).toLocaleString()}` : undefined}
+          aria-label={`Message history, version ${message.revision}`}
+          onClick={() => openHistory(message.id)}
+        >
+          edited
+        </button>
+      ) : undefined;
     if (run && !runShown) {
       // Every message stays one list item, so history paging is unchanged.
       if (run.first !== message.clientMessageId)
@@ -684,7 +729,7 @@ export default function Chat({
           </div>
         )}
         <article
-          className={`chat-message${pending ? " chat-message-pending" : ""}${"id" in message && jumpMessage === message.id ? " chat-message-jump-target" : ""}${!pending && mentionsAccount(message, state.author?.id) ? " chat-message-mentioned" : ""}${!inThread && "id" in message && state.thread?.rootId === message.id ? " chat-message-thread-active" : ""}`}
+          className={`chat-message${grouped ? " chat-message-grouped" : ""}${continued ? " chat-message-continued" : ""}${pending ? " chat-message-pending" : ""}${"id" in message && jumpMessage === message.id ? " chat-message-jump-target" : ""}${!pending && mentionsAccount(message, state.author?.id) ? " chat-message-mentioned" : ""}${!inThread && "id" in message && state.thread?.rootId === message.id ? " chat-message-thread-active" : ""}`}
           data-message-key={message.clientMessageId}
           data-message-id={"id" in message ? message.id : undefined}
           onPointerDown={(event) => {
@@ -729,25 +774,22 @@ export default function Chat({
           }}
           tabIndex={pending ? undefined : -1}
         >
-          <div className="chat-avatar">
-            <Avatar avatarId={author?.avatarId} name={author?.name ?? name} />
-          </div>
+          {grouped ? (
+            // The run's avatar is above; show the time here on hover instead.
+            <div className="chat-grouped-time" aria-hidden="true">
+              {compactTime(message.createdAt)}
+            </div>
+          ) : (
+            <div className="chat-avatar">
+              <Avatar avatarId={author?.avatarId} name={author?.name ?? name} />
+            </div>
+          )}
           <div>
-            <header>
+            <header className={grouped ? "sr-only" : undefined}>
               <strong>{author?.name ?? name}</strong>
               {author?.isGuest && <span>Guest</span>}
               <time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt, timeFormatter) : ""}</time>
-              {"content" in message && !message.forward && (message.revision ?? 1) > 1 && (
-                <button
-                  type="button"
-                  className="chat-edited"
-                  title={message.editedAt ? `Edited ${new Date(message.editedAt).toLocaleString()}` : undefined}
-                  aria-label={`Message history, version ${message.revision}`}
-                  onClick={() => openHistory(message.id)}
-                >
-                  edited
-                </button>
-              )}
+              {!grouped && edited}
             </header>
             {!inThread && message.threadRootId && (
               <button
@@ -764,7 +806,7 @@ export default function Chat({
               <p>
                 {"content" in message
                   ? mentionSegments(message.content.text, message.content.mentions).map((segment, part) => {
-                      if (!segment.mention) return segment.text;
+                      if (!segment.mention) return <LinkedText key={part} text={segment.text} />;
                       const user = segment.user;
                       if (!user)
                         return (
@@ -795,6 +837,8 @@ export default function Chat({
                       );
                     })
                   : message.text}
+                {/* Compact rows have no header, so the marker follows the text. */}
+                {grouped && edited && <> {edited}</>}
               </p>
             )}
             {"content" in message && (
@@ -807,6 +851,7 @@ export default function Chat({
                   type="button"
                   className="chat-message-actions-trigger"
                   aria-label={`Message actions for ${message.author.name}`}
+                  title="More actions"
                   aria-haspopup="dialog"
                   aria-expanded={actionTarget?.messageId === message.id && actionTarget.mode === "actions"}
                   onClick={(event) => openActions(message.id, event.currentTarget, inThread)}
@@ -977,27 +1022,31 @@ export default function Chat({
               {state.phase === "error" ? "Offline" : "Connecting…"}
             </span>
           )}
-          {state.phase === "ready" && state.error && (
-            <div className="chat-refresh-error" role="alert">
-              {state.error}{" "}
-              <button type="button" onClick={() => clientRef.current?.retryLoad()}>
-                Retry
-              </button>
-            </div>
-          )}
-          {pinError && (
-            <div className="chat-refresh-error" role="alert">
-              {pinError.text}{" "}
-              <button
-                type="button"
-                disabled={pinning.has(pinError.messageId)}
-                onClick={() => void pin(pinError.messageId, pinError.active)}
-              >
-                Retry
-              </button>{" "}
-              <button type="button" onClick={() => setPinError(undefined)}>
-                Dismiss
-              </button>
+          {((state.phase === "ready" && state.error) || pinError) && (
+            <div className="chat-heading-alerts">
+              {state.phase === "ready" && state.error && (
+                <div className="chat-refresh-error" role="alert">
+                  {state.error}{" "}
+                  <button type="button" onClick={() => clientRef.current?.retryLoad()}>
+                    Retry
+                  </button>
+                </div>
+              )}
+              {pinError && (
+                <div className="chat-refresh-error" role="alert">
+                  {pinError.text}{" "}
+                  <button
+                    type="button"
+                    disabled={pinning.has(pinError.messageId)}
+                    onClick={() => void pin(pinError.messageId, pinError.active)}
+                  >
+                    Retry
+                  </button>{" "}
+                  <button type="button" onClick={() => setPinError(undefined)}>
+                    Dismiss
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </header>
@@ -1084,7 +1133,9 @@ export default function Chat({
                           {hydrated ? timeLabel(message.createdAt, pinTimeFormatter) : ""}
                         </time>
                       </header>
-                      <p>{message.content.text}</p>
+                      <p>
+                        <LinkedText text={message.content.text} />
+                      </p>
                       <ForwardCard
                         message={message}
                         onOpen={(anchor) => setConversationTarget({ messageId: message.id, anchor })}
@@ -1264,8 +1315,15 @@ export default function Chat({
             onReply={
               actionTarget.inThread ? undefined : () => openThread(actionMessage.threadRootId ?? actionMessage.id)
             }
-            onEdit={() => openEdit(actionMessage.id)}
-            onHistory={() => openHistory(actionMessage.id)}
+            // The menu item is removed as the dialog opens; let the dialog return focus to the menu's trigger.
+            onEdit={() => {
+              actionTarget.anchor.focus({ preventScroll: true });
+              openEdit(actionMessage.id);
+            }}
+            onHistory={() => {
+              actionTarget.anchor.focus({ preventScroll: true });
+              openHistory(actionMessage.id);
+            }}
             onViewReactions={(emoji) => showReactors(actionMessage.id, emoji, actionTarget.anchor)}
             block={
               onBlockAuthor && !actionMessage.author.isGuest && actionMessage.author.id !== state.author?.id

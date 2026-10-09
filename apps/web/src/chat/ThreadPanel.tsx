@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Send, X } from "lucide-react";
+import Avatar from "../components/Avatar";
 import type { ChatClient, ChatViewState } from "./client.ts";
+import { COUNTER_START, counterTone } from "./counter.ts";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import type { MentionCandidate } from "./mentions.ts";
 import { sequence, type ChatMessage } from "./types.ts";
@@ -24,7 +26,13 @@ export default function ThreadPanel({
   /** People `@` can suggest, without the author; undefined until loaded. */
   mentionPeople?: MentionCandidate[];
   specialMentions: boolean;
-  renderMessage: (index: number, message: ChatMessage, inThread: boolean) => ReactNode;
+  renderMessage: (
+    index: number,
+    message: ChatMessage,
+    inThread: boolean,
+    previous?: ChatMessage,
+    next?: ChatMessage,
+  ) => ReactNode;
   onClose: () => void;
 }) {
   const [drafts, setDrafts] = useState<Record<string, { text: string; broadcast: boolean }>>({});
@@ -121,7 +129,7 @@ export default function ThreadPanel({
         event.key === "Escape" &&
         !event.defaultPrevented &&
         !document.querySelector(
-          ".chat-reaction-picker, .chat-message-actions, .chat-reactors, dialog[open], details[open], [popover]:popover-open",
+          ".chat-reaction-picker, .chat-message-actions, .chat-reactors, .chat-mention-card, .chat-forward-dialog, dialog[open], details[open], [popover]:popover-open",
         )
       )
         onClose();
@@ -170,10 +178,13 @@ export default function ThreadPanel({
   // Typing a reply changes only this panel's draft; keep the rendered messages.
   const renderedRoot = useMemo(() => root && renderMessage(0, root, true), [root, renderMessage]);
   const renderedReplies = useMemo(
-    () => replies.map((message, index) => renderMessage(index + 1, message, true)),
+    // Replies group with the reply above them; the root never groups.
+    () =>
+      replies.map((message, index) => renderMessage(index + 1, message, true, replies[index - 1], replies[index + 1])),
     [replies, renderMessage],
   );
   if (!state.thread) return null;
+  const count = Array.from(draft.text).length;
   const sending = !!state.pendingSend && !state.sendError;
   const blocked = !!state.pendingSend && !pending;
   const submit = async () => {
@@ -267,7 +278,7 @@ export default function ThreadPanel({
           </button>
         )}
         {!state.thread.loading && !state.thread.error && !replies.length && (
-          <p className="chat-thread-status">No replies yet. Start the thread.</p>
+          <p className="chat-thread-status">{readOnly ? "No replies yet." : "No replies yet. Start the thread."}</p>
         )}
         {renderedReplies}
         {state.thread.hasNewer && (
@@ -282,7 +293,9 @@ export default function ThreadPanel({
         )}
         {pending && (
           <article className="chat-message chat-message-pending">
-            <div />
+            <div className="chat-avatar">
+              <Avatar avatarId={pending.author?.avatarId} name={pending.author?.name ?? ""} />
+            </div>
             <div>
               <header>
                 <strong>{pending.author?.name}</strong>
@@ -294,7 +307,9 @@ export default function ThreadPanel({
       </div>
       <div className="chat-composer chat-thread-composer">
         {readOnly ? (
-          <p>Join the channel to reply.</p>
+          <p className="chat-thread-readonly">
+            {direct ? "You can’t reply in this conversation." : "Join the channel to reply."}
+          </p>
         ) : (
           <>
             {state.sessionError && (
@@ -397,8 +412,10 @@ export default function ThreadPanel({
                   <Send size={18} />
                 </button>
               </div>
-              {Array.from(draft.text).length >= 3000 && (
-                <small>{Array.from(draft.text).length.toLocaleString()} / 4,000</small>
+              {count >= COUNTER_START && (
+                <small className="chat-counter" data-tone={counterTone(count)}>
+                  {count.toLocaleString()} / 4,000
+                </small>
               )}
             </form>
           </>

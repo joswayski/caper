@@ -1,5 +1,6 @@
 import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from "react";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
+import { COUNTER_START, counterTone } from "./counter.ts";
 import type { MentionCandidate } from "./mentions.ts";
 
 export interface ComposerHandle {
@@ -127,8 +128,6 @@ export default function Composer({
   }));
 
   const characterCount = Array.from(draft).length;
-  const counterTone =
-    characterCount >= 3900 ? "red" : characterCount >= 3750 ? "orange" : characterCount >= 3500 ? "yellow" : "gray";
 
   return (
     <>
@@ -179,8 +178,8 @@ export default function Composer({
           Type : to find emoji or @ to mention someone. Up and Down choose; Enter or Tab inserts; Escape closes
           suggestions. Enter to send. Shift+Enter for a new line.
         </span>
-        {characterCount >= 3000 && (
-          <small className="chat-counter" data-tone={counterTone}>
+        {characterCount >= COUNTER_START && (
+          <small className="chat-counter" data-tone={counterTone(characterCount)}>
             {characterCount.toLocaleString()} / 4,000
           </small>
         )}

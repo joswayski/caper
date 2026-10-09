@@ -462,7 +462,9 @@ are no join notices, reaction picker/hints, or playback controls. Speech,
 messages, typing and delayed reactions use independent randomized timings.
 Only seven of the 24 scripted posts (memes and a few standout replies) receive
 one to three delayed reactions; ordinary messages stay unreacted.
-Messages remain in local page history across animation loops. The full-height
+Messages remain in local page history for one earlier animation loop; older
+loops are dropped so a long-open homepage stays light, and the clock pauses
+while the window is off screen or the tab is hidden. The full-height
 conversation follows new posts unless the visitor scrolls back to read older
 messages; reloading starts a fresh illustration. No reaction API is called.
 The four profile pictures in
@@ -743,7 +745,9 @@ are visible to their explicitly selected space members and the owner. The public
 demo cannot be managed through these APIs.
 
 Owners invite existing accounts by exact username and can remove members or
-cancel pending invitations. Invitees must accept before becoming members.
+cancel pending invitations. Every client confirms before removing a space member
+("Remove {name}?") or a private-channel member ("Remove {name} from #channel?");
+cancelling an invitation stays one click. Invitees must accept before becoming members.
 Existing memberships are unchanged; the migration does not retroactively ask
 existing members to accept. There are no invite links, custom roles, ownership
 transfers or public space discovery yet.
@@ -1928,6 +1932,60 @@ actions performed during development.
    migration, version reads and edit-event consumption while disabling writes.
    Never drop retained content/outbox/migration records or roll SQLx images back
    across the applied migration.
+
+## Message text: links and grouping
+
+Message content stays plain text on the wire
+(`content: {version: 1, type: "text", text, mentions}`); there is no server,
+database or API change. Clients find links at render time the same way they
+find mentions: split the text into mention segments, then run link detection
+on the plain segments only.
+
+**Links.** `http://`, `https://` and `www.` URLs (case-insensitive) become
+links. The rules follow GitHub Flavored Markdown's autolink literals: a link
+starts at the beginning, after whitespace, or after `( [ { < " ' * _ ~`; runs
+to whitespace or `<`; drops trailing `? ! . , : ; * _ ~ " ' >`, a trailing
+`&entity;`, and unbalanced `)`/`]`; and needs a host of ASCII letters,
+digits, `_`, `.` and `-` with at least two labels (three after `www.`) and no
+`_` in the last two. `www.` links open as `https://`. Nothing else
+(`javascript:`, `mailto:`, `ftp:`, bare domains) is ever linked, and the
+visible text is never shortened. Links open in the system browser; on web in a
+new tab with `rel="noopener noreferrer nofollow ugc"`. They apply to message
+bodies in the timeline, threads, Pins and forwarded-message cards, not to
+edit-history diffs or the composer.
+
+The algorithm lives in `apps/web/src/chat/links.ts` and each native client;
+all four clients' unit tests assert the same segments for every case in
+`shared/messages/link-cases.json`. Change the rules and that file together.
+
+**Compatibility with rich messages.** Markdown and multi-part bot messages
+(titles, fields, embeds, buttons) should be added as optional fields on the
+same version-1 text content, for example a format flag or a structured
+`blocks`/`embeds` list, while `text` always carries a readable plain fallback.
+Every current client ignores unknown content fields but rejects unknown
+`version`/`type` values, so this keeps already-installed apps showing the
+fallback instead of dropping the message. A future Markdown renderer should
+call the same link detection for bare URLs (GFM autolink literals), so plain
+messages render identically before and after it ships; explicit
+`[label](url)` links and bot embed links should go through the same
+http/https-only, open-externally link handling. Link previews, if added, are
+separate server-generated attachments rather than text.
+
+**Grouping.** A message is shown compactly, without avatar and name, when the
+previous visible row in the same list (timeline or a thread's replies) is by
+the same account, at most five minutes earlier, on the same day, and neither
+is a blocked-message placeholder; "Replied to a thread" broadcasts and thread
+roots always keep their header. Compact rows keep the avatar column empty and
+show the time there on pointer hover; an "edited" marker moves after the
+text. Grouping is presentation only: ordering, paging, unread state and
+actions are unchanged.
+
+Validation: web was checked in a browser at desktop and phone sizes. Android
+compiles with 221 JVM unit tests passing, including the shared link cases.
+Desktop UI and unit tests pass (stand-in fonts; no rendered screenshot in CI).
+Apple was not compiled in the implementing environment; its unit and parity UI
+tests, and link colour when a message also has mention pills, still need a
+macOS run. No physical device, TalkBack/VoiceOver or touch-hover checks yet.
 
 ## Shared call state and rolling deployments
 
@@ -3797,6 +3855,12 @@ minutes and have three attempts by default. A replacement code consumes the prio
 active code for that email. Request limits default to 3/email/15 minutes,
 5/email/day, 10/IP/hour, and 500 globally/hour; all are configurable through the
 application secret.
+Past a limit the API still returns a challenge ID but sends nothing, so clients
+cap resends: the code step offers **Resend code** 60 seconds after each code is
+sent (with an m:ss countdown), at most twice per email entry, then shows "Still
+nothing? Check your spam folder, or try again in 15 minutes." **Email me a new
+code** (after all attempts are used) counts as a resend. **Use a different
+email** resets the count.
 
 ### Notifications webhook
 
