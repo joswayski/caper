@@ -167,7 +167,7 @@ function ContactLinks() {
         title={contactEmail}
       >
         {status === "copied" ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
-        <span>{status === "copied" ? "Copied!" : "Copy email."}</span>
+        <span>{status === "copied" ? "Copied." : "email."}</span>
       </button>
       <span className={status === "failed" ? "contact-feedback" : "sr-only"} role="status">
         {status === "copied"

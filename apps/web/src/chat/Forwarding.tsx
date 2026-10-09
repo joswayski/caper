@@ -77,13 +77,16 @@ function OriginalMessage({ message }: { message: ChatMessage }) {
           <Avatar avatarId={message.author.avatarId} name={message.author.name} />
         </span>
         <strong>{message.author.name}</strong>
-        {message.editedAt && <small title={message.editedAt}>edited</small>}
+        {message.editedAt && <small title={`Edited ${new Date(message.editedAt).toLocaleString()}`}>edited</small>}
       </header>
       <p>{message.content.text}</p>
       {!!message.reactions?.length && (
         <div className="chat-forward-reactions" aria-label="Original reactions">
           {message.reactions.map(({ emoji, authorIds }) => (
-            <span key={emoji} aria-label={`${emoji}, ${authorIds.length} reactions`}>
+            <span
+              key={emoji}
+              aria-label={`${emoji}, ${authorIds.length} ${authorIds.length === 1 ? "reaction" : "reactions"}`}
+            >
               <img src={emojiAsset(emojiCode(emoji))} width={18} height={18} alt={emoji} />
               <span>{authorIds.length}</span>
             </span>

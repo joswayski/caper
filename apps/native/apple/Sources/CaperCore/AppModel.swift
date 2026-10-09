@@ -2022,7 +2022,8 @@ public final class ChatModel {
         if delivery.pending == nil, let validation = MessageValidation.error(for: text) { error = validation; return }
         let newSubmission = delivery.pending == nil
         let command = delivery.begin(text: text, threadRootId: rootID, broadcast: inThread && threadBroadcast)
-        if newSubmission { if inThread { threadDraft = "" } else { draft = "" } }
+        // "Also send to channel" applies to one reply, so it resets with the draft.
+        if newSubmission { if inThread { threadDraft = ""; threadBroadcast = false } else { draft = "" } }
         let requestGeneration = generation
         sending = true; error = nil
         defer {

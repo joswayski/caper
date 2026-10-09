@@ -207,7 +207,7 @@ export default function MessageActions({
             <div className="chat-copy-actions">
               {onReply && (
                 <button type="button" onClick={onReply}>
-                  <MessageSquare size={20} aria-hidden="true" />
+                  <MessageSquare size={16} aria-hidden="true" />
                   Reply in thread
                 </button>
               )}

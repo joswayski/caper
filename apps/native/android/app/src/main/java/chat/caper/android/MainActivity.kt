@@ -1185,7 +1185,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     fun send() {
         if (state.pendingMessage != null && pending == null || pending?.rejected == true || pending != null && pending.error == null) return
         if (pending != null) viewModel.send(pending.text, threadRootId = thread.rootId, broadcast = pending.broadcast)
-        else if (draft.text.isNotBlank()) { viewModel.send(draft.text, threadRootId = thread.rootId, broadcast = broadcast); draft = TextFieldValue("") }
+        // "Also send to channel" applies to one reply, so it resets with the draft.
+        else if (draft.text.isNotBlank()) { viewModel.send(draft.text, threadRootId = thread.rootId, broadcast = broadcast); draft = TextFieldValue(""); broadcast = false }
     }
     Column(modifier.background(SurfaceConversation).border(BorderStroke(1.dp, Border))) {
         Row(Modifier.fillMaxWidth().height(53.dp).padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {

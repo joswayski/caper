@@ -9,6 +9,7 @@ export default function ThreadPanel({
   state,
   client,
   channelName,
+  direct = false,
   readOnly,
   mentionPeople,
   specialMentions,
@@ -18,6 +19,7 @@ export default function ThreadPanel({
   state: ChatViewState;
   client?: ChatClient;
   channelName: string;
+  direct?: boolean;
   readOnly: boolean;
   /** People `@` can suggest, without the author; undefined until loaded. */
   mentionPeople?: MentionCandidate[];
@@ -113,10 +115,14 @@ export default function ThreadPanel({
     follow.current = true;
     composer.current?.focus();
     const escape = (event: KeyboardEvent) => {
+      // Escape closes the innermost layer first: a menu, popover or dialog
+      // over the thread (including sidebar menus and space dialogs) keeps it open.
       if (
         event.key === "Escape" &&
         !event.defaultPrevented &&
-        !document.querySelector(".chat-reaction-picker, .chat-message-actions, .chat-reactors, .chat-edit-dialog[open]")
+        !document.querySelector(
+          ".chat-reaction-picker, .chat-message-actions, .chat-reactors, dialog[open], details[open], [popover]:popover-open",
+        )
       )
         onClose();
     };
@@ -134,7 +140,10 @@ export default function ThreadPanel({
     if (!pending) return;
     setDrafts((current) => {
       const old = current[pending.threadRootId!] ?? { text: "", broadcast: false };
-      return old.text === pending.text ? { ...current, [pending.threadRootId!]: { ...old, text: "" } } : current;
+      // "Also send to channel" applies to one reply, so it resets with the draft.
+      return old.text === pending.text
+        ? { ...current, [pending.threadRootId!]: { text: "", broadcast: false } }
+        : current;
     });
   }, [pending?.clientMessageId]);
   useEffect(() => {
@@ -185,12 +194,17 @@ export default function ThreadPanel({
       aria-modal={mobile || undefined}
     >
       <header className="chat-thread-heading">
-        <button type="button" className="chat-thread-back" onClick={onClose} aria-label="Back to channel">
+        <button
+          type="button"
+          className="chat-thread-back"
+          onClick={onClose}
+          aria-label={direct ? "Back to conversation" : "Back to channel"}
+        >
           <ArrowLeft size={20} />
         </button>
         <div>
           <h2 id="chat-thread-heading">Thread</h2>
-          <span>in #{channelName}</span>
+          <span>{direct ? `with ${channelName}` : `in #${channelName}`}</span>
         </div>
         <button type="button" className="chat-thread-close" onClick={onClose} aria-label="Close thread">
           <X size={20} />
@@ -305,8 +319,9 @@ export default function ThreadPanel({
                       type="button"
                       disabled={!!draft.text}
                       onClick={() => {
+                        const broadcast = pending.broadcast ?? false;
                         const text = client?.discardRejected();
-                        if (text !== undefined) update({ text });
+                        if (text !== undefined) update({ text, broadcast });
                       }}
                     >
                       Edit
@@ -370,7 +385,7 @@ export default function ThreadPanel({
                     disabled={!!pending}
                     onChange={(event) => update({ broadcast: event.target.checked })}
                   />
-                  Also send to #{channelName}
+                  {direct ? "Also send to conversation" : `Also send to #${channelName}`}
                 </label>
                 <button
                   type="submit"

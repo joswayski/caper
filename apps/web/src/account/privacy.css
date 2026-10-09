@@ -30,9 +30,15 @@
   border: 1px solid var(--border);
   border-radius: 8px;
   cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease;
 }
 .privacy-settings label:has(input:checked) {
   border-color: var(--terracotta);
+}
+.privacy-settings fieldset:not(:disabled) label:hover {
+  background: rgb(255 255 255 / 4%);
 }
 .privacy-settings fieldset:disabled label {
   cursor: wait;
@@ -86,17 +92,30 @@
   min-height: 36px;
   padding: 0 12px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 8px;
   color: var(--text);
   background: var(--surface-raised);
   font: inherit;
   font-size: 0.75rem;
   font-weight: 750;
   cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease;
+}
+.privacy-settings li button:hover:not(:disabled) {
+  border-color: var(--text-muted);
+  background: var(--border);
 }
 .privacy-settings li button:disabled {
   cursor: wait;
   opacity: 0.6;
+}
+@media (prefers-reduced-motion: reduce) {
+  .privacy-settings label,
+  .privacy-settings li button {
+    transition: none;
+  }
 }
 .privacy-settings :is(label, button):focus-visible,
 .privacy-settings input:focus-visible {

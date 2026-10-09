@@ -3959,11 +3959,10 @@ impl CaperApp {
         let id = pending.id.clone();
         if self.pending.is_none() {
             if let Some(root) = &root {
-                self.thread_drafts
-                    .entry(root.clone())
-                    .or_default()
-                    .0
-                    .clear();
+                // "Also send to channel" applies to one reply, so it resets with the draft.
+                let draft = self.thread_drafts.entry(root.clone()).or_default();
+                draft.0.clear();
+                draft.1 = false;
             } else if self.draft == text {
                 self.draft.clear();
             }

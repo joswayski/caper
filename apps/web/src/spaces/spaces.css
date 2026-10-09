@@ -52,7 +52,13 @@
     color 150ms ease,
     background-color 150ms ease;
 }
-.space-rail :is(button, a):hover,
+/* Hover stays neutral; terracotta marks only the current space. */
+.space-rail :is(button, a):hover:not(:disabled, [aria-current="page"]) {
+  border-color: var(--text-muted);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface-raised);
+}
 .space-rail button[aria-current="page"] {
   border-color: #805143;
   border-radius: 8px;
@@ -82,7 +88,7 @@
   letter-spacing: -0.02em;
 }
 .space-rail .add-space,
-.space-rail .add-space:hover {
+.space-rail .add-space:hover:not(:disabled) {
   color: var(--terracotta-bright);
   border-style: dashed;
   border-radius: 12px;
@@ -250,7 +256,7 @@
 }
 .space-menu summary:hover,
 .space-menu[open] summary {
-  background: var(--surface-raised);
+  background: var(--surface-composer);
 }
 .space-menu h1 {
   flex: 1;
@@ -267,6 +273,7 @@
   height: 16px;
   flex: 0 0 auto;
   color: var(--text-muted);
+  transition: transform 150ms ease;
 }
 .space-menu[open] summary > svg {
   transform: rotate(180deg);
@@ -387,6 +394,7 @@
   width: 16px;
   height: 16px;
   flex: 0 0 auto;
+  transition: transform 150ms ease;
 }
 .channel-section-toggle[aria-expanded="false"] svg {
   transform: rotate(-90deg);
@@ -744,7 +752,7 @@
 .member-list-toggle:hover,
 .member-list-toggle[aria-expanded="true"] {
   color: var(--text);
-  background: var(--surface-raised);
+  background: var(--surface-composer);
 }
 .member-list-toggle svg {
   width: 20px;
@@ -793,6 +801,7 @@
 }
 .space-member-presence li {
   display: flex;
+  align-items: center;
   gap: 10px;
   min-height: 44px;
   padding: 4px 8px;
@@ -841,6 +850,10 @@
   opacity: 0.4;
   cursor: default;
 }
+.member-presence-pages button:hover:not(:disabled) {
+  border-color: var(--text-muted);
+  background: var(--border);
+}
 .space-sidebar-error button {
   display: block;
   margin-top: 8px;
@@ -859,7 +872,7 @@
   min-height: 34px;
   padding: 0 9px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--text-muted);
   background: transparent;
   font: inherit;
@@ -890,13 +903,14 @@
 }
 .chat-channel-menu > summary:hover,
 .chat-channel-menu[open] > summary {
-  background: var(--surface-raised);
+  background: var(--surface-composer);
 }
 .chat-channel-menu > summary > svg {
   flex: 0 0 auto;
   width: 16px;
   height: 16px;
   color: var(--text-muted);
+  transition: transform 150ms ease;
 }
 .chat-channel-menu[open] > summary > svg {
   transform: rotate(180deg);
@@ -948,16 +962,19 @@
   font-weight: 800;
   cursor: pointer;
 }
-.spaces-empty section {
+.spaces-empty > section {
   width: min(560px, 100%);
   margin: 18vh auto 0;
 }
+/* Matches the login and profile page headings. */
 .spaces-empty h1 {
   margin: 10px 0 14px;
-  font-size: clamp(2.4rem, 7vw, 4.5rem);
-  letter-spacing: -0.06em;
+  font-size: clamp(2.2rem, 7vw, 3.1rem);
+  font-weight: 700;
+  line-height: 1.08;
+  letter-spacing: -0.055em;
 }
-.spaces-empty section > p:not(.eyebrow) {
+.spaces-empty > section > p:not(.eyebrow) {
   color: var(--text-muted);
   line-height: 1.65;
 }
@@ -978,10 +995,14 @@
   opacity: 0.45;
   cursor: not-allowed;
 }
-.spaces-empty section > small {
+.spaces-empty > section > small {
   display: block;
   margin-top: 10px;
   color: var(--text-muted);
+}
+/* Direct messages sit below the form as a secondary option, not as a sidebar. */
+.spaces-empty .direct-section {
+  margin-top: 40px;
 }
 .empty-channel-account {
   display: flex;
@@ -1071,6 +1092,7 @@
 .invitation-consent h3 {
   margin: 16px 0 10px;
   font-size: 1.25rem;
+  font-weight: 700;
   overflow-wrap: anywhere;
 }
 .invitation-consent p {
@@ -1089,6 +1111,10 @@
   color: var(--terracotta-bright);
   border-color: var(--terracotta);
   border-style: dashed;
+}
+.space-rail .invited-space:hover:not(:disabled) {
+  color: var(--terracotta-bright);
+  border-color: var(--terracotta-bright);
 }
 .space-rail .invited-space svg {
   width: 17px;
@@ -1117,7 +1143,7 @@
   cursor: pointer;
 }
 .pending-space-invite:hover {
-  border-color: var(--terracotta);
+  border-color: var(--text-muted);
 }
 .pending-space-invite svg {
   width: 18px;
@@ -1149,10 +1175,18 @@
   font-size: 0.84rem;
   box-shadow: 0 6px 24px rgb(0 0 0 / 0.3);
 }
-.space-access-notice button {
+/* The notice lives inside the rail's nav; don't inherit space-tile styling. */
+.space-rail .space-access-notice button {
   width: 28px;
   height: 28px;
   border: 0;
+  border-radius: 8px;
+  color: var(--text-muted);
+  background: transparent;
+}
+.space-rail .space-access-notice button:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--border);
 }
 .space-access-notice svg {
   width: 16px;
@@ -1170,9 +1204,15 @@
   border-bottom: 1px solid var(--border);
   background: var(--surface);
 }
+.space-dialog > header > div {
+  min-width: 0;
+}
 .space-dialog > header h2 {
+  min-width: 0;
   margin: 0;
+  overflow-wrap: anywhere;
   font-size: 1.2rem;
+  font-weight: 700;
   letter-spacing: -0.025em;
 }
 .space-dialog > header h2:has(img) {
@@ -1199,7 +1239,7 @@
   place-items: center;
   padding: 0;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--text-muted);
   background: transparent;
   cursor: pointer;
@@ -1227,10 +1267,13 @@
   height: 42px;
   padding: 0 11px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 8px;
   color: var(--text);
   background: var(--surface-composer);
   font: inherit;
+  /* Not the label's small bold type. */
+  font-size: 0.85rem;
+  font-weight: 500;
 }
 .space-field input:focus,
 .member-add input:focus {
@@ -1359,7 +1402,7 @@
   min-height: 36px;
   padding: 0 12px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 8px;
   color: var(--text);
   background: var(--surface-raised);
   font: inherit;
@@ -1405,6 +1448,7 @@
 .danger-zone h3 {
   margin: 0;
   font-size: 0.84rem;
+  font-weight: 700;
 }
 .dialog-section-heading > span {
   padding: 2px 6px;
@@ -1674,6 +1718,7 @@
   cursor: pointer;
 }
 .channel-preview .primary:hover:not(:disabled) {
+  border-color: var(--terracotta-bright);
   background: var(--terracotta-bright);
 }
 .channel-preview .primary:disabled {
@@ -1700,6 +1745,10 @@
 .member-add button:hover:not(:disabled) {
   border-color: var(--text-muted);
   background: var(--border);
+}
+/* Add keeps its accent border on hover instead of turning gray. */
+.member-add button:hover:not(:disabled) {
+  border-color: var(--terracotta-bright);
 }
 .space-dialog .primary:hover:not(:disabled),
 .spaces-state button:hover:not(:disabled),
@@ -1734,11 +1783,25 @@
 .space-dialog :is(.danger, .danger-outline):focus-visible {
   outline-color: #ff8c9a;
 }
+/* Browse channels rows fill a scroll container that clips an outside ring,
+   so draw it inside them instead. */
+.channel-directory li button:focus-visible {
+  outline-offset: -2px;
+}
+.spaces-state button:focus-visible,
+.spaces-empty .primary:focus-visible,
+.pending-space-invite:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
+}
 @media (prefers-reduced-motion: reduce) {
   :is(.space-dialog, .channel-navigation, .space-rail, .spaces-state, .spaces-empty, .empty-channel)
     :is(button, summary),
   .navigation-toggle,
-  .channel-section-actions {
+  .channel-section-actions,
+  .space-menu summary > svg,
+  .channel-section-heading svg,
+  .chat-channel-menu > summary > svg {
     transition: none;
   }
 }
@@ -2006,6 +2069,12 @@ html[data-browse-transition="close"]::view-transition-new(browse-room) {
     width: 44px;
     height: 44px;
   }
+  /* 44px touch targets: Close navigation and the access notice's dismiss. */
+  .channel-navigation > header > button,
+  .space-rail .space-access-notice button {
+    width: 44px;
+    height: 44px;
+  }
   .spaces-room .call-account {
     height: 52px;
   }
@@ -2114,7 +2183,12 @@ html[data-browse-transition="close"]::view-transition-new(browse-room) {
   background: var(--terracotta);
 }
 .direct-request-bar .primary:hover:not(:disabled) {
+  border-color: var(--terracotta-bright);
   background: var(--terracotta-bright);
+}
+.direct-request-bar .secondary:hover:not(:disabled) {
+  border-color: var(--text-muted);
+  background: var(--border);
 }
 .direct-request-bar .danger-outline {
   border-color: #a33b48;
