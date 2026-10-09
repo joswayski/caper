@@ -1921,6 +1921,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [unchanged], timeout: 5), .completed,
                        "Inviting must not grant immediate space membership")
         assertStaticText("Pending invitations  1", in: app)
+        assertStaticText("Invitation sent. They must accept before joining.", in: app)
         assertStaticText("Sam", in: app)
         assertStaticText("@sam", in: app)
         XCTAssertTrue(username.value as? String == "" || username.value as? String == username.placeholderValue,

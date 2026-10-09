@@ -22,6 +22,9 @@ final class PushNotifications: NSObject, UIApplicationDelegate, UNUserNotificati
     private func bindModel() {
         model?.setPushEnabled = { [weak self] enabled in await self?.setEnabled(enabled) }
         model?.disablePushLocally = { [weak self] in self?.disableLocally(remember: false) }
+        model?.removeDeliveredNotifications = { conversationID in
+            Task { await PushNotifications.removeDelivered(threadID: conversationID) }
+        }
         if let model, let route = pendingRoute {
             pendingRoute = nil
             // The model holds it until the account's spaces load.
@@ -79,12 +82,23 @@ final class PushNotifications: NSObject, UIApplicationDelegate, UNUserNotificati
     }
 
     /// Logout stops push without recording a choice, so signing in again keeps the default.
+    /// Either way the delivered pushes go, as on Android.
     private func disableLocally(remember: Bool) {
         optInGeneration += 1
         model?.configurePush(available: platform != nil, enabled: false)
         if remember, let accountID { Self.setChoice(false, for: accountID) }
         pendingRoute = nil
         UIApplication.shared.unregisterForRemoteNotifications()
+        UNUserNotificationCenter.current().removeAllDeliveredNotifications()
+    }
+
+    /// The server sets each push's `thread-id` to its channel or DM id.
+    private nonisolated static func removeDelivered(threadID: String) async {
+        let center = UNUserNotificationCenter.current()
+        let identifiers = await center.deliveredNotifications()
+            .filter { $0.request.content.threadIdentifier == threadID }
+            .map(\.request.identifier)
+        if !identifiers.isEmpty { center.removeDeliveredNotifications(withIdentifiers: identifiers) }
     }
 
     func setEnabled(_ enabled: Bool) async {
