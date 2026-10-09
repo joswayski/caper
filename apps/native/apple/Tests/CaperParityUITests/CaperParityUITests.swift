@@ -725,10 +725,10 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(hasKeyboardFocus(search), "One tap must focus search without reopening the sheet")
         search.typeText("rocket")
         // Scope to the picker grid: on macOS a Touch Bar item also titled
-        // "rockets" appears while searching, so app.buttons["rockets"] matches
+        // "rocket" appears while searching, so app.buttons["rocket"] matches
         // twice and tapping it fails.
-        let rockets = try require(app.scrollViews["reaction-picker-grid"].buttons["rockets"], timeout: 5,
-                                  "Searching rocket never showed the rockets emoji")
+        let rockets = try require(app.scrollViews["reaction-picker-grid"].buttons["rocket"], timeout: 5,
+                                  "Searching rocket never showed the rocket emoji")
 
         // Push the presenting row out of the lazy timeline's viewport
         // while the picker is open and its keyboard has focus.
@@ -741,7 +741,7 @@ final class CaperParityUITests: XCTestCase {
             XCTAssertTrue(hasKeyboardFocus(search), "Live scrolling must not replace the sheet")
         }
         capture("reaction-picker-focused-after-live-scroll-fixture", app: app)
-        try require(rockets, timeout: 2, "Live delivery must not drop the rockets search result")
+        try require(rockets, timeout: 2, "Live delivery must not drop the rocket search result")
         rockets.tap()
         let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: search)
         XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
