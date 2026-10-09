@@ -8,7 +8,9 @@ Custom photo/GIF uploads and an avatar gallery are not implemented yet.
 
 Signed-in accounts can start persistent, private one-to-one messages by username.
 The Direct messages list is shared across spaces. Phone push is implemented behind
-server flags using APNs for iOS and FCM for Android; real-provider and physical-device
+server flags using APNs for iOS and FCM for Android, with sender avatars. Open web
+tabs and running desktop apps also implement local OS notifications; alerts after
+desktop quit or browser close are not implemented. Real-provider and physical-device
 validation is still pending. See [notification behavior and rollout](docs/notifications.md).
 
 Channel pins are shared with everyone who can read the channel. Joined members

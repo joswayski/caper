@@ -12,7 +12,7 @@ export interface PresenceMember {
   userId: string;
   status: PresenceStatus;
 }
-export type SubscriptionKind = "chat" | "media" | "presence";
+export type SubscriptionKind = "chat" | "media" | "presence" | "notifications";
 
 export interface SubscriptionRequest {
   kind: SubscriptionKind;
@@ -57,6 +57,7 @@ type SocketFactory = (url: string) => SocketLike;
 interface StreamSubscription {
   subscribed: boolean;
   position?: bigint;
+  notificationReady?: boolean;
   snapshotRevision?: number;
   pendingEvent?: unknown;
 }
@@ -76,6 +77,7 @@ interface LogicalSubscription {
   id: string;
   request: SubscriptionRequest;
   callbacks: SubscriptionCallbacks;
+  position?: bigint;
   revision?: number;
   readySettled: boolean;
   retries: number;
@@ -456,6 +458,22 @@ export class AppGateway {
         if (state.position !== undefined && checkpoint !== state.position) throw new Error("Invalid chat checkpoint.");
         state.position = checkpoint;
       }
+    } else if (subscription.request.kind === "notifications") {
+      const raw = value.type === "ready" ? value.cursor : value.seq;
+      if (typeof raw !== "string" || !["ready", "notification.created"].includes(String(value.type)))
+        throw new Error("Invalid notification event.");
+      const next = sequence(raw);
+      state.position = next > (state.position ?? -1n) ? next : state.position;
+      if (value.type === "ready") state.notificationReady = true;
+      if (
+        value.type === "notification.created" &&
+        subscription.position !== undefined &&
+        next <= subscription.position
+      ) {
+        this.maybePromote(stream);
+        return;
+      }
+      subscription.position = next > (subscription.position ?? -1n) ? next : subscription.position;
     } else if (subscription.request.kind === "presence" && stream === this.candidate) {
       state.pendingEvent = event;
       this.maybePromote(stream);
@@ -477,7 +495,9 @@ export class AppGateway {
     const after =
       subscription.request.kind === "chat"
         ? (subscription.callbacks.cursor?.() ?? subscription.request.after)
-        : subscription.request.after;
+        : subscription.request.kind === "notifications" && subscription.position !== undefined
+          ? subscription.position.toString()
+          : subscription.request.after;
     const position = after === undefined ? undefined : sequence(after);
     stream.subscriptions.set(subscription.id, { subscribed: false, position });
     this.send(stream, {
@@ -539,6 +559,13 @@ export class AppGateway {
         if (
           (candidateState.position ?? -1n) < applied ||
           (activePosition !== undefined && (candidateState.position ?? -1n) < activePosition)
+        )
+          return;
+      } else if (subscription.request.kind === "notifications") {
+        if (
+          !candidateState.notificationReady ||
+          candidateState.position === undefined ||
+          candidateState.position < (subscription.position ?? 0n)
         )
           return;
       } else if (subscription.request.kind === "media") {

@@ -128,9 +128,11 @@ fn channel_alert(text: &str) -> Alert {
             space_id: "space0000001".into(),
             channel_id: "chan00000001".into(),
             title: "#general (Studio)".into(),
+            recipient_count: 2,
         },
         "Alice",
         "alice0000001",
+        Some(317),
         text,
     )
 }
@@ -165,6 +167,7 @@ fn previews_trim_truncate_to_180_characters_and_name_empty_messages() {
         },
         "Alice",
         "a",
+        None,
         "",
     );
     assert_eq!(
@@ -378,8 +381,10 @@ async fn apns_sends_http2_alerts_with_a_cached_es256_token_and_classifies_replie
     assert_eq!(
         first.body,
         json!({
-            "aps": {"alert": {"title": "Alice · #general (Studio)", "body": "Hello @bob"}, "sound": "default", "thread-id": "chan00000001"},
+            "aps": {"alert": {"title": "Alice · #general (Studio)", "body": "Hello @bob"}, "sound": "default", "thread-id": "chan00000001", "mutable-content": 1},
             "kind": "mention.user", "messageId": "message00000001", "spaceId": "space0000001", "channelId": "chan00000001",
+            "sender": "Alice", "senderId": "alice0000001", "senderAvatarId": 317,
+            "conversationTitle": "#general (Studio)", "recipientCount": 2,
         })
     );
 
@@ -391,6 +396,7 @@ async fn apns_sends_http2_alerts_with_a_cached_es256_token_and_classifies_replie
         },
         "Alice",
         "alice0000001",
+        None,
         "hi",
     );
     apns.send(APNS_TOKEN, &direct).await;
@@ -504,7 +510,7 @@ async fn fcm_sends_data_messages_with_a_cached_oauth_token_and_classifies_replie
             "data": {
                 "kind": "mention.user", "messageId": "message00000001",
                 "title": "Alice · #general (Studio)", "body": format!("{}…", "x".repeat(179)),
-                "sender": "Alice", "senderId": "alice0000001",
+                "sender": "Alice", "senderId": "alice0000001", "senderAvatarId": "317",
                 "spaceId": "space0000001", "channelId": "chan00000001", "conversationTitle": "#general (Studio)",
             },
             "android": {"priority": "HIGH", "ttl": "86400s", "collapse_key": "chan00000001"},
@@ -518,6 +524,7 @@ async fn fcm_sends_data_messages_with_a_cached_oauth_token_and_classifies_replie
         },
         "Alice",
         "alice0000001",
+        None,
         "hi",
     );
     fcm.send("fcm:token", &direct).await;
@@ -2017,12 +2024,21 @@ async fn deliveries_reach_providers_revoke_dead_tokens_and_retry_with_backoff(po
     let long = format!("  {}  ", "word ".repeat(60));
     let first = send(&h, &alice, &general, &long, None).await;
     expand(&h).await;
+    // Profile changes after sending must not use a historical message avatar.
+    sqlx::query("UPDATE public.users SET avatar_id=317 WHERE id=$1")
+        .bind(alice.id)
+        .execute(&pool)
+        .await
+        .unwrap();
     deliver(&h).await;
     let apns_requests = h.apns.take();
     assert_eq!(apns_requests.len(), 1);
     assert_eq!(apns_requests[0].path, format!("/3/device/{APNS_TOKEN}"));
     let body = &apns_requests[0].body;
     assert_eq!(body["aps"]["alert"]["title"], "Alice · #general (Studio)");
+    assert_eq!(body["aps"]["mutable-content"], 1);
+    assert_eq!(body["senderAvatarId"], 317);
+    assert_eq!(body["recipientCount"], 2);
     let preview = body["aps"]["alert"]["body"].as_str().unwrap();
     assert_eq!(preview.chars().count(), 180);
     assert!(preview.ends_with('…') && !preview.starts_with(' '));
@@ -2043,6 +2059,7 @@ async fn deliveries_reach_providers_revoke_dead_tokens_and_retry_with_backoff(po
     let fcm_requests = h.fcm.take();
     let data = &fcm_requests[0].body["message"]["data"];
     assert_eq!(fcm_requests[0].body["message"]["token"], "fcm:carol");
+    assert_eq!(data["senderAvatarId"], "317");
     assert_eq!(
         (
             data["sender"].as_str(),

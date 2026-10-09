@@ -3,6 +3,7 @@ import { test, type TestContext, vi } from "vitest";
 import { AppGateway, setAppGatewayForTests, watchPresence } from "../gateway/client.ts";
 import { watchPresence as watchMediaPresence } from "../media/presence.ts";
 import { callSnapshot } from "../media/events.ts";
+import { watchBrowserNotifications, setBrowserNotificationsEnabled } from "../account/browser-notifications.ts";
 
 class FakeWindow extends EventTarget {
   location = { protocol: "https:", host: "caper.test" };
@@ -713,4 +714,137 @@ test("reconnect backoff restarts after a stream stays healthy", (t) => {
   f.sockets[healthy].fail();
   vi.advanceTimersByTime(200);
   assert.equal(f.sockets.length, healthy + 2, "a drop after a healthy stream reconnects with the base delay");
+});
+
+test("notification handoff replays sparse account IDs once and waits for a real checkpoint", (t) => {
+  const f = setup(t);
+  const delivered: string[] = [];
+  const sub = f.gateway.subscribe(
+    { kind: "notifications" },
+    {
+      event: (value) => {
+        const event = value as { type: string; seq: string };
+        if (event.type === "notification.created") delivered.push(event.seq);
+      },
+    },
+  );
+  t.onTestFinished(() => sub.unsubscribe());
+  f.hello(0);
+  assert.deepEqual(f.subscribe(0), { type: "subscribe", id: sub.id, kind: "notifications" });
+  const event = (index: number, value: object) => f.sockets[index].frame({ type: "event", id: sub.id, event: value });
+  event(0, { type: "ready", cursor: "9007199254740993" });
+  f.sockets[0].frame({ type: "subscribed", id: sub.id });
+  f.sockets[0].frame({ type: "migrating" });
+  f.hello(1);
+  assert.equal(f.subscribe(1).after, "9007199254740993");
+  f.sockets[1].frame({ type: "subscribed", id: sub.id });
+  assert.equal(f.sockets[0].closed, false, "an echoed after cursor is not proof of catch-up");
+  event(0, { type: "notification.created", seq: "9007199254740999" });
+  event(1, { type: "notification.created", seq: "9007199254740999" });
+  assert.equal(f.sockets[0].closed, false);
+  event(1, { type: "ready", cursor: "9007199254741005" }); // Suppressed records also advance the checkpoint.
+  assert.equal(f.sockets[0].closed, true);
+  assert.deepEqual(delivered, ["9007199254740999"]);
+  f.sockets[1].frame({ type: "migrating" });
+  f.hello(2);
+  assert.equal(f.subscribe(2).after, "9007199254741005");
+});
+
+test("browser alerts show the sender avatar, suppress reading/disabled/stale messages and fence clicks on logout", (t) => {
+  const f = setup(t);
+  setAppGatewayForTests(f.gateway);
+  let focused = true;
+  const doc = Object.assign(new EventTarget(), { visibilityState: "visible", hasFocus: () => focused });
+  const storage = new Map<string, string>();
+  vi.stubGlobal("document", doc);
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => storage.set(key, value),
+    removeItem: (key: string) => storage.delete(key),
+  });
+  vi.stubGlobal("navigator", {});
+  const shown: FakeNotification[] = [];
+  class FakeNotification {
+    static permission = "granted";
+    closed = false;
+    onclick?: () => void;
+    onclose?: () => void;
+    constructor(
+      readonly title: string,
+      readonly options: NotificationOptions,
+    ) {
+      shown.push(this);
+    }
+    close() {
+      this.closed = true;
+      this.onclose?.();
+    }
+  }
+  vi.stubGlobal("Notification", FakeNotification);
+  let destination: string | undefined;
+  Object.assign(window, {
+    focus: () => {
+      focused = true;
+    },
+    location: {
+      protocol: "https:",
+      host: "caper.test",
+      assign: (url: string) => {
+        destination = url;
+      },
+    },
+  });
+  const stop = watchBrowserNotifications("account", () => "chan00000001");
+  t.onTestFinished(() => {
+    stop();
+    setAppGatewayForTests(undefined);
+  });
+  f.hello(0);
+  const id = f.subscribe(0).id;
+  const emit = (seq: number, change: object = {}) =>
+    f.sockets[0].frame({
+      type: "event",
+      id,
+      event: {
+        type: "notification.created",
+        seq: String(seq),
+        messageId: `message${seq}`,
+        title: "Maya · #design",
+        body: "A new sketch",
+        spaceId: "space0000001",
+        channelId: "chan00000002",
+        senderAvatarId: 317,
+        createdAt: new Date().toISOString(),
+        ...change,
+      },
+    });
+  emit(1, { channelId: "chan00000001" });
+  assert.equal(shown.length, 0, "do not alert the conversation currently being read");
+  emit(3);
+  assert.equal(shown.length, 1);
+  assert.equal(shown[0].options.icon, "/images/avatars/v3/317.svg");
+  assert.equal(shown[0].options.body, "A new sketch");
+  emit(4, { messageId: "message3" });
+  assert.equal(shown.length, 1, "duplicate messages do not redisplay even with a newer notification ID");
+  setBrowserNotificationsEnabled(false);
+  emit(5);
+  setBrowserNotificationsEnabled(true);
+  emit(6, { createdAt: new Date(Date.now() - 121_000).toISOString() });
+  FakeNotification.permission = "denied";
+  emit(7);
+  FakeNotification.permission = "granted";
+  assert.equal(shown.length, 1);
+  shown[0].onclick?.();
+  assert.equal(destination, "/spaces?space=space0000001&channel=chan00000002");
+  emit(8, { conversationId: "dm0000000001", senderAvatarId: null });
+  assert.equal(shown[1].options.icon, undefined, "accounts without an avatar retain the OS fallback");
+  shown[1].onclick?.();
+  assert.equal(destination, "/spaces?dm=dm0000000001");
+  emit(9);
+  stop();
+  destination = undefined;
+  shown[2].onclick?.();
+  assert.equal(destination, undefined, "old-account notifications cannot navigate after logout");
+  assert.ok(shown.every((notification) => notification.closed));
+  assert.ok(![...storage.values()].some((value) => value.includes("A new sketch")), "storage never contains previews");
 });

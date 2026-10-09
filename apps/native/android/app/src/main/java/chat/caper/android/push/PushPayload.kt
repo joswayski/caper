@@ -1,5 +1,7 @@
 package chat.caper.android.push
 
+import chat.caper.android.model.caperAvatarIndex
+
 internal const val DIRECT_MESSAGES_CHANNEL = "direct_messages"
 internal const val CHANNEL_MESSAGES_CHANNEL = "channel_messages"
 internal const val MENTIONS_CHANNEL = "mentions"
@@ -31,6 +33,7 @@ internal data class PushPayload(
     val body: String,
     val sender: String,
     val senderId: String?,
+    val senderAvatarId: Int?,
     /** `#channel (Space)` for a channel; null for a DM. */
     val conversationTitle: String?,
 ) {
@@ -73,6 +76,7 @@ internal data class PushPayload(
                 body = value("body")?.limit(MAX_BODY) ?: "Sent a message",
                 sender = sender ?: title?.substringBefore(" · ") ?: "Caper",
                 senderId = value("senderId"),
+                senderAvatarId = caperAvatarIndex(value("senderAvatarId")?.toIntOrNull()),
                 conversationTitle = conversationTitle,
             )
         }

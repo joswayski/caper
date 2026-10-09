@@ -40,6 +40,7 @@ nnnoiseless = { version = "=0.5.2", default-features = false }
 ort = { version = "=2.0.0-rc.11", default-features = false, features = ["load-dynamic"] }
 reqwest = { version = "0.12.23", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rodio = { version = "=0.21.1", default-features = false, features = ["playback", "wav"] }
+resvg = { version = "0.45.1", default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 similar = "2.7"
@@ -50,12 +51,14 @@ uuid = { version = "1.18", features = ["v4"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3.6.3", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
+notify-rust = { version = "4.18.2", default-features = false, features = ["z"] }
 wgpu = { version = "27.0", default-features = false, features = ["std", "wgsl", "vulkan", "gles"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
 wgpu = { version = "27.0", default-features = false, features = ["std", "wgsl", "dx12"] }
 winreg = "0.55"
+winrt-toast-reborn = "0.3.8"
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
 winresource = "0.1"

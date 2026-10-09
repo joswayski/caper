@@ -14,8 +14,11 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.core.app.NotificationCompat
 import androidx.core.app.Person
 import androidx.core.content.ContextCompat
+import androidx.core.graphics.drawable.IconCompat
+import androidx.core.graphics.drawable.toBitmap
 import chat.caper.android.MainActivity
 import chat.caper.android.R
+import chat.caper.android.caperAvatarResources
 import chat.caper.android.ui.Terracotta
 
 /** The DM or channel on screen while the app is in the foreground; its pushes show no notification. */
@@ -49,8 +52,13 @@ internal object CaperNotifications {
         // New messages join the conversation's notification.
         val style = current?.let { NotificationCompat.MessagingStyle.extractMessagingStyleFromNotification(it) }
             ?: NotificationCompat.MessagingStyle(Person.Builder().setName("You").build())
+        val avatar = payload.senderAvatarId?.let { index ->
+            ContextCompat.getDrawable(context, caperAvatarResources[index])?.toBitmap(128, 128)
+        }
+        val sender = Person.Builder().setName(payload.sender).setKey(payload.senderId)
+            .setIcon(avatar?.let(IconCompat::createWithBitmap)).build()
         style.setConversationTitle(payload.conversationTitle).setGroupConversation(payload.groupConversation)
-            .addMessage(payload.body, System.currentTimeMillis(), Person.Builder().setName(payload.sender).setKey(payload.senderId).build())
+            .addMessage(payload.body, System.currentTimeMillis(), sender)
         // The data URI keeps each conversation's PendingIntent (and its extras) separate.
         val open = Intent(context, MainActivity::class.java).setData(Uri.fromParts("caper", payload.tag, null))
             .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
@@ -59,6 +67,7 @@ internal object CaperNotifications {
         val pending = PendingIntent.getActivity(context, 0, open, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val notification = NotificationCompat.Builder(context, payload.channel)
             .setSmallIcon(R.drawable.ic_caper_notification).setColor(Terracotta.toArgb())
+            .setLargeIcon(avatar)
             .setStyle(style).setContentTitle(payload.title).setContentText(payload.body)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE).setContentIntent(pending).setAutoCancel(true)
             .addExtras(Bundle().apply { putStringArrayList(MESSAGE_IDS, ArrayList((seen + payload.messageId).takeLast(MAX_MESSAGES))) })

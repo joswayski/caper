@@ -37,7 +37,9 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   non-owner leave-space with immediate call teardown and conversation clearing.
 - Global two-person direct messages, including exact-username conversation
   creation, unread state, account-wide read cursors, paging, typing, retry, and gateway
-  replay. Desktop does not provide OS push notifications in this stage.
+  replay. An independent account gateway feed presents local OS notifications
+  with sender avatars and click navigation while the app runs, including minimized.
+  Quitting exits the app; there is no keep-running-in-tray behavior.
 - The channel/DM composer suggests after `:` (emoji) and `@` (people) in one
   popup; the thread reply box and message editor do not yet. Space channels
   offer the open space's loaded members except you, then `@everyone`/`@here`.
@@ -61,8 +63,8 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   accounts and "Who can start a DM with you" (Anyone, People in my spaces, No
   one new), saved on change and reverted if saving fails. Pinned-message lists
   still show blocked authors' pins.
-- Notification controls, which govern phone push (desktop shows no OS
-  notifications yet). The space menu and each channel's options menu set
+- Notification controls govern phone push and local desktop notifications.
+  The space menu and each channel's options menu set
   **Notifications** (Default, All messages, Only @mentions, Nothing) and
   **Mute** (15 minutes, 1, 8 or 24 hours, or until turned back on); a channel
   in a muted space says "Muted with the space". DM rows get a hover options
@@ -212,7 +214,7 @@ Linux packages carry the checked native runtime and licenses. Windows also
 stages the four Microsoft-signed app-local VC++ DLLs imported by ORT; these come
 from the active Visual Studio toolchain and are not immutable hash-pinned. Windows
 package execution remains an exact-head CI/platform acceptance requirement.
-No camera, screen sharing, native push notifications, or Windows/Linux code signing.
+No camera, screen sharing, notifications after quit, or Windows/Linux code signing.
 IME/accessibility and sustained multi-network voice need separate acceptance.
 The `.deb` and archives are unsigned release artifacts, not installers.
 
