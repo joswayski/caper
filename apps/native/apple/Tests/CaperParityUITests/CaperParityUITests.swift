@@ -130,6 +130,21 @@ final class CaperParityUITests: XCTestCase {
         #endif
     }
 
+    #if os(macOS)
+    /// Apple silicon, including the x86_64 build under Rosetta on the
+    /// self-hosted Mac, whose VM screen fits only the medium layout. Only a
+    /// real Intel Mac gets the 1,440×900 desktop reference window.
+    private static let runsOnAppleSilicon: Bool = {
+        #if arch(arm64)
+        return true
+        #else
+        var translated: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        return sysctlbyname("sysctl.proc_translated", &translated, &size, nil, 0) == 0 && translated == 1
+        #endif
+    }()
+    #endif
+
     private func capture(_ name: String, app: XCUIApplication) {
         #if os(macOS)
         // Screenshot the frontmost window (the fixed-size Settings window when
@@ -140,16 +155,17 @@ final class CaperParityUITests: XCTestCase {
         let main = app.windows.matching(NSPredicate(format: "identifier != %@", "com_apple_SwiftUI_Settings_window")).firstMatch
         XCTAssertTrue(main.exists, "The main app window must stay open behind any capture")
         let size = main.frame.size
-        #if arch(arm64)
-        let desktop = size.width >= 1_400
-        let layout = desktop ? "desktop" : "medium"
-        XCTAssertGreaterThanOrEqual(size.width, desktop ? 1_400 : 980, "Hosted ARM medium capture requires at least 980 points of width")
-        XCTAssertGreaterThanOrEqual(size.height, desktop ? 880 : 640, "Hosted ARM capture is too short for its declared layout")
-        #else
-        let layout = "desktop"
-        XCTAssertGreaterThanOrEqual(size.width, 1_400, "Intel desktop parity capture requires a 1,400-point-wide app window")
-        XCTAssertGreaterThanOrEqual(size.height, 880, "Intel desktop parity capture requires an app window close to the 1,440×900 reference")
-        #endif
+        let layout: String
+        if Self.runsOnAppleSilicon {
+            let desktop = size.width >= 1_400
+            layout = desktop ? "desktop" : "medium"
+            XCTAssertGreaterThanOrEqual(size.width, desktop ? 1_400 : 980, "ARM medium capture requires at least 980 points of width")
+            XCTAssertGreaterThanOrEqual(size.height, desktop ? 880 : 640, "ARM capture is too short for its declared layout")
+        } else {
+            layout = "desktop"
+            XCTAssertGreaterThanOrEqual(size.width, 1_400, "Intel desktop parity capture requires a 1,400-point-wide app window")
+            XCTAssertGreaterThanOrEqual(size.height, 880, "Intel desktop parity capture requires an app window close to the 1,440×900 reference")
+        }
         let captureName = "\(layout)-\(name)"
         let dimensions = XCTAttachment(string: "layout=\(layout) width=\(Int(size.width)) height=\(Int(size.height))")
         dimensions.name = "\(captureName)-window-size"
