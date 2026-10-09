@@ -201,18 +201,6 @@ enum Suggestion {
     Mention(mentions::Candidate),
 }
 
-/// One composer's `:`/`@` popup state. The message and thread composers each
-/// keep their own, so neither inherits the other's token, row or dismissal.
-#[derive(Default)]
-struct SuggestionState {
-    /// The editor this state belongs to; another thread's editor starts fresh.
-    composer: Option<egui::Id>,
-    token: Option<ComposerToken>,
-    selected: usize,
-    /// The draft and token end Escape dismissed, until either changes.
-    dismissed: Option<(String, usize)>,
-}
-
 /// A person pill that was clicked or activated with Enter/Space.
 #[derive(Clone, Debug)]
 struct PillClick {
@@ -444,8 +432,9 @@ struct CaperApp {
     username: String,
     display_name: String,
     draft: String,
-    message_suggestions: SuggestionState,
-    thread_suggestions: SuggestionState,
+    suggestion_token: Option<ComposerToken>,
+    suggestion_selected: usize,
+    suggestion_dismissed: Option<(String, usize)>,
     ime_composing: bool,
     pending: Option<PendingSend>,
     mention_card: Option<MentionCard>,
@@ -590,8 +579,9 @@ impl CaperApp {
             username: String::new(),
             display_name: String::new(),
             draft: String::new(),
-            message_suggestions: SuggestionState::default(),
-            thread_suggestions: SuggestionState::default(),
+            suggestion_token: None,
+            suggestion_selected: 0,
+            suggestion_dismissed: None,
             ime_composing: false,
             pending: None,
             mention_card: None,
@@ -7662,17 +7652,11 @@ impl CaperApp {
                 if pending.is_none() && self.pending.as_ref().is_some_and(|pending| !pending.sending && (pending.rejection.is_some() || self.error.is_some())) {
                     ui.label("Confirm or dismiss the pending message first.");
                 }
-                // The same `:` emoji and `@` mention popup and keys as the message composer.
-                let chosen = self.suggestion_keys(ui, Some(&root));
-                let draft = self.composer_draft(Some(&root));
-                let mut output = ui.add_enabled_ui(!loading, |ui| egui::TextEdit::multiline(draft)
-                    .id(composer_id(Some(&root))).desired_rows(3).desired_width(f32::INFINITY).char_limit(4000)
-                    .hint_text("Reply to thread…").return_key(Some(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter)))
-                    .show(ui)).inner;
-                self.suggestion_popup(ui, Some(&root), &mut output, chosen);
-                // An Enter that accepted a suggestion was consumed above, so it never sends.
-                let enter = output.response.has_focus() && ui.input(|input| !input.events.iter().any(|event| matches!(event, egui::Event::Ime(_))) && input.events.iter().any(|event| matches!(event, egui::Event::Key { key: egui::Key::Enter, pressed: true, modifiers, .. } if !modifiers.shift)));
                 let draft = self.thread_drafts.entry(root.clone()).or_default();
+                let output = ui.add_enabled(!loading, egui::TextEdit::multiline(&mut draft.0)
+                    .id_salt(("thread-draft", &root)).desired_rows(3).desired_width(f32::INFINITY).char_limit(4000)
+                    .hint_text("Reply to thread…").return_key(Some(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter))));
+                let enter = output.has_focus() && ui.input(|input| !input.events.iter().any(|event| matches!(event, egui::Event::Ime(_))) && input.events.iter().any(|event| matches!(event, egui::Event::Key { key: egui::Key::Enter, pressed: true, modifiers, .. } if !modifiers.shift)));
                 ui.add_enabled(!blocked, egui::Checkbox::new(&mut draft.1, &broadcast_label));
                 let draft = self.thread_drafts.get(&root).cloned().unwrap_or_default();
                 let send = ui.add_enabled(!blocked && !loading && !draft.0.trim().is_empty(), egui::Button::new("Send reply")).clicked();
@@ -7926,8 +7910,37 @@ impl CaperApp {
                     } else {
                         format!("Message #{}", self.channel_name())
                     };
-                    let ime_frame = ime_this_frame(ui);
-                    let chosen = self.suggestion_keys(ui, None);
+                    let composer_id = egui::Id::new("message-composer");
+                    let ime_frame = ui.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::Ime(_))));
+                    ui.input(|input| {
+                        for event in &input.events {
+                            if let egui::Event::Ime(event) = event {
+                                self.ime_composing = matches!(event, egui::ImeEvent::Enabled | egui::ImeEvent::Preedit(_));
+                            }
+                        }
+                    });
+                    let cursor = egui::TextEdit::load_state(ui.ctx(), composer_id)
+                        .and_then(|state| state.cursor.char_range());
+                    if let Some((text, caret)) = &self.suggestion_dismissed
+                        && (text != &self.draft || cursor.is_none_or(|range| !range.is_empty() || range.primary.index != *caret)) {
+                        self.suggestion_dismissed = None;
+                    }
+                    let active = cursor.filter(|range| range.is_empty())
+                        .filter(|_| !self.ime_composing && !ime_frame && ui.memory(|memory| memory.has_focus(composer_id)))
+                        .and_then(|range| ComposerToken::at(&self.draft, range.primary.index))
+                        .filter(|token| self.suggestion_dismissed.as_ref() != Some(&(self.draft.clone(), token.end())));
+                    if active != self.suggestion_token { self.suggestion_selected = 0; self.suggestion_token = active.clone(); }
+                    let choices = active.as_ref().map(|token| self.suggestions(token)).unwrap_or_default();
+                    let mut chosen = None;
+                    if !choices.is_empty() {
+                        self.suggestion_selected = self.suggestion_selected.min(choices.len() - 1);
+                        ui.input_mut(|input| {
+                            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) { self.suggestion_selected = (self.suggestion_selected + 1) % choices.len(); }
+                            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) { self.suggestion_selected = (self.suggestion_selected + choices.len() - 1) % choices.len(); }
+                            if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter) || input.consume_key(egui::Modifiers::NONE, egui::Key::Tab) { chosen = Some(choices[self.suggestion_selected].clone()); }
+                            if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) { self.suggestion_dismissed = active.as_ref().map(|token| (self.draft.clone(), token.end())); }
+                        });
+                    }
                     let editor = egui::ScrollArea::vertical()
                         .id_salt("composer-scroll")
                         .max_height((ui.ctx().viewport_rect().height() * 0.4).min(320.0))
@@ -7935,7 +7948,7 @@ impl CaperApp {
                         .auto_shrink([false, true])
                         .show(ui, |ui|
                         egui::TextEdit::multiline(&mut self.draft)
-                            .id(composer_id(None))
+                            .id(composer_id)
                             .desired_width(f32::INFINITY)
                             .min_size(egui::vec2(0.0, 42.0))
                             .desired_rows(1)
@@ -7950,7 +7963,59 @@ impl CaperApp {
                             .char_limit(4_000).show(ui)
                     );
                     let mut output = editor.inner;
-                    self.suggestion_popup(ui, None, &mut output, chosen);
+                    let response = &output.response;
+                    let active = output.cursor_range.filter(|range| range.is_empty())
+                        .filter(|_| response.has_focus() && !self.ime_composing && !ime_frame)
+                        .and_then(|range| ComposerToken::at(&self.draft, range.primary.index))
+                        .filter(|token| self.suggestion_dismissed.as_ref() != Some(&(self.draft.clone(), token.end())));
+                    let choices = active.as_ref().map(|token| self.suggestions(token)).unwrap_or_default();
+                    // One popup serves `:` emoji and `@` mention rows.
+                    if !choices.is_empty() && chosen.is_none() {
+                        egui::Area::new(egui::Id::new("composer-suggestions"))
+                            .order(egui::Order::Foreground).pivot(egui::Align2::LEFT_BOTTOM)
+                            .fixed_pos(response.rect.left_top() - egui::vec2(0.0, 6.0))
+                            .show(ui.ctx(), |ui| {
+                                egui::Frame::new().fill(COMPOSER).stroke(Stroke::new(1.0, BORDER)).corner_radius(8).inner_margin(4).show(ui, |ui| {
+                                    let width = response.rect.width().min(260.0) - 8.0;
+                                    ui.set_width(width);
+                                    ui.spacing_mut().icon_spacing = 12.0;
+                                    ui.spacing_mut().item_spacing.y = 0.0;
+                                    for (index, choice) in choices.iter().enumerate() {
+                                        let fill = if index == self.suggestion_selected { Color32::from_rgb(67, 36, 30) } else { Color32::TRANSPARENT };
+                                        let clicked = match choice {
+                                            Suggestion::Emoji(entry) => {
+                                                let image = self.reaction_textures.image(ui, entry, 24.0);
+                                                let label = format!(":{}:", entry.name.replace(' ', "_"));
+                                                let button = egui::Button::image_and_text(image, label)
+                                                    .min_size(egui::vec2(width, 44.0))
+                                                    .truncate()
+                                                    .stroke(Stroke::NONE)
+                                                    .fill(fill);
+                                                ui.add(button).clicked()
+                                            }
+                                            Suggestion::Mention(candidate) => mention_suggestion(ui, candidate, width, fill).clicked(),
+                                        };
+                                        if clicked { chosen = Some(choice.clone()); }
+                                    }
+                                });
+                            });
+                    }
+                    if let Some(choice) = &chosen
+                        && let Some(token) = active.as_ref()
+                        && let Some((value, caret)) = token.insert(&self.draft, choice) {
+                        self.draft = value;
+                        output.state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(caret))));
+                        output.state.store(ui.ctx(), composer_id);
+                        response.request_focus();
+                        self.suggestion_token = None;
+                    }
+                    // egui processes focus traversal before widgets handle keys.
+                    // Keep Tab/Escape in the editor while suggestions are open.
+                    let lock_suggestions = chosen.is_none() && !choices.is_empty();
+                    ui.memory_mut(|memory| memory.set_focus_lock_filter(composer_id, egui::EventFilter {
+                        horizontal_arrows: true, vertical_arrows: true,
+                        tab: lock_suggestions, escape: lock_suggestions,
+                    }));
                     ui.painter().rect_stroke(
                         editor.inner_rect,
                         6.0,
@@ -7960,7 +8025,7 @@ impl CaperApp {
                     if self.draft != before {
                         self.typing_edited = Instant::now();
                     }
-                    let send = output.response.has_focus() && !self.ime_composing && !ime_frame
+                    let send = response.has_focus() && !self.ime_composing && !ime_frame
                         && ui.input(|input| {
                             // The modifier belongs to the key event, not the end of
                             // the frame (Shift may already have been released).
@@ -9298,193 +9363,6 @@ impl CaperApp {
                     .find(|channel| Some(channel.id.as_str()) == id)
             })
             .map_or("general", |channel| channel.name.as_str())
-    }
-
-    /// The message composer's draft (`None`) or a thread's reply draft.
-    fn composer_draft(&mut self, thread: Option<&str>) -> &mut String {
-        match thread {
-            Some(root) => &mut self.thread_drafts.entry(root.to_owned()).or_default().0,
-            None => &mut self.draft,
-        }
-    }
-
-    /// That composer's own suggestion state, reset when the editor changes.
-    fn suggestion_state(&mut self, thread: Option<&str>) -> &mut SuggestionState {
-        let id = composer_id(thread);
-        let state = if thread.is_some() {
-            &mut self.thread_suggestions
-        } else {
-            &mut self.message_suggestions
-        };
-        if state.composer != Some(id) {
-            *state = SuggestionState {
-                composer: Some(id),
-                ..SuggestionState::default()
-            };
-        }
-        state
-    }
-
-    /// Runs before a composer's editor: resolves the `:`/`@` token at the
-    /// stored caret and takes the popup's keys before the editor sees them,
-    /// returning the row Enter or Tab accepted.
-    fn suggestion_keys(&mut self, ui: &mut egui::Ui, thread: Option<&str>) -> Option<Suggestion> {
-        let id = composer_id(thread);
-        let ime_frame = ime_this_frame(ui);
-        ui.input(|input| {
-            for event in &input.events {
-                if let egui::Event::Ime(event) = event {
-                    self.ime_composing =
-                        matches!(event, egui::ImeEvent::Enabled | egui::ImeEvent::Preedit(_));
-                }
-            }
-        });
-        let draft = self.composer_draft(thread).clone();
-        let cursor =
-            egui::TextEdit::load_state(ui.ctx(), id).and_then(|state| state.cursor.char_range());
-        let typing = !self.ime_composing && !ime_frame && ui.memory(|memory| memory.has_focus(id));
-        let state = self.suggestion_state(thread);
-        if let Some((text, caret)) = &state.dismissed
-            && (text != &draft
-                || cursor.is_none_or(|range| !range.is_empty() || range.primary.index != *caret))
-        {
-            state.dismissed = None;
-        }
-        let active = cursor
-            .filter(|range| range.is_empty() && typing)
-            .and_then(|range| ComposerToken::at(&draft, range.primary.index))
-            .filter(|token| state.dismissed.as_ref() != Some(&(draft.clone(), token.end())));
-        if active != state.token {
-            state.selected = 0;
-            state.token = active.clone();
-        }
-        let choices = active
-            .as_ref()
-            .map(|token| self.suggestions(token))
-            .unwrap_or_default();
-        if choices.is_empty() {
-            return None;
-        }
-        let state = self.suggestion_state(thread);
-        state.selected = state.selected.min(choices.len() - 1);
-        let mut chosen = None;
-        ui.input_mut(|input| {
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
-                state.selected = (state.selected + 1) % choices.len();
-            }
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) {
-                state.selected = (state.selected + choices.len() - 1) % choices.len();
-            }
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
-                || input.consume_key(egui::Modifiers::NONE, egui::Key::Tab)
-            {
-                chosen = Some(choices[state.selected].clone());
-            }
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
-                state.dismissed = active.as_ref().map(|token| (draft.clone(), token.end()));
-            }
-        });
-        chosen
-    }
-
-    /// Runs after a composer's editor: shows the one popup serving `:` emoji
-    /// and `@` mention rows above it, and applies a chosen row to that
-    /// composer's draft and caret.
-    fn suggestion_popup(
-        &mut self,
-        ui: &mut egui::Ui,
-        thread: Option<&str>,
-        output: &mut egui::text_edit::TextEditOutput,
-        mut chosen: Option<Suggestion>,
-    ) {
-        let id = composer_id(thread);
-        let typing = output.response.has_focus() && !self.ime_composing && !ime_this_frame(ui);
-        let draft = self.composer_draft(thread).clone();
-        let state = self.suggestion_state(thread);
-        let selected = state.selected;
-        let active = output
-            .cursor_range
-            .filter(|range| range.is_empty() && typing)
-            .and_then(|range| ComposerToken::at(&draft, range.primary.index))
-            .filter(|token| state.dismissed.as_ref() != Some(&(draft.clone(), token.end())));
-        let choices = active
-            .as_ref()
-            .map(|token| self.suggestions(token))
-            .unwrap_or_default();
-        let response = &output.response;
-        if !choices.is_empty() && chosen.is_none() {
-            egui::Area::new(id.with("suggestions"))
-                .order(egui::Order::Foreground)
-                .pivot(egui::Align2::LEFT_BOTTOM)
-                .fixed_pos(response.rect.left_top() - egui::vec2(0.0, 6.0))
-                .show(ui.ctx(), |ui| {
-                    egui::Frame::new()
-                        .fill(COMPOSER)
-                        .stroke(Stroke::new(1.0, BORDER))
-                        .corner_radius(8)
-                        .inner_margin(4)
-                        .show(ui, |ui| {
-                            let width = response.rect.width().min(260.0) - 8.0;
-                            ui.set_width(width);
-                            ui.spacing_mut().icon_spacing = 12.0;
-                            ui.spacing_mut().item_spacing.y = 0.0;
-                            for (index, choice) in choices.iter().enumerate() {
-                                let fill = if index == selected {
-                                    Color32::from_rgb(67, 36, 30)
-                                } else {
-                                    Color32::TRANSPARENT
-                                };
-                                let clicked = match choice {
-                                    Suggestion::Emoji(entry) => {
-                                        let image = self.reaction_textures.image(ui, entry, 24.0);
-                                        let label = format!(":{}:", entry.name.replace(' ', "_"));
-                                        let button = egui::Button::image_and_text(image, label)
-                                            .min_size(egui::vec2(width, 44.0))
-                                            .truncate()
-                                            .stroke(Stroke::NONE)
-                                            .fill(fill);
-                                        ui.add(button).clicked()
-                                    }
-                                    Suggestion::Mention(candidate) => {
-                                        mention_suggestion(ui, candidate, width, fill).clicked()
-                                    }
-                                };
-                                if clicked {
-                                    chosen = Some(choice.clone());
-                                }
-                            }
-                        });
-                });
-        }
-        if let Some(choice) = &chosen
-            && let Some(token) = active.as_ref()
-            && let Some((value, caret)) = token.insert(&draft, choice)
-        {
-            *self.composer_draft(thread) = value;
-            output
-                .state
-                .cursor
-                .set_char_range(Some(egui::text::CCursorRange::one(
-                    egui::text::CCursor::new(caret),
-                )));
-            output.state.clone().store(ui.ctx(), id);
-            output.response.request_focus();
-            self.suggestion_state(thread).token = None;
-        }
-        // egui processes focus traversal before widgets handle keys.
-        // Keep Tab/Escape in the editor while suggestions are open.
-        let lock = chosen.is_none() && !choices.is_empty();
-        ui.memory_mut(|memory| {
-            memory.set_focus_lock_filter(
-                id,
-                egui::EventFilter {
-                    horizontal_arrows: true,
-                    vertical_arrows: true,
-                    tab: lock,
-                    escape: lock,
-                },
-            );
-        });
     }
 
     fn suggestions(&self, token: &ComposerToken) -> Vec<Suggestion> {
@@ -11525,24 +11403,6 @@ fn pill_rects(galley: &egui::Galley, range: std::ops::Range<usize>) -> Vec<egui:
         offset += placed.row.char_count_including_newline();
     }
     rects
-}
-
-/// The message composer's editor (`None`) or a thread's reply editor.
-fn composer_id(thread: Option<&str>) -> egui::Id {
-    thread.map_or_else(
-        || egui::Id::new("message-composer"),
-        |root| egui::Id::new(("thread-draft", root)),
-    )
-}
-
-/// Whether this frame carries IME events, which never open or accept suggestions.
-fn ime_this_frame(ui: &egui::Ui) -> bool {
-    ui.input(|input| {
-        input
-            .events
-            .iter()
-            .any(|event| matches!(event, egui::Event::Ime(_)))
-    })
 }
 
 /// One `@` row in the shared suggestion popup, laid out like an emoji row:
@@ -16819,7 +16679,7 @@ mod tests {
             "Escape must retain composer focus"
         );
         assert!(
-            app.message_suggestions.dismissed.is_some(),
+            app.suggestion_dismissed.is_some(),
             "Escape must dismiss the current token"
         );
         render(&mut app, &context, key(egui::Key::Enter));
@@ -16956,158 +16816,10 @@ mod tests {
         let output = render(&mut app, &context, vec![]);
         assert!(shows(&output, "Maya @maya"));
         render(&mut app, &context, press(egui::Key::Escape));
-        assert!(app.message_suggestions.dismissed.is_some());
+        assert!(app.suggestion_dismissed.is_some());
         assert!(context.memory(|memory| memory.has_focus(id)));
         render(&mut app, &context, press(egui::Key::Enter));
         assert_eq!(app.pending.as_ref().unwrap().text, "hi @ma");
-    }
-
-    /// A channel app with a loaded thread open on its first message.
-    fn thread_app(context: &egui::Context) -> (CaperApp, String) {
-        let mut app = CaperApp::new(
-            context,
-            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
-            Some("parity-desktop"),
-        );
-        app.session = Some(session());
-        let root = app.timeline.messages().next().unwrap().id.clone();
-        app.thread_view = Some(super::ThreadView {
-            root: root.clone(),
-            loading: false,
-            has_more: false,
-            before: None,
-            error: None,
-            window: None,
-            has_newer: false,
-        });
-        render(&mut app, context, vec![]);
-        (app, root)
-    }
-
-    #[test]
-    fn thread_composer_suggests_emoji_into_its_own_draft() {
-        let context = egui::Context::default();
-        let (mut app, root) = thread_app(&context);
-        app.draft = "main :rocket".into();
-        let id = super::composer_id(Some(&root));
-        context.memory_mut(|memory| memory.request_focus(id));
-        render(&mut app, &context, vec![egui::Event::Text(":tom".into())]);
-        let output = render(&mut app, &context, vec![]);
-        assert_eq!(app.thread_drafts[&root].0, ":tom");
-        let top = crate::emoji::suggestions("tom")[0];
-        let row = format!(":{}:", top.name.replace(' ', "_"));
-        assert!(shows(&output, &row), "{row}: {:?}", text_shapes(&output));
-        assert!(
-            matches!(&app.thread_suggestions.token,
-                Some(ComposerToken::Emoji(token)) if token.query == "tom"),
-            "the thread composer tracks its own token"
-        );
-        assert!(
-            app.message_suggestions.token.is_none() && app.message_suggestions.selected == 0,
-            "the unfocused message composer's draft opens nothing"
-        );
-
-        render(&mut app, &context, press(egui::Key::Enter));
-        assert_eq!(app.thread_drafts[&root].0, top.emoji);
-        assert_eq!(app.draft, "main :rocket", "the message draft is untouched");
-        assert!(
-            app.pending.is_none(),
-            "Accepting emoji must not send the reply"
-        );
-        assert!(app.thread_suggestions.token.is_none());
-        let caret = |context: &egui::Context, id| {
-            egui::TextEdit::load_state(context, id)
-                .unwrap()
-                .cursor
-                .char_range()
-                .unwrap()
-                .primary
-                .index
-        };
-        assert_eq!(caret(&context, id), top.emoji.chars().count());
-        assert!(context.memory(|memory| memory.has_focus(id)));
-
-        // The row survives the message composer's pass in the same frame.
-        render(&mut app, &context, vec![egui::Event::Text(" :".into())]);
-        render(&mut app, &context, press(egui::Key::ArrowDown));
-        assert_eq!(app.thread_suggestions.selected, 1);
-        render(&mut app, &context, press(egui::Key::Tab));
-        assert_eq!(app.thread_drafts[&root].0, format!("{} 😀", top.emoji));
-        assert!(
-            context.memory(|memory| memory.has_focus(id)),
-            "Tab must stay in the thread composer"
-        );
-
-        // The message composer still accepts into its own draft.
-        app.draft.clear();
-        let message = super::composer_id(None);
-        context.memory_mut(|memory| memory.request_focus(message));
-        render(&mut app, &context, vec![]);
-        render(
-            &mut app,
-            &context,
-            vec![egui::Event::Text(":rocket".into())],
-        );
-        render(&mut app, &context, vec![]);
-        assert!(app.thread_suggestions.token.is_none());
-        render(&mut app, &context, press(egui::Key::Enter));
-        assert_eq!(app.draft, "🚀");
-        assert_eq!(app.thread_drafts[&root].0, format!("{} 😀", top.emoji));
-        assert!(app.pending.is_none());
-    }
-
-    #[test]
-    fn thread_composer_mentions_the_conversation_and_sends_after_escape() {
-        let context = egui::Context::default();
-        let (mut app, root) = thread_app(&context);
-        let id = super::composer_id(Some(&root));
-        context.memory_mut(|memory| memory.request_focus(id));
-        render(&mut app, &context, vec![egui::Event::Text("@".into())]);
-        let output = render(&mut app, &context, vec![]);
-        let labels = text_shapes(&output);
-        // The same people and specials as the message composer offers here.
-        for row in [
-            "Alex @alex",
-            "Maya @maya",
-            "@everyone Everyone in this channel",
-            "@here Everyone online in this channel",
-        ] {
-            assert!(labels.iter().any(|label| label == row), "{row}: {labels:?}");
-        }
-        assert!(
-            !labels.iter().any(|label| label.contains("@fixture_owner")),
-            "never suggest yourself: {labels:?}"
-        );
-        render(&mut app, &context, vec![egui::Event::Text("ma".into())]);
-        render(&mut app, &context, vec![]);
-        render(&mut app, &context, press(egui::Key::Enter));
-        assert_eq!(app.thread_drafts[&root].0, "@maya ");
-        assert!(app.draft.is_empty());
-        assert!(app.pending.is_none(), "Accepting a mention must not send");
-
-        render(
-            &mut app,
-            &context,
-            vec![egui::Event::Text(":rocket".into())],
-        );
-        render(&mut app, &context, vec![]);
-        render(&mut app, &context, press(egui::Key::Escape));
-        assert!(app.thread_suggestions.dismissed.is_some());
-        assert!(app.message_suggestions.dismissed.is_none());
-        assert!(
-            context.memory(|memory| memory.has_focus(id)),
-            "Escape must retain thread composer focus"
-        );
-        let output = render(&mut app, &context, vec![]);
-        assert!(
-            !shows(&output, ":rocket:"),
-            "dismissed until the token changes"
-        );
-        render(&mut app, &context, press(egui::Key::Enter));
-        let pending = app.pending.as_ref().expect("Enter sends the reply");
-        assert_eq!(pending.text, "@maya :rocket");
-        assert_eq!(pending.thread_root_id.as_deref(), Some(root.as_str()));
-        assert!(app.thread_drafts[&root].0.is_empty());
     }
 
     #[test]

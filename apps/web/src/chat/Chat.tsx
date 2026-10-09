@@ -1370,7 +1370,6 @@ export default function Chat({
         client={clientRef.current}
         channelName={channelName}
         direct={direct}
-        mentionMembers={mentionMembers}
         readOnly={readOnly}
         renderMessage={renderMessage}
         onClose={closeThread}
