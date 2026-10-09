@@ -71,6 +71,38 @@ final class APIClientTests: XCTestCase {
     }
 
     @MainActor
+    func testSwitchingConversationsKeepsEachUnsentDraftUntilSignOut() async throws {
+        MockURLProtocol.handler = { request in
+            if request.url?.path == "/api/chat/session" {
+                return (200, Data(#"{"token":"chat-secret","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+            }
+            guard let url = request.url, url.path.hasSuffix("/messages"), let channel = url.pathComponents.dropLast().last else {
+                throw URLError(.badURL)
+            }
+            return (200, chatHistory(channel, sequences: [], cursor: 0, hasMore: false))
+        }
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: "chan00000001", displayName: "Me")
+        chat.draft = "first draft"
+        await chat.open(channelID: "chan00000002", displayName: "Me")
+        XCTAssertEqual(chat.draft, "", "drafts belong to one conversation")
+        chat.draft = "second draft"
+        await chat.open(channelID: "chan00000001", displayName: "Me")
+        XCTAssertEqual(chat.draft, "first draft")
+        chat.draft = ""
+        await chat.open(channelID: "chan00000002", displayName: "Me")
+        XCTAssertEqual(chat.draft, "second draft")
+        await chat.open(channelID: "chan00000001", displayName: "Me")
+        XCTAssertEqual(chat.draft, "", "a cleared draft stays cleared")
+        await chat.stop()
+        await chat.open(channelID: "chan00000002", displayName: "Me")
+        XCTAssertEqual(chat.draft, "second draft", "leaving the conversation view keeps drafts")
+        await chat.stop(discardingDrafts: true)
+        await chat.open(channelID: "chan00000002", displayName: "Me")
+        XCTAssertEqual(chat.draft, "", "signing out discards drafts")
+    }
+
+    @MainActor
     func testRepeatThreadOpenKeepsPendingLoadAndReusesPaginationUntilHistoryReset() async throws {
         let channel = "chan00000001"
         let author = ChatAuthor(id: "other", name: "Other", isGuest: false)

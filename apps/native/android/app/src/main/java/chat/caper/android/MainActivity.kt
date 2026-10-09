@@ -1268,7 +1268,11 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 ) {
     val channel = state.selectedChannel
     if (channel == null) return EmptyChannel(state, narrow, show, openNavigation, modifier)
-    var draft by rememberSaveable(channel.id, stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("")) }
+    var draft by rememberSaveable(channel.id, stateSaver = TextFieldValue.Saver) {
+        viewModel.drafts[channel.id].let { mutableStateOf(TextFieldValue(it, TextRange(it.length))) }
+    }
+    // Kept per conversation, so switching channels or DMs and coming back restores it.
+    fun updateDraft(value: TextFieldValue) { draft = value; viewModel.drafts[channel.id] = value.text }
     var channelMenuOpen by remember(channel.id) { mutableStateOf(false) }
     var showingPins by remember(channel.id) { mutableStateOf(false) }
     // Switching to Pins must not discard the channel's measured scroll position.
@@ -1355,7 +1359,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     Text(if (channelPending.rejected) "Not sent. $pending" else "Not confirmed yet. $pending", Modifier.weight(1f), color = ErrorText, fontSize = 11.sp)
                     TextButton({
                         if (channelPending.rejected) {
-                            if (editable) viewModel.discardPending()?.let { draft = TextFieldValue(it, TextRange(it.length)) }
+                            if (editable) viewModel.discardPending()?.let { updateDraft(TextFieldValue(it, TextRange(it.length))) }
                         } else viewModel.send(channelPending.text)
                     }, Modifier.semantics { if (channelPending.rejected && !editable) stateDescription = "Clear your current draft to edit this message." },
                         enabled = !channelPending.rejected || editable) {
@@ -1394,10 +1398,10 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 // Web: Enter retries an unconfirmed send; a rejected one waits for Edit or Dismiss.
                 if (state.chatAuthorId != null) {
                     if (pending != null) { if (pending.threadRootId == null && !pending.rejected && pending.error != null) viewModel.send(pending.text) }
-                    else if (draft.text.isNotBlank()) { val sent = draft.text; viewModel.setTyping(false); viewModel.send(sent); draft = TextFieldValue("") }
+                    else if (draft.text.isNotBlank()) { val sent = draft.text; viewModel.setTyping(false); viewModel.send(sent); updateDraft(TextFieldValue("")) }
                 }
             }
-            SuggestingComposer(draft, { draft = it; viewModel.reportActivity(); viewModel.setTyping(it.text.isNotBlank()) }, mentionSource(state), channel.id, ::submit) { field, change, actions ->
+            SuggestingComposer(draft, { updateDraft(it); viewModel.reportActivity(); viewModel.setTyping(it.text.isNotBlank()) }, mentionSource(state), channel.id, ::submit) { field, change, actions ->
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
                     OutlinedTextField(
                         draft, change, modifier = Modifier.weight(1f).then(field),
@@ -1407,7 +1411,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = SurfaceComposer, unfocusedContainerColor = SurfaceComposer, focusedBorderColor = Terracotta, unfocusedBorderColor = Border),
                     )
                     FilledIconButton(
-                        { if (draft.text.isNotBlank() && state.pendingMessage == null) { val sent = draft.text; viewModel.setTyping(false); viewModel.send(sent); draft = TextFieldValue("") } },
+                        { if (draft.text.isNotBlank() && state.pendingMessage == null) { val sent = draft.text; viewModel.setTyping(false); viewModel.send(sent); updateDraft(TextFieldValue("")) } },
                         modifier = Modifier.size(48.dp).semantics { contentDescription = "Send" }, enabled = draft.text.isNotBlank() && state.pendingMessage == null && state.chatAuthorId != null,
                         shape = MaterialTheme.shapes.small,
                         colors = IconButtonDefaults.filledIconButtonColors(

@@ -1,6 +1,7 @@
 import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from "react";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import { COUNTER_START, counterTone } from "./counter.ts";
+import { readDraft, saveDraft } from "./drafts.ts";
 import type { MentionCandidate } from "./mentions.ts";
 
 export interface ComposerHandle {
@@ -13,6 +14,8 @@ export interface ComposerHandle {
 interface ComposerProps {
   ref?: Ref<ComposerHandle>;
   channelName: string;
+  /** Keeps unsent text for this conversation across channel and DM switches. */
+  draftKey?: string;
   direct: boolean;
   disabled: boolean;
   identityReady: boolean;
@@ -38,6 +41,7 @@ interface ComposerProps {
 export default function Composer({
   ref,
   channelName,
+  draftKey,
   direct,
   disabled,
   identityReady,
@@ -51,7 +55,7 @@ export default function Composer({
   onResize,
   onDraftPresence,
 }: ComposerProps) {
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(() => (draftKey ? readDraft(draftKey) : ""));
   const [validationError, setValidationError] = useState<string>();
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const people = useMemo(() => mentionMembers?.filter((member) => member.id !== authorId), [mentionMembers, authorId]);
@@ -69,6 +73,9 @@ export default function Composer({
     onTooLong: () => setValidationError("Messages must be 4,000 characters or fewer."),
   });
 
+  useEffect(() => {
+    if (draftKey) saveDraft(draftKey, draft);
+  }, [draftKey, draft]);
   const hasDraft = draft !== "";
   useEffect(() => {
     onDraftPresence(hasDraft);

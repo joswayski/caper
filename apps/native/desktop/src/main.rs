@@ -504,6 +504,8 @@ struct CaperApp {
     username: String,
     display_name: String,
     draft: String,
+    /// Unsent text of other conversations by channel or DM ID, restored on return.
+    drafts: BTreeMap<String, String>,
     /// `:`/`@` suggestions by composer editor ID (channel and thread).
     composer_suggestions: egui::IdMap<SuggestionState>,
     ime_composing: bool,
@@ -673,6 +675,7 @@ impl CaperApp {
             username: String::new(),
             display_name: String::new(),
             draft: String::new(),
+            drafts: BTreeMap::new(),
             composer_suggestions: egui::IdMap::default(),
             ime_composing: false,
             pending: None,
@@ -2178,6 +2181,7 @@ impl CaperApp {
         self.detail = None;
         self.selected_space = None;
         self.clear_channel_state();
+        self.drafts.clear();
         self.token = Some(token);
         self.username = account.username.clone().unwrap_or_default();
         self.display_name = account.display_name.clone().unwrap_or_default();
@@ -3250,6 +3254,18 @@ impl CaperApp {
         });
     }
 
+    /// Keeps the open conversation's unsent text so returning to it restores it.
+    fn stash_draft(&mut self) {
+        let draft = std::mem::take(&mut self.draft);
+        if let Some(channel) = &self.selected_channel {
+            if draft.is_empty() {
+                self.drafts.remove(channel);
+            } else {
+                self.drafts.insert(channel.clone(), draft);
+            }
+        }
+    }
+
     fn reload_selected_channel(&mut self, id: String, general: bool) {
         self.navigation += 1;
         self.opening = false;
@@ -3257,6 +3273,7 @@ impl CaperApp {
         self.navigation_error = None;
         self.voice.state.browse(id.clone());
         self.generation += 1;
+        self.stash_draft();
         self.selected_channel = Some(id.clone());
         self.session = None;
         self.session_error = None;
@@ -3281,7 +3298,7 @@ impl CaperApp {
         self.reactors.clear();
         self.pending_pins.clear();
         self.mutations = model::MessageMutations::default();
-        self.draft.clear();
+        self.draft = self.drafts.remove(&id).unwrap_or_default();
         self.typers.clear();
         self.error = None;
         self.loading = true;
@@ -3844,6 +3861,7 @@ impl CaperApp {
         self.channel_rosters.clear();
         self.voice_session_starts.clear();
         self.unavailable_rosters.clear();
+        self.stash_draft();
         self.selected_channel = None;
         self.session = None;
         self.session_error = None;
@@ -3911,6 +3929,7 @@ impl CaperApp {
         self.selected_space = None;
         self.selected_channel = None;
         self.clear_channel_state();
+        self.drafts.clear();
         self.challenge = None;
         self.code.clear();
         self.attempts_remaining = None;
@@ -22130,6 +22149,34 @@ mod tests {
         assert!(!app.loading_older);
         assert!(app.older_error.is_none());
         assert!(!app.has_more);
+    }
+
+    #[test]
+    fn switching_conversations_keeps_each_unsent_draft_until_sign_out() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        let first = app.selected_channel.clone().unwrap();
+        app.draft = "first draft".into();
+        app.reload_selected_channel("other".into(), false);
+        assert!(app.draft.is_empty(), "drafts belong to one conversation");
+        app.draft = "other draft".into();
+        app.reload_selected_channel(first.clone(), false);
+        assert_eq!(app.draft, "first draft");
+        app.draft.clear();
+        app.reload_selected_channel("other".into(), false);
+        assert_eq!(app.draft, "other draft");
+        app.reload_selected_channel(first.clone(), false);
+        assert!(app.draft.is_empty(), "a cleared draft stays cleared");
+        app.reload_channel();
+        app.draft = "reloaded draft".into();
+        app.reload_channel();
+        assert_eq!(app.draft, "reloaded draft");
+        app.logout();
+        assert!(app.draft.is_empty() && app.drafts.is_empty());
     }
 
     #[test]

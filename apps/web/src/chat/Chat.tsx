@@ -1490,6 +1490,7 @@ export default function Chat({
             <Composer
               ref={composerRef}
               channelName={channelName}
+              draftKey={accountId && channelId ? `${accountId}:${channelId}` : undefined}
               direct={direct}
               disabled={state.phase !== "ready"}
               identityReady={identityReady}

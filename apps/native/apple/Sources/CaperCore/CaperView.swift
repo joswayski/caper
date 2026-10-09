@@ -2121,7 +2121,7 @@ private struct ChatView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 6))
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(CaperTheme.border))
-                    .onChange(of: chat.draft) { _, value in chat.setTyping(!value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+                    .onChange(of: chat.draft) { _, value in chat.draftChanged(value) }
                 }
                 Button { Task { await chat.send() } } label: {
                     Image(systemName: "arrow.up").font(.system(size: 15, weight: .bold))

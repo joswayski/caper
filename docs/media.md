@@ -596,6 +596,13 @@ Message bodies, chat capabilities, and account credentials are never logged.
 Messages and author snapshots are saved in Postgres and visible to authorized
 channel members; there is no automatic retention purge. Browser tokens use local
 storage; drafts/pending sends survive reconnects but not closing/reloading a tab.
+Each channel and DM keeps its own unsent draft while the app stays open on web,
+Android, Apple and Rust desktop: switching conversations and coming back restores
+it, sending clears it, and signing out discards every draft. Drafts stay in memory
+and are never sent to the API. Restoring one does not send a typing indicator.
+`scripts/test-desktop-navigation.mjs` (channels) and
+`scripts/test-direct-messages.mjs` (DMs) check this in Chromium. Desktop, Apple
+and Android unit tests cover switching and sign-out.
 Signed-in startup obtains a fresh capability
 from the current account session rather than identifying an account by its name.
 
@@ -5374,7 +5381,8 @@ iPhone has no lock-screen call controls (CallKit); web, macOS and Rust desktop
 have no OS notifications; Android has no in-app update notice; Android and Apple
 load older history only from the button; Apple scrolls to every new message even
 while reading history. Product gaps on every client (no change): message deletion,
-links, unread markers, jump to latest, per-channel drafts and shortcuts.
+links, unread markers, jump to latest and shortcuts. (Per-conversation drafts
+were added later on every client.)
 
 **Deployment order.** No backend step. Web, Android, Apple and Rust desktop can
 release independently, in any order; merging does not deploy. Roll back web with
