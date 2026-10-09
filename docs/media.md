@@ -5240,8 +5240,9 @@ Presentation stays platform-native.
   shown. Removal shows "This space is no longer available."
 - **Invites:** native space/channel member forms pre-check members and pending
   invitations, show "Invitation sent. They must accept before joining.", explain
-  failures in web's words and keep the typed username. The channel pre-check says
-  "This person already has access to this channel."
+  failures in web's words and keep the typed username. Every client's channel
+  pre-check, web's included, now says "This person already has access to this
+  channel."
 - **Rust desktop** always shows private-channel invitations, which previously
   never arrived because `SpaceDetail` read `channel_invitations` instead of the
   API's `channelInvitations`. Owners can manage unjoined channels from Browse on
