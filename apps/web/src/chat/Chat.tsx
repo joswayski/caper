@@ -23,7 +23,7 @@ import { dateDivider } from "./dates.ts";
 import { isChannelMessage, type ChatAuthor, type GeneralChatHistory } from "./types.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
 import Avatar from "../components/Avatar";
-import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
+import Composer, { type ComposerHandle } from "./Composer.tsx";
 import { mentionCardPerson, mentionSegments, mentionsAccount, type MentionCandidate } from "./mentions.ts";
 import MentionCard, { type MentionCardTarget } from "./MentionCard.tsx";
 import { blockedLabel, blockedRuns, type BlockedRun } from "./blocked.ts";
@@ -181,7 +181,9 @@ export default function Chat({
   const viewerId = accountId ?? state.author?.id;
   const [showConnectionStatus, setShowConnectionStatus] = useState(false);
   const [firstItemIndex, setFirstItemIndex] = useState(INITIAL_ITEM_INDEX);
-  const [draft, setDraft] = useState("");
+  // The composer owns the draft; the conversation only needs to know one exists.
+  const composerRef = useRef<ComposerHandle>(null);
+  const [hasDraft, setHasDraft] = useState(false);
   const channelMenuRef = useRef<HTMLDetailsElement>(null);
   useEffect(() => {
     const dismiss = (event: PointerEvent) => {
@@ -191,7 +193,6 @@ export default function Chat({
     document.addEventListener("pointerdown", dismiss);
     return () => document.removeEventListener("pointerdown", dismiss);
   }, []);
-  const [validationError, setValidationError] = useState<string>();
   const clientRef = useRef<ChatClient | undefined>(undefined);
   const [actionTarget, setActionTarget] = useState<MessageActionTarget>();
   const [reactorsTarget, setReactorsTarget] = useState<ReactorsTarget>();
@@ -325,9 +326,9 @@ export default function Chat({
   const actionMessage = findMessage(actionTarget?.messageId);
   const reactorsMessage = findMessage(reactorsTarget?.messageId);
   const forwardMessage = findMessage(forwardTarget?.messageId);
-  const conversationMessage = [...state.messages, ...state.pinnedMessages].find(
-    (message) => message.id === conversationTarget?.messageId,
-  );
+  const conversationMessage = conversationTarget
+    ? [...state.messages, ...state.pinnedMessages].find((message) => message.id === conversationTarget.messageId)
+    : undefined;
   const closeForward = useCallback(() => setForwardTarget(undefined), []);
   const closeConversation = useCallback(() => setConversationTarget(undefined), []);
   const editMessage = findMessage(editTarget);
@@ -368,6 +369,7 @@ export default function Chat({
     }
   };
   const listRef = useRef<VirtuosoHandle>(null);
+  const scrollerRef = useRef<HTMLElement>(null);
   const goToMessage = async (message: GeneralChatHistory["messages"][number]) => {
     const client = clientRef.current;
     if (!client || jumping) return;
@@ -380,7 +382,6 @@ export default function Chat({
         setShowPins(false);
         setJumpMessage(message.id);
         if (!message.threadRootId) {
-          followLatest.current = false;
           // Cancel the previous window's queued follow/measurement corrections.
           setListWindow((window) => window + 1);
           setScrollTarget(message.id);
@@ -407,25 +408,11 @@ export default function Chat({
     }, 1_000);
     return () => clearTimeout(timer);
   }, [state.author?.id, readOnly]);
-  const composerRef = useRef<HTMLTextAreaElement>(null);
+  // The thread composer suggests the same people as the channel composer.
   const mentionPeople = useMemo(
     () => mentionMembers?.filter((member) => member.id !== state.author?.id),
     [mentionMembers, state.author?.id],
   );
-  const composerSuggestions = useComposerSuggestions({
-    id: "chat",
-    draft,
-    input: composerRef,
-    people: mentionPeople,
-    specialMentions: !direct,
-    onInsert: (value) => {
-      setDraft(value);
-      setValidationError(undefined);
-      clientRef.current?.setTyping(!!value.trim());
-    },
-    onTooLong: () => setValidationError("Messages must be 4,000 characters or fewer."),
-  });
-  const followLatest = useRef(true);
   const allowFollow = useRef(false);
   allowFollow.current = !state.hasNewer && !scrollTarget && !jumping;
   const latestMessage = state.messages.at(-1);
@@ -436,8 +423,7 @@ export default function Chat({
   }, [latestMessage?.id, state.phase]);
   // Reaction events advance the conversation stream without adding a message.
   // HTTP reaction snapshots do not advance this committed replay cursor.
-  const readCursor =
-    clientRef.current?.snapshotHistory()?.cursor ?? initialHistory?.cursor ?? latestMessage?.seq ?? "0";
+  const readCursor = clientRef.current?.readCursor() ?? initialHistory?.cursor ?? latestMessage?.seq ?? "0";
   const readCallback = useRef(onReadCursor);
   readCallback.current = onReadCursor;
   useEffect(() => {
@@ -449,27 +435,18 @@ export default function Chat({
     return () => document.removeEventListener("visibilitychange", read);
   }, [state.phase, readCursor, channelId]);
 
-  useLayoutEffect(() => {
-    const composer = composerRef.current;
-    if (!composer) return;
-    const resize = () => {
-      composer.style.height = "0px";
-      composer.style.height = `${composer.scrollHeight + composer.offsetHeight - composer.clientHeight}px`;
-      if (followLatest.current && allowFollow.current) listRef.current?.autoscrollToBottom();
-    };
-    resize();
-    let width = composer.clientWidth;
-    const observer = new ResizeObserver(() => {
-      if (composer.clientWidth === width) return;
-      width = composer.clientWidth;
-      resize();
-    });
-    observer.observe(composer);
-    return () => observer.disconnect();
-  }, [draft]);
+  // The composer resizes itself; keep the conversation pinned to the newest
+  // message when it already was. Read the position before resizing, not a
+  // delayed bottom callback, and correct only real height changes using the
+  // new DOM extent rather than the virtualizer's previous measurements.
+  const keepLatestInView = useCallback((resize: () => boolean) => {
+    const scroller = scrollerRef.current;
+    const atBottom = scroller && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 80;
+    if (resize() && atBottom && allowFollow.current) scroller.scrollTop = scroller.scrollHeight;
+  }, []);
+  const setTyping = useCallback((active: boolean) => clientRef.current?.setTyping(active), []);
 
   useEffect(() => {
-    let pendingId: string | undefined;
     let firstMessageId: string | undefined;
     const client = new ChatClient(
       (next) => {
@@ -482,12 +459,7 @@ export default function Chat({
           if (prepended > 0) setFirstItemIndex((index) => index - prepended);
           firstMessageId = next.channelMessages?.[0]?.id;
         }
-        const pending = next.pendingSend;
-        if (pending && !pending.threadRootId && pending.clientMessageId !== pendingId) {
-          setDraft((current) => (current === pending.text ? "" : current));
-          followLatest.current = true;
-        }
-        pendingId = pending?.clientMessageId;
+        // The composer clears the draft a new local send came from.
         setState(next);
       },
       channelId,
@@ -534,8 +506,8 @@ export default function Chat({
   }, [state.online, onOnlineChange]);
 
   useEffect(() => {
-    if (identityReady && (!readOnly || signedIn)) clientRef.current?.identify(name, signedIn);
-  }, [identityReady, name, signedIn, readOnly]);
+    if (identityReady && (!readOnly || signedIn)) clientRef.current?.identify(name, signedIn, accountId);
+  }, [identityReady, name, signedIn, accountId, readOnly]);
 
   useEffect(() => {
     if (state.author) onAuthorChange?.(state.author);
@@ -556,9 +528,6 @@ export default function Chat({
   const channelName = direct
     ? (expectedChannelName ?? state.channelName)
     : (expectedChannelName ?? state.channelName).toLowerCase();
-  const characterCount = Array.from(draft).length;
-  const counterTone =
-    characterCount >= 3900 ? "red" : characterCount >= 3750 ? "orange" : characterCount >= 3500 ? "yellow" : "gray";
   const channelMessages = state.channelMessages ?? state.messages.filter(isChannelMessage);
   const messages =
     state.pendingSend && !state.pendingSend.threadRootId ? [...channelMessages, state.pendingSend] : channelMessages;
@@ -629,18 +598,10 @@ export default function Chat({
     const timer = setTimeout(() => setDisplayedTypingLabel(""), 180);
     return () => clearTimeout(timer);
   }, [typingLabel]);
-  const submit = async () => {
-    if (readOnly || !identityReady || sending || state.sendRejected || state.pendingSend?.threadRootId) return;
-    setValidationError(undefined);
-    followLatest.current = true;
-    const submitted = state.pendingSend?.text ?? draft;
-    try {
-      if ((await clientRef.current?.send(submitted)) && state.hasNewer) {
-        setJumpMessage(undefined);
-        setScrollTarget("latest");
-      }
-    } catch (error) {
-      setValidationError(error instanceof Error ? error.message : "Message could not be sent.");
+  const sendDraft = async (text: string) => {
+    if ((await clientRef.current?.send(text)) && state.hasNewer) {
+      setJumpMessage(undefined);
+      setScrollTarget("latest");
     }
   };
 
@@ -897,14 +858,11 @@ export default function Chat({
                   <>
                     <button
                       type="button"
-                      disabled={!!draft}
-                      title={draft ? "Clear your current draft to edit this message." : undefined}
+                      disabled={hasDraft}
+                      title={hasDraft ? "Clear your current draft to edit this message." : undefined}
                       onClick={() => {
                         const text = clientRef.current?.discardRejected();
-                        if (text !== undefined) {
-                          setDraft(text);
-                          composerRef.current?.focus();
-                        }
+                        if (text !== undefined) composerRef.current?.restore(text);
                       }}
                     >
                       Edit
@@ -914,7 +872,7 @@ export default function Chat({
                     </button>
                   </>
                 ) : (
-                  <button type="button" onClick={() => void submit()}>
+                  <button type="button" onClick={() => composerRef.current?.submit()}>
                     Retry send
                   </button>
                 )}
@@ -1163,6 +1121,9 @@ export default function Chat({
               <Virtuoso
                 key={listWindow}
                 ref={listRef}
+                scrollerRef={(element) => {
+                  scrollerRef.current = element instanceof HTMLElement ? element : null;
+                }}
                 data={messages}
                 firstItemIndex={firstItemIndex}
                 initialTopMostItemIndex={{
@@ -1177,9 +1138,6 @@ export default function Chat({
                 increaseViewportBy={{ top: 250, bottom: 150 }}
                 followOutput={allowFollow.current ? "auto" : false}
                 atBottomThreshold={80}
-                atBottomStateChange={(atBottom) => {
-                  followLatest.current = atBottom;
-                }}
                 startReached={() => {
                   if (!state.olderError) loadOlder();
                 }}
@@ -1313,8 +1271,8 @@ export default function Chat({
               if (!clientRef.current) return Promise.reject(new Error("Chat session is unavailable."));
               return clientRef.current.forward(destination, messageId, key, text);
             }}
-            onSent={(destination) => {
-              setActionStatus(`Forwarded to ${destination.direct ? "" : "#"}${destination.name}.`);
+            onSent={(count) => {
+              setActionStatus(`Forwarded to ${count} ${count === 1 ? "destination" : "destinations"}.`);
               setForwardTarget(undefined);
             }}
           />
@@ -1366,59 +1324,22 @@ export default function Chat({
                 </button>
               </p>
             )}
-            {validationError && (
-              <p className="chat-inline-error" role="alert">
-                {validationError}
-              </p>
-            )}
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                void submit();
-              }}
-            >
-              <label className="sr-only" htmlFor="chat-message">
-                Message {channelName}
-              </label>
-              {composerSuggestions.popup}
-              <textarea
-                ref={composerRef}
-                id="chat-message"
-                rows={1}
-                value={draft}
-                disabled={state.phase !== "ready"}
-                enterKeyHint="send"
-                aria-describedby="chat-composer-hint"
-                {...composerSuggestions.textarea}
-                placeholder={`Message ${direct ? "" : "#"}${channelName}`}
-                onChange={(event) => {
-                  setDraft(event.target.value);
-                  composerSuggestions.change(event.target);
-                  setValidationError(undefined);
-                  clientRef.current?.setTyping(!!event.target.value.trim());
-                }}
-                onBlur={() => {
-                  composerSuggestions.blur();
-                  clientRef.current?.setTyping(false);
-                }}
-                onKeyDown={(event) => {
-                  if (composerSuggestions.keyDown(event)) return;
-                  if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                    event.preventDefault();
-                    if (!sending) void submit();
-                  }
-                }}
-              />
-              <span id="chat-composer-hint" className="sr-only">
-                Type : to find emoji or @ to mention someone. Up and Down choose; Enter or Tab inserts; Escape closes
-                suggestions. Enter to send. Shift+Enter for a new line.
-              </span>
-              {characterCount >= 3000 && (
-                <small className="chat-counter" data-tone={counterTone}>
-                  {characterCount.toLocaleString()} / 4,000
-                </small>
-              )}
-            </form>
+            <Composer
+              ref={composerRef}
+              channelName={channelName}
+              direct={direct}
+              disabled={state.phase !== "ready"}
+              identityReady={identityReady}
+              sending={sending}
+              sendRejected={!!state.sendRejected}
+              pendingSend={state.pendingSend}
+              authorId={state.author?.id}
+              mentionMembers={mentionMembers}
+              onSend={sendDraft}
+              onTyping={setTyping}
+              onResize={keepLatestInView}
+              onDraftPresence={setHasDraft}
+            />
           </div>
         )}
       </section>

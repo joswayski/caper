@@ -89,6 +89,14 @@ const open = (id) => {
   wait(
     '!!document.querySelector(".chat-thread-panel") && !document.querySelector(".chat-thread-messages[aria-busy=true]")',
   );
+  assert.deepEqual(
+    evaluate(`(() => {
+      const replies = document.querySelector('.chat-thread-messages');
+      return [getComputedStyle(replies).scrollbarWidth, getComputedStyle(replies, '::-webkit-scrollbar').display];
+    })()`),
+    ["none", "none"],
+    "Thread replies keep scrolling without revealing a scrollbar",
+  );
 };
 const reply = (text) => {
   browser("fill", "#chat-thread-reply", text);

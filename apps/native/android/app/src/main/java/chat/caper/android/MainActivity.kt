@@ -12,7 +12,10 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -20,6 +23,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -39,6 +43,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.GenericShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -53,11 +58,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
@@ -125,6 +133,8 @@ import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import java.util.Locale
 import kotlin.math.abs
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -382,29 +392,53 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
                 Modifier.fillMaxSize(),
                 color = Surface,
             ) {
-                if (narrow) Box {
-                    if (navigationOpen) Column(Modifier.fillMaxSize().background(Blackout)) {
-                        Row(Modifier.weight(1f)) {
-                            SpaceRail(state, viewModel, show, Modifier.width(60.dp))
-                            ChannelSidebar(state, voice, viewModel, show,
-                                Modifier.weight(1f).padding(top = 8.dp, end = 8.dp).clip(RoundedCornerShape(16.dp))
-                                    .browseSwipe(open = true, enabled = state.selectedChannel != null) { setNavigationOpen(it) },
-                                channelsExpanded, { channelsExpanded = it }, joinVoice, pendingVoiceJoin, voicePermissionError,
-                                { voicePermissionError = null }, showAccountBar = false) { setNavigationOpen(false) }
+                if (narrow) {
+                    val drawer = rememberBrowseDrawer(navigationOpen)
+                    val latestSetNavigationOpen by rememberUpdatedState(setNavigationOpen)
+                    LaunchedEffect(navigationOpen) { if (!drawer.dragging) drawer.settle(navigationOpen) }
+                    // How much of the conversation stays in view beside Browse.
+                    val peek = (maxWidth * 0.2f).coerceIn(56.dp, 96.dp)
+                    drawer.peek = with(LocalDensity.current) { peek.toPx() }
+                    var barHeight by remember { mutableIntStateOf(0) }
+                    // Browse is composed only while it shows or the conversation moves.
+                    val browseUncovered by remember { derivedStateOf { drawer.progress.value > 0f } }
+                    CompositionLocalProvider(LocalBrowseDrawer provides drawer) {
+                        Box(Modifier.fillMaxSize().clipToBounds().background(Blackout).browseDrag(drawer) { latestSetNavigationOpen(it) }) {
+                            if (navigationOpen || browseUncovered) Column(Modifier.fillMaxSize()) {
+                                Row(Modifier.weight(1f).padding(end = peek)) {
+                                    SpaceRail(state, viewModel, show, Modifier.width(60.dp))
+                                    ChannelSidebar(state, voice, viewModel, show,
+                                        Modifier.weight(1f).padding(top = 8.dp, end = 8.dp).clip(RoundedCornerShape(16.dp))
+                                            .browseSwipeRegion(drawer, enabled = state.selectedChannel != null),
+                                        channelsExpanded, { channelsExpanded = it }, joinVoice, pendingVoiceJoin, voicePermissionError,
+                                        { voicePermissionError = null }, showAccountBar = false) { setNavigationOpen(false) }
+                                }
+                                // The account bar keeps the full width, below the conversation's edge.
+                                Box(Modifier.onSizeChanged { barHeight = it.height }) { AccountBar(state, voice, viewModel, show) }
+                            }
+                            Box(Modifier.fillMaxSize().conversationLayer(drawer, barHeight).background(Surface)
+                                .then(if (navigationOpen) Modifier.clearAndSetSemantics {} else Modifier)) {
+                                conversationState.SaveableStateProvider(state.selectedChannel?.id ?: "empty") {
+                                    Conversation(state, voice, viewModel, show, true, membersVisible, { membersVisible = !membersVisible }, voicePermissionError) { setNavigationOpen(true) }
+                                }
+                                if (membersVisible && !navigationOpen && state.selectedChannel?.joined == true && state.selectedDirectId == null) {
+                                    Box(Modifier.fillMaxSize().padding(top = 54.dp).clickable(
+                                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                                        indication = null,
+                                    ) { membersVisible = false })
+                                    MemberPresencePanel(state, viewModel,
+                                        Modifier.padding(top = 62.dp, end = 8.dp, bottom = 8.dp).widthIn(max = 280.dp).fillMaxHeight().align(Alignment.CenterEnd)
+                                            .clip(RoundedCornerShape(16.dp)).pointerInput(Unit) { detectTapGestures {} },
+                                        close = { membersVisible = false })
+                                }
+                            }
+                            // Beside Browse the conversation's edge is inert: tapping or dragging it returns.
+                            if (navigationOpen) Box(Modifier.align(Alignment.TopEnd).width(peek).fillMaxHeight()
+                                .padding(bottom = with(LocalDensity.current) { barHeight.toDp() })
+                                .browseSwipeRegion(drawer, enabled = true)
+                                .clickable(onClickLabel = "Back to conversation") { setNavigationOpen(false) }
+                                .semantics { contentDescription = "Back to conversation" })
                         }
-                        AccountBar(state, voice, viewModel, show)
-                    } else conversationState.SaveableStateProvider(state.selectedChannel?.id ?: "empty") {
-                        Conversation(state, voice, viewModel, show, true, membersVisible, { membersVisible = !membersVisible }, voicePermissionError) { setNavigationOpen(true) }
-                    }
-                    if (membersVisible && !navigationOpen && state.selectedChannel?.joined == true && state.selectedDirectId == null) {
-                        Box(Modifier.fillMaxSize().padding(top = 54.dp).clickable(
-                            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                            indication = null,
-                        ) { membersVisible = false })
-                        MemberPresencePanel(state, viewModel,
-                            Modifier.padding(top = 62.dp, end = 8.dp, bottom = 8.dp).widthIn(max = 280.dp).fillMaxHeight().align(Alignment.CenterEnd)
-                                .clip(RoundedCornerShape(16.dp)).pointerInput(Unit) { detectTapGestures {} },
-                            close = { membersVisible = false })
                     }
                 } else Row {
                     SpaceRail(state, viewModel, show, Modifier.width(60.dp))
@@ -422,29 +456,118 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
     }
 }
 
-// Only the timeline/sidebar uses this gesture; the composer and audio controls
-// keep their native drags. Consumed moves belong to scrolling, selection or a slider.
-private fun Modifier.browseSwipe(open: Boolean, enabled: Boolean, onOpenChange: (Boolean) -> Unit): Modifier =
-    if (!enabled) this else pointerInput(open) {
-        val threshold = 64.dp.toPx()
+/**
+ * Phones show the conversation, or Browse (spaces and channels) with the
+ * conversation's edge still in view. The conversation slides over the still
+ * Browse, following a finger from the timeline, channel list or that edge.
+ * Buttons, Back and channel choices animate the same slide.
+ */
+@Stable
+private class BrowseDrawer(private val scope: CoroutineScope, open: Boolean) {
+    /** How much of Browse is uncovered: 0 shows the conversation, 1 shows Browse. */
+    val progress = Animatable(if (open) 1f else 0f)
+    var dragging = false
+    /** Set when a touch lands on the timeline, channel list or the conversation's edge; elsewhere keeps its own drags. */
+    var regionTouched = false
+    /** The conversation's edge kept in view beside Browse, in pixels. */
+    var peek = 0f
+
+    fun drag(value: Float) {
+        scope.launch(start = CoroutineStart.UNDISPATCHED) { progress.snapTo(value.coerceIn(0f, 1f)) }
+    }
+
+    /** Animates to Browse or the conversation, carrying on at `velocity` (progress per second). */
+    fun settle(open: Boolean, velocity: Float = 0f) {
+        val target = if (open) 1f else 0f
+        if (progress.targetValue == target && (progress.isRunning || progress.value == target)) return
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            progress.animateTo(target, spring(Spring.DampingRatioNoBouncy, Spring.StiffnessMediumLow), velocity)
+        }
+    }
+}
+
+@Composable private fun rememberBrowseDrawer(open: Boolean): BrowseDrawer {
+    val scope = rememberCoroutineScope()
+    return remember(scope) { BrowseDrawer(scope, open) }
+}
+
+private val LocalBrowseDrawer = staticCompositionLocalOf<BrowseDrawer?> { null }
+
+/** Moves the conversation over Browse, lifting its bottom edge off Browse's account bar on the way. */
+private fun Modifier.conversationLayer(drawer: BrowseDrawer, barHeight: Int): Modifier = graphicsLayer {
+    val uncovered = drawer.progress.value
+    translationX = uncovered * (size.width - drawer.peek)
+    // A clipped layer also clips touches, so the bar's controls stay reachable.
+    val inset = uncovered * barHeight
+    clip = uncovered > 0f
+    shape = GenericShape { size, _ -> addRect(Rect(0f, 0f, size.width, size.height - inset)) }
+    shadowElevation = if (uncovered > 0f) 16.dp.toPx() else 0f
+}
+
+// Only the timeline/sidebar starts this gesture; the composer and audio controls
+// keep their native drags.
+private fun Modifier.browseSwipeRegion(drawer: BrowseDrawer?, enabled: Boolean): Modifier =
+    if (drawer == null || !enabled) this else pointerInput(drawer) {
+        awaitEachGesture {
+            awaitFirstDown(requireUnconsumed = false)
+            drawer.regionTouched = true
+        }
+    }
+
+// Tracks the finger on the unmoving container, since the layers it moves would
+// otherwise move their own touch coordinates. Consumed moves belong to
+// scrolling, selection or a slider.
+private fun Modifier.browseDrag(drawer: BrowseDrawer, setOpen: (Boolean) -> Unit): Modifier =
+    pointerInput(drawer) {
+        val tracker = VelocityTracker()
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
-            var rejected = false
-            var horizontal = false
-            do {
-                val event = awaitPointerEvent()
-                val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                val dx = change.position.x - down.position.x
-                val dy = change.position.y - down.position.y
-                if (event.changes.size != 1 || change.isConsumed || change.uptimeMillis - down.uptimeMillis > 600 ||
-                    abs(dy) > maxOf(viewConfiguration.touchSlop, abs(dx))) rejected = true
-                if (!rejected && abs(dx) > viewConfiguration.touchSlop && abs(dx) > abs(dy) * 2 &&
-                    (if (open) dx < 0 else dx > 0)) horizontal = true
-                if (horizontal && !rejected) {
+            val allowed = drawer.regionTouched
+            drawer.regionTouched = false
+            if (!allowed) return@awaitEachGesture
+            val opening = drawer.progress.targetValue < 0.5f
+            val width = (size.width - drawer.peek).coerceAtLeast(1f)
+            val start = drawer.progress.value
+            var dragging = false
+            var dx = 0f
+            var velocity = 0f
+            tracker.resetTracking()
+            try {
+                while (true) {
+                    val event = awaitPointerEvent()
+                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                    dx = change.position.x - down.position.x
+                    val dy = change.position.y - down.position.y
+                    if (!dragging) {
+                        if (!change.pressed || event.changes.size != 1 || change.isConsumed ||
+                            (abs(dy) > viewConfiguration.touchSlop && abs(dy) > abs(dx))) break
+                        if (abs(dx) <= viewConfiguration.touchSlop) continue
+                        if ((dx > 0) != opening || abs(dx) < abs(dy) * 1.5f) break
+                        dragging = true
+                        drawer.dragging = true
+                    }
+                    tracker.addPosition(change.uptimeMillis, change.position)
+                    // Lifting flings; a second finger settles where the slide is.
+                    if (!change.pressed || event.changes.size != 1) {
+                        if (!change.pressed) velocity = tracker.calculateVelocity().x
+                        break
+                    }
                     change.consume() // Cancel a channel row's release click after a drag.
-                    if (!change.pressed && abs(dx) >= threshold && abs(dx) > abs(dy) * 2) onOpenChange(!open)
+                    drawer.drag(start + dx / width)
                 }
-            } while (event.changes.any { it.pressed })
+            } finally {
+                if (dragging) {
+                    drawer.dragging = false
+                    val toward = if (opening) velocity else -velocity
+                    val travelled = abs(drawer.progress.value - start)
+                    val flingSpeed = 300.dp.toPx()
+                    val commit = toward > -flingSpeed &&
+                        (travelled >= 0.5f || (toward >= flingSpeed && abs(dx) >= 40.dp.toPx()))
+                    val target = if (commit) opening else !opening
+                    drawer.settle(target, velocity / width)
+                    setOpen(target)
+                }
+            }
         }
     }
 
@@ -1189,7 +1312,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 }
             }
         }
-        MessageTimeline(state, viewModel, Modifier.weight(1f).browseSwipe(open = false, enabled = narrow && !membersVisible && !channelMenuOpen, onOpenChange = { openNavigation() }), listState = timelineState, follow = timelineFollow) {
+        MessageTimeline(state, viewModel, Modifier.weight(1f).browseSwipeRegion(LocalBrowseDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen), listState = timelineState, follow = timelineFollow) {
             channelPending?.error?.let { pending ->
                 val editable = canEditRejectedMessage(draft.text, channelPending.text)
                 Row(verticalAlignment = Alignment.CenterVertically) {

@@ -21,7 +21,6 @@ import {
   MicOff,
   PhoneOff,
   Settings,
-  Speech,
   Users,
   VolumeX,
   X,
@@ -59,6 +58,7 @@ import MicPlayback, { SpeakerTest } from "./MicPlayback";
 import AudioDiagnostics from "./AudioDiagnostics";
 import VoiceActivity from "./VoiceActivity";
 import ChannelSidebar from "./ChannelSidebar";
+import { useBrowseLayout, useBrowseSwipe } from "../spaces/browseTransition";
 import "./call.css";
 
 const initialState: CallViewState = {
@@ -422,6 +422,8 @@ interface CallProps {
   channelNavigation?: ReactNode | ((voiceFor: (channelId: string) => VoiceSlot | null) => ReactNode);
   navigationOpen?: boolean;
   onNavigationToggle?: () => void;
+  /** Sets Browse at once; swipes on phones animate it themselves. */
+  onNavigationChange?: (open: boolean) => void;
   initialAccount?: Account;
   initialHistory?: GeneralChatHistory;
   initialHistoryError?: string;
@@ -456,6 +458,7 @@ export default function Call({
   membersPanel,
   navigationOpen = false,
   onNavigationToggle,
+  onNavigationChange,
   initialAccount,
   initialHistory,
   initialHistoryError,
@@ -495,18 +498,17 @@ export default function Call({
   );
   const [membersVisible, setMembersVisible] = useState(false);
   const [narrow, setNarrow] = useState(false);
-  const navigationSwipe = useRef<{ id: number; x: number; y: number; time: number } | undefined>(undefined);
-  const suppressNavigationClick = useRef(false);
   useEffect(() => {
     const media = window.matchMedia("(max-width: 760px)");
-    const update = () => {
-      setNarrow(media.matches);
-      navigationSwipe.current = undefined;
-    };
+    const update = () => setNarrow(media.matches);
     update();
     media.addEventListener("change", update);
     return () => media.removeEventListener("change", update);
   }, []);
+  const navigationSwipe = useBrowseSwipe(narrow && !membersVisible, navigationOpen, onNavigationChange);
+  const roomRef = useRef<HTMLElement>(null);
+  const peeking = narrow && navigationOpen && !!onNavigationToggle;
+  useBrowseLayout(roomRef, navigationOpen);
   const [selfPresence, setSelfPresence] = useState<PresenceStatus>();
   const [localPresence, setLocalPresence] = useState<PresenceStatus>("offline");
   const [presenceLive, setPresenceLive] = useState(false);
@@ -608,6 +610,12 @@ export default function Call({
       playSound("channel-join");
     } else if (idle) joined.current = false;
   }, [connected, idle]);
+
+  useEffect(() => {
+    if (!connected) return;
+    const key = voiceChannel?.id ?? "general";
+    setExpandedRosters((current) => new Set(current).add(key));
+  }, [connected, voiceChannel?.id]);
 
   useEffect(() => {
     const previous = previousVoiceRoster.current;
@@ -712,10 +720,16 @@ export default function Call({
   }, [mediaRoot, voiceJoined]);
 
   useEffect(() => {
-    if (voiceChannel?.id && voiceChannels && !voiceChannels.some((item) => item.id === voiceChannel.id)) {
+    if (
+      voiceChannel?.id &&
+      voiceChannels &&
+      !channel?.direct &&
+      voiceChannel.spaceId === channel?.spaceId &&
+      !voiceChannels.some((item) => item.id === voiceChannel.id)
+    ) {
       clientRef.current?.leaveImmediately();
     }
-  }, [voiceChannel?.id, voiceChannels]);
+  }, [voiceChannel?.id, voiceChannel?.spaceId, voiceChannels, channel?.spaceId, channel?.direct]);
 
   useEffect(() => {
     // Download/compile only; never a permission prompt. Deferred for embedded
@@ -826,6 +840,19 @@ export default function Call({
     if (connected) playSound("disconnect");
     void act(() => clientRef.current!.leave());
   };
+  const leaveControl = (
+    <Tooltip content={connected ? "Leave this voice channel" : "Cancel joining voice"}>
+      <button
+        type="button"
+        className="voice-hangup voice-leave"
+        aria-label={connected ? "Leave voice" : "Cancel joining voice"}
+        onClick={leave}
+      >
+        <PhoneOff aria-hidden="true" />
+        <span>{connected ? "Leave" : "Cancel"}</span>
+      </button>
+    </Tooltip>
+  );
   const closeAudioPanel = () => {
     if (audioPanel === "mic") {
       ++actionGeneration.current;
@@ -1093,14 +1120,15 @@ export default function Call({
     channelId === channel?.id || !channelId
       ? (channel?.name ?? "general")
       : (voiceChannels?.find((item) => item.id === channelId)?.name ?? "voice");
-  // Every channel has a separate, stable voice row. The roster expands only
-  // on request. Connected channels reserve the action slot; leave lives in the dock.
+  // Keep the active call with its channel. If navigation hides that channel,
+  // render the same roster and leave action above the persistent audio controls.
   let rosterPlaced = false;
   const voiceFor = (channelId?: string): VoiceSlot | null => {
     if ((channel?.direct && (!channelId || channelId === channel.id)) || (channelId === channel?.id && !channelJoined))
       return null;
     const { people, startedAt, own } = rosterFor(channelId);
-    if (own) rosterPlaced = true;
+    const ownVisible = own && (!narrow || !onNavigationToggle || navigationOpen || channelId === channel?.id);
+    if (ownVisible) rosterPlaced = true;
     const key = voiceChannelKey(channelId);
     const label = channelLabel(channelId);
     const open = expandedRosters.has(key);
@@ -1136,16 +1164,17 @@ export default function Call({
           setVolumeParticipant(undefined);
         }}
       >
-        <span className="voice-stack-faces" aria-hidden="true">
-          {people.slice(0, 2).map((participant) => (
-            <span
-              key={participant.id}
-              className={`voice-stack-avatar${own && !open && isSpeaking(participant) ? " speaking" : ""}`}
-            >
-              <Avatar avatarId={participant.avatarId} name={participant.name} />
-            </span>
-          ))}
-        </span>
+        {activeHere && connected ? (
+          <AudioLines className="voice-connected-icon" aria-hidden="true" />
+        ) : (
+          <span className="voice-stack-faces" aria-hidden="true">
+            {people.slice(0, 2).map((participant) => (
+              <span key={participant.id} className="voice-stack-avatar">
+                <Avatar avatarId={participant.avatarId} name={participant.name} />
+              </span>
+            ))}
+          </span>
+        )}
         <span className="voice-stack-count">{people.length} in voice</span>
         <ChevronDown aria-hidden="true" />
       </button>
@@ -1153,7 +1182,9 @@ export default function Call({
     const viewed = channelId === channel?.id;
     const join =
       activeHere && connected ? (
-        <span className="channel-join-slot" aria-hidden="true" />
+        ownVisible ? (
+          leaveControl
+        ) : null
       ) : (
         <Tooltip
           content={
@@ -1191,7 +1222,6 @@ export default function Call({
               if (!blocked) joinChannel(channelId);
             }}
           >
-            <Speech aria-hidden="true" />
             <span className="channel-join-label">{actionLabel}</span>
           </button>
         </Tooltip>
@@ -1200,14 +1230,19 @@ export default function Call({
       timer:
         startedAt != null && (people.length > 0 || joiningHere) ? <VoiceSessionTimer startedAt={startedAt} /> : null,
       summary: (
-        <span className="channel-voice">
+        <span className="channel-voice" data-active={activeHere && connected ? "" : undefined}>
           {stack}
           {join}
         </span>
       ),
       list:
-        people.length > 0 ? (
-          <div className="voice-occupants" id={listId} data-open={open ? "" : undefined}>
+        people.length > 0 && (!own || ownVisible) ? (
+          <div
+            className="voice-occupants"
+            id={listId}
+            data-open={open ? "" : undefined}
+            data-active={activeHere && connected ? "" : undefined}
+          >
             <div className="voice-occupants-inner" inert={!open}>
               {renderRoster(people, own, label)}
             </div>
@@ -1243,88 +1278,24 @@ export default function Call({
         </header>
       )}
       <section
+        ref={roomRef}
         className={`call-room${channel ? " spaces-room" : ""}${navigationOpen ? " navigation-open" : ""}`}
         data-direct={channel?.direct ? "" : undefined}
-        onPointerDownCapture={(event) => {
-          suppressNavigationClick.current = false;
-          navigationSwipe.current = undefined;
-          if (
-            !narrow ||
-            !onNavigationToggle ||
-            event.pointerType !== "touch" ||
-            !event.isPrimary ||
-            membersVisible ||
-            document.querySelector("dialog[open], details[open], [role=dialog], [popover]:popover-open") ||
-            window.getSelection()?.type === "Range" ||
-            (event.target as HTMLElement).closest(
-              "input, textarea, select, [contenteditable=true], [role=slider], a, summary, button:not(.channel-select):not(.direct-select)",
-            )
-          )
-            return;
-          navigationSwipe.current = { id: event.pointerId, x: event.clientX, y: event.clientY, time: event.timeStamp };
-        }}
-        onPointerMove={(event) => {
-          const start = navigationSwipe.current;
-          if (
-            start &&
-            (event.pointerId !== start.id ||
-              Math.abs(event.clientY - start.y) > Math.max(12, Math.abs(event.clientX - start.x)))
-          )
-            navigationSwipe.current = undefined;
-        }}
-        onPointerCancel={() => {
-          navigationSwipe.current = undefined;
-        }}
-        onPointerUp={(event) => {
-          const start = navigationSwipe.current;
-          navigationSwipe.current = undefined;
-          if (!start || start.id !== event.pointerId || event.timeStamp - start.time > 600) return;
-          const dx = event.clientX - start.x,
-            dy = event.clientY - start.y;
-          if (
-            Math.abs(dx) < 64 ||
-            Math.abs(dx) < Math.abs(dy) * 2 ||
-            (navigationOpen ? dx >= 0 : dx <= 0) ||
-            document.querySelector("dialog[open], details[open], [role=dialog], [popover]:popover-open") ||
-            window.getSelection()?.type === "Range"
-          )
-            return;
-          suppressNavigationClick.current = true;
-          onNavigationToggle?.();
-        }}
-        onKeyDownCapture={() => {
-          suppressNavigationClick.current = false;
-        }}
-        onClickCapture={(event) => {
-          if (!suppressNavigationClick.current) return;
-          suppressNavigationClick.current = false;
-          event.preventDefault();
-          event.stopPropagation();
-        }}
+        {...navigationSwipe}
       >
         {spaceRail}
         <ChannelSidebar>
-          <div className="sidebar-channels">
-            {navigation}
-            {!rosterPlaced && !publicRoster && roster.length > 0 && (
-              <div className="voice-elsewhere">
-                <p className="voice-roster-label">
-                  In voice · {roster.length} · {voiceChannel?.name ?? "general"}
-                </p>
-                {renderRoster(roster, true, voiceChannel?.name ?? "general")}
-              </div>
-            )}
-          </div>
+          <div className="sidebar-channels">{navigation}</div>
           <div className="voice-panel">
-            {((!idle && !pendingJoin) || (voiceError && !audioPanel)) && (
+            {((!idle && !pendingJoin && (!connected || !rosterPlaced)) || (voiceError && !audioPanel)) && (
               <div className="voice-dock">
-                {!idle && !pendingJoin && (
+                {!idle && !pendingJoin && (!connected || !rosterPlaced) && (
                   <div className="connected-channel" data-phase={state.phase} role="status">
                     <div className="voice-dock-channel">
                       <AudioLines aria-hidden="true" />
                       <span>
                         <strong>
-                          {connected ? "Voice connected" : state.phase === "joining" ? "Connecting…" : "Reconnecting…"}
+                          {connected ? "Connected" : state.phase === "joining" ? "Connecting…" : "Reconnecting…"}
                         </strong>
                         <small>
                           {voiceChannel?.name ?? initialHistory?.channel.name ?? "general"} /{" "}
@@ -1332,16 +1303,14 @@ export default function Call({
                         </small>
                       </span>
                     </div>
-                    <Tooltip content={connected ? "Disconnect" : "Cancel"}>
-                      <button
-                        type="button"
-                        className="voice-hangup"
-                        aria-label={connected ? "Leave voice" : "Cancel joining voice"}
-                        onClick={leave}
-                      >
-                        <PhoneOff aria-hidden="true" />
-                      </button>
-                    </Tooltip>
+                    {leaveControl}
+                  </div>
+                )}
+                {connected && !rosterPlaced && (
+                  <div className="voice-occupants voice-pinned" data-open="" data-active="">
+                    <div className="voice-occupants-inner">
+                      {renderRoster(state.participants, true, voiceChannel?.name ?? "general")}
+                    </div>
                   </div>
                 )}
                 {voiceError && !audioPanel && (
@@ -1550,7 +1519,7 @@ export default function Call({
             </div>
           </div>
         </ChannelSidebar>
-        <div className="stage">
+        <div className="stage" inert={peeking}>
           {state.remoteMedia.map((media) => (
             <AudioOutput
               key={media.trackId}
@@ -1653,6 +1622,14 @@ export default function Call({
             />
             {membersPanel(() => setMembersVisible(false))}
           </>
+        )}
+        {peeking && (
+          <button
+            type="button"
+            className="browse-peek"
+            aria-label={`Back to ${channel?.direct ? "" : "#"}${channel?.name ?? "conversation"}`}
+            onClick={onNavigationToggle}
+          />
         )}
       </section>
       <dialog

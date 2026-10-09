@@ -112,14 +112,19 @@ needed; only updated Apple binaries receive this fix.
 
 Web channel names and `⋯` actions have a separate row above voice
 activity. Join, Joining and Switch here use one fixed-width action slot;
-connected channels reserve that space without an inline Leave action.
-Disconnect lives in the bottom voice dock beside the account.
+web uses quiet text-only actions and replaces Join with Leave in the active
+channel. Its roster opens automatically on connection. Mic, deafen and device
+settings stay in the account footer, including before joining. When navigation
+hides the active channel, its roster, channel/space status and single Leave
+action pin above that footer; participant audio menus open upward. Browsing
+other chats, spaces or DMs does not leave voice.
 Voice actions are neutral until hover/focus, and empty channels have no voice
-status text. Only occupied channels show a voice count. Hover and connection/roster
-updates do not shift the action target. The Channels count stays beside its label
+status text. Only occupied channels show a voice count. Hover and connection
+updates do not shift the active channel's action target; expanding its roster
+moves later channels down. The Channels count stays beside its label
 in both owned and shared spaces. Selecting a channel
-opens text without switching voice. Participant lists start collapsed and expand
-from the voice count. Joined-channel menus offer Leave channel to members;
+opens text without switching voice. Other participant lists start collapsed and
+expand from the voice count. Joined-channel menus offer Leave channel to members;
 owners also have the existing privacy/member settings. Leave channel requires
 confirmation and no longer appears in the chat header on web, Apple or Rust
 desktop; Android already uses its channel menu.
@@ -129,9 +134,15 @@ Run `VOICE_TEST_CHANNEL_ROWS=1 node scripts/test-voice-controls.mjs http://local
 against Vite for mocked desktop/narrow/minimum-width geometry, roster disclosure,
 owner permissions, settings focus return, voice switching and pending/error/cancel
 states. This is browser UI coverage, not live SFU or physical-device validation.
-Web, Android, Apple and Rust desktop implement these stable rows independently.
-No shared protocol change is required, but updated native binaries must be
-released separately; browser checks do not establish native rendering parity.
+Run `VOICE_TEST_REDESIGN=1 node scripts/test-voice-controls.mjs` for pre-join
+audio settings, inline/pinned Leave, automatic rosters and chat/space call
+persistence. `VOICE_TEST_PREVIEW=1 node scripts/test-voice-controls.mjs` serves
+the explicitly simulated, interactive UI on port 5180 beside local Vite; it
+does not capture a real microphone or contact the SFU. No production mock route
+is added. The channel-centric redesign is web-only at the owner's request.
+Android, Apple and Rust desktop retain their independent rows and bottom
+disconnect control; no native release or shared protocol/configuration change
+is required. Web can deploy independently; merging does not deploy it.
 Browser modals use viewport-bounded, stable-height shells with scrollable overflow;
 errors, pending states and member loading do not resize or recenter them. Channel
 settings reserve the hidden save bar, and profile forms reserve error space so
@@ -639,7 +650,10 @@ Delivery and recovery:
    checked per subscription; this is not a claim of zero per-recipient SQL work.
 
 Limits: 30 new messages/guest/minute, 120/channel/minute, and 60 new sender
-sessions/minute globally for this demo. `GATEWAY_MAX_CONNECTIONS` defaults to 4096
+sessions/minute per account (a site-wide budget let a few accounts block
+everyone). Signed-in clients reuse one sender session per account across
+conversations (web per page, Apple/Android/Rust desktop per sign-in) and mint a
+new one only after a 401 or a profile rename; a 403 refusal never replaces it. `GATEWAY_MAX_CONNECTIONS` defaults to 4096
 per pod (an admission limit, **not measured capacity**). Each channel has a bounded
 256-event ring. A lagging receiver replays from Postgres in batches of 128.
 Application sockets use 4 KiB read buffers, a 256-frame outgoing queue, and a
@@ -1438,8 +1452,9 @@ model. Android helper and Apple model tests are included but were not run in the
 Linux orb (no Android SDK or Swift/Xcode); full native builds/device checks remain
 release validation. This client-only correction needs no server or schema change.
 
-Every history page includes complete `pinnedMessages`, newest pin first, captured
-under the same channel lock as its cursor. The pins collection is separate from
+Every first history page includes complete `pinnedMessages`, newest pin first, captured
+under the same channel lock as its cursor. Older pages (`before=`) return an empty
+`pinnedMessages`: every client keeps the first page's pins and live pin events. The pins collection is separate from
 the 50-message timeline page: an old pin must not enter that page or skip the
 intervening history. There are at most 100 active pins per channel and 60 actual
 mutations per actor/channel/minute. Idempotent retries preserve the original
@@ -1662,7 +1677,9 @@ content stays inside that channel once a member forwards it.
 The API stores `messages.forward_source_id`, retaining both records. It does not
 copy the original content into an independently editable message. The destination
 wrapper has its own author, optional note, creation sequence, reactions, pins
-and thread summary. Shared source snapshots omit source pins and parent linkage.
+and thread summary. `@mentions` in the note resolve like a message's
+(`content.mentions`), so every client highlights them and opens profile cards,
+but they never notify: the forward notifies as an ordinary message only. Shared source snapshots omit source pins and parent linkage.
 Removing destination membership/grants revokes the scoped read; an independently
 re-forwarded DM remains authorized by that DM, not the intermediate space.
 Deleted source spaces/channels render an unavailable original without exposing
@@ -1672,6 +1689,15 @@ their retained history. Individual message deletion is not implemented.
 
 - `GET /api/chat/forward-destinations` returns writable joined channels and existing
   DMs for the signed-in account.
+- Web, Android, Apple and Rust desktop pickers support selecting multiple
+  destinations. Search matches case-insensitive words across space and channel/DM
+  names in either order (including `#channel`); filtering keeps hidden selections.
+  Each row keeps the space subtitle directly below its channel/DM name.
+  Clients send sequentially with a separate UUID per destination. Confirmed
+  destinations leave the selection; an ambiguous failure freezes the remaining
+  keys and note for retry. A definitive rejection unlocks only the remaining
+  selection/note. This is not an atomic batch: earlier confirmed forwards remain
+  delivered if a later destination fails or the picker is closed.
 - `POST /api/chat/channels/{destination}/forwards` uses `X-Caper-Chat-Token` and
   `{sourceChannelId,sourceMessageId,clientMessageId,text?}`. The source must be
   readable and the destination writable. Same-session retries reuse the exact
@@ -1705,9 +1731,9 @@ independently from reactions, pins and destination thread summaries.
 | Platform | Evidence and remaining gap |
 | --- | --- |
 | API | Workspace tests/Clippy plus disposable Postgres/Valkey checks: private cross-space/DM reads, canonical re-forwarding, authorization denial/revocation, stable retry/conflict, 54-reply pagination, separate destination thread, real edit handler, wrapper edit rejection, source-version denial, real outbox Pub/Sub and replay deduplication. The existing editing database regression also passes |
-| Web | Production build, 387 unit tests, 15 fixture tests and both `scripts/test-message-forwarding.mjs` and `scripts/test-message-edits.mjs`: lost response after commit/retry, destination-only live edit/reaction/future reply, read-only original/wrapper controls, independent destination reply, editing/history regression and inspected 2x desktop/narrow/retry captures. Chromium narrow layout is not Safari, a physical phone or native acceptance |
-| Rust desktop | Full libwebrtc-linked Linux build/tests and package Clippy; 224 tests pass, 9 existing opt-in tests ignored, including wrapper-author edit/history rejection. Native picker/card/read-only conversation implemented. Disposable HTTP fixture rendering is separate from production/Windows/device acceptance |
-| Android | Compose picker/card/read-only view, protocol/gateway/merge and regression tests implemented. JDK/Android SDK unavailable in this orb; compilation, native rendering and device checks remain required |
+| Web | `npm run check` and `npm test` pass (470 web/shared tests). `scripts/test-message-forwarding.mjs` checks aligned 2px subtitles, space/channel token search, selection surviving filtering, delivery across spaces/channels/DMs, partial unknown-response retries without duplicates, definitive rejection edits to remaining destinations, destination-only live edits/reactions/replies, read-only originals and independent destination threads. Default/selected/search/empty/retry/rejected desktop and narrow captures inspected at 2x. Chromium narrow layout is not Safari, a physical phone or native acceptance |
+| Rust desktop | Full libwebrtc-linked Linux build and 288 tests pass, 9 existing opt-in tests ignored. Headless picker tests cover compact same-space rows, token search and hidden selections; retry tests cover partial success and preserved UUIDs. Application Clippy passes with `--no-deps`; unrestricted Clippy still fails on existing vendored `webrtc-sys` safety-documentation warnings. Native default/selected/search renders inspected and one forward per destination confirmed via the disposable HTTP fixture for two spaces and a DM. Not production/Windows/device acceptance |
+| Android | Compose multi-select picker/card/read-only view, protocol/gateway/merge and regression tests implemented. JDK is available, but Android SDK/Kotlin compiler are not; compilation, native rendering and device checks remain required |
 | Apple | SwiftUI picker/card/read-only view, protocol/gateway/merge and regression tests implemented. Swift/Xcode unavailable in this Linux orb; iOS/macOS compilation, sheet transitions and device checks remain required |
 | Containers/live | No Docker daemon; build stages validated directly. No deployed multi-account/cross-client or physical-device acceptance is claimed |
 
@@ -3236,7 +3262,10 @@ contain `{}`. Older clients without `snapshots=1` still receive `changed` and fe
 the roster. No private monitor session is exposed or authorized
 to receive the public stream. One stream per participant is retained; a new one
 replaces the previous stream. Auth/expiry is rechecked for every event, and SSE
-alone never renews the lease. There is no durable event log or second registry.
+alone never renews the lease. A transient (5xx) database recheck failure on a
+heartbeat or roster change sends nothing for that event and keeps the stream; the
+next successful check delivers any missed revision. Denials, setup failures, three
+consecutive transient failures (about 30s) and a shared-store outage still end it. There is no durable event log or second registry.
 
 Join/rejoin waits for the selected audio processor before publication. The SSE
 handshake and publication run concurrently; the published track stays disabled
@@ -4285,6 +4314,29 @@ With local Vite running, repeat the long-history check using
 (substitute the configured port). Its account/history/gateway are explicit test
 mocks; no production data or SFU is used.
 
+### Quiet conversation timelines (October 8, 2026)
+
+Web desktop/narrow, Apple and Rust desktop channel/thread timelines hide scroll
+indicators while retaining scrolling. Android's existing `LazyColumn` timelines
+already omit indicators. Web keeps Virtuoso's reader-aware incoming-message follow
+and explicit own-send reveal; delivery does not focus the composer. Composer resize
+corrects the bottom position only when its height changes and the reader was within
+80 CSS pixels of the bottom before resizing, using the current DOM scroll extent
+rather than delayed virtualizer measurements. Historical context jumps retain their
+existing no-follow guard. Pins retain their existing indicators.
+
+| Platform/check | Coverage for this pass |
+| --- | --- |
+| Web | `npm run check` and all 470 tests passed. Chromium's 3,000-message history, thread and Pins regressions passed desktop/narrow scrolling, hidden-indicator style checks, composer growth, retained focus, reader/prepend anchors, PageUp/End, Pins return frames/context navigation and own sends. Inspected latest/history/thread captures at 1280×800, 1440×900 and 390×844; these use explicit test fixtures, not production data. Newest-content checks measure the visible text, not the virtualizer's estimated empty end padding. |
+| Rust desktop | Linux: 286 tests passed, nine opt-in tests ignored; format, application Clippy and build passed. Inspected a 2× static channel/thread fixture. No Windows execution or live gateway/voice validation. Root workspace tests, format and Clippy also passed. |
+| Apple/Android | Apple indicator changes are source-only here; no Apple toolchain or native device run in this Linux orb. Android is unchanged. Native follow policies are unchanged, including the reader-aware follow limitations noted above. Physical phones, software-keyboard transitions, touch scrolling and Safari acceptance remain required. |
+
+No infrastructure, secrets/configuration, database migration, API or gateway rollout
+is needed. Deploy the web image and release Apple/Rust desktop clients independently;
+no Android release is needed for this change. Before distribution, verify native
+scrolling and incoming messages on each changed platform. Roll back the web to its
+previous image; native rollback requires a corrected higher-build release.
+
 ### Fixed app icons and rotating site characters
 
 Clickable app identities (Dock, launcher, taskbar/window, installed shortcuts and
@@ -4731,6 +4783,11 @@ account's message, and from a request. Clients confirm first. A block:
   their sends in an existing DM fail with the same refusal a privacy setting gives,
   so they can't tell which it was. You see "You blocked @name" with **Unblock**
   instead of the composer.
+- stops every other interaction in that DM too: reactions, pins, edits and typing
+  get the same 403 refusal (`dm_not_accepted` for the blocked person, `dm_blocked`
+  for you), and none of them accepts a pending request. Every client shows the
+  refusal on the message and keeps the conversation open, treats a refused send as
+  final (Edit or Dismiss), and hides reactions, pins and edits in a DM you blocked.
 - declines any pending request from them.
 - hides their messages wherever you share a conversation. Each run of consecutive
   messages becomes one row, "⊘ N blocked messages — Show", in channels, threads and
@@ -4970,8 +5027,10 @@ their existing Pins/member controls.
 Swiping right opens the existing space/channel browser; swiping left returns to
 the selected conversation without selecting a different channel. Web keeps the
 chat mounted, Apple keeps the draft in its chat model, and Android saves the
-conversation state while Browse replaces it. Gestures require at least 64
-CSS pixels/native points of mostly horizontal travel and reject vertical drags.
+conversation state while Browse replaces it. Gestures originally required at
+least 64 CSS pixels/native points of mostly horizontal travel and reject vertical
+drags; see [Sliding Browse on phones](#sliding-browse-on-phones-october-8-2026)
+for the current finger-tracked behavior.
 
 | Platform | Intentional behavior and validation boundary |
 | --- | --- |
@@ -5084,6 +5143,72 @@ presents Pins as a sheet over the mounted conversation and is unchanged.
 | Rust desktop | 276 tests pass, 9 existing tests ignored, including rendered scroll-anchor/paging preservation across empty Pins. No macOS/Windows or physical-device acceptance. |
 | Android | Scroll state is hoisted above Pins navigation. Gradle compile attempt is blocked by the missing Android SDK; no native build or device verification. |
 | Deployment | Web, Android and Rust desktop can release independently. No API/gateway, infrastructure, secret/configuration, database or Apple release is required. Docker daemon unavailable; web build stages validated directly. No deployment performed. |
+
+### Sliding Browse on phones (October 8, 2026)
+
+On narrow layouts, Browse works like Discord's mobile drawer instead of the two
+views swapping in place:
+
+- **Still Browse:** Browse (spaces, channels and DMs) stays still underneath.
+  The conversation slides over it, following the finger during a swipe.
+- **Resting edge:** with Browse shown, the conversation's left edge stays in
+  view on the right, about 20% of the width (56–96 CSS px/dp/pt). Browse's
+  channel list is laid out beside it.
+- **Account bar:** keeps the full width at the bottom, and the edge view stops
+  above it. During the slide, the conversation's bottom edge lifts off the bar.
+- **Edge view:** inert. Tapping it, or dragging it left, returns to the
+  conversation.
+- **Release:** past halfway, or a flick of at least 300 CSS px/points per second
+  after 40 of travel, completes the move; anything else springs back. A flick
+  back toward the start cancels.
+- **Buttons:** Back to Browse, Close navigation, and choosing a channel or DM
+  animate the same slide.
+- **Swipe starts:** unchanged from the October 6 rules above, plus the edge
+  view. Swipes never select a channel. Drafts and history are kept.
+
+| Platform | Behavior and validation boundary |
+| --- | --- |
+| Web ≤760px | Same-document View Transitions snapshot the room. The conversation's snapshot is moved (and its bottom clipped) by the drag, then settled with WAAPI. The rest of the page stays live. Browse's live layout keeps the conversation laid out at the edge: inert, at its usual offset, and clipped above the bar. That keeps its scroll position, which previously reset to the latest message on every Browse. Without View Transitions, or with `prefers-reduced-motion`, Browse switches at once, keeping the edge view and the original 64px/600ms quick-swipe rule. `npm run check` passes, and `npm test` passes 471 tests on Node 24. `scripts/test-desktop-navigation.mjs` passes against disposable mocks in Chromium touch emulation, with timestamped touches. It covers mid-drag tracking, slow snap-back, halfway and fling commits both ways, the resting edge (position, inert, Browse not covered), tap and drag back from the edge, cancel/vertical/wrong-direction/multi-touch guards, reduced motion, Back/Close, overlays, drafts and history reads. The test's stale members-default and Pins-header expectations (#363/#366) were updated. 320px and 390px captures (resting edge, mid-swipe, button slide) were inspected. Not Safari, Firefox or physical-device acceptance. |
+| Android narrow | Compose `Animatable` with a critically damped spring that carries the release velocity. The conversation stays composed. Its layer is translated and clipped above the account bar; the clip also limits touches, so the bar's controls stay reachable. The finger is tracked on the unmoving container. Follows the system animator duration scale. `./gradlew :app:compileDebugKotlin` and `:app:lintDebug` pass (Android SDK 36). No emulator or device run: there is no KVM in this environment. |
+| Apple narrow | SwiftUI offset and clip shape inside a scoped transaction: no animation while dragged, then an interpolating spring carrying the release velocity. Model-driven changes use the default spring, and Reduce Motion switches without animation. Only a small modifier reads the drag, so the chat itself doesn't re-render per frame. The conversation stays in the hierarchy. Beside Browse it is not hit-testable or exposed to accessibility, and a "Back to conversation" target covers its edge. Switching dismisses the keyboard. Timeline and channel-list edge-start rules (24pt) are unchanged. Swift/Xcode are unavailable in this Linux environment, so this is not compiled, UI-tested or device-checked. The existing iOS UI test's swipe/Back expectations are expected to hold. |
+| Rust desktop narrow | No touch gestures. Toggling Browse slides the conversation over a still Browse to the same resting edge (0.3s cubic ease-out). The account bar moves to a full-width bottom bar in narrow Browse, and the conversation's rect stops above it (egui panels set their own clip). Clicking the edge returns. Fmt, application-package Clippy (`--no-deps`) and the debug build pass, and 288 tests pass (9 existing ignored). 60 fps Xvfb recordings of the `parity-narrow` fixture were inspected frame by frame. Not macOS or Windows acceptance. |
+| Containers/services | No API, gateway, infrastructure, secret/configuration or database change. No deployment performed. |
+
+#### Deployment order
+
+1. No infrastructure, secret/configuration, database migration, API, gateway or
+   Valkey change is necessary. Web, Android, Apple and Rust desktop can deploy
+   independently. Wait for the merged revision's immutable web image and native
+   build checks, and set `MERGED_SHA` to that full merged commit SHA. Merging
+   does not deploy services or release apps.
+2. Deploy web through the existing operator workflow from an authenticated
+   checkout with the production Kubernetes context:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # Wait for this SHA's deployment workflow to succeed, then:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+
+3. Build Android, Apple and Rust desktop through their existing native
+   workflows after native checks pass: `bash apps/native/android/build.sh`,
+   `bash apps/native/apple/build.sh ios`, `bash apps/native/apple/build.sh macos`
+   and `bash apps/native/desktop/build.sh`. Build output is not a store release.
+4. On a real iPhone, an Android phone and mobile Safari/Chrome, verify:
+   - slow drags snapping back, half-way drags, and flicks in both directions;
+   - tapping and dragging the conversation's edge beside Browse;
+   - the account bar's controls beside that edge;
+   - catching a slide mid-animation;
+   - vertical scrolling while horizontally still;
+   - Back to Browse and Close navigation;
+   - choosing a channel and a DM;
+   - draft and scroll retention, and keyboard dismissal;
+   - Reduce Motion or Remove animations;
+   - member overlay and audio slider drags.
+
+   Roll back web by deploying the previous known-good web image SHA with the
+   command above. For native clients, stop distribution and ship a corrected
+   higher-build-number build. No data rollback is required.
 
 ### Cross-client parity pass (October 8, 2026)
 

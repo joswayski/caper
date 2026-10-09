@@ -1,4 +1,13 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import {
   Ban,
   BellOff,
@@ -36,6 +45,7 @@ import {
 } from "./notifications";
 import Tooltip from "../components/Tooltip";
 import { createSpaceNavigation, type PreparedSpace } from "./navigation";
+import { transitionBrowse, useBrowseLayout } from "./browseTransition";
 import {
   acceptChannelInvitation,
   acceptDirectRequest,
@@ -92,6 +102,8 @@ function errorMessage(error: unknown) {
   }
   return error instanceof Error ? error.message : "That request did not work.";
 }
+
+const INACCESSIBLE_DIRECT = "This conversation is not accessible.";
 
 function selectedFromUrl() {
   if (typeof window === "undefined") return {};
@@ -1453,6 +1465,11 @@ export default function Spaces({
       ? { space: { id: "", name: "Direct messages", ownerId: "" }, channels: [], members: [] }
       : undefined);
   const navigation = useRef(createSpaceNavigation());
+  // The rendered detail, for the poll below whose effect tracks only the space id.
+  const shownDetail = useRef(detail);
+  useEffect(() => {
+    shownDetail.current = detail;
+  });
   const [selected, setSelected] = useState<{ spaceId?: string; channelId?: string; dmId?: string }>(() =>
     embedded ? {} : selectedFromUrl(),
   );
@@ -1473,7 +1490,21 @@ export default function Spaces({
   const invitation = invitations.find((item) => item.id === selected.spaceId);
   const [dialog, setDialog] = useState<"space" | "channel" | "manage-space" | "leave-space" | "direct">();
   const [manageChannel, setManageChannel] = useState<Channel>();
-  const [navigationOpen, setNavigationOpen] = useState(false);
+  const [navigationOpen, showNavigation] = useState(false);
+  // Where Browse is headed: it changes inside a slide's view transition, after the request.
+  const navigationTarget = useRef(false);
+  const changeNavigation = useCallback((open: boolean) => {
+    navigationTarget.current = open;
+    showNavigation(open);
+  }, []);
+  const setNavigationOpen = useCallback((next: boolean | ((open: boolean) => boolean)) => {
+    const open = typeof next === "function" ? next(navigationTarget.current) : next;
+    if (open === navigationTarget.current) return;
+    navigationTarget.current = open;
+    transitionBrowse(open, () => showNavigation(open));
+  }, []);
+  const emptyRoomRef = useRef<HTMLElement>(null);
+  useBrowseLayout(emptyRoomRef, navigationOpen);
   const spaceMenu = useRef<HTMLDetailsElement>(null);
   const channelMenu = useRef<HTMLDetailsElement>(null);
   const channelNavigationRef = useRef<HTMLElement>(null);
@@ -1596,9 +1627,11 @@ export default function Spaces({
     const conversation = directs.find((item) => item.id === selected.dmId);
     if (!conversation) {
       setDirectView(undefined);
-      setDirectError("This conversation is not accessible.");
+      setDirectError(INACCESSIBLE_DIRECT);
       return;
     }
+    // A deep link checks before the list loads; drop that error once it arrives.
+    setDirectError((current) => (current === INACCESSIBLE_DIRECT ? undefined : current));
     // ChatClient owns the history read, its cancellation, and explicit retries.
     // Mounting it while also fetching here issued two reads for every DM open.
     setDirectView({ conversation });
@@ -1771,7 +1804,14 @@ export default function Spaces({
           choose(result.spaces[0]?.id, undefined, true, selected.dmId);
         if (!selected.dmId && detail?.space.id && available.has(detail.space.id) && !membershipSubmitting.current) {
           const next = await getSpace(detail.space.id);
-          if (current && revision === membershipRevision.current && activeSpace.current === next.space.id)
+          // Replacing forgets every visited channel's saved history in the
+          // space, so an unchanged poll result must not cost a refetch later.
+          if (
+            current &&
+            revision === membershipRevision.current &&
+            activeSpace.current === next.space.id &&
+            JSON.stringify(next) !== JSON.stringify(shownDetail.current)
+          )
             replaceDetail(next);
         }
       } catch {
@@ -2628,7 +2668,10 @@ export default function Spaces({
           <header className="call-header">
             <Wordmark />
           </header>
-          <section className={`call-room spaces-room empty-channel-room${navigationOpen ? " navigation-open" : ""}`}>
+          <section
+            ref={emptyRoomRef}
+            className={`call-room spaces-room empty-channel-room${navigationOpen ? " navigation-open" : ""}`}
+          >
             {rail}
             <ChannelSidebar>
               <div className="sidebar-channels">{channelNavigation(() => null)}</div>
@@ -2675,6 +2718,14 @@ export default function Spaces({
                 New direct message
               </button>
             </div>
+            {navigationOpen && (
+              <button
+                type="button"
+                className="browse-peek"
+                aria-label="Back to conversation"
+                onClick={() => setNavigationOpen(false)}
+              />
+            )}
           </section>
         </main>
         {dialog === "space" && (
@@ -2830,6 +2881,7 @@ export default function Spaces({
         }
         navigationOpen={navigationOpen}
         onNavigationToggle={() => setNavigationOpen((open) => !open)}
+        onNavigationChange={changeNavigation}
       />
       {dialog === "space" && (
         <CreateSpaceDialog

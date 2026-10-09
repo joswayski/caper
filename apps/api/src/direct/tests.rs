@@ -7,7 +7,6 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use sha2::{Digest, Sha256};
 use std::{future::IntoFuture, sync::Arc, time::Duration};
-use tokio::sync::Notify;
 use tokio_tungstenite::{
     connect_async,
     tungstenite::{Message, client::IntoClientRequest},
@@ -63,11 +62,10 @@ async fn two_person_privacy_durability_read_cursors_and_gateway_replay(pool: PgP
             .bind(random_id(12)).bind(Sha256::digest(format!("chat-{name}").as_bytes()).to_vec()).bind(user).bind(account).bind(name).execute(&pool).await.unwrap();
         users.push(user);
     }
-    let chat = chat::Chat {
-        pool: pool.clone(),
-        broker: redis::Client::open(std::env::var("CHAT_TEST_VALKEY_URL").unwrap()).unwrap(),
-        wake: Arc::new(Notify::new()),
-    };
+    let chat = chat::Chat::new(
+        pool.clone(),
+        redis::Client::open(std::env::var("CHAT_TEST_VALKEY_URL").unwrap()).unwrap(),
+    );
     let mut config = Config::test(false);
     config.auth_fixture = false;
     let mut state =
@@ -476,11 +474,10 @@ async fn message_requests_blocks_and_privacy(pool: PgPool) {
     config.auth_fixture = false;
     let mut state =
         AppState::with_database(config, Arc::new(Cloudflare::new()), Some(pool.clone()));
-    state.chat = Some(chat::Chat {
-        pool: pool.clone(),
-        broker: redis::Client::open(std::env::var("CHAT_TEST_VALKEY_URL").unwrap()).unwrap(),
-        wake: Arc::new(Notify::new()),
-    });
+    state.chat = Some(chat::Chat::new(
+        pool.clone(),
+        redis::Client::open(std::env::var("CHAT_TEST_VALKEY_URL").unwrap()).unwrap(),
+    ));
     let app = crate::app(state);
     let open = |from: &'static str, to: &'static str| {
         let app = app.clone();
@@ -934,4 +931,169 @@ async fn message_requests_blocks_and_privacy(pool: PgPool) {
     .await;
     assert_eq!(open("eve", "dave").await.1["code"], "dm_not_accepted");
     assert_eq!(open("dave", "eve").await.1["code"], "dm_blocked");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
+async fn blocks_stop_reactions_pins_edits_and_typing_in_dms(pool: PgPool) {
+    let mut ids = std::collections::HashMap::new();
+    let mut users = Vec::new();
+    for name in ["alice", "bob"] {
+        let external = random_id(12);
+        let user: i64 = sqlx::query_scalar(
+            "INSERT INTO users (external_id,username,display_name) VALUES ($1,$2,$2) RETURNING id",
+        )
+        .bind(&external)
+        .bind(name)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let account = Sha256::digest(name.as_bytes()).to_vec();
+        sqlx::query("INSERT INTO account_sessions (token_hash,user_id,expires_at) VALUES ($1,$2,now()+interval '1 day')")
+            .bind(&account).bind(user).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO chat_sessions (external_id,token_hash,user_id,account_session_hash,name) VALUES ($1,$2,$3,$4,$5)")
+            .bind(random_id(12)).bind(Sha256::digest(format!("chat-{name}").as_bytes()).to_vec()).bind(user).bind(account).bind(name).execute(&pool).await.unwrap();
+        ids.insert(name, external);
+        users.push(user);
+    }
+    // Sharing a space makes the DM accepted, so only the block matters.
+    let space: i64 = sqlx::query_scalar(
+        "INSERT INTO spaces (external_id,name,owner_id) VALUES ('blocks','Blocks',$1) RETURNING id",
+    )
+    .bind(users[0])
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    for user in &users {
+        sqlx::query("INSERT INTO space_members (space_id,user_id) VALUES ($1,$2)")
+            .bind(space)
+            .bind(user)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let mut config = Config::test(false);
+    config.auth_fixture = false;
+    let mut state =
+        AppState::with_database(config, Arc::new(Cloudflare::new()), Some(pool.clone()));
+    state.chat = Some(chat::Chat::new(
+        pool.clone(),
+        redis::Client::open(std::env::var("CHAT_TEST_VALKEY_URL").unwrap()).unwrap(),
+    ));
+    let app = crate::app(state);
+    let (status, dm) = request(
+        &app,
+        "POST",
+        "/api/dms",
+        Some("alice"),
+        None,
+        json!({"username":"bob"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{dm}");
+    let dm = dm["id"].as_str().unwrap().to_owned();
+    let (status, sent) = request(
+        &app,
+        "POST",
+        &format!("/api/chat/channels/{dm}/messages"),
+        None,
+        Some("chat-alice"),
+        json!({"clientMessageId":Uuid::new_v4(),"text":"hello"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{sent}");
+    let message = sent["id"].as_str().unwrap().to_owned();
+    let interact = |who: &'static str, action: &'static str| {
+        let app = app.clone();
+        let (dm, message) = (dm.clone(), message.clone());
+        async move {
+            let (method, path, body) = match action {
+                "react" => (
+                    "PUT",
+                    format!("/api/chat/channels/{dm}/messages/{message}/reactions"),
+                    json!({"emoji":"👍","active":true}),
+                ),
+                "unreact" => (
+                    "PUT",
+                    format!("/api/chat/channels/{dm}/messages/{message}/reactions"),
+                    json!({"emoji":"👍","active":false}),
+                ),
+                "pin" => (
+                    "PUT",
+                    format!("/api/chat/channels/{dm}/messages/{message}/pin"),
+                    json!({"active":true}),
+                ),
+                "edit" => (
+                    "PUT",
+                    format!("/api/chat/channels/{dm}/messages/{message}"),
+                    json!({"text":"edited","expectedRevision":1}),
+                ),
+                _ => (
+                    "POST",
+                    format!("/api/chat/channels/{dm}/typing"),
+                    json!({"typing":true}),
+                ),
+            };
+            let (status, body) = request(
+                &app,
+                method,
+                &path,
+                None,
+                Some(&format!("chat-{who}")),
+                body,
+            )
+            .await;
+            (status, body["code"].as_str().map(str::to_owned))
+        }
+    };
+    assert_eq!(interact("bob", "react").await.0, StatusCode::OK);
+    assert_eq!(interact("bob", "unreact").await.0, StatusCode::OK);
+
+    let block = |method: &'static str| {
+        let app = app.clone();
+        let alice = ids["alice"].clone();
+        async move {
+            request(
+                &app,
+                method,
+                &format!("/api/blocks/{alice}"),
+                Some("bob"),
+                None,
+                Value::Null,
+            )
+            .await
+            .0
+        }
+    };
+    assert_eq!(block("PUT").await, StatusCode::NO_CONTENT);
+    // Neither side can interact while the block stands, in any form.
+    for action in ["react", "pin", "edit", "typing"] {
+        assert_eq!(
+            interact("alice", action).await,
+            (StatusCode::FORBIDDEN, Some("dm_not_accepted".to_owned())),
+            "blocked person: {action}"
+        );
+    }
+    for action in ["react", "pin", "typing"] {
+        assert_eq!(
+            interact("bob", action).await,
+            (StatusCode::FORBIDDEN, Some("dm_blocked".to_owned())),
+            "blocker: {action}"
+        );
+    }
+    let reactions: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM message_reactions WHERE deleted_at IS NULL")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(reactions, 0);
+
+    assert_eq!(block("DELETE").await, StatusCode::NO_CONTENT);
+    for action in ["react", "pin", "edit"] {
+        assert_eq!(
+            interact("alice", action).await.0,
+            StatusCode::OK,
+            "after unblocking: {action}"
+        );
+    }
 }
