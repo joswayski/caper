@@ -82,7 +82,7 @@ class ReactionUiTest {
         compose.onNodeWithText("No emoji found.").assertIsDisplayed()
         capture("reaction-empty-test-fixture.png", compose.onNode(isDialog()))
         compose.onNode(hasSetTextAction()).performTextReplacement("rocket")
-        compose.onNodeWithContentDescription("rockets").performClick()
+        compose.onNodeWithContentDescription("rocket").performClick()
         compose.runOnIdle { assertEquals(Triple(message.id, "🚀", true), submitted) }
         compose.onNodeWithText("Search emoji").assertDoesNotExist()
         compose.runOnIdle { state.value = state.value.copy(reactionSaves = mapOf("${message.id}:🚀" to ReactionSaveUi("🚀", true))) }
