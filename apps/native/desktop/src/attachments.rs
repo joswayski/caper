@@ -285,6 +285,19 @@ impl Media {
         }
     }
 
+    /// Refresh one attachment's URLs as soon as possible (a viewer load failed).
+    pub fn refresh_now(&mut self, id: &str) {
+        if !self.retried.contains(id) {
+            self.retried.insert(id.to_owned());
+            self.refresher.force(id);
+        }
+    }
+
+    /// The client media loads use, for loads outside this cache.
+    pub fn api(&self) -> Option<&crate::api::Api> {
+        self.api.as_ref()
+    }
+
     pub fn take_refresh(&mut self, now: Instant) -> Vec<String> {
         self.refresher.take(now)
     }

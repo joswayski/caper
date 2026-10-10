@@ -273,6 +273,8 @@ targets:
         # crypto: declare exempt so each TestFlight build skips the compliance prompt.
         ITSAppUsesNonExemptEncryption: false
         NSMicrophoneUsageDescription: Caper uses your microphone when you join a voice channel.
+        # The media viewer's share sheet can save photos and videos to the library.
+        NSPhotoLibraryAddUsageDescription: Caper saves photos and videos you choose to your library.
         CaperAPNsEnvironment: $(CAPER_APNS_ENVIRONMENT)
         NSUserActivityTypes: [INSendMessageIntent]
         UIAppFonts: [Satoshi-Regular.otf, Satoshi-Medium.otf, Satoshi-Bold.otf, Satoshi-Black.otf]
@@ -351,6 +353,7 @@ targets:
       - Tests/CaperCoreTests/MessageLinksTests.swift
       - Tests/CaperCoreTests/MessageGroupingTests.swift
       - Tests/CaperCoreTests/CodeResendTests.swift
+      - Tests/CaperCoreTests/MediaViewerTests.swift
     dependencies:
       - target: CaperCoreIOS
       - target: CaperRTCBridgeIOS

@@ -591,6 +591,8 @@ private struct WorkspaceView: View {
             }
         }
         .modifier(LoginPresentation(sheet: $sheet, model: model))
+        // Timeline, thread and (on the Mac) pinned attachments open here, over the whole window.
+        .modifier(MediaViewerHost())
         .onChange(of: sheet?.id) { _, _ in modalDismissDisabled = false }
         .task(id: model.detail?.space.id) {
             guard sheet == nil, model.detail != nil else { return }
@@ -2538,6 +2540,10 @@ private struct NativeThreadView: View {
             .onChange(of: reactionMessage?.id) { _, _ in showingEmojiPicker = false }
             .onChange(of: chat.editingContext) { _, _ in reactionMessage = nil; reactorsTarget = nil; forwardMessage = nil }
             .modifier(BlockConfirmation(target: $blockTarget) { await chat.block($0) })
+            #if os(iOS)
+            // The thread is a cover on iPhone, which only it can present over.
+            .modifier(MediaViewerHost())
+            #endif
             .accessibilityIdentifier("message-thread")
     }
 }
@@ -3653,6 +3659,9 @@ private struct PinnedMessagesView: View {
     @State private var reactorsTarget: ReactorsTarget?
     @State private var mentionCard: MentionCardTarget?
     @State private var mentionPointer = MentionPointer()
+    #if os(macOS)
+    @Environment(\.mediaViewer) private var mediaViewer
+    #endif
     private var viewerID: String? { chat.currentAuthor?.id ?? model.account?.id }
     private var mentionCards: MentionCardContext {
         MentionCardContext(pointer: mentionPointer, name: { model.mentionPerson($0, viewerID: viewerID).title }, open: { pill in
@@ -3726,6 +3735,12 @@ private struct PinnedMessagesView: View {
             .popover(item: $actionTarget) { message in ReactionPicker { emoji in actionTarget = nil; Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) } } }
             #endif
             .onChange(of: chat.editingContext) { _, _ in actionTarget = nil; reactorsTarget = nil; close() }
+            #if os(iOS)
+            .modifier(MediaViewerHost())
+            #else
+            // The popover closes so the window's viewer fills the window.
+            .environment(\.mediaViewer, mediaViewer.map { show in MediaViewerAction { close(); show($0) } })
+            #endif
             .accessibilityIdentifier("pinned-messages")
     }
 }

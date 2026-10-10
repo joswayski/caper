@@ -632,6 +632,8 @@ pub enum UploadUpdate {
     },
     /// The sender's own decoded copy, when the format decodes here.
     Thumbnail(egui::ColorImage),
+    /// Video compression before upload, 0–1.
+    Compressing(f32),
     Progress(f32),
     Finished(Result<crate::model::Attachment, crate::uploads::UploadError>),
 }
@@ -1040,15 +1042,28 @@ fn upload_file(
     context: &egui::Context,
 ) {
     let update = |update| send(events, context, Event::Upload { key, update });
-    let mut prepared = match crate::uploads::prepare_path(path, settings) {
-        Ok(prepared) => prepared,
-        Err(message) => {
-            update(UploadUpdate::Finished(Err(
-                crate::uploads::UploadError::new(message),
-            )));
-            return;
+    // Whole-percent steps, like upload progress below.
+    let compressed = std::sync::Mutex::new(-1_i32);
+    let compressing = |fraction: f32| {
+        let percent = (fraction.clamp(0.0, 1.0) * 100.0) as i32;
+        let mut last = compressed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if percent > *last {
+            *last = percent;
+            update(UploadUpdate::Compressing(fraction));
         }
     };
+    let mut prepared =
+        match crate::uploads::prepare_path_with(path, settings, &compressing, &cancel) {
+            Ok(prepared) => prepared,
+            Err(message) => {
+                update(UploadUpdate::Finished(Err(
+                    crate::uploads::UploadError::new(message),
+                )));
+                return;
+            }
+        };
     update(UploadUpdate::Prepared {
         name: prepared.name.clone(),
         kind: prepared.kind,

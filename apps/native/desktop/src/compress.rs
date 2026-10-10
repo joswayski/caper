@@ -264,6 +264,7 @@ pub fn renamed(name: &str, content_type: &str) -> String {
         "image/webp" => "webp",
         "image/avif" => "avif",
         "image/jpeg" => "jpg",
+        "video/mp4" => "mp4",
         _ => return name.into(),
     };
     let stem = match name.rfind('.') {
@@ -563,6 +564,14 @@ pub fn prepare_image(
 
 // Adapted from joswayski/captures `crates/captures-image/src/encoding.rs`
 // (Apache-2.0, same author): full-resolution chroma and ImageMagick tables.
+/// A video poster's preview: the same JPEG as still previews, within the
+/// preview byte limit.
+pub fn encode_preview_jpeg(poster: &RgbImage) -> Option<Vec<u8>> {
+    encode_jpeg(poster, PREVIEW_QUALITY, None)
+        .ok()
+        .filter(|bytes| bytes.len() <= PREVIEW_MAX_BYTES)
+}
+
 pub fn encode_jpeg(image: &RgbImage, quality: u8, icc: Option<&[u8]>) -> Result<Vec<u8>, String> {
     let width =
         u16::try_from(image.width()).map_err(|_| "JPEG width is too large to encode".to_owned())?;
@@ -1027,7 +1036,8 @@ mod tests {
         assert_eq!(renamed("diagram", "image/png"), "diagram.png");
         assert_eq!(renamed(".hidden", "image/jpeg"), ".hidden.jpg");
         assert_eq!(renamed("IMG_1.JPG", "image/avif"), "IMG_1.avif");
-        assert_eq!(renamed("clip.mov", "video/mp4"), "clip.mov");
+        assert_eq!(renamed("clip.mov", "video/mp4"), "clip.mp4");
+        assert_eq!(renamed("clip.mov", "video/quicktime"), "clip.mov");
         assert_eq!(fit_within(8000, 4000, 4096), (4096, 2048));
         assert_eq!(fit_within(300, 200, 640), (300, 200));
         assert_eq!(fit_within(300, 200, 0), (300, 200));

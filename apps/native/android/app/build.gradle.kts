@@ -144,6 +144,9 @@ dependencies {
     // video to H.264/AAC (with HDR tone mapping) before upload.
     implementation("io.coil-kt.coil3:coil-compose:3.3.0")
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.3.0")
+    // GIFs upload unchanged; the media viewer plays them (and animated WebP)
+    // with Coil's own decoders, the platform ImageDecoder from API 28.
+    implementation("io.coil-kt.coil3:coil-gif:3.3.0")
     implementation("androidx.media3:media3-exoplayer:1.8.0")
     implementation("androidx.media3:media3-ui:1.8.0")
     implementation("androidx.media3:media3-transformer:1.8.0")

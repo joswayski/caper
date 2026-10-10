@@ -44,6 +44,10 @@ const env = {
       body: new TextEncoder().encode("<html>"),
       headers: { "content-type": "text/html", "content-disposition": 'attachment; filename="page.html"' },
     },
+    "original/pdf": {
+      body: new TextEncoder().encode("%PDF-1.7"),
+      headers: { "content-type": "application/pdf", "content-disposition": 'attachment; filename="notes.pdf"' },
+    },
   }),
 };
 
@@ -72,6 +76,14 @@ test("other types download as opaque bytes with their name", async () => {
   const response = await worker.fetch(new Request(await signed("original/doc")), env);
   assert.equal(response.headers.get("content-type"), "application/octet-stream");
   assert.equal(response.headers.get("content-disposition"), 'attachment; filename="page.html"');
+});
+
+test("PDFs open in a browser tab with their name and without a page sandbox", async () => {
+  const response = await worker.fetch(new Request(await signed("original/pdf")), env);
+  assert.equal(response.headers.get("content-type"), "application/pdf");
+  assert.equal(response.headers.get("content-disposition"), 'inline; filename="notes.pdf"');
+  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(response.headers.get("content-security-policy"), null);
 });
 
 test("ranges return partial content for video seeking", async () => {

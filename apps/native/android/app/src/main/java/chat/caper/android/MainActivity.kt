@@ -2283,7 +2283,10 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                     )
                 }
             }
-            MessageAttachments(attachments, pending, onAttachmentFailed, attachmentProgress, localAttachmentPreviews)
+            MessageAttachments(
+                attachments, pending, onAttachmentFailed, attachmentProgress, localAttachmentPreviews,
+                caption = listOf(author, timeLabel(createdAt)).filter { it.isNotEmpty() }.joinToString(" · "),
+            )
         }
     }
 }

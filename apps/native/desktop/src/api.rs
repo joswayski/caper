@@ -760,6 +760,23 @@ impl Api {
     /// reqwest is built without decompression features, so it
     /// sends no `Accept-Encoding` and the CDN never answers with gzip; other
     /// files open in the system browser, which decodes gzip itself.
+    /// Stream a media URL into `path` (the viewer's Save; videos can be large).
+    pub fn download_media(&self, url: &str, path: &std::path::Path) -> Result<(), Option<u16>> {
+        let url = media_url(url).ok_or(None)?;
+        let mut response = self.media.get(url).send().map_err(|_| None)?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(Some(status.as_u16()));
+        }
+        let mut file = std::fs::File::create(path).map_err(|_| None)?;
+        if std::io::copy(&mut response, &mut file).is_err() {
+            drop(file);
+            let _ = std::fs::remove_file(path);
+            return Err(None);
+        }
+        Ok(())
+    }
+
     pub fn fetch_media(&self, url: &str) -> Result<Vec<u8>, Option<u16>> {
         const MAX_MEDIA_BYTES: u64 = 40 * 1024 * 1024;
         let url = media_url(url).ok_or(None)?;
@@ -1020,7 +1037,7 @@ impl Api {
 
 /// Storage and CDN addresses must be HTTPS, or plain HTTP on loopback for
 /// local development servers.
-fn media_url(url: &str) -> Option<Url> {
+pub(crate) fn media_url(url: &str) -> Option<Url> {
     let url = Url::parse(url).ok()?;
     let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
     (url.username().is_empty()

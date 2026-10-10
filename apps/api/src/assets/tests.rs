@@ -147,6 +147,10 @@ fn sniffing_rejects_mislabelled_inline_media() {
     assert!(sniff("video/webm", b"\x1a\x45\xdf\xa3\x01"));
     assert!(sniff("audio/mpeg", b"ID3\x04"));
     assert!(!sniff("image/gif", b"<html>"));
+    assert!(sniff("application/pdf", b"%PDF-1.7\n"));
+    assert!(!sniff("application/pdf", b"<html><script>"));
+    assert!(opens_in_browser("application/pdf") && opens_in_browser("image/png"));
+    assert!(!opens_in_browser("text/html") && !opens_in_browser("image/svg+xml"));
     assert_eq!(kind("image/svg+xml"), "file");
     assert_eq!(kind("text/html"), "file");
     assert_eq!(kind("image/heic"), "file");

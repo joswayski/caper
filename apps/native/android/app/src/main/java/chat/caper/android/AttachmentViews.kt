@@ -51,6 +51,7 @@ import coil3.memory.MemoryCache
 import coil3.network.HttpException
 import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import coil3.request.ImageRequest
+import coil3.serviceLoaderEnabled
 import okhttp3.OkHttpClient
 import okio.Path.Companion.toOkioPath
 
@@ -58,6 +59,8 @@ import okio.Path.Companion.toOkioPath
  * One image loader for attachments. Caches are keyed by attachment ID, so re-signed URLs reuse
  * them. OkHttp adds `Accept-Encoding: gzip` itself, so a gzip-encoded response is decoded
  * transparently. Below API 31 the platform cannot decode AVIF, so a bundled decoder handles it.
+ * Only the media viewer animates GIFs (per request), so `coil-gif`'s ServiceLoader registration
+ * is off and timeline images stay still.
  */
 internal object AttachmentImages {
     @Volatile private var loader: ImageLoader? = null
@@ -65,6 +68,7 @@ internal object AttachmentImages {
     fun loader(context: Context): ImageLoader = loader ?: synchronized(this) {
         loader ?: context.applicationContext.let { app ->
             ImageLoader.Builder(app)
+                .serviceLoaderEnabled(false)
                 .components {
                     // Delivery URLs are already signed; never follow redirects or attach credentials.
                     add(OkHttpNetworkFetcherFactory(callFactory = { OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).build() }))
@@ -81,7 +85,7 @@ internal object AttachmentImages {
         ImageRequest.Builder(context).data(data).memoryCacheKey(key).diskCacheKey(key).build()
 }
 
-private fun Throwable.httpStatus(): Int? = (this as? HttpException)?.response?.code
+internal fun Throwable.httpStatus(): Int? = (this as? HttpException)?.response?.code
 
 /** Reserved display size before the image loads (web `frame`: at most 360 × 300). */
 internal fun attachmentFrame(width: Int?, height: Int?, maxWidth: Int = 360, maxHeight: Int = 300): Pair<Int, Int>? {
@@ -98,7 +102,9 @@ internal fun durationLabel(durationMs: Long?): String? {
 /**
  * Files under a message, shown by processing status. Pending rows show local copies and are not
  * interactive. [progress] is the latest server percent per file; [localPreviews] are this
- * device's own picked images, shown while the server processes them.
+ * device's own picked images, shown while the server processes them. Tapping a ready image or
+ * video opens the media viewer on this message's images and videos; [caption] (sender and time)
+ * shows under the file name there.
  */
 @Composable internal fun MessageAttachments(
     attachments: List<ChatAttachment>,
@@ -106,13 +112,15 @@ internal fun durationLabel(durationMs: Long?): String? {
     onLoadFailed: (ChatAttachment, Int?) -> Unit,
     progress: Map<String, Int> = emptyMap(),
     localPreviews: Map<String, String> = emptyMap(),
+    caption: String? = null,
 ) {
     if (attachments.isEmpty()) return
-    var viewing by remember { mutableStateOf<String?>(null) }
+    var viewer by remember { mutableStateOf<ViewerPages?>(null) }
     var playing by remember { mutableStateOf<String?>(null) }
     val uriHandler = LocalUriHandler.current
     // The system browser downloads or shows the file and handles `Content-Encoding: gzip` itself.
     val open: (String) -> Unit = { url -> runCatching { uriHandler.openUri(url) } }
+    val view: (ChatAttachment) -> (() -> Unit)? = { attachment -> if (pending) null else ({ viewer = viewerPages(attachments, attachment.id) }) }
     Column(Modifier.padding(top = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         attachments.forEach { attachment ->
             val url = attachment.url
@@ -123,15 +131,15 @@ internal fun durationLabel(durationMs: Long?): String? {
                     attachment, attachment.previewUrl ?: localPreviews[attachment.id], progress[attachment.id], onLoadFailed,
                 )
                 url == null -> FileCard(attachment, null)
-                attachment.kind == "image" -> MediaFrame(attachment, if (pending) null else ({ viewing = attachment.id })) {
+                attachment.kind == "image" -> MediaFrame(attachment, view(attachment)) {
                     AttachmentImage(attachment, attachment.previewUrl ?: url, "display", Modifier.fillMaxSize(), ContentScale.Crop, onLoadFailed)
                 }
                 // Stored GIFs and animated images: muted, looping, inline, no controls.
-                attachment.kind == "video" && attachment.animated -> MediaFrame(attachment, null) {
+                attachment.kind == "video" && attachment.animated -> MediaFrame(attachment, view(attachment)) {
                     attachment.previewUrl?.let { AttachmentImage(attachment, it, "display", Modifier.fillMaxSize(), ContentScale.Crop, onLoadFailed) }
                     if (!pending) AnimatedVideo(attachment, url, onLoadFailed)
                 }
-                attachment.kind == "video" -> MediaFrame(attachment, if (pending) null else ({ playing = attachment.id })) {
+                attachment.kind == "video" -> MediaFrame(attachment, view(attachment)) {
                     attachment.previewUrl?.let { AttachmentImage(attachment, it, "display", Modifier.fillMaxSize(), ContentScale.Crop, onLoadFailed) }
                     Surface(Modifier.align(Alignment.Center).size(44.dp), shape = CircleShape, color = Blackout.copy(alpha = 0.72f)) {
                         Icon(painterResource(R.drawable.lucide_play), null, Modifier.padding(12.dp), tint = Text)
@@ -145,9 +153,7 @@ internal fun durationLabel(durationMs: Long?): String? {
             }
         }
     }
-    attachments.firstOrNull { it.id == viewing && it.url != null && it.state == AttachmentState.READY }?.let { attachment ->
-        ImageViewer(attachment, close = { viewing = null }, open = open, onLoadFailed = onLoadFailed)
-    }
+    viewer?.let { MediaViewer(it, attachments, caption, close = { viewer = null }, open = open, onLoadFailed = onLoadFailed) }
     attachments.firstOrNull { it.id == playing && it.url != null && it.state == AttachmentState.READY }?.let { attachment ->
         MediaPlayerDialog(attachment, close = { playing = null }, open = open, onLoadFailed = onLoadFailed)
     }
@@ -171,7 +177,7 @@ internal fun durationLabel(durationMs: Long?): String? {
     }
 }
 
-@Composable private fun Spinner(percent: Int?, modifier: Modifier) {
+@Composable internal fun Spinner(percent: Int?, modifier: Modifier) {
     if (percent != null && percent > 0) CircularProgressIndicator(
         progress = { percent / 100f }, modifier = modifier, color = Terracotta, trackColor = Border, strokeWidth = 3.dp,
     ) else CircularProgressIndicator(modifier = modifier, color = Terracotta, trackColor = Border, strokeWidth = 3.dp)
@@ -229,7 +235,7 @@ internal fun durationLabel(durationMs: Long?): String? {
     )
 }
 
-@Composable private fun AttachmentImage(
+@Composable internal fun AttachmentImage(
     attachment: ChatAttachment, data: String, variant: String, modifier: Modifier, scale: ContentScale,
     onLoadFailed: (ChatAttachment, Int?) -> Unit,
 ) {
@@ -283,24 +289,7 @@ internal fun durationLabel(durationMs: Long?): String? {
     }
 }
 
-/** Full size. If the original cannot be decoded on this device, the WebP preview is shown instead. */
-@Composable private fun ImageViewer(attachment: ChatAttachment, close: () -> Unit, open: (String) -> Unit, onLoadFailed: (ChatAttachment, Int?) -> Unit) {
-    val url = attachment.url ?: return
-    var usePreview by remember(url) { mutableStateOf(false) }
-    val preview = attachment.previewUrl
-    ViewerFrame(attachment.name, close, actions = { TextButton({ open(url) }) { Text("Open", color = Text) } }) {
-        if (usePreview && preview != null) {
-            AttachmentImage(attachment, preview, "display", Modifier.fillMaxSize(), ContentScale.Fit, onLoadFailed)
-        } else {
-            AttachmentImage(attachment, url, "original", Modifier.fillMaxSize(), ContentScale.Fit) { failed, status ->
-                if (status == null && preview != null) usePreview = true
-                onLoadFailed(failed, status)
-            }
-        }
-    }
-}
-
-/** In-app video/audio playback; a failed load asks for fresh URLs once, then offers the browser. */
+/** In-app audio playback; a failed load asks for fresh URLs once, then offers the browser. */
 @OptIn(UnstableApi::class)
 @Composable private fun MediaPlayerDialog(attachment: ChatAttachment, close: () -> Unit, open: (String) -> Unit, onLoadFailed: (ChatAttachment, Int?) -> Unit) {
     val url = attachment.url ?: return

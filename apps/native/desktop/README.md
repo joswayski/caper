@@ -38,10 +38,16 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
 - File attachments, when the server has storage configured (otherwise the
   attach control is hidden). Inline images show the uploaded preview, else
   the PNG/JPEG/WebP/GIF original, decoded off the UI thread and cached by
-  attachment id; clicking opens the full file in the system browser. AVIF
-  and HEIC are never decoded in the app. Videos show their poster with a play
-  button. Audio and other files show cards that open in the system browser
-  or player. Desktop has **no in-app video or audio playback**. Removed files
+  attachment id. Videos show their poster with a play button. Clicking an
+  image or video opens the in-app viewer over the window (`viewer.rs`): the
+  message's images and videos with arrows, Left/Right, an "n / m" counter,
+  zoom (double-click, Ctrl+scroll or pinch) and pan, animated GIF/WebP,
+  Save (file dialog), Open in browser and Esc to close. Full-size AVIF/HEIC
+  decode through the bundled FFmpeg. Videos play in the app (`player.rs`):
+  FFmpeg decodes frames and PCM, rodio plays the sound and keeps time, with
+  play/pause (Space), a seek bar and volume; the signed URL streams through a
+  loopback range proxy (`media_proxy.rs`). Audio and other files show cards
+  that open in the system browser or player (PDFs open in a tab). Removed files
   read "File removed". The parked server-processing fields stay supported
   (absent `status` means ready): processing placeholders with the
   `attachment.progress` percent, "Couldn't process this file", animated
@@ -63,9 +69,14 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   signalled in `nclx`), else lossy WebP at `imageQuality` (libwebp), kept
   only when at least 10% smaller. AVIF falls back to WebP for translucent
   photos, other colour profiles and encoder errors, and WebP to JPEG. A
-  missing `imageFormat` means WebP. HEIC, AVIF, GIF,
-  SVG, audio, documents and videos upload as the original (no transcoder;
-  MP4/QuickTime size and duration come from the header). Originals lose their
+  missing `imageFormat` means WebP. Videos are compressed with the bundled
+  FFmpeg by the same rules as web and phones (H.264/AAC MP4 when the short
+  edge is over `videoMaxHeight`, the codec isn't H.264, the container isn't
+  MP4/QuickTime/WebM or the bitrate is over 1.25× the target; HDR tone
+  mapped to SDR; Windows' hardware-backed Media Foundation encoder first,
+  then x264), with "Compressing… N%" on the chip, a poster preview, and the
+  original kept on any failure. HEIC, AVIF, GIF, SVG, audio and documents
+  upload as the original, as do videos when FFmpeg is missing. Originals lose their
   metadata losslessly: JPEG APPn/comments except JFIF, ICC and Adobe (a
   non-default orientation is kept), PNG text/eXIf chunks, and MP4/QuickTime
   `udta`/`meta` boxes under `moov` and each `trak`, zero-filled as `free`

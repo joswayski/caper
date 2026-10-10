@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { FileText, FileWarning, Play, X } from "lucide-react";
+import { FileText, FileWarning, Maximize2, Play, X } from "lucide-react";
 import { attachmentView, type ChatAttachment } from "./types.ts";
 import { formatBytes } from "./uploads.ts";
 
@@ -98,16 +98,34 @@ function Processing({
   );
 }
 
+/** Opens a video in the viewer; the inline player keeps its own controls. */
+function ExpandButton({ name, onClick }: { name: string; onClick: (anchor: HTMLElement) => void }) {
+  return (
+    <button
+      type="button"
+      className="chat-media-expand"
+      aria-label={`Open ${name} in viewer`}
+      title="Open in viewer"
+      aria-haspopup="dialog"
+      onClick={(event) => onClick(event.currentTarget)}
+    >
+      <Maximize2 size={16} aria-hidden="true" />
+    </button>
+  );
+}
+
 /** GIF-like playback for animated files: muted, looping, no controls. With
  * reduced motion it stays paused until clicked. */
 function AnimatedVideo({
   attachment,
   size,
   onError,
+  onView,
 }: {
   attachment: ChatAttachment;
   size?: { width: number; height: number };
   onError: () => void;
+  onView?: (anchor: HTMLElement) => void;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
   const [paused, setPaused] = useState(true);
@@ -151,6 +169,7 @@ function AnimatedVideo({
           <Play size={18} aria-hidden="true" />
         </button>
       )}
+      {onView && <ExpandButton name={attachment.name} onClick={onView} />}
     </div>
   );
 }
@@ -160,11 +179,14 @@ export function MessageAttachments({
   progress = {},
   localPreviews = {},
   onExpired,
+  onView,
 }: {
   attachments: ChatAttachment[];
   progress?: Record<string, number>;
   localPreviews?: Record<string, LocalPreview>;
   onExpired?: (ids: string[]) => void;
+  /** Opens a sent image or video in the viewer; pending rows leave it unset. */
+  onView?: (attachmentId: string, anchor: HTMLElement) => void;
 }) {
   // Ask for fresh URLs once per attachment if a long-open tab outlives them.
   const reported = useRef(new Set<string>());
@@ -208,6 +230,14 @@ export function MessageAttachments({
               target="_blank"
               rel="noopener noreferrer"
               style={size}
+              aria-haspopup={onView ? "dialog" : undefined}
+              onClick={(event) => {
+                // Modified clicks keep the link's new tab or window.
+                if (!onView || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
+                  return;
+                event.preventDefault();
+                onView(attachment.id, event.currentTarget);
+              }}
             >
               <img
                 src={attachment.previewUrl ?? attachment.url}
@@ -228,22 +258,32 @@ export function MessageAttachments({
               attachment={attachment}
               size={size}
               onError={() => expired(attachment)}
+              onView={onView && ((anchor) => onView(attachment.id, anchor))}
             />
           );
         if (view === "video") {
           return (
-            <video
-              key={attachment.id}
-              className="chat-media"
-              controls
-              playsInline
-              preload="metadata"
-              poster={attachment.previewUrl}
-              src={attachment.url}
-              style={size}
-              aria-label={attachment.name}
-              onError={() => expired(attachment)}
-            />
+            <div key={attachment.id} className="chat-media chat-video" style={size}>
+              <video
+                controls
+                playsInline
+                preload="metadata"
+                poster={attachment.previewUrl}
+                src={attachment.url}
+                aria-label={attachment.name}
+                onError={() => expired(attachment)}
+              />
+              {onView && (
+                <ExpandButton
+                  name={attachment.name}
+                  onClick={(anchor) => {
+                    // The viewer plays its own copy; don't play both.
+                    anchor.parentElement?.querySelector("video")?.pause();
+                    onView(attachment.id, anchor);
+                  }}
+                />
+              )}
+            </div>
           );
         }
         if (view === "audio") {

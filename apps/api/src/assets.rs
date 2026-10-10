@@ -67,8 +67,14 @@ pub(crate) fn kind(content_type: &str) -> &'static str {
     }
 }
 
-/// Signature check of the stored bytes for inline types, so a renamed HTML or
-/// SVG file can never be served as an image.
+/// Types the CDN opens in the browser rather than downloading: inline media
+/// and PDFs. Their stored bytes are checked on completion.
+pub(crate) fn opens_in_browser(content_type: &str) -> bool {
+    kind(content_type) != "file" || content_type == "application/pdf"
+}
+
+/// Signature check of the stored bytes for types that open in the browser, so
+/// a renamed HTML or SVG file can never be served as an image or a PDF.
 pub(crate) fn sniff(content_type: &str, bytes: &[u8]) -> bool {
     let at = |offset: usize, magic: &[u8]| bytes.get(offset..offset + magic.len()) == Some(magic);
     let ftyp = at(4, b"ftyp");
@@ -95,6 +101,7 @@ pub(crate) fn sniff(content_type: &str, bytes: &[u8]) -> bool {
         "audio/ogg" => at(0, b"OggS"),
         "audio/wav" | "audio/x-wav" => at(0, b"RIFF") && at(8, b"WAVE"),
         "audio/flac" => at(0, b"fLaC"),
+        "application/pdf" => at(0, b"%PDF-"),
         _ => true,
     }
 }
@@ -874,7 +881,8 @@ async fn complete(
             Some(size) if size != *expected => return reject(assets, &asset).await,
             Some(_) => {}
         }
-        if kind(content_type) != "file" && !sniff(content_type, &assets.r2.head_bytes(key).await?) {
+        if opens_in_browser(content_type) && !sniff(content_type, &assets.r2.head_bytes(key).await?)
+        {
             return reject(assets, &asset).await;
         }
     }

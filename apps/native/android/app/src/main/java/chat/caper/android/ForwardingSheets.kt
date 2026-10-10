@@ -46,7 +46,7 @@ import java.util.UUID
         if (message.content.text.isNotEmpty()) LinkedText(message.content.text, fontSize = 14.sp)
         MessageAttachments(
             message.content.attachments.map { it.withFreshUrls(state?.freshAttachmentUrls?.get(it.id)) }, false, onAttachmentFailed,
-            state?.attachmentProgress.orEmpty(),
+            state?.attachmentProgress.orEmpty(), caption = message.author.name,
         )
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             message.reactions.forEach { reaction -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {

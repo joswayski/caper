@@ -136,6 +136,8 @@ struct ForwardPickerView: View {
             }
         }.background(CaperTheme.raised).foregroundStyle(CaperTheme.text)
             .frame(idealWidth: 460, idealHeight: 560)
+            // A sheet: only it can present the viewer over itself.
+            .modifier(MediaViewerHost())
             .onDisappear { sendTask?.cancel() }
             .task(id: attempt) {
                 do { destinations = try await chat.forwardDestinations().sorted { "\($0.spaceName) \($0.name)" < "\($1.spaceName) \($1.name)" }; error = nil }
@@ -178,6 +180,8 @@ struct ForwardConversationView: View {
                 }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
             }
         }.background(CaperTheme.raised).foregroundStyle(CaperTheme.text).frame(idealWidth: 520, idealHeight: 560)
+            // A sheet: only it can present the viewer over itself.
+            .modifier(MediaViewerHost())
             .task(id: "\(message?.forward?.seq ?? "0"):\(pages):\(attempt)") {
                 guard let message else { conversation = nil; return }
                 loading = true; error = nil

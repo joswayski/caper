@@ -2,9 +2,11 @@
 //! settings, see `compress`), reserve its exact size, PUT the bytes and any
 //! preview straight to storage, confirm, and return the description sent
 //! with `attachmentIds` (docs/media.md, "Uploads and attachments").
-//! Desktop has no bundled video transcoder: videos upload as the original,
-//! with dimensions and duration read from MP4/QuickTime headers and their
-//! metadata boxes blanked (`metadata`), so location never leaves the device.
+//! Videos are compressed with the bundled FFmpeg (`ffmpeg`) by the same rules
+//! as web and phones. A video that needs no compression, or a build without
+//! FFmpeg, uploads the original with dimensions and duration read from
+//! MP4/QuickTime headers and their metadata boxes blanked (`metadata`), so
+//! location never leaves the device.
 
 use crate::api::Api;
 use crate::compress::{self, Compression};
@@ -54,6 +56,43 @@ pub enum Body {
         path: PathBuf,
         patches: Vec<crate::metadata::Patch>,
     },
+    /// A compressed copy in the temp directory, removed once uploaded or dropped.
+    Scratch(Scratch),
+}
+
+/// A file this app wrote and owns; deleted on drop.
+#[derive(Debug)]
+pub struct Scratch(PathBuf);
+
+impl Scratch {
+    /// A fresh path in the temp directory with the given extension.
+    pub fn new(extension: &str) -> Self {
+        Self(
+            std::env::temp_dir().join(format!("caper-upload-{}.{extension}", uuid::Uuid::new_v4())),
+        )
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Reads a scratch file, keeping it until the upload has read it.
+struct ScratchReader {
+    file: std::io::Take<std::fs::File>,
+    _scratch: Scratch,
+}
+
+impl Read for ScratchReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.file.read(buffer)
+    }
 }
 
 pub struct Prepared {
@@ -81,7 +120,19 @@ fn file_name(path: &Path) -> String {
 }
 
 /// Read, classify and compress one picked or dropped file. Runs off the UI thread.
+#[cfg(test)]
 pub fn prepare_path(path: &Path, settings: &Compression) -> Result<Prepared, String> {
+    prepare_path_with(path, settings, &|_| {}, &AtomicBool::new(false))
+}
+
+/// [`prepare_path`], reporting video compression progress (0–1) and stopping
+/// a compression as soon as `cancel` is set.
+pub fn prepare_path_with(
+    path: &Path,
+    settings: &Compression,
+    compressing: &dyn Fn(f32),
+    cancel: &AtomicBool,
+) -> Result<Prepared, String> {
     let name = file_name(path);
     let metadata = std::fs::metadata(path).map_err(|_| format!("Could not read {name}."))?;
     if !metadata.is_file() {
@@ -98,6 +149,24 @@ pub fn prepare_path(path: &Path, settings: &Compression) -> Result<Prepared, Str
     if content_type.starts_with("image/") && size <= MAX_IMAGE_READ_BYTES {
         let bytes = std::fs::read(path).map_err(|_| format!("Could not read {name}."))?;
         return Ok(prepare_bytes(&name, bytes, settings));
+    }
+    if content_type.starts_with("video/")
+        && let Some(binary) = crate::ffmpeg::binary()
+        && let Some(prepared) = prepare_video(
+            binary,
+            path,
+            &name,
+            &content_type,
+            size,
+            settings,
+            compressing,
+            cancel,
+        )
+    {
+        return Ok(prepared);
+    }
+    if cancel.load(Ordering::Relaxed) {
+        return Err("Cancelled.".into());
     }
     let mut prepared = Prepared {
         kind: compress::attachment_kind(&content_type),
@@ -128,6 +197,105 @@ pub fn prepare_path(path: &Path, settings: &Compression) -> Result<Prepared, Str
         }
     }
     Ok(prepared)
+}
+
+/// A video through FFmpeg: compressed when the rules call for it (and the
+/// result is worth keeping), otherwise the original with its metadata blanked;
+/// either way with a poster preview. `None` when FFmpeg cannot read it.
+#[allow(clippy::too_many_arguments)]
+fn prepare_video(
+    binary: &Path,
+    path: &Path,
+    name: &str,
+    content_type: &str,
+    size: u64,
+    settings: &Compression,
+    compressing: &dyn Fn(f32),
+    cancel: &AtomicBool,
+) -> Option<Prepared> {
+    let probe = crate::ffmpeg::probe(binary, path).ok()?;
+    let inline = matches!(content_type, "video/mp4" | "video/quicktime" | "video/webm");
+    let compressed = crate::ffmpeg::video_plan(&probe, inline, settings).and_then(|plan| {
+        compressing(0.0);
+        let scratch = Scratch::new("mp4");
+        crate::ffmpeg::transcode(
+            binary,
+            path,
+            scratch.path(),
+            &probe,
+            &plan,
+            settings,
+            compressing,
+            cancel,
+        )
+        .ok()?;
+        let stored = std::fs::metadata(scratch.path()).ok()?.len();
+        (stored > 0 && crate::ffmpeg::keep_transcode(&plan.reasons, size, stored))
+            .then_some((plan, scratch, stored))
+    });
+    if cancel.load(Ordering::Relaxed) {
+        return None;
+    }
+    let mut prepared = match compressed {
+        Some((plan, scratch, stored)) => {
+            // The output has no rotation: its own size is the display size.
+            let result = crate::ffmpeg::probe(binary, scratch.path()).ok();
+            let video = result.as_ref().and_then(|result| result.video.as_ref());
+            Prepared {
+                kind: AttachmentKind::Video,
+                name: compress::renamed(name, "video/mp4"),
+                content_type: "video/mp4".into(),
+                source_size: size,
+                size: stored,
+                width: video.map_or(Some(plan.width), |video| Some(video.width)),
+                height: video.map_or(Some(plan.height), |video| Some(video.height)),
+                duration_ms: result
+                    .and_then(|result| result.duration_ms)
+                    .or(probe.duration_ms),
+                body: Body::Scratch(scratch),
+                preview: None,
+                thumbnail: None,
+            }
+        }
+        // Kept as is: only formats the API serves inline go up as video.
+        None if inline => {
+            let video = probe.video.as_ref()?;
+            let patches =
+                crate::metadata::mp4_metadata_patches(&mut std::fs::File::open(path).ok()?);
+            Prepared {
+                kind: AttachmentKind::Video,
+                name: name.into(),
+                content_type: content_type.into(),
+                source_size: size,
+                size,
+                width: Some(video.width),
+                height: Some(video.height),
+                duration_ms: probe.duration_ms,
+                body: Body::File {
+                    path: path.to_owned(),
+                    patches,
+                },
+                preview: None,
+                thumbnail: None,
+            }
+        }
+        None => return None,
+    };
+    // The poster comes from what is stored, already tone mapped and rotated.
+    let stored = match &prepared.body {
+        Body::Scratch(scratch) => scratch.path(),
+        _ => path,
+    };
+    let poster = crate::ffmpeg::probe(binary, stored)
+        .ok()
+        .and_then(|stored_probe| {
+            crate::ffmpeg::poster(binary, stored, &stored_probe, settings.preview_edge)
+        });
+    if let Some(poster) = poster {
+        prepared.preview = compress::encode_preview_jpeg(&poster);
+        prepared.thumbnail = Some(image::DynamicImage::ImageRgb8(poster).to_rgba8());
+    }
+    Some(prepared)
 }
 
 /// Prepare in-memory bytes (stills are compressed with the server settings).
@@ -299,6 +467,12 @@ fn upload_with_delays(
                 .take(size),
             patches,
         )),
+        Body::Scratch(scratch) => Box::new(ScratchReader {
+            file: std::fs::File::open(scratch.path())
+                .map_err(|_| UploadError::new(format!("Could not read {name}.")))?
+                .take(size),
+            _scratch: scratch,
+        }),
     };
     let reserved = api.create_asset(token, request)?;
     let id = reserved["id"]
@@ -948,5 +1122,97 @@ mod tests {
         assert_eq!(size_label(1_677_722, Some(146_432)), "1.6 MB → 143 KB");
         assert_eq!(size_label(2048, Some(2048)), "2.0 KB");
         assert_eq!(size_label(2048, None), "2.0 KB");
+    }
+
+    /// A phone-style clip through the real pipeline (`CAPER_FFMPEG` with
+    /// libx264, libx265 and zimg, such as a distribution FFmpeg): 4K HEVC HLG,
+    /// rotated to portrait, becomes 1080×1920 SDR H.264 with a poster, and
+    /// its compressed copy is removed with the upload body.
+    #[test]
+    #[ignore = "needs a full FFmpeg via CAPER_FFMPEG"]
+    fn phone_hdr_video_is_compressed_tone_mapped_and_cleaned_up() {
+        let binary = crate::ffmpeg::binary().expect("set CAPER_FFMPEG");
+        let scratch = Scratch::new("video");
+        let encoded = scratch.0.join("encoded.mov");
+        let status = crate::ffmpeg::command(binary)
+            .args([
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=3840x2160:rate=30",
+            ])
+            .args(["-f", "lavfi", "-i", "sine=sample_rate=48000", "-t", "1"])
+            .args([
+                "-c:v",
+                "libx265",
+                "-x265-params",
+                "log-level=error",
+                "-pix_fmt",
+                "yuv420p10le",
+            ])
+            .args([
+                "-color_primaries",
+                "bt2020",
+                "-color_trc",
+                "arib-std-b67",
+                "-colorspace",
+                "bt2020nc",
+            ])
+            .args(["-c:a", "aac", "-tag:v", "hvc1"])
+            .arg(&encoded)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let picked = scratch.0.join("IMG_0001.MOV");
+        let status = crate::ffmpeg::command(binary)
+            .args(["-loglevel", "error", "-display_rotation", "90", "-i"])
+            .arg(&encoded)
+            .args(["-c", "copy"])
+            .arg(&picked)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let reported = std::sync::Mutex::new(Vec::new());
+        let prepared = prepare_path_with(
+            &picked,
+            &Compression::default(),
+            &|fraction| reported.lock().unwrap().push(fraction),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(prepared.content_type, "video/mp4");
+        assert_eq!(prepared.name, "IMG_0001.mp4");
+        assert_eq!((prepared.width, prepared.height), (Some(1080), Some(1920)));
+        assert!(
+            prepared
+                .duration_ms
+                .is_some_and(|duration| (900..=1100).contains(&duration))
+        );
+        assert!(prepared.size > 0 && prepared.size < prepared.source_size);
+        assert!(
+            prepared
+                .preview
+                .as_ref()
+                .is_some_and(|preview| preview.len() <= compress::PREVIEW_MAX_BYTES)
+        );
+        assert_eq!(
+            prepared.thumbnail.as_ref().map(|image| image.dimensions()),
+            Some((360, 640))
+        );
+        assert!(!reported.lock().unwrap().is_empty());
+        let Body::Scratch(copy) = &prepared.body else {
+            panic!("the compressed copy uploads");
+        };
+        let copy = copy.path().to_owned();
+        let stored = crate::ffmpeg::probe(binary, &copy).unwrap();
+        let video = stored.video.unwrap();
+        assert_eq!(
+            (video.codec.as_str(), video.width, video.height, video.hdr),
+            ("h264", 1080, 1920, false)
+        );
+        drop(prepared);
+        assert!(!copy.exists());
     }
 }

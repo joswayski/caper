@@ -1032,7 +1032,10 @@ Expiry snaps to UTC day boundaries, so a URL is identical for a day (browser
 cacheable) and lives 24–48 hours. The Worker rejects anything signed more than
 three days out, serves allowlisted image/video/audio types inline, forces every
 other type to download as `application/octet-stream`, and always sends
-`nosniff` plus a sandboxing CSP. Range requests (video seeking) are supported.
+`nosniff` plus a sandboxing CSP. PDFs are the one document type that opens in
+a browser tab (`inline` with their file name and no page CSP, which would stop
+Chrome's viewer); the API only completes a PDF whose bytes start with `%PDF-`.
+Range requests (video seeking) are supported.
 The edge cache is keyed by object, after signature verification. A leaked URL
 works until it expires, as with Discord's signed attachment links.
 
@@ -1118,7 +1121,7 @@ open-source Chromium builds without H.264 keep the original file.
 | Web | libavif 1.0.1 + aom 3.7.0 WASM (`@jsquash/avif` 2.1.1), single-threaded worker, speed 9 (≈3 s per 12 MP here) | `@jsquash/webp` 1.5.0 worker; indexed PNG | Mediabunny/WebCodecs H.264; HDR tone mapped on WebGL2 | 3.5 MB WASM (1.1 MB gzipped), fetched only when a photo is encoded |
 | Android | libavif 1.4.2 + aom 3.15.1 JNI built from pinned sources (`prepare-avif.sh`), speed 8, `tune=ssim`; AOMedia decoder shows AVIF on API 26–30 | Bitmap lossless WebP; indexed PNG | Media3 Transformer H.264; HDR tone mapped with OpenGL | +1.8 MB download per ABI (3.75 MB installed) |
 | Apple | libavif 1.4.2 + aom 3.15.1 static XCFramework from [joswayski/libavif-apple](https://github.com/joswayski/libavif-apple) (built from pinned sources, Neon on arm64, SSE/AVX on x86_64), speed 6, `tune=ssim`; ImageIO decodes | libwebp 1.6.0 lossless; indexed PNG | AVAssetExportSession H.264 presets; HDR to BT.709 via AVVideoComposition | ≈4.3 MB uncompressed per arm64 slice (estimate) |
-| Desktop (Windows, Linux) | rav1e 0.8.1 + avif-serialize, speed 10, quantizer 55 for quality 85; x86 assembly when nasm is present (1.4 s vs 4.6 s per 14 MP) | libwebp 1.6.0 lossless (`webpx`); indexed PNG | Videos upload unchanged (no transcoder); metadata stripped | ≈2.4 MB uncompressed (1 MB gzipped) |
+| Desktop (Windows, Linux) | rav1e 0.8.1 + avif-serialize, speed 10, quantizer 55 for quality 85; x86 assembly when nasm is present (1.4 s vs 4.6 s per 14 MP) | libwebp 1.6.0 lossless (`webpx`); indexed PNG | Bundled FFmpeg 9.0.2: Windows' Media Foundation H.264 encoder (hardware on most PCs), else x264 `veryfast`; HDR tone mapped with zimg (Hable, as on web) | ≈2.4 MB uncompressed (1 MB gzipped), plus FFmpeg ≈16.6 MB (6.1 MB gzipped) |
 
 ### Server-side processing (parked)
 
@@ -1157,6 +1160,44 @@ forward; they refresh when the forward is reloaded, not through
 `POST /api/assets/urls`. Pinned messages and thread replies show their files.
 Thread replies may carry files through the API; the client composers attach
 files only in channels and DMs.
+
+### In-app viewer
+
+Clicking a sent image or video opens it almost full screen inside the app on
+every client (`MediaViewer.tsx` on web, `MediaViewer.kt` on Android, the
+`AttachmentViews.swift` viewer on iPhone/iPad/Mac, `viewer.rs` on desktop),
+like Discord's. The viewer holds that message's ready images and videos in
+message order, starting at the one clicked: arrows, Left/Right or a swipe move
+between them (no wrap) with an "n / m" counter. Images show the preview until
+the original loads, zoom with double-click/double-tap, pinch or Ctrl+scroll,
+and pan while zoomed; animated GIF/WebP play. Videos autoplay with sound and
+pause when you move away or close; GIF-style videos (`animated`) loop muted.
+Each viewer has Save/Download, Open in browser and Close (Esc, the dark area,
+or a swipe down on phones). URLs come from each client's existing fresh-URL
+cache, and a refused load asks for one refresh. Audio and other files keep
+their inline behaviour; pending rows never open the viewer.
+
+Desktop has no platform video player or AVIF decoder, so it ships a trimmed,
+static FFmpeg built from pinned sources by `joswayski/ffmpeg-desktop`
+(FFmpeg 9.0.2, x264, dav1d 1.5.4, zimg 3.0.6; GPL-2.0-or-later, run as a
+separate program so the app stays Apache-2.0; licences and `SOURCES.txt` ship
+with it). The app uses it to:
+
+- compress videos before upload with the shared rules (sizes are FFmpeg
+  expressions on the rotated frame, so portrait video keeps its shape),
+  reporting "Compressing… N%" on the draft chip; any failure uploads the
+  original;
+- play videos in the viewer: one FFmpeg decodes RGBA frames at a constant rate
+  into an egui texture, another decodes 48 kHz stereo PCM for rodio, and audio
+  is the clock (the wall clock without sound). FFmpeg has no TLS; it streams
+  the signed CDN URL through a loopback range proxy (`media_proxy.rs`, bound to
+  127.0.0.1 with an unguessable per-video token). Seeking restarts both
+  decoders at the new time;
+- decode AVIF and HEIC originals for the full-size viewer.
+
+It is found beside the executable (`/usr/lib/caper-desktop` for the .deb) or
+at `CAPER_FFMPEG`. Without it, videos upload unchanged and the viewer offers
+the browser.
 
 ### Deletion and purge
 
@@ -1198,10 +1239,10 @@ npx wrangler deploy --env staging
 
 | Platform | Send files | Show files |
 | --- | --- | --- |
-| Web (desktop and mobile layouts) | Yes: picker, paste, drag and drop | Images, video, audio, file cards |
-| Apple (iOS and macOS) | Yes: Photos picker, file importer, drag and drop on macOS (no paste) | Images, video (AVKit), audio, file cards, "File removed" |
-| Android | Yes: system photo picker and document picker, up to 10 files, draft chips with compression savings and progress. Applies the server `compression` settings on device per the shared rules and encoder table above (Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview, tap for full size), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
-| Rust desktop (Windows, Linux) | Yes: file dialog (Win32; XDG desktop portal on Linux) and drag and drop, up to 10. No clipboard image paste. Stills per the shared rules and encoder table above (JPEG only if WebP fails; HEIC uploads unchanged). Videos upload unchanged (no transcoder) with metadata stripped; MP4/QuickTime size and duration from headers | Inline images (decoded off the UI thread, cached by attachment id). Video posters, audio and files open in the system browser or player; no in-app playback. "File removed" cards. URLs refreshed before expiry and once after a 403/404 load |
+| Web (desktop and mobile layouts) | Yes: picker, paste, drag and drop | Images, video, audio, file cards; images and videos open in the in-app viewer |
+| Apple (iOS and macOS) | Yes: Photos picker, file importer, drag and drop on macOS (no paste) | Images, video (AVKit), audio, file cards, "File removed"; images and videos open in the in-app viewer |
+| Android | Yes: system photo picker and document picker, up to 10 files, draft chips with compression savings and progress. Applies the server `compression` settings on device per the shared rules and encoder table above (Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview; tap opens the in-app viewer), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
+| Rust desktop (Windows, Linux) | Yes: file dialog (Win32; XDG desktop portal on Linux) and drag and drop, up to 10. No clipboard image paste. Stills per the shared rules and encoder table above (JPEG only if WebP fails; HEIC uploads unchanged). Videos through the bundled FFmpeg by the shared rules (below), else unchanged with metadata stripped; posters for previews | Inline images and video posters (decoded off the UI thread, cached by attachment id). Images and videos open in the in-app viewer with an in-app player; audio and files open in the system browser or player. "File removed" cards. URLs refreshed before expiry and once after a 403/404 load |
 
 Apple notes. Attachments decode tolerantly (a malformed entry is skipped).
 Signed URLs are refreshed through `POST /api/assets/urls` when `exp` is past or
@@ -1215,9 +1256,8 @@ conversion succeeds. Videos use the largest
 `videoMaxHeight` (H.264/AAC MP4, kept only if smaller, original on failure).
 Presets choose their own bitrates, so `videoBitrateKbps` and
 `audioBitrateKbps` are not applied. Previews and poster frames use
-`previewEdge`. Taps open images and files at their signed URL in the system
-browser or viewer; there is no in-app full-screen viewer. GIFs show their
-first frame. Audio plays through `AVPlayer` with the app's existing audio
+`previewEdge`. Taps open images and videos in the in-app viewer (below) and
+files at their signed URL in the system browser. Audio plays through `AVPlayer` with the app's existing audio
 session. Unit tests cover decoding, URL refresh decisions, compression
 decisions, the indexed-PNG round trip through ImageIO, the upload request
 sequence and a file-only send against a stubbed `URLProtocol`. They were

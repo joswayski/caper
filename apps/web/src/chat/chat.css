@@ -1560,9 +1560,15 @@
   height: 100%;
   object-fit: cover;
 }
-video.chat-media {
-  max-height: 300px;
+.chat-video {
+  position: relative;
   background: #000;
+}
+.chat-video video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-height: 300px;
 }
 .chat-audio {
   display: grid;
@@ -1684,9 +1690,229 @@ a.chat-file:hover {
   background: rgb(12 13 15 / 0.78);
   cursor: pointer;
 }
+.chat-media-expand {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  color: var(--text);
+  background: rgb(12 13 15 / 0.78);
+  cursor: pointer;
+  transition: opacity 140ms ease;
+}
+.chat-media-expand:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
+}
+/* Like the player's own controls, it shows on hover or focus where there is hover. */
+@media (hover: hover) {
+  .chat-media:not(:hover, :focus-within) > .chat-media-expand {
+    opacity: 0;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   .chat-spinner {
     animation-duration: 2.4s;
+  }
+  .chat-media-expand {
+    transition: none;
+  }
+}
+/* Above every chat layer, including the pins and forward dialogs it can open from. */
+.chat-viewer-overlay {
+  z-index: 1200;
+  background: rgb(0 0 0 / 92%);
+  animation: chat-viewer-in 140ms ease-out;
+}
+@keyframes chat-viewer-in {
+  from {
+    opacity: 0;
+  }
+}
+.chat-viewer {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  color: var(--text);
+  outline: none;
+}
+.chat-viewer-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 56px;
+  padding: 8px 12px 8px 20px;
+}
+.chat-viewer-title {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  margin-right: 8px;
+}
+.chat-viewer-title :is(strong, small) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-viewer-title strong {
+  font-size: 0.85rem;
+}
+.chat-viewer-title small {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+.chat-viewer-counter {
+  margin-right: 8px;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.chat-viewer-bar :is(a, button) {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--text-muted);
+  background: none;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
+}
+@media (hover: hover) {
+  .chat-viewer-bar :is(a, button):hover {
+    color: var(--text);
+    background: rgb(255 255 255 / 10%);
+  }
+}
+.chat-viewer :is(a, button):focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
+}
+.chat-viewer-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+/* The area media fits in. Presses outside the media fall through to the stage, which closes. */
+.chat-viewer-frame {
+  position: absolute;
+  inset: 0 72px 24px;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+.chat-viewer-frame > * {
+  grid-area: 1 / 1;
+  pointer-events: auto;
+}
+/* Springs back after a swipe that didn't change file or close. */
+.chat-viewer-media {
+  transition: transform 160ms ease;
+}
+.chat-viewer-media[data-dragging] {
+  transition: none;
+}
+.chat-viewer-image {
+  position: relative;
+}
+.chat-viewer-image[data-zoomed] {
+  cursor: grab;
+}
+.chat-viewer-image img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.chat-viewer video {
+  display: block;
+  background: #000;
+}
+.chat-viewer .chat-spinner {
+  width: 28px;
+  height: 28px;
+  border-width: 3px;
+}
+.chat-viewer-message {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+.chat-viewer-nav {
+  position: absolute;
+  top: 50%;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  margin-top: -22px;
+  border: 0;
+  border-radius: 50%;
+  color: var(--text);
+  background: rgb(12 13 15 / 0.7);
+  transition: background-color 140ms ease;
+}
+.chat-viewer-nav[data-direction="previous"] {
+  left: 16px;
+}
+.chat-viewer-nav[data-direction="next"] {
+  right: 16px;
+}
+.chat-viewer-nav[aria-disabled="true"] {
+  opacity: 0.35;
+}
+@media (hover: hover) {
+  .chat-viewer-nav:not([aria-disabled="true"]):hover {
+    background: rgb(40 42 46 / 0.9);
+  }
+}
+/* Phones and tablets: edge to edge, with the bar over the media. */
+@media (max-width: 760px), (pointer: coarse) {
+  .chat-viewer-bar {
+    position: absolute;
+    top: 0;
+    right: 0;
+    left: 0;
+    z-index: 1;
+    padding: max(8px, env(safe-area-inset-top)) 4px 8px 16px;
+    background: linear-gradient(rgb(0 0 0 / 70%), transparent);
+  }
+  .chat-viewer-bar :is(a, button) {
+    width: 44px;
+    height: 44px;
+  }
+  .chat-viewer-frame {
+    inset: 0;
+  }
+  .chat-viewer-nav {
+    top: auto;
+    bottom: max(16px, env(safe-area-inset-bottom));
+    margin-top: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-viewer-overlay {
+    animation: none;
+  }
+  .chat-viewer-media,
+  .chat-viewer-bar :is(a, button),
+  .chat-viewer-nav {
+    transition: none;
   }
 }
 .chat-composer form small {

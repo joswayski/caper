@@ -30,6 +30,7 @@ import {
   type GeneralChatHistory,
 } from "./types.ts";
 import { MessageAttachments, type DraftAttachment, type LocalPreview } from "./Attachments.tsx";
+import MediaViewer, { type ViewerTarget } from "./MediaViewer.tsx";
 import { MAX_ATTACHMENTS, browserTransport, refreshAttachmentUrls, uploadPrepared, uploadSettings } from "./uploads.ts";
 import { prepareFile, type CompressionSettings } from "./prepare.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
@@ -218,6 +219,7 @@ export default function Chat({
   const [conversationTarget, setConversationTarget] = useState<ForwardTarget>();
   const [editTarget, setEditTarget] = useState<string>();
   const [historyTarget, setHistoryTarget] = useState<string>();
+  const [viewerTarget, setViewerTarget] = useState<ViewerTarget>();
   // Confirmations such as "Text copied." show briefly; `key` restarts the timer when repeated.
   const [actionStatus, setActionStatusState] = useState<{
     text: string;
@@ -273,6 +275,7 @@ export default function Chat({
     setConversationTarget(undefined);
     setEditTarget(undefined);
     setHistoryTarget(undefined);
+    setViewerTarget(undefined);
     setActionStatus("");
     setReactionSaves({});
     setShowPins(false);
@@ -381,6 +384,14 @@ export default function Chat({
   const closeConversation = useCallback(() => setConversationTarget(undefined), []);
   const editMessage = findMessage(editTarget);
   const historyMessage = findMessage(historyTarget);
+  // Forwarded originals live on the forwarding message; the viewer closes if either goes.
+  const viewerMessage = findMessage(viewerTarget?.messageId);
+  const viewerSource = viewerTarget?.forwarded ? (viewerMessage?.forward?.message ?? undefined) : viewerMessage;
+  const closeViewer = useCallback(() => setViewerTarget(undefined), []);
+  const viewFile =
+    (messageId: string, forwarded = false) =>
+    (attachmentId: string, anchor: HTMLElement) =>
+      setViewerTarget({ messageId, attachmentId, anchor, forwarded });
   const openEdit = (messageId: string) => {
     if (findMessage(messageId)?.forward) return;
     setActionTarget(undefined);
@@ -1137,12 +1148,14 @@ export default function Chat({
                 progress={state.attachmentProgress}
                 localPreviews={localPreviews}
                 onExpired={pending ? undefined : refreshUrls}
+                onView={"content" in message ? viewFile(message.id) : undefined}
               />
               {"content" in message && (
                 <>
                   <ForwardCard
                     message={message}
                     onOpen={(anchor) => setConversationTarget({ messageId: message.id, anchor })}
+                    onView={viewFile(message.id, true)}
                   />
                   <button
                     type="button"
@@ -1283,6 +1296,21 @@ export default function Chat({
     });
   };
 
+  const pinsOpen = showPins && state.phase === "ready";
+  // Opened from pins, the viewer renders inside that dialog, which then treats it as its own layer.
+  const viewer = viewerTarget && viewerSource && (
+    <MediaViewer
+      // Forwarded originals have no URL refresh, like their inline previews.
+      attachments={viewerTarget.forwarded ? attachmentsOf(viewerSource) : withFreshUrls(attachmentsOf(viewerSource))}
+      attachmentId={viewerTarget.attachmentId}
+      anchor={viewerTarget.anchor}
+      author={viewerSource.author.name}
+      sentAt={viewerSource.createdAt}
+      onClose={closeViewer}
+      onExpired={viewerTarget.forwarded ? undefined : refreshUrls}
+    />
+  );
+
   return (
     <div className="chat-layout" data-thread-open={!!state.thread}>
       <section
@@ -1340,7 +1368,7 @@ export default function Chat({
         </header>
 
         <div className="chat-messages" aria-busy={state.phase === "loading"}>
-          {showPins && state.phase === "ready" && (
+          {pinsOpen && (
             <PinsDialog
               onClose={closePins}
               actionsOpen={
@@ -1431,6 +1459,7 @@ export default function Chat({
                         progress={state.attachmentProgress}
                         localPreviews={localPreviews}
                         onExpired={refreshUrls}
+                        onView={viewFile(message.id)}
                       />
                       <ForwardCard
                         message={message}
@@ -1440,6 +1469,7 @@ export default function Chat({
                             anchor,
                           })
                         }
+                        onView={viewFile(message.id, true)}
                       />
                       <div className="chat-pinned-navigation">
                         <button type="button" disabled={!!jumping} onClick={() => void goToMessage(message)}>
@@ -1461,6 +1491,7 @@ export default function Chat({
                   ))
                 )}
               </div>
+              {viewer}
             </PinsDialog>
           )}
           <div className="chat-timeline" inert={showPins} aria-hidden={showPins}>
@@ -1780,6 +1811,7 @@ export default function Chat({
           onClose={() => setHistoryTarget(undefined)}
         />
       )}
+      {!pinsOpen && viewer}
     </div>
   );
 }

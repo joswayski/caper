@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   FloatingFocusManager,
   FloatingOverlay,
@@ -15,6 +15,7 @@ import { apiError, ChatHistoryError } from "./client.ts";
 import { emojiAsset, emojiCode } from "./emoji.ts";
 import { attachmentsOf, isChatMessage, sequence, type ChatMessage } from "./types.ts";
 import { MessageAttachments } from "./Attachments.tsx";
+import MediaViewer, { type ViewerTarget } from "./MediaViewer.tsx";
 
 export interface ForwardTarget {
   messageId: string;
@@ -79,7 +80,13 @@ function ForwardDialog({
   );
 }
 
-function OriginalMessage({ message }: { message: ChatMessage }) {
+function OriginalMessage({
+  message,
+  onView,
+}: {
+  message: ChatMessage;
+  onView?: (attachmentId: string, anchor: HTMLElement) => void;
+}) {
   return (
     <article className="chat-forward-original">
       <header>
@@ -94,7 +101,7 @@ function OriginalMessage({ message }: { message: ChatMessage }) {
           <LinkedText text={message.content.text} />
         </p>
       )}
-      <MessageAttachments attachments={attachmentsOf(message)} />
+      <MessageAttachments attachments={attachmentsOf(message)} onView={onView} />
       {!!message.reactions?.length && (
         <div className="chat-forward-reactions" aria-label="Original reactions">
           {message.reactions.map(({ emoji, authorIds }) => (
@@ -112,7 +119,15 @@ function OriginalMessage({ message }: { message: ChatMessage }) {
   );
 }
 
-export function ForwardCard({ message, onOpen }: { message: ChatMessage; onOpen: (anchor: HTMLElement) => void }) {
+export function ForwardCard({
+  message,
+  onOpen,
+  onView,
+}: {
+  message: ChatMessage;
+  onOpen: (anchor: HTMLElement) => void;
+  onView?: (attachmentId: string, anchor: HTMLElement) => void;
+}) {
   if (!message.forward) return null;
   const original = message.forward.message;
   return (
@@ -123,7 +138,7 @@ export function ForwardCard({ message, onOpen }: { message: ChatMessage; onOpen:
       </small>
       {original ? (
         <>
-          <OriginalMessage message={original} />
+          <OriginalMessage message={original} onView={onView} />
           <button type="button" onClick={(event) => onOpen(event.currentTarget)}>
             {original.thread?.replyCount
               ? `${original.thread.replyCount} ${original.thread.replyCount === 1 ? "reply" : "replies"} · `
@@ -163,6 +178,9 @@ export function ForwardPicker({
     pending: { destination: Destination; key: string }[];
     text: string;
   }>();
+  const [viewer, setViewer] = useState<ViewerTarget>();
+  const closeViewer = useCallback(() => setViewer(undefined), []);
+  const original = message.forward?.message ?? message;
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -265,7 +283,10 @@ export function ForwardPicker({
           Shares this message and its conversation live, including future edits, reactions and replies. People in the
           destination can read and forward it.
         </p>
-        <OriginalMessage message={message.forward?.message ?? message} />
+        <OriginalMessage
+          message={original}
+          onView={(attachmentId, anchor) => setViewer({ messageId: original.id, attachmentId, anchor })}
+        />
         <label>
           Send to
           <input
@@ -335,6 +356,16 @@ export function ForwardPicker({
           {sending ? "Forwarding…" : command ? `Retry forwards (${selected.length})` : `Forward (${selected.length})`}
         </button>
       </div>
+      {viewer && (
+        <MediaViewer
+          attachments={attachmentsOf(original)}
+          attachmentId={viewer.attachmentId}
+          anchor={viewer.anchor}
+          author={original.author.name}
+          sentAt={original.createdAt}
+          onClose={closeViewer}
+        />
+      )}
     </ForwardDialog>
   );
 }
@@ -354,6 +385,13 @@ export function ForwardConversation({
   const [attempt, setAttempt] = useState(0);
   const oldest = useRef<string | undefined>(undefined);
   const controller = useRef<AbortController | undefined>(undefined);
+  const [viewer, setViewer] = useState<ViewerTarget>();
+  const closeViewer = useCallback(() => setViewer(undefined), []);
+  const view = (messageId: string) => (attachmentId: string, anchor: HTMLElement) =>
+    setViewer({ messageId, attachmentId, anchor });
+  // Live: the viewer follows reloads of the conversation and closes if its message goes.
+  const viewed =
+    viewer && [conversation?.root, ...(conversation?.messages ?? [])].find((item) => item?.id === viewer.messageId);
   const path = `/api/chat/channels/${encodeURIComponent(message.channelId)}/forwards/${encodeURIComponent(message.id)}/thread`;
   const page = async (signal: AbortSignal, before?: string): Promise<Conversation> => {
     const response = await fetch(`${path}${before ? `?before=${encodeURIComponent(before)}` : ""}`, {
@@ -448,7 +486,7 @@ export function ForwardConversation({
         </p>
         {conversation?.root ? (
           <>
-            <OriginalMessage message={conversation.root} />
+            <OriginalMessage message={conversation.root} onView={view(conversation.root.id)} />
             <h3>
               {replyCount} {replyCount === 1 ? "reply" : "replies"}
             </h3>
@@ -458,7 +496,7 @@ export function ForwardConversation({
               </button>
             )}
             {conversation.messages.map((reply) => (
-              <OriginalMessage key={reply.id} message={reply} />
+              <OriginalMessage key={reply.id} message={reply} onView={view(reply.id)} />
             ))}
             {!conversation.messages.length && <p className="chat-forward-status">No replies yet.</p>}
           </>
@@ -479,6 +517,16 @@ export function ForwardConversation({
           </p>
         )}
       </div>
+      {viewer && viewed && (
+        <MediaViewer
+          attachments={attachmentsOf(viewed)}
+          attachmentId={viewer.attachmentId}
+          anchor={viewer.anchor}
+          author={viewed.author.name}
+          sentAt={viewed.createdAt}
+          onClose={closeViewer}
+        />
+      )}
     </ForwardDialog>
   );
 }

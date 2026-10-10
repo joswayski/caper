@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import UniformTypeIdentifiers
 
@@ -556,6 +557,94 @@ public enum AttachmentPolicy {
         if error is StorageUploadError { return "Storage refused the upload." }
         if error is URLError { return "The upload was interrupted." }
         return "Upload failed."
+    }
+}
+
+/// The in-app media viewer's decisions, kept separate from its views for unit tests.
+public enum MediaViewerPolicy {
+    /// Opens in the viewer: a ready image or video with a delivery URL. The
+    /// pending row's local copies (`file:` URLs) keep opening on their own.
+    public static func isViewable(_ attachment: ChatAttachment) -> Bool {
+        guard attachment.kind == .image || attachment.kind == .video, !attachment.unavailable,
+              attachment.status == .ready, let url = attachment.url else { return false }
+        return ChatAttachment.isWebURL(url)
+    }
+
+    /// The viewer's set: the message's viewable files, in message order.
+    public static func items(_ attachments: [ChatAttachment]) -> [ChatAttachment] {
+        attachments.filter(isViewable)
+    }
+
+    /// The latest copy of each file in the set, matched by id: refreshed URLs
+    /// or a removal. Files no longer loaded keep the copy the viewer opened with.
+    public static func latest(_ items: [ChatAttachment], in messages: [ChatMessage]) -> [ChatAttachment] {
+        let ids = Set(items.map(\.id))
+        var current: [String: ChatAttachment] = [:]
+        for message in messages {
+            for attachment in message.content.attachments ?? [] where ids.contains(attachment.id) && current[attachment.id] == nil {
+                current[attachment.id] = attachment
+            }
+        }
+        return items.map { current[$0.id] ?? $0 }
+    }
+
+    /// "2 / 5" over a set of more than one file.
+    public static func counter(position: Int, count: Int) -> String? {
+        count > 1 ? "\(position + 1) / \(count)" : nil
+    }
+
+    /// Where Previous (-1) or Next (+1) moves, stopping at either end.
+    public static func step(_ position: Int, by delta: Int, count: Int) -> Int {
+        min(max(0, position + delta), max(0, count - 1))
+    }
+
+    // MARK: Zoom
+
+    public static let maxZoom: CGFloat = 4
+    /// Double-click or double-tap toggles between fit and this.
+    public static let doubleTapZoom: CGFloat = 2
+
+    /// The size media of `width`×`height` takes in `container`, keeping its aspect ratio.
+    public static func fittedSize(width: Double, height: Double, in container: CGSize) -> CGSize {
+        guard width > 0, height > 0, container.width > 0, container.height > 0 else { return .zero }
+        let scale = min(Double(container.width) / width, Double(container.height) / height)
+        return CGSize(width: width * scale, height: height * scale)
+    }
+
+    /// The offset that brings `point` (in the fitted media's own coordinates)
+    /// to the middle of the container once zoomed to `scale` about its centre.
+    public static func zoomOffset(at point: CGPoint, fitted: CGSize, scale: CGFloat) -> CGSize {
+        CGSize(width: (fitted.width / 2 - point.x) * scale, height: (fitted.height / 2 - point.y) * scale)
+    }
+
+    /// Keeps zoomed media covering the container: it pans only until an edge
+    /// meets the container's, and not at all along an axis where it fits.
+    public static func clampedOffset(_ offset: CGSize, scale: CGFloat, fitted: CGSize, container: CGSize) -> CGSize {
+        let limitX = max(0, (fitted.width * scale - container.width) / 2)
+        let limitY = max(0, (fitted.height * scale - container.height) / 2)
+        return CGSize(width: min(limitX, max(-limitX, offset.width)), height: min(limitY, max(-limitY, offset.height)))
+    }
+
+    // MARK: Animated images
+
+    /// How long a GIF, WebP or APNG frame shows: like browsers, a delay of
+    /// 10 ms or less (or none) shows for 100 ms.
+    public static func frameDuration(_ delay: Double?) -> Double {
+        guard let delay, delay > 0.01 else { return 0.1 }
+        return delay
+    }
+
+    /// The frame showing `elapsed` seconds into a looping animation.
+    public static func frameIndex(at elapsed: Double, durations: [Double]) -> Int {
+        let total = durations.reduce(0, +)
+        guard durations.count > 1, total > 0, elapsed.isFinite else { return 0 }
+        var time = elapsed.truncatingRemainder(dividingBy: total)
+        if time < 0 { time += total }
+        for (index, duration) in durations.enumerated() {
+            if time < duration { return index }
+            time -= duration
+        }
+        return durations.count - 1
     }
 }
 

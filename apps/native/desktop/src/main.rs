@@ -11,6 +11,7 @@ mod daily_icon;
 mod edits;
 mod effects;
 mod emoji;
+mod ffmpeg;
 mod forwarding;
 mod gateway;
 mod grouping;
@@ -19,17 +20,20 @@ mod links;
 mod media;
 #[path = "../voice-spike/src/media_gateway.rs"]
 mod media_gateway;
+mod media_proxy;
 mod mentions;
 mod metadata;
 mod model;
 mod navigation;
 mod notifications;
 mod os_notifications;
+mod player;
 mod startup;
 #[path = "../voice-spike/src/state.rs"]
 mod state;
 mod updates;
 mod uploads;
+mod viewer;
 mod voice;
 mod worker;
 
@@ -92,6 +96,11 @@ enum NavIcon {
     Paperclip,
     FileText,
     Play,
+    Pause,
+    ChevronLeft,
+    Download,
+    ExternalLink,
+    Volume,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -338,6 +347,8 @@ struct DraftUpload {
     source_size: u64,
     /// What is stored after compression, once prepared.
     stored_size: Option<u64>,
+    /// Video compression before upload, 0–1, while it runs.
+    compressing: Option<f32>,
     progress: f32,
     error: Option<String>,
     attachment: Option<model::Attachment>,
@@ -628,6 +639,10 @@ struct CaperApp {
     draft_files: Vec<DraftUpload>,
     draft_keys: u64,
     media: attachments::Media,
+    /// The full-screen image and video viewer, while open.
+    viewer: Option<viewer::Viewer>,
+    /// Loopback streaming for the viewer's player, started on first use.
+    media_proxy: Option<media_proxy::MediaProxy>,
     file_picker: Option<std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>>,
     /// Decoded local images of finished uploads, shown without a download.
     local_media: Vec<(String, egui::ColorImage)>,
@@ -800,6 +815,8 @@ impl CaperApp {
             draft_files: Vec::new(),
             draft_keys: 0,
             media,
+            viewer: None,
+            media_proxy: None,
             file_picker: None,
             local_media: Vec::new(),
             open_after_refresh: None,
@@ -1785,6 +1802,7 @@ impl CaperApp {
             kind: model::AttachmentKind::Image,
             source_size: size,
             stored_size: Some(size),
+            compressing: None,
             progress,
             error: error.map(str::to_owned),
             attachment: None,
@@ -3298,6 +3316,8 @@ impl CaperApp {
     }
 
     fn navigate(&mut self, target: NavigationTarget) {
+        // Another conversation's media never stays open over it.
+        self.viewer = None;
         let mut cache_target = navigation::Target {
             space: target.space.clone(),
             channel: target.channel.clone(),
@@ -4267,6 +4287,7 @@ impl CaperApp {
         self.uploads = None;
         self.uploads_checked = None;
         self.media.clear();
+        self.viewer = None;
         self.attachment_progress.clear();
         self.local_media.clear();
         self.open_after_refresh = None;
@@ -4559,6 +4580,7 @@ impl CaperApp {
                 kind: model::AttachmentKind::File,
                 source_size: 0,
                 stored_size: None,
+                compressing: None,
                 progress: 0.0,
                 error: None,
                 attachment: None,
@@ -4592,6 +4614,7 @@ impl CaperApp {
                 kind: attachment.kind,
                 source_size: attachment.size,
                 stored_size: Some(attachment.size),
+                compressing: None,
                 progress: 1.0,
                 error: None,
                 attachment: Some(attachment),
@@ -4635,6 +4658,10 @@ impl CaperApp {
                 draft.kind = kind;
                 draft.source_size = source_size;
                 draft.stored_size = Some(stored_size);
+                draft.compressing = None;
+            }
+            worker::UploadUpdate::Compressing(fraction) => {
+                draft.compressing = Some(fraction.max(draft.compressing.unwrap_or(0.0)));
             }
             worker::UploadUpdate::Thumbnail(image) => {
                 // The upload may have finished first.
@@ -5342,6 +5369,17 @@ impl eframe::App for CaperApp {
         self.refresh_media_status();
         self.periodic(context);
         self.attachment_housekeeping(context);
+        // Before the page: the viewer is modal and takes the keys it uses.
+        if let Some(mut viewer) = self.viewer.take()
+            && viewer.show(
+                context,
+                &mut self.media,
+                &mut self.media_proxy,
+                chrono::Utc::now().timestamp(),
+            )
+        {
+            self.viewer = Some(viewer);
+        }
         self.page(context);
         self.update_notice(context);
         let messages = self
@@ -10386,7 +10424,22 @@ impl CaperApp {
                                 file_card(ui, attachment, pending, progress)
                             };
                             if clicked && !pending {
-                                self.media.open(ui.ctx(), attachment, unix_now);
+                                if tiles && viewer::viewable(attachment) {
+                                    // This message's images and videos, starting here.
+                                    let items: Vec<_> = resolved
+                                        .iter()
+                                        .map(|(item, _)| item.clone())
+                                        .filter(viewer::viewable)
+                                        .collect();
+                                    let index = items
+                                        .iter()
+                                        .position(|item| item.id == attachment.id)
+                                        .unwrap_or(0);
+                                    self.viewer = Some(viewer::Viewer::open(items, index));
+                                    ui.ctx().request_repaint();
+                                } else {
+                                    self.media.open(ui.ctx(), attachment, unix_now);
+                                }
                             }
                         }
                     });
@@ -10504,11 +10557,11 @@ impl CaperApp {
         let label = if processing {
             format!("{}, {}", attachment.name, processing_label(progress))
         } else if video && attachment.animated {
-            format!("Play animation {} in your browser", attachment.name)
+            format!("Play animation {}", attachment.name)
         } else if video {
-            format!("Play {} in your browser or video player", attachment.name)
+            format!("Play {}", attachment.name)
         } else {
-            format!("Open {} in your browser", attachment.name)
+            format!("View {}", attachment.name)
         };
         response.widget_info(|| {
             egui::WidgetInfo::labeled(
@@ -10573,6 +10626,10 @@ impl CaperApp {
                     error.clone()
                 } else if draft.attachment.is_some() {
                     uploads::size_label(draft.source_size, draft.stored_size)
+                } else if let Some(fraction) =
+                    draft.compressing.filter(|_| draft.stored_size.is_none())
+                {
+                    format!("Compressing… {}%", (fraction * 100.0).round() as u32)
                 } else if draft.stored_size.is_none() {
                     "Preparing…".into()
                 } else if draft.progress >= 1.0 {
@@ -13202,6 +13259,11 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
     let source = match icon {
         NavIcon::Chevron => egui::include_image!("../resources/icons/chevron-down.svg"),
         NavIcon::ChevronRight => egui::include_image!("../resources/icons/chevron-right.svg"),
+        NavIcon::ChevronLeft => egui::include_image!("../resources/icons/chevron-left.svg"),
+        NavIcon::Pause => egui::include_image!("../resources/icons/pause.svg"),
+        NavIcon::Download => egui::include_image!("../resources/icons/download.svg"),
+        NavIcon::ExternalLink => egui::include_image!("../resources/icons/external-link.svg"),
+        NavIcon::Volume => egui::include_image!("../resources/icons/volume-2.svg"),
         NavIcon::Close => egui::include_image!("../resources/icons/x.svg"),
         NavIcon::More => egui::include_image!("../resources/icons/ellipsis.svg"),
         NavIcon::Plus => egui::include_image!("../resources/icons/plus.svg"),
@@ -22800,7 +22862,7 @@ mod tests {
     }
 
     #[test]
-    fn attachments_render_by_status_and_open_in_the_system_browser() {
+    fn attachments_render_by_status_and_open_in_the_viewer_or_browser() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
             &context,
@@ -22837,12 +22899,12 @@ mod tests {
             click_opening(&mut app, &context, pdf).as_deref(),
             Some("https://fixture.invalid/original/fixture-pdf")
         );
-        // Animated MP4s open in the browser, which autoplays them.
+        // Images and videos open the in-app viewer, not the browser: here the
+        // message's screenshot and animation, at the animation.
         let gif = text_position(&output, "GIF");
-        assert_eq!(
-            click_opening(&mut app, &context, gif).as_deref(),
-            Some("https://fixture.invalid/original/fixture-gif")
-        );
+        assert_eq!(click_opening(&mut app, &context, gif), None);
+        let viewer = app.viewer.take().expect("the viewer opens");
+        assert_eq!((viewer.index(), viewer.len()), (1, 2));
         // Removed, failed and processing files are not links.
         for label in [
             "File removed",

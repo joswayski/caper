@@ -24,6 +24,10 @@ const INLINE = new Set([
   "audio/webm",
   "audio/flac",
 ]);
+// Documents that open in a browser tab, keeping their name. The API checked
+// their signature bytes; browser PDF viewers sandbox the document themselves,
+// and a page-level CSP sandbox would stop Chrome from showing it at all.
+const VIEWABLE = new Set(["application/pdf"]);
 // API URLs live 24–48 hours; refuse anything signed further out.
 const MAX_LIFETIME = 3 * 24 * 60 * 60;
 const PRIVATE = "private, max-age=86400, immutable";
@@ -70,6 +74,11 @@ function headersFor(object) {
   const type = (headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
   if (INLINE.has(type)) {
     headers.set("content-disposition", "inline");
+  } else if (VIEWABLE.has(type)) {
+    headers.set(
+      "content-disposition",
+      (headers.get("content-disposition") ?? "").replace(/^attachment\b/, "inline") || "inline",
+    );
   } else {
     headers.set("content-type", "application/octet-stream");
     if (!headers.get("content-disposition")?.startsWith("attachment")) headers.set("content-disposition", "attachment");
@@ -79,7 +88,7 @@ function headersFor(object) {
   headers.set("etag", object.httpEtag);
   headers.set("accept-ranges", "bytes");
   headers.set("x-content-type-options", "nosniff");
-  headers.set("content-security-policy", "default-src 'none'; sandbox");
+  if (!VIEWABLE.has(type)) headers.set("content-security-policy", "default-src 'none'; sandbox");
   headers.set("cross-origin-resource-policy", "cross-origin");
   // Objects never change once uploaded; the signed URL itself rotates daily.
   headers.set("cache-control", PRIVATE);
