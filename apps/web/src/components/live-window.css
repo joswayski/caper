@@ -108,7 +108,7 @@
   pointer-events: none;
 }
 .live-chassis {
-  --thickness: calc(48px * var(--depth));
+  --thickness: calc(28.8px * var(--depth));
   --half-thickness: calc(var(--thickness) / 2);
   --body-top: var(--border);
   --body-bottom: #252a2d;
