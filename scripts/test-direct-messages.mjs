@@ -175,6 +175,15 @@ try {
     browser("set", "viewport", String(width), "900", "2");
     if (width === 390) browser("click", ".navigation-toggle");
     checkSidebarAlignment();
+    assert.deepEqual(
+      evaluate(`(() => {
+        const navigation = document.querySelector('.channel-navigation');
+        const style = getComputedStyle(navigation);
+        return [style.overflowY, style.scrollbarWidth, getComputedStyle(navigation, '::-webkit-scrollbar').display];
+      })()`),
+      ["auto", "none", "none"],
+      `Navigation stays scrollable without native scrollbar chrome at ${width}px`,
+    );
     console.log(
       `PASS: sidebar icon/avatar centers, label columns, and vertical centering at ${width}px (220/260/440px desktop sidebar widths)`,
     );
