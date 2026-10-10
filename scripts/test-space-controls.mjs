@@ -221,9 +221,15 @@ const wait = (expression) => browser("wait", "--fn", expression);
 const screenshot = (name) => {
   if (artifacts) browser("screenshot", ...(name.startsWith("homepage-") ? [] : ["--full"]), `${artifacts}/${name}.png`);
 };
+// On phones the member list slides in and out; these wait until it rests or is gone.
+const membersSettled = () => wait('!document.querySelector(".space-member-presence")?.getAnimations().length');
 function toggleMembers() {
-  if (evaluate('!!document.querySelector(".chat-channel-menu")')) browser("click", ".chat-channel-menu summary");
   browser("click", ".member-list-toggle");
+  membersSettled();
+}
+function closeMembers() {
+  browser("click", ".member-list-close");
+  membersSettled();
 }
 const modal = ".delete-confirmation";
 const opens = () => evaluate('document.querySelectorAll(".space-dialog[open]").length');
@@ -248,6 +254,7 @@ function dismissMemberBackdrop() {
   browser("mouse", "move", String(x + 8), String(y + 20));
   browser("mouse", "down", "left");
   browser("mouse", "up", "left");
+  membersSettled();
 }
 function dismissBackdrop() {
   browser("mouse", "move", "1", "1");
@@ -472,7 +479,7 @@ function testModalGeometry() {
         "Close must remain visible while the member list scrolls",
       );
       screenshot(`members-scrolled-${width}-${height}`);
-      browser("click", ".member-list-close");
+      closeMembers();
       assert.equal(evaluate('!!document.querySelector(".space-member-presence")'), false);
       toggleMembers();
       dismissMemberBackdrop();
@@ -619,7 +626,7 @@ try {
       );
       browser("set", "viewport", "390", "844", "2");
       screenshot("members-narrow-open");
-      browser("click", ".member-list-close");
+      closeMembers();
       assert.equal(evaluate('!!document.querySelector(".space-member-presence")'), false);
       toggleMembers();
       dismissMemberBackdrop();

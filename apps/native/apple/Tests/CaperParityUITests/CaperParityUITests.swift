@@ -2064,9 +2064,11 @@ final class CaperParityUITests: XCTestCase {
         let channel = app.descendants(matching: .any)["selected-channel-name"]
         XCTAssertGreaterThan(channel.frame.minX, navigation.frame.maxX, "Back arrow leads the channel menu")
         XCTAssertGreaterThanOrEqual(navigation.frame.width, 44, "Keep the back touch target accessible")
-        XCTAssertFalse(app.buttons["Show member list"].exists, "Mobile Members belongs in the channel dropdown")
-        // Since #363 Pins is a header button on every width, as on web.
+        // Since #363 Pins is a header button on every width, as on web; Members sits right of it.
         XCTAssertTrue(app.buttons["channel-pins"].isHittable, "Pins sits in the phone header")
+        let members = app.buttons["Show member list"]
+        XCTAssertTrue(members.isHittable, "Members is a phone header button, not in a channel dropdown")
+        XCTAssertGreaterThan(members.frame.minX, app.buttons["channel-pins"].frame.maxX - 1, "Members sits right of Pins")
         let composer = app.descendants(matching: .any)["message-composer"]
         composer.tap(); composer.typeText("Draft survives Browse")
         let timeline = app.descendants(matching: .any)["chat-timeline"]
@@ -2081,14 +2083,20 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(navigation.waitForExistence(timeout: 3), "Swipe left from Browse's edge returns to chat")
         XCTAssertEqual(composer.value as? String, "Draft survives Browse")
         capture("narrow-conversation", app: app)
-        channel.tap()
-        let members = app.buttons["Members"]
-        XCTAssertTrue(members.waitForExistence(timeout: 2))
-        capture("narrow-channel-menu", app: app)
         members.tap()
         assertStaticText("Members", in: app, timeout: 2)
         capture("narrow-members", app: app)
         app.buttons["Close member list"].tap()
+        XCTAssertEqual(staticTexts("Members", in: app).count, 0)
+        // Like Browse from the leading edge, the member list follows a finger: in from the trailing edge, out from the panel.
+        timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.97, dy: 0.5)).press(forDuration: 0.01,
+            thenDragTo: timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.4, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
+        assertStaticText("Members", in: app, timeout: 3)
+        XCTAssertTrue(navigation.isHittable, "Swiping in the member list keeps the conversation, not Browse")
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.5)).press(forDuration: 0.01,
+            thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.buttons["Hide member list"])
+        XCTAssertEqual(XCTWaiter().wait(for: [closed], timeout: 3), .completed, "Swiping the panel right closes the member list")
         XCTAssertEqual(staticTexts("Members", in: app).count, 0)
         let pins = app.buttons["channel-pins"]
         XCTAssertTrue(pins.waitForExistence(timeout: 2))
@@ -2100,7 +2108,6 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(navigation.waitForExistence(timeout: 3))
         XCTAssertTrue(pins.waitForExistence(timeout: 3), "Dismissing Pins restores the header")
         XCTAssertEqual(composer.value as? String, "Draft survives Browse")
-        channel.tap()
         members.tap()
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.5)).tap()
         XCTAssertEqual(staticTexts("Members", in: app).count, 0)

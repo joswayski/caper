@@ -49,10 +49,6 @@
   outline: 2px solid var(--terracotta);
   outline-offset: 2px;
 }
-/* In the narrow channel menu, Pins matches the menu's other items. */
-.space-actions .chat-pins-toggle {
-  font-weight: inherit;
-}
 .chat-channel-title {
   min-width: 0;
   flex: 1;
