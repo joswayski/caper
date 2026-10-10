@@ -583,6 +583,7 @@ async fn notification_subscription(
     if after > initial {
         return Err(invalid());
     }
+    let mut checkpoint = None;
     let mut check = tokio::time::interval(Duration::from_secs(10));
     loop {
         identity.check(state).await?;
@@ -602,13 +603,21 @@ async fn notification_subscription(
                 after = id;
             }
         }
-        event(
-            out,
-            &sub.id,
-            json!({"type":"ready","cursor":after.to_string()}),
-        )
-        .await?;
-        subscribed(out, &sub.id).await?;
+        // The immediate authorization tick and a lagging shared poll can wake
+        // us without progress. Acknowledge once, then only checkpoint new IDs,
+        // including suppressed notifications, without skipping identity checks.
+        if checkpoint != Some(after) {
+            event(
+                out,
+                &sub.id,
+                json!({"type":"ready","cursor":after.to_string()}),
+            )
+            .await?;
+            if checkpoint.is_none() {
+                subscribed(out, &sub.id).await?;
+            }
+            checkpoint = Some(after);
+        }
         tokio::select! { _ = heads.changed() => {}, _ = check.tick() => {} }
     }
 }
