@@ -529,6 +529,7 @@ private struct WorkspaceView: View {
                         .padding(.bottom, narrow ? browseBarHeight : 0)
                     }
                     .allowsHitTesting(showsBrowse)
+                    .accessibilityElement(children: .contain)
                     .accessibilityHidden(!showsBrowse)
                     if narrow && conversationAvailable {
                         ZStack(alignment: .trailing) {
@@ -549,6 +550,7 @@ private struct WorkspaceView: View {
                         }
                         .modifier(BrowseLayer(showsBrowse: showsBrowse) { CGSize(width: $0 * travel, height: 0) })
                         .allowsHitTesting(!showsBrowse)
+                        .accessibilityElement(children: .contain)
                         .accessibilityHidden(showsBrowse)
                     }
                     // The account bar keeps the full width: it rises from the bottom
@@ -560,6 +562,7 @@ private struct WorkspaceView: View {
                             .modifier(BrowseLayer(showsBrowse: showsBrowse, hidesCovered: true) { CGSize(width: 0, height: (1 - $0) * (browseBarHeight + geometry.safeAreaInsets.bottom)) })
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                             .allowsHitTesting(showsBrowse)
+                            .accessibilityElement(children: .contain)
                             .accessibilityHidden(!showsBrowse)
                     }
                 }
@@ -593,6 +596,9 @@ private struct WorkspaceView: View {
         ZStack {
             workspaceContent
                 .disabled(modalSheet.wrappedValue != nil)
+                // Hide this container without overriding its children's own
+                // hidden states when the workspace becomes accessible again.
+                .accessibilityElement(children: .contain)
                 .accessibilityHidden(modalSheet.wrappedValue != nil)
             // A sibling, not an overlay on disabled content: modal controls must
             // retain their own hit-testing, keyboard and accessibility environment.
@@ -1471,6 +1477,7 @@ private struct MembersOverlay: View {
                 .transaction(settle) { $0.offset(x: (1 - shown) * travel) }
                 .modifier(MembersSwipe(open: true, enabled: shows, anywhere: true, navigate: close))
                 .allowsHitTesting(shows)
+                .accessibilityElement(children: .contain)
                 .accessibilityHidden(!shows)
         }
         .onChange(of: travel, initial: true) { _, travel in drawer?.travel = travel }
@@ -2371,6 +2378,9 @@ private struct ChatView: View {
                     .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
                     .onChange(of: chat.draft) { _, value in chat.draftChanged(value) }
+                    #if os(iOS)
+                    .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
+                    #endif
                 }
                 Button { Task { await chat.send() } } label: {
                     Image(systemName: "arrow.up").font(.system(size: 15, weight: .bold))
@@ -2688,6 +2698,9 @@ private struct NativeThreadView: View {
                     // Clipped too: the fill's square corners showed outside the rounded border.
                     .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+                    #if os(iOS)
+                    .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
+                    #endif
                 HStack {
                     Toggle(direct ? "Also send to conversation" : "Also send to #\(chat.channelName)", isOn: $chat.threadBroadcast).font(CaperTheme.font(11)).disabled(chat.pendingMessage != nil)
                     Button("Send reply") { Task { await chat.send(inThread: true) } }.buttonStyle(CaperPrimaryButton())
@@ -2771,7 +2784,7 @@ private struct PrimaryIconButton: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.foregroundStyle(CaperTheme.text)
-            .background(configuration.isPressed ? CaperTheme.terracottaBright : CaperTheme.terracotta)
+            .background(configuration.isPressed ? CaperTheme.terracottaBright : CaperTheme.terracotta, ignoresSafeAreaEdges: [])
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .opacity(isEnabled ? 1 : 0.45)
             .modifier(ControlHover())
@@ -3649,6 +3662,27 @@ struct ReactionFlowLayout: Layout {
 }
 
 #if os(iOS)
+/// Parity tests only. XCUITest's keyboard element excludes the prediction bar
+/// on iOS 26; UIKit reports the full system keyboard in screen coordinates.
+/// This measures the system boundary, not the composer's own layout.
+private struct ParityKeyboardProbe: View {
+    @State private var top: CGFloat?
+
+    var body: some View {
+        if ProcessInfo.processInfo.environment["CAPER_TEST_MODE"] == "parity" {
+            Color.clear.frame(width: 1, height: 1)
+                .allowsHitTesting(false)
+                .accessibilityElement()
+                .accessibilityIdentifier("parity-keyboard-top")
+                .accessibilityLabel("System keyboard top")
+                .accessibilityValue(top.map { String(Double($0)) } ?? "")
+                .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidChangeFrameNotification)) { notification in
+                    top = (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue.minY
+                }
+        }
+    }
+}
+
 /// Parity tests only. Since iOS 26 the UI test runner is not authorized to
 /// read a pasteboard item another app wrote (PBErrorDomain code 13), so the app
 /// that wrote it reads its own pasteboard back and exposes the exact string.
