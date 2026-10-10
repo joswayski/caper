@@ -263,7 +263,11 @@ export function MessageAttachments({
           );
         if (view === "video") {
           return (
-            <div key={attachment.id} className="chat-media chat-video" style={size}>
+            <div
+              key={attachment.id}
+              className={size ? "chat-media chat-video" : "chat-media chat-video intrinsic"}
+              style={size}
+            >
               <video
                 controls
                 playsInline

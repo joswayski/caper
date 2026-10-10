@@ -110,12 +110,19 @@ final class AttachmentImageLoader: @unchecked Sendable {
         return nil
     }
 
-    /// Downloads a file into its own temporary folder under its name, for
-    /// the share sheet.
+    /// Downloads a file under its name for the share sheet, into a folder
+    /// that keeps only the latest share: each one clears the last, so
+    /// shared originals don't pile up in temporary storage.
     func download(_ url: URL, name: String) async throws -> URL {
         let (location, response) = try await session.download(from: url)
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { throw AttachmentLoadError.status(http.statusCode) }
-        let destination = try AttachmentStaging.newDirectory().appendingPathComponent(AttachmentStaging.sanitized(name))
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            try? FileManager.default.removeItem(at: location)
+            throw AttachmentLoadError.status(http.statusCode)
+        }
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("caper-shared", isDirectory: true)
+        try? FileManager.default.removeItem(at: folder)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let destination = folder.appendingPathComponent(AttachmentStaging.sanitized(name))
         try FileManager.default.moveItem(at: location, to: destination)
         return destination
     }
@@ -557,6 +564,19 @@ private final class LoopingPlayback {
         looper.disableLooping()
         player.removeAllItems()
     }
+
+    /// Waits for the file: true once it plays, false when it fails to load
+    /// (usually an expired signature) or the wait is cancelled.
+    @MainActor func loads() async -> Bool {
+        for await status in looper.publisher(for: \.status).values {
+            switch status {
+            case .ready: return true
+            case .failed, .cancelled: return false
+            default: continue
+            }
+        }
+        return false
+    }
 }
 
 #if os(iOS)
@@ -636,6 +656,8 @@ private struct AttachmentAnimationView: View {
     @State private var poster: CGImage?
     @State private var playing = false
     @State private var userPaused = false
+    @State private var failed = false
+    @State private var attempt = 0
 
     var body: some View {
         ZStack {
@@ -661,8 +683,14 @@ private struct AttachmentAnimationView: View {
             guard attachment.previewUrl != nil else { return }
             poster = await loadAttachmentImage(attachment, preview: true, chat: chat).image ?? poster
         }
-        .task(id: reduceMotion) {
+        .task(id: "\(reduceMotion):\(attempt)") {
             if reduceMotion || userPaused { pause() } else { await play() }
+        }
+        .onChange(of: attachment.url) { _, _ in
+            // The fresh signature a failed load asked for: retry once with it.
+            guard failed, attempt == 0 else { return }
+            failed = false
+            attempt += 1
         }
         .onDisappear {
             playback?.stop()
@@ -699,6 +727,14 @@ private struct AttachmentAnimationView: View {
         playback = created
         created.player.play()
         playing = true
+        let loaded = await created.loads()
+        guard !loaded, !Task.isCancelled, playback === created else { return }
+        // Usually an expired signature: one fresh URL retries (see `attachment.url`).
+        created.stop()
+        playback = nil
+        playing = false
+        failed = true
+        if attempt == 0 { chat?.requestFreshAttachmentURLs(ids: [attachment.id]) }
     }
 }
 
@@ -910,16 +946,8 @@ private struct MediaViewer: View {
     /// The original file, downloaded only once a share action asks for it, so
     /// the share sheet can save it (Photos, Files) or send it on.
     @ViewBuilder private func shareButton(_ item: ChatAttachment, url: URL) -> some View {
-        Group {
-            if item.kind == .image {
-                ShareLink(item: SharedAttachmentImage(url: url, name: item.name), preview: SharePreview(item.name)) {
-                    Image(systemName: "square.and.arrow.up")
-                }
-            } else {
-                ShareLink(item: SharedAttachmentVideo(url: url, name: item.name), preview: SharePreview(item.name)) {
-                    Image(systemName: "square.and.arrow.up")
-                }
-            }
+        ShareLink(item: SharedAttachmentFile(item, url: url), preview: SharePreview(item.name)) {
+            Image(systemName: "square.and.arrow.up")
         }
         .buttonStyle(MediaViewerButton())
         .help("Save or share")
@@ -939,34 +967,42 @@ private struct MediaViewer: View {
     #if os(iOS)
     UIAccessibility.post(notification: .announcement, argument: text)
     #else
-    NSAccessibility.post(element: NSApp.mainWindow as Any, notification: .announcementRequested,
+    guard let window = NSApp.mainWindow else { return }
+    NSAccessibility.post(element: window, notification: .announcementRequested,
                          userInfo: [.announcement: text, .priority: NSAccessibilityPriorityLevel.high.rawValue])
     #endif
 }
 
-/// A viewer image for the share sheet, downloaded once an action asks for it.
-private struct SharedAttachmentImage: Transferable, Sendable {
+/// A viewer file for the share sheet, downloaded once an action asks for
+/// it. It offers its own concrete type (a JPEG, an MP4), which the sheet's
+/// Save Image and Save Video actions need; other types go as plain data.
+private struct SharedAttachmentFile: Transferable, Sendable {
     let url: URL
     let name: String
+    let type: UTType?
 
-    static var transferRepresentation: some TransferRepresentation {
-        FileRepresentation(exportedContentType: .image) { file in
-            let downloaded = try await AttachmentImageLoader.shared.download(file.url, name: file.name)
-            return SentTransferredFile(downloaded)
-        }
+    init(_ item: ChatAttachment, url: URL) {
+        self.url = url
+        name = item.name
+        type = UTType(mimeType: item.contentType)
     }
-}
 
-/// A viewer video for the share sheet, downloaded once an action asks for it.
-private struct SharedAttachmentVideo: Transferable, Sendable {
-    let url: URL
-    let name: String
+    static let saveable: [UTType] = [.jpeg, .png, .heic, .gif, .webP, .mpeg4Movie, .quickTimeMovie]
 
     static var transferRepresentation: some TransferRepresentation {
-        FileRepresentation(exportedContentType: .movie) { file in
-            let downloaded = try await AttachmentImageLoader.shared.download(file.url, name: file.name)
-            return SentTransferredFile(downloaded)
-        }
+        FileRepresentation(exportedContentType: .jpeg) { try await $0.downloaded() }.exportingCondition { $0.type == .jpeg }
+        FileRepresentation(exportedContentType: .png) { try await $0.downloaded() }.exportingCondition { $0.type == .png }
+        FileRepresentation(exportedContentType: .heic) { try await $0.downloaded() }.exportingCondition { $0.type == .heic }
+        FileRepresentation(exportedContentType: .gif) { try await $0.downloaded() }.exportingCondition { $0.type == .gif }
+        FileRepresentation(exportedContentType: .webP) { try await $0.downloaded() }.exportingCondition { $0.type == .webP }
+        FileRepresentation(exportedContentType: .mpeg4Movie) { try await $0.downloaded() }.exportingCondition { $0.type == .mpeg4Movie }
+        FileRepresentation(exportedContentType: .quickTimeMovie) { try await $0.downloaded() }.exportingCondition { $0.type == .quickTimeMovie }
+        FileRepresentation(exportedContentType: .data) { try await $0.downloaded() }
+            .exportingCondition { file in !saveable.contains { $0 == file.type } }
+    }
+
+    private func downloaded() async throws -> SentTransferredFile {
+        SentTransferredFile(try await AttachmentImageLoader.shared.download(url, name: name))
     }
 }
 
@@ -1047,8 +1083,8 @@ private struct MediaViewerImage: View {
     @State private var preview: CGImage?
     @State private var original: AttachmentOriginal?
     @State private var failed = false
-    /// A refused URL asked for a fresh one; the next failure stays failed.
-    @State private var refreshed = false
+    /// Bumped once when the fresh URL a refused load asked for arrives.
+    @State private var attempt = 0
     /// Tapped away from the default: paused, or played with Reduce Motion.
     @State private var toggled = false
     @State private var started = Date()
@@ -1098,7 +1134,15 @@ private struct MediaViewerImage: View {
         .overlay(alignment: .bottom) {
             if animated && active { MediaViewerAnimationToggle(playing: playing) { toggled.toggle() } }
         }
-        .task(id: "\(active):\(item.url ?? "")") { await load() }
+        // Not keyed on the URL: opening the original can re-sign it, which
+        // would cancel the download it is about to start.
+        .task(id: "\(active):\(attempt)") { await load() }
+        .onChange(of: item.url) { _, _ in
+            // The fresh signature a refused load asked for: retry once with it.
+            guard failed, attempt == 0 else { return }
+            failed = false
+            attempt += 1
+        }
         .onChange(of: active) { _, isActive in
             // Each file opens fitted. Pages stay alive once seen, so only the
             // one on screen holds its decoded original (stills stay cached).
@@ -1175,9 +1219,8 @@ private struct MediaViewerImage: View {
         } else if !Task.isCancelled {
             failed = result.failed
             // Usually an expired signature: the task retries once with the
-            // fresh URL when it arrives (its id follows `item.url`).
-            if result.refusedURL && !refreshed {
-                refreshed = true
+            // fresh URL when it arrives (see `item.url`).
+            if result.refusedURL && attempt == 0 {
                 chat?.requestFreshAttachmentURLs(ids: [item.id])
             }
         }
@@ -1195,6 +1238,8 @@ private struct MediaViewerAnimation: View {
     @State private var poster: CGImage?
     /// Tapped away from the default: paused, or played with Reduce Motion.
     @State private var toggled = false
+    @State private var failed = false
+    @State private var attempt = 0
 
     private var playing: Bool { active && (reduceMotion ? toggled : !toggled) }
 
@@ -1202,7 +1247,7 @@ private struct MediaViewerAnimation: View {
         ZStack {
             if let poster { Image(decorative: poster, scale: 1).resizable().scaledToFit() }
             if let playback { PlayerSurface(player: playback.player, gravity: .resizeAspect) }
-            if playback == nil && playing { ProgressView() }
+            if playback == nil && playing && !failed { ProgressView() }
         }
         .modifier(MediaViewerAspect(item: item))
         .contentShape(Rectangle())
@@ -1219,7 +1264,13 @@ private struct MediaViewerAnimation: View {
             guard item.previewUrl != nil else { return }
             poster = await loadAttachmentImage(item, preview: true, chat: chat).image ?? poster
         }
-        .task(id: playing) { await update() }
+        .task(id: "\(playing):\(attempt)") { await update() }
+        .onChange(of: item.url) { _, _ in
+            // The fresh signature a failed load asked for: retry once with it.
+            guard failed, attempt == 0 else { return }
+            failed = false
+            attempt += 1
+        }
         .onDisappear {
             playback?.stop()
             playback = nil
@@ -1231,8 +1282,18 @@ private struct MediaViewerAnimation: View {
         if playback == nil {
             let url: URL?
             if let chat { url = await chat.currentURL(for: item) } else { url = item.url.flatMap { URL(string: $0) } }
-            guard let url, playback == nil, !Task.isCancelled else { return }
-            playback = LoopingPlayback(url: url)
+            guard let url, playback == nil, !failed, !Task.isCancelled else { return }
+            let created = LoopingPlayback(url: url)
+            playback = created
+            created.player.play()
+            let loaded = await created.loads()
+            guard !loaded, !Task.isCancelled, playback === created else { return }
+            // Usually an expired signature: one fresh URL retries (see `item.url`).
+            created.stop()
+            playback = nil
+            failed = true
+            if attempt == 0 { chat?.requestFreshAttachmentURLs(ids: [item.id]) }
+            return
         }
         playback?.player.play()
     }

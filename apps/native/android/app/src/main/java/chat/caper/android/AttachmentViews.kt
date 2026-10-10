@@ -103,8 +103,9 @@ internal fun durationLabel(durationMs: Long?): String? {
  * Files under a message, shown by processing status. Pending rows show local copies and are not
  * interactive. [progress] is the latest server percent per file; [localPreviews] are this
  * device's own picked images, shown while the server processes them. Tapping a ready image or
- * video opens the media viewer on this message's images and videos; [caption] (sender and time)
- * shows under the file name there.
+ * video opens the media viewer on this message's images and videos (the timeline's
+ * [LocalMediaViewerHost] when there is one); [caption] (sender and time) shows under the file
+ * name there.
  */
 @Composable internal fun MessageAttachments(
     attachments: List<ChatAttachment>,
@@ -120,7 +121,13 @@ internal fun durationLabel(durationMs: Long?): String? {
     val uriHandler = LocalUriHandler.current
     // The system browser downloads or shows the file and handles `Content-Encoding: gzip` itself.
     val open: (String) -> Unit = { url -> runCatching { uriHandler.openUri(url) } }
-    val view: (ChatAttachment) -> (() -> Unit)? = { attachment -> if (pending) null else ({ viewer = viewerPages(attachments, attachment.id) }) }
+    val host = LocalMediaViewerHost.current
+    val view: (ChatAttachment) -> (() -> Unit)? = { attachment ->
+        if (pending) null else ({
+            val pages = viewerPages(attachments, attachment.id)
+            if (host != null) host.open = pages?.let { OpenViewer(it, caption) } else viewer = pages
+        })
+    }
     Column(Modifier.padding(top = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         attachments.forEach { attachment ->
             val url = attachment.url
@@ -290,34 +297,17 @@ internal fun durationLabel(durationMs: Long?): String? {
 }
 
 /** In-app audio playback; a failed load asks for fresh URLs once, then offers the browser. */
-@OptIn(UnstableApi::class)
 @Composable private fun MediaPlayerDialog(attachment: ChatAttachment, close: () -> Unit, open: (String) -> Unit, onLoadFailed: (ChatAttachment, Int?) -> Unit) {
     val url = attachment.url ?: return
-    val context = LocalContext.current
-    var failed by remember(url) { mutableStateOf(false) }
-    val latest by rememberUpdatedState(attachment)
-    val reportFailure by rememberUpdatedState(onLoadFailed)
-    val player = remember(url) {
-        ExoPlayer.Builder(context).build().apply {
-            setMediaItem(MediaItem.fromUri(url))
-            addListener(object : Player.Listener {
-                override fun onPlayerError(error: PlaybackException) {
-                    failed = true
-                    reportFailure(latest, (error.cause as? HttpDataSource.InvalidResponseCodeException)?.responseCode)
-                }
-            })
-            prepare()
-            playWhenReady = true
-        }
-    }
-    DisposableEffect(player) { onDispose { player.release() } }
+    val playback = rememberAttachmentPlayback(attachment, url, silent = false, onLoadFailed) { playWhenReady = true }
+    val player = playback.player
     ViewerFrame(attachment.name, close, actions = { TextButton({ open(url) }) { Text("Open", color = Text) } }) {
         AndroidView(
             factory = { PlayerView(it).apply { useController = true; setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING) } },
             update = { it.player = player },
             modifier = Modifier.fillMaxSize(),
         )
-        if (failed) Text("This file could not be played.", Modifier.align(Alignment.TopCenter).padding(12.dp), color = ErrorText, fontSize = 12.sp)
+        if (playback.failed) Text("This file could not be played.", Modifier.align(Alignment.TopCenter).padding(12.dp), color = ErrorText, fontSize = 12.sp)
     }
 }
 

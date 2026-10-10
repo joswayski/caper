@@ -40,6 +40,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -58,6 +59,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.net.toUri
 import androidx.lifecycle.compose.LifecycleStartEffect
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -65,6 +67,8 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import chat.caper.android.data.withFreshUrls
+import chat.caper.android.model.AppUiState
 import chat.caper.android.model.AttachmentState
 import chat.caper.android.model.ChatAttachment
 import chat.caper.android.ui.*
@@ -109,6 +113,45 @@ internal fun panLimit(content: Float, viewport: Float, scale: Float): Float = ma
 /** A name DownloadManager can write: no path separators, reserved or control characters, or leading dots. */
 internal fun downloadName(name: String): String =
     name.replace(Regex("[\\\\/:*?\"<>|\\p{Cntrl}]"), "_").trim().trimStart('.').ifEmpty { "file" }
+
+/** A timeline's open viewer: the files it pages through and the caption under their names. */
+internal data class OpenViewer(val pages: ViewerPages, val caption: String?)
+
+/**
+ * Holds a timeline's media viewer above its LazyColumn. A viewer composed in its message row
+ * would close, stopping its video, once the row scrolls out of composition, as it does when new
+ * messages arrive and the timeline follows them.
+ */
+internal class MediaViewerHost { var open by mutableStateOf<OpenViewer?>(null) }
+
+/** The timeline's viewer host; files outside a timeline (forwarded conversations) keep their own viewer. */
+internal val LocalMediaViewerHost = staticCompositionLocalOf<MediaViewerHost?> { null }
+
+/**
+ * [ids]' files as the conversation has them now, in [ids] order and on their freshest URLs, from
+ * any loaded or pinned message or the original it forwards. Files no longer loaded are left out.
+ */
+internal fun liveAttachments(state: AppUiState, ids: List<String>): List<ChatAttachment> {
+    val wanted = ids.toSet()
+    val found = HashMap<String, ChatAttachment>()
+    (state.messages + state.pinnedMessages).forEach { message ->
+        (message.content.attachments + message.forward?.message?.content?.attachments.orEmpty()).forEach {
+            if (it.id in wanted) found.putIfAbsent(it.id, it)
+        }
+    }
+    return ids.mapNotNull { id -> found[id]?.withFreshUrls(state.freshAttachmentUrls[id]) }
+}
+
+/** [host]'s viewer over its files as [state] has them now; it closes once none is loaded (another conversation opened). */
+@Composable internal fun HostedMediaViewer(host: MediaViewerHost, state: AppUiState, onLoadFailed: (ChatAttachment, Int?) -> Unit) {
+    val open = host.open ?: return
+    val attachments = remember(state.messages, state.pinnedMessages, state.freshAttachmentUrls, open) { liveAttachments(state, open.pages.ids) }
+    if (attachments.isEmpty()) return SideEffect { host.open = null }
+    val uriHandler = LocalUriHandler.current
+    key(open) {
+        MediaViewer(open.pages, attachments, open.caption, close = { host.open = null }, open = { url -> runCatching { uriHandler.openUri(url) } }, onLoadFailed = onLoadFailed)
+    }
+}
 
 private const val MAX_ZOOM = 4f
 private const val DOUBLE_TAP_ZOOM = 2f
@@ -305,6 +348,65 @@ private const val DOUBLE_TAP_ZOOM = 2f
     )
 }
 
+/** [rememberAttachmentPlayback]'s player and what it has shown so far. */
+internal class AttachmentPlayback(val player: ExoPlayer) {
+    var rendered by mutableStateOf(false)
+    var failed by mutableStateOf(false)
+}
+
+/**
+ * An ExoPlayer for [attachment], prepared and released with the composition. Sound takes audio
+ * focus unless [silent] (a stored GIF, which leaves other apps' audio alone). A re-signed URL
+ * doesn't restart playback: the player keeps reading its URL until that fails, then carries on
+ * from the same spot on the newest one; a failure with nothing newer goes to [onLoadFailed].
+ */
+@OptIn(UnstableApi::class)
+@Composable internal fun rememberAttachmentPlayback(
+    attachment: ChatAttachment, url: String, silent: Boolean, onLoadFailed: (ChatAttachment, Int?) -> Unit, configure: ExoPlayer.() -> Unit = {},
+): AttachmentPlayback {
+    val context = LocalContext.current
+    val latest by rememberUpdatedState(attachment)
+    val reportFailure by rememberUpdatedState(onLoadFailed)
+    // The URL the player is reading.
+    var source by remember(attachment.id) { mutableStateOf(url) }
+    val playback = remember(attachment.id) {
+        AttachmentPlayback(ExoPlayer.Builder(context).build().apply {
+            setAudioAttributes(AudioAttributes.DEFAULT, !silent)
+            configure()
+            setMediaItem(MediaItem.fromUri(url))
+            prepare()
+        })
+    }
+    val player = playback.player
+    fun reload(next: String) {
+        source = next
+        playback.failed = false
+        player.setMediaItem(MediaItem.fromUri(next), player.currentPosition)
+        player.prepare()
+    }
+    DisposableEffect(player) {
+        val listener = object : Player.Listener {
+            override fun onRenderedFirstFrame() { playback.rendered = true }
+            override fun onPlayerError(error: PlaybackException) {
+                val fresh = latest.url
+                if (fresh != null && fresh != source) reload(fresh)
+                else {
+                    playback.failed = true
+                    reportFailure(latest, (error.cause as? HttpDataSource.InvalidResponseCodeException)?.responseCode)
+                }
+            }
+        }
+        player.addListener(listener)
+        onDispose {
+            player.removeListener(listener)
+            player.release()
+        }
+    }
+    // The fresh URL a failure asked for.
+    LaunchedEffect(url) { if (playback.failed && url != source) reload(url) }
+    return playback
+}
+
 /**
  * Plays while its page is the settled one and the app is visible, and pauses when paged away;
  * leaving the viewer releases it. A stored GIF loops silently without controls. The poster shows
@@ -313,29 +415,13 @@ private const val DOUBLE_TAP_ZOOM = 2f
 @OptIn(UnstableApi::class)
 @Composable private fun ViewerVideo(attachment: ChatAttachment, active: Boolean, onLoadFailed: (ChatAttachment, Int?) -> Unit) {
     val url = attachment.url ?: return
-    val context = LocalContext.current
-    val latest by rememberUpdatedState(attachment)
-    val reportFailure by rememberUpdatedState(onLoadFailed)
-    var failed by remember(url) { mutableStateOf(false) }
-    var rendered by remember(url) { mutableStateOf(false) }
-    val player = remember(url) {
-        ExoPlayer.Builder(context).build().apply {
-            if (attachment.animated) {
-                volume = 0f
-                repeatMode = Player.REPEAT_MODE_ONE
-            }
-            setMediaItem(MediaItem.fromUri(url))
-            addListener(object : Player.Listener {
-                override fun onRenderedFirstFrame() { rendered = true }
-                override fun onPlayerError(error: PlaybackException) {
-                    failed = true
-                    reportFailure(latest, (error.cause as? HttpDataSource.InvalidResponseCodeException)?.responseCode)
-                }
-            })
-            prepare()
+    val playback = rememberAttachmentPlayback(attachment, url, silent = attachment.animated, onLoadFailed) {
+        if (attachment.animated) {
+            volume = 0f
+            repeatMode = Player.REPEAT_MODE_ONE
         }
     }
-    DisposableEffect(player) { onDispose { player.release() } }
+    val player = playback.player
     LifecycleStartEffect(player, active) {
         player.playWhenReady = active
         onStopOrDispose { player.pause() }
@@ -351,8 +437,8 @@ private const val DOUBLE_TAP_ZOOM = 2f
         update = { it.player = player },
         modifier = Modifier.fillMaxSize(),
     )
-    if (!rendered) attachment.previewUrl?.let { AttachmentImage(attachment, it, "display", Modifier.fillMaxSize(), ContentScale.Fit, onLoadFailed) }
-    if (failed) Text("This file could not be played.", color = ErrorText, fontSize = 12.sp)
+    if (!playback.rendered) attachment.previewUrl?.let { AttachmentImage(attachment, it, "display", Modifier.fillMaxSize(), ContentScale.Fit, onLoadFailed) }
+    if (playback.failed) Text("This file could not be played.", color = ErrorText, fontSize = 12.sp)
 }
 
 /**

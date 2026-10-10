@@ -1,6 +1,12 @@
 package chat.caper.android
 
+import chat.caper.android.model.AppUiState
+import chat.caper.android.model.AttachmentUrls
 import chat.caper.android.model.ChatAttachment
+import chat.caper.android.model.ChatAuthor
+import chat.caper.android.model.ChatContent
+import chat.caper.android.model.ChatMessage
+import chat.caper.android.model.MessageForward
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -72,5 +78,24 @@ class MediaViewerTest {
         assertEquals("file", downloadName(".."))
         assertEquals("file", downloadName("  "))
         assertEquals("line_break.txt", downloadName("line\nbreak.txt"))
+    }
+
+    private fun message(id: String, vararg files: ChatAttachment, forward: ChatMessage? = null) = ChatMessage(
+        id, "channel", "1", ChatAuthor("author", "Author", false), ChatContent(1, "text", "", files.toList()), "2026-01-01T00:00:00Z", "client-$id",
+        forward = forward?.let { MessageForward(it, "1") },
+    )
+
+    @Test fun `the timeline's viewer follows its files live wherever they are loaded`() {
+        val original = message("original", file("shared"))
+        val state = AppUiState(
+            messages = listOf(message("one", file("a"), file("b", kind = "video")), message("forward", forward = original)),
+            pinnedMessages = listOf(message("pinned", file("p"))),
+            freshAttachmentUrls = mapOf("b" to AttachmentUrls(url = "https://cdn.example/original/b?exp=3000&sig=new")),
+        )
+        val live = liveAttachments(state, listOf("b", "shared", "p", "a"))
+        assertEquals("in viewer order", listOf("b", "shared", "p", "a"), live.map { it.id })
+        assertEquals("on the re-signed URL", "https://cdn.example/original/b?exp=3000&sig=new", live.first().url)
+        assertEquals("files no longer loaded drop out", listOf("a"), liveAttachments(state, listOf("gone", "a")).map { it.id })
+        assertTrue("another conversation: nothing to show", liveAttachments(AppUiState(), listOf("a")).isEmpty())
     }
 }

@@ -1627,6 +1627,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     var reactorsTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
     // The tapped person's `user` mention entry; another pill replaces it.
     var mentionTarget by remember { mutableStateOf<MessageMention?>(null) }
+    // Above the list, so new messages scrolling a row away don't close its viewer.
+    val viewerHost = remember { MediaViewerHost() }
     val messages = if (inThread) state.displayedMessages else state.displayedChannelMessages
     // Runs of blocked authors' messages collapse; Show reveals one run, in memory only.
     var revealedRuns by remember { mutableStateOf(emptySet<String>()) }
@@ -1656,7 +1658,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         historyTarget = null
         blockTarget = null
         revealedRuns = emptySet()
+        viewerHost.open = null
     }
+    HostedMediaViewer(viewerHost, state, viewModel::reportAttachmentFailure)
     // Web's chat phases: loading, failed first load, then the conversation.
     if (state.messagesLoading) {
         SideEffect { follow.settled = false }
@@ -1682,7 +1686,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         loadingNewer = if (inThread) threadPaging && state.thread?.hasNewer == true else state.loadingNewer,
         jump = state.focusRevision.takeIf { state.focusedMessageId?.let { id -> messages.any { it.id == id } } == true }),
         firstRow, firstRow + rows.size + listOf(skeleton, listedPending != null, empty, newer).count { it } - 1, ready = !skeleton)
-    LazyColumn(modifier.fillMaxWidth(), state = listState, reverseLayout = false, contentPadding = PaddingValues(vertical = 8.dp)) {
+    CompositionLocalProvider(LocalMediaViewerHost provides viewerHost) { LazyColumn(modifier.fillMaxWidth(), state = listState, reverseLayout = false, contentPadding = PaddingValues(vertical = 8.dp)) {
         if (!inThread) item {
             Row(Modifier.fillMaxWidth().height(44.dp).padding(horizontal = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalAlignment = Alignment.CenterVertically) {
                 val historyButton: @Composable (String, Boolean) -> Unit = { label, enabled ->
@@ -1779,7 +1783,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 TextButton(viewModel::retryMessages) { Text("Back to latest") }
             }
         }
-    }
+    } }
     actionTarget?.let { target ->
         val presented = state.displayedMessages.firstOrNull { it.id == target.id } ?: target
         MessageActionsSheet(

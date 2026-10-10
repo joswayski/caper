@@ -357,14 +357,20 @@ export default function MediaViewer({
     // Back closes the viewer on phones and tablets, like the thread panel.
     if (!window.matchMedia("(max-width: 760px), (pointer: coarse)").matches) return;
     const key = crypto.randomUUID();
-    window.history.pushState({ ...window.history.state, caperViewer: key }, "");
+    // A viewer remounting elsewhere (pins opening or closing under it) takes over the entry its
+    // last mount left, rather than pushing a second one that the first's Back would then close.
+    if (window.history.state?.caperViewer) window.history.replaceState({ ...window.history.state, caperViewer: key }, "");
+    else window.history.pushState({ ...window.history.state, caperViewer: key }, "");
     const back = () => {
       if (window.history.state?.caperViewer !== key) onClose();
     };
     window.addEventListener("popstate", back);
     return () => {
       window.removeEventListener("popstate", back);
-      if (window.history.state?.caperViewer === key) window.history.back();
+      // Left until the next task, so a remount in the same commit can take the entry over.
+      setTimeout(() => {
+        if (window.history.state?.caperViewer === key) window.history.back();
+      });
     };
   }, [onClose]);
 

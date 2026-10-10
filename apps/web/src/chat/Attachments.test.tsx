@@ -26,8 +26,8 @@ test("sent images open the viewer but keep a real link for new tabs, and videos 
   expect(markup).toMatch(
     /<a class="chat-media" href="https:\/\/cdn\.test\/original\/photo" target="_blank" rel="noopener noreferrer"[^>]*aria-haspopup="dialog"/,
   );
-  // Videos keep playing inline with their own controls.
-  expect(markup).toMatch(/<div class="chat-media chat-video"><video controls=""/);
+  // Videos keep playing inline with their own controls; one with no stored size keeps its own shape.
+  expect(markup).toMatch(/<div class="chat-media chat-video intrinsic"><video controls=""/);
   expect(markup).toContain('aria-label="Open clip.mp4 in viewer"');
   expect(markup).toContain('aria-label="Open party.mp4 in viewer"');
   expect(markup).not.toContain("Open voice.m4a in viewer");
@@ -37,7 +37,13 @@ test("sent images open the viewer but keep a real link for new tabs, and videos 
 test("without a viewer (the sender's pending row) files keep their links and inline players", () => {
   const markup = renderToStaticMarkup(<MessageAttachments attachments={files} />);
   expect(markup).toContain('href="https://cdn.test/original/photo" target="_blank"');
-  expect(markup).toMatch(/<div class="chat-media chat-video"><video controls=""/);
+  expect(markup).toMatch(/<div class="chat-media chat-video intrinsic"><video controls=""/);
   expect(markup).not.toContain("aria-haspopup");
   expect(markup).not.toContain("in viewer");
+});
+
+test("a video with a stored size fills a frame of that shape", () => {
+  const sized = file("sized", "sized.mp4", { kind: "video", contentType: "video/mp4", width: 1080, height: 1920 });
+  const markup = renderToStaticMarkup(<MessageAttachments attachments={[sized]} />);
+  expect(markup).toMatch(/<div class="chat-media chat-video" style="width:\d+px;height:\d+px"><video/);
 });
