@@ -33,10 +33,10 @@ struct MessageEditorView: View {
                 }
                 HStack {
                     Spacer()
-                    Button("Cancel", action: close).disabled(busy).keyboardShortcut(.cancelAction)
+                    Button("Cancel", action: close).buttonStyle(CaperSecondaryButton(minHeight: 42)).disabled(busy).keyboardShortcut(.cancelAction)
+                    // The app's primary style (not the system's), wide enough for "Saving…".
                     Button(busy ? "Saving…" : "Save changes") { perform { try await chat.editMessage(baseline, text: draft); close() } }
-                        .buttonStyle(.borderedProminent).tint(CaperTheme.terracotta)
-                        .modifier(ControlPointer())
+                        .buttonStyle(CaperPrimaryButton()).frame(width: 140)
                         .disabled(busy || MessageValidation.error(for: draft) != nil || !chat.canEdit(baseline))
                         .keyboardShortcut(.return, modifiers: .command)
                 }

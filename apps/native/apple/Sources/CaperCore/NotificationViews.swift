@@ -143,6 +143,7 @@ struct NotificationErrorRow: View {
                     .buttonStyle(.plain)
                     .font(CaperTheme.font(11, weight: .bold))
                     .foregroundStyle(CaperTheme.muted)
+                    .modifier(ControlPointer())
             }
             .padding(.horizontal, 16).padding(.vertical, 8)
             .accessibilityElement(children: .contain)
