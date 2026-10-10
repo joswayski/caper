@@ -96,6 +96,8 @@ struct ForwardPickerView: View {
                                 Image(systemName: selected.contains(destination.id) ? "checkmark.square.fill" : "square")
                                     .foregroundStyle(selected.contains(destination.id) ? CaperTheme.terracottaBright : CaperTheme.muted)
                             }.frame(minHeight: 44)
+                                // The whole row toggles, including the gap before the checkbox.
+                                .contentShape(Rectangle())
                         }.buttonStyle(.plain).disabled(pending != nil)
                             .accessibilityValue(selected.contains(destination.id) ? "Selected" : "Not selected")
                             .modifier(ControlPointer())

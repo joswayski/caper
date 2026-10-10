@@ -387,7 +387,7 @@ final class CaperParityUITests: XCTestCase {
         // The text view already measured 42 points before the fix. Its bottom
         // must align with Send too, or its background can still occupy 174.
         XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
-        XCTAssertEqual(send.frame.maxY, app.keyboards.firstMatch.frame.minY, accuracy: 2,
+        XCTAssertEqual(send.frame.maxY, try keyboardTop(in: app), accuracy: 2,
                        "The composer must meet the keyboard without an extra bottom margin")
         capture("composer-empty-keyboard", app: app)
 
@@ -395,7 +395,7 @@ final class CaperParityUITests: XCTestCase {
         composer.typeText(short)
         XCTAssertEqual(composer.frame.height, 42, accuracy: 2)
         XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
-        XCTAssertEqual(send.frame.maxY, app.keyboards.firstMatch.frame.minY, accuracy: 2)
+        XCTAssertEqual(send.frame.maxY, try keyboardTop(in: app), accuracy: 2)
         capture("composer-single-line-keyboard", app: app)
 
         let multiline = "\nSecond line\nThird line"
@@ -404,7 +404,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertGreaterThan(composer.frame.height, 62, "The fix must not freeze the composer at one line")
         XCTAssertLessThan(composer.frame.height, 174, "A three-line draft must not jump straight to the cap")
         XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
-        XCTAssertEqual(send.frame.maxY, app.keyboards.firstMatch.frame.minY, accuracy: 2)
+        XCTAssertEqual(send.frame.maxY, try keyboardTop(in: app), accuracy: 2)
         capture("composer-multiline-keyboard", app: app)
 
         let overflow = String(repeating: "\nmore", count: 16)
@@ -413,7 +413,7 @@ final class CaperParityUITests: XCTestCase {
                        "Scrolling must retain lines beyond the visible height")
         XCTAssertEqual(composer.frame.height, 174, accuracy: 2)
         XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
-        XCTAssertEqual(send.frame.maxY, app.keyboards.firstMatch.frame.minY, accuracy: 2)
+        XCTAssertEqual(send.frame.maxY, try keyboardTop(in: app), accuracy: 2)
         XCTAssertTrue(send.isHittable, "Send must remain available above the keyboard at the height cap")
         capture("composer-capped-keyboard", app: app)
 
@@ -429,13 +429,28 @@ final class CaperParityUITests: XCTestCase {
         app.buttons["Back to Browse"].tap()
         let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
         XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed)
-        try require(app.buttons["Back to conversation"], timeout: 5, "Missing conversation return target").tap()
+        try require(app.buttons["Close navigation"], timeout: 5, "Missing conversation return target").tap()
         XCTAssertEqual(send.frame.maxY, restingBottom, accuracy: 2, "Dismissing the keyboard must restore the safe-area layout")
         capture("composer-keyboard-dismissed", app: app)
         XCTAssertTrue(focus(composer))
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
-        XCTAssertEqual(send.frame.maxY, app.keyboards.firstMatch.frame.minY, accuracy: 2)
+        XCTAssertEqual(send.frame.maxY, try keyboardTop(in: app), accuracy: 2)
         capture("composer-keyboard-reopened", app: app)
+    }
+
+    /// Measure UIKit's full keyboard (including predictions), independently of
+    /// the controls under test. XCUITest's keyboard frame is only the keys.
+    private func keyboardTop(in app: XCUIApplication) throws -> CGFloat {
+        // Both composers can remain in the tree under a thread cover. They
+        // observe the same system notification and report the same boundary.
+        let probe = try require(app.descendants(matching: .any).matching(identifier: "parity-keyboard-top").firstMatch, timeout: 3,
+                                "Missing system keyboard measurement")
+        let measured = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value != %@", ""), object: probe)
+        XCTAssertEqual(XCTWaiter.wait(for: [measured], timeout: 3), .completed)
+        let top = try XCTUnwrap(Double(probe.value as? String ?? ""), "UIKit did not report the keyboard frame")
+        XCTAssertGreaterThan(top, Double(app.frame.minY))
+        XCTAssertLessThan(top, Double(app.frame.maxY), "The measured keyboard must be onscreen")
+        return CGFloat(top)
     }
 
     /// Deletes from the end until the field holds `target`. On the simulator a
@@ -488,7 +503,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertLessThan(send.frame.minY - composer.frame.maxY, 32)
         XCTAssertTrue(send.isHittable)
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
-        XCTAssertEqual(send.frame.maxY, app.keyboards.firstMatch.frame.minY, accuracy: 2,
+        XCTAssertEqual(send.frame.maxY, try keyboardTop(in: app), accuracy: 2,
                        "Thread controls must meet the keyboard without an extra bottom margin")
         capture("thread-composer-single-line-keyboard", app: app)
 

@@ -8,7 +8,9 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -16,6 +18,8 @@ import androidx.activity.viewModels
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
@@ -62,11 +66,13 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.UriHandler
 import androidx.compose.ui.res.painterResource
@@ -80,6 +86,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -94,7 +101,6 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -171,6 +177,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Edge to edge on every API level, as Android 15+ already enforces: the root pads for the
+        // system bars and the keyboard itself, with light bar icons over the dark app.
+        val bars = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+        enableEdgeToEdge(statusBarStyle = bars, navigationBarStyle = bars)
         CaperEffects.init(applicationContext)
         // A recreated activity or a relaunch from Recents must not reopen an old tap.
         if (savedInstanceState == null) openFromNotification(intent)
@@ -255,17 +265,19 @@ internal data class VoiceJoinIntent(
     var navigationOpen by remember { mutableStateOf(false) }
     VoiceChimes(voice)
 
+    // Web: closing User Settings, or a panel opened from it, returns focus to its button.
+    val settingsFocus = remember { FocusRequester() }
+    var settingsShown by remember { mutableStateOf(false) }
+    LaunchedEffect(overlay) {
+        if (settingsShown && overlay == null) runCatching { settingsFocus.requestFocus() }
+        settingsShown = overlay.let { it == Overlay.Audio || it == Overlay.Privacy || it is Overlay.AudioPanelOverlay }
+    }
+
     val homeVisible = state.screen == SessionScreen.Home || state.screen is SessionScreen.Spaces
-    Scaffold(containerColor = Blackout, snackbarHost = {
-        if (homeVisible) state.error?.let { Snackbar(containerColor = SurfaceRaised) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(it, Modifier.weight(1f), color = ErrorText)
-                TextButton(viewModel::clearError) { Text("Dismiss") }
-            }
-        } }
-    }) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding).imePadding()) {
-            when (val screen = state.screen) {
+    Scaffold(containerColor = Blackout) { padding ->
+        // The bottom inset Scaffold pads for is part of the keyboard's, so only the rest is added.
+        Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding()) {
+            CompositionLocalProvider(LocalSettingsFocus provides settingsFocus) { when (val screen = state.screen) {
                 SessionScreen.Loading -> BrandLoading()
                 SessionScreen.SignedOut -> LoginScreen(state.busy, state.error, viewModel::clearError, viewModel::requestCode)
                 is SessionScreen.Verify -> VerifyScreen(screen, state.busy, state.error, viewModel::clearError, viewModel::showLogin, viewModel::verify, viewModel::resendCode)
@@ -278,9 +290,23 @@ internal data class VoiceJoinIntent(
                     else HomeScreen(
                         state, voice, navigationOpen, { navigationOpen = it }, { overlay = it }, viewModel,
                     )
-            }
+            } }
             // Keep the current conversation stable while a space or channel opens.
             if (state.busy && !homeVisible) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter), color = Terracotta)
+            // Web's notice sits at the top centre: at the bottom it covered the composer and the
+            // account bar's audio controls.
+            if (homeVisible) state.error?.let { error ->
+                Surface(
+                    Modifier.align(Alignment.TopCenter).padding(16.dp).widthIn(max = 560.dp).semantics { liveRegion = LiveRegionMode.Polite },
+                    color = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border), shadowElevation = 6.dp,
+                ) {
+                    Row(Modifier.padding(start = 14.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(error, Modifier.weight(1f, fill = false).padding(vertical = 12.dp), color = ErrorText, fontSize = 13.sp)
+                        Spacer(Modifier.width(8.dp))
+                        TextButton(viewModel::clearError, colors = ButtonDefaults.textButtonColors(contentColor = Text), shape = MaterialTheme.shapes.small) { Text("Dismiss") }
+                    }
+                }
+            }
         }
     }
 
@@ -326,6 +352,8 @@ internal data class VoiceJoinIntent(
 }
 
 private val LocalBrandAvatar = compositionLocalOf { 0 }
+/** The account bar's User Settings button, which takes focus back when settings close. */
+private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { null }
 
 @Composable private fun Wordmark(modifier: Modifier = Modifier) = Box(
     modifier.size(width = 132.dp, height = 35.dp).clearAndSetSemantics { contentDescription = "Caper" },
@@ -639,7 +667,8 @@ private fun Modifier.browseDrag(
                 Spacer(Modifier.width(3.dp))
                 Box {
                     Surface(
-                        Modifier.size(48.dp).alpha(if (muted) MUTED_ALPHA else 1f).clickable { viewModel.selectSpace(space.id) }
+                        // Clipped first, so the press ripple keeps the tile's corners.
+                        Modifier.size(48.dp).alpha(if (muted) MUTED_ALPHA else 1f).clip(MaterialTheme.shapes.medium).clickable { viewModel.selectSpace(space.id) }
                             .semantics { contentDescription = space.name; if (muted) stateDescription = "Muted" },
                         color = if (selected) TerracottaDark else Surface, shape = MaterialTheme.shapes.medium,
                         border = BorderStroke(1.dp, if (selected) TerracottaBorder else Border),
@@ -650,7 +679,7 @@ private fun Modifier.browseDrag(
         }
         state.invitations.forEach { invitation ->
             Surface(
-                Modifier.size(40.dp).clickable { show(Overlay.Invitation(invitation)) }.semantics {
+                Modifier.size(40.dp).clip(MaterialTheme.shapes.medium).clickable { show(Overlay.Invitation(invitation)) }.semantics {
                     contentDescription = "Invitation to ${invitation.name}"
                 },
                 color = Surface, shape = MaterialTheme.shapes.medium, border = BorderStroke(1.dp, TerracottaBorder),
@@ -661,7 +690,7 @@ private fun Modifier.browseDrag(
             state.spaces.count { !it.demo } < limits.totalSpaces
         val spaceEnabled = state.account == null || canCreateSpace
         Surface(
-            Modifier.size(48.dp).clickable(enabled = spaceEnabled) { if (state.account == null) viewModel.showLogin() else show(Overlay.CreateSpace) }.semantics {
+            Modifier.size(48.dp).clip(MaterialTheme.shapes.medium).clickable(enabled = spaceEnabled) { if (state.account == null) viewModel.showLogin() else show(Overlay.CreateSpace) }.semantics {
                 contentDescription = "Create space"
                 // Web's tooltip; Android has no hover, so it is the state description.
                 if (!spaceEnabled) stateDescription = "Space limit reached (${limits?.ownedSpaces ?: 20} owned, ${limits?.totalSpaces ?: 100} total)"
@@ -698,8 +727,8 @@ private fun Modifier.browseDrag(
     var channelQuery by remember(detail?.space?.id) { mutableStateOf("") }
     val activeChannel = voice.channelId.takeIf { voice.phase != VoiceState.Phase.IDLE && voice.phase != VoiceState.Phase.FAILED }
     Column(modifier.fillMaxHeight().background(SurfaceSidebar)) {
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-            Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 8.dp)) {
+        // Web: the space name and its menu stay put while a long channel list scrolls.
+        Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp)) {
             Row(Modifier.fillMaxWidth().heightIn(min = 42.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (detail != null && !detail.space.demo) Box(Modifier.weight(1f)) {
                     // Web: the space name opens a menu with Space settings (owners) or Leave space…,
@@ -717,7 +746,7 @@ private fun Modifier.browseDrag(
                         Spacer(Modifier.width(6.dp))
                         Icon(painterResource(R.drawable.lucide_chevron_down), null, Modifier.size(16.dp), tint = TextMuted)
                     }
-                    DropdownMenu(spaceMenuOpen, closeSpaceMenu, containerColor = SurfaceRaised) {
+                    DropdownMenu(spaceMenuOpen, closeSpaceMenu, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
                         ScopeMenuContent(
                             spaceMenuPage, { spaceMenuPage = it }, "space", settings?.override(spaceKey(detail.space.id)), settings?.inheritedLevel(),
                             { viewModel.setSpaceNotifications(detail.space.id, it) }, closeSpaceMenu,
@@ -745,6 +774,9 @@ private fun Modifier.browseDrag(
             }
             if (detail != null) NotificationSaveError(state.notificationErrors[spaceKey(detail.space.id)]) { viewModel.dismissNotificationError(spaceKey(detail.space.id)) }
             HorizontalDivider(color = Border)
+        }
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+            Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp)) {
             if (browsing) OutlinedTextField(channelQuery, { channelQuery = it }, Modifier.fillMaxWidth().padding(top = 8.dp), singleLine = true, label = { Text("Search channels") })
             Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Row(
@@ -757,9 +789,9 @@ private fun Modifier.browseDrag(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Icon(if (channelsExpanded) painterResource(R.drawable.lucide_chevron_down) else painterResource(R.drawable.lucide_chevron_right), null, Modifier.size(18.dp), tint = TextMuted)
+                    DisclosureChevron(channelsExpanded, Modifier.size(18.dp))
                     Text("Channels", color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                    Text((detail?.channels?.count { it.joined } ?: 0).toString(), color = TextMuted, fontSize = 10.sp)
+                    Text((detail?.channels?.count { it.joined } ?: 0).toString(), color = TextMuted, fontSize = 10.sp, style = TabularNumbers)
                 }
                 if (owner) {
                     IconButton({ show(Overlay.CreateChannel) }, enabled = canCreateChannel, modifier = Modifier.semantics {
@@ -774,8 +806,10 @@ private fun Modifier.browseDrag(
                                 enabled = canCreateChannel,
                                 onClick = { channelMenuOpen = false; show(Overlay.CreateChannel) },
                             )
+                            // Every item has an icon, so the labels line up (web).
                             DropdownMenuItem(
                                 text = { Text(if (channelsExpanded) "Collapse channels" else "Expand channels", fontSize = 13.sp) },
+                                leadingIcon = { Icon(painterResource(if (channelsExpanded) R.drawable.lucide_chevrons_down_up else R.drawable.lucide_chevrons_up_down), null) },
                                 onClick = { channelMenuOpen = false; setChannelsExpanded(!channelsExpanded) },
                             )
                         }
@@ -819,12 +853,12 @@ private fun Modifier.browseDrag(
                 Column(Modifier.fillMaxWidth()) {
                     Row(
                         Modifier.fillMaxWidth().height(48.dp).clip(MaterialTheme.shapes.small)
-                            .background(if (selected) TerracottaWash else Color.Transparent)
-                            .padding(start = 9.dp),
+                            .background(if (selected) TerracottaWash else Color.Transparent),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        // The press starts at the row's edge; only the content is inset.
                         Row(Modifier.weight(1f).fillMaxHeight().alpha(if (channelMuted) MUTED_ALPHA else 1f)
-                            .clickable { viewModel.selectChannel(channel); closeNavigation?.invoke() }
+                            .clickable { viewModel.selectChannel(channel); closeNavigation?.invoke() }.padding(start = 9.dp)
                             .semantics { if (channelMuted) stateDescription = "Muted" }, verticalAlignment = Alignment.CenterVertically) {
                             Icon(if (channel.private) painterResource(R.drawable.lucide_lock_keyhole) else painterResource(R.drawable.lucide_hash), null, Modifier.size(17.dp), tint = if (selected) TerracottaBright else TextMuted)
                             Spacer(Modifier.width(6.dp)); Text(channel.name, Modifier.weight(1f), color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -850,11 +884,15 @@ private fun Modifier.browseDrag(
                     }
                     NotificationSaveError(state.notificationErrors[channelKey(channel.id)], Modifier.padding(start = 35.dp)) { viewModel.dismissNotificationError(channelKey(channel.id)) }
                     if (channel.joined && BuildConfig.ENABLE_NATIVE_VOICE) Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 35.dp), verticalAlignment = Alignment.CenterVertically) {
-                        if (people.isNotEmpty()) TextButton({ rosterOpen = !rosterOpen }, contentPadding = PaddingValues(horizontal = 4.dp), modifier = Modifier.weight(1f)
-                            .semantics { contentDescription = "${people.size} in voice in ${channel.name}. ${if (rosterOpen) "Hide" else "Show"} who is in voice" }) {
-                            Text("${people.size} in voice", Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 11.sp, color = TextMuted)
-                            Icon(if (rosterOpen) painterResource(R.drawable.lucide_chevron_down) else painterResource(R.drawable.lucide_chevron_right), null, Modifier.size(15.dp), tint = TextMuted)
-                        } else Spacer(Modifier.weight(1f))
+                        // The count stays whole; the Join button beside it yields first (web).
+                        if (people.isNotEmpty()) TextButton({ rosterOpen = !rosterOpen }, shape = MaterialTheme.shapes.small, contentPadding = PaddingValues(horizontal = 6.dp),
+                            modifier = Modifier.heightIn(min = 48.dp)
+                                .semantics { contentDescription = "${people.size} in voice in ${channel.name}. ${if (rosterOpen) "Hide" else "Show"} who is in voice" }) {
+                            Text("${people.size} in voice", maxLines = 1, softWrap = false, fontSize = 11.sp, color = TextMuted, style = TabularNumbers)
+                            Spacer(Modifier.width(4.dp))
+                            DisclosureChevron(rosterOpen, Modifier.size(15.dp))
+                        }
+                        Spacer(Modifier.weight(1f))
                         if (activeHere && voice.phase == VoiceState.Phase.CONNECTED) {
                             Spacer(Modifier.width(112.dp).height(48.dp))
                         } else TextButton({ joinVoice(channel) },
@@ -870,16 +908,16 @@ private fun Modifier.browseDrag(
                                 contentDescription = if (!activeHere && !denied) voiceJoinUnavailableLabel(available) ?: actionDescription else actionDescription
                             }) {
                             Icon(painterResource(R.drawable.lucide_speech), null, Modifier.size(14.dp))
-                            Spacer(Modifier.width(4.dp)); Text(actionLabel, fontSize = 11.sp, maxLines = 1)
+                            Spacer(Modifier.width(4.dp)); Text(actionLabel, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
                     if (people.isNotEmpty() && rosterOpen) {
                         if (activeChannel == channel.id) VoiceRoster(voice)
                         else people.forEach { participant ->
-                            Row(Modifier.fillMaxWidth().padding(start = 42.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Row(Modifier.fillMaxWidth().padding(start = 42.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Avatar(participant.name, 28.dp, avatarId = participant.avatarId)
                                 Spacer(Modifier.width(8.dp))
-                                Text(participant.name, fontSize = 12.sp)
+                                Text(participant.name, Modifier.weight(1f, fill = false), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 // Web: MicOff and/or HeadphoneOff, announced as one status.
                                 if (participant.deafened || participant.muted) Row(Modifier.padding(start = 4.dp).semantics { contentDescription = if (participant.deafened) "Deafened" else "Muted" }) {
                                     if (participant.muted) Icon(painterResource(R.drawable.lucide_mic_off), null, Modifier.size(15.dp), tint = TextMuted)
@@ -897,7 +935,7 @@ private fun Modifier.browseDrag(
                         Text("${invitation.inviter.displayName} (@${invitation.inviter.username}) invited you to ${detail.space.name}.", color = TextMuted, fontSize = 11.sp)
                         Text("Expires seven days after it was sent.", color = TextMuted, fontSize = 10.sp)
                         Text("Messages stay hidden until acceptance. Accepting joins the channel, not its voice call.", color = TextMuted, fontSize = 10.sp)
-                        Row { TextButton({ viewModel.declineChannelInvitation(invitation) }, enabled = !state.busy) { Text("Decline") }; Button({ viewModel.acceptChannelInvitation(invitation) }, enabled = !state.busy) { Text("Accept") } }
+                        Row { TextButton({ viewModel.declineChannelInvitation(invitation) }, enabled = !state.busy, shape = MaterialTheme.shapes.small) { Text("Decline") }; Button({ viewModel.acceptChannelInvitation(invitation) }, enabled = !state.busy, shape = MaterialTheme.shapes.small) { Text("Accept") } }
                     }
                 }
             }
@@ -905,7 +943,7 @@ private fun Modifier.browseDrag(
             state.openError?.let { error ->
                 Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(error, Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
-                    TextButton(viewModel::retryOpening) { Text("Retry opening", fontSize = 12.sp) }
+                    TextButton(viewModel::retryOpening, shape = MaterialTheme.shapes.small) { Text("Retry opening", fontSize = 12.sp) }
                 }
             }
             }
@@ -956,7 +994,7 @@ private fun Modifier.browseDrag(
                             Spacer(Modifier.width(9.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(direct.peer.displayName, color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text("@${direct.peer.username}", color = TextMuted, fontSize = 10.sp, maxLines = 1)
+                                Text("@${direct.peer.username}", color = TextMuted, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                             if (muted) MutedBell(Modifier.padding(start = 6.dp))
                         }
@@ -991,7 +1029,7 @@ private fun Modifier.browseDrag(
             Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), color = SurfaceRaised, border = BorderStroke(1.dp, Border), shape = MaterialTheme.shapes.small) {
                 Row(Modifier.padding(start = 10.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(error, Modifier.weight(1f).padding(vertical = 8.dp), color = ErrorText, fontSize = 11.sp)
-                    IconButton({ dismissVoicePermissionError(); VoiceCallService.clearError() }, Modifier.size(36.dp)) { Icon(painterResource(R.drawable.lucide_x), "Dismiss voice error", Modifier.size(16.dp), tint = TextMuted) }
+                    IconButton({ dismissVoicePermissionError(); VoiceCallService.clearError() }, Modifier.size(48.dp)) { Icon(painterResource(R.drawable.lucide_x), "Dismiss voice error", Modifier.size(16.dp), tint = TextMuted) }
                 }
             }
         }
@@ -1001,6 +1039,13 @@ private fun Modifier.browseDrag(
 
 /** Muted spaces, channels and DMs are dimmed in the sidebar. */
 private const val MUTED_ALPHA = 0.5f
+
+/** Web's disclosure chevron: it turns between collapsed (toward the reading direction) and expanded rather than swapping icons. */
+@Composable internal fun DisclosureChevron(expanded: Boolean, modifier: Modifier = Modifier) {
+    val collapsed = if (LocalLayoutDirection.current == LayoutDirection.Rtl) 90f else -90f
+    val turn by animateFloatAsState(if (expanded) 0f else collapsed, tween(150), label = "chevron")
+    Icon(painterResource(R.drawable.lucide_chevron_down), null, modifier.graphicsLayer { rotationZ = turn }, tint = TextMuted)
+}
 
 internal fun formatVoiceSessionDuration(startedAt: Long, now: Long): String {
     val seconds = ((now - startedAt).coerceAtLeast(0L) / 1_000L)
@@ -1027,9 +1072,10 @@ internal fun formatVoiceSessionDuration(startedAt: Long, now: Long): String {
             stateDescription = duration
         },
         color = VoiceSessionGreen,
-        fontFamily = FontFamily.Monospace,
         fontSize = 11.sp,
         maxLines = 1,
+        // Satoshi's tabular figures, as on web, so the row doesn't shift each second.
+        style = TabularNumbers,
     )
 }
 
@@ -1042,7 +1088,7 @@ internal fun formatVoiceSessionDuration(startedAt: Long, now: Long): String {
             // Long-press opens the audio menu, like a browser's context menu on touch.
             val menuAvailable = participant.id != voice.selfId && voice.phase == VoiceState.Phase.CONNECTED
             Row(Modifier.fillMaxWidth().heightIn(min = 38.dp)
-                .then(if (menuAvailable) Modifier.combinedClickable(onClick = {}, onLongClick = { audioOpen = true }, onLongClickLabel = "Audio controls for ${participant.name}") else Modifier)
+                .then(if (menuAvailable) Modifier.clip(MaterialTheme.shapes.small).combinedClickable(onClick = {}, onLongClick = { audioOpen = true }, onLongClickLabel = "Audio controls for ${participant.name}") else Modifier)
                 .padding(start = 42.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Avatar(participant.name, 24.dp, avatarId = participant.avatarId, speaking = participant.id in voice.speakingParticipants)
                 Spacer(Modifier.width(8.dp))
@@ -1059,18 +1105,19 @@ internal fun formatVoiceSessionDuration(startedAt: Long, now: Long): String {
                 if (if (participant.id == voice.selfId) voice.muted else participant.muted) Icon(painterResource(R.drawable.lucide_mic_off), "Muted", Modifier.size(15.dp), tint = TextMuted)
                 if (if (participant.id == voice.selfId) voice.deafened else participant.deafened) Icon(painterResource(R.drawable.lucide_headphone_off), "Deafened", Modifier.size(15.dp), tint = TextMuted)
                 if (participant.id != voice.selfId && voice.phase == VoiceState.Phase.CONNECTED) Box {
-                    TextButton({ audioOpen = !audioOpen }, modifier = Modifier.semantics { contentDescription = "Audio controls for ${participant.name}" }) { Text("Audio", fontSize = 10.sp) }
+                    TextButton({ audioOpen = !audioOpen }, modifier = Modifier.semantics { contentDescription = "Audio controls for ${participant.name}" },
+                        shape = MaterialTheme.shapes.small, colors = ButtonDefaults.textButtonColors(contentColor = TextMuted)) { Text("Audio", fontSize = 10.sp) }
                     DropdownMenu(audioOpen, { audioOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
                         Column(Modifier.width(220.dp).padding(12.dp).semantics { contentDescription = "${participant.name} local audio settings" }) {
                             val volume = voice.participantVolumes[participant.id] ?: 100
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                 Text("User volume", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                Text("$volume%", fontSize = 11.sp, color = TextMuted)
+                                Text("$volume%", fontSize = 11.sp, color = TextMuted, style = TabularNumbers)
                             }
                             Slider(volume.toFloat(), { CaperEffects.slider(it / 200f); VoiceCallService.setParticipantVolume(context, participant.id, it.toInt()) }, Modifier.semantics { contentDescription = "${participant.name} volume" }, valueRange = 0f..200f)
                             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                 Text("Mute", Modifier.weight(1f), fontSize = 12.sp)
-                                Switch(participant.id in voice.locallyMutedParticipants, { CaperEffects.toggle(!it); VoiceCallService.toggleParticipantMute(context, participant.id) }, modifier = Modifier.semantics { contentDescription = "Mute ${participant.name} for me" })
+                                Switch(participant.id in voice.locallyMutedParticipants, { CaperEffects.toggle(!it); VoiceCallService.toggleParticipantMute(context, participant.id) }, modifier = Modifier.semantics { contentDescription = "Mute ${participant.name} for me" }, colors = caperSwitchColors())
                             }
                             Text("Only changes what you hear.", color = TextMuted, fontSize = 10.sp)
                         }
@@ -1130,9 +1177,10 @@ internal fun formatVoiceSessionDuration(startedAt: Long, now: Long): String {
     val pages = ((members.size + 24) / 25).coerceAtLeast(1)
     val shown = members.drop(state.presencePage * 25).take(25)
     Column(modifier.background(SurfaceSidebar).then(if (compact) Modifier else Modifier)) {
-        Row(Modifier.fillMaxWidth().height(54.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        // The heading starts where the rows' avatars do (list and row insets, 8dp each).
+        Row(Modifier.fillMaxWidth().height(54.dp).padding(start = 16.dp, end = if (close != null) 4.dp else 16.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Members", Modifier.weight(1f), color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-            if (!detail.space.demo) Text(members.size.toString(), color = TextMuted, fontSize = 10.sp)
+            if (!detail.space.demo) Text(members.size.toString(), color = TextMuted, fontSize = 10.sp, style = TabularNumbers)
             if (close != null) IconButton(close, Modifier.size(48.dp)) {
                 Icon(painterResource(R.drawable.lucide_x), "Close member list", tint = TextMuted)
             }
@@ -1152,9 +1200,9 @@ internal fun formatVoiceSessionDuration(startedAt: Long, now: Long): String {
             }
         }
         if (pages > 1) Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            TextButton({ viewModel.setPresencePage(state.presencePage - 1) }, enabled = state.presencePage > 0) { Text("Previous", fontSize = 10.sp) }
-            Text("${state.presencePage + 1} / $pages", color = TextMuted, fontSize = 10.sp)
-            TextButton({ viewModel.setPresencePage(state.presencePage + 1) }, enabled = state.presencePage + 1 < pages) { Text("Next", fontSize = 10.sp) }
+            TextButton({ viewModel.setPresencePage(state.presencePage - 1) }, enabled = state.presencePage > 0, shape = MaterialTheme.shapes.small) { Text("Previous", fontSize = 10.sp) }
+            Text("${state.presencePage + 1} / $pages", color = TextMuted, fontSize = 10.sp, style = TabularNumbers)
+            TextButton({ viewModel.setPresencePage(state.presencePage + 1) }, enabled = state.presencePage + 1 < pages, shape = MaterialTheme.shapes.small) { Text("Next", fontSize = 10.sp) }
         }
     }
 }
@@ -1190,10 +1238,20 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     val context = LocalContext.current
     Surface(Modifier.fillMaxWidth().padding(12.dp), color = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
         Row(Modifier.height(52.dp).padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Row(Modifier.weight(1f).fillMaxHeight().clickable { if (state.account == null) viewModel.showLogin() else show(Overlay.Profile) }
-                .semantics { contentDescription = if (state.account == null) "Sign in to edit your profile" else "Edit profile for ${state.account.displayName ?: "Guest"}" }, verticalAlignment = Alignment.CenterVertically) {
-                AccountAvatar(state, viewModel); Spacer(Modifier.width(7.dp))
-                Text(state.account?.displayName ?: "Guest", maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            BoxWithConstraints(Modifier.weight(1f).fillMaxHeight().clip(MaterialTheme.shapes.small)
+                .clickable { if (state.account == null) viewModel.showLogin() else show(Overlay.Profile) }
+                .semantics { contentDescription = if (state.account == null) "Sign in to edit your profile" else "Edit profile for ${state.account.displayName ?: "Guest"}" }
+                .padding(horizontal = 4.dp), contentAlignment = Alignment.CenterStart) {
+                // Web: where the controls would leave the name a letter or two ("F…"), the
+                // avatar shows alone; the button above still names the account.
+                val nameFits = maxWidth >= 30.dp + 7.dp + 44.dp
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    AccountAvatar(state, viewModel)
+                    if (nameFits) {
+                        Spacer(Modifier.width(7.dp))
+                        Text(state.account?.displayName ?: "Guest", maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
             }
             // Web shows mute and deafen before joining too; the next join uses them.
             if (BuildConfig.ENABLE_NATIVE_VOICE) {
@@ -1204,7 +1262,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 IconButton({ CaperEffects.toggle(voice.deafened); VoiceCallService.toggleDeafen(context) }, Modifier.size(40.dp).semantics { if (voice.monitoring) stateDescription = "Stop mic test to change deafen" }, enabled = !voice.monitoring) { Icon(if (voice.deafened) painterResource(R.drawable.lucide_volume_x) else painterResource(R.drawable.lucide_headphones), if (voice.deafened) "Undeafen audio" else "Deafen audio", Modifier.size(18.dp), tint = if (voice.deafened) TerracottaBright else TextMuted) }
                 AudioOptionsMenu(input = false, voice = voice)
             }
-            IconButton({ show(Overlay.Audio) }, Modifier.size(40.dp)) { Icon(painterResource(R.drawable.lucide_settings), "User Settings", Modifier.size(18.dp), tint = TextMuted) }
+            IconButton({ show(Overlay.Audio) }, Modifier.size(40.dp).then(LocalSettingsFocus.current?.let { Modifier.focusRequester(it) } ?: Modifier)) {
+                Icon(painterResource(R.drawable.lucide_settings), "User Settings", Modifier.size(18.dp), tint = TextMuted)
+            }
         }
     }
 }
@@ -1254,11 +1314,11 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     Column(modifier.background(SurfaceConversation).border(BorderStroke(1.dp, Border))) {
         Row(Modifier.fillMaxWidth().height(53.dp).padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Thread · $conversation", Modifier.weight(1f), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            TextButton(viewModel::closeThread) { Text(if (direct) "Back to conversation" else "Back to channel") }
+            TextButton(viewModel::closeThread, shape = MaterialTheme.shapes.small) { Text(if (direct) "Back to conversation" else "Back to channel") }
         }
         HorizontalDivider(color = Border)
-        thread.error?.let { Text(it, Modifier.padding(12.dp), color = ErrorText); TextButton({ viewModel.loadThread() }) { Text("Retry") } }
-        if (thread.hasMore) TextButton({ viewModel.loadThread(older = true) }, enabled = !thread.loading) { Text("Load older replies") }
+        thread.error?.let { Text(it, Modifier.padding(12.dp), color = ErrorText); TextButton({ viewModel.loadThread() }, shape = MaterialTheme.shapes.small) { Text("Retry") } }
+        if (thread.hasMore) HistoryRow { HistoryButton("Load older replies", !thread.loading) { viewModel.loadThread(older = true) } }
         val rows = state.messages.filter { it.id == thread.rootId || it.threadRootId == thread.rootId &&
             (thread.windowStart == null || it.seq.toBigInteger() >= thread.windowStart.toBigInteger()) &&
             (thread.windowEnd == null || it.seq.toBigInteger() <= thread.windowEnd.toBigInteger()) }
@@ -1266,23 +1326,23 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             pending?.error?.let { error ->
                 Text(error, color = ErrorText)
                 if (pending.rejected) Row {
-                    TextButton({ viewModel.discardPending()?.let { draft = TextFieldValue(it, TextRange(it.length)) } }, enabled = draft.text.isEmpty()) { Text("Edit") }
-                    TextButton({ viewModel.discardPending() }) { Text("Dismiss") }
-                } else TextButton(::send) { Text("Retry send") }
+                    TextButton({ viewModel.discardPending()?.let { draft = TextFieldValue(it, TextRange(it.length)) } }, enabled = draft.text.isEmpty(), shape = MaterialTheme.shapes.small) { Text("Edit") }
+                    TextButton({ viewModel.discardPending() }, shape = MaterialTheme.shapes.small) { Text("Dismiss") }
+                } else TextButton(::send, shape = MaterialTheme.shapes.small) { Text("Retry send") }
             }
         }
-        if (thread.hasNewer) TextButton({ viewModel.loadThread(newer = true) }, enabled = !thread.loading) { Text("Load newer replies") }
+        if (thread.hasNewer) HistoryRow { HistoryButton("Load newer replies", !thread.loading) { viewModel.loadThread(newer = true) } }
         if (!thread.loading && rows.none { it.threadRootId == thread.rootId })
             Text(if (state.canParticipate) "No replies yet. Start the thread." else "No replies yet.", Modifier.padding(18.dp), color = TextMuted)
         if (state.canParticipate) Column(Modifier.padding(12.dp)) {
             SuggestingComposer(draft, { draft = it }, mentionSource(state), thread.rootId, ::send) { field, change, actions ->
                 OutlinedTextField(draft, change, Modifier.fillMaxWidth().then(field), placeholder = { Text("Reply to thread…") }, maxLines = 5,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = actions, enabled = !thread.loading)
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = actions, enabled = !thread.loading, colors = composerFieldColors())
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(pending?.broadcast ?: broadcast, { broadcast = it }, enabled = pending == null)
                 Text(if (direct) "Also send to conversation" else "Also send to $conversation", Modifier.weight(1f), fontSize = 12.sp)
-                TextButton(::send, enabled = !thread.loading && state.chatAuthorId != null && state.pendingMessage == null && draft.text.isNotBlank()) { Text("Send reply") }
+                TextButton(::send, enabled = !thread.loading && state.chatAuthorId != null && state.pendingMessage == null && draft.text.isNotBlank(), shape = MaterialTheme.shapes.small) { Text("Send reply") }
             }
             DraftCounter(draft.text)
             if (state.pendingMessage?.error != null && pending == null) Text("Confirm or dismiss the pending message first.", color = TextMuted)
@@ -1322,8 +1382,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         val live = state.gateway == GatewayStatus.LIVE
         var showConnection by remember(channel.id) { mutableStateOf(false) }
         LaunchedEffect(live, channel.id) { showConnection = false; if (!live) { kotlinx.coroutines.delay(1_000); showConnection = true } }
-        Row(Modifier.fillMaxWidth().height(53.dp).padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (narrow) IconButton(openNavigation, Modifier.size(44.dp)) {
+        // On phones Back's arrow, not its 48dp touch target, lines up with the messages' 18dp inset.
+        Row(Modifier.fillMaxWidth().height(53.dp).padding(start = if (narrow) 4.dp else 18.dp, end = 18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (narrow) IconButton(openNavigation, Modifier.size(48.dp)) {
                 Icon(painterResource(R.drawable.lucide_arrow_right), "Back to Browse", Modifier.size(20.dp).graphicsLayer { rotationZ = 180f }, tint = TextMuted)
             }
             // Phones keep Block in a 1:1 DM's title menu; Members is a header button.
@@ -1339,15 +1400,15 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         onClick = { channelMenuOpen = false; toggleBlock() })
                 }
             } else Text(if (channel.direct) channel.name else "# ${channel.name}", Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            IconButton({ showingPins = !showingPins }, Modifier.sizeIn(minWidth = 44.dp, minHeight = 44.dp)) {
+            IconButton({ showingPins = !showingPins }, Modifier.size(48.dp)) {
                 Icon(painterResource(R.drawable.lucide_pin), "Pins", Modifier.size(20.dp), tint = TextMuted)
             }
-            // Right of Pins on every width, as on web.
-            if (!channel.direct && joined) IconButton(toggleMembers, Modifier.size(if (narrow) 44.dp else 36.dp)) {
+            // Right of Pins on every width, and the same size, as on web.
+            if (!channel.direct && joined) IconButton(toggleMembers, Modifier.size(48.dp)) {
                 Icon(painterResource(R.drawable.lucide_users), if (membersVisible) "Hide member list" else "Show member list",
                     Modifier.size(20.dp), tint = if (membersVisible) Text else TextMuted)
             }
-            if (!narrow && direct != null) TextButton(::toggleBlock, Modifier.heightIn(min = 48.dp)) {
+            if (!narrow && direct != null) TextButton(::toggleBlock, Modifier.heightIn(min = 48.dp), shape = MaterialTheme.shapes.small) {
                 Text(if (direct.blocked) "Unblock" else "Block", color = if (direct.blocked) TextMuted else ErrorText, fontSize = 11.sp, fontWeight = FontWeight.Bold)
             }
             if (!channel.direct && !joined) Button({ viewModel.joinChannel(channel) }, enabled = !state.busy, shape = MaterialTheme.shapes.small) { Text("Join channel") }
@@ -1366,7 +1427,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             Surface(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
                 Row(Modifier.padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(error, Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
-                    TextButton(viewModel::retryMessages) { Text("Retry", color = Text, fontSize = 12.sp) }
+                    TextButton(viewModel::retryMessages, shape = MaterialTheme.shapes.small) { Text("Retry", color = Text, fontSize = 12.sp) }
                 }
             }
         }
@@ -1379,10 +1440,11 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         if (showingPins) Dialog(onDismissRequest = { showingPins = false }) {
             Surface(shape = MaterialTheme.shapes.medium, color = SurfaceConversation, border = BorderStroke(1.dp, Border)) {
                 Column(Modifier.heightIn(max = 560.dp)) {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text("Pins", Modifier.weight(1f), fontWeight = FontWeight.Bold)
-                        TextButton({ showingPins = false }) { Text("Close") }
+                    Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 8.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Pins", Modifier.weight(1f).semantics { heading() }, fontWeight = FontWeight.Bold)
+                        TextButton({ showingPins = false }, shape = MaterialTheme.shapes.small) { Text("Close") }
                     }
+                    HorizontalDivider(color = Border)
                     PinnedMessages(state, viewModel, Modifier.weight(1f, fill = false)) { showingPins = false }
                 }
             }
@@ -1400,10 +1462,10 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                             if (editable) viewModel.discardPending(restoreFiles = true)?.let { updateDraft(TextFieldValue(it, TextRange(it.length))) }
                         } else viewModel.send(channelPending.text)
                     }, Modifier.semantics { if (channelPending.rejected && !editable) stateDescription = "Clear your current draft to edit this message." },
-                        enabled = !channelPending.rejected || editable) {
+                        enabled = !channelPending.rejected || editable, shape = MaterialTheme.shapes.small) {
                         Text(if (channelPending.rejected) "Edit" else "Retry send")
                     }
-                    if (channelPending.rejected) TextButton({ viewModel.discardPending() }) { Text("Dismiss") }
+                    if (channelPending.rejected) TextButton({ viewModel.discardPending() }, shape = MaterialTheme.shapes.small) { Text("Dismiss") }
                 }
                 if (channelPending.rejected && !editable)
                     Text("Clear your current draft to edit this message.", color = TextMuted, fontSize = 10.sp)
@@ -1421,14 +1483,14 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 pending.threadRootId?.let { root ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(if (pending.rejected) "A thread reply wasn’t sent." else "A thread reply couldn’t be confirmed.", Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
-                        TextButton({ viewModel.openThread(root) }) { Text("Review reply") }
+                        TextButton({ viewModel.openThread(root) }, shape = MaterialTheme.shapes.small) { Text("Review reply") }
                     }
                 }
             }
             state.sessionError?.let { error ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(error, Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
-                    TextButton(viewModel::retrySession) { Text("Retry session", fontSize = 12.sp) }
+                    TextButton(viewModel::retrySession, shape = MaterialTheme.shapes.small) { Text("Retry session", fontSize = 12.sp) }
                 }
             }
             state.attachmentError?.let { error -> Text(error, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
@@ -1458,11 +1520,12 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         placeholder = { Text(if (channel.direct) "Message ${channel.name}" else "Message #${channel.name}") }, maxLines = 6,
                         enabled = !state.messagesLoading && state.messagesError == null,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = actions,
-                        colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = SurfaceComposer, unfocusedContainerColor = SurfaceComposer, focusedBorderColor = Terracotta, unfocusedBorderColor = Border),
+                        colors = composerFieldColors(),
                     )
                     FilledIconButton(
                         { sendDraft() },
-                        modifier = Modifier.size(48.dp).semantics { contentDescription = "Send" }, enabled = hasContent && state.pendingMessage == null && state.chatAuthorId != null,
+                        // Centred on a one-line field (56dp), and near the bottom as the field grows.
+                        modifier = Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = "Send" }, enabled = hasContent && state.pendingMessage == null && state.chatAuthorId != null,
                         shape = MaterialTheme.shapes.small,
                         colors = IconButtonDefaults.filledIconButtonColors(
                             containerColor = Terracotta, contentColor = Color.White,
@@ -1554,10 +1617,15 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     )
 }
 
+/** The channel and thread composers' field: the composer surface, terracotta while focused. */
+@Composable private fun composerFieldColors() = OutlinedTextFieldDefaults.colors(
+    focusedContainerColor = SurfaceComposer, unfocusedContainerColor = SurfaceComposer, focusedBorderColor = Terracotta, unfocusedBorderColor = Border,
+)
+
 /** Web's `.chat-counter`: shown from 3,000 characters, toned toward the 4,000 limit. */
 @Composable private fun ColumnScope.DraftCounter(text: String) {
     val count = text.codePointCount(0, text.length)
-    if (count >= 3000) Text("${"%,d".format(java.util.Locale.US, count)} / 4,000", Modifier.align(Alignment.End), color = counterTone(count), fontSize = 10.sp)
+    if (count >= 3000) Text("${"%,d".format(java.util.Locale.US, count)} / 4,000", Modifier.align(Alignment.End), color = counterTone(count), fontSize = 10.sp, style = TabularNumbers)
 }
 
 /** One flat row of the composer's `:` emoji / `@` mention popup. */
@@ -1688,16 +1756,10 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         firstRow, firstRow + rows.size + listOf(skeleton, listedPending != null, empty, newer).count { it } - 1, ready = !skeleton)
     CompositionLocalProvider(LocalMediaViewerHost provides viewerHost) { LazyColumn(modifier.fillMaxWidth(), state = listState, reverseLayout = false, contentPadding = PaddingValues(vertical = 8.dp)) {
         if (!inThread) item {
-            Row(Modifier.fillMaxWidth().height(44.dp).padding(horizontal = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalAlignment = Alignment.CenterVertically) {
-                val historyButton: @Composable (String, Boolean) -> Unit = { label, enabled ->
-                    OutlinedButton(viewModel::loadOlder, enabled = enabled, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp), colors = ButtonDefaults.outlinedButtonColors(contentColor = TextMuted)) {
-                        Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
+            HistoryRow {
                 when {
-                    state.olderError != null -> { Text("Couldn’t load older messages.", color = TextMuted, fontSize = 11.sp); historyButton("Retry", true) }
-                    state.hasMoreMessages -> historyButton(if (state.loadingOlder) "Loading…" else "Load older messages", !state.loadingOlder)
+                    state.olderError != null -> { Text("Couldn’t load older messages.", color = TextMuted, fontSize = 11.sp); HistoryButton("Retry", onClick = viewModel::loadOlder) }
+                    state.hasMoreMessages -> HistoryButton(if (state.loadingOlder) "Loading…" else "Load older messages", !state.loadingOlder, viewModel::loadOlder)
                     else -> Text("Beginning of conversation", color = TextMuted, fontSize = 11.sp)
                 }
             }
@@ -1721,7 +1783,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     BlockedRunRow(row.run.messages.size, row.run.revealed) {
                         revealedRuns = if (row.run.revealed) revealedRuns - row.run.key else revealedRuns + row.run.key
                     }
-                } else Column(Modifier.background(if (state.focusedMessageId == message.id) TerracottaWash else if (!inThread && state.thread?.rootId == message.id) Color(0xFFE4C76A).copy(alpha = 0.1f) else Color.Transparent)) {
+                } else Column(Modifier.background(if (state.focusedMessageId == message.id) TerracottaWash else if (!inThread && state.thread?.rootId == message.id) PinGold.copy(alpha = 0.1f) else Color.Transparent)) {
                     ReactionMessageRow(
                         message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
                         openReactors = { target, emoji -> reactorsTarget = target.id to emoji },
@@ -1736,7 +1798,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     )
                     if (!inThread && (message.threadRootId != null || (message.thread?.replyCount ?: 0) > 0)) Row(Modifier.padding(start = 62.dp), verticalAlignment = Alignment.CenterVertically) {
                         message.thread?.takeIf { message.threadRootId == null }?.participants?.forEach { Avatar(it.name, 24.dp, avatarId = it.avatarId) }
-                        TextButton({ viewModel.openThread(message.threadRootId ?: message.id) }) { Text(message.thread?.takeIf { message.threadRootId == null }?.let { "${it.replyCount} ${if (it.replyCount == 1) "reply" else "replies"} · View thread" } ?: "Replied to a thread · View thread") }
+                        TextButton({ viewModel.openThread(message.threadRootId ?: message.id) }, shape = MaterialTheme.shapes.small) { Text(message.thread?.takeIf { message.threadRootId == null }?.let { "${it.replyCount} ${if (it.replyCount == 1) "reply" else "replies"} · View thread" } ?: "Replied to a thread · View thread") }
                     }
                 }
             }
@@ -1778,9 +1840,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             }
         } }
         if (newer) item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                TextButton(viewModel::loadNewer, enabled = !state.loadingNewer) { Text(if (state.loadingNewer) "Loading…" else "Load newer messages") }
-                TextButton(viewModel::retryMessages) { Text("Back to latest") }
+            HistoryRow {
+                HistoryButton(if (state.loadingNewer) "Loading…" else "Load newer messages", !state.loadingNewer, viewModel::loadNewer)
+                HistoryButton("Back to latest", onClick = viewModel::retryMessages)
             }
         }
     } }
@@ -1924,8 +1986,11 @@ internal fun followScroll(follow: TimelineFollow, ready: Boolean, now: FollowFra
     val threshold = with(LocalDensity.current) { 80.dp.roundToPx() }
     SideEffect {
         // The layout still shows the previous rows here.
+        val before = follow.last?.keys
         followScroll(follow, ready, now, lastIndex, { list.layoutInfo.nearBottom(threshold) }) {
-            olderPageAnchor(list.layoutInfo.visibleItemsInfo.map { Triple(it.key, it.index, it.offset) }) { key -> (key as? String)?.let(now.keys::indexOf)?.takeIf { it >= 0 }?.plus(firstRow) }
+            olderPageAnchor(list.layoutInfo.visibleItemsInfo.map { Triple(it.key, it.index, it.offset) }, before?.let { pageBoundary(it, now.keys) }) { key ->
+                (key as? String)?.let(now.keys::indexOf)?.takeIf { it >= 0 }?.plus(firstRow)
+            }
         }?.let { (index, offset) -> list.requestScrollToItem(index, offset) }
     }
     LaunchedEffect(list, follow) {
@@ -1953,10 +2018,32 @@ internal fun nearBottom(totalItems: Int, lastVisibleIndex: Int, lastVisibleEnd: 
 
 /**
  * After an older page lands: the first visible `(key, index, offset)` item whose index moved, as the new index and
- * the scroll offset that keeps it where it was. A header or thread root above the page keeps its index.
+ * the scroll offset that keeps it where it was. A header or thread root above the page keeps its index. The row the
+ * page landed against ([boundary]) is passed over while another moved row is visible: it gains a previous message,
+ * so its day divider or full header can drop, and holding its top would pull everything below it up (web's jump).
  */
-internal fun olderPageAnchor(visible: List<Triple<Any, Int, Int>>, newIndex: (Any) -> Int?): Pair<Int, Int>? =
-    visible.firstNotNullOfOrNull { (key, index, offset) -> newIndex(key)?.takeIf { it != index }?.let { it to -offset } }
+internal fun olderPageAnchor(visible: List<Triple<Any, Int, Int>>, boundary: Any? = null, newIndex: (Any) -> Int?): Pair<Int, Int>? {
+    fun anchor(skip: Any?) = visible.firstNotNullOfOrNull { (key, index, offset) ->
+        if (skip != null && key == skip) null else newIndex(key)?.takeIf { it != index }?.let { it to -offset }
+    }
+    return anchor(boundary) ?: anchor(null)
+}
+
+/** The earlier rows' first key whose index moved: the row an older page landed against (after any thread root). */
+internal fun pageBoundary(before: List<String>, now: List<String>): String? =
+    before.withIndex().firstOrNull { (index, key) -> now.indexOf(key).let { it >= 0 && it != index } }?.value
+
+/** Web's `.chat-history` buttons: older and newer messages or replies, and Back to latest, all alike. */
+@Composable private fun HistoryButton(label: String, enabled: Boolean = true, onClick: () -> Unit) = OutlinedButton(
+    onClick, enabled = enabled, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border),
+    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp), colors = ButtonDefaults.outlinedButtonColors(contentColor = TextMuted),
+) { Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+
+/** A centred row of [HistoryButton]s (and their status text), as tall as the timeline's first row. */
+@Composable private fun HistoryRow(content: @Composable RowScope.() -> Unit) = Row(
+    Modifier.fillMaxWidth().height(44.dp).padding(horizontal = 14.dp),
+    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalAlignment = Alignment.CenterVertically, content = content,
+)
 
 @Composable private fun DateDivider(createdAt: String) {
     val label = fullDateLabel(createdAt)
@@ -2017,18 +2104,18 @@ internal fun olderPageAnchor(visible: List<Triple<Any, Int, Int>>, newIndex: (An
         }
         saves.filter { it.error != null }.forEach { save ->
             Column(Modifier.padding(start = 62.dp, end = 18.dp, top = 4.dp)) {
-                Text(save.error ?: "Reaction could not be saved.", color = Terracotta, fontSize = 11.sp)
+                Text(save.error ?: "Reaction could not be saved.", color = ErrorText, fontSize = 11.sp)
                 Row {
-                    TextButton({ retryReaction(message.id, save.emoji) }, enabled = canReact, modifier = Modifier.heightIn(min = 48.dp)) { Text("Retry") }
-                    TextButton({ dismissReactionError(message.id, save.emoji) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Dismiss") }
+                    TextButton({ retryReaction(message.id, save.emoji) }, enabled = canReact, modifier = Modifier.heightIn(min = 48.dp), shape = MaterialTheme.shapes.small) { Text("Retry") }
+                    TextButton({ dismissReactionError(message.id, save.emoji) }, modifier = Modifier.heightIn(min = 48.dp), shape = MaterialTheme.shapes.small) { Text("Dismiss") }
                 }
             }
         }
         state.pinSaves[message.id]?.takeIf { it.error != null }?.let { save ->
             Row(Modifier.padding(start = 62.dp, end = 18.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(save.error ?: "Pin could not be saved.", Modifier.weight(1f), color = Terracotta, fontSize = 11.sp)
-                TextButton({ retryPin(message.id) }) { Text("Retry") }
-                TextButton({ dismissPinError(message.id) }) { Text("Dismiss") }
+                Text(save.error ?: "Pin could not be saved.", Modifier.weight(1f), color = ErrorText, fontSize = 11.sp)
+                TextButton({ retryPin(message.id) }, shape = MaterialTheme.shapes.small) { Text("Retry") }
+                TextButton({ dismissPinError(message.id) }, shape = MaterialTheme.shapes.small) { Text("Dismiss") }
             }
         }
     }
@@ -2083,31 +2170,38 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
             Surface(shape = MaterialTheme.shapes.small, color = Surface) {
                 Column {
                     if (state.account != null && (message.forward == null || message.forward.message != null)) {
-                        TextButton(forward, Modifier.fillMaxWidth().heightIn(min = 48.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) { Text("Forward message", Modifier.fillMaxWidth()) }
+                        SheetAction("Forward message", onClick = forward)
                         HorizontalDivider(color = Border)
                     }
                     if (canReact) {
                         val saving = state.pinSaves[message.id]?.saving == true
-                        TextButton({ setPin(message.id, message.pin == null) }, enabled = !saving, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) {
-                            Text(if (message.pin == null) "Pin message" else "Unpin message", Modifier.fillMaxWidth())
-                        }
+                        SheetAction(if (message.pin == null) "Pin message" else "Unpin message", enabled = !saving) { setPin(message.id, message.pin == null) }
                         HorizontalDivider(color = Border)
                     }
-                    onReply?.let { TextButton(it, Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("Reply in thread", Modifier.fillMaxWidth()) }; HorizontalDivider(color = Border) }
-                    onEdit?.let { TextButton(it, Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("Edit message", Modifier.fillMaxWidth()) }; HorizontalDivider(color = Border) }
-                    if (message.forward == null && message.revision > 1) onHistory?.let { TextButton(it, Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("View edit history", Modifier.fillMaxWidth()) }; HorizontalDivider(color = Border) }
-                    TextButton({ copy("Message text", message.content.text) }, Modifier.fillMaxWidth().heightIn(min = 48.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) { Text("Copy text", Modifier.fillMaxWidth()) }
+                    onReply?.let { SheetAction("Reply in thread", onClick = it); HorizontalDivider(color = Border) }
+                    onEdit?.let { SheetAction("Edit message", onClick = it); HorizontalDivider(color = Border) }
+                    if (message.forward == null && message.revision > 1) onHistory?.let { SheetAction("View edit history", onClick = it); HorizontalDivider(color = Border) }
+                    SheetAction("Copy text") { copy("Message text", message.content.text) }
                     HorizontalDivider(color = Border)
-                    TextButton({ copy("Message ID", message.id) }, Modifier.fillMaxWidth().heightIn(min = 48.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) { Text("Copy message ID", Modifier.fillMaxWidth()) }
+                    SheetAction("Copy message ID") { copy("Message ID", message.id) }
                     blockLabel?.let { label ->
                         HorizontalDivider(color = Border)
-                        TextButton(onBlock, Modifier.fillMaxWidth().heightIn(min = 48.dp), colors = ButtonDefaults.textButtonColors(contentColor = if (label.startsWith("Block")) ErrorText else Text)) { Text(label, Modifier.fillMaxWidth()) }
+                        SheetAction(label, if (label.startsWith("Block")) ErrorText else Text, onClick = onBlock)
                     }
                 }
             }
         }
     }
 }
+
+/**
+ * One item of the message actions list: neutral like its siblings, and pressed edge to edge (the
+ * list's rounded corners clip it) rather than as a pill inside the row.
+ */
+@Composable private fun SheetAction(label: String, color: Color = Text, enabled: Boolean = true, onClick: () -> Unit) = TextButton(
+    onClick, Modifier.fillMaxWidth().heightIn(min = 48.dp), enabled = enabled, shape = RectangleShape,
+    colors = ButtonDefaults.textButtonColors(contentColor = color),
+) { Text(label, Modifier.fillMaxWidth()) }
 
 @Composable private fun PinnedMessages(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, close: () -> Unit) {
     var conversationTarget by remember { mutableStateOf<ChatMessage?>(null) }
@@ -2119,10 +2213,9 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     var reactorsTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
     var pinnerTarget by remember { mutableStateOf<ChatAuthor?>(null) }
     LaunchedEffect(state.account?.id, state.selectedChannel?.id, state.selectedDirectId) { conversationTarget = null; editTarget = null; historyTarget = null; pinnerTarget = null }
-    LazyColumn(modifier.fillMaxWidth(), contentPadding = PaddingValues(vertical = 10.dp)) {
-        item {
-            state.messageContextError?.let { Text(it, Modifier.padding(18.dp), color = ErrorText) }
-        }
+    // Each pin is its own card: a gap keeps their washes from running together.
+    LazyColumn(modifier.fillMaxWidth(), contentPadding = PaddingValues(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        state.messageContextError?.let { error -> item { Text(error, Modifier.padding(horizontal = 18.dp, vertical = 8.dp), color = ErrorText) } }
         if (state.displayedPins.isEmpty()) item {
             Text("No pinned messages.", Modifier.fillMaxWidth().padding(24.dp), color = TextMuted, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
         }
@@ -2135,7 +2228,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                     Text("Pinned by ${pin.author.name}", Modifier.padding(start = 62.dp, end = 18.dp)
                         .heightIn(min = 44.dp).wrapContentHeight()
                         .hoverable(interaction)
-                        .combinedClickable(role = Role.Button, onClick = { pinnerTarget = pin.author }, onLongClick = { pinnerTarget = pin.author })
+                        .clip(MaterialTheme.shapes.small).combinedClickable(role = Role.Button, onClick = { pinnerTarget = pin.author }, onLongClick = { pinnerTarget = pin.author })
                         .semantics { contentDescription = "Open profile for ${pin.author.name}" },
                         color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                 }
@@ -2145,9 +2238,10 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                     openConversation = { conversationTarget = it }, openHistory = { historyTarget = it },
                     retryPin = viewModel::retryPin, dismissPinError = viewModel::dismissPinError,
                     onAttachmentFailed = viewModel::reportAttachmentFailure)
-                Row(Modifier.fillMaxWidth().padding(start = 62.dp, end = 18.dp), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton({ pinnerTarget = null; viewModel.goToMessage(message, close) }, enabled = !state.loadingMessageContext,
-                        colors = ButtonDefaults.textButtonColors(contentColor = TextMuted), contentPadding = PaddingValues(vertical = 8.dp)) {
+                // The button's own inset keeps its label in line with the message text.
+                Row(Modifier.fillMaxWidth().padding(start = 54.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    TextButton({ pinnerTarget = null; viewModel.goToMessage(message, close) }, enabled = !state.loadingMessageContext, shape = MaterialTheme.shapes.small,
+                        colors = ButtonDefaults.textButtonColors(contentColor = TextMuted), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)) {
                         Text(if (state.loadingMessageContext) "Loading message…" else "Go to message")
                         Spacer(Modifier.width(6.dp))
                         Icon(painterResource(R.drawable.lucide_arrow_right), null, Modifier.size(14.dp))
@@ -2204,7 +2298,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     Dialog(onDismissRequest = onDismiss) {
         Surface(shape = MaterialTheme.shapes.medium, color = SurfaceRaised, border = BorderStroke(1.dp, Border), modifier = Modifier.fillMaxWidth().heightIn(max = 520.dp)) {
             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) { Text("Add reaction", Modifier.weight(1f), fontWeight = FontWeight.Bold); TextButton(onDismiss) { Text("Close") } }
+                Row(verticalAlignment = Alignment.CenterVertically) { Text("Add reaction", Modifier.weight(1f), fontWeight = FontWeight.Bold); TextButton(onDismiss, shape = MaterialTheme.shapes.small) { Text("Close") } }
                 OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), placeholder = { Text("Search emoji") }, singleLine = true)
                 if (shown.isEmpty()) Box(Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) { Text("No emoji found.", color = TextMuted) }
                 else LazyVerticalGrid(GridCells.Adaptive(44.dp), modifier = Modifier.heightIn(max = 390.dp)) {
@@ -2253,7 +2347,8 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
             if (!grouped) Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(author, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                // A long name gives way first, so the time and tags stay whole.
+                Text(author, Modifier.weight(1f, fill = false), fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (guest) { Spacer(Modifier.width(7.dp)); Surface(color = Color.Transparent, border = BorderStroke(1.dp, Border), shape = MaterialTheme.shapes.extraSmall) { Text("GUEST", Modifier.padding(horizontal = 5.dp, vertical = 2.dp), color = TextMuted, fontSize = 8.sp, fontWeight = FontWeight.Bold) } }
                 Spacer(Modifier.width(7.dp)); Text(timeLabel(createdAt), color = TextMuted, fontSize = 10.sp)
                 if (edited) { Spacer(Modifier.width(7.dp)); Text("(edited)", Modifier.clickable(onClickLabel = "View edit history", onClick = openHistory), color = TextMuted, fontSize = 10.sp) }
@@ -2396,7 +2491,7 @@ internal fun openExternalLink(uriHandler: UriHandler, href: String) {
 internal fun counterTone(count: Int): Color = when {
     count >= 3900 -> Color(0xFFFF827C)
     count >= 3750 -> Color(0xFFEDA361)
-    count >= 3500 -> Color(0xFFE4C76A)
+    count >= 3500 -> PinGold
     else -> TextMuted
 }
 
@@ -2447,6 +2542,30 @@ internal fun counterTone(count: Int): Color = when {
     }
 }
 
+/**
+ * Web's one primary button for sign-in and the profile (account/controls.tsx): compact, with a
+ * spinner beside the pending label and a minimum width so that label never resizes it. Disabled
+ * or pending, it dims (to 60%, as on web) rather than turning grey.
+ */
+@Composable private fun PrimaryButton(
+    label: String, pendingLabel: String, pending: Boolean, enabled: Boolean, modifier: Modifier = Modifier,
+    minWidth: Dp = 200.dp, onClick: () -> Unit,
+) = Button(
+    onClick, modifier.widthIn(min = minWidth), enabled = enabled && !pending, shape = MaterialTheme.shapes.small,
+    colors = ButtonDefaults.buttonColors(disabledContainerColor = Terracotta.copy(alpha = 0.6f), disabledContentColor = Color.White.copy(alpha = 0.6f)),
+    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
+) {
+    if (pending) {
+        CircularProgressIndicator(Modifier.size(16.dp), color = LocalContentColor.current, strokeWidth = 2.dp)
+        Spacer(Modifier.width(12.dp))
+        Text(pendingLabel)
+    } else {
+        Text(label)
+        Spacer(Modifier.width(12.dp))
+        Icon(painterResource(R.drawable.lucide_arrow_right), null, Modifier.size(20.dp))
+    }
+}
+
 @Composable private fun LoginScreen(busy: Boolean, error: String?, clearError: () -> Unit, submit: (String) -> Unit) {
     var email by remember { mutableStateOf("") }
     val emailFocus = remember { FocusRequester() }
@@ -2470,13 +2589,7 @@ internal fun counterTone(count: Int): Color = when {
         if (error != null) Surface(Modifier.fillMaxWidth().padding(top = 20.dp), color = Color.Transparent, border = BorderStroke(1.dp, Terracotta), shape = MaterialTheme.shapes.small) {
             Text(error, Modifier.padding(horizontal = 14.dp, vertical = 12.dp), lineHeight = 24.sp)
         }
-        Button({ submit(email) }, enabled = email.contains('@') && !busy, modifier = Modifier.align(Alignment.End).padding(top = 12.dp), shape = MaterialTheme.shapes.small, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)) {
-            Text(if (busy) "Sending…" else "Email me a code")
-            if (!busy) {
-                Spacer(Modifier.width(12.dp))
-                Icon(painterResource(R.drawable.lucide_arrow_right), null, Modifier.size(20.dp))
-            }
-        }
+        PrimaryButton("Email me a code", "Sending…", busy, email.contains('@'), Modifier.align(Alignment.End).padding(top = 12.dp)) { submit(email) }
     }
 }
 
@@ -2502,15 +2615,13 @@ internal fun counterTone(count: Int): Color = when {
         if (screen.resends > 0) Text(RESENT_CODE_STATUS, Modifier.padding(top = 12.dp).semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 14.sp)
         // "Email me a new code" counts as a resend too, and restarts the wait.
         // At the resend limit the API would send nothing, so the button is hidden (as on web).
-        if (exhausted) { if (screen.resends < MAX_CODE_RESENDS) Button(sendNewCode, enabled = !busy, modifier = Modifier.fillMaxWidth().padding(top = 12.dp), shape = MaterialTheme.shapes.small, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)) {
-            Text(if (busy) "Sending…" else "Email me a new code", Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Start)
-            if (!busy) Icon(painterResource(R.drawable.lucide_arrow_right), null, Modifier.size(20.dp))
-        } } else Button({ submit(screen.challengeId, code) }, enabled = code.length == 6 && !busy, modifier = Modifier.fillMaxWidth().padding(top = 12.dp), shape = MaterialTheme.shapes.small, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)) {
-            Text(if (busy && !resending) "Checking…" else "Continue", Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Start)
-            if (!busy || resending) Icon(painterResource(R.drawable.lucide_arrow_right), null, Modifier.size(20.dp))
-        }
+        // Only the request that is running says so: a resend leaves Continue as it was.
+        if (exhausted) { if (screen.resends < MAX_CODE_RESENDS) PrimaryButton("Email me a new code", "Sending…", busy, true,
+            Modifier.align(Alignment.End).padding(top = 12.dp), minWidth = 232.dp, onClick = sendNewCode) }
+        else PrimaryButton("Continue", "Checking…", busy && !resending, code.length == 6 && !busy,
+            Modifier.align(Alignment.End).padding(top = 12.dp)) { submit(screen.challengeId, code) }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(20.dp), itemVerticalAlignment = Alignment.CenterVertically) {
-            TextButton(back, enabled = !busy, contentPadding = PaddingValues(vertical = 16.dp)) { Text("Use a different email", color = TextMuted) }
+            TextButton(back, enabled = !busy, contentPadding = PaddingValues(vertical = 16.dp), shape = MaterialTheme.shapes.small) { Text("Use a different email", color = TextMuted) }
             // Hidden while "Email me a new code" is shown; after the last resend, a hint replaces it.
             if (screen.resends >= MAX_CODE_RESENDS) Text(RESEND_LIMIT_HINT, Modifier.padding(vertical = 16.dp), color = TextMuted, fontSize = 14.sp)
             else if (!exhausted) {
@@ -2526,8 +2637,8 @@ internal fun counterTone(count: Int): Color = when {
                 }
                 val secondsLeft = resendSecondsLeft(screen.sentAt, now)
                 val ready = !busy && secondsLeft == 0
-                TextButton(sendNewCode, enabled = ready, contentPadding = PaddingValues(vertical = 16.dp)) {
-                    Text(if (resending) "Sending…" else resendLabel(secondsLeft), color = if (ready) TextMuted else TextMuted.copy(alpha = 0.6f))
+                TextButton(sendNewCode, enabled = ready, contentPadding = PaddingValues(vertical = 16.dp), shape = MaterialTheme.shapes.small) {
+                    Text(if (resending) "Sending…" else resendLabel(secondsLeft), color = if (ready) TextMuted else TextMuted.copy(alpha = 0.6f), style = TabularNumbers)
                 }
             }
         }
@@ -2538,8 +2649,10 @@ internal fun counterTone(count: Int): Color = when {
     var username by remember(account.id) { mutableStateOf(account.username.orEmpty()) }
     var name by remember(account.id) { mutableStateOf(account.displayName.orEmpty()) }
     val form: @Composable ColumnScope.() -> Unit = {
-        if (close == null) Text("ONE LAST THING", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
-        if (close == null) Text("Choose how you show up.", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        if (close == null) Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("ONE LAST THING", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+            Text("Choose how you show up.", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        }
         Text("Your username is unique. Your display name is what people see in conversations.", color = TextMuted, fontSize = 12.sp)
         // Web's field hints (account/ProfileForm.tsx).
         OutlinedTextField(username, { username = normalizeUsername(it) }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
@@ -2550,9 +2663,12 @@ internal fun counterTone(count: Int): Color = when {
         Box(Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
             error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         }
-        Button({ submit(username, name) }, enabled = profileValid(username, name) && !busy, modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small) { Text(if (busy) "Saving…" else if (account.username.isNullOrEmpty()) "Finish account" else "Save profile") }
+        PrimaryButton(if (account.username.isNullOrEmpty()) "Finish account" else "Save profile", "Saving…", busy, profileValid(username, name),
+            Modifier.align(Alignment.End)) { submit(username, name) }
     }
-    if (close == null) AuthFrame { form() } else CaperDialog("Edit profile", close) { form() }
+    // Onboarding spaces the form as the Edit profile dialog does.
+    if (close == null) AuthFrame { Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(14.dp)) { form() } }
+    else CaperDialog("Edit profile", close) { form() }
 }
 
 @Composable private fun FirstSpaceScreen(state: AppUiState, viewModel: CaperViewModel, browse: () -> Unit) {
@@ -2574,7 +2690,7 @@ internal fun counterTone(count: Int): Color = when {
             enabled = allowed && !state.busy && name.isNotBlank(), modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small,
         ) { Text(if (state.busy) "Creating…" else "Create space") }
         OutlinedButton(browse, modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small) { Text("Direct messages") }
-        TextButton(viewModel::logout, Modifier.align(Alignment.End)) { Text("Log out", color = TextMuted) }
+        TextButton(viewModel::logout, Modifier.align(Alignment.End), shape = MaterialTheme.shapes.small) { Text("Log out", color = TextMuted) }
     }
 }
 
@@ -2609,15 +2725,12 @@ internal fun counterTone(count: Int): Color = when {
             error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            TextButton(close, enabled = !busy) { Text("Cancel") }; Spacer(Modifier.width(8.dp))
+            TextButton(close, enabled = !busy, shape = MaterialTheme.shapes.small) { Text("Cancel") }; Spacer(Modifier.width(8.dp))
             Button({
                 if (!Regex("^[a-z0-9_]{3,32}$").matches(username)) error = "Enter an exact valid username."
                 else { error = null; start(username) { error = it } }
             }, enabled = !busy && username.isNotBlank(), shape = MaterialTheme.shapes.small) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text("Start conversation", Modifier.alpha(0f).clearAndSetSemantics {})
-                    Text(if (busy) "Opening…" else "Start conversation")
-                }
+                PendingLabel("Start conversation", "Opening…", busy)
             }
         }
     }
@@ -2676,11 +2789,11 @@ internal fun counterTone(count: Int): Color = when {
         error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             OutlinedButton({ accepting = false; decline() }, enabled = !busy, shape = MaterialTheme.shapes.small) {
-                Text(if (busy && accepting == false) "Declining…" else "Decline")
+                PendingLabel("Decline", "Declining…", busy && accepting == false)
             }
             Spacer(Modifier.width(8.dp))
             Button({ accepting = true; accept() }, enabled = !busy, shape = MaterialTheme.shapes.small) {
-                Text(if (busy && accepting == true) "Accepting…" else "Accept")
+                PendingLabel("Accept", "Accepting…", busy && accepting == true)
             }
         }
     }
@@ -2701,7 +2814,7 @@ internal fun counterTone(count: Int): Color = when {
                 Text(member.displayName, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 Text("@${member.username}", color = TextMuted, fontSize = 10.sp)
             }
-            TextButton({ cancel(member) }, enabled = !busy) { Text("Cancel", color = ErrorText) }
+            TextButton({ cancel(member) }, enabled = !busy, shape = MaterialTheme.shapes.small) { Text("Cancel", color = ErrorText) }
         }
     }
 }
@@ -2719,7 +2832,7 @@ internal fun counterTone(count: Int): Color = when {
             Text("You have unsaved changes.", Modifier.weight(1f), fontSize = 12.sp)
             OutlinedButton({ name = channel.name; private = channel.private }, enabled = dirty && !state.busy, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) { Text("Reset") }
             Spacer(Modifier.width(8.dp))
-            Button({ viewModel.updateChannel(channel, name.removeSuffix("-"), private) }, enabled = dirty && !state.busy && !channelInvalid(name), shape = MaterialTheme.shapes.small) { Text(if (state.busy) "Saving…" else "Save changes") }
+            Button({ viewModel.updateChannel(channel, name.removeSuffix("-"), private) }, enabled = dirty && !state.busy && !channelInvalid(name), shape = MaterialTheme.shapes.small) { PendingLabel("Save changes", "Saving…", state.busy) }
         }
     }) {
         state.error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
@@ -2775,7 +2888,7 @@ internal fun counterTone(count: Int): Color = when {
                 Text(member.displayName, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 Text("@${member.username}${if (member.owner) " · Owner" else ""}", color = TextMuted, fontSize = 10.sp)
             }
-            if (!member.owner) TextButton({ remove(member) }, enabled = !busy) { Text("Remove", color = ErrorText) }
+            if (!member.owner) TextButton({ remove(member) }, enabled = !busy, shape = MaterialTheme.shapes.small) { Text("Remove", color = ErrorText) }
         }
     }
 }
@@ -2789,8 +2902,8 @@ internal fun counterTone(count: Int): Color = when {
 internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolean =
     draft.isBlank() || draft == rejectedText
 
-@Composable private fun PrivacyToggle(value: Boolean, spaceName: String, stableSwitch: Boolean = false, changed: (Boolean) -> Unit) = Row(Modifier.fillMaxWidth().clickable { CaperEffects.toggle(!value); changed(!value) }, verticalAlignment = if (stableSwitch) Alignment.Top else Alignment.CenterVertically) {
-    Icon(painterResource(R.drawable.lucide_lock_keyhole), null, Modifier.size(17.dp), tint = TextMuted); Spacer(Modifier.width(8.dp)); Column(Modifier.weight(1f)) { Text("Private channel", fontWeight = FontWeight.Bold, fontSize = 13.sp); Text(if (value) "Only you and the people you add can view or join." else "Anyone in $spaceName can view or join this channel.", color = TextMuted, fontSize = 11.sp) }; Switch(value, { CaperEffects.toggle(it); changed(it) })
+@Composable private fun PrivacyToggle(value: Boolean, spaceName: String, stableSwitch: Boolean = false, changed: (Boolean) -> Unit) = Row(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).clickable { CaperEffects.toggle(!value); changed(!value) }, verticalAlignment = if (stableSwitch) Alignment.Top else Alignment.CenterVertically) {
+    Icon(painterResource(R.drawable.lucide_lock_keyhole), null, Modifier.size(17.dp), tint = TextMuted); Spacer(Modifier.width(8.dp)); Column(Modifier.weight(1f)) { Text("Private channel", fontWeight = FontWeight.Bold, fontSize = 13.sp); Text(if (value) "Only you and the people you add can view or join." else "Anyone in $spaceName can view or join this channel.", color = TextMuted, fontSize = 11.sp) }; Switch(value, { CaperEffects.toggle(it); changed(it) }, colors = caperSwitchColors())
 }
 
 @Composable private fun ConfirmDialog(
@@ -2811,9 +2924,9 @@ internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolea
     error?.takeIf { confirmed }?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
         // Web: Cancel waits for the action; the action shows its progress.
-        TextButton(close, Modifier.focusRequester(cancelFocus), enabled = !busy) { Text("Cancel") }; Spacer(Modifier.width(8.dp))
+        TextButton(close, Modifier.focusRequester(cancelFocus), enabled = !busy, shape = MaterialTheme.shapes.small) { Text("Cancel") }; Spacer(Modifier.width(8.dp))
         Button({ confirmed = true; confirm() }, enabled = !busy, shape = MaterialTheme.shapes.small, colors = ButtonDefaults.buttonColors(containerColor = Danger)) {
-            Text(if (busy) pendingLabel else action)
+            PendingLabel(action, pendingLabel, busy)
         }
     }
 }
@@ -2831,20 +2944,24 @@ internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolea
 ) {
     Dialog({ if (!busy) close() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         BoxWithConstraints(Modifier.padding(16.dp).widthIn(max = if (wide) 600.dp else 460.dp).fillMaxWidth(), contentAlignment = Alignment.Center) {
-            Surface(Modifier.fillMaxWidth().height(minOf(maxHeight, 760.dp)), color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+            // Short dialogs fit their content; long ones scroll below a fixed heading (web).
+            Surface(Modifier.fillMaxWidth().heightIn(max = minOf(maxHeight, 760.dp)), color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
                 Column {
-                    Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-                            Column(Modifier.weight(1f)) {
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                    titleIcon?.let { Image(painterResource(it), contentDescription = null, modifier = Modifier.size(32.dp)) }
-                                    Text(title, fontSize = 19.sp, fontWeight = FontWeight.Bold)
-                                }
-                                description?.let { Text(it, color = TextMuted, fontSize = 12.sp, lineHeight = 17.sp) }
+                    Row(Modifier.fillMaxWidth().padding(start = 22.dp, end = 10.dp, top = 10.dp, bottom = if (description != null) 16.dp else 10.dp), verticalAlignment = Alignment.Top) {
+                        Column(Modifier.weight(1f)) {
+                            // As tall as the close button, so the X stays level with the title.
+                            Row(Modifier.heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                titleIcon?.let { Image(painterResource(it), contentDescription = null, modifier = Modifier.size(32.dp)) }
+                                Text(title, Modifier.semantics { heading() }, fontSize = 19.sp, fontWeight = FontWeight.Bold)
                             }
-                            IconButton(close, enabled = !busy) { Icon(painterResource(R.drawable.lucide_x), "Close", tint = if (busy) TextMuted.copy(alpha = 0.4f) else TextMuted) }
+                            description?.let { Text(it, color = TextMuted, fontSize = 12.sp, lineHeight = 17.sp) }
                         }
-                        HorizontalDivider(color = Border); content()
+                        Spacer(Modifier.width(8.dp))
+                        IconButton(close, Modifier.size(48.dp), enabled = !busy) { Icon(painterResource(R.drawable.lucide_x), "Close", tint = if (busy) TextMuted.copy(alpha = 0.4f) else TextMuted) }
+                    }
+                    HorizontalDivider(color = Border)
+                    Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        content()
                     }
                     if (footer != null) { HorizontalDivider(color = Border); footer() }
                 }
@@ -2853,12 +2970,21 @@ internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolea
     }
 }
 
+/**
+ * A button's [label], or [pendingLabel] while its request runs, sized for the wider of the two so
+ * the button never resizes (and its neighbours never shift) as the label changes (web).
+ */
+@Composable internal fun PendingLabel(label: String, pendingLabel: String, pending: Boolean) = Box(contentAlignment = Alignment.Center) {
+    Text(if (pending) label else pendingLabel, Modifier.alpha(0f).clearAndSetSemantics {})
+    Text(if (pending) pendingLabel else label)
+}
+
 /** [pendingLabel] says what the request is doing; [canSubmit] is false while the required field is empty. */
 @Composable private fun DialogActions(
     close: () -> Unit, label: String, busy: Boolean, pendingLabel: String = "Saving…", canSubmit: Boolean = true, action: () -> Unit,
 ) = Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-    TextButton(close, enabled = !busy) { Text("Cancel") }; Spacer(Modifier.width(8.dp))
-    Button(action, enabled = !busy && canSubmit, shape = MaterialTheme.shapes.small) { Text(if (busy) pendingLabel else label) }
+    TextButton(close, enabled = !busy, shape = MaterialTheme.shapes.small) { Text("Cancel") }; Spacer(Modifier.width(8.dp))
+    Button(action, enabled = !busy && canSubmit, shape = MaterialTheme.shapes.small) { PendingLabel(label, pendingLabel, busy) }
 }
 
 /** Web's spaces/client.ts validation copy. */

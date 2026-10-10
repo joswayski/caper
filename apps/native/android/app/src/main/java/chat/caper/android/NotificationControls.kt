@@ -13,6 +13,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -59,7 +60,7 @@ internal enum class NotificationMenuPage { Main, Level, Mute }
     if (error == null) return
     Row(modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite }, verticalAlignment = Alignment.CenterVertically) {
         Text(error, Modifier.weight(1f), color = ErrorText, fontSize = 11.sp)
-        IconButton(dismiss, Modifier.size(36.dp)) { Icon(painterResource(R.drawable.lucide_x), "Dismiss", Modifier.size(14.dp), tint = TextMuted) }
+        IconButton(dismiss, Modifier.size(48.dp)) { Icon(painterResource(R.drawable.lucide_x), "Dismiss", Modifier.size(14.dp), tint = TextMuted) }
     }
 }
 
@@ -171,12 +172,15 @@ internal enum class NotificationMenuPage { Main, Level, Mute }
     }
 }
 
+/** A settings sub-label: quieter than its section's title (web's Notifications and Privacy). */
+@Composable internal fun SettingLabel(text: String) = Text(text, Modifier.semantics { heading() }, color = TextMuted, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+
 @Composable private fun SettingChoices(title: String, options: List<Pair<String, String>>, selected: String?, enabled: Boolean, choose: (String) -> Unit) {
-    Text(title, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+    SettingLabel(title)
     Column(Modifier.selectableGroup()) {
         options.forEach { (value, label) ->
             Row(
-                Modifier.fillMaxWidth().heightIn(min = 48.dp).selectable(selected == value, enabled = enabled, role = Role.RadioButton) {
+                Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(MaterialTheme.shapes.small).selectable(selected == value, enabled = enabled, role = Role.RadioButton) {
                     if (selected != value) choose(value)
                 },
                 verticalAlignment = Alignment.CenterVertically,
@@ -228,13 +232,13 @@ internal enum class NotificationMenuPage { Main, Level, Mute }
     if (settings == null) {
         val error = state.notificationSettingsError
         Text(error ?: "Loading…", color = if (error != null) ErrorText else TextMuted, fontSize = 12.sp)
-        if (error != null) TextButton(viewModel::refreshNotificationSettings) { Text("Retry") }
+        if (error != null) TextButton(viewModel::refreshNotificationSettings, shape = MaterialTheme.shapes.small) { Text("Retry") }
     }
     if (!pushAvailable) return
     SettingChoices("Send to this phone", mobileOptions, settings?.mobile, settings != null, viewModel::setMobileNotifications)
     NotificationSaveError(state.notificationErrors[MOBILE_KEY]) { viewModel.dismissNotificationError(MOBILE_KEY) }
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 48.dp).toggleable(pushEnabled, enabled = !pushWorking, role = Role.Switch) {
+        Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(MaterialTheme.shapes.small).toggleable(pushEnabled, enabled = !pushWorking, role = Role.Switch) {
             pushError = null
             if (pushEnabled) { pushWorking = true; viewModel.disablePush { pushWorking = false; pushEnabled = false } }
             else if (Build.VERSION.SDK_INT >= 33) {
@@ -245,7 +249,7 @@ internal enum class NotificationMenuPage { Main, Level, Mute }
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text("Notifications on this phone", Modifier.weight(1f), fontSize = 13.sp)
-        Switch(pushEnabled, null, enabled = !pushWorking)
+        Switch(pushEnabled, null, enabled = !pushWorking, colors = caperSwitchColors())
     }
     pushError?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
 }

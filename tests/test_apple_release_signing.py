@@ -45,6 +45,17 @@ with open(os.environ["TEST_LOG"], "a") as log:
     log.write(json.dumps(record) + "\\n")
 if os.environ.get("FAIL_STAGE") == stage:
     sys.exit(23)
+if stage == "archive":
+    bundle = Path(args[args.index("-archivePath") + 1]) / "Products/Applications/Caper.app"
+    app = {"CFBundleVersion": os.environ["BUILD_NUMBER"], "CFBundleShortVersionString": "0.1.0"}
+    extension = {
+        "CFBundleVersion": os.environ.get("TEST_EXTENSION_BUILD", app["CFBundleVersion"]),
+        "CFBundleShortVersionString": os.environ.get("TEST_EXTENSION_VERSION", app["CFBundleShortVersionString"]),
+    }
+    for path, versions in ((bundle, app), (bundle / "PlugIns/CaperNotificationService.appex", extension)):
+        path.mkdir(parents=True)
+        with (path / "Info.plist").open("wb") as info:
+            plistlib.dump(versions, info, fmt=plistlib.FMT_BINARY)
 """)
         xcodebuild.chmod(0o755)
         self.log = self.root / "commands.jsonl"
@@ -61,10 +72,10 @@ if os.environ.get("FAIL_STAGE") == stage:
             "BUILD_NUMBER": "37.2",
         }
 
-    def upload(self, fail_stage=""):
+    def upload(self, fail_stage="", **overrides):
         result = subprocess.run(
             ["bash", str(self.app / "upload-testflight.sh")],
-            env={**self.env, "FAIL_STAGE": fail_stage},
+            env={**self.env, "FAIL_STAGE": fail_stage, **overrides},
             capture_output=True,
             text=True,
             check=False,
@@ -113,6 +124,21 @@ if os.environ.get("FAIL_STAGE") == stage:
             },
         )
         self.assertIn("Uploaded chat.fixture.custom build 37.2", result.stdout)
+
+    def test_mismatched_extension_versions_stop_before_upload(self):
+        for overrides, key in (
+            ({"TEST_EXTENSION_BUILD": "1"}, "CFBundleVersion"),
+            ({"TEST_EXTENSION_VERSION": "1.0"}, "CFBundleShortVersionString"),
+            ({"TEST_EXTENSION_BUILD": "1", "TEST_EXTENSION_VERSION": "1.0"}, "CFBundleVersion"),
+        ):
+            with self.subTest(overrides=overrides):
+                self.log.unlink(missing_ok=True)
+                result, commands = self.upload(**overrides)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(len(commands), 1)
+                self.assertIn(key, result.stderr)
+                self.assertIn("does not match", result.stderr)
+                self.assertNotIn("Uploaded", result.stdout)
 
     def test_archive_failure_stops_before_export_or_success_message(self):
         result, commands = self.upload("archive")

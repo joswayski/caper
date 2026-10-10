@@ -9,6 +9,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.LinkAnnotation
@@ -24,9 +25,9 @@ import chat.caper.android.data.linkRanges
 import chat.caper.android.model.*
 import chat.caper.android.ui.Border
 import chat.caper.android.ui.EmojiImage
+import chat.caper.android.ui.ErrorText
 import chat.caper.android.ui.SurfaceRaised
 import chat.caper.android.ui.TextMuted
-import chat.caper.android.ui.Terracotta
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import java.math.BigInteger
@@ -82,7 +83,7 @@ import java.util.UUID
             if (original == null) Text("Original conversation unavailable.", color = TextMuted)
             else {
                 SharedOriginal(original, state, onAttachmentFailed)
-                TextButton(open) { Text("${original.thread?.replyCount?.let { "$it ${if (it == 1) "reply" else "replies"} · " }.orEmpty()}View conversation") }
+                TextButton(open, shape = MaterialTheme.shapes.small) { Text("${original.thread?.replyCount?.let { "$it ${if (it == 1) "reply" else "replies"} · " }.orEmpty()}View conversation") }
             }
         }
     }
@@ -114,7 +115,7 @@ import java.util.UUID
             val terms = search.trim().split(Regex("\\s+")).map { it.removePrefix("#") }
             val visible = destinations?.filter { destination -> terms.all { "${destination.spaceName} ${destination.name}".contains(it, ignoreCase = true) } }
             visible?.forEach { destination ->
-                Row(Modifier.fillMaxWidth().toggleable(value = destination.id in selected, enabled = pending == null, role = Role.Checkbox, onValueChange = { checked -> selected = if (checked) selected + destination.id else selected - destination.id }).padding(vertical = 8.dp, horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).toggleable(value = destination.id in selected, enabled = pending == null, role = Role.Checkbox, onValueChange = { checked -> selected = if (checked) selected + destination.id else selected - destination.id }).padding(vertical = 8.dp, horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text("${if (destination.direct) "" else "# "}${destination.name}", fontWeight = FontWeight.Bold)
                         Text(destination.spaceName, color = TextMuted, fontSize = 11.sp)
@@ -125,7 +126,7 @@ import java.util.UUID
             if (destinations == null && error == null) Text("Loading destinations…", color = TextMuted)
             if (visible?.isEmpty() == true) Text("No matching destinations. Join a channel or start a DM.", color = TextMuted)
             OutlinedTextField(note, { note = it }, label = { Text("Add a note (optional)") }, enabled = pending == null, modifier = Modifier.fillMaxWidth())
-            error?.let { Text(it, color = Terracotta); if (destinations == null) TextButton({ attempt++ }) { Text("Retry loading") } }
+            error?.let { Text(it, color = ErrorText); if (destinations == null) TextButton({ attempt++ }, shape = MaterialTheme.shapes.small) { Text("Retry loading") } }
             Button({
                 if (sending || selected.isEmpty()) return@Button
                 val intent = pending ?: destinations.orEmpty().filter { it.id in selected }.map { it to UUID.randomUUID() }
@@ -157,7 +158,7 @@ import java.util.UUID
                         error = "$done$status ${friendlyError(reason, "Try again.")}"
                     } finally { sending = false }
                 }
-            }, enabled = selected.isNotEmpty() && !sending && note.codePointCount(0, note.length) <= 4000) { Text(if (sending) "Forwarding…" else if (pending != null) "Retry forwards (${selected.size})" else "Forward (${selected.size})") }
+            }, enabled = selected.isNotEmpty() && !sending && note.codePointCount(0, note.length) <= 4000, shape = MaterialTheme.shapes.small) { Text(if (sending) "Forwarding…" else if (pending != null) "Retry forwards (${selected.size})" else "Forward (${selected.size})") }
         }
     }
 }
@@ -189,12 +190,12 @@ import java.util.UUID
             Text("Forwarded conversation", fontWeight = FontWeight.Bold, fontSize = 16.sp)
             Text("Live · Read-only original. Replies to the forward stay in the destination.", color = TextMuted, fontSize = 12.sp)
             conversation?.root?.let { SharedOriginal(it) }
-            if (conversation?.hasMore == true) TextButton({ pages++ }, enabled = !loading) { Text("Load older replies") }
+            if (conversation?.hasMore == true) TextButton({ pages++ }, enabled = !loading, shape = MaterialTheme.shapes.small) { Text("Load older replies") }
             conversation?.messages?.forEach { reply -> key(reply.id) { SharedOriginal(reply) } }
             if (conversation?.root == null && !loading && error == null) Text("Original conversation unavailable.", color = TextMuted)
             if (conversation?.messages?.isEmpty() == true && conversation?.root != null) Text("No replies yet.", color = TextMuted)
             if (loading) Text("Updating conversation…", color = TextMuted)
-            error?.let { Text(it, color = Terracotta); TextButton({ attempt++ }) { Text("Retry") } }
+            error?.let { Text(it, color = ErrorText); TextButton({ attempt++ }, shape = MaterialTheme.shapes.small) { Text("Retry") } }
         }
     }
 }
