@@ -20,7 +20,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -64,7 +63,7 @@ internal const val ShowReactorsLabel = "Show who reacted"
             .defaultMinSize(minWidth = 58.dp, minHeight = 48.dp)
             .clip(shape)
             .border(1.dp, if (selected) Terracotta else Border, shape)
-            .background(if (selected) Terracotta.copy(alpha = .18f) else Color.Transparent)
+            .background(if (selected) TerracottaWash else Surface)
             .then(gestures)
             .semantics(mergeDescendants = true) {
                 this.selected = selected
@@ -77,10 +76,11 @@ internal const val ShowReactorsLabel = "Show who reacted"
     ) {
         EmojiImage(reaction.emoji, null, Modifier.size(19.dp))
         Spacer(Modifier.width(5.dp))
+        // Web's chip: a muted count, light terracotta on your own reaction, in tabular figures.
         Text(
             reaction.authorIds.size.toString(),
-            color = if (canReact) Terracotta else Text.copy(alpha = .38f),
-            style = MaterialTheme.typography.labelLarge,
+            color = if (!canReact) Text.copy(alpha = .38f) else if (selected) TerracottaLight else TextMuted,
+            fontSize = 12.sp, fontWeight = FontWeight.Bold, style = TabularNumbers,
         )
     }
 }

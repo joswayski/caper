@@ -15,7 +15,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
@@ -49,10 +48,13 @@ import kotlinx.coroutines.launch
             .padding(horizontal = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text("Message requests", Modifier.weight(1f), color = Text, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        // In the avatars' column, turning like the Channels chevron (web).
+        Box(Modifier.width(26.dp), contentAlignment = Alignment.Center) { DisclosureChevron(open, Modifier.size(16.dp)) }
+        Spacer(Modifier.width(9.dp))
+        Text("Message requests", Modifier.weight(1f), color = Text, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
         // A neutral count of conversations: requests never add to unread dots.
         Surface(color = SurfaceRaised, shape = CircleShape, border = BorderStroke(1.dp, Border)) {
-            Text(requests.size.toString(), Modifier.padding(horizontal = 7.dp, vertical = 1.dp), color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            Text(requests.size.toString(), Modifier.padding(horizontal = 7.dp, vertical = 1.dp), color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold, style = TabularNumbers)
         }
     }
     if (open) requests.forEach { request ->
@@ -67,7 +69,7 @@ import kotlinx.coroutines.launch
             Spacer(Modifier.width(9.dp))
             Column(Modifier.weight(1f)) {
                 Text(request.peer.displayName, color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text("@${request.peer.username}", color = TextMuted, fontSize = 10.sp, maxLines = 1)
+                Text("@${request.peer.username}", color = TextMuted, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
     }
@@ -89,7 +91,7 @@ import kotlinx.coroutines.launch
             Button({ working = true; error = null; viewModel.acceptRequest(request) { failed(it) } }, Modifier.heightIn(min = 48.dp), enabled = !working, shape = MaterialTheme.shapes.small) { Text("Accept") }
             OutlinedButton({ working = true; error = null; viewModel.declineRequest(request, left) { failed(it) } }, Modifier.heightIn(min = 48.dp), enabled = !working,
                 shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) { Text("Decline", color = Text) }
-            TextButton({ confirmBlock = true }, Modifier.heightIn(min = 48.dp), enabled = !working) { Text("Block", color = ErrorText) }
+            TextButton({ confirmBlock = true }, Modifier.heightIn(min = 48.dp), enabled = !working, shape = MaterialTheme.shapes.small) { Text("Block", color = ErrorText) }
         }
         error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
     }
@@ -125,12 +127,12 @@ import kotlinx.coroutines.launch
         Text("You won't see their messages unless you choose to, and they can't send you DMs or requests.", color = TextMuted)
         error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            TextButton(close, enabled = !working) { Text("Cancel") }
+            TextButton(close, enabled = !working, shape = MaterialTheme.shapes.small) { Text("Cancel") }
             Spacer(Modifier.width(8.dp))
             Button(
                 { working = true; error = null; viewModel.block(account, { close(); blocked() }) { working = false; error = it } },
                 enabled = !working, shape = MaterialTheme.shapes.small, colors = ButtonDefaults.buttonColors(containerColor = Danger),
-            ) { Text(if (working) "Blocking…" else "Block") }
+            ) { PendingLabel("Block", "Blocking…", working) }
         }
     }
 }
@@ -142,7 +144,7 @@ import kotlinx.coroutines.launch
 ) {
     Text("⊘ ${blockedRunLabel(count)}", Modifier.weight(1f, fill = false), color = TextMuted, fontSize = 12.sp)
     Text(" — ", color = TextMuted, fontSize = 12.sp)
-    TextButton(toggle, Modifier.heightIn(min = 48.dp).semantics { contentDescription = "${if (revealed) "Hide" else "Show"} ${blockedRunLabel(count)}" }) {
+    TextButton(toggle, Modifier.heightIn(min = 48.dp).semantics { contentDescription = "${if (revealed) "Hide" else "Show"} ${blockedRunLabel(count)}" }, shape = MaterialTheme.shapes.small) {
         Text(if (revealed) "Hide" else "Show", fontSize = 12.sp)
     }
 }
@@ -162,12 +164,12 @@ import kotlinx.coroutines.launch
     }
     LaunchedEffect(Unit) { viewModel.refreshBlocks() }
 
-    Text("Who can start a DM with you", Modifier.semantics { heading() }, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+    SettingLabel("Who can start a DM with you")
     Column(Modifier.selectableGroup()) {
         directPrivacyOptions.forEach { (value, label, detail) ->
             Row(
                 // Only disabled while loading: disabling during a save would drop focus from the chosen option.
-                Modifier.fillMaxWidth().heightIn(min = 48.dp).selectable(setting == value, enabled = setting != null, role = Role.RadioButton) {
+                Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(MaterialTheme.shapes.small).selectable(setting == value, enabled = setting != null, role = Role.RadioButton) {
                     val previous = setting
                     if (saving || previous == value) return@selectable
                     setting = value; saving = true; settingError = null
@@ -193,11 +195,11 @@ import kotlinx.coroutines.launch
     if (setting == null && settingError == null) Text("Loading…", color = TextMuted, fontSize = 12.sp)
     settingError?.let {
         Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp)
-        if (setting == null) TextButton({ attempt++ }) { Text("Retry") }
+        if (setting == null) TextButton({ attempt++ }, shape = MaterialTheme.shapes.small) { Text("Retry") }
     }
 
     HorizontalDivider(color = Border)
-    Text("Blocked accounts", Modifier.semantics { heading() }, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+    SettingLabel("Blocked accounts")
     var unblockError by remember { mutableStateOf<String?>(null) }
     // "None" only once the list has loaded, and never alongside a load error.
     if (state.blocks.isEmpty()) Text(when {
@@ -218,5 +220,5 @@ import kotlinx.coroutines.launch
         }
     }
     (unblockError ?: state.blocksError?.takeIf { state.blocks.isNotEmpty() })?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
-    if (state.blocksError != null) TextButton(viewModel::refreshBlocks) { Text("Retry") }
+    if (state.blocksError != null) TextButton(viewModel::refreshBlocks, shape = MaterialTheme.shapes.small) { Text("Retry") }
 }

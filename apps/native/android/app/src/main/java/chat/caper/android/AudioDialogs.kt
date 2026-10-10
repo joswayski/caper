@@ -66,7 +66,7 @@ internal enum class AudioPanel { Test, Connection, Diagnostics }
     var soundEffects by remember { mutableStateOf(CaperEffects.enabled) }
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text("Caper sound effects", Modifier.weight(1f), fontSize = 13.sp)
-        Switch(soundEffects, { soundEffects = it; CaperEffects.enabled = it; if (it) CaperEffects.play(CaperEffects.Effect.ToggleOn) })
+        Switch(soundEffects, { soundEffects = it; CaperEffects.enabled = it; if (it) CaperEffects.play(CaperEffects.Effect.ToggleOn) }, colors = caperSwitchColors())
     }
     val testable = voice.phase == VoiceState.Phase.IDLE || voice.phase == VoiceState.Phase.FAILED || voice.phase == VoiceState.Phase.CONNECTED
     MenuButton("Audio test", testable) { open(AudioPanel.Test) }
@@ -92,7 +92,7 @@ internal enum class AudioPanel { Test, Connection, Diagnostics }
         IconButton({ open = true }, Modifier.size(width = 32.dp, height = 40.dp)) {
             Icon(painterResource(R.drawable.lucide_chevron_down), if (input) "Input Options" else "Output Options", Modifier.size(12.dp), tint = TextMuted)
         }
-        DropdownMenu(open, { open = false }, Modifier.width(280.dp), containerColor = SurfaceRaised) {
+        DropdownMenu(open, { open = false }, Modifier.width(280.dp), containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
             Column(Modifier.padding(horizontal = 14.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (input) {
                     // Android records from the system's communication microphone.
@@ -106,7 +106,7 @@ internal enum class AudioPanel { Test, Connection, Diagnostics }
                 } else {
                     Text("Audio output", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                     if (Build.VERSION.SDK_INT >= 31 && voice.routes.isNotEmpty()) voice.routes.forEach { route ->
-                        Row(Modifier.fillMaxWidth().clickable { VoiceCallService.selectRoute(context, route.id) }, verticalAlignment = Alignment.CenterVertically) {
+                        Row(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).clickable { VoiceCallService.selectRoute(context, route.id) }, verticalAlignment = Alignment.CenterVertically) {
                             RadioButton(route.id == voice.selectedRouteId, { VoiceCallService.selectRoute(context, route.id) })
                             Spacer(Modifier.width(8.dp)); Text(route.name, fontSize = 13.sp)
                         }
@@ -127,7 +127,7 @@ internal enum class AudioPanel { Test, Connection, Diagnostics }
     }
 
 @Composable private fun VolumeRow(label: String, value: Int) = Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-    Text(label, fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("$value%", color = TextMuted, fontSize = 11.sp)
+    Text(label, fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("$value%", color = TextMuted, fontSize = 11.sp, style = TabularNumbers)
 }
 
 private const val INPUT_METER_SEGMENTS = 40
@@ -312,7 +312,7 @@ private const val MAX_RECORDING_SECONDS = 30
             modifier = Modifier.semantics { contentDescription = "Test microphone volume" }, valueRange = 0f..200f)
         Text("Speaker", fontWeight = FontWeight.Bold, fontSize = 12.sp)
         if (Build.VERSION.SDK_INT >= 31 && voice.routes.isNotEmpty()) voice.routes.forEach { route ->
-            Row(Modifier.fillMaxWidth().clickable { VoiceCallService.selectRoute(context, route.id) }, verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).clickable { VoiceCallService.selectRoute(context, route.id) }, verticalAlignment = Alignment.CenterVertically) {
                 RadioButton(route.id == voice.selectedRouteId, { VoiceCallService.selectRoute(context, route.id) })
                 Spacer(Modifier.width(8.dp)); Text(route.name, fontSize = 13.sp)
             }
@@ -331,13 +331,13 @@ private const val MAX_RECORDING_SECONDS = 30
             if (testing) {
                 Box(Modifier.size(7.dp).clip(CircleShape).background(TerracottaBright))
                 Spacer(Modifier.width(5.dp))
-                Text("%.1fs".format(elapsed), color = TextMuted, fontSize = 11.sp)
+                Text("%.1fs".format(elapsed), color = TextMuted, fontSize = 11.sp, style = TabularNumbers)
             }
         }
         Text("Less noise. Clearer voice.", color = TextMuted, fontSize = 12.sp)
         Column {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("Voice enhancement", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("$strength%", color = TextMuted, fontSize = 11.sp)
+                Text("Voice enhancement", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("$strength%", color = TextMuted, fontSize = 11.sp, style = TabularNumbers)
             }
             Slider(strength.toFloat(), { strength = it.toInt(); CaperEffects.slider(it / 100f); VoiceCallService.setProcessingStrength(context, strength); prejoin?.processingStrength(strength) },
                 modifier = Modifier.semantics { contentDescription = "Voice processing" }, enabled = !testing, valueRange = 0f..100f)
@@ -346,12 +346,13 @@ private const val MAX_RECORDING_SECONDS = 30
             }
         }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            // Wide enough for every label, so the level meter beside it doesn't resize as it changes.
             Button({ if (testing) stopTest() else {
                 finishing = true
                 permissionGeneration = generation
                 microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
-            } }, enabled = testing || !finishing, shape = MaterialTheme.shapes.small) {
-                Text(if (testing) "Stop recording" else if (finishing) "Preparing…" else "Test microphone")
+            } }, Modifier.widthIn(min = 160.dp), enabled = testing || !finishing, shape = MaterialTheme.shapes.small) {
+                Text(if (testing) "Stop recording" else if (finishing) "Preparing…" else "Test microphone", maxLines = 1)
             }
             Column(Modifier.weight(1f)) {
                 Text("Input level", color = TextMuted, fontSize = 10.sp)
@@ -479,5 +480,5 @@ internal fun formatMegabytes(bytes: Long) = String.format(java.util.Locale.US, "
 internal fun formatKbps(bitsPerSecond: Long) = "${Math.round(bitsPerSecond / 1_000.0)} kbps"
 
 @Composable private fun DiagnosticRow(label: String, value: String) = Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-    Text(label, color = TextMuted, fontSize = 11.sp); Text(value, fontSize = 11.sp)
+    Text(label, color = TextMuted, fontSize = 11.sp); Text(value, fontSize = 11.sp, style = TabularNumbers)
 }

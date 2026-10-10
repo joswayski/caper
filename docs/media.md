@@ -5542,3 +5542,53 @@ both ways, the status bar and home indicator areas mid-slide, the account bar's
 controls, and that the timeline doesn't move during a slide. Roll
 back web with the previous web image and native clients with a corrected
 higher-build-number release. No data rollback is required.
+
+### UI polish pass (October 10, 2026)
+
+A sweep of things a user would notice as odd: highlights that stick after a tap,
+hidden or clipped text and menus, jumps while scrolling, mismatched buttons and
+missing hover/pressed states. Web shipped in #437; the native clients follow with
+the same fixes where the problem existed, plus their own audit fixes.
+
+- **Timelines:** loading older messages keeps the reader's place (web, Apple,
+  Android, Rust desktop), and a growing draft, suggestions or the keyboard no
+  longer push the newest message out of view (web, Apple, Rust desktop; Android
+  already handled it).
+- **Hover actions:** compact follow-up messages wrap clear of the hover actions,
+  and the action bar stays while its menu or picker is open (web, macOS, Rust
+  desktop). Web touch layouts keep text clear of the ⋯ button.
+- **Sidebars:** the space header stays pinned above long channel lists, the
+  space-unavailable notice sits at the top instead of over the audio controls or
+  composer, the narrowest sidebar shows the account avatar alone instead of a
+  one-letter name, and the "N in voice" count is never cut off.
+- **Dialogs and buttons:** dialog headings stay fixed above their scrolling body;
+  web, Apple and Android dialogs fit their content (Rust desktop shells stay
+  fixed-size, as `modal_shells_do_not_recenter_for_errors_or_pending_content`
+  requires). Sign-in and profile primary actions are compact and right-aligned
+  with a spinner while pending, and pending labels no longer resize buttons.
+- **Controls:** disclosure chevrons rotate instead of swapping icons, Members
+  matches Pins, timers and percentages use tabular digits, and touch targets are
+  44px/44pt/48dp. Keyboard focus returns to User Settings after its dialogs close
+  (web, macOS, Android hardware keyboards, Rust desktop).
+- **Platform fixes:** Android runs edge-to-edge on every API level with `adjustResize`;
+  the root consumes the Scaffold's system-bar insets before IME padding, so the
+  composer sits directly above the keyboard, and every Material color role comes
+  from the brand tokens. Rust desktop's voice error no longer pushes the account
+  bar past the sidebar, the space rail scrolls so every space is reachable, and
+  filled buttons gain hover, pressed and focus states.
+
+| Platform | Validation boundary |
+| --- | --- |
+| Web | See #437: `npm run check` passes; `npm test` passes except the known Node 22 `noise-assets` failure. Chromium against the disposable fixture at 1280×800 and 390×844 touch, before/after captures inspected; the older-history hold was measured frame by frame. The `scripts/test-*.mjs` suites were not run (`agent-browser` unavailable). Not Safari, Firefox or physical-device acceptance. |
+| Rust desktop | Linux: fmt, application-package Clippy (`--no-deps`) and build pass; 331 tests pass (9 existing ignored), including new regressions for the older-history frame and same-frame composer growth. Before/after Xvfb renders at 1440×900, 1000×560, 420×844 and 390×844, with frame captures for motion. The Forward window was not audited. No Windows or macOS run. |
+| Android | `compileDebugKotlin`, `testDebugUnitTest` (236 tests, 0 failures), `lintDebug` and `compileDebugAndroidTestKotlin` pass with Android SDK 36. No emulator or device: rendering, edge-to-edge on Android 8–14 versus 15+, fitted dialogs and chevron motion are unverified. |
+| iOS/macOS | Swift 6.1.2 on Linux parses all Apple Sources/Tests (`swiftc -parse`); no Xcode build, type-check, XCTest, simulator or device run. Check dialog sizing, older-history anchoring, keyboard/composer pinning and macOS focus return in Xcode. |
+| Containers/services | No API, gateway, infrastructure, secret/configuration or database change. |
+
+**Deployment order.** No backend, infrastructure, secret/configuration or
+database step. Web already shipped with #437. Android, Apple and Rust desktop can
+release independently, in any order, with their existing build scripts; merging
+does not deploy. Before distributing, build Apple in Xcode and check the items
+above, and check Android's keyboard and system bars on a phone. Roll back native
+clients with a corrected higher-build-number release; no data rollback is
+required.
