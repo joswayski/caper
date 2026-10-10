@@ -1,10 +1,14 @@
 package chat.caper.android.ui
 
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
+import androidx.compose.material3.SwitchColors
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
@@ -32,6 +36,8 @@ val TerracottaBright = Color(0xFFDB6849)
 val TerracottaDark = Color(0xFF39231E)
 val TerracottaBorder = Color(0xFF805143)
 val TerracottaWash = Color(0x29B64D32)
+/** Text on a terracotta wash, such as your own reaction's count (web's #F2AE9C). */
+val TerracottaLight = Color(0xFFF2AE9C)
 val PinGold = Color(0xFFE4C76A)
 val PinGoldWash = Color(0x0FE4C76A)
 val Idle = Color(0xFFC58B3C)
@@ -54,15 +60,37 @@ private val Satoshi = FontFamily(
             large = ControlShape,
             extraLarge = ControlShape,
         ),
+        // Every role Material components read comes from the tokens; unset roles fall back to
+        // Material's purple baseline (slider tracks, field labels, dividers, menus, sheets).
         colorScheme = darkColorScheme(
             primary = Terracotta,
-            secondary = CaperGreen,
-            background = Blackout,
-            surface = Surface,
-            outline = Border,
             onPrimary = Color.White,
+            primaryContainer = TerracottaDark,
+            onPrimaryContainer = Text,
+            inversePrimary = TerracottaBright,
+            secondary = CaperGreen,
+            onSecondary = Text,
+            secondaryContainer = Border,
+            onSecondaryContainer = Text,
+            background = Blackout,
             onBackground = Text,
+            surface = Surface,
             onSurface = Text,
+            surfaceVariant = SurfaceRaised,
+            onSurfaceVariant = TextMuted,
+            inverseSurface = Text,
+            inverseOnSurface = Blackout,
+            error = ErrorText,
+            onError = Blackout,
+            outline = Border,
+            outlineVariant = Border,
+            surfaceDim = Blackout,
+            surfaceBright = SurfaceComposer,
+            surfaceContainerLowest = Blackout,
+            surfaceContainerLow = Surface,
+            surfaceContainer = SurfaceRaised,
+            surfaceContainerHigh = SurfaceRaised,
+            surfaceContainerHighest = SurfaceComposer,
         ),
         typography = Typography().run {
             copy(
@@ -76,3 +104,16 @@ private val Satoshi = FontFamily(
         content = content,
     )
 }
+
+/**
+ * Web's toggle: a light thumb on a border-colored track, terracotta when on. Material's
+ * unchecked thumb is the outline color, which nearly vanishes on its dark track.
+ */
+@Composable fun caperSwitchColors(): SwitchColors = SwitchDefaults.colors(
+    checkedThumbColor = Text, checkedTrackColor = Terracotta, checkedBorderColor = Terracotta,
+    uncheckedThumbColor = Text, uncheckedTrackColor = Border, uncheckedBorderColor = Border,
+)
+
+/** Tabular figures (web's `tabular-nums`), so timers and counts keep their width as digits change. */
+val TabularNumbers: TextStyle
+    @Composable @ReadOnlyComposable get() = LocalTextStyle.current.merge(TextStyle(fontFeatureSettings = "tnum"))

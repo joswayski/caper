@@ -30,6 +30,19 @@ class TimelineFollowTest {
         assertNull(olderPageAnchor(listOf(Triple("root", 0, 0), Triple("r1", 1, 120))) { mapOf("root" to 0, "r1" to 1)[it] })
     }
 
+    @Test fun `an older page holds the row below the one it landed against`() {
+        // m1 gains a previous message, so its day divider or header can drop; m2 holds still instead.
+        val moved = mapOf("m1" to 21, "m2" to 22)
+        val visible = listOf(Triple<Any, Int, Int>("header", 0, 0), Triple("m1", 1, 132), Triple("m2", 2, 300))
+        assertEquals(22 to -300, olderPageAnchor(visible, boundary = "m1") { key -> if (key == "header") 0 else moved[key] })
+        // Alone in view, it is still the anchor.
+        assertEquals(21 to 40, olderPageAnchor(listOf(Triple("m1", 1, -40)), boundary = "m1") { moved[it] })
+        assertEquals("m1", pageBoundary(listOf("m1", "m2"), listOf("o1", "o2", "m1", "m2")))
+        // A thread's root keeps its place above the page.
+        assertEquals("r1", pageBoundary(listOf("root", "r1", "r2"), listOf("root", "o1", "r1", "r2")))
+        assertNull(pageBoundary(listOf("m1", "m2"), listOf("m1", "m2", "m3")))
+    }
+
     @Test fun `a conversation opens at the latest row once`() {
         val follow = TimelineFollow()
         assertNull(follow.next(FollowFrame(listOf("root")), ready = false))

@@ -20,10 +20,12 @@
         <meta-data android:name="firebase_messaging_auto_init_enabled" android:value="false" />
         <meta-data android:name="firebase_analytics_collection_enabled" android:value="false" />
         <meta-data android:name="com.google.firebase.messaging.default_notification_icon" android:resource="@drawable/ic_caper_notification" />
+        <!-- adjustResize: the keyboard is a window inset the composer pads for, never a pan of the whole window. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTop" />
+            android:launchMode="singleTop"
+            android:windowSoftInputMode="adjustResize" />
         <!-- BEGIN generated launcher aliases; run scripts/generate-android-launcher-aliases.mjs -->
         <activity-alias
             android:name="chat.caper.android.launcher.Default"
