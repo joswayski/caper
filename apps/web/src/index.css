@@ -73,6 +73,7 @@
 
 .page {
   min-height: 100vh;
+  min-height: 100dvh;
   background: #0c0d0f;
 }
 .shell {
@@ -291,8 +292,12 @@
   color: var(--text);
   text-underline-offset: 4px;
 }
-.app-downloads a:hover {
-  color: var(--terracotta-bright);
+/* Link hovers here are gated to real pointers: on touch, :hover sticks after
+   a tap, leaving a link (or a download button) lit when you come back. */
+@media (hover: hover) {
+  .app-downloads a:hover {
+    color: var(--terracotta-bright);
+  }
 }
 .app-downloads a:focus-visible {
   outline: 2px solid var(--terracotta);
@@ -320,25 +325,42 @@
   white-space: nowrap;
   transition:
     background-color 0.2s ease,
-    border-color 0.2s ease;
+    border-color 0.2s ease,
+    color 0.2s ease;
 }
 .app-downloads .download-button {
   color: var(--blackout);
   background: var(--text);
 }
-/* #fff on #f3f4f5 is invisible; dim instead so the hover reads like its sibling's. */
-.app-downloads .download-button:hover {
-  color: var(--blackout);
-  background: #d4d6d8;
+.app-downloads .download-button:focus-visible {
+  color: var(--text);
+  background: var(--terracotta);
 }
 .app-downloads .source-button {
   color: var(--text);
   border-color: var(--border);
   background: var(--surface);
 }
-.app-downloads .source-button:hover {
+/* Hover only where a pointer hovers, so a tapped button doesn't stay lit on
+   touch; a press still shows the same terracotta. */
+@media (hover: hover) {
+  .app-downloads .download-button:hover {
+    color: var(--text);
+    background: var(--terracotta);
+  }
+  .app-downloads .source-button:hover {
+    color: var(--text);
+    border-color: var(--text-muted);
+  }
+}
+.app-downloads .download-button:active {
+  color: var(--text);
+  background: var(--terracotta);
+}
+.app-downloads .source-button:active {
   color: var(--text);
   border-color: var(--text-muted);
+  background: var(--surface-raised);
 }
 .download-actions svg {
   width: 18px;
@@ -354,9 +376,11 @@
   color: inherit;
   text-decoration: none;
 }
-.app-downloads p a:hover {
-  color: var(--text);
-  text-decoration: underline;
+@media (hover: hover) {
+  .app-downloads p a:hover {
+    color: var(--text);
+    text-decoration: underline;
+  }
 }
 .hero-copy > .made-by {
   margin: 20px 0 0;
@@ -370,18 +394,12 @@
   text-underline-offset: 4px;
   transition: color 0.2s ease;
 }
-.made-by a:hover {
-  color: var(--terracotta-bright);
-}
-:is(.made-by a, .latest-changes li a, .not-found a):focus-visible {
-  outline: 2px solid var(--terracotta);
-  outline-offset: 4px;
-  border-radius: 2px;
-}
-.made-by a:hover,
-.experimental-note a:hover,
-.latest-changes li a:hover {
-  color: var(--terracotta-bright);
+@media (hover: hover) {
+  .made-by a:hover,
+  .experimental-note a:hover,
+  .latest-changes li a:hover {
+    color: var(--terracotta-bright);
+  }
 }
 :is(.made-by, .experimental-note, .latest-changes) a:focus-visible,
 .not-found a:focus-visible {
@@ -415,6 +433,9 @@
   font: inherit;
   cursor: pointer;
 }
+.contact-or {
+  white-space: nowrap;
+}
 .contact-action svg {
   width: 14px;
   height: 14px;
@@ -438,14 +459,18 @@
 }
 .not-found {
   min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   place-content: center;
   text-align: center;
   padding: 24px;
 }
 .not-found p {
-  color: var(--terracotta);
+  margin: 0 0 12px;
+  color: var(--terracotta-bright);
+  font-size: 0.75rem;
   font-weight: 700;
+  letter-spacing: 0.14em;
 }
 /* Match the other standalone pages' bold, tightly tracked headings. */
 .not-found h1 {
@@ -462,8 +487,10 @@
   text-underline-offset: 5px;
   transition: color 0.2s ease;
 }
-.not-found a:hover {
-  color: var(--terracotta-bright);
+@media (hover: hover) {
+  .not-found a:hover {
+    color: var(--terracotta-bright);
+  }
 }
 /* Full shell width with the list on the hero copy's left edge, instead of a
    centred 680px column that lined up with nothing above it. */
@@ -502,8 +529,10 @@
   text-decoration: none;
   text-underline-offset: 4px;
 }
-.latest-changes li a:hover {
-  text-decoration: underline;
+@media (hover: hover) {
+  .latest-changes li a:hover {
+    text-decoration: underline;
+  }
 }
 .latest-changes time,
 .latest-changes-empty {
@@ -525,6 +554,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .app-downloads .download-button,
   .hero-copy,
   .hero[data-live-open] .hero-copy {
     transition: none;
@@ -568,6 +598,13 @@
   }
   .hero-copy > .app-downloads {
     order: 5;
+  }
+  /* The copy below the window sits above its stage (z-index 3), so the
+     window's floor shadow falls behind the download buttons instead of
+     dimming them. */
+  .hero-copy > :is(.app-downloads, .experimental-note, .made-by) {
+    position: relative;
+    z-index: 4;
   }
   .hero-copy > .made-by {
     order: 10;

@@ -114,8 +114,14 @@ export default function Composer({
       const composer = composerRef.current;
       if (!composer) return false;
       const height = composer.offsetHeight;
+      // Collapsing the textarea to measure it must not shrink the form for that
+      // moment: the conversation would grow and clamp its scroll position, so
+      // every keystroke in a multi-line draft scrolled the messages up.
+      const form = composer.parentElement;
+      if (form) form.style.minHeight = `${form.offsetHeight}px`;
       composer.style.height = "0px";
       composer.style.height = `${composer.scrollHeight + composer.offsetHeight - composer.clientHeight}px`;
+      if (form) form.style.minHeight = "";
       return composer.offsetHeight !== height;
     });
   const resizeRef = useRef(resize);

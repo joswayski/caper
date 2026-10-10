@@ -439,6 +439,8 @@
   height: 8px;
   border-radius: 50%;
   background: var(--caper);
+  /* Fades with the pill instead of snapping to white ahead of it. */
+  transition: background-color 0.2s ease;
 }
 .live-invite i::after {
   position: absolute;
@@ -447,19 +449,31 @@
   border: 1.5px solid var(--caper);
   border-radius: 50%;
   animation: live-ping 2s ease-out infinite;
+  transition: border-color 0.2s ease;
 }
-.live-invite:hover,
+/* Hover only for real pointers: after a tap on touch, and when coming back
+   to the page, the pill must not stay terracotta. */
 .live-activator:focus-visible .live-invite {
   color: #fff;
   background: var(--terracotta);
 }
-.live-invite:hover i,
 .live-activator:focus-visible .live-invite i {
   background: #fff;
 }
-.live-invite:hover i::after,
 .live-activator:focus-visible .live-invite i::after {
   border-color: #fff;
+}
+@media (hover: hover) {
+  .live-invite:hover {
+    color: #fff;
+    background: var(--terracotta);
+  }
+  .live-invite:hover i {
+    background: #fff;
+  }
+  .live-invite:hover i::after {
+    border-color: #fff;
+  }
 }
 .live-invite-coarse {
   display: none;
@@ -843,7 +857,10 @@ html.live-sheet-open {
   .sim-typing i {
     animation: none;
   }
-  .live-glow {
+  .live-glow,
+  .live-invite,
+  .live-invite i,
+  .live-invite i::after {
     transition: none;
   }
 }

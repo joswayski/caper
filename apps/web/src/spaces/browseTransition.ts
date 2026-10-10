@@ -8,21 +8,23 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 
-// Phones show the conversation, or Browse (spaces and channels) with the
-// conversation pushed to the right edge. Moving between them slides the
-// conversation over the still Browse, following a finger when swiped. Both
-// views share the room's DOM, so a view transition snapshots the outgoing view
-// while the incoming one renders live; the conversation's snapshot is posed by
-// hand so a swipe can scrub it and then settle forward or back.
+// Phones show the conversation or Browse (spaces and channels), never both.
+// Moving between them slides the conversation fully over or off the still
+// Browse, following a finger when swiped, while Browse's account bar rises over
+// it from the bottom edge. Both views share the room's DOM, so a view
+// transition snapshots the outgoing view while the incoming one renders live;
+// the conversation's and bar's snapshots are posed by hand so a swipe can scrub
+// them and then settle forward or back.
 
 const NARROW = "(max-width: 760px)";
 const ROOM = ".call-room.spaces-room";
 const NAME = "browse-room";
+const BAR_NAME = "browse-bar";
 /** Browse's account and voice bar, which stays uncovered at the bottom. */
 const BAR = ":scope > .people-panel > .voice-panel";
-const SETTLE = { duration: 320, easing: "cubic-bezier(0.32, 0.72, 0, 1)" };
+export const SETTLE = { duration: 320, easing: "cubic-bezier(0.32, 0.72, 0, 1)" };
 /** An ease-out whose initial speed is three times its average, to carry on from a finger. */
-const RELEASE_EASING = "cubic-bezier(0.2, 0.6, 0.35, 1)";
+export const RELEASE_EASING = "cubic-bezier(0.2, 0.6, 0.35, 1)";
 
 export interface BrowseDrag {
   /** Share of the way to the other view, from 0 to 1. */
@@ -40,16 +42,15 @@ function animatable() {
   );
 }
 
-/** How far the conversation moves to reveal Browse: the room, less the edge it keeps in view. */
+/** How far the conversation moves to reveal Browse: past the room, so its edge shadow leaves too. */
 export function browseTravel(room: Element) {
-  const peek = parseFloat(getComputedStyle(room).getPropertyValue("--browse-peek")) || 0;
-  return Math.max(1, room.getBoundingClientRect().width - peek);
+  return room.getBoundingClientRect().width + 48;
 }
 
 /**
- * Lines the conversation's edge view up with the conversation on phones: it
- * keeps the offset it has below its channel row, and stops above Browse's
- * account bar so the bar's controls keep their full width.
+ * Keeps the hidden conversation laid out where it was on phones (the offset it
+ * has below its channel row), and measures Browse's account bar, which rises
+ * over the sliding conversation by that height.
  */
 export function useBrowseLayout(roomRef: RefObject<HTMLElement | null>, open: boolean) {
   useLayoutEffect(() => {
@@ -166,23 +167,25 @@ class Slide implements BrowseDrag {
 
   /**
    * Moves the conversation's snapshot (outgoing when opening Browse) between two
-   * progress values, lifting its bottom edge off Browse's account bar on the way.
+   * progress values, and raises Browse's account bar over it from the bottom edge.
    */
   private animate(from: number, to: number, timing: KeyframeAnimationOptions) {
     const bar = parseFloat(this.room?.style.getPropertyValue("--browse-bar") ?? "") || 0;
-    const offset = (progress: number) => {
-      const uncovered = this.opening ? progress : 1 - progress;
-      return {
-        transform: `translateX(${uncovered * this.travel}px)`,
-        clipPath: `inset(0 0 ${uncovered * bar}px -48px)`,
-      };
-    };
-    const animation = document.documentElement.animate([offset(from), offset(to)], {
-      ...timing,
-      pseudoElement: `::view-transition-${this.opening ? "old" : "new"}(${NAME})`,
-    });
-    this.animations.push(animation);
-    return [animation];
+    const uncovered = (progress: number) => (this.opening ? progress : 1 - progress);
+    const conversation = (progress: number) => ({ transform: `translateX(${uncovered(progress) * this.travel}px)` });
+    const account = (progress: number) => ({ transform: `translateY(${(1 - uncovered(progress)) * bar}px)` });
+    const animations = [
+      document.documentElement.animate([conversation(from), conversation(to)], {
+        ...timing,
+        pseudoElement: `::view-transition-${this.opening ? "old" : "new"}(${NAME})`,
+      }),
+      document.documentElement.animate([account(from), account(to)], {
+        ...timing,
+        pseudoElement: `::view-transition-${this.opening ? "new" : "old"}(${BAR_NAME})`,
+      }),
+    ];
+    this.animations.push(...animations);
+    return animations;
   }
 
   private settle() {
@@ -237,9 +240,9 @@ export function dragBrowse(opening: boolean, update: (open: boolean) => void): B
   return start(opening, update, true);
 }
 
-const BLOCKING = "dialog[open], details[open], [role=dialog], [popover]:popover-open";
-const OWN_GESTURES =
-  "input, textarea, select, [contenteditable=true], [role=slider], a, summary, button:not(.channel-select, .direct-select, .browse-peek)";
+export const BLOCKING = "dialog[open], details[open], [role=dialog], [popover]:popover-open";
+export const OWN_GESTURES =
+  "input, textarea, select, [contenteditable=true], [role=slider], a, summary, button:not(.channel-select, .direct-select)";
 
 /**
  * Touch swipes on the room: right from the conversation reveals Browse, left

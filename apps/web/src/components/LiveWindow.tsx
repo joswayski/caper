@@ -703,7 +703,14 @@ export default function LiveWindow() {
             </section>
           </div>
         </div>
-        <a className="live-activator" data-live-activator data-live-control href="/spaces" aria-label="Join Caper">
+        <a
+          className="live-activator"
+          data-live-activator
+          data-live-control
+          href="/spaces"
+          aria-label="Join Caper"
+          draggable={false}
+        >
           <span className="live-invite">
             <i aria-hidden="true" />
             <span className="live-invite-fine">Click to join</span>

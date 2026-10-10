@@ -99,8 +99,9 @@ try {
     document.querySelectorAll('main').forEach(e => e.style.display = 'none');
     const mount = document.createElement('div'); document.body.append(mount);
     createRoot(mount).render(React.createElement('dialog', {className: 'audio-dialog', ref: e => {if(e && !e.open) e.showModal();}},
-      React.createElement('p', null, 'Synthetic microphone fixture — real RNNoise fallback'),
-      React.createElement(MicPlayback, {stream: filteredStream, output: '', processingStrength: 50, noiseStatus: capture.status, onProcessingStrengthChange: () => {}})));
+      React.createElement('div', {className: 'audio-dialog-body'},
+        React.createElement('p', null, 'Synthetic microphone fixture — real RNNoise fallback'),
+        React.createElement(MicPlayback, {stream: filteredStream, output: '', processingStrength: 50, noiseStatus: capture.status, onProcessingStrengthChange: () => {}}))));
   `);
   browser("wait", ".mic-test-card");
   for (const width of [1280, 390]) {
