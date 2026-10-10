@@ -199,16 +199,25 @@ private struct CaperIcon: View {
     }
 }
 
-/// Phones show the conversation, or Browse (spaces and channels) with the
-/// conversation's edge still in view. The conversation slides over the still
-/// Browse, following a finger from the screen edge or that edge view. Buttons,
-/// Back and channel choices animate the same slide.
+/// Phones show the conversation or Browse (spaces and channels), never both.
+/// The conversation slides fully off the still Browse, following a finger from
+/// the screen edge. Buttons, Back and channel choices animate the same slide.
 @Observable private final class BrowseDrawer {
     /// While a finger drags: how much of Browse is uncovered, from 0 (conversation) to 1 (Browse).
     var drag: CGFloat?
-    /// How far the conversation moves: the width, less the edge kept in view.
+    /// How far the conversation moves: the full width and its edge shadow.
     var travel: CGFloat = 1
     static let settle = Animation.interpolatingSpring(duration: 0.35, bounce: 0)
+}
+
+/// Marks a Browse/conversation switch. Only the conversation layer moves with
+/// it: nothing inside animates on its own, so no control lags behind the slide.
+private struct BrowseSlideKey: TransactionKey { static let defaultValue = false }
+private extension Transaction {
+    var browseSlide: Bool {
+        get { self[BrowseSlideKey.self] }
+        set { self[BrowseSlideKey.self] = newValue }
+    }
 }
 
 /// The conversation's outline, lifted off Browse's account bar at the bottom
@@ -240,6 +249,9 @@ private struct BrowseLayer: ViewModifier {
         // Follow the finger while dragged and spring into place otherwise,
         // keeping a release's own spring (and speed).
         content.transaction { transaction in
+            if transaction.browseSlide { transaction.animation = nil }
+        }
+        .transaction { transaction in
             if drag != nil || reduceMotion { transaction.animation = nil }
             else if transaction.animation == nil { transaction.animation = BrowseDrawer.settle }
         } body: { layer in
@@ -253,8 +265,6 @@ private struct BrowseLayer: ViewModifier {
 private struct BrowseSwipe: ViewModifier {
     let open: Bool
     let enabled: Bool
-    /// Starts anywhere on the view, not just at its edge.
-    var anywhere = false
     let navigate: () -> Void
     @Environment(BrowseDrawer.self) private var drawer: BrowseDrawer?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -271,7 +281,7 @@ private struct BrowseSwipe: ViewModifier {
                 .onChanged { value in
                     let dx = value.translation.width, dy = value.translation.height
                     if tracking == nil {
-                        let edge = anywhere || (open ? value.startLocation.x >= frame.maxX - 24 : value.startLocation.x <= frame.minX + 24)
+                        let edge = open ? value.startLocation.x >= frame.maxX - 24 : value.startLocation.x <= frame.minX + 24
                         tracking = enabled && drawer != nil && edge && abs(dx) > abs(dy) && (open ? dx < 0 : dx > 0)
                     }
                     guard tracking == true, let drawer else { return }
@@ -290,7 +300,7 @@ private struct BrowseSwipe: ViewModifier {
                     let velocity = abs(remaining) > 0.01 ? value.velocity.width / drawer.travel / remaining : 0
                     withAnimation(reduceMotion ? nil : .interpolatingSpring(duration: 0.35, bounce: 0, initialVelocity: min(max(velocity, -20), 20))) {
                         drawer.drag = nil
-                        if commit { navigate() }
+                        if commit { withTransaction(\.browseSlide, true, navigate) }
                     }
                 }, including: enabled ? .all : .subviews)
             .onChange(of: dragging) { _, active in
@@ -366,11 +376,11 @@ private struct WorkspaceView: View {
                             .disabled(model.openingSpaceID != nil)
                     }.padding(12).background(CaperTheme.surface)
                 }
-                // Phones slide the conversation over Browse; wider windows show both.
+                // Phones slide the conversation fully over Browse; wider windows show both.
                 let conversationAvailable = !model.spaces.isEmpty || model.selectedDirectMessageID != nil
                 let showsBrowse = !narrow || model.navigationOpen || !conversationAvailable
-                // How much of the conversation stays in view beside Browse.
-                let peek = min(96, max(56, geometry.size.width * 0.2))
+                // Past the width, so the edge shadow leaves too.
+                let travel = geometry.size.width + 16
                 ZStack(alignment: .leading) {
                     VStack(spacing: 0) {
                         HStack(spacing: 0) {
@@ -380,7 +390,7 @@ private struct WorkspaceView: View {
                                 model: model,
                                 sheet: $sheet,
                                 narrow: narrow,
-                                close: { model.navigationOpen = false }
+                                close: { slide(open: false) }
                             )
                             .frame(width: narrow ? nil : CGFloat(min(sidebarWidth, sidebarMaximum(for: geometry.size.width))))
                             .frame(maxWidth: narrow ? .infinity : CGFloat(min(sidebarWidth, sidebarMaximum(for: geometry.size.width))))
@@ -439,14 +449,14 @@ private struct WorkspaceView: View {
                                 Group {
                                     if geometry.size.width - 60 - min(sidebarWidth, sidebarMaximum(for: geometry.size.width)) >= 540 {
                                         HStack(spacing: 0) {
-                                            ConversationStage(model: model, narrow: false, browse: { model.navigationOpen = true }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
+                                            ConversationStage(model: model, narrow: false, browse: { slide(open: true) }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
                                                 membersPreference = !membersVisible
                                             }
                                             if membersVisible && model.selectedDirectMessageID == nil { MemberPresenceView(model: model).frame(width: 220) }
                                         }
                                     } else {
                                         ZStack(alignment: .trailing) {
-                                            ConversationStage(model: model, narrow: false, browse: { model.navigationOpen = true }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
+                                            ConversationStage(model: model, narrow: false, browse: { slide(open: true) }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
                                                 membersPreference = !membersVisible
                                             }
                                             if membersVisible && model.selectedDirectMessageID == nil { MemberPresenceView(model: model).frame(width: 220).padding(.top, 50) }
@@ -455,9 +465,8 @@ private struct WorkspaceView: View {
                                 }
                             }
                         }
-                        .padding(.trailing, narrow ? peek : 0)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        // The account bar keeps the full width, below the conversation's edge.
+                        // The account bar keeps the full width; the sliding conversation lifts off it.
                         if narrow {
                             AccountBar(model: model, sheet: $sheet)
                                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { browseBarHeight = $0 }
@@ -467,7 +476,7 @@ private struct WorkspaceView: View {
                     .accessibilityHidden(!showsBrowse)
                     if narrow && conversationAvailable {
                         ZStack(alignment: .trailing) {
-                            ConversationStage(model: model, narrow: true, browse: { model.navigationOpen = true }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
+                            ConversationStage(model: model, narrow: true, browse: { slide(open: true) }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
                                 membersPreference = !membersVisible
                             }
                             if membersVisible && model.selectedDirectMessageID == nil {
@@ -487,34 +496,25 @@ private struct WorkspaceView: View {
                             LinearGradient(colors: [.clear, .black.opacity(0.35)], startPoint: .trailing, endPoint: .leading)
                                 .frame(width: 16).offset(x: -16).allowsHitTesting(false).accessibilityHidden(true)
                         }
-                        .modifier(BrowseLayer(showsBrowse: showsBrowse, travel: geometry.size.width - peek, bar: browseBarHeight))
+                        .modifier(BrowseLayer(showsBrowse: showsBrowse, travel: travel, bar: browseBarHeight))
                         .allowsHitTesting(!showsBrowse)
                         .accessibilityHidden(showsBrowse)
-                    }
-                    // Beside Browse the conversation's edge is inert: tapping or dragging it returns.
-                    if narrow && conversationAvailable && showsBrowse {
-                        Color.clear
-                            .frame(width: peek)
-                            .contentShape(Rectangle())
-                            .onTapGesture { model.navigationOpen = false }
-                            .modifier(BrowseSwipe(open: true, enabled: true, anywhere: true, navigate: { model.navigationOpen = false }))
-                            .accessibilityElement()
-                            .accessibilityLabel("Back to conversation")
-                            .accessibilityAddTraits(.isButton)
-                            .accessibilityAction { model.navigationOpen = false }
-                            .padding(.bottom, browseBarHeight)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipped()
-                .onChange(of: geometry.size.width - peek, initial: true) { _, travel in browseDrawer.travel = max(travel, 1) }
+                .onChange(of: travel, initial: true) { _, travel in browseDrawer.travel = max(travel, 1) }
                 .onChange(of: showsBrowse) { _, _ in endEditing() }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(CaperTheme.blackout)
             .environment(browseDrawer)
         }
+    }
+
+    /// Buttons switch with the same slide as a finger.
+    private func slide(open: Bool) {
+        withTransaction(\.browseSlide, true) { model.navigationOpen = open }
     }
 
     /// The hidden view stays in place to slide back, so it must not keep the keyboard.
