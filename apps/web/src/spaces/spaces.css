@@ -1947,13 +1947,27 @@ html[data-browse-transition]::view-transition-new(browse-room) {
   animation: none;
   mix-blend-mode: normal;
 }
-/* The conversation is always the top layer. */
+/* The conversation is above Browse at its full height; only Browse's account
+   bar, which rises from the bottom edge, is above the conversation. */
 html[data-browse-transition="open"]::view-transition-old(browse-room) {
   z-index: 1;
 }
 html[data-browse-transition="open"]::view-transition-old(browse-room),
 html[data-browse-transition="close"]::view-transition-new(browse-room) {
   box-shadow: -12px 0 32px rgb(0 0 0 / 0.45);
+  clip-path: inset(0 0 0 -48px);
+}
+html[data-browse-transition] .call-room.spaces-room.navigation-open > .people-panel > .voice-panel {
+  view-transition-name: browse-bar;
+}
+html[data-browse-transition]::view-transition-group(browse-bar) {
+  z-index: 2;
+  animation: none;
+}
+html[data-browse-transition]::view-transition-old(browse-bar),
+html[data-browse-transition]::view-transition-new(browse-bar) {
+  animation: none;
+  mix-blend-mode: normal;
 }
 
 @media (max-width: 760px) {
@@ -2048,6 +2062,31 @@ html[data-browse-transition="close"]::view-transition-new(browse-room) {
   .spaces-room.navigation-open > .people-panel > .voice-panel {
     grid-area: 2 / 1 / 3 / -1;
     margin: 12px calc(12px - var(--browse-peek)) 12px 12px;
+  }
+  /* It rises over the sliding conversation on a band that reaches the room's
+     edges; its own box moves to ::after so the band can sit beneath it. */
+  .call-room.spaces-room.navigation-open > .people-panel > .voice-panel {
+    isolation: isolate;
+    border-color: transparent;
+    background: transparent;
+  }
+  .call-room.spaces-room.navigation-open > .people-panel > .voice-panel::before,
+  .call-room.spaces-room.navigation-open > .people-panel > .voice-panel::after {
+    position: absolute;
+    z-index: -1;
+    content: "";
+    pointer-events: none;
+  }
+  .call-room.spaces-room.navigation-open > .people-panel > .voice-panel::before {
+    inset: -13px -13px calc(-13px - env(safe-area-inset-bottom, 0px));
+    height: auto;
+    background: var(--blackout);
+  }
+  .call-room.spaces-room.navigation-open > .people-panel > .voice-panel::after {
+    inset: -1px;
+    border: 1px solid var(--border);
+    border-radius: inherit;
+    background: var(--surface-raised);
   }
   /* Beside Browse the conversation stays in view at the edge, still laid out
      where it was (so it keeps its scroll position), and is inert. Tapping or

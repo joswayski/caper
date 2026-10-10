@@ -43,7 +43,6 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.GenericShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -63,7 +62,6 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -428,7 +426,8 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
                     val browseUncovered by remember { derivedStateOf { drawer.progress.value > 0f } }
                     CompositionLocalProvider(LocalBrowseDrawer provides drawer) {
                         Box(Modifier.fillMaxSize().clipToBounds().background(Blackout).browseDrag(drawer) { latestSetNavigationOpen(it) }) {
-                            if (navigationOpen || browseUncovered) Column(Modifier.fillMaxSize()) {
+                            // Leaves room for the account bar, which rises over the conversation.
+                            if (navigationOpen || browseUncovered) Column(Modifier.fillMaxSize().padding(bottom = with(LocalDensity.current) { barHeight.toDp() })) {
                                 Row(Modifier.weight(1f).padding(end = peek)) {
                                     SpaceRail(state, viewModel, show, Modifier.width(60.dp))
                                     ChannelSidebar(state, voice, viewModel, show,
@@ -437,10 +436,8 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
                                         channelsExpanded, { channelsExpanded = it }, joinVoice, pendingVoiceJoin, voicePermissionError,
                                         { voicePermissionError = null }, showAccountBar = false) { setNavigationOpen(false) }
                                 }
-                                // The account bar keeps the full width, below the conversation's edge.
-                                Box(Modifier.onSizeChanged { barHeight = it.height }) { AccountBar(state, voice, viewModel, show) }
                             }
-                            Box(Modifier.fillMaxSize().conversationLayer(drawer, barHeight).background(Surface)
+                            Box(Modifier.fillMaxSize().conversationLayer(drawer).background(Surface)
                                 .then(if (navigationOpen) Modifier.clearAndSetSemantics {} else Modifier)) {
                                 conversationState.SaveableStateProvider(state.selectedChannel?.id ?: "empty") {
                                     Conversation(state, voice, viewModel, show, true, membersVisible, { membersVisible = !membersVisible }, voicePermissionError) { setNavigationOpen(true) }
@@ -456,6 +453,10 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
                                         close = { membersVisible = false })
                                 }
                             }
+                            // The account bar keeps the full width: it rises from the bottom
+                            // edge over the conversation as Browse is uncovered.
+                            if (navigationOpen || browseUncovered) Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                                .onSizeChanged { barHeight = it.height }.browseBarLayer(drawer).background(Blackout)) { AccountBar(state, voice, viewModel, show) }
                             // Beside Browse the conversation's edge is inert: tapping or dragging it returns.
                             if (navigationOpen) Box(Modifier.align(Alignment.TopEnd).width(peek).fillMaxHeight()
                                 .padding(bottom = with(LocalDensity.current) { barHeight.toDp() })
@@ -517,15 +518,16 @@ private class BrowseDrawer(private val scope: CoroutineScope, open: Boolean) {
 
 private val LocalBrowseDrawer = staticCompositionLocalOf<BrowseDrawer?> { null }
 
-/** Moves the conversation over Browse, lifting its bottom edge off Browse's account bar on the way. */
-private fun Modifier.conversationLayer(drawer: BrowseDrawer, barHeight: Int): Modifier = graphicsLayer {
+/** Moves the conversation over Browse at its full height. */
+private fun Modifier.conversationLayer(drawer: BrowseDrawer): Modifier = graphicsLayer {
     val uncovered = drawer.progress.value
     translationX = uncovered * (size.width - drawer.peek)
-    // A clipped layer also clips touches, so the bar's controls stay reachable.
-    val inset = uncovered * barHeight
-    clip = uncovered > 0f
-    shape = GenericShape { size, _ -> addRect(Rect(0f, 0f, size.width, size.height - inset)) }
     shadowElevation = if (uncovered > 0f) 16.dp.toPx() else 0f
+}
+
+/** Raises Browse's account bar from below the bottom edge as Browse is uncovered. */
+private fun Modifier.browseBarLayer(drawer: BrowseDrawer): Modifier = graphicsLayer {
+    translationY = (1f - drawer.progress.value) * size.height
 }
 
 // Only the timeline/sidebar starts this gesture; the composer and audio controls
@@ -558,7 +560,9 @@ private fun Modifier.browseDrag(drawer: BrowseDrawer, setOpen: (Boolean) -> Unit
             tracker.resetTracking()
             try {
                 while (true) {
-                    val event = awaitPointerEvent()
+                    // Once sliding, take moves before the timeline or channel list
+                    // can scroll with them.
+                    val event = awaitPointerEvent(if (dragging) PointerEventPass.Initial else PointerEventPass.Main)
                     val change = event.changes.firstOrNull { it.id == down.id } ?: break
                     dx = change.position.x - down.position.x
                     val dy = change.position.y - down.position.y

@@ -5486,14 +5486,13 @@ impl CaperApp {
                     );
                     let peek = (content.width() * 0.2).clamp(56.0, 96.0);
                     if uncovered > 0.0 {
-                        ui.scope_builder(egui::UiBuilder::new().max_rect(content), |ui| {
-                            // The account bar keeps the full width, below the conversation's edge.
-                            let bar = egui::TopBottomPanel::bottom("narrow-account")
-                                .show_separator_line(false)
-                                .frame(egui::Frame::new().fill(SIDEBAR).inner_margin(12))
-                                .show_inside(ui, |ui| self.account_bar(ui));
-                            self.browse_bar = bar.response.rect.height();
-                            let browse = ui.available_rect_before_wrap();
+                        // Browse stops above the account bar, which rises over the
+                        // conversation below.
+                        let browse = egui::Rect::from_min_max(
+                            content.min,
+                            egui::pos2(content.right(), content.bottom() - self.browse_bar),
+                        );
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(browse), |ui| {
                             let rail_rect = egui::Rect::from_min_max(
                                 browse.min,
                                 egui::pos2(browse.left() + 59.0, browse.bottom()),
@@ -5510,16 +5509,9 @@ impl CaperApp {
                             });
                         });
                     }
-                    // Panels inside set their own clip, so the conversation's rect itself
-                    // stops above Browse's account bar as it slides aside.
-                    let stage = egui::Rect::from_min_max(
-                        content.min,
-                        egui::pos2(
-                            content.right(),
-                            content.bottom() - uncovered * self.browse_bar,
-                        ),
-                    )
-                    .translate(egui::vec2(uncovered * (content.width() - peek), 0.0));
+                    // The conversation keeps its full height as it slides aside.
+                    let stage =
+                        content.translate(egui::vec2(uncovered * (content.width() - peek), 0.0));
                     if uncovered > 0.0 {
                         let shadow = egui::Shadow {
                             offset: [-4, 0],
@@ -5549,6 +5541,35 @@ impl CaperApp {
                             });
                         }
                     });
+                    if uncovered > 0.0 {
+                        // The account bar keeps the full width: it rises from the bottom
+                        // edge over the conversation as Browse is uncovered.
+                        let top = content.bottom() - uncovered * self.browse_bar;
+                        let bar_rect =
+                            egui::Rect::from_min_max(egui::pos2(content.left(), top), content.max);
+                        // Clicks on the bar's background stay off the conversation beneath.
+                        ui.interact(
+                            bar_rect,
+                            egui::Id::new("narrow-account-backdrop"),
+                            egui::Sense::click(),
+                        );
+                        let bar = ui.scope_builder(
+                            egui::UiBuilder::new().max_rect(egui::Rect::from_min_max(
+                                egui::pos2(content.left(), top),
+                                egui::pos2(content.right(), top + content.height()),
+                            )),
+                            |ui| {
+                                egui::Frame::new()
+                                    .fill(SIDEBAR)
+                                    .inner_margin(12)
+                                    .show(ui, |ui| {
+                                        ui.set_width(ui.available_width());
+                                        self.account_bar(ui);
+                                    })
+                            },
+                        );
+                        self.browse_bar = bar.inner.response.rect.height();
+                    }
                     if self.navigation_open {
                         let edge = egui::Rect::from_min_max(
                             egui::pos2(content.right() - peek, content.top()),

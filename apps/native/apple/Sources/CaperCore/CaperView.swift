@@ -211,25 +211,21 @@ private struct CaperIcon: View {
     static let settle = Animation.interpolatingSpring(duration: 0.35, bounce: 0)
 }
 
-/// The conversation's outline, lifted off Browse's account bar at the bottom
-/// and widened to the left for its edge shadow.
-private struct BrowseEdge: Shape {
-    var inset: CGFloat
-    var animatableData: CGFloat {
-        get { inset }
-        set { inset = newValue }
-    }
-    func path(in rect: CGRect) -> Path {
-        Path(CGRect(x: rect.minX - 48, y: rect.minY, width: rect.width + 48, height: max(0, rect.height - inset)))
-    }
+/// Clips sideways only, so backgrounds still reach under the status bar and
+/// home indicator.
+private struct SideClip: Shape {
+    func path(in rect: CGRect) -> Path { Path(rect.insetBy(dx: 0, dy: -rect.height)) }
 }
 
-/// Poses the conversation over Browse on phones. Only this reads the drag, so a
-/// moving finger re-renders the pose rather than the conversation itself.
+/// Poses a layer for the slide on phones: the conversation, or the account bar
+/// that rises over it. Only this reads the drag, so a moving finger re-renders
+/// the pose rather than the layer itself.
 private struct BrowseLayer: ViewModifier {
     let showsBrowse: Bool
-    let travel: CGFloat
-    let bar: CGFloat
+    /// Hidden once Browse is covered, as the account bar is behind a translucent keyboard.
+    var hidesCovered = false
+    /// The layer's offset for how much of Browse is uncovered.
+    let pose: (CGFloat) -> CGSize
     @Environment(BrowseDrawer.self) private var drawer: BrowseDrawer?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -243,7 +239,7 @@ private struct BrowseLayer: ViewModifier {
             if drag != nil || reduceMotion { transaction.animation = nil }
             else if transaction.animation == nil { transaction.animation = BrowseDrawer.settle }
         } body: { layer in
-            layer.clipShape(BrowseEdge(inset: uncovered * bar)).offset(x: uncovered * travel)
+            layer.offset(pose(uncovered)).opacity(hidesCovered && uncovered == 0 ? 0 : 1)
         }
     }
 }
@@ -264,8 +260,9 @@ private struct BrowseSwipe: ViewModifier {
     @GestureState private var dragging = false
 
     func body(content: Content) -> some View {
-        // Global coordinates: the view itself moves with the finger.
-        content.onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { if tracking != true { frame = $0 } }
+        // Global coordinates: the view itself moves with the finger. The list
+        // stops scrolling while it follows a slide.
+        content.scrollDisabled(tracking == true).onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { if tracking != true { frame = $0 } }
             .simultaneousGesture(DragGesture(minimumDistance: 12, coordinateSpace: .global)
                 .updating($dragging) { _, active, _ in active = true }
                 .onChanged { value in
@@ -457,11 +454,8 @@ private struct WorkspaceView: View {
                         }
                         .padding(.trailing, narrow ? peek : 0)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        // The account bar keeps the full width, below the conversation's edge.
-                        if narrow {
-                            AccountBar(model: model, sheet: $sheet)
-                                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { browseBarHeight = $0 }
-                        }
+                        // Room for the account bar, which rises over the conversation.
+                        .padding(.bottom, narrow ? browseBarHeight : 0)
                     }
                     .allowsHitTesting(showsBrowse)
                     .accessibilityHidden(!showsBrowse)
@@ -482,14 +476,27 @@ private struct WorkspaceView: View {
                                     .padding(.top, 58).padding(.trailing, 8).padding(.bottom, 8)
                             }
                         }
+                        // Full height, under the status bar and home indicator too.
                         .background(CaperTheme.blackout)
                         .overlay(alignment: .leading) {
                             LinearGradient(colors: [.clear, .black.opacity(0.35)], startPoint: .trailing, endPoint: .leading)
-                                .frame(width: 16).offset(x: -16).allowsHitTesting(false).accessibilityHidden(true)
+                                .frame(width: 16).offset(x: -16).ignoresSafeArea(.container, edges: .vertical)
+                                .allowsHitTesting(false).accessibilityHidden(true)
                         }
-                        .modifier(BrowseLayer(showsBrowse: showsBrowse, travel: geometry.size.width - peek, bar: browseBarHeight))
+                        .modifier(BrowseLayer(showsBrowse: showsBrowse) { CGSize(width: $0 * (geometry.size.width - peek), height: 0) })
                         .allowsHitTesting(!showsBrowse)
                         .accessibilityHidden(showsBrowse)
+                    }
+                    // The account bar keeps the full width: it rises from the bottom
+                    // edge over the conversation as Browse is uncovered.
+                    if narrow {
+                        AccountBar(model: model, sheet: $sheet)
+                            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { browseBarHeight = $0 }
+                            .background(CaperTheme.blackout)
+                            .modifier(BrowseLayer(showsBrowse: showsBrowse, hidesCovered: true) { CGSize(width: 0, height: (1 - $0) * (browseBarHeight + geometry.safeAreaInsets.bottom)) })
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                            .allowsHitTesting(showsBrowse)
+                            .accessibilityHidden(!showsBrowse)
                     }
                     // Beside Browse the conversation's edge is inert: tapping or dragging it returns.
                     if narrow && conversationAvailable && showsBrowse {
@@ -507,7 +514,7 @@ private struct WorkspaceView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipped()
+                .clipShape(SideClip())
                 .onChange(of: geometry.size.width - peek, initial: true) { _, travel in browseDrawer.travel = max(travel, 1) }
                 .onChange(of: showsBrowse) { _, _ in endEditing() }
             }
