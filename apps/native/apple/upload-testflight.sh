@@ -31,6 +31,23 @@ xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme CaperIOS -configuration
   CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
   CODE_SIGN_IDENTITY=- AD_HOC_CODE_SIGNING_ALLOWED=YES archive
 
+# Validate the built bundles before export can upload them (ITMS-90473).
+python3 - "$work/Caper.xcarchive" <<'PY'
+from pathlib import Path
+import plistlib
+import sys
+
+bundle = Path(sys.argv[1]) / "Products/Applications/Caper.app"
+with (bundle / "Info.plist").open("rb") as source:
+    app = plistlib.load(source)
+with (bundle / "PlugIns/CaperNotificationService.appex/Info.plist").open("rb") as source:
+    extension = plistlib.load(source)
+for key in ("CFBundleVersion", "CFBundleShortVersionString"):
+    if extension[key] != app[key]:
+        sys.exit(f"CaperNotificationService: {key} {extension[key]!r} does not match app {app[key]!r}.")
+print(f"Verified iOS app/extension versions: {app['CFBundleShortVersionString']} ({app['CFBundleVersion']}).")
+PY
+
 cat >"$work/ExportOptions.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

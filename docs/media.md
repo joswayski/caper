@@ -4193,6 +4193,12 @@ certificates and does not publish releases or submit to stores.
   Connect key and automatic cloud-managed distribution signing/upload; do not
   disable signing or clear entitlements on the archive. Existing development
   certificates do not need to be revoked for this CI path.
+  The app and `CaperNotificationService.appex` use the same `MARKETING_VERSION`
+  and `CURRENT_PROJECT_VERSION`; XcodeGen defaults otherwise give the extension
+  literal `1.0` / `1` versions and cause ITMS-90473 warnings. The upload script
+  checks both built Info.plists before export and refuses mismatched versions.
+  Correcting an already uploaded build requires a new binary with a higher build
+  number, then confirmation that App Store Connect processing reports no mismatch.
 - **Windows:** unsigned installers and executables can be distributed, but SmartScreen,
   Smart App Control, and organization policy may warn or block execution. There
   is no guaranteed per-app override. Trusted code signing may use a certificate
@@ -5564,9 +5570,7 @@ the same fixes where the problem existed, plus their own audit fixes.
   matches Pins, timers and percentages use tabular digits, and touch targets are
   44px/44pt/48dp. Keyboard focus returns to User Settings after its dialogs close
   (web, macOS, Android hardware keyboards, Rust desktop).
-- **Platform fixes:** Apple restores `DrawerSwipe.anywhere`, which #435/#436
-  removed while the member list still passes it, so `CaperView.swift` did not
-  type-check. Android runs edge-to-edge on every API level with `adjustResize`;
+- **Platform fixes:** Android runs edge-to-edge on every API level with `adjustResize`;
   the root consumes the Scaffold's system-bar insets before IME padding, so the
   composer sits directly above the keyboard, and every Material color role comes
   from the brand tokens. Rust desktop's voice error no longer pushes the account

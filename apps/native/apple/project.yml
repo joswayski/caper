@@ -279,6 +279,8 @@ targets:
       path: Configuration/NotificationService-Info.plist
       properties:
         CFBundleDisplayName: Caper Notifications
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.usernotifications.service
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService

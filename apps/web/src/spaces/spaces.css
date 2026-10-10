@@ -164,6 +164,14 @@
   min-height: 0;
   align-content: start;
 }
+/* Keep navigation and rosters scrollable without platform scrollbar chrome,
+   matching the conversation timeline. This also covers the homepage demo. */
+.spaces-room :is(.space-rail, .channel-navigation, .people-panel ul, .space-member-presence) {
+  scrollbar-width: none;
+}
+.spaces-room :is(.space-rail, .channel-navigation, .people-panel ul, .space-member-presence)::-webkit-scrollbar {
+  display: none;
+}
 .direct-section {
   position: relative;
   flex: 0 0 auto;
@@ -943,7 +951,6 @@
   max-height: 232px;
   overflow-y: auto;
   margin: 8px 0;
-  scrollbar-width: thin;
 }
 .space-member-presence li {
   display: flex;
