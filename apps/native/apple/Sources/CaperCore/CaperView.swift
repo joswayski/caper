@@ -286,6 +286,8 @@ private typealias MembersSwipe = DrawerSwipe<MembersDrawer>
 private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
     let open: Bool
     let enabled: Bool
+    /// Starts anywhere on the view, not just at its edge.
+    var anywhere = false
     let navigate: () -> Void
     @Environment(Drawer.self) private var drawer: Drawer?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
