@@ -5357,6 +5357,26 @@ views swapping in place:
    command above. For native clients, stop distribution and ship a corrected
    higher-build-number build. No data rollback is required.
 
+### Browse hides the conversation on phones (October 10, 2026)
+
+Supersedes the October 8 **Resting edge** and **Edge view**: Browse and the
+conversation no longer share a narrow screen.
+
+- **Full slide:** Back to Browse (and a swipe) moves the conversation all the
+  way off, past the width so its edge shadow leaves too. Browse's channel list
+  takes the full width. There is no conversation edge or "Back to
+  conversation" target; Close navigation, choosing a channel/DM, and the
+  existing swipe from Browse return.
+- **Account bar, release, buttons, swipe starts:** unchanged from October 8,
+  minus the edge view as a start.
+
+| Platform            | Behavior and validation boundary                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Web ≤760px          | Travel is the room's width plus 48px. With Browse shown, the conversation stays laid out (scroll kept) but is `visibility: hidden` and inert. `npm run check` passes. `npm test`: 491/492; the one failure (`noise-assets.test.ts`, compile-cache count) fails identically on unmodified `main`. A focused Chromium run at 390px confirmed Back hides the conversation, Browse fills the width (8px gutter) and choosing the channel returns. `scripts/test-desktop-navigation.mjs` was updated for the full slide but stops at its pre-existing desktop presence step (the mock records no presence subscription on `main` either), so its mobile section did not run here. |
+| Android narrow      | Translation is the full layer width; the edge target and Browse's end padding are removed. Not compiled here (no Android SDK in this environment); no emulator or device.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Apple narrow        | Offset is the width plus 48pt, past the edge shadow from #431. Back, Close and swipe commits mark their transaction so nothing inside the conversation animates on its own: only the layer moves, fixing the Back arrow that lagged behind the slide and then slid back in on iPhone. Not compiled or device-checked (no Xcode on Linux).                                                                                                                                                                                                                                                                                                                                                                    |
+| Rust desktop narrow | The slide travels the width plus 16px and the clickable edge is removed. `cargo fmt --check` and application-package Clippy (`--no-deps -D warnings`) pass; 328 tests pass (9 existing ignored). Not visually inspected under Xvfb this round; not macOS or Windows acceptance.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+
 ### Cross-client parity pass (October 8, 2026)
 
 An audit of web, Android, Apple and Rust desktop closed these capability gaps.
@@ -5491,8 +5511,7 @@ and the timeline or channel list kept scrolling under a sideways drag.
   indicator; the slide clips only sideways.
 - **Account bar:** rises from the bottom edge over the conversation as Browse is
   uncovered, on a blackout band reaching the screen edges (and, on iPhone, under
-  the home indicator). It keeps the full width, so its controls are unchanged
-  beside the resting edge. Settled Browse looks as before.
+  the home indicator). It keeps the full width. Settled Browse looks as before.
 - **No scrolling mid-slide:** once a drag is following a slide, the timeline or
   channel list it started on stops scrolling until the finger lifts (iPhone and
   Android). This also covers the member list's slide, which shares the swipe. Web already cancels the slide when the browser takes a vertical pan,
@@ -5500,10 +5519,10 @@ and the timeline or channel list kept scrolling under a sideways drag.
 
 | Platform | Behavior and validation boundary |
 | --- | --- |
-| Web ≤760px | The conversation's snapshot is no longer clipped at the bottom. The voice panel in Browse gets its own view-transition name (`browse-bar`) and is raised from the bottom with the same WAAPI scrub/settle as the conversation; its box moves to `::after` so a blackout `::before` band beneath it is part of its snapshot. `npm run check` passes; `npm test` passes except the known Node 22 `noise-assets` failure, which also fails on the base commit. Chromium touch emulation against the `test-desktop-navigation.mjs` fixture at 390px: opening and closing drags captured mid-slide and settled, and inspected. Not Safari or physical-device acceptance. |
+| Web ≤760px | The conversation's snapshot is no longer clipped at the top (the channel-row strip from #436) or the bottom. The voice panel in Browse gets its own view-transition name (`browse-bar`) and is raised from the bottom with the same WAAPI scrub/settle as the conversation; its box moves to `::after` so a blackout `::before` band beneath it is part of its snapshot. `npm run check` passes; `npm test` passes except the known Node 22 `noise-assets` failure, which also fails on the base commit. Chromium touch emulation against the `test-desktop-navigation.mjs` fixture at 390px: opening and closing drags captured mid-slide and settled, and inspected. Not Safari or physical-device acceptance. |
 | Android narrow | The conversation layer only translates (no clip); the account bar is drawn above it and translated up from below the bottom edge by its own height. Once a drag is sliding, the container reads moves in the Initial pass and consumes them, so the timeline and channel list never start scrolling. System bars stay blackout outside the app's content, as before. `./gradlew :app:compileDebugKotlin` passes (Android SDK 36) with no new warnings. No emulator or device run. |
 | Apple narrow | The conversation layer is offset without a clip shape; the workspace clips only sideways (`SideClip`), so its background extends under the status bar and home indicator. The account bar rises over it, hidden once covered (it would show through a translucent keyboard). `BrowseSwipe` sets `scrollDisabled` while it tracks a slide. Swift 6.1 on Linux parses `CaperView.swift`; no Xcode build, type-check, simulator or device run. |
-| Rust desktop narrow | No touch gestures. The stage keeps the full content height; the account bar is drawn after it, rising from the bottom edge, with a click-absorbing backdrop so clicks on the bar's background don't reach the conversation. Fmt and application-package Clippy (`--no-deps`) pass; 328 tests pass (9 existing ignored). No rendered-frame inspection, macOS or Windows acceptance. |
+| Rust desktop narrow | No touch gestures. The stage keeps the full content height; the account bar is drawn after it, rising from the bottom edge, with a click-absorbing backdrop so clicks on the bar's background don't reach the conversation. Fmt and application-package Clippy (`--no-deps`) pass; 329 tests pass (9 existing ignored). No rendered-frame inspection, macOS or Windows acceptance. |
 | Containers/services | No API, gateway, infrastructure, secret/configuration or database change. |
 
 **Deployment order.** No backend, infrastructure, secret/configuration or
@@ -5514,6 +5533,6 @@ in any order; merging does not deploy. Deploy web with the existing workflow
 deployment/caper-web --timeout=15m`) and build native clients with their existing
 scripts. On a real iPhone and Android phone, check slow, halfway and flick slides
 both ways, the status bar and home indicator areas mid-slide, the account bar's
-controls beside the edge, and that the timeline doesn't move during a slide. Roll
+controls, and that the timeline doesn't move during a slide. Roll
 back web with the previous web image and native clients with a corrected
 higher-build-number release. No data rollback is required.

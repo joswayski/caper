@@ -5476,15 +5476,14 @@ impl CaperApp {
                 }
                 let content = ui.max_rect();
                 if narrow {
-                    // As on phones, the conversation slides over a still Browse and
-                    // rests with its edge in view beside it; that edge returns to it.
+                    // As on phones, the conversation slides fully off a still Browse;
+                    // they never share the window.
                     let uncovered = context.animate_bool_with_time_and_easing(
                         egui::Id::new("browse-slide"),
                         self.navigation_open,
                         0.3,
                         egui::emath::easing::cubic_out,
                     );
-                    let peek = (content.width() * 0.2).clamp(56.0, 96.0);
                     if uncovered > 0.0 {
                         // Browse stops above the account bar, which rises over the
                         // conversation below.
@@ -5499,7 +5498,7 @@ impl CaperApp {
                             );
                             let sidebar_rect = egui::Rect::from_min_max(
                                 egui::pos2(rail_rect.right(), browse.top()),
-                                egui::pos2(browse.right() - peek, browse.bottom()),
+                                browse.max,
                             );
                             ui.scope_builder(egui::UiBuilder::new().max_rect(rail_rect), |ui| {
                                 self.rail(ui);
@@ -5509,9 +5508,10 @@ impl CaperApp {
                             });
                         });
                     }
-                    // The conversation keeps its full height as it slides aside.
+                    // The conversation keeps its full height as it slides aside, and
+                    // moves past the width so its shadow leaves too.
                     let stage =
-                        content.translate(egui::vec2(uncovered * (content.width() - peek), 0.0));
+                        content.translate(egui::vec2(uncovered * (content.width() + 16.0), 0.0));
                     if uncovered > 0.0 {
                         ui.painter().add(EDGE_SHADOW.as_shape(stage, 0));
                     }
@@ -5597,25 +5597,6 @@ impl CaperApp {
                             },
                         );
                         self.browse_bar = bar.inner.response.rect.height();
-                    }
-                    if self.navigation_open {
-                        let edge = egui::Rect::from_min_max(
-                            egui::pos2(content.right() - peek, content.top()),
-                            egui::pos2(content.right(), content.bottom() - self.browse_bar),
-                        );
-                        let back = ui
-                            .interact(edge, egui::Id::new("browse-peek"), egui::Sense::click())
-                            .on_hover_cursor(egui::CursorIcon::PointingHand);
-                        back.widget_info(|| {
-                            egui::WidgetInfo::labeled(
-                                egui::WidgetType::Button,
-                                true,
-                                "Back to conversation",
-                            )
-                        });
-                        if back.clicked() {
-                            self.navigation_open = false;
-                        }
                     }
                 } else {
                     let sidebar_width = self.sidebar_width.min(content.width() - 380.0).max(220.0);

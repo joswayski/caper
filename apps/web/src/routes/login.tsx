@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { AccountApiError, getAccount, requestEmailCode, verifyEmailCode } from "../account/client";
+import { fieldClass, primaryButtonClass, Spinner } from "../account/controls";
 import Wordmark from "../components/Wordmark";
 
 export const Route = createFileRoute("/login")({
@@ -8,8 +9,6 @@ export const Route = createFileRoute("/login")({
   component: Login,
 });
 
-const primaryButton =
-  "mt-3 flex cursor-pointer items-center gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content transition-colors duration-150 enabled:hover:border-terracotta-bright enabled:hover:bg-terracotta-bright disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4";
 /** The API sends at most 3 codes per email every 15 minutes; past that it silently sends none. */
 const RESEND_COOLDOWN_MS = 60_000;
 const MAX_RESENDS = 2;
@@ -17,18 +16,6 @@ const MAX_RESENDS = 2;
 function countdown(milliseconds: number) {
   const seconds = Math.max(0, Math.ceil(milliseconds / 1000));
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-}
-
-const fieldClass =
-  "w-full rounded-control border border-border bg-surface px-3.5 py-[13px] text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4 read-only:opacity-55 disabled:cursor-not-allowed disabled:opacity-55";
-
-function Spinner() {
-  return (
-    <span
-      className="size-[1em] animate-spin rounded-full border-2 border-current border-r-transparent"
-      aria-hidden="true"
-    />
-  );
 }
 
 function loginError(error: unknown) {
@@ -183,9 +170,10 @@ function Login() {
               )}
               {attemptsRemaining === 0 && resends >= MAX_RESENDS ? null : attemptsRemaining === 0 ? (
                 <button
-                  className={`${primaryButton} w-full ${pending ? "justify-center" : "justify-between"}`}
+                  className={`${primaryButtonClass} mt-3 min-w-[14.5rem]`}
                   type="button"
                   disabled={pending}
+                  aria-busy={pending}
                   onClick={() => void sendCode(true)}
                 >
                   {pending ? (
@@ -201,9 +189,10 @@ function Login() {
                 </button>
               ) : (
                 <button
-                  className={`${primaryButton} w-full ${pending ? "justify-center" : "justify-between"}`}
+                  className={`${primaryButtonClass} mt-3 min-w-[12.5rem]`}
                   type="submit"
                   disabled={pending || code.length !== 6}
+                  aria-busy={pending}
                 >
                   {pending ? (
                     <>
@@ -283,9 +272,10 @@ function Login() {
                 </p>
               )}
               <button
-                className={`${primaryButton} ml-auto min-w-[12.5rem] ${pending ? "justify-center" : "justify-between"}`}
+                className={`${primaryButtonClass} mt-3 min-w-[12.5rem]`}
                 type="submit"
                 disabled={pending}
+                aria-busy={pending}
               >
                 {pending ? (
                   <>

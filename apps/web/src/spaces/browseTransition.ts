@@ -8,13 +8,13 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 
-// Phones show the conversation, or Browse (spaces and channels) with the
-// conversation pushed to the right edge. Moving between them slides the
-// conversation over the still Browse, following a finger when swiped, while
-// Browse's account bar rises over it from the bottom edge. Both views share the
-// room's DOM, so a view transition snapshots the outgoing view while the
-// incoming one renders live; the conversation's and bar's snapshots are posed
-// by hand so a swipe can scrub them and then settle forward or back.
+// Phones show the conversation or Browse (spaces and channels), never both.
+// Moving between them slides the conversation fully over or off the still
+// Browse, following a finger when swiped, while Browse's account bar rises over
+// it from the bottom edge. Both views share the room's DOM, so a view
+// transition snapshots the outgoing view while the incoming one renders live;
+// the conversation's and bar's snapshots are posed by hand so a swipe can scrub
+// them and then settle forward or back.
 
 const NARROW = "(max-width: 760px)";
 const ROOM = ".call-room.spaces-room";
@@ -42,16 +42,15 @@ function animatable() {
   );
 }
 
-/** How far the conversation moves to reveal Browse: the room, less the edge it keeps in view. */
+/** How far the conversation moves to reveal Browse: past the room, so its edge shadow leaves too. */
 export function browseTravel(room: Element) {
-  const peek = parseFloat(getComputedStyle(room).getPropertyValue("--browse-peek")) || 0;
-  return Math.max(1, room.getBoundingClientRect().width - peek);
+  return room.getBoundingClientRect().width + 48;
 }
 
 /**
- * Lines the conversation's edge view up with the conversation on phones: it
- * keeps the offset it has below its channel row, and stops above Browse's
- * account bar so the bar's controls keep their full width.
+ * Keeps the hidden conversation laid out where it was on phones (the offset it
+ * has below its channel row), and measures Browse's account bar, which rises
+ * over the sliding conversation by that height.
  */
 export function useBrowseLayout(roomRef: RefObject<HTMLElement | null>, open: boolean) {
   useLayoutEffect(() => {
@@ -243,7 +242,7 @@ export function dragBrowse(opening: boolean, update: (open: boolean) => void): B
 
 export const BLOCKING = "dialog[open], details[open], [role=dialog], [popover]:popover-open";
 export const OWN_GESTURES =
-  "input, textarea, select, [contenteditable=true], [role=slider], a, summary, button:not(.channel-select, .direct-select, .browse-peek)";
+  "input, textarea, select, [contenteditable=true], [role=slider], a, summary, button:not(.channel-select, .direct-select)";
 
 /**
  * Touch swipes on the room: right from the conversation reveals Browse, left

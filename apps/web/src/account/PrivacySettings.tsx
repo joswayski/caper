@@ -72,7 +72,8 @@ export default function PrivacySettings() {
   };
 
   return (
-    <div className="privacy-settings">
+    <section className="privacy-settings" aria-labelledby={`${name}-title`}>
+      <h3 id={`${name}-title`}>Privacy</h3>
       {/* Only while loading: disabling during a save would drop focus from the chosen radio. */}
       <fieldset disabled={!privacy} aria-busy={saving}>
         <legend>Who can start a DM with you</legend>
@@ -103,7 +104,7 @@ export default function PrivacySettings() {
         </p>
       )}
       <section aria-labelledby={`${name}-blocked`}>
-        <h3 id={`${name}-blocked`}>Blocked accounts</h3>
+        <h4 id={`${name}-blocked`}>Blocked accounts</h4>
         {blocks.length ? (
           <ul>
             {blocks.map((account) => (
@@ -146,6 +147,6 @@ export default function PrivacySettings() {
           </p>
         )}
       </section>
-    </div>
+    </section>
   );
 }

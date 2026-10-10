@@ -418,9 +418,6 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
                     val drawer = rememberBrowseDrawer(navigationOpen)
                     val latestSetNavigationOpen by rememberUpdatedState(setNavigationOpen)
                     LaunchedEffect(navigationOpen) { if (!drawer.dragging) drawer.settle(navigationOpen) }
-                    // How much of the conversation stays in view beside Browse.
-                    val peek = (maxWidth * 0.2f).coerceIn(56.dp, 96.dp)
-                    drawer.peek = with(LocalDensity.current) { peek.toPx() }
                     var barHeight by remember { mutableIntStateOf(0) }
                     // Browse is composed only while it shows or the conversation moves.
                     val browseUncovered by remember { derivedStateOf { drawer.progress.value > 0f } }
@@ -435,7 +432,7 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
                         Box(Modifier.fillMaxSize().clipToBounds().background(Blackout).browseDrag(drawer) { latestSetNavigationOpen(it) }) {
                             // Leaves room for the account bar, which rises over the conversation.
                             if (navigationOpen || browseUncovered) Column(Modifier.fillMaxSize().padding(bottom = with(LocalDensity.current) { barHeight.toDp() })) {
-                                Row(Modifier.weight(1f).padding(end = peek)) {
+                                Row(Modifier.weight(1f)) {
                                     SpaceRail(state, viewModel, show, Modifier.width(60.dp))
                                     ChannelSidebar(state, voice, viewModel, show,
                                         Modifier.weight(1f).padding(top = 8.dp, end = 8.dp).clip(RoundedCornerShape(16.dp))
@@ -473,12 +470,6 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
                             // edge over the conversation as Browse is uncovered.
                             if (navigationOpen || browseUncovered) Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth()
                                 .onSizeChanged { barHeight = it.height }.browseBarLayer(drawer).background(Blackout)) { AccountBar(state, voice, viewModel, show) }
-                            // Beside Browse the conversation's edge is inert: tapping or dragging it returns.
-                            if (navigationOpen) Box(Modifier.align(Alignment.TopEnd).width(peek).fillMaxHeight()
-                                .padding(bottom = with(LocalDensity.current) { barHeight.toDp() })
-                                .browseSwipeRegion(drawer, enabled = true)
-                                .clickable(onClickLabel = "Back to conversation") { setNavigationOpen(false) }
-                                .semantics { contentDescription = "Back to conversation" })
                         }
                     }
                 } else Row {
@@ -498,9 +489,9 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
 }
 
 /**
- * Phones show the conversation, or Browse (spaces and channels) with the
- * conversation's edge still in view. The conversation slides over the still
- * Browse, following a finger from the timeline, channel list or that edge.
+ * Phones show the conversation or Browse (spaces and channels), never both.
+ * The conversation slides fully off the still Browse, following a finger from
+ * the timeline or channel list.
  * Buttons, Back and channel choices animate the same slide.
  */
 @Stable
@@ -508,10 +499,8 @@ private class BrowseDrawer(private val scope: CoroutineScope, open: Boolean) {
     /** How much of Browse is uncovered: 0 shows the conversation, 1 shows Browse. */
     val progress = Animatable(if (open) 1f else 0f)
     var dragging = false
-    /** Set when a touch lands on the timeline, channel list or the conversation's edge; elsewhere keeps its own drags. */
+    /** Set when a touch lands on the timeline or channel list; elsewhere keeps its own drags. */
     var regionTouched = false
-    /** The conversation's edge kept in view beside Browse, in pixels. */
-    var peek = 0f
 
     fun drag(value: Float) {
         scope.launch(start = CoroutineStart.UNDISPATCHED) { progress.snapTo(value.coerceIn(0f, 1f)) }
@@ -544,7 +533,7 @@ private val MEMBERS_MARGIN = MEMBERS_END + 24.dp
 /** Moves the conversation over Browse at its full height. */
 private fun Modifier.conversationLayer(drawer: BrowseDrawer): Modifier = graphicsLayer {
     val uncovered = drawer.progress.value
-    translationX = uncovered * (size.width - drawer.peek)
+    translationX = uncovered * size.width
     shadowElevation = if (uncovered > 0f) 16.dp.toPx() else 0f
 }
 
@@ -589,7 +578,7 @@ private fun Modifier.browseDrag(
             drawer.regionTouched = false
             if (!allowed) return@awaitEachGesture
             val opening = drawer.progress.targetValue < 0.5f
-            val width = (travel?.invoke() ?: (size.width - drawer.peek)).coerceAtLeast(1f)
+            val width = (travel?.invoke() ?: size.width.toFloat()).coerceAtLeast(1f)
             val start = drawer.progress.value
             var dragging = false
             var dx = 0f

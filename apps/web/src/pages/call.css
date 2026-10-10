@@ -1,5 +1,6 @@
 .call-page {
   min-height: 100vh;
+  min-height: 100dvh;
   background: var(--blackout);
 }
 .call-destination {
@@ -8,8 +9,10 @@
   font-weight: 700;
   text-decoration: none;
 }
-.call-destination:hover {
-  color: var(--text);
+@media (hover: hover) {
+  .call-destination:hover {
+    color: var(--text);
+  }
 }
 .voice-panel {
   --presence-ring: var(--surface-raised);
@@ -41,8 +44,10 @@
   padding-top: 1px;
   border-top: 0;
 }
+/* A one-line error centers on its dismiss button; longer ones start at its top. */
 .voice-error span {
   flex: 1;
+  align-self: center;
 }
 .voice-error button {
   width: 22px;
@@ -57,9 +62,11 @@
   background: transparent;
   cursor: pointer;
 }
-.voice-error button:hover {
-  color: var(--text);
-  background: var(--surface-composer);
+@media (hover: hover) {
+  .voice-error button:hover {
+    color: var(--text);
+    background: var(--surface-composer);
+  }
 }
 .voice-error svg {
   width: 14px;
@@ -151,6 +158,7 @@
   gap: 2px;
   height: 42px;
   padding: 4px;
+  container: account / inline-size;
 }
 .account-profile {
   min-width: 0;
@@ -167,8 +175,12 @@
   text-align: left;
   cursor: pointer;
 }
+/* Disabled only until the account loads; it should not promise a click. */
+.account-profile:disabled {
+  cursor: default;
+}
 @media (hover: hover) {
-  .account-profile:hover {
+  .account-profile:not(:disabled):hover {
     --presence-ring: var(--surface-composer);
     background: var(--surface-composer);
   }
@@ -192,6 +204,13 @@
   white-space: nowrap;
   font-size: 0.8rem;
   line-height: 20px;
+}
+/* Near the 220px sidebar minimum the controls left the name about 20px ("F…").
+   Show the avatar alone instead; the button keeps its "Edit profile for …" name. */
+@container account (max-width: 209px) {
+  .account-name {
+    display: none;
+  }
 }
 .call-account .voice-icon-button {
   width: 28px;
@@ -282,14 +301,39 @@
   text-decoration: none;
   cursor: pointer;
 }
+/* --surface-raised barely differs from the panel; use the app's menu hover wash. */
 @media (hover: hover) {
   .call-settings-panel :is(button:not(:disabled), a):hover {
-    background: var(--surface-raised);
+    background: var(--surface-hover, rgb(255 255 255 / 6%));
   }
 }
 .call-settings-panel button:disabled {
   opacity: 0.5;
   cursor: default;
+}
+/* User Settings is a menu like the space and channel menus: one inset shared by
+   its heading, switch and actions, compact rows, and a divider between groups. */
+.call-settings:not(.device-menu) .call-settings-panel {
+  gap: 0;
+  padding: 5px;
+}
+.call-settings:not(.device-menu) .call-settings-panel > strong {
+  padding: 8px 8px 4px;
+}
+.call-settings:not(.device-menu) .call-settings-panel > .device-options {
+  margin-bottom: 5px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid var(--border);
+}
+.call-settings:not(.device-menu) .call-settings-panel > :is(button, a) {
+  min-height: 38px;
+  padding: 10px 8px;
+}
+@media (max-width: 760px), (pointer: coarse) {
+  .call-settings:not(.device-menu) .call-settings-panel > :is(button, a),
+  .device-options label {
+    min-height: 44px;
+  }
 }
 .output-volume {
   padding-top: 12px;
@@ -377,8 +421,10 @@
 .channel-link > span {
   transform: translateY(-2px);
 }
-.channel-link:hover:not([aria-current]) {
-  background: rgb(182 77 50 / 0.22);
+@media (hover: hover) {
+  .channel-link:hover:not([aria-current]) {
+    background: rgb(182 77 50 / 0.22);
+  }
 }
 .voice-roster-label {
   margin: 24px 9px 0;
@@ -411,9 +457,11 @@
   width: 16px;
   height: 16px;
 }
-.voice-button:hover:not([aria-disabled="true"]) {
-  border-color: var(--terracotta-bright);
-  background: rgb(182 77 50 / 0.24);
+@media (hover: hover) {
+  .voice-button:hover:not([aria-disabled="true"]) {
+    border-color: var(--terracotta-bright);
+    background: rgb(182 77 50 / 0.24);
+  }
 }
 .voice-button[aria-disabled="true"] {
   opacity: 0.5;
@@ -505,10 +553,15 @@
   font-weight: 700;
   cursor: pointer;
 }
-.participant-menu-button:hover,
 .participant-menu-button[aria-expanded="true"] {
   color: var(--text);
   background: var(--border);
+}
+@media (hover: hover) {
+  .participant-menu-button:hover {
+    color: var(--text);
+    background: var(--border);
+  }
 }
 @media (hover: hover) and (pointer: fine) {
   .participant-menu-button {
@@ -520,12 +573,14 @@
     pointer-events: auto;
   }
 }
+/* A top-layer popover placed beside its row by Call.tsx (placeVolumeMenu). */
 .participant-volume {
-  position: absolute;
-  z-index: 2;
-  top: 52px;
-  right: 8px;
+  position: fixed;
+  inset: auto;
+  margin: 0;
   width: 220px;
+  overflow: visible;
+  color: var(--text);
   display: grid;
   gap: 10px;
   padding: 14px;
@@ -612,10 +667,14 @@
   display: flex;
   align-items: center;
   touch-action: none;
+  -webkit-user-select: none;
   user-select: none;
+  /* Pressing anywhere on the track moves the thumb there. */
+  cursor: pointer;
 }
 .range-slider[data-disabled] {
   opacity: 0.5;
+  cursor: default;
 }
 .range-slider-track {
   position: relative;
@@ -640,13 +699,43 @@
   background: var(--text);
   box-shadow: 0 1px 4px rgb(0 0 0 / 0.35);
   cursor: grab;
+  transition: box-shadow 120ms ease;
 }
 .range-slider-thumb:active {
   cursor: grabbing;
 }
+.range-slider[data-disabled] .range-slider-thumb {
+  cursor: default;
+}
 .range-slider-thumb:focus-visible {
   outline: 2px solid var(--terracotta-bright);
   outline-offset: 3px;
+}
+/* The thumb previously gave no feedback before it moved. */
+@media (hover: hover) {
+  .range-slider:not([data-disabled]):hover .range-slider-thumb {
+    box-shadow:
+      0 1px 4px rgb(0 0 0 / 0.35),
+      0 0 0 4px rgb(219 104 73 / 0.18);
+  }
+}
+.range-slider:not([data-disabled]) .range-slider-thumb:active {
+  box-shadow:
+    0 1px 4px rgb(0 0 0 / 0.35),
+    0 0 0 6px rgb(219 104 73 / 0.24);
+}
+/* Fingers need more than the 20px row: a larger thumb, and an invisible band
+   that takes presses 10px above and below without changing the layout. */
+@media (pointer: coarse) {
+  .range-slider::before {
+    position: absolute;
+    inset: -10px 0;
+    content: "";
+  }
+  .range-slider-thumb {
+    width: 20px;
+    height: 20px;
+  }
 }
 .call-page :focus-visible {
   outline: 2px solid var(--terracotta-bright);
@@ -676,9 +765,11 @@
 }
 .audio-dialog {
   width: min(720px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
   max-height: calc(100dvh - 32px);
   margin: auto;
-  padding: 20px;
+  padding: 0;
+  overflow: hidden;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   color: var(--text);
@@ -686,25 +777,64 @@
 }
 .audio-dialog {
   box-sizing: border-box;
+  height: min(680px, calc(100vh - 32px));
   height: min(680px, calc(100dvh - 32px));
-  overflow-y: auto;
-  scrollbar-gutter: stable;
+}
+/* Only while open: a display value would otherwise reveal the closed dialog. */
+.audio-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+/* Short read-only panels fit their content instead of a mostly empty frame. */
+.audio-dialog:is([data-panel="connection"], [data-panel="debug"]) {
+  height: auto;
 }
 .audio-dialog::backdrop {
   background: rgb(0 0 0 / 0.65);
 }
 .audio-dialog-heading {
-  position: sticky;
-  z-index: 1;
-  top: -20px;
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin: -20px -20px 20px;
   padding: 14px 20px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
+}
+.audio-dialog-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 20px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.audio-dialog-body > :first-child {
+  margin-top: 0;
+}
+/* The debug-only diagnostics disclosure was an unstyled 16px browser summary. */
+.audio-dialog-body > details {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.audio-dialog-body > details > summary {
+  width: fit-content;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.audio-dialog-body > details[open] > summary {
+  margin-bottom: 12px;
+}
+@media (hover: hover) {
+  .audio-dialog-body > details > summary:hover {
+    color: var(--text);
+  }
 }
 .audio-dialog-heading h2 {
   margin: 0;
@@ -719,9 +849,11 @@
   color: var(--text-muted);
   background: transparent;
 }
-.audio-dialog-heading > .voice-icon-button:hover:not(:disabled) {
-  color: var(--text);
-  background: var(--border);
+@media (hover: hover) {
+  .audio-dialog-heading > .voice-icon-button:hover:not(:disabled) {
+    color: var(--text);
+    background: var(--border);
+  }
 }
 .audio-dialog-heading > .voice-icon-button svg {
   width: 18px;
@@ -848,6 +980,7 @@
   gap: 3px;
   margin-top: 7px;
   padding: 6px 0;
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 65%);
   mask-image: linear-gradient(to right, transparent, #000 65%);
 }
 .mic-meter i {
@@ -873,9 +1006,11 @@
   opacity: 0.55;
   cursor: wait;
 }
-.mic-test-button:hover:not(:disabled) {
-  border-color: var(--terracotta-bright);
-  background: var(--terracotta-bright);
+@media (hover: hover) {
+  .mic-test-button:hover:not(:disabled) {
+    border-color: var(--terracotta-bright);
+    background: var(--terracotta-bright);
+  }
 }
 .mic-comparison {
   display: grid;
@@ -1095,6 +1230,24 @@
   font: inherit;
   font-size: 0.8rem;
   font-weight: 500;
+  cursor: pointer;
+}
+@media (hover: hover) {
+  .device-select select:hover:not(:disabled) {
+    border-color: #4a4f53;
+  }
+}
+/* Unavailable pickers (no output selection in this browser, or a pending
+   change) no longer look identical to working ones. */
+.device-select select:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+/* iOS zooms the page when a control under 16px gains focus. */
+@media (max-width: 760px), (pointer: coarse) {
+  .device-select select {
+    font-size: 16px;
+  }
 }
 .device-options {
   min-width: 0;
@@ -1109,10 +1262,11 @@
   font-weight: 700;
 }
 .device-options label {
+  min-height: 38px;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 9px 8px;
+  padding: 8px;
   border-radius: 6px;
   color: var(--text);
   font-size: 0.8rem;
@@ -1123,7 +1277,7 @@
 }
 @media (hover: hover) {
   .device-options label:hover {
-    background: var(--surface-raised);
+    background: var(--surface-hover, rgb(255 255 255 / 6%));
   }
 }
 .device-options input {
@@ -1165,16 +1319,19 @@
 .device-options input[role="switch"]:checked::after {
   transform: translateX(16px);
 }
-/* Same hover as the channel privacy switch in spaces.css. */
-.device-options label:hover input[role="switch"]:not(:disabled) {
-  border-color: var(--text-muted);
-  background: #484d51;
-  box-shadow: 0 0 0 3px rgb(255 255 255 / 0.06);
-}
-.device-options label:hover input[role="switch"]:checked:not(:disabled) {
-  border-color: var(--terracotta-bright);
-  background: var(--terracotta-bright);
-  box-shadow: 0 0 0 3px rgb(182 77 50 / 0.18);
+/* Same hover as the channel privacy switch in spaces.css. A tap must not
+   leave the switch looking hovered on touch screens. */
+@media (hover: hover) {
+  .device-options label:hover input[role="switch"]:not(:disabled) {
+    border-color: var(--text-muted);
+    background: #484d51;
+    box-shadow: 0 0 0 3px rgb(255 255 255 / 0.06);
+  }
+  .device-options label:hover input[role="switch"]:checked:not(:disabled) {
+    border-color: var(--terracotta-bright);
+    background: var(--terracotta-bright);
+    box-shadow: 0 0 0 3px rgb(182 77 50 / 0.18);
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .device-options input[role="switch"],
@@ -1197,6 +1354,7 @@
   width: min(440px, calc(100vw - 32px));
 }
 .profile-dialog {
+  height: min(640px, calc(100vh - 32px));
   height: min(640px, calc(100dvh - 32px));
 }
 .call-page :is(button, a, summary, .voice-action-group, .device-options label),
@@ -1209,6 +1367,7 @@
     transform 150ms ease-in-out;
 }
 .call-settings-panel:popover-open,
+.participant-volume:popover-open,
 .audio-dialog[open] {
   animation: audio-panel-in 140ms ease-out;
 }
@@ -1238,6 +1397,7 @@
     transition: none !important;
   }
   .call-settings-panel:popover-open,
+  .participant-volume:popover-open,
   .audio-dialog[open] {
     animation: none;
   }
@@ -1280,21 +1440,8 @@
     max-height: 240px;
     overflow-y: auto;
   }
-  .people-panel ul.volume-menu-open {
-    max-height: 420px;
-  }
-  .participant.volume-open {
-    padding-bottom: 161px;
-  }
   .mic-test-heading {
     align-items: flex-start;
-  }
-  .mic-test-action-row {
-    grid-template-columns: 120px minmax(0, 1fr);
-    gap: 10px;
-  }
-  .mic-test-button {
-    width: 120px;
   }
   .mic-meter-label {
     gap: 4px;
@@ -1316,7 +1463,9 @@
   }
 }
 
-@media (max-width: 350px) {
+/* A 120px button wrapped "Test microphone" onto two cramped lines on phones;
+   stack the full-width action above a full-width meter instead. */
+@media (max-width: 540px) {
   .mic-test-action-row {
     grid-template-columns: 1fr;
   }
@@ -1428,14 +1577,17 @@
 .sidebar-channels {
   container: channels / inline-size;
 }
+/* The hover wash hugs the faces, count and chevron with a little inset; the
+   negative margins keep them exactly where they sat without it. */
 .voice-stack {
   min-width: 0;
   min-height: 28px;
-  flex: 1;
+  flex: 0 1 auto;
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 0;
+  margin: 0 -4px;
+  padding: 0 4px;
   border: 0;
   border-radius: 6px;
   color: var(--text-muted);
@@ -1474,11 +1626,17 @@
   font-size: 0.72rem;
   font-weight: 500;
 }
-.channel-join.voice-button:hover:not([aria-disabled="true"]),
 .channel-join.voice-button:focus-visible {
   border-color: var(--border);
   color: var(--text);
   background: var(--surface-raised);
+}
+@media (hover: hover) {
+  .channel-join.voice-button:hover:not([aria-disabled="true"]) {
+    border-color: var(--border);
+    color: var(--text);
+    background: var(--surface-raised);
+  }
 }
 .voice-leave > svg {
   width: 14px;
@@ -1541,12 +1699,14 @@
     display: none;
   }
 }
-/* At the 220px sidebar minimum, keep the count/action rather than clipping faces. */
+/* At the 220px sidebar minimum, keep the count/action rather than clipping faces.
+   The active row's connected icon likewise yields, so "3 in voice" stays whole. */
 @container channels (max-width: 219px) {
   .channel-voice {
     padding-left: 9px;
   }
-  .voice-stack-faces {
+  .voice-stack-faces,
+  .voice-stack > .voice-connected-icon {
     display: none;
   }
 }
@@ -1581,9 +1741,6 @@
   min-height: 0;
   overflow: hidden;
 }
-.voice-occupants-inner:has(.volume-menu-open) {
-  overflow: visible;
-}
 .people-panel .voice-occupants .voice-occupants-inner > ul {
   max-height: 180px;
   display: grid;
@@ -1592,10 +1749,6 @@
   padding: 0;
   overflow-y: auto;
   list-style: none;
-}
-.people-panel .voice-occupants .voice-occupants-inner > ul.volume-menu-open {
-  max-height: none;
-  overflow: visible;
 }
 .people-panel .voice-occupants[data-active] .voice-occupants-inner > ul {
   margin-top: 0;
@@ -1608,14 +1761,6 @@
   padding: 0;
   border-left: 0;
   overflow-y: auto;
-}
-.people-panel .voice-pinned[data-active] .voice-occupants-inner > ul.volume-menu-open {
-  max-height: none;
-  overflow: visible;
-}
-.voice-occupants.voice-pinned .participant-volume {
-  top: auto;
-  bottom: calc(100% + 4px);
 }
 .voice-occupants .participant {
   gap: 8px;
@@ -1657,8 +1802,16 @@
   height: 24px;
   font-size: 0.66rem;
 }
-.voice-occupants .participant-volume {
-  top: 34px;
+/* Touch has no hover reveal, so Audio is always shown; give it a finger-sized
+   target (rows grow from 30px to 40px). */
+@media (pointer: coarse) {
+  .voice-occupants .participant {
+    padding-block: 2px;
+  }
+  .voice-occupants .participant-menu-button {
+    height: 36px;
+    padding: 0 10px;
+  }
 }
 @media (max-width: 760px) {
   .people-panel .voice-occupants .voice-occupants-inner > ul {
@@ -1667,7 +1820,8 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .voice-occupants,
-  .voice-stack > svg {
+  .voice-stack > svg,
+  .range-slider-thumb {
     transition: none;
   }
 }

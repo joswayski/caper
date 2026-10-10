@@ -308,12 +308,8 @@ try {
   );
 
   // The conversation follows the finger over a still, live Browse. It travels
-  // the room's width less the edge it keeps in view beside Browse.
-  const peekWidth = evaluate(
-    'parseFloat(getComputedStyle(document.querySelector(".spaces-room")).getPropertyValue("--browse-peek"))',
-  );
-  assert.ok(peekWidth >= 56 && peekWidth <= 96, `peek ${peekWidth}`);
-  const travel = evaluate('document.querySelector(".spaces-room").getBoundingClientRect().width') - peekWidth;
+  // past the room's width, so its edge shadow leaves too.
+  const travel = evaluate('document.querySelector(".spaces-room").getBoundingClientRect().width') + 48;
   await touch("touchStart", p.x - 100, p.y);
   for (let step = 1; step <= 10; step++) await touch("touchMove", p.x - 100 + step * 10, p.y);
   wait('document.getAnimations().filter(a => a.effect?.pseudoElement?.includes("browse-room")).length === 1');
@@ -351,18 +347,19 @@ try {
   await swipe(p.x - 60, p.y, 68);
   settled();
   assert.equal(browsing(), true, "A quick right flick reveals Browse");
-  // Browse stays put and fits beside the conversation, which rests at the edge.
-  const edge = evaluate(`(() => {
+  // Browse takes the room; the conversation is hidden entirely, not kept at the edge.
+  const hidden = evaluate(`(() => {
     const room = document.querySelector(".spaces-room").getBoundingClientRect();
+    const stage = document.querySelector(".spaces-room > .stage");
     return {
-      peek: room.right - document.querySelector(".spaces-room > .stage").getBoundingClientRect().left,
+      visibility: getComputedStyle(stage).visibility,
       browse: room.right - document.querySelector(".sidebar-channels").getBoundingClientRect().right,
-      inert: document.querySelector(".spaces-room > .stage").inert,
+      inert: stage.inert,
     };
   })()`);
-  assert.ok(Math.abs(edge.peek - peekWidth) < 2, `conversation rests at the edge (${edge.peek})`);
-  assert.ok(edge.browse >= peekWidth, "Browse is not covered by the conversation's edge");
-  assert.equal(edge.inert, true, "The conversation's edge is not interactive");
+  assert.equal(hidden.visibility, "hidden", "No part of the conversation shows beside Browse");
+  assert.ok(hidden.browse <= 16, `Browse fills the width (${hidden.browse})`);
+  assert.equal(hidden.inert, true, "The hidden conversation is not interactive");
   screenshot("mobile-browse");
   const row = point('.channel-select:not([aria-current="page"])');
   await swipe(row.x + 60, row.y, -110);
@@ -451,17 +448,7 @@ try {
   browser("click", ".navigation-toggle");
   settled();
   assert.equal(browsing(), true, "Back button must open Browse");
-  browser("click", ".browse-peek");
-  settled();
-  assert.equal(browsing(), false, "Tapping the conversation's edge returns to it");
-  browser("click", ".navigation-toggle");
-  settled();
-  const peek = point(".browse-peek");
-  await swipe(peek.x, peek.y, -200, 0, "touchEnd", 1200);
-  settled();
-  assert.equal(browsing(), false, "Dragging the conversation's edge back returns to it");
-  browser("click", ".navigation-toggle");
-  settled();
+  assert.equal(evaluate('!!document.querySelector(".browse-peek")'), false, "No conversation edge stays in view");
   browser("click", '.channel-select[aria-current="page"]');
   settled();
   assert.equal(browsing(), false);

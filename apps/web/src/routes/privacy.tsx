@@ -83,7 +83,10 @@ function Privacy() {
           <p>
             You can change your username and display name at any time. To get a copy of your data or delete your account
             and messages, email{" "}
-            <a className="text-content underline underline-offset-4" href={`mailto:${CONTACT}`}>
+            <a
+              className="rounded-[2px] text-content underline underline-offset-4 transition-colors hover:text-terracotta-bright focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
+              href={`mailto:${CONTACT}`}
+            >
               {CONTACT}
             </a>{" "}
             from the address you sign in with.
