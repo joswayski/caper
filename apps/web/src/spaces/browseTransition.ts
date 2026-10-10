@@ -8,9 +8,9 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 
-// Phones show the conversation, or Browse (spaces and channels) with the
-// conversation pushed to the right edge. Moving between them slides the
-// conversation over the still Browse, following a finger when swiped. Both
+// Phones show the conversation or Browse (spaces and channels), never both.
+// Moving between them slides the conversation fully over or off the still
+// Browse, following a finger when swiped. Both
 // views share the room's DOM, so a view transition snapshots the outgoing view
 // while the incoming one renders live; the conversation's snapshot is posed by
 // hand so a swipe can scrub it and then settle forward or back.
@@ -40,16 +40,15 @@ function animatable() {
   );
 }
 
-/** How far the conversation moves to reveal Browse: the room, less the edge it keeps in view. */
+/** How far the conversation moves to reveal Browse: past the room, so its edge shadow leaves too. */
 export function browseTravel(room: Element) {
-  const peek = parseFloat(getComputedStyle(room).getPropertyValue("--browse-peek")) || 0;
-  return Math.max(1, room.getBoundingClientRect().width - peek);
+  return room.getBoundingClientRect().width + 48;
 }
 
 /**
- * Lines the conversation's edge view up with the conversation on phones: it
- * keeps the offset it has below its channel row, and stops above Browse's
- * account bar so the bar's controls keep their full width.
+ * Keeps the hidden conversation laid out where it was on phones (the offset it
+ * has below its channel row), and measures Browse's account bar, which the
+ * sliding conversation lifts off so the bar's controls stay in view.
  */
 export function useBrowseLayout(roomRef: RefObject<HTMLElement | null>, open: boolean) {
   useLayoutEffect(() => {
@@ -239,7 +238,7 @@ export function dragBrowse(opening: boolean, update: (open: boolean) => void): B
 
 export const BLOCKING = "dialog[open], details[open], [role=dialog], [popover]:popover-open";
 export const OWN_GESTURES =
-  "input, textarea, select, [contenteditable=true], [role=slider], a, summary, button:not(.channel-select, .direct-select, .browse-peek)";
+  "input, textarea, select, [contenteditable=true], [role=slider], a, summary, button:not(.channel-select, .direct-select)";
 
 /**
  * Touch swipes on the room: right from the conversation reveals Browse, left

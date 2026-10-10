@@ -1881,16 +1881,8 @@
 
 /* Browse slides on phones (browseTransition.ts poses the snapshots). Only the
    room is captured; the rest of the page stays live. */
-@property --browse-peek {
-  syntax: "<length>";
-  inherits: true;
-  initial-value: 0px;
-}
 html[data-browse-transition] {
   view-transition-name: none;
-}
-.browse-peek {
-  display: none;
 }
 html[data-browse-transition] .call-room.spaces-room {
   view-transition-name: browse-room;
@@ -1915,8 +1907,6 @@ html[data-browse-transition="close"]::view-transition-new(browse-room) {
 
 @media (max-width: 760px) {
   .call-room.spaces-room {
-    /* How much of the conversation stays in view beside Browse. */
-    --browse-peek: clamp(56px, 20vw, 96px);
     position: relative;
     grid-template: minmax(0, 1fr) / 1fr;
     touch-action: pan-y pinch-zoom;
@@ -1992,7 +1982,6 @@ html[data-browse-transition="close"]::view-transition-new(browse-room) {
     border: 0;
     background: var(--blackout);
     padding-top: 8px;
-    padding-right: var(--browse-peek);
     padding-bottom: env(safe-area-inset-bottom, 0px);
   }
   .spaces-room.navigation-open > :is(.space-member-presence, .member-list-backdrop) {
@@ -2012,38 +2001,20 @@ html[data-browse-transition="close"]::view-transition-new(browse-room) {
     border-radius: 16px;
     background: var(--surface-sidebar);
   }
-  /* The account and voice bar keeps the full width, below the conversation's edge. */
+  /* The account and voice bar keeps the full width. */
   .spaces-room.navigation-open > .people-panel > .voice-panel {
     grid-area: 2 / 1 / 3 / -1;
-    margin: 12px calc(12px - var(--browse-peek)) 12px 12px;
+    margin: 12px;
   }
-  /* Beside Browse the conversation stays in view at the edge, still laid out
-     where it was (so it keeps its scroll position), and is inert. Tapping or
-     dragging the edge returns to it. */
+  /* Browse hides the conversation entirely. It stays laid out where it was,
+     so it keeps its scroll position, and is inert. */
   .spaces-room.navigation-open > .stage {
     position: absolute;
     inset: 0 auto 0 0;
     width: 100%;
     padding-top: var(--browse-stage-top, 0px);
-    transform: translateX(calc(100% - var(--browse-peek)));
-    box-shadow: -12px 0 32px rgb(0 0 0 / 0.45);
-    clip-path: inset(0 0 var(--browse-bar, 0px) -48px);
+    visibility: hidden;
     pointer-events: none;
-  }
-  .browse-peek {
-    display: block;
-    position: absolute;
-    z-index: 9;
-    inset: 0 0 var(--browse-bar, 0px) auto;
-    width: var(--browse-peek);
-    padding: 0;
-    border: 0;
-    background: transparent;
-    cursor: pointer;
-  }
-  .browse-peek:focus-visible {
-    outline: 2px solid var(--terracotta-bright);
-    outline-offset: -4px;
   }
   .spaces-room .people-panel {
     border-right: 0;

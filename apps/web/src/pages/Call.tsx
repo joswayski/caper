@@ -524,7 +524,7 @@ export default function Call({
   }, []);
   const navigationSwipe = useBrowseSwipe(narrow && !membersVisible, navigationOpen, onNavigationChange);
   const roomRef = useRef<HTMLElement>(null);
-  const peeking = narrow && navigationOpen && !!onNavigationToggle;
+  const browsing = narrow && navigationOpen && !!onNavigationToggle;
   useBrowseLayout(roomRef, navigationOpen);
   const members = useMembersDrawer(
     roomRef,
@@ -1554,7 +1554,7 @@ export default function Call({
             </div>
           </div>
         </ChannelSidebar>
-        <div className="stage" inert={peeking}>
+        <div className="stage" inert={browsing}>
           {state.remoteMedia.map((media) => (
             <AudioOutput
               key={media.trackId}
@@ -1643,14 +1643,6 @@ export default function Call({
             />
             {membersPanel(() => members.change(false))}
           </>
-        )}
-        {peeking && (
-          <button
-            type="button"
-            className="browse-peek"
-            aria-label={`Back to ${channel ? `${channel.direct ? "" : "#"}${channel.name}` : "conversation"}`}
-            onClick={onNavigationToggle}
-          />
         )}
       </section>
       <dialog

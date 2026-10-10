@@ -5355,6 +5355,26 @@ views swapping in place:
    command above. For native clients, stop distribution and ship a corrected
    higher-build-number build. No data rollback is required.
 
+### Browse hides the conversation on phones (October 10, 2026)
+
+Supersedes the October 8 **Resting edge** and **Edge view**: Browse and the
+conversation no longer share a narrow screen.
+
+- **Full slide:** Back to Browse (and a swipe) moves the conversation all the
+  way off, past the width so its edge shadow leaves too. Browse's channel list
+  takes the full width. There is no conversation edge or "Back to
+  conversation" target; Close navigation, choosing a channel/DM, and the
+  existing swipe from Browse return.
+- **Account bar, release, buttons, swipe starts:** unchanged from October 8,
+  minus the edge view as a start.
+
+| Platform            | Behavior and validation boundary                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Web ≤760px          | Travel is the room's width plus 48px. With Browse shown, the conversation stays laid out (scroll kept) but is `visibility: hidden` and inert. `npm run check` passes. `npm test`: 491/492; the one failure (`noise-assets.test.ts`, compile-cache count) fails identically on unmodified `main`. A focused Chromium run at 390px confirmed Back hides the conversation, Browse fills the width (8px gutter) and choosing the channel returns. `scripts/test-desktop-navigation.mjs` was updated for the full slide but stops at its pre-existing desktop presence step (the mock records no presence subscription on `main` either), so its mobile section did not run here. |
+| Android narrow      | Translation is the full layer width; the edge target and Browse's end padding are removed. Not compiled here (no Android SDK in this environment); no emulator or device.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Apple narrow        | Offset is the width plus 48pt, past the edge shadow from #431. Back, Close and swipe commits mark their transaction so nothing inside the conversation animates on its own: only the layer moves, fixing the Back arrow that lagged behind the slide and then slid back in on iPhone. Not compiled or device-checked (no Xcode on Linux).                                                                                                                                                                                                                                                                                                                                                                    |
+| Rust desktop narrow | The slide travels the width plus 16px and the clickable edge is removed. `cargo fmt --check` and application-package Clippy (`--no-deps -D warnings`) pass; 328 tests pass (9 existing ignored). Not visually inspected under Xvfb this round; not macOS or Windows acceptance.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+
 ### Cross-client parity pass (October 8, 2026)
 
 An audit of web, Android, Apple and Rust desktop closed these capability gaps.
