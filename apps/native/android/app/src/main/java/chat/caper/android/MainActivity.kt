@@ -423,7 +423,14 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
                     var barHeight by remember { mutableIntStateOf(0) }
                     // Browse is composed only while it shows or the conversation moves.
                     val browseUncovered by remember { derivedStateOf { drawer.progress.value > 0f } }
-                    CompositionLocalProvider(LocalBrowseDrawer provides drawer) {
+                    // The member list slides over the conversation the same way, from the trailing edge.
+                    val membersShown = membersVisible && state.selectedChannel?.joined == true && state.selectedDirectId == null
+                    val members = rememberBrowseDrawer(membersShown)
+                    LaunchedEffect(membersShown) { if (!members.dragging) members.settle(membersShown) }
+                    val membersInView by remember { derivedStateOf { members.progress.value > 0f } }
+                    var membersTravel by remember { mutableFloatStateOf(1f) }
+                    val membersMargin = with(LocalDensity.current) { MEMBERS_MARGIN.toPx() }
+                    CompositionLocalProvider(LocalBrowseDrawer provides drawer, LocalMembersDrawer provides members) {
                         Box(Modifier.fillMaxSize().clipToBounds().background(Blackout).browseDrag(drawer) { latestSetNavigationOpen(it) }) {
                             if (navigationOpen || browseUncovered) Column(Modifier.fillMaxSize()) {
                                 Row(Modifier.weight(1f)) {
@@ -438,18 +445,27 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
                                 Box(Modifier.onSizeChanged { barHeight = it.height }) { AccountBar(state, voice, viewModel, show) }
                             }
                             Box(Modifier.fillMaxSize().conversationLayer(drawer, barHeight).background(Surface)
+                                .browseDrag(members, direction = -1f, travel = { membersTravel }) { membersVisible = it }
                                 .then(if (navigationOpen) Modifier.clearAndSetSemantics {} else Modifier)) {
                                 conversationState.SaveableStateProvider(state.selectedChannel?.id ?: "empty") {
                                     Conversation(state, voice, viewModel, show, true, membersVisible, { membersVisible = !membersVisible }, voicePermissionError) { setNavigationOpen(true) }
                                 }
-                                if (membersVisible && !navigationOpen && state.selectedChannel?.joined == true && state.selectedDirectId == null) {
-                                    Box(Modifier.fillMaxSize().padding(top = 54.dp).clickable(
-                                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                                        indication = null,
-                                    ) { membersVisible = false })
+                                // Composed while shown or sliding; it moves with the conversation over Browse.
+                                if (membersShown || membersInView) {
+                                    Box(Modifier.fillMaxSize().padding(top = 54.dp).graphicsLayer { alpha = members.progress.value }
+                                        .background(Color.Black.copy(alpha = 0.25f))
+                                        .then(if (membersShown) Modifier.clickable(
+                                            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                                            indication = null,
+                                        ) { membersVisible = false } else Modifier))
                                     MemberPresencePanel(state, viewModel,
-                                        Modifier.padding(top = 62.dp, end = 8.dp, bottom = 8.dp).widthIn(max = 280.dp).fillMaxHeight().align(Alignment.CenterEnd)
-                                            .clip(RoundedCornerShape(16.dp)).pointerInput(Unit) { detectTapGestures {} },
+                                        Modifier.padding(top = 62.dp, end = MEMBERS_END, bottom = 8.dp).widthIn(max = 280.dp).fillMaxHeight().align(Alignment.CenterEnd)
+                                            .onSizeChanged { membersTravel = it.width + membersMargin }
+                                            .membersLayer(members)
+                                            .border(1.dp, Border, RoundedCornerShape(16.dp))
+                                            .browseSwipeRegion(members, enabled = membersShown)
+                                            .pointerInput(Unit) { detectTapGestures {} }
+                                            .then(if (membersShown) Modifier else Modifier.clearAndSetSemantics {}),
                                         close = { membersVisible = false })
                                 }
                             }
@@ -505,6 +521,13 @@ private class BrowseDrawer(private val scope: CoroutineScope, open: Boolean) {
 }
 
 private val LocalBrowseDrawer = staticCompositionLocalOf<BrowseDrawer?> { null }
+/** The phone member list's drawer: 0 hidden, 1 shown. */
+private val LocalMembersDrawer = staticCompositionLocalOf<BrowseDrawer?> { null }
+
+/** The phone member list's inset from the trailing edge. */
+private val MEMBERS_END = 8.dp
+/** How far past its width the member list travels: its inset, plus room for its shadow. */
+private val MEMBERS_MARGIN = MEMBERS_END + 24.dp
 
 /** Moves the conversation over Browse, lifting its bottom edge off Browse's account bar on the way. */
 private fun Modifier.conversationLayer(drawer: BrowseDrawer, barHeight: Int): Modifier = graphicsLayer {
@@ -515,6 +538,17 @@ private fun Modifier.conversationLayer(drawer: BrowseDrawer, barHeight: Int): Mo
     clip = uncovered > 0f
     shape = GenericShape { size, _ -> addRect(Rect(0f, 0f, size.width, size.height - inset)) }
     shadowElevation = if (uncovered > 0f) 16.dp.toPx() else 0f
+}
+
+/**
+ * Slides the phone member list in from the trailing edge, outlined and lifted
+ * by the same shadow the conversation casts over Browse.
+ */
+private fun Modifier.membersLayer(drawer: BrowseDrawer): Modifier = graphicsLayer {
+    translationX = (1f - drawer.progress.value) * (size.width + MEMBERS_MARGIN.toPx())
+    shape = RoundedCornerShape(16.dp)
+    clip = true
+    shadowElevation = 16.dp.toPx()
 }
 
 // Only the timeline/sidebar starts this gesture; the composer and audio controls
@@ -529,8 +563,11 @@ private fun Modifier.browseSwipeRegion(drawer: BrowseDrawer?, enabled: Boolean):
 
 // Tracks the finger on the unmoving container, since the layers it moves would
 // otherwise move their own touch coordinates. Consumed moves belong to
-// scrolling, selection or a slider.
-private fun Modifier.browseDrag(drawer: BrowseDrawer, setOpen: (Boolean) -> Unit): Modifier =
+// scrolling, selection or a slider. `direction` is the finger's way to open
+// (right for Browse, left for the member list); `travel` defaults to Browse's.
+private fun Modifier.browseDrag(
+    drawer: BrowseDrawer, direction: Float = 1f, travel: (() -> Float)? = null, setOpen: (Boolean) -> Unit,
+): Modifier =
     pointerInput(drawer) {
         val tracker = VelocityTracker()
         awaitEachGesture {
@@ -539,7 +576,7 @@ private fun Modifier.browseDrag(drawer: BrowseDrawer, setOpen: (Boolean) -> Unit
             drawer.regionTouched = false
             if (!allowed) return@awaitEachGesture
             val opening = drawer.progress.targetValue < 0.5f
-            val width = size.width.toFloat().coerceAtLeast(1f)
+            val width = (travel?.invoke() ?: size.width.toFloat()).coerceAtLeast(1f)
             val start = drawer.progress.value
             var dragging = false
             var dx = 0f
@@ -549,7 +586,7 @@ private fun Modifier.browseDrag(drawer: BrowseDrawer, setOpen: (Boolean) -> Unit
                 while (true) {
                     val event = awaitPointerEvent()
                     val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                    dx = change.position.x - down.position.x
+                    dx = (change.position.x - down.position.x) * direction
                     val dy = change.position.y - down.position.y
                     if (!dragging) {
                         if (!change.pressed || event.changes.size != 1 || change.isConsumed ||
@@ -562,7 +599,7 @@ private fun Modifier.browseDrag(drawer: BrowseDrawer, setOpen: (Boolean) -> Unit
                     tracker.addPosition(change.uptimeMillis, change.position)
                     // Lifting flings; a second finger settles where the slide is.
                     if (!change.pressed || event.changes.size != 1) {
-                        if (!change.pressed) velocity = tracker.calculateVelocity().x
+                        if (!change.pressed) velocity = tracker.calculateVelocity().x * direction
                         break
                     }
                     change.consume() // Cancel a channel row's release click after a drag.
@@ -1282,30 +1319,32 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             if (narrow) IconButton(openNavigation, Modifier.size(44.dp)) {
                 Icon(painterResource(R.drawable.lucide_arrow_right), "Back to Browse", Modifier.size(20.dp).graphicsLayer { rotationZ = 180f }, tint = TextMuted)
             }
-            if (narrow) Box(Modifier.weight(1f)) {
+            // Phones keep Block in a 1:1 DM's title menu; Members is a header button.
+            if (narrow && direct != null) Box(Modifier.weight(1f)) {
                 Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
                     .clickable(role = Role.Button) { channelMenuOpen = true }
-                    .semantics(mergeDescendants = true) { contentDescription = "${if (channel.direct) "" else "# "}${channel.name} channel menu" }, verticalAlignment = Alignment.CenterVertically) {
-                    Text(if (channel.direct) channel.name else "# ${channel.name}", Modifier.weight(1f, fill = false), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    .semantics(mergeDescendants = true) { contentDescription = "${channel.name} channel menu" }, verticalAlignment = Alignment.CenterVertically) {
+                    Text(channel.name, Modifier.weight(1f, fill = false), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Icon(painterResource(R.drawable.lucide_chevron_down), null, Modifier.size(16.dp), tint = TextMuted)
                 }
                 DropdownMenu(channelMenuOpen, { channelMenuOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
-                    if (!channel.direct && joined) DropdownMenuItem(text = { Text(if (membersVisible) "Hide member list" else "Members") },
-                        leadingIcon = { Icon(painterResource(R.drawable.lucide_users), null) },
-                        onClick = { channelMenuOpen = false; toggleMembers() })
-                    if (direct != null) DropdownMenuItem(text = { Text(if (direct.blocked) "Unblock" else "Block", color = if (direct.blocked) Text else ErrorText) },
+                    DropdownMenuItem(text = { Text(if (direct.blocked) "Unblock" else "Block", color = if (direct.blocked) Text else ErrorText) },
                         onClick = { channelMenuOpen = false; toggleBlock() })
                 }
             } else Text(if (channel.direct) channel.name else "# ${channel.name}", Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             IconButton({ showingPins = !showingPins }, Modifier.sizeIn(minWidth = 44.dp, minHeight = 44.dp)) {
                 Icon(painterResource(R.drawable.lucide_pin), "Pins", Modifier.size(20.dp), tint = TextMuted)
             }
+            // Right of Pins on every width, as on web.
+            if (!channel.direct && joined) IconButton(toggleMembers, Modifier.size(if (narrow) 44.dp else 36.dp)) {
+                Icon(painterResource(R.drawable.lucide_users), if (membersVisible) "Hide member list" else "Show member list",
+                    Modifier.size(20.dp), tint = if (membersVisible) Text else TextMuted)
+            }
             if (!narrow && direct != null) TextButton(::toggleBlock, Modifier.heightIn(min = 48.dp)) {
                 Text(if (direct.blocked) "Unblock" else "Block", color = if (direct.blocked) TextMuted else ErrorText, fontSize = 11.sp, fontWeight = FontWeight.Bold)
             }
             if (!channel.direct && !joined) Button({ viewModel.joinChannel(channel) }, enabled = !state.busy, shape = MaterialTheme.shapes.small) { Text("Join channel") }
             if (!live && showConnection) Text(if (state.gateway == GatewayStatus.ERROR || state.messagesError != null) "Offline" else "Connecting…", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-            if (!narrow && !channel.direct && joined) IconButton(toggleMembers, Modifier.size(36.dp)) { Icon(painterResource(R.drawable.lucide_users), if (membersVisible) "Hide member list" else "Show member list", tint = if (membersVisible) Text else TextMuted) }
         }
         HorizontalDivider(color = Border)
         if (!joined) Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
@@ -1341,7 +1380,10 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 }
             }
         }
-        MessageTimeline(state, viewModel, Modifier.weight(1f).browseSwipeRegion(LocalBrowseDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen), listState = timelineState, follow = timelineFollow) {
+        MessageTimeline(state, viewModel, Modifier.weight(1f).browseSwipeRegion(LocalBrowseDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen)
+            // A left swipe opens the member list, as a right one opens Browse.
+            .browseSwipeRegion(LocalMembersDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen && !channel.direct && joined),
+            listState = timelineState, follow = timelineFollow) {
             channelPending?.error?.let { pending ->
                 val editable = canEditRejectedMessage(draft.text, channelPending.text)
                 Row(verticalAlignment = Alignment.CenterVertically) {

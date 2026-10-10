@@ -20,9 +20,9 @@ const ROOM = ".call-room.spaces-room";
 const NAME = "browse-room";
 /** Browse's account and voice bar, which stays uncovered at the bottom. */
 const BAR = ":scope > .people-panel > .voice-panel";
-const SETTLE = { duration: 320, easing: "cubic-bezier(0.32, 0.72, 0, 1)" };
+export const SETTLE = { duration: 320, easing: "cubic-bezier(0.32, 0.72, 0, 1)" };
 /** An ease-out whose initial speed is three times its average, to carry on from a finger. */
-const RELEASE_EASING = "cubic-bezier(0.2, 0.6, 0.35, 1)";
+export const RELEASE_EASING = "cubic-bezier(0.2, 0.6, 0.35, 1)";
 
 export interface BrowseDrag {
   /** Share of the way to the other view, from 0 to 1. */
@@ -236,8 +236,8 @@ export function dragBrowse(opening: boolean, update: (open: boolean) => void): B
   return start(opening, update, true);
 }
 
-const BLOCKING = "dialog[open], details[open], [role=dialog], [popover]:popover-open";
-const OWN_GESTURES =
+export const BLOCKING = "dialog[open], details[open], [role=dialog], [popover]:popover-open";
+export const OWN_GESTURES =
   "input, textarea, select, [contenteditable=true], [role=slider], a, summary, button:not(.channel-select, .direct-select)";
 
 /**

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowRight, Ban, ChevronDown, MoreHorizontal, Pin, X } from "lucide-react";
+import { ArrowRight, Ban, MoreHorizontal, Pin, X } from "lucide-react";
 import {
   FloatingFocusManager,
   FloatingOverlay,
@@ -153,7 +153,6 @@ export default function Chat({
   initialHistoryError,
   showTitle = false,
   headerLeading,
-  channelMenu,
   headerActions,
   readOnly = false,
   composerNotice,
@@ -182,7 +181,6 @@ export default function Chat({
   initialHistoryError?: string;
   showTitle?: boolean;
   headerLeading?: ReactNode;
-  channelMenu?: ReactNode;
   headerActions?: ReactNode;
   readOnly?: boolean;
   composerNotice?: ReactNode;
@@ -204,15 +202,6 @@ export default function Chat({
   // The composer owns the draft; the conversation only needs to know one exists.
   const composerRef = useRef<ComposerHandle>(null);
   const [hasDraft, setHasDraft] = useState(false);
-  const channelMenuRef = useRef<HTMLDetailsElement>(null);
-  useEffect(() => {
-    const dismiss = (event: PointerEvent) => {
-      const menu = channelMenuRef.current;
-      if (menu && !menu.contains(event.target as Node)) menu.open = false;
-    };
-    document.addEventListener("pointerdown", dismiss);
-    return () => document.removeEventListener("pointerdown", dismiss);
-  }, []);
   const clientRef = useRef<ChatClient | undefined>(undefined);
   const [actionTarget, setActionTarget] = useState<MessageActionTarget>();
   const [reactorsTarget, setReactorsTarget] = useState<ReactorsTarget>();
@@ -1055,44 +1044,10 @@ export default function Chat({
       <section className="chat-panel" aria-labelledby="chat-heading">
         <header className="chat-heading">
           {headerLeading}
-          {channelMenu ? (
-            <details
-              ref={channelMenuRef}
-              className="chat-channel-menu"
-              onKeyDown={(event) => {
-                if (event.key === "Escape" && event.currentTarget.open) {
-                  // Handled here, so an open thread does not also close.
-                  event.preventDefault();
-                  event.currentTarget.open = false;
-                  event.currentTarget.querySelector("summary")?.focus();
-                }
-              }}
-              onBlur={(event) => {
-                if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
-              }}
-            >
-              <summary aria-label={`${direct ? "" : "# "}${channelName} channel menu`}>
-                <h2 id="chat-heading" className="chat-channel-title">
-                  {direct ? "" : "# "}
-                  {channelName}
-                </h2>
-                <ChevronDown aria-hidden="true" />
-              </summary>
-              <div
-                className="space-actions"
-                onClick={(event) => {
-                  if ((event.target as HTMLElement).closest("button")) channelMenuRef.current!.open = false;
-                }}
-              >
-                {channelMenu}
-              </div>
-            </details>
-          ) : (
-            <h2 id="chat-heading" className={showTitle ? "chat-channel-title" : "sr-only"}>
-              {direct ? "" : "# "}
-              {channelName}
-            </h2>
-          )}
+          <h2 id="chat-heading" className={showTitle ? "chat-channel-title" : "sr-only"}>
+            {direct ? "" : "# "}
+            {channelName}
+          </h2>
           {pinsToggle}
           {headerActions}
           {!state.online && showConnectionStatus && (

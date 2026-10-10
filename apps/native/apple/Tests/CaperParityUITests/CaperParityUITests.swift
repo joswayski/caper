@@ -378,19 +378,24 @@ final class CaperParityUITests: XCTestCase {
         let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 30,
                                    "Missing message composer")
         let send = app.buttons["send-message-button"]
+        let restingBottom = send.frame.maxY
+        XCTAssertLessThan(restingBottom, app.frame.maxY, "The home-indicator safe area must remain when the keyboard is closed")
+        capture("composer-empty-keyboard-closed", app: app)
         XCTAssertTrue(focus(composer))
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
         XCTAssertEqual(composer.frame.height, 42, accuracy: 2)
         // The text view already measured 42 points before the fix. Its bottom
         // must align with Send too, or its background can still occupy 174.
         XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
+        XCTAssertEqual(send.frame.maxY, app.keyboards.firstMatch.frame.minY, accuracy: 2,
+                       "The composer must meet the keyboard without an extra bottom margin")
         capture("composer-empty-keyboard", app: app)
 
         let short = "Compact draft"
         composer.typeText(short)
         XCTAssertEqual(composer.frame.height, 42, accuracy: 2)
         XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
-        XCTAssertLessThanOrEqual(send.frame.maxY, app.keyboards.firstMatch.frame.minY)
+        XCTAssertEqual(send.frame.maxY, app.keyboards.firstMatch.frame.minY, accuracy: 2)
         capture("composer-single-line-keyboard", app: app)
 
         let multiline = "\nSecond line\nThird line"
@@ -399,6 +404,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertGreaterThan(composer.frame.height, 62, "The fix must not freeze the composer at one line")
         XCTAssertLessThan(composer.frame.height, 174, "A three-line draft must not jump straight to the cap")
         XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
+        XCTAssertEqual(send.frame.maxY, app.keyboards.firstMatch.frame.minY, accuracy: 2)
         capture("composer-multiline-keyboard", app: app)
 
         let overflow = String(repeating: "\nmore", count: 16)
@@ -407,6 +413,7 @@ final class CaperParityUITests: XCTestCase {
                        "Scrolling must retain lines beyond the visible height")
         XCTAssertEqual(composer.frame.height, 174, accuracy: 2)
         XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
+        XCTAssertEqual(send.frame.maxY, app.keyboards.firstMatch.frame.minY, accuracy: 2)
         XCTAssertTrue(send.isHittable, "Send must remain available above the keyboard at the height cap")
         capture("composer-capped-keyboard", app: app)
 
@@ -418,6 +425,17 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(composer.value as? String, "")
         XCTAssertEqual(composer.frame.height, 42, accuracy: 2)
         XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
+
+        app.buttons["Back to Browse"].tap()
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed)
+        try require(app.buttons["Back to conversation"], timeout: 5, "Missing conversation return target").tap()
+        XCTAssertEqual(send.frame.maxY, restingBottom, accuracy: 2, "Dismissing the keyboard must restore the safe-area layout")
+        capture("composer-keyboard-dismissed", app: app)
+        XCTAssertTrue(focus(composer))
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
+        XCTAssertEqual(send.frame.maxY, app.keyboards.firstMatch.frame.minY, accuracy: 2)
+        capture("composer-keyboard-reopened", app: app)
     }
 
     /// Deletes from the end until the field holds `target`. On the simulator a
@@ -469,6 +487,9 @@ final class CaperParityUITests: XCTestCase {
         // below the text view that a 174-point background would introduce.
         XCTAssertLessThan(send.frame.minY - composer.frame.maxY, 32)
         XCTAssertTrue(send.isHittable)
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
+        XCTAssertEqual(send.frame.maxY, app.keyboards.firstMatch.frame.minY, accuracy: 2,
+                       "Thread controls must meet the keyboard without an extra bottom margin")
         capture("thread-composer-single-line-keyboard", app: app)
 
         let threadRoot = try XCTUnwrap(visible(app.descendants(matching: .any).matching(identifier: "message-row-chan00000001m01")),
@@ -2043,9 +2064,11 @@ final class CaperParityUITests: XCTestCase {
         let channel = app.descendants(matching: .any)["selected-channel-name"]
         XCTAssertGreaterThan(channel.frame.minX, navigation.frame.maxX, "Back arrow leads the channel menu")
         XCTAssertGreaterThanOrEqual(navigation.frame.width, 44, "Keep the back touch target accessible")
-        XCTAssertFalse(app.buttons["Show member list"].exists, "Mobile Members belongs in the channel dropdown")
-        // Since #363 Pins is a header button on every width, as on web.
+        // Since #363 Pins is a header button on every width, as on web; Members sits right of it.
         XCTAssertTrue(app.buttons["channel-pins"].isHittable, "Pins sits in the phone header")
+        let members = app.buttons["Show member list"]
+        XCTAssertTrue(members.isHittable, "Members is a phone header button, not in a channel dropdown")
+        XCTAssertGreaterThan(members.frame.minX, app.buttons["channel-pins"].frame.maxX - 1, "Members sits right of Pins")
         let composer = app.descendants(matching: .any)["message-composer"]
         composer.tap(); composer.typeText("Draft survives Browse")
         let timeline = app.descendants(matching: .any)["chat-timeline"]
@@ -2060,14 +2083,20 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(navigation.waitForExistence(timeout: 3), "Swipe left from Browse's edge returns to chat")
         XCTAssertEqual(composer.value as? String, "Draft survives Browse")
         capture("narrow-conversation", app: app)
-        channel.tap()
-        let members = app.buttons["Members"]
-        XCTAssertTrue(members.waitForExistence(timeout: 2))
-        capture("narrow-channel-menu", app: app)
         members.tap()
         assertStaticText("Members", in: app, timeout: 2)
         capture("narrow-members", app: app)
         app.buttons["Close member list"].tap()
+        XCTAssertEqual(staticTexts("Members", in: app).count, 0)
+        // Like Browse from the leading edge, the member list follows a finger: in from the trailing edge, out from the panel.
+        timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.97, dy: 0.5)).press(forDuration: 0.01,
+            thenDragTo: timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.4, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
+        assertStaticText("Members", in: app, timeout: 3)
+        XCTAssertTrue(navigation.isHittable, "Swiping in the member list keeps the conversation, not Browse")
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.5)).press(forDuration: 0.01,
+            thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.buttons["Hide member list"])
+        XCTAssertEqual(XCTWaiter().wait(for: [closed], timeout: 3), .completed, "Swiping the panel right closes the member list")
         XCTAssertEqual(staticTexts("Members", in: app).count, 0)
         let pins = app.buttons["channel-pins"]
         XCTAssertTrue(pins.waitForExistence(timeout: 2))
@@ -2079,7 +2108,6 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(navigation.waitForExistence(timeout: 3))
         XCTAssertTrue(pins.waitForExistence(timeout: 3), "Dismissing Pins restores the header")
         XCTAssertEqual(composer.value as? String, "Draft survives Browse")
-        channel.tap()
         members.tap()
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.5)).tap()
         XCTAssertEqual(staticTexts("Members", in: app).count, 0)
