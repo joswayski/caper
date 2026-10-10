@@ -1697,13 +1697,12 @@ export default function Spaces({
 
   useEffect(() => {
     const dismiss = (event: PointerEvent) => {
-      // Every menu, including DM rows outside the channel list and the narrow-layout
-      // channel title menu: Safari does not focus a tapped <summary>, so onBlur alone
-      // never closes them on an outside tap.
+      // Every menu, including DM rows outside the channel list: Safari does not
+      // focus a tapped <summary>, so onBlur alone never closes them on an outside tap.
       for (const menu of [
         spaceMenu.current,
         channelMenu.current,
-        ...document.querySelectorAll<HTMLDetailsElement>(".channel-menu[open], .chat-channel-menu[open]"),
+        ...document.querySelectorAll<HTMLDetailsElement>(".channel-menu[open]"),
       ]) {
         if (menu && !menu.contains(event.target as Node)) menu.open = false;
       }

@@ -178,7 +178,11 @@ try {
 
   // Real stale-revision conflict: keep the draft; explicit reload discards it.
   browser("set", "viewport", "390", "844", "2");
-  if (evaluate('!!document.querySelector(".member-list-close")')) browser("click", ".member-list-close");
+  if (evaluate('!!document.querySelector(".member-list-close")')) {
+    browser("click", ".member-list-close");
+    // The phone member list slides out before it is removed.
+    wait('!document.querySelector(".space-member-presence")');
+  }
   edit(root);
   browser("fill", "#chat-edit-text", "TEST FIXTURE — Unsaved narrow draft.");
   await control({

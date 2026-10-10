@@ -224,7 +224,11 @@ try {
 
   // Touch-sized browser layout: visible actions and outside dismissal, not a physical-device test.
   browser("set", "viewport", "390", "844", "2");
-  if (evaluate('!!document.querySelector(".member-list-close")')) browser("click", ".member-list-close");
+  if (evaluate('!!document.querySelector(".member-list-close")')) {
+    browser("click", ".member-list-close");
+    // The phone member list slides out before it is removed.
+    wait('!document.querySelector(".space-member-presence")');
+  }
   openPins();
   assert.equal(evaluate("document.documentElement.scrollWidth > innerWidth"), false);
   screenshot("pins-narrow");
