@@ -99,7 +99,10 @@ retains its 12-point bottom margin. iPhone parity tests assert empty/single-line
 alignment with Send, multiline growth, the height cap, shrinking after
 deletion/send, and compact thread replies with the keyboard open. They also
 require the controls to meet the keyboard without a gap and check the resting
-safe-area layout after keyboard dismissal and reopening.
+safe-area layout after keyboard dismissal and reopening. In parity mode only,
+the app exposes UIKit's keyboard end frame to measure the full system keyboard,
+including predictions; iOS 26's XCUITest keyboard element excludes that bar.
+The tests retain their two-point tolerance and do not alter keyboard settings.
 Run `./apps/native/apple/parity-screenshots.sh ios` and its `macos` counterpart
 with Xcode before release and inspect the composer attachments. These new iPhone
 checks and native rendering were not executed in the Linux orb; passing web and
