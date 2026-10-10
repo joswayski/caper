@@ -33,6 +33,23 @@ if ((Get-FileHash (Join-Path $Root 'apps\web\public\audio\dpdfnet8-v2\dpdfnet8_4
   throw 'DPDFNet model hash mismatch'
 }
 
+# Caper's trimmed static FFmpeg (joswayski/ffmpeg-desktop, GPL-2.0-or-later),
+# run as a separate program to compress videos, play them in the app and decode
+# AVIF/HEIC originals. That repo's CI smoke-tests the app's exact commands.
+$FfmpegRelease = 'ffmpeg-9.0.2-r1'
+$FfmpegArchive = Join-Path $Native "target\ffmpeg-desktop-windows-x64-$FfmpegRelease.zip"
+$FfmpegExtract = Join-Path $Native "target\ffmpeg-desktop-windows-x64-$FfmpegRelease"
+if (-not (Test-Path $FfmpegArchive)) {
+  Invoke-WebRequest "https://github.com/joswayski/ffmpeg-desktop/releases/download/$FfmpegRelease/ffmpeg-desktop-windows-x64.zip" -OutFile $FfmpegArchive -MaximumRetryCount 6 -RetryIntervalSec 5
+}
+if ((Get-FileHash $FfmpegArchive -Algorithm SHA256).Hash.ToLowerInvariant() -ne '851f16be048d3348e635c42711a1b7868303372e8538d56202766a92bb1b84ad') {
+  throw 'FFmpeg download hash mismatch'
+}
+Remove-Item $FfmpegExtract -Recurse -Force -ErrorAction SilentlyContinue
+Expand-Archive $FfmpegArchive -DestinationPath $FfmpegExtract -Force
+& (Join-Path $FfmpegExtract 'ffmpeg.exe') -hide_banner -version
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 python (Join-Path $Root "scripts\native_fonts.py")
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 cargo fmt --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop -- --check
@@ -69,6 +86,9 @@ Copy-Item $env:CAPER_ONNXRUNTIME_LIBRARY $Stage
 Copy-Item (Join-Path $OrtExtract 'LICENSE') (Join-Path $Stage 'ONNX-RUNTIME-LICENSE')
 Copy-Item (Join-Path $OrtExtract 'ThirdPartyNotices.txt') (Join-Path $Stage 'ONNX-RUNTIME-THIRD-PARTY-NOTICES.txt')
 Copy-Item (Join-Path $Root 'apps\web\public\audio\dpdfnet8-v2\LICENSE-APACHE-2.0') (Join-Path $Stage 'DPDFNET-LICENSE')
+Copy-Item (Join-Path $FfmpegExtract 'ffmpeg.exe') $Stage
+$FfmpegLicenses = New-Item (Join-Path $Stage 'ffmpeg-licenses') -ItemType Directory -Force
+Copy-Item (Join-Path $FfmpegExtract 'licenses\*'), (Join-Path $FfmpegExtract 'SOURCES.txt') $FfmpegLicenses.FullName
 # ORT's official DLL is /MD even though the Rust executable uses +crt-static.
 # Stage Microsoft's signed app-local VC++ runtime from the VS build toolchain;
 # do not claim a portable package that depends on an installed redistributable.

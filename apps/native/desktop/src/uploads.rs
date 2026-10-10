@@ -1124,17 +1124,19 @@ mod tests {
         assert_eq!(size_label(2048, None), "2.0 KB");
     }
 
-    /// A phone-style clip through the real pipeline (`CAPER_FFMPEG` with
-    /// libx264, libx265 and zimg, such as a distribution FFmpeg): 4K HEVC HLG,
-    /// rotated to portrait, becomes 1080×1920 SDR H.264 with a poster, and
-    /// its compressed copy is removed with the upload body.
+    /// A phone-style clip through the real pipeline (`CAPER_FFMPEG`, the
+    /// shipped build or a distribution FFmpeg; its input made by
+    /// `CAPER_FFMPEG_FIXTURES`): 4K HEVC HLG, rotated to portrait, becomes
+    /// 1080×1920 SDR H.264 with a poster, and its compressed copy is removed
+    /// with the upload body.
     #[test]
-    #[ignore = "needs a full FFmpeg via CAPER_FFMPEG"]
+    #[ignore = "needs CAPER_FFMPEG (and CAPER_FFMPEG_FIXTURES with lavfi and libx265 if it lacks them)"]
     fn phone_hdr_video_is_compressed_tone_mapped_and_cleaned_up() {
         let binary = crate::ffmpeg::binary().expect("set CAPER_FFMPEG");
         let scratch = Scratch::new("video");
         let encoded = scratch.0.join("encoded.mov");
-        let status = crate::ffmpeg::command(binary)
+        let fixtures = crate::ffmpeg::fixture_binary();
+        let status = crate::ffmpeg::command(&fixtures)
             .args([
                 "-loglevel",
                 "error",
@@ -1166,7 +1168,7 @@ mod tests {
             .unwrap();
         assert!(status.success());
         let picked = scratch.0.join("IMG_0001.MOV");
-        let status = crate::ffmpeg::command(binary)
+        let status = crate::ffmpeg::command(&fixtures)
             .args(["-loglevel", "error", "-display_rotation", "90", "-i"])
             .arg(&encoded)
             .args(["-c", "copy"])

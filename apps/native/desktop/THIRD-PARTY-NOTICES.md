@@ -46,7 +46,7 @@ Desktop packages include a separate `ffmpeg` executable: a static, trimmed
 [FFmpeg](https://ffmpeg.org) 9.0.2 with [x264](https://code.videolan.org/videolan/x264),
 [dav1d](https://code.videolan.org/videolan/dav1d) 1.5.4 and
 [zimg](https://github.com/sekrit-twc/zimg) 3.0.6, built from pinned sources by
-`joswayski/ffmpeg-desktop`. Because it includes x264 it is licensed under the
+[joswayski/ffmpeg-desktop](https://github.com/joswayski/ffmpeg-desktop). Because it includes x264 it is licensed under the
 GNU GPL version 2 or later; Caper runs it as a separate program over pipes and
 does not link it. Its licence texts (`FFmpeg-COPYING.GPLv2`,
 `FFmpeg-LICENSE.md`, `x264-COPYING`, `dav1d-COPYING` (BSD-2-Clause),

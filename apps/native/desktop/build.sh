@@ -29,6 +29,21 @@ echo '13ab8084954fa4a47c777880180b90810d6020f021441395712b48a75b74c68b  '"$ort_d
 export CAPER_ONNXRUNTIME_LIBRARY="$ort_dir/lib/libonnxruntime.so.1.23.2"
 echo '7b3afbb260a08fe9af3d16e3bda992971be1e7e951d1dee7c2d235f5c43f5631  '"$root/apps/web/public/audio/dpdfnet8-v2/dpdfnet8_48khz_hr.onnx" | sha256sum --check --status
 
+# Caper's trimmed static FFmpeg (joswayski/ffmpeg-desktop, GPL-2.0-or-later),
+# run as a separate program to compress videos, play them in the app and decode
+# AVIF/HEIC originals. That repo's CI smoke-tests the app's exact commands.
+ffmpeg_release=ffmpeg-9.0.2-r1
+ffmpeg_archive="$CARGO_TARGET_DIR/ffmpeg-desktop-linux-x64-$ffmpeg_release.zip"
+ffmpeg_dir="$CARGO_TARGET_DIR/ffmpeg-desktop-linux-x64-$ffmpeg_release"
+if [[ ! -f "$ffmpeg_archive" ]]; then
+  curl -fL --retry 6 --retry-delay 5 --retry-all-errors -o "$ffmpeg_archive" "https://github.com/joswayski/ffmpeg-desktop/releases/download/$ffmpeg_release/ffmpeg-desktop-linux-x64.zip"
+fi
+echo '5f054de67d70281f3aeb69d2c9f6beb5d4f99f1a4e38a795ee1a017e710e5ba5  '"$ffmpeg_archive" | sha256sum --check --status
+rm -rf "$ffmpeg_dir"
+python3 -m zipfile -e "$ffmpeg_archive" "$ffmpeg_dir"
+chmod 0755 "$ffmpeg_dir/ffmpeg"
+"$ffmpeg_dir/ffmpeg" -hide_banner -version | sed -n 1p
+
 python3 "$root/scripts/native_fonts.py"
 cargo fmt --manifest-path "$native/Cargo.toml" --package caper-desktop -- --check
 cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-desktop
@@ -60,6 +75,9 @@ install -m 0755 "$CAPER_ONNXRUNTIME_LIBRARY" "$package_dir/Caper-linux-x64/"
 install -m 0644 "$ort_dir/LICENSE" "$package_dir/Caper-linux-x64/ONNX-RUNTIME-LICENSE"
 install -m 0644 "$ort_dir/ThirdPartyNotices.txt" "$package_dir/Caper-linux-x64/ONNX-RUNTIME-THIRD-PARTY-NOTICES.txt"
 install -m 0644 "$root/apps/web/public/audio/dpdfnet8-v2/LICENSE-APACHE-2.0" "$package_dir/Caper-linux-x64/DPDFNET-LICENSE"
+install -m 0755 "$ffmpeg_dir/ffmpeg" "$package_dir/Caper-linux-x64/ffmpeg"
+install -d "$package_dir/Caper-linux-x64/ffmpeg-licenses"
+install -m 0644 "$ffmpeg_dir/licenses/"* "$ffmpeg_dir/SOURCES.txt" "$package_dir/Caper-linux-x64/ffmpeg-licenses/"
 tar -C "$package_dir" -czf "$native/dist/Caper-linux-x64.tar.gz" Caper-linux-x64
 
 deb="$package_dir/deb"
@@ -68,6 +86,9 @@ install -m 0755 "$CARGO_TARGET_DIR/release/caper-desktop" "$deb/usr/bin/caper-de
 install -m 0755 "$CAPER_ONNXRUNTIME_LIBRARY" "$deb/usr/lib/caper-desktop/"
 # Only checks for updates here: /usr needs root, so the app links to the download.
 install -m 0755 "$CARGO_TARGET_DIR/release/caper-updater" "$deb/usr/lib/caper-desktop/caper-updater"
+install -m 0755 "$ffmpeg_dir/ffmpeg" "$deb/usr/lib/caper-desktop/ffmpeg"
+install -d "$deb/usr/share/doc/caper-desktop/ffmpeg-licenses"
+install -m 0644 "$ffmpeg_dir/licenses/"* "$ffmpeg_dir/SOURCES.txt" "$deb/usr/share/doc/caper-desktop/ffmpeg-licenses/"
 install -m 0644 "$ort_dir/LICENSE" "$deb/usr/share/doc/caper-desktop/ONNX-RUNTIME-LICENSE"
 install -m 0644 "$ort_dir/ThirdPartyNotices.txt" "$deb/usr/share/doc/caper-desktop/ONNX-RUNTIME-THIRD-PARTY-NOTICES.txt"
 install -m 0644 "$root/apps/web/public/audio/dpdfnet8-v2/LICENSE-APACHE-2.0" "$deb/usr/share/doc/caper-desktop/DPDFNET-LICENSE"

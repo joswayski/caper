@@ -630,11 +630,11 @@ mod tests {
     /// Real decoding (`CAPER_FFMPEG`): frames arrive at the clip's size and
     /// rate, a seek starts at the new time, and the end is reached.
     #[test]
-    #[ignore = "needs an FFmpeg with lavfi and libx264 via CAPER_FFMPEG"]
+    #[ignore = "needs CAPER_FFMPEG (and CAPER_FFMPEG_FIXTURES with lavfi if it lacks it)"]
     fn decodes_frames_seeks_and_ends_with_a_real_ffmpeg() {
         let binary = crate::ffmpeg::binary().expect("set CAPER_FFMPEG");
         let path = std::env::temp_dir().join(format!("caper-player-{}.mp4", uuid::Uuid::new_v4()));
-        let status = crate::ffmpeg::command(binary)
+        let status = crate::ffmpeg::command(&crate::ffmpeg::fixture_binary())
             .args([
                 "-loglevel",
                 "error",

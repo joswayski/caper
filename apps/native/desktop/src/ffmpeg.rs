@@ -49,6 +49,17 @@ pub fn binary() -> Option<&'static Path> {
         .as_deref()
 }
 
+/// The FFmpeg that makes test inputs: `CAPER_FFMPEG_FIXTURES` when the one
+/// under test (`CAPER_FFMPEG`, such as the shipped trimmed build) has no lavfi
+/// test sources or libx265, otherwise that same one.
+#[cfg(test)]
+pub fn fixture_binary() -> PathBuf {
+    std::env::var_os("CAPER_FFMPEG_FIXTURES")
+        .map(PathBuf::from)
+        .or_else(|| binary().map(Path::to_path_buf))
+        .expect("set CAPER_FFMPEG")
+}
+
 /// A quiet, windowless invocation with no stdin.
 pub fn command(binary: &Path) -> Command {
     let mut command = Command::new(binary);
@@ -402,7 +413,16 @@ pub fn transcode_args(
     push(&["-map", "0:v:0", "-map", "0:a:0?", "-vf"]);
     push(&[&transcode_filter(plan, hdr)]);
     match encoder {
-        Encoder::MediaFoundation => push(&["-c:v", "h264_mf", "-rate_control", "u_vbr"]),
+        // H.264 High (100); Media Foundation otherwise picks Baseline, which
+        // looks worse at the same bitrate.
+        Encoder::MediaFoundation => push(&[
+            "-c:v",
+            "h264_mf",
+            "-rate_control",
+            "u_vbr",
+            "-profile:v",
+            "100",
+        ]),
         Encoder::X264 => push(&[
             "-c:v",
             "libx264",
@@ -728,7 +748,7 @@ mod tests {
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect::<Vec<_>>()
         .join(" ");
-        assert!(joined.contains("-c:v h264_mf"));
+        assert!(joined.contains("-c:v h264_mf -rate_control u_vbr -profile:v 100"));
         assert!(
             joined
                 .contains("scale=w='trunc(iw/2)*2':h='trunc(ih/2)*2':flags=bicubic,format=yuv420p")
@@ -739,13 +759,13 @@ mod tests {
     /// End to end with a real FFmpeg (`CAPER_FFMPEG=/usr/bin/ffmpeg`), when one
     /// is available: compress a generated 1080p clip and grab its poster.
     #[test]
-    #[ignore = "needs an FFmpeg build with libx264 and zimg via CAPER_FFMPEG"]
+    #[ignore = "needs CAPER_FFMPEG (and CAPER_FFMPEG_FIXTURES with lavfi if it lacks it)"]
     fn compresses_and_grabs_a_poster_with_a_real_ffmpeg() {
         let binary = binary().expect("set CAPER_FFMPEG");
         let dir = std::env::temp_dir().join(format!("caper-ffmpeg-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let input = dir.join("in.mp4");
-        let status = command(binary)
+        let status = command(&fixture_binary())
             .args([
                 "-loglevel",
                 "error",

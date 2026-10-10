@@ -1181,10 +1181,17 @@ cache, and a refused load asks for one refresh. Audio and other files keep
 their inline behaviour; pending rows never open the viewer.
 
 Desktop has no platform video player or AVIF decoder, so it ships a trimmed,
-static FFmpeg built from pinned sources by `joswayski/ffmpeg-desktop`
+static FFmpeg built from pinned sources by
+[joswayski/ffmpeg-desktop](https://github.com/joswayski/ffmpeg-desktop)
 (FFmpeg 9.0.2, x264, dav1d 1.5.4, zimg 3.0.6; GPL-2.0-or-later, run as a
-separate program so the app stays Apache-2.0; licences and `SOURCES.txt` ship
-with it). The app uses it to:
+separate program so the app stays Apache-2.0). `build.sh` and `build.ps1`
+download its `ffmpeg-9.0.2-r1` release, check the zip's SHA-256 and package
+`ffmpeg` (`ffmpeg.exe`) beside the app, with its licences, `SOURCES.txt` and
+build recipe in `ffmpeg-licenses/` (`/usr/share/doc/caper-desktop/` in the
+.deb). That repo's CI smoke-tests the app's exact commands on Linux and on a
+Windows runner, where Media Foundation's H.264 encoder (asked for High profile)
+and x264 both pass; a newer build is a new release revision and a new pin. The
+app uses it to:
 
 - compress videos before upload with the shared rules (sizes are FFmpeg
   expressions on the rotated frame, so portrait video keeps its shape),
@@ -1199,8 +1206,10 @@ with it). The app uses it to:
 - decode AVIF and HEIC originals for the full-size viewer.
 
 It is found beside the executable (`/usr/lib/caper-desktop` for the .deb) or
-at `CAPER_FFMPEG`. Without it, videos upload unchanged and the viewer offers
-the browser.
+at `CAPER_FFMPEG`. Without it (a development build), videos upload unchanged
+and the viewer offers the browser. The ignored real-FFmpeg tests run against
+the shipped build with `CAPER_FFMPEG` set to it and `CAPER_FFMPEG_FIXTURES` set
+to a full FFmpeg (lavfi test sources, libx265) that makes their inputs.
 
 ### Deletion and purge
 
