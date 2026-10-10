@@ -68,7 +68,14 @@ export function useBrowseLayout(roomRef: RefObject<HTMLElement | null>, open: bo
             "--browse-bar",
             `${room.getBoundingClientRect().bottom - bar.getBoundingClientRect().top + 12}px`,
           );
-        if (!open && stage) room.style.setProperty("--browse-stage-top", `${stage.offsetTop}px`);
+        if (!open && stage) {
+          room.style.setProperty("--browse-stage-top", `${stage.offsetTop}px`);
+          // The channel row and account bar above the conversation, read by the slide.
+          room.style.setProperty(
+            "--browse-strip",
+            `${stage.getBoundingClientRect().top - room.getBoundingClientRect().top}px`,
+          );
+        }
       };
       measure();
       observer = new ResizeObserver(measure);
@@ -166,14 +173,18 @@ class Slide implements BrowseDrag {
   /**
    * Moves the conversation's snapshot (outgoing when opening Browse) between two
    * progress values, lifting its bottom edge off Browse's account bar on the way.
+   * Its top edge drops below the channel row and account bar, which the edge
+   * view in Browse leaves out, so they do not vanish in one frame as it lands.
    */
   private animate(from: number, to: number, timing: KeyframeAnimationOptions) {
-    const bar = parseFloat(this.room?.style.getPropertyValue("--browse-bar") ?? "") || 0;
+    const length = (name: string) => parseFloat(this.room?.style.getPropertyValue(name) ?? "") || 0;
+    const bar = length("--browse-bar"),
+      strip = length("--browse-strip");
     const offset = (progress: number) => {
       const uncovered = this.opening ? progress : 1 - progress;
       return {
         transform: `translateX(${uncovered * this.travel}px)`,
-        clipPath: `inset(0 0 ${uncovered * bar}px -48px)`,
+        clipPath: `inset(${uncovered * strip}px 0 ${uncovered * bar}px -48px)`,
       };
     };
     const animation = document.documentElement.animate([offset(from), offset(to)], {

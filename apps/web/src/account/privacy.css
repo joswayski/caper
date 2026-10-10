@@ -1,6 +1,6 @@
 .privacy-settings {
   display: grid;
-  gap: 14px;
+  gap: 12px;
   margin-top: 22px;
   padding-top: 18px;
   border-top: 1px solid var(--border);
@@ -14,11 +14,18 @@
   padding: 0;
   border: 0;
 }
-.privacy-settings legend,
+/* Each section has a title, then a quieter label for each of its questions. */
 .privacy-settings h3 {
+  margin: 0;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+.privacy-settings legend,
+.privacy-settings h4 {
   margin: 0 0 6px;
   padding: 0;
-  font-size: 0.86rem;
+  color: var(--text-muted);
+  font-size: 0.78rem;
   font-weight: 700;
 }
 .privacy-settings label {
@@ -37,8 +44,18 @@
 .privacy-settings label:has(input:checked) {
   border-color: var(--terracotta);
 }
-.privacy-settings fieldset:not(:disabled) label:hover {
-  background: rgb(255 255 255 / 4%);
+/* Hover only where a pointer hovers; a tapped row must not stay lit on touch. */
+@media (hover: hover) {
+  .privacy-settings fieldset:not(:disabled) label:hover {
+    background: rgb(255 255 255 / 4%);
+  }
+  :is(.privacy-settings li button, .privacy-notification-enable):hover:not(:disabled) {
+    border-color: var(--text-muted);
+    background: var(--border);
+  }
+  .privacy-error button:hover {
+    color: var(--terracotta-bright);
+  }
 }
 .privacy-settings fieldset:disabled label {
   cursor: wait;
@@ -104,21 +121,14 @@
     background-color 140ms ease,
     border-color 140ms ease;
 }
-.privacy-settings li button:hover:not(:disabled) {
-  border-color: var(--text-muted);
-  background: var(--border);
-}
-.privacy-settings li button:hover:not(:disabled) {
-  border-color: var(--text-muted);
-  background: var(--border);
-}
 .privacy-settings li button:disabled {
   cursor: wait;
   opacity: 0.6;
 }
 @media (prefers-reduced-motion: reduce) {
   .privacy-settings label,
-  .privacy-settings li button {
+  .privacy-settings li button,
+  .privacy-notification-enable {
     transition: none;
   }
 }
@@ -126,6 +136,16 @@
 .privacy-settings input:focus-visible {
   outline: 2px solid var(--terracotta);
   outline-offset: 2px;
+}
+/* Ring the whole choice row rather than a square around its round radio. */
+@supports selector(:has(*)) {
+  .privacy-settings label:has(input:focus-visible) {
+    outline: 2px solid var(--terracotta);
+    outline-offset: 2px;
+  }
+  .privacy-settings label input:focus-visible {
+    outline: none;
+  }
 }
 .privacy-settings section > p {
   margin: 0;
@@ -147,24 +167,20 @@
   text-decoration: underline;
   cursor: pointer;
 }
-/* A section title, then a quieter label for its one question. */
-.notification-settings {
-  gap: 8px;
-}
-.notification-settings legend {
-  color: var(--text-muted);
-  font-size: 0.78rem;
-  font-weight: 650;
-}
+/* As tall as the choice rows above it, with the same label type. */
 .privacy-notification-enable {
   justify-self: start;
-  min-height: 40px;
-  padding: 8px 12px;
+  min-height: 44px;
+  padding: 0 14px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface-raised);
   color: var(--text);
   font: inherit;
-  font-size: 0.8rem;
+  font-size: 0.82rem;
+  font-weight: 700;
   cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease;
 }

@@ -28,6 +28,11 @@
 .chat-heading h2 {
   margin: 0;
 }
+/* An empty header-actions slot (DMs have no voice actions) would still take a
+   flex gap and pull Pins in from the edge. */
+.chat-heading > div:empty {
+  display: none;
+}
 .chat-pins-toggle {
   display: inline-flex;
   align-items: center;
@@ -41,9 +46,13 @@
   color: var(--text-muted);
   cursor: pointer;
 }
-.chat-pins-toggle:hover {
-  color: var(--text);
-  background: var(--surface);
+/* Hover-capable pointers only: on touch, :hover sticks after the tap that
+   opened Pins and leaves the closed button looking pressed. */
+@media (hover: hover) {
+  .chat-pins-toggle:hover {
+    color: var(--text);
+    background: var(--surface);
+  }
 }
 .chat-pins-toggle:focus-visible {
   outline: 2px solid var(--terracotta);
@@ -103,8 +112,10 @@
   text-decoration: underline;
   cursor: pointer;
 }
-.chat-refresh-error button:hover:not(:disabled) {
-  background: var(--border);
+@media (hover: hover) {
+  .chat-refresh-error button:hover:not(:disabled) {
+    background: var(--border);
+  }
 }
 .chat-refresh-error button:disabled {
   opacity: 0.5;
@@ -182,6 +193,19 @@
 .chat-thread-messages::-webkit-scrollbar {
   display: none;
 }
+/* Other scrolling chat surfaces use the app's thin, quiet scrollbar (call.css,
+   live-window.css) instead of a full-width bar inside rounded corners. */
+.chat-composer textarea,
+.chat-emoji-suggestions,
+.chat-pins,
+.chat-message-actions,
+.chat-reactors-list,
+.chat-forward-body,
+.chat-forward-destinations,
+.chat-edit-dialog {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
 .chat-history {
   height: 44px;
   display: flex;
@@ -206,20 +230,22 @@
   opacity: 0.55;
   cursor: wait;
 }
-/* Bordered secondary buttons: a neutral hover, like the space dialogs' Cancel. */
-.chat-history button:hover:not(:disabled),
-:is(.chat-state, .chat-inline-error) button:hover:not(:disabled),
-.chat-pinned-message > button:hover:not(:disabled),
-.chat-pinned-edit-actions > button:not(.chat-edited):hover:not(:disabled),
-.chat-send-status button:hover:not(:disabled),
-.chat-reactors-status button:hover:not(:disabled),
-.chat-thread-older:hover:not(:disabled),
-.chat-forward-card > button:hover:not(:disabled),
-.chat-forward-body button:not(.chat-forward-send):hover:not(:disabled),
-.chat-edit-dialog button:not(.chat-edit-save):hover:not(:disabled) {
-  border-color: var(--text-muted);
-  color: var(--text);
-  background: var(--border);
+/* Bordered secondary buttons: a neutral hover, like the space dialogs' Cancel.
+   Hover-capable pointers only, so a tapped button doesn't stay highlighted. */
+@media (hover: hover) {
+  .chat-history button:hover:not(:disabled),
+  :is(.chat-state, .chat-inline-error) button:hover:not(:disabled),
+  .chat-pinned-edit-actions > button:not(.chat-edited):hover:not(:disabled),
+  .chat-send-status button:hover:not(:disabled),
+  .chat-reactors-status button:hover:not(:disabled),
+  .chat-thread-older:hover:not(:disabled),
+  .chat-forward-card > button:hover:not(:disabled),
+  .chat-forward-body button:not(.chat-forward-send):hover:not(:disabled),
+  .chat-edit-dialog button:not(.chat-edit-save):hover:not(:disabled) {
+    border-color: var(--text-muted);
+    color: var(--text);
+    background: var(--border);
+  }
 }
 .chat-date-divider {
   display: flex;
@@ -266,12 +292,6 @@
   font-weight: 700;
   cursor: pointer;
 }
-.chat-state button:hover:not(:disabled),
-.chat-inline-error button:hover:not(:disabled),
-.chat-send-status button:hover:not(:disabled) {
-  border-color: var(--text-muted);
-  background: var(--border);
-}
 .chat-history button:focus-visible,
 .chat-state button:focus-visible,
 .chat-inline-error button:focus-visible,
@@ -293,6 +313,11 @@
   }
 }
 .chat-message:has(:focus-visible) {
+  background: rgb(255 255 255 / 2%);
+}
+/* Keep the row marked while its menu or picker is open and the pointer has
+   moved into it. :where() lets mention, thread and jump tints still win. */
+.chat-message:where(:has(> div > :is(.chat-add-reaction, .chat-message-actions-trigger)[aria-expanded="true"])) {
   background: rgb(255 255 255 / 2%);
 }
 /* Follow-ups from the same person (grouping.ts): no avatar or name, tighter
@@ -333,15 +358,20 @@
   text-underline-offset: 2px;
   overflow-wrap: anywhere;
 }
-.chat-link:hover {
-  text-decoration-thickness: 2px;
+@media (hover: hover) {
+  .chat-link:hover {
+    text-decoration-thickness: 2px;
+  }
 }
 .chat-link:focus-visible {
   border-radius: 2px;
   outline: 2px solid var(--terracotta);
   outline-offset: 2px;
 }
-.chat-message-jump-target {
+/* Including hover/focus, which would otherwise swap the tint for the plain row highlight. */
+.chat-message-jump-target,
+.chat-message-jump-target:hover,
+.chat-message-jump-target:focus-within {
   background: rgb(182 77 50 / 12%);
   box-shadow: inset 3px 0 var(--terracotta);
 }
@@ -351,6 +381,11 @@
 .chat-message > header,
 .chat-message > :where(:not(.chat-forward-card)) > header {
   padding-right: 82px;
+}
+/* Thread rows have two hover actions, so a narrow panel keeps name and time on one line. */
+.chat-message:where(.chat-thread-panel *) > header,
+.chat-message:where(.chat-thread-panel *) > :where(:not(.chat-forward-card)) > header {
+  padding-right: 56px;
 }
 .chat-add-reaction,
 .chat-message-actions-trigger,
@@ -398,8 +433,25 @@
   .chat-message:has(:focus-visible) .chat-message-actions-trigger,
   .chat-message-actions-trigger[aria-expanded="true"],
   .chat-message:hover .chat-reply-thread,
-  .chat-message:has(:focus-visible) .chat-reply-thread {
+  .chat-message:has(:focus-visible) .chat-reply-thread,
+  /* The whole bar stays while its menu or picker is open, instead of
+     collapsing to the one open trigger when the pointer moves into it. */
+  .chat-message:has(> div > [aria-expanded="true"]) :is(.chat-add-reaction, .chat-message-actions-trigger, .chat-reply-thread) {
     opacity: 1;
+  }
+}
+/* Compact follow-ups have no header line for the hover actions to sit beside:
+   wrap their first text line around the actions instead of under them. */
+@media (min-width: 761px) and (hover: hover) and (pointer: fine) {
+  .chat-message-grouped > .chat-grouped-time + div::before {
+    content: "";
+    float: right;
+    width: 82px;
+    height: 20px;
+  }
+  /* Thread rows have two actions (no Reply in thread). */
+  .chat-thread-panel .chat-message-grouped > .chat-grouped-time + div::before {
+    width: 56px;
   }
 }
 @media (hover: hover) {
@@ -458,9 +510,6 @@
   .chat-reaction[aria-pressed="true"]:not([aria-disabled="true"]):hover {
     border-color: var(--terracotta-bright);
   }
-}
-.chat-reaction[aria-pressed="true"]:hover {
-  border-color: var(--terracotta-bright);
 }
 .chat-reaction img {
   flex-shrink: 0;
@@ -603,10 +652,6 @@
   .chat-quick-reactions button:not([aria-pressed="true"]):hover {
     background: var(--surface-raised);
   }
-  .chat-reaction-picker-heading button:hover {
-    color: var(--text);
-    background: var(--surface-raised);
-  }
 }
 .chat-copy-actions button svg {
   flex: none;
@@ -660,9 +705,11 @@
   color: var(--text-muted);
   cursor: pointer;
 }
-.chat-reaction-picker-heading button:hover {
-  color: var(--text);
-  background: var(--border);
+@media (hover: hover) {
+  .chat-reaction-picker-heading button:hover {
+    color: var(--text);
+    background: var(--border);
+  }
 }
 /* Popovers and the forward dialog are portaled outside .call-page, so they
    need their own state transitions. */
@@ -777,13 +824,22 @@
   .chat-message-actions-trigger[aria-expanded="true"] {
     background: var(--surface);
   }
+  /* Center the glyph on the name line, or on a compact row's first text line,
+     rather than below it (the target is taller than either). */
+  .chat-message > div > .chat-message-actions-trigger {
+    top: -2px;
+  }
+  .chat-message-grouped > div > .chat-message-actions-trigger {
+    top: -6px;
+  }
   .chat-reply-thread {
     display: none;
   }
-  .chat-message:not(.chat-message-pending) > .chat-avatar + div {
+  /* Compact follow-ups too: their text would otherwise run under the trigger. */
+  .chat-message:not(.chat-message-pending) > :is(.chat-avatar, .chat-grouped-time) + div {
     padding-right: 44px;
   }
-  .chat-thread-panel .chat-message:not(.chat-message-pending) > .chat-avatar + div {
+  .chat-thread-panel .chat-message:not(.chat-message-pending) > :is(.chat-avatar, .chat-grouped-time) + div {
     padding-right: 44px;
   }
   .chat-message > header,
@@ -795,6 +851,16 @@
     font-size: 0.85rem;
   }
   .chat-message-actions .chat-reaction-picker-heading button {
+    width: 44px;
+    height: 44px;
+  }
+  /* The emoji and reactions sheets' Close, like the actions sheet's. Pull the
+     larger target into the inset so the X glyph stays where it was. */
+  :is(.chat-reaction-picker-drawer, .chat-reactors-drawer) > .chat-reaction-picker-heading {
+    flex-basis: 48px;
+    padding-right: 5px;
+  }
+  :is(.chat-reaction-picker-drawer, .chat-reactors-drawer) > .chat-reaction-picker-heading button {
     width: 44px;
     height: 44px;
   }
@@ -902,7 +968,8 @@
   position: relative;
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr);
-  column-gap: 10px;
+  /* The rows carry their own margins; .chat-message's 10px row gap doubled them. */
+  gap: 0 10px;
   padding: 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -936,9 +1003,24 @@
   font-size: 0.84rem;
 }
 .chat-pinned-message .chat-pin-marker {
-  margin-bottom: 6px;
-  padding-right: 0;
+  margin-bottom: 8px;
+  /* Clear the card's actions trigger. */
+  padding-right: 24px;
   color: var(--text-muted);
+}
+/* Inside the card's 12px inset, level with the "Pinned by" line. */
+.chat-pinned-message > .chat-message-actions-trigger {
+  top: 8px;
+  right: 8px;
+}
+@media (max-width: 760px), (pointer: coarse) {
+  .chat-pinned-message .chat-pin-marker {
+    padding-right: 36px;
+  }
+  .chat-pinned-message > .chat-message-actions-trigger {
+    top: 0;
+    right: 0;
+  }
 }
 /* Forwarded cards are direct children here; keep them in the content column. */
 .chat-pinned-message > .chat-forward-card {
@@ -953,8 +1035,10 @@
   text-align: left;
   cursor: pointer;
 }
-.chat-pin-author:hover {
-  text-decoration: underline;
+@media (hover: hover) {
+  .chat-pin-author:hover {
+    text-decoration: underline;
+  }
 }
 .chat-pin-author:focus-visible {
   outline: 2px solid var(--terracotta);
@@ -981,9 +1065,11 @@
   font-size: 0.68rem;
   cursor: pointer;
 }
-.chat-pinned-navigation > button:hover:not(:disabled) {
-  color: var(--text);
-  text-decoration: underline;
+@media (hover: hover) {
+  .chat-pinned-navigation > button:hover:not(:disabled) {
+    color: var(--text);
+    text-decoration: underline;
+  }
 }
 .chat-pinned-navigation > button:focus-visible {
   outline: 2px solid var(--terracotta);
@@ -1009,9 +1095,14 @@
   text-align: inherit;
   cursor: pointer;
 }
-.chat-mention-person:hover,
 .chat-mention-person:focus-visible {
   background: rgb(182 77 50 / 32%);
+}
+/* A tapped pill would otherwise stay highlighted after its profile sheet closes. */
+@media (hover: hover) {
+  .chat-mention-person:hover {
+    background: rgb(182 77 50 / 32%);
+  }
 }
 .chat-mention-person:focus-visible {
   outline: 2px solid var(--terracotta);
@@ -1082,20 +1173,20 @@
   font-weight: 700;
   cursor: pointer;
 }
-.chat-mention-card-message:hover:not(:disabled) {
-  border-color: var(--terracotta-bright);
-  background: var(--terracotta-bright);
-}
 .chat-mention-card-message:disabled {
   opacity: 0.6;
   cursor: wait;
 }
-.chat-mention-card-message:hover:not(:disabled),
-.chat-thread-send-row button:hover:not(:disabled),
-.chat-forward-body .chat-forward-send:hover:not(:disabled),
-.chat-edit-dialog .chat-edit-save:hover:not(:disabled) {
-  border-color: var(--terracotta-bright);
-  background: var(--terracotta-bright);
+/* Primary buttons. Hover-capable pointers only: the thread's Send stays on
+   screen after a tap and would keep the brighter fill. */
+@media (hover: hover) {
+  .chat-mention-card-message:hover:not(:disabled),
+  .chat-thread-send-row button:hover:not(:disabled),
+  .chat-forward-body .chat-forward-send:hover:not(:disabled),
+  .chat-edit-dialog .chat-edit-save:hover:not(:disabled) {
+    border-color: var(--terracotta-bright);
+    background: var(--terracotta-bright);
+  }
 }
 .chat-mention-card-message:focus-visible {
   outline: 2px solid var(--text);
@@ -1173,11 +1264,13 @@
   background: rgb(182 77 50 / 18%);
   color: var(--text);
 }
-.chat-emoji-suggestions button:hover {
-  color: var(--text);
-}
-.chat-emoji-suggestions button:hover:not([aria-selected="true"]) {
-  background: rgb(255 255 255 / 6%);
+@media (hover: hover) {
+  .chat-emoji-suggestions button:hover {
+    color: var(--text);
+  }
+  .chat-emoji-suggestions button:hover:not([aria-selected="true"]) {
+    background: rgb(255 255 255 / 6%);
+  }
 }
 .chat-emoji-suggestions img {
   flex: 0 0 24px;
@@ -1353,7 +1446,9 @@
   .chat-panel {
     min-height: 420px;
   }
-  .chat-message {
+  /* Dividers keep to the rows' narrower inset. */
+  .chat-message,
+  .chat-date-divider {
     padding-inline: 14px;
   }
   /* Phones show only the 44px actions button. */
@@ -1363,6 +1458,11 @@
   .chat-composer,
   .chat-typing {
     padding-inline: 14px;
+  }
+  /* Line the suggestions up with the narrower composer inset. */
+  .chat-emoji-suggestions {
+    left: 14px;
+    width: min(260px, calc(100% - 28px));
   }
 }
 .chat-reaction[aria-disabled="true"] {
@@ -1441,9 +1541,11 @@
   border-bottom-color: var(--terracotta, #b64d32);
   color: var(--text);
 }
-.chat-reactors-tabs button:hover {
-  color: var(--text);
-  background: rgb(255 255 255 / 4%);
+@media (hover: hover) {
+  .chat-reactors-tabs button:hover {
+    color: var(--text);
+    background: rgb(255 255 255 / 4%);
+  }
 }
 .chat-reactors-label {
   padding: 12px 16px 4px;
@@ -1543,8 +1645,10 @@
 .chat-thread-summary strong {
   color: var(--terracotta-bright);
 }
-.chat-thread-summary:hover strong {
-  text-decoration: underline;
+@media (hover: hover) {
+  .chat-thread-summary:hover strong {
+    text-decoration: underline;
+  }
 }
 .chat-thread-avatars {
   display: flex;
@@ -1567,8 +1671,10 @@
   text-align: left;
   cursor: pointer;
 }
-.chat-thread-context:hover {
-  color: var(--terracotta-bright);
+@media (hover: hover) {
+  .chat-thread-context:hover {
+    color: var(--terracotta-bright);
+  }
 }
 .chat-thread-panel {
   display: grid;
@@ -1621,9 +1727,11 @@
   color: var(--text-muted);
   cursor: pointer;
 }
-.chat-thread-heading button:hover {
-  background: var(--surface-composer);
-  color: var(--text);
+@media (hover: hover) {
+  .chat-thread-heading button:hover {
+    background: var(--surface-composer);
+    color: var(--text);
+  }
 }
 .chat-thread-back {
   display: none !important;
@@ -1686,14 +1794,17 @@
 .chat-thread-skeleton-row:nth-child(even) .chat-thread-skeleton-text {
   width: 54%;
 }
+/* Matches the channel's Load older messages button. */
 .chat-thread-older {
   display: block;
   margin: 8px auto;
-  padding: 8px 12px;
+  padding: 6px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--surface);
+  background: transparent;
   color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
   cursor: pointer;
 }
 .chat-thread-older:disabled {
@@ -1735,9 +1846,6 @@
   color: var(--text);
   cursor: pointer;
 }
-.chat-thread-send-row button:hover:not(:disabled) {
-  background: var(--terracotta-bright);
-}
 .chat-thread-send-row button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -1765,6 +1873,14 @@
   }
   .chat-thread-heading {
     padding: 4px 12px;
+  }
+  /* Keep the reply count, status and skeleton rows on the messages' 14px inset. */
+  .chat-thread-divider,
+  .chat-thread-status {
+    margin-inline: 14px;
+  }
+  .chat-thread-skeleton-row {
+    padding-inline: 14px;
   }
   .chat-thread-heading button {
     width: 44px;
@@ -1849,11 +1965,6 @@
   font: inherit;
   font-size: 0.8rem;
   cursor: pointer;
-}
-.chat-forward-card > button:hover:not(:disabled),
-.chat-forward-body button:not(.chat-forward-send):hover:not(:disabled) {
-  border-color: var(--text-muted);
-  background: var(--border);
 }
 .chat-forward-unavailable,
 .chat-forward-status {
@@ -1982,10 +2093,6 @@
   color: var(--text);
   font-weight: 700;
 }
-.chat-forward-body .chat-forward-send:hover:not(:disabled) {
-  border-color: var(--terracotta-bright);
-  background: var(--terracotta-bright);
-}
 .chat-forward-dialog button:disabled {
   cursor: default;
   opacity: 0.5;
@@ -2031,8 +2138,10 @@
   font-size: 0.68rem;
   cursor: pointer;
 }
-.chat-edited:hover {
-  text-decoration: underline;
+@media (hover: hover) {
+  .chat-edited:hover {
+    text-decoration: underline;
+  }
 }
 .chat-edit-dialog {
   width: min(560px, calc(100vw - 28px));
@@ -2120,14 +2229,6 @@
   border-color: var(--terracotta);
   background: var(--terracotta);
 }
-.chat-edit-dialog button:not(.chat-edit-save):hover:not(:disabled) {
-  border-color: var(--text-muted);
-  background: var(--border);
-}
-.chat-edit-dialog .chat-edit-save:hover:not(:disabled) {
-  border-color: var(--terracotta-bright);
-  background: var(--terracotta-bright);
-}
 .chat-edit-dialog button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -2154,8 +2255,10 @@
   border-radius: 8px;
   color: var(--text-muted);
 }
-.chat-version-dialog > header button:hover {
-  color: var(--text);
+@media (hover: hover) {
+  .chat-version-dialog > header button:hover {
+    color: var(--text);
+  }
 }
 .chat-version-text {
   margin: 0;
@@ -2265,9 +2368,11 @@
   font: inherit;
   cursor: pointer;
 }
-.chat-blocked-run button:hover {
-  color: var(--text);
-  text-decoration: underline;
+@media (hover: hover) {
+  .chat-blocked-run button:hover {
+    color: var(--text);
+    text-decoration: underline;
+  }
 }
 .chat-blocked-run button:focus-visible {
   outline: 2px solid var(--terracotta);
@@ -2283,6 +2388,12 @@
 /* One pixel, not zero: the virtual list needs every item to have a size. */
 .chat-blocked-hidden {
   height: 1px;
+}
+/* The icon stays centered under the narrower rows' avatars. */
+@media (max-width: 760px) {
+  .chat-blocked-run {
+    padding-inline: 23px 14px;
+  }
 }
 .chat-message-actions .message-action-danger {
   color: #ff8c9a;
@@ -2317,5 +2428,10 @@
   .chat-forward-body :is(input[type="search"], textarea),
   .chat-edit-dialog :is(textarea, select) {
     font-size: 16px;
+  }
+  /* A full touch target for the thread's Send, like its Back button. */
+  .chat-thread-send-row button {
+    width: 44px;
+    height: 44px;
   }
 }

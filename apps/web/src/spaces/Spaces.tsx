@@ -13,7 +13,8 @@ import {
   Ban,
   BellOff,
   ChevronDown,
-  ChevronRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
   Hash,
   LockKeyhole,
   LogOut,
@@ -2200,7 +2201,8 @@ export default function Spaces({
               aria-controls="direct-request-list"
               onClick={() => setRequestsOpen(!requestsShown)}
             >
-              {requestsShown ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
+              {/* Turns like the Channels chevron instead of swapping icons. */}
+              <ChevronDown aria-hidden="true" />
               <span>Message requests</span>
               <span
                 className="direct-request-count"
@@ -2738,6 +2740,8 @@ export default function Spaces({
                       setChannelsExpanded((value) => !value);
                     }}
                   >
+                    {/* Every item has an icon, so the labels line up. */}
+                    {channelsExpanded ? <ChevronsDownUp aria-hidden="true" /> : <ChevronsUpDown aria-hidden="true" />}
                     {channelsExpanded ? "Collapse" : "Expand"} channels
                   </button>
                 </div>
