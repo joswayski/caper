@@ -3,6 +3,7 @@ package chat.caper.android
 import android.Manifest
 import android.app.Application
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
@@ -16,9 +17,12 @@ import chat.caper.android.push.PushRegistration
 import chat.caper.android.push.pushOffer
 import chat.caper.android.voice.VoiceCallService
 import chat.caper.android.voice.VoiceState
+import java.io.File
 import java.io.IOException
 import java.time.Instant
+import java.util.UUID
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -53,6 +57,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var voiceAuthorizationRequest = 0L
     private val pendingSends = PendingSendTracker()
     private val unloadedReactions = mutableMapOf<String, ReactionUpdate>()
+    private val unloadedAttachments = mutableMapOf<String, AttachmentsUpdate>()
     private data class ReactionIntent(val emoji: String, val active: Boolean, val version: Long)
     private val reactionIntents = mutableMapOf<String, LinkedHashMap<String, ReactionIntent>>()
     private val reactionWorkers = mutableMapOf<String, Job>()
@@ -70,7 +75,20 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var pendingChannelIntent: Pair<String, String>? = null
     private var notificationEdits: NotificationEdits? = null
     private var foreground = false
+    private val uploader = AttachmentUploader(api)
+    private val preparer by lazy { AttachmentPreparer(application) }
+    /** Client compression settings from `GET /api/assets/usage`. */
+    private var compression = CompressionSettings()
+    private val uploadJobs = mutableMapOf<String, Job>()
+    private val draftDirectories = mutableMapOf<String, File>()
+    /** Drafts moved into the pending message; restored by Edit, deleted once confirmed. */
+    private var pendingDrafts: List<DraftAttachmentUi> = emptyList()
+    private val urlRefresh = AttachmentUrlRefresh()
+    private val urlQueue = linkedSetOf<String>()
+    private var urlBatch: Job? = null
     private var threadRequest = 0L
+    private val uploadRoot = File(application.cacheDir, "attachment-uploads")
+    private val uploadSession = File(uploadRoot, UUID.randomUUID().toString())
     private val threadPages = mutableMapOf<String, ThreadUi>()
     /** Web/Apple: the channel last opened in each space, in memory; returning to the space reopens it. */
     private val lastChannelBySpace = mutableMapOf<String, String>()
@@ -81,6 +99,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         loadHome()
+        // Working copies only matter to this process; drop any left by an earlier one.
+        viewModelScope.launch(Dispatchers.IO) { uploadRoot.listFiles()?.filter { it != uploadSession }?.forEach { it.deleteRecursively() } }
+        // Signed URLs live 24-48 hours; an app left open for days refreshes them before expiry.
+        viewModelScope.launch { while (true) { delay(10 * 60_000L); if (foreground) refreshExpiringUrls() } }
         viewModelScope.launch { state.map { it.selectedChannel?.id }.distinctUntilChanged().collect { publishForegroundConversation() } }
     }
 
@@ -120,6 +142,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 refreshNotificationSettings()
                 createChatSession(requestAccountGeneration)
                 if (requestAccountGeneration != accountGeneration) return@launch
+                checkUploads(requestAccountGeneration)
                 startDirectRefresh()
                 if (PushRegistration.enabled(getApplication())) viewModelScope.launch {
                     runCatching { PushRegistration.enable(getApplication()) }
@@ -686,6 +709,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         publishForegroundConversation()
         if (!active) return
         refreshDirectConversations()
+        refreshExpiringUrls()
         refreshMembership()
         val current = mutable.value
         if (!current.messagesLoading) current.selectedDirectId?.let { id ->
@@ -770,7 +794,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 if (request != generation || anchorRequest != historyAnchorRequest) return@launch
                 val newer = authoritativeMessages()
                 mutable.value = mutable.value.copy(
-                    messages = projectMessages(mergeTimelinePins(mergeMessages(newer, history.messages, unloadedReactions))), hasMoreMessages = history.hasMore,
+                    messages = projectMessages(mergeTimelinePins(mergeMessages(newer, history.messages, unloadedReactions, unloadedAttachments))), hasMoreMessages = history.hasMore,
                     threadOnlyRows = mutable.value.threadOnlyRows - history.messages.map { it.id }.toSet(),
                     contextStart = if (mutable.value.contextStart != null) history.messages.firstOrNull()?.seq ?: mutable.value.contextStart else null,
                     loadingOlder = false,
@@ -1112,7 +1136,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     windowEnd = if (older) thread.windowEnd else if (page.hasNewer) page.messages.lastOrNull()?.seq else null)
                 threadPages[thread.rootId] = pageState
                 mutable.value = mutable.value.copy(
-                    messages = projectMessages(mergeTimelinePins(mergeMessages(authoritativeMessages(), rows, unloadedReactions))),
+                    messages = projectMessages(mergeTimelinePins(mergeMessages(authoritativeMessages(), rows, unloadedReactions, unloadedAttachments))),
                     threadOnlyRows = mutable.value.threadOnlyRows + rows.filter { it.id !in loaded && (it.threadRootId == null || it.broadcast) }.map { it.id },
                     thread = pageState,
                 )
@@ -1124,11 +1148,15 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun send(text: String, confirmed: () -> Unit = {}, threadRootId: String? = null, broadcast: Boolean = false) {
-        if (text.isBlank()) return
-        if (mutable.value.pendingMessage?.let { it.threadRootId != threadRootId } == true) return
-        val channel = mutable.value.selectedChannel?.takeIf { it.joined } ?: return
+    /**
+     * Returns false when nothing was sent, so the composer keeps its text. Composer files go
+     * with channel messages only: the thread composer is text-only, so its replies leave them.
+     */
+    fun send(text: String, confirmed: () -> Unit = {}, threadRootId: String? = null, broadcast: Boolean = false): Boolean {
+        if (mutable.value.pendingMessage?.let { it.threadRootId != threadRootId } == true) return false
+        val channel = mutable.value.selectedChannel?.takeIf { it.joined } ?: return false
         val author = chatAuthor ?: run {
+            if (text.isBlank() && (threadRootId != null || mutable.value.drafts.isEmpty())) return false
             // The session is still being created (or failed earlier): create
             // it now and send once it exists, instead of refusing the message.
             val request = generation
@@ -1139,19 +1167,45 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 if (session != null && chatAuthor != null) send(text, confirmed, threadRootId, broadcast)
                 else fail(IllegalStateException("Chat session is unavailable."))
             }
-            return
+            return true
         }
+        // An unknown outcome must be retried with the same ID, text and files.
+        val retry = pendingSends.retrying(channel.id, author)
+        val drafts = if (threadRootId == null) mutable.value.drafts else emptyList()
+        val files = if (retry != null) mutable.value.pendingMessage?.attachments.orEmpty() else {
+            if (drafts.any { it.attachment == null }) {
+                mutable.value = mutable.value.copy(attachmentError =
+                    if (drafts.any { it.error != null }) "Remove files that failed to upload first." else "Wait for files to finish uploading.")
+                return false
+            }
+            // Pending messages show the local compressed copies until the server's message arrives.
+            drafts.mapNotNull { draft -> draft.attachment?.copy(status = "ready", url = draft.localUrl, previewUrl = draft.thumbnail) }
+        }
+        if (retry == null && text.isBlank() && files.isEmpty()) return false
         val request = generation
-        val operation = pendingSends.begin(channel.id, author, text, threadRootId, broadcast, confirmed)
+        val operation = pendingSends.begin(channel.id, author, text, files.map { it.id }, threadRootId, broadcast, confirmed)
+        if (retry == null) pendingDrafts = drafts
+        if (retry == null && threadRootId == null) {
+            // If a server ever reports these as processing, this device shows its own picked images
+            // (the working copies are deleted once the send is confirmed; the picked URI is not).
+            val local = drafts.mapNotNull { draft -> draft.attachment?.id?.let { id -> draft.pickedImage?.let { id to it } } }
+            mutable.value = mutable.value.copy(
+                drafts = emptyList(), attachmentError = null,
+                localAttachmentPreviews = (mutable.value.localAttachmentPreviews + local).entries.toList().takeLast(64).associate { it.key to it.value },
+            )
+        }
         mutable.value = mutable.value.copy(pendingMessage = PendingMessageUi(
-            operation.id.toString(), operation.text, author, Instant.now().toString(),
+            operation.id.toString(), operation.text, author, Instant.now().toString(), attachments = files,
             threadRootId = operation.threadRootId, broadcast = operation.broadcast,
         ))
         viewModelScope.launch {
             try {
                 val capability = chatToken ?: createChatSession(accountGeneration) ?: return@launch
                 val message = retryUnknownSend {
-                    api.sendMessage(accountToken, capability, channel.id, author, operation.id, operation.text, operation.threadRootId, operation.broadcast)
+                    api.sendMessage(
+                        accountToken, capability, channel.id, author, operation.id, operation.text, operation.attachmentIds,
+                        operation.threadRootId, operation.broadcast,
+                    )
                 }
                 if (request == generation && mutable.value.selectedChannel?.id == channel.id) {
                     addMessage(message)
@@ -1177,13 +1231,137 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 } else mutable.value = mutable.value.copy(pendingMessage = mutable.value.pendingMessage?.copy(error = message(error)))
             }
         }
+        return true
     }
 
-    fun discardPending(): String? {
+    /** Edit restores a rejected message's files to the composer; Dismiss drops them. */
+    fun discardPending(restoreFiles: Boolean = false): String? {
         val pending = mutable.value.pendingMessage ?: return null
         pendingSends.clear()
-        mutable.value = mutable.value.copy(pendingMessage = null)
+        val candidates = if (restoreFiles) pendingDrafts + mutable.value.drafts else mutable.value.drafts
+        val kept = candidates.take(AttachmentPolicy.MAX_ATTACHMENTS)
+        (pendingDrafts + mutable.value.drafts).filter { it !in kept }.forEach { discardDraftFiles(it.key) }
+        pendingDrafts = emptyList()
+        mutable.value = mutable.value.copy(pendingMessage = null, drafts = kept)
         return pending.text
+    }
+
+    // --- Attachments ---------------------------------------------------------------------------
+
+    private fun checkUploads(request: Long) {
+        val token = accountToken ?: return
+        viewModelScope.launch {
+            val usage = try { api.assetUsage(token) } catch (cancelled: CancellationException) { throw cancelled } catch (_: Throwable) { null }
+            if (request != accountGeneration) return@launch
+            usage?.let { compression = it.compression }
+            mutable.value = mutable.value.copy(uploadsEnabled = usage != null)
+        }
+    }
+
+    /** Picked photos, videos or documents: compress on the device, upload, and hold as composer drafts. */
+    fun addAttachments(uris: List<Uri>) {
+        val current = mutable.value
+        val channel = current.selectedChannel?.takeIf { it.joined } ?: return
+        val token = accountToken ?: return
+        if (!current.uploadsEnabled || uris.isEmpty()) return
+        val room = AttachmentPolicy.MAX_ATTACHMENTS - current.drafts.size
+        if (room <= 0) {
+            mutable.value = current.copy(attachmentError = "You can attach up to ${AttachmentPolicy.MAX_ATTACHMENTS} files.")
+            return
+        }
+        mutable.value = current.copy(attachmentError = if (uris.size > room) "Only $room more file${if (room == 1) "" else "s"} can be attached." else null)
+        val settings = compression
+        uris.take(room).forEach { uri ->
+            val key = UUID.randomUUID().toString()
+            val directory = File(uploadSession, key)
+            draftDirectories[key] = directory
+            mutable.value = mutable.value.copy(drafts = mutable.value.drafts + DraftAttachmentUi(key, "File", "file"))
+            uploadJobs[key] = viewModelScope.launch {
+                try {
+                    val picked = preparer.copy(uri, directory)
+                    val image = picked.contentType.startsWith("image/")
+                    updateDraft(key) {
+                        it.copy(
+                            name = picked.name, kind = AttachmentPolicy.kind(picked.contentType), sourceSize = picked.source.length(),
+                            thumbnail = if (image) Uri.fromFile(picked.source).toString() else null, pickedImage = if (image) uri.toString() else null,
+                        )
+                    }
+                    val prepared = preparer.prepare(picked, settings, directory, progressReporter(key))
+                    updateDraft(key) {
+                        it.copy(
+                            name = prepared.name, kind = prepared.kind, storedSize = prepared.file.length(), compressing = false, progress = 0f,
+                            thumbnail = (prepared.preview ?: prepared.file.takeIf { prepared.kind == "image" })?.let { file -> Uri.fromFile(file).toString() } ?: it.thumbnail,
+                            localUrl = Uri.fromFile(prepared.file).toString(),
+                        )
+                    }
+                    // A fresh reporter: upload progress restarts from zero after compression.
+                    val attachment = uploader.upload(token, channel.id, prepared, progressReporter(key))
+                    updateDraft(key) { it.copy(attachment = attachment, progress = 1f) }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    updateDraft(key) { it.copy(error = AttachmentPolicy.uploadErrorMessage(error), compressing = false) }
+                } finally {
+                    uploadJobs.remove(key)
+                }
+            }
+        }
+    }
+
+    fun removeDraft(key: String) {
+        discardDraftFiles(key)
+        mutable.value = mutable.value.copy(drafts = mutable.value.drafts.filter { it.key != key }, attachmentError = null)
+    }
+
+    /** Stops an unfinished upload and deletes its working copies; the API expires reservations never sent. */
+    private fun discardDraftFiles(key: String) {
+        uploadJobs.remove(key)?.cancel()
+        draftDirectories.remove(key)?.let { directory -> viewModelScope.launch(Dispatchers.IO) { directory.deleteRecursively() } }
+    }
+
+    private fun updateDraft(key: String, change: (DraftAttachmentUi) -> DraftAttachmentUi) {
+        mutable.value = mutable.value.copy(drafts = mutable.value.drafts.map { if (it.key == key) change(it) else it })
+    }
+
+    /** Compression/upload progress arrives off the main thread; post at most every 1%. */
+    private fun progressReporter(key: String): (Float) -> Unit {
+        var last = -1f
+        return { fraction ->
+            if (fraction - last >= 0.01f || fraction >= 1f) {
+                last = fraction
+                viewModelScope.launch(Dispatchers.Main) { updateDraft(key) { if (it.attachment == null) it.copy(progress = fraction) else it } }
+            }
+        }
+    }
+
+    /** A 403/404 (or expired) media load asks for new signatures once per file. */
+    fun reportAttachmentFailure(attachment: ChatAttachment, status: Int?) {
+        if (urlRefresh.afterLoadFailure(attachment, status)) requestAttachmentUrls(listOf(attachment.id))
+    }
+
+    private fun refreshExpiringUrls() {
+        val current = mutable.value
+        val attachments = current.messages.flatMap { it.content.attachments }.map { it.withFreshUrls(current.freshAttachmentUrls[it.id]) }
+        requestAttachmentUrls(urlRefresh.expiring(attachments))
+    }
+
+    private fun requestAttachmentUrls(ids: List<String>) {
+        val valid = ids.filter { runCatching { it.assetPathId() }.isSuccess }
+        if (valid.isEmpty() || accountToken == null) return
+        urlQueue += valid
+        if (urlBatch?.isActive == true) return
+        val request = generation
+        urlBatch = viewModelScope.launch {
+            delay(250)
+            while (urlQueue.isNotEmpty() && request == generation) {
+                val batch = urlQueue.take(100)
+                urlQueue.removeAll(batch.toSet())
+                val token = accountToken ?: break
+                val urls = try { api.attachmentUrls(token, batch) } catch (cancelled: CancellationException) { throw cancelled } catch (_: Throwable) { continue }
+                if (request != generation) break
+                if (urls.isNotEmpty()) mutable.value = mutable.value.copy(freshAttachmentUrls = mutable.value.freshAttachmentUrls + urls)
+            }
+        }
     }
 
     private suspend fun retryUnknownSend(block: suspend () -> ChatMessage): ChatMessage = try { block() } catch (error: IOException) {
@@ -1224,6 +1402,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } },
             onReaction = { value -> viewModelScope.launch { if (generation == request) receiveReaction(value) } },
+            onAttachments = { value -> viewModelScope.launch { if (generation == request) receiveAttachments(value) } },
+            onAttachmentProgress = { value -> viewModelScope.launch { if (generation == request) receiveAttachmentProgress(value) } },
             onPin = { value -> viewModelScope.launch { if (generation == request) receivePin(value) } },
             onForward = { value -> viewModelScope.launch { if (generation == request) receiveForward(value) } },
             onEdit = { value -> viewModelScope.launch { if (generation == request) receiveEdit(value) } },
@@ -1300,7 +1480,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (message.channelId != mutable.value.selectedChannel?.id) return
         val messages = authoritativeMessages()
         val isNew = messages.none { it.id == message.id }
-        mutable.value = mutable.value.copy(messages = projectMessages(mergeTimelinePins(mergeMessages(messages, listOf(message), unloadedReactions))))
+        mutable.value = mutable.value.copy(messages = projectMessages(mergeTimelinePins(mergeMessages(messages, listOf(message), unloadedReactions, unloadedAttachments))))
         if (isNew) {
             // Web chimes for someone else's new message in the open conversation.
             // Never for a blocked author or an incoming request.
@@ -1334,6 +1514,38 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         )
         val own = mutable.value.chatAuthorId ?: mutable.value.account?.id
         if (own != null) projectPendingReaction(update.messageId, own)
+    }
+
+    /** `message.attachments`: sequenced exactly like reactions, replacing the message's files. */
+    private fun receiveAttachments(update: AttachmentsUpdate) {
+        if (update.channelId != mutable.value.selectedChannel?.id) return
+        durableReplayCursor = update.seq
+        if (mutable.value.selectedDirectId == update.channelId) markDirectRead(update.channelId, update.seq)
+        // Pinned snapshots can hold messages outside the loaded page; keep their files current too.
+        pinSnapshots[update.messageId]?.let { pinSnapshots[update.messageId] = mergeAttachments(it, update) }
+        val pinned = mutable.value.pinnedMessages.map { mergeAttachments(it, update) }
+        if (mutable.value.messages.none { it.id == update.messageId }) {
+            mutable.value = mutable.value.copy(pinnedMessages = pinned)
+            if (!cacheUnseenAttachments(unloadedAttachments, update)) mutable.value.selectedChannel?.id?.let(::resyncChannel)
+            return
+        }
+        authoritativeReactionMessages[update.messageId]?.let { authoritativeReactionMessages[update.messageId] = mergeAttachments(it, update) }
+        val settled = update.attachments.filter { it.state != AttachmentState.PROCESSING }.map { it.id }.toSet()
+        mutable.value = mutable.value.copy(
+            messages = mutable.value.messages.map { mergeAttachments(it, update) },
+            pinnedMessages = pinned,
+            attachmentProgress = mutable.value.attachmentProgress - settled,
+        )
+    }
+
+    /** Ephemeral processing percent, like typing: latest value wins and nothing is replayed. */
+    private fun receiveAttachmentProgress(progress: AttachmentProgress) {
+        val current = mutable.value
+        val processing = current.messages.firstOrNull { it.id == progress.messageId }?.content?.attachments
+            ?.any { it.id == progress.attachmentId && it.state == AttachmentState.PROCESSING } == true
+        if (!processing || current.attachmentProgress[progress.attachmentId] == progress.percent) return
+        if (progress.attachmentId !in current.attachmentProgress && current.attachmentProgress.size >= 256) return
+        mutable.value = current.copy(attachmentProgress = current.attachmentProgress + (progress.attachmentId to progress.percent))
     }
 
     private fun receiveEdit(update: EditUpdate) {
@@ -1476,6 +1688,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun confirmPending(message: ChatMessage) {
         pendingSends.confirm(message)?.let {
             mutable.value = mutable.value.copy(pendingMessage = null, focusedMessageId = null)
+            pendingDrafts.forEach { draft -> discardDraftFiles(draft.key) }
+            pendingDrafts = emptyList()
             it.confirmed.invoke()
             if (!refreshingHistory) {
                 if (message.threadRootId != null && mutable.value.thread?.rootId == message.threadRootId && mutable.value.thread?.hasNewer == true) loadThread()
@@ -1489,6 +1703,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val previousCursor = durableReplayCursor ?: return
         val request = ++generation
         unloadedReactions.clear()
+        unloadedAttachments.clear()
         val previous = mutable.value.copy(messages = authoritativeMessages())
         closeChannel(clearPending = false)
         // closeChannel normally discards channel replay state; a failed refresh must remain retryable.
@@ -1759,7 +1974,17 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         gatewayStatus?.cancel(); gatewayStatus = null
         typingExpiry?.cancel(); typingExpiry = null; typers.clear()
         unloadedReactions.clear()
-        if (clearPending) pendingSends.clear()
+        unloadedAttachments.clear()
+        if (clearPending) {
+            pendingSends.clear()
+            // Uploads belong to one conversation; abandon them when it changes.
+            (pendingDrafts + mutable.value.drafts).forEach { discardDraftFiles(it.key) }
+            pendingDrafts = emptyList()
+            urlBatch?.cancel(); urlBatch = null; urlQueue.clear(); urlRefresh.reset()
+            mutable.value = mutable.value.copy(
+                drafts = emptyList(), attachmentError = null, freshAttachmentUrls = emptyMap(), localAttachmentPreviews = emptyMap(),
+            )
+        }
         reactionWorkers.values.forEach { it.cancel() }
         reactionWorkers.clear(); reactionIntents.clear(); authoritativeReactionMessages.clear()
         reactorCache.clear()
@@ -1776,7 +2001,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             voiceRosters = emptyMap(),
             voiceSessionStartedAt = emptyMap(),
             gateway = GatewayStatus.DISCONNECTED, pendingMessage = if (clearPending) null else mutable.value.pendingMessage,
-            reactionSaves = emptyMap(),
+            reactionSaves = emptyMap(), attachmentProgress = emptyMap(),
             pinnedMessages = emptyList(), pinSaves = emptyMap(),
             pinIntents = emptyMap(), editIntents = emptyMap(),
         )

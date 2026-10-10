@@ -12,6 +12,7 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.core.Animatable
@@ -117,6 +118,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
+import chat.caper.android.data.AttachmentPolicy
 import chat.caper.android.data.LinkRange
 import chat.caper.android.data.MAX_CODE_RESENDS
 import chat.caper.android.data.RESEND_COOLDOWN_MILLIS
@@ -141,6 +143,7 @@ import chat.caper.android.data.resendLabel
 import chat.caper.android.data.resendSecondsLeft
 import chat.caper.android.data.mainDirects
 import chat.caper.android.data.messageRequests
+import chat.caper.android.data.withFreshUrls
 import chat.caper.android.model.*
 import chat.caper.android.push.CaperNotifications
 import chat.caper.android.ui.*
@@ -1456,7 +1459,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     Text(if (channelPending.rejected) "Not sent. $pending" else "Not confirmed yet. $pending", Modifier.weight(1f), color = ErrorText, fontSize = 11.sp)
                     TextButton({
                         if (channelPending.rejected) {
-                            if (editable) viewModel.discardPending()?.let { updateDraft(TextFieldValue(it, TextRange(it.length))) }
+                            if (editable) viewModel.discardPending(restoreFiles = true)?.let { updateDraft(TextFieldValue(it, TextRange(it.length))) }
                         } else viewModel.send(channelPending.text)
                     }, Modifier.semantics { if (channelPending.rejected && !editable) stateDescription = "Clear your current draft to edit this message." },
                         enabled = !channelPending.rejected || editable, shape = MaterialTheme.shapes.small) {
@@ -1490,16 +1493,28 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     TextButton(viewModel::retrySession, shape = MaterialTheme.shapes.small) { Text("Retry session", fontSize = 12.sp) }
                 }
             }
+            state.attachmentError?.let { error -> Text(error, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
+            DraftAttachmentStrip(state.drafts, viewModel::removeDraft)
+            val hasContent = draft.text.isNotBlank() || state.drafts.isNotEmpty()
+            fun sendDraft() {
+                if (hasContent && state.pendingMessage == null) {
+                    val sent = draft.text
+                    viewModel.setTyping(false)
+                    if (viewModel.send(sent)) updateDraft(TextFieldValue(""))
+                }
+            }
             fun submit() {
                 val pending = state.pendingMessage
                 // Web: Enter retries an unconfirmed send; a rejected one waits for Edit or Dismiss.
                 if (state.chatAuthorId != null) {
                     if (pending != null) { if (pending.threadRootId == null && !pending.rejected && pending.error != null) viewModel.send(pending.text) }
-                    else if (draft.text.isNotBlank()) { val sent = draft.text; viewModel.setTyping(false); viewModel.send(sent); updateDraft(TextFieldValue("")) }
+                    else sendDraft()
                 }
             }
             SuggestingComposer(draft, { updateDraft(it); viewModel.reportActivity(); viewModel.setTyping(it.text.isNotBlank()) }, mentionSource(state), channel.id, ::submit) { field, change, actions ->
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+                    // Shown only when the server accepts uploads; read-only previews have no composer.
+                    if (state.uploadsEnabled) AttachButton(state.drafts.size < AttachmentPolicy.MAX_ATTACHMENTS && !state.messagesLoading && state.messagesError == null, viewModel::addAttachments)
                     OutlinedTextField(
                         draft, change, modifier = Modifier.weight(1f).then(field),
                         placeholder = { Text(if (channel.direct) "Message ${channel.name}" else "Message #${channel.name}") }, maxLines = 6,
@@ -1508,9 +1523,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         colors = composerFieldColors(),
                     )
                     FilledIconButton(
-                        { if (draft.text.isNotBlank() && state.pendingMessage == null) { val sent = draft.text; viewModel.setTyping(false); viewModel.send(sent); updateDraft(TextFieldValue("")) } },
+                        { sendDraft() },
                         // Centred on a one-line field (56dp), and near the bottom as the field grows.
-                        modifier = Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = "Send" }, enabled = draft.text.isNotBlank() && state.pendingMessage == null && state.chatAuthorId != null,
+                        modifier = Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = "Send" }, enabled = hasContent && state.pendingMessage == null && state.chatAuthorId != null,
                         shape = MaterialTheme.shapes.small,
                         colors = IconButtonDefaults.filledIconButtonColors(
                             containerColor = Terracotta, contentColor = Color.White,
@@ -1680,6 +1695,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     var reactorsTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
     // The tapped person's `user` mention entry; another pill replaces it.
     var mentionTarget by remember { mutableStateOf<MessageMention?>(null) }
+    // Above the list, so new messages scrolling a row away don't close its viewer.
+    val viewerHost = remember { MediaViewerHost() }
     val messages = if (inThread) state.displayedMessages else state.displayedChannelMessages
     // Runs of blocked authors' messages collapse; Show reveals one run, in memory only.
     var revealedRuns by remember { mutableStateOf(emptySet<String>()) }
@@ -1709,7 +1726,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         historyTarget = null
         blockTarget = null
         revealedRuns = emptySet()
+        viewerHost.open = null
     }
+    HostedMediaViewer(viewerHost, state, viewModel::reportAttachmentFailure)
     // Web's chat phases: loading, failed first load, then the conversation.
     if (state.messagesLoading) {
         SideEffect { follow.settled = false }
@@ -1735,7 +1754,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         loadingNewer = if (inThread) threadPaging && state.thread?.hasNewer == true else state.loadingNewer,
         jump = state.focusRevision.takeIf { state.focusedMessageId?.let { id -> messages.any { it.id == id } } == true }),
         firstRow, firstRow + rows.size + listOf(skeleton, listedPending != null, empty, newer).count { it } - 1, ready = !skeleton)
-    LazyColumn(modifier.fillMaxWidth(), state = listState, reverseLayout = false, contentPadding = PaddingValues(vertical = 8.dp)) {
+    CompositionLocalProvider(LocalMediaViewerHost provides viewerHost) { LazyColumn(modifier.fillMaxWidth(), state = listState, reverseLayout = false, contentPadding = PaddingValues(vertical = 8.dp)) {
         if (!inThread) item {
             HistoryRow {
                 when {
@@ -1774,6 +1793,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         openHistory = { historyTarget = it },
                         retryPin = viewModel::retryPin,
                         dismissPinError = viewModel::dismissPinError,
+                        onAttachmentFailed = viewModel::reportAttachmentFailure,
                         grouped = row is TimelineRow.Message && groupsWithPrevious(row.above, message, inThread, state.focusedMessageId),
                     )
                     if (!inThread && (message.threadRootId != null || (message.thread?.replyCount ?: 0) > 0)) Row(Modifier.padding(start = 62.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1804,7 +1824,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 // Your unsent message joins your run like a sent one.
                 val grouped = groupsWithPrevious((rows.lastOrNull() as? TimelineRow.Message)?.message, pending.author?.id ?: selfId, pending.createdAt,
                     pending.threadRootId, jumpTarget = state.focusedMessageId)
-                MessageRow(pending.author?.name ?: "You", pending.author?.isGuest == true, pending.createdAt, pending.text, true, pending.author?.avatarId, grouped = grouped)
+                MessageRow(pending.author?.name ?: "You", pending.author?.isGuest == true, pending.createdAt, pending.text, true, pending.author?.avatarId, pending.attachments, grouped = grouped)
                 Box(Modifier.padding(start = 62.dp, end = 18.dp)) { Column { pendingStatus() } }
             }
         } }
@@ -1825,7 +1845,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 HistoryButton("Back to latest", onClick = viewModel::retryMessages)
             }
         }
-    }
+    } }
     actionTarget?.let { target ->
         val presented = state.displayedMessages.firstOrNull { it.id == target.id } ?: target
         MessageActionsSheet(
@@ -2050,6 +2070,7 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     dismissPinError: (String) -> Unit = {},
     openConversation: (ChatMessage) -> Unit = {},
     openHistory: (ChatMessage) -> Unit = {},
+    onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> },
     openMention: (MessageMention) -> Unit = {},
     /** Compact under the same person's previous message (`data/Grouping.kt`). */
     grouped: Boolean = false,
@@ -2069,8 +2090,8 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
             onClick = {},
             onLongClick = { openActions(message) },
             onLongClickLabel = "Message actions for ${message.author.name}",
-        )) { MessageRow(message, openMention, { mentionCard(it.id, it.username.orEmpty(), state).title }, grouped) { if (message.forward == null) openHistory(message) } }
-        ForwardCard(message) { openConversation(message) }
+        )) { MessageRow(message, state, onAttachmentFailed, openMention, { mentionCard(it.id, it.username.orEmpty(), state).title }, grouped) { if (message.forward == null) openHistory(message) } }
+        ForwardCard(message, state, onAttachmentFailed) { openConversation(message) }
         FlowRow(Modifier.padding(start = 62.dp, end = 18.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             message.reactions.forEach { reaction ->
                 val selected = own != null && own in reaction.authorIds
@@ -2215,7 +2236,8 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                 ReactionMessageRow(message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
                     openReactors = { target, emoji -> reactorsTarget = target.id to emoji }, openActions = { actionTarget = it },
                     openConversation = { conversationTarget = it }, openHistory = { historyTarget = it },
-                    retryPin = viewModel::retryPin, dismissPinError = viewModel::dismissPinError)
+                    retryPin = viewModel::retryPin, dismissPinError = viewModel::dismissPinError,
+                    onAttachmentFailed = viewModel::reportAttachmentFailure)
                 // The button's own inset keeps its label in line with the message text.
                 Row(Modifier.fillMaxWidth().padding(start = 54.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     TextButton({ pinnerTarget = null; viewModel.goToMessage(message, close) }, enabled = !state.loadingMessageContext, shape = MaterialTheme.shapes.small,
@@ -2288,16 +2310,23 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
         }
     }
 }
+/** A delivered message: its files on fresh URLs with their live processing state, and its resolved mentions. */
 @Composable private fun MessageRow(
-    message: ChatMessage, openMention: ((MessageMention) -> Unit)? = null,
-    mentionLabel: (MessageMention) -> String = { "@${it.username}" }, grouped: Boolean = false, openHistory: () -> Unit = {},
+    message: ChatMessage, state: AppUiState, onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> },
+    openMention: ((MessageMention) -> Unit)? = null, mentionLabel: (MessageMention) -> String = { "@${it.username}" },
+    grouped: Boolean = false, openHistory: () -> Unit = {},
 ) = MessageRow(
     message.author.name, message.author.isGuest, message.createdAt, message.content.text, false, message.author.avatarId,
-    message.forward == null && message.revision > 1, openHistory, highlightedMentions(message.content.text, message.content.mentions), message.content.mentions, openMention, mentionLabel,
-    grouped,
+    message.content.attachments.map { it.withFreshUrls(state.freshAttachmentUrls[it.id]) }, onAttachmentFailed,
+    state.attachmentProgress, state.localAttachmentPreviews,
+    edited = message.forward == null && message.revision > 1, openHistory = openHistory,
+    mentions = highlightedMentions(message.content.text, message.content.mentions), entries = message.content.mentions,
+    openMention = openMention, mentionLabel = mentionLabel, grouped = grouped,
 )
 @Composable private fun MessageRow(
     author: String, guest: Boolean, createdAt: String, text: String, pending: Boolean, avatarId: Int? = null,
+    attachments: List<ChatAttachment> = emptyList(), onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> },
+    attachmentProgress: Map<String, Int> = emptyMap(), localAttachmentPreviews: Map<String, String> = emptyMap(),
     edited: Boolean = false, openHistory: () -> Unit = {}, mentions: List<MentionSpan> = emptyList(), entries: List<MessageMention> = emptyList(),
     openMention: ((MessageMention) -> Unit)? = null, mentionLabel: (MessageMention) -> String = { "@${it.username}" },
     /** No avatar or header under the same person's previous message; the time shows on pointer hover. */
@@ -2326,30 +2355,59 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
             }
             // A grouped row's "(edited)" follows its text instead.
             val inlineEdited = grouped && edited
-            // Unsent text stays plain; sent text gets mention pills and links.
-            val links = remember(text, mentions, pending) { if (pending) emptyList() else linkRanges(text, mentions.map { it.start until it.end }) }
-            if (mentions.isEmpty() && links.isEmpty() && !inlineEdited) Text(text, color = if (pending) TextMuted else MessageText, fontSize = 14.sp, lineHeight = 21.sp)
-            else {
-                // Pills and links are link annotations: their tap is consumed before the row's long-press handler sees it.
-                val open by rememberUpdatedState(openMention)
-                val history by rememberUpdatedState(openHistory)
-                val uriHandler = LocalUriHandler.current
-                val linked = if (openMention == null) null else entries
-                val annotated = remember(text, mentions, linked, links, inlineEdited, uriHandler) {
-                    messageText(text, mentions, linked, links, { user -> open?.invoke(user) }, { openExternalLink(uriHandler, it) }, if (inlineEdited) ({ history() }) else null)
+            // A file-only message has empty text: show just its files.
+            if (text.isNotEmpty() || inlineEdited) {
+                // Unsent text stays plain; sent text gets mention pills and links.
+                val links = remember(text, mentions, pending) { if (pending) emptyList() else linkRanges(text, mentions.map { it.start until it.end }) }
+                if (mentions.isEmpty() && links.isEmpty() && !inlineEdited) Text(text, color = if (pending) TextMuted else MessageText, fontSize = 14.sp, lineHeight = 21.sp)
+                else {
+                    // Pills and links are link annotations: their tap is consumed before the row's long-press handler sees it.
+                    val open by rememberUpdatedState(openMention)
+                    val history by rememberUpdatedState(openHistory)
+                    val uriHandler = LocalUriHandler.current
+                    val linked = if (openMention == null) null else entries
+                    val annotated = remember(text, mentions, linked, links, inlineEdited, uriHandler) {
+                        messageText(text, mentions, linked, links, { user -> open?.invoke(user) }, { openExternalLink(uriHandler, it) }, if (inlineEdited) ({ history() }) else null)
+                    }
+                    val people = linked?.let { mentions.mapNotNull { span -> mentionedUser(span, it) }.distinct() }.orEmpty()
+                    // TalkBack also reaches each pill, link and the inline "(edited)" through labelled custom actions.
+                    Text(
+                        annotated,
+                        if (people.isEmpty() && links.isEmpty() && !inlineEdited) Modifier else Modifier.semantics {
+                            customActions = people.map { user -> CustomAccessibilityAction("Open profile for ${mentionLabel(user)}") { open?.invoke(user); true } } +
+                                links.map { link -> CustomAccessibilityAction("Open link ${text.substring(link.start, link.end)}") { openExternalLink(uriHandler, link.href); true } } +
+                                listOfNotNull(if (inlineEdited) CustomAccessibilityAction("View edit history") { history(); true } else null)
+                        },
+                        color = if (pending) TextMuted else MessageText, fontSize = 14.sp, lineHeight = 21.sp,
+                    )
                 }
-                val people = linked?.let { mentions.mapNotNull { span -> mentionedUser(span, it) }.distinct() }.orEmpty()
-                // TalkBack also reaches each pill, link and the inline "(edited)" through labelled custom actions.
-                Text(
-                    annotated,
-                    if (people.isEmpty() && links.isEmpty() && !inlineEdited) Modifier else Modifier.semantics {
-                        customActions = people.map { user -> CustomAccessibilityAction("Open profile for ${mentionLabel(user)}") { open?.invoke(user); true } } +
-                            links.map { link -> CustomAccessibilityAction("Open link ${text.substring(link.start, link.end)}") { openExternalLink(uriHandler, link.href); true } } +
-                            listOfNotNull(if (inlineEdited) CustomAccessibilityAction("View edit history") { history(); true } else null)
-                    },
-                    color = if (pending) TextMuted else MessageText, fontSize = 14.sp, lineHeight = 21.sp,
-                )
             }
+            MessageAttachments(
+                attachments, pending, onAttachmentFailed, attachmentProgress, localAttachmentPreviews,
+                caption = listOf(author, timeLabel(createdAt)).filter { it.isNotEmpty() }.joinToString(" · "),
+            )
+        }
+    }
+}
+
+/** Photo picker for photos/videos plus the system document picker for any file. */
+@Composable private fun AttachButton(enabled: Boolean, add: (List<android.net.Uri>) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    val media = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(AttachmentPolicy.MAX_ATTACHMENTS)) { add(it) }
+    val documents = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { add(it) }
+    Box {
+        IconButton({ open = true }, Modifier.size(48.dp).semantics { contentDescription = "Attach files" }, enabled = enabled) {
+            Icon(painterResource(R.drawable.lucide_paperclip), null, Modifier.size(20.dp), tint = if (enabled) TextMuted else TextMuted.copy(alpha = 0.4f))
+        }
+        DropdownMenu(open, { open = false }, containerColor = SurfaceRaised, border = BorderStroke(1.dp, Border)) {
+            DropdownMenuItem(text = { Text("Photos and videos", fontSize = 13.sp) }, onClick = {
+                open = false
+                runCatching { media.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) }
+            })
+            DropdownMenuItem(text = { Text("Files", fontSize = 13.sp) }, onClick = {
+                open = false
+                runCatching { documents.launch(arrayOf("*/*")) }
+            })
         }
     }
 }

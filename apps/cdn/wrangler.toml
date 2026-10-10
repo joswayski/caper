@@ -1,0 +1,16 @@
+# Signed delivery for Caper uploads. Deploy with `npx wrangler deploy --env <name>`
+# from this directory; see docs/media.md "Uploads and attachments".
+name = "caper-cdn"
+main = "worker.mjs"
+compatibility_date = "2026-09-01"
+workers_dev = false
+
+[env.staging]
+name = "caper-cdn-staging"
+routes = [{ pattern = "cdn.staging.caper.chat", custom_domain = true }]
+r2_buckets = [{ binding = "MEDIA", bucket_name = "staging-caper" }]
+
+[env.production]
+name = "caper-cdn-production"
+routes = [{ pattern = "cdn.caper.chat", custom_domain = true }]
+r2_buckets = [{ binding = "MEDIA", bucket_name = "production-caper" }]

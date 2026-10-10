@@ -102,7 +102,10 @@ android {
 
 tasks.configureEach {
     if (name.startsWith("configureCMake") || name.startsWith("merge") && name.endsWith("Assets")) {
-        doFirst { check(file("build/native-inputs/ort/headers/onnxruntime_cxx_api.h").isFile) { "Run prepare-audio.sh before Gradle." } }
+        doFirst {
+            check(file("build/native-inputs/ort/headers/onnxruntime_cxx_api.h").isFile) { "Run prepare-audio.sh before Gradle." }
+            check(file("build/native-inputs/avif/lib/arm64-v8a/libaom.a").isFile) { "Run prepare-audio.sh (which runs prepare-avif.sh) before Gradle." }
+        }
     }
 }
 
@@ -136,6 +139,25 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
     implementation("com.squareup.okhttp3:okhttp:5.1.0")
+    // Attachments: images keyed by attachment ID (so re-signed URLs reuse the
+    // cache) over the app's OkHttp; Media3 plays video/audio and transcodes
+    // video to H.264/AAC (with HDR tone mapping) before upload.
+    implementation("io.coil-kt.coil3:coil-compose:3.3.0")
+    implementation("io.coil-kt.coil3:coil-network-okhttp:3.3.0")
+    // GIFs upload unchanged; the media viewer plays them (and animated WebP)
+    // with Coil's own decoders, the platform ImageDecoder from API 28.
+    implementation("io.coil-kt.coil3:coil-gif:3.3.0")
+    implementation("androidx.media3:media3-exoplayer:1.8.0")
+    implementation("androidx.media3:media3-ui:1.8.0")
+    implementation("androidx.media3:media3-transformer:1.8.0")
+    implementation("androidx.media3:media3-effect:1.8.0")
+    // Photo orientation, applied when re-encoding (which drops EXIF/GPS).
+    implementation("androidx.exifinterface:exifinterface:1.4.1")
+    // AOMedia libavif (dav1d decoder, ~0.9 MB per ABI): Android only decodes AVIF
+    // itself from API 31; used below that. Photos are encoded to AVIF by
+    // libcaper_avif.so (libavif + libaom encoder, prepare-avif.sh), not this.
+    implementation("org.aomedia.avif.android:avif:1.3.0.841110fd")
+    // Word-level diffs for message edit history.
     implementation("io.github.java-diff-utils:java-diff-utils:4.16")
     implementation("io.github.webrtc-sdk:android:150.7871.01")
     implementation(platform("com.google.firebase:firebase-bom:34.3.0"))

@@ -1,9 +1,15 @@
 package chat.caper.android.model
 
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonDecoder
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -89,9 +95,92 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val version: Int,
     val type: String,
     val text: String,
+    /** Additive file list. Malformed entries are dropped, never the message. */
+    @Serializable(with = TolerantAttachmentsSerializer::class) val attachments: List<ChatAttachment> = emptyList(),
     /** Absent on older messages and servers. */
     @Serializable(with = MentionListSerializer::class) val mentions: List<MessageMention> = emptyList(),
 )
+
+/** A file on a message. URLs are signed per response and expire in 24–48 hours. */
+@Serializable data class ChatAttachment(
+    val id: String,
+    val kind: String,
+    val contentType: String,
+    val name: String,
+    val size: Long,
+    val width: Int? = null,
+    val height: Int? = null,
+    val durationMs: Long? = null,
+    /** Present (as `{}`) when a preview image exists. */
+    val preview: JsonObject? = null,
+    /** `processing`, `ready` or `failed`; absent in older payloads, which are ready. */
+    val status: String? = null,
+    /** A GIF or animated image stored as a silent looping MP4: play it like a GIF. */
+    val animated: Boolean = false,
+    /** Only ready files have a `url`; `previewUrl` can appear while processing. */
+    val url: String? = null,
+    val previewUrl: String? = null,
+    /** The file was deleted: show a placeholder. */
+    val unavailable: Boolean = false,
+) {
+    /** How to show the file. Unknown future states fall back on whether a URL was delivered. */
+    val state: AttachmentState get() = when (status) {
+        null, "ready" -> AttachmentState.READY
+        "processing", "uploading" -> AttachmentState.PROCESSING
+        "failed" -> AttachmentState.FAILED
+        else -> if (url != null) AttachmentState.READY else AttachmentState.PROCESSING
+    }
+
+    internal fun isValid(): Boolean {
+        val web = { value: String? -> value == null || value.startsWith("https://") || value.startsWith("http://") }
+        return id.isNotEmpty() && name.isNotEmpty() && contentType.isNotEmpty() && size >= 0 &&
+            kind in ATTACHMENT_KINDS && (width ?: 0) >= 0 && (height ?: 0) >= 0 && (durationMs ?: 0) >= 0 &&
+            web(url) && web(previewUrl)
+    }
+}
+
+enum class AttachmentState { PROCESSING, READY, FAILED }
+
+val ATTACHMENT_KINDS = setOf("image", "video", "audio", "file")
+
+/** Mirrors the web's `attachmentsOf`: one bad file never breaks a history page or frame. */
+object TolerantAttachmentsSerializer : KSerializer<List<ChatAttachment>> {
+    private val delegate = ListSerializer(ChatAttachment.serializer())
+    private val lenient = Json { ignoreUnknownKeys = true }
+    override val descriptor: SerialDescriptor = delegate.descriptor
+    override fun serialize(encoder: Encoder, value: List<ChatAttachment>) = delegate.serialize(encoder, value)
+    override fun deserialize(decoder: Decoder): List<ChatAttachment> {
+        val input = decoder as? JsonDecoder ?: return delegate.deserialize(decoder)
+        val array = input.decodeJsonElement() as? JsonArray ?: return emptyList()
+        return array.mapNotNull { element ->
+            runCatching { lenient.decodeFromJsonElement(ChatAttachment.serializer(), element) }.getOrNull()?.takeIf { it.isValid() }
+        }
+    }
+}
+
+/** `POST /api/assets/urls`: only ready files get a `url`; a processing file may get just a preview. */
+@Serializable data class AttachmentUrls(val url: String? = null, val previewUrl: String? = null)
+@Serializable data class AttachmentUrlsResponse(val urls: Map<String, AttachmentUrls> = emptyMap())
+
+/** Server-tunable client compression (`GET /api/assets/usage`, docs/media.md "Client compression and previews"). */
+@Serializable data class CompressionSettings(
+    /** WebP/JPEG photo quality, also the fallback when AVIF cannot be encoded; 100 disables lossy photo encoding. */
+    val imageQuality: Int = 92,
+    val imageMaxEdge: Int = 4096,
+    val paletteColors: Int = 256,
+    val previewEdge: Int = 640,
+    val videoMaxHeight: Int = 1080,
+    val videoBitrateKbps: Int = 6000,
+    val audioBitrateKbps: Int = 128,
+    /** Photo format: only exactly `avif` selects AVIF; older servers omit it and keep WebP. */
+    val imageFormat: String = "webp",
+    /** AVIF photo quality on libavif's `quality` scale. */
+    val avifQuality: Int = 85,
+)
+/** `GET /api/assets/usage`: stored bytes, the allowance and the compression settings. */
+@Serializable data class AssetUsage(val used: Long, val limit: Long, val compression: CompressionSettings = CompressionSettings())
+@Serializable data class PresignedUpload(val method: String = "PUT", val url: String, val headers: Map<String, String> = emptyMap())
+@Serializable data class AssetReservation(val id: String, val kind: String = "file", val upload: PresignedUpload, val previewUpload: PresignedUpload? = null)
 
 /** Keeps a malformed or future-shaped mention entry from failing the whole message. */
 object MentionListSerializer : JsonTransformingSerializer<List<MessageMention>>(ListSerializer(MessageMention.serializer())) {
@@ -144,6 +233,15 @@ object MentionListSerializer : JsonTransformingSerializer<List<MessageMention>>(
     val messageId: String,
     val reactions: List<MessageReaction>,
 )
+/** `message.attachments`: the message's files after the media worker changed them. */
+@Serializable data class AttachmentsUpdate(
+    val type: String,
+    val schemaVersion: Int,
+    val channelId: String,
+    val seq: String,
+    val messageId: String,
+    @Serializable(with = TolerantAttachmentsSerializer::class) val attachments: List<ChatAttachment> = emptyList(),
+)
 @Serializable data class ChatMessage(
     val id: String,
     val channelId: String,
@@ -154,6 +252,8 @@ object MentionListSerializer : JsonTransformingSerializer<List<MessageMention>>(
     val clientMessageId: String,
     val reactions: List<MessageReaction> = emptyList(),
     val reactionSeq: String? = null,
+    /** Sequence of the last `message.attachments` applied to this message. */
+    val attachmentsSeq: String? = null,
     val pin: MessagePin? = null,
     val pinSeq: String? = null,
     val threadRootId: String? = null,
@@ -335,6 +435,16 @@ data class AppUiState(
     val pinIntents: Map<String, PinIntentUi> = emptyMap(),
     val editIntents: Map<String, EditIntentUi> = emptyMap(),
     val chatAuthorId: String? = null,
+    /** `GET /api/assets/usage` succeeded: show the attach control. */
+    val uploadsEnabled: Boolean = false,
+    val drafts: List<DraftAttachmentUi> = emptyList(),
+    val attachmentError: String? = null,
+    /** Re-signed URLs for long-open conversations, keyed by attachment ID. */
+    val freshAttachmentUrls: Map<String, AttachmentUrls> = emptyMap(),
+    /** Latest server processing percent (`attachment.progress`), keyed by attachment ID. */
+    val attachmentProgress: Map<String, Int> = emptyMap(),
+    /** This device's picked content for files it sent, shown while the server processes them. */
+    val localAttachmentPreviews: Map<String, String> = emptyMap(),
     /** Ask Android 13+ for notification permission now; set once per account by app open. */
     val pushPrompt: Boolean = false,
     val busy: Boolean = false,
@@ -393,6 +503,28 @@ data class PendingMessageUi(
     val rejected: Boolean = false,
     val threadRootId: String? = null,
     val broadcast: Boolean = false,
+    /** Uploaded files with local `file://` copies until the server confirms. */
+    val attachments: List<ChatAttachment> = emptyList(),
+)
+
+/** A file in the composer: preparing (compressing), uploading, ready to send, or failed. */
+data class DraftAttachmentUi(
+    val key: String,
+    val name: String,
+    val kind: String,
+    val sourceSize: Long = 0,
+    /** Bytes actually uploaded, once compression finished. */
+    val storedSize: Long? = null,
+    /** Local `file://` thumbnail (the stored image or its preview, a poster for video). */
+    val thumbnail: String? = null,
+    /** Local `file://` copy of the bytes being uploaded, shown by the pending message. */
+    val localUrl: String? = null,
+    /** The picked `content://` image, kept for the (dormant) server-processing placeholder. */
+    val pickedImage: String? = null,
+    val compressing: Boolean = true,
+    val progress: Float = 0f,
+    val error: String? = null,
+    val attachment: ChatAttachment? = null,
 )
 
 data class ReactionSaveUi(val emoji: String, val active: Boolean, val saving: Boolean = true, val error: String? = null)

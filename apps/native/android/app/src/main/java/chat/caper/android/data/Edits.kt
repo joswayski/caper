@@ -14,10 +14,18 @@ internal fun EditUpdate.validated(expectedChannel: String): EditUpdate {
     return this
 }
 
-/** Content, pins, reactions and thread summaries have independent revisions. */
+/**
+ * Content, pins, reactions, files and thread summaries have independent revisions. An edit
+ * changes text only: files follow `attachmentsSeq`, so an edit snapshot never rolls a
+ * "ready" file back to an older "processing" one.
+ */
 internal fun mergeEdit(current: ChatMessage, incoming: ChatMessage): ChatMessage {
     if (current.id != incoming.id || current.channelId != incoming.channelId || incoming.revision <= current.revision) return current
-    return current.copy(content = incoming.content, revision = incoming.revision, editedAt = incoming.editedAt, editSeq = incoming.editSeq)
+    val edited = current.copy(
+        content = incoming.content.copy(attachments = current.content.attachments),
+        revision = incoming.revision, editedAt = incoming.editedAt, editSeq = incoming.editSeq,
+    )
+    return newerAttachments(edited, incoming)
 }
 
 /** Keep loaded overlays; bound only edits awaiting an unloaded page. */

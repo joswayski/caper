@@ -646,7 +646,10 @@ async fn replay(
             event(
                 out,
                 &sub.id,
-                chat::enrich_author(payload, avatar_id, name.as_deref()),
+                crate::assets::sign_attachments(
+                    chat::enrich_author(payload, avatar_id, name.as_deref()),
+                    state.chat.cdn.as_deref(),
+                ),
             )
             .await?;
             *after = seq;
@@ -685,9 +688,9 @@ async fn chat_subscription(
             incoming = events.recv() => match incoming {
                 Ok(payload) => {
                     identity.check_channel(state, channel).await?;
-                    if payload["type"] == "typing.updated" { event(out, &sub.id, payload).await?; }
+                    if chat::ephemeral(&payload) { event(out, &sub.id, payload).await?; }
                     else if let Some(seq) = payload["seq"].as_str().and_then(|s| s.parse::<i64>().ok()) {
-                        if seq == after + 1 { event(out, &sub.id, payload).await?; after = seq; }
+                        if seq == after + 1 { event(out, &sub.id, crate::assets::sign_attachments(payload, state.chat.cdn.as_deref())).await?; after = seq; }
                         else if seq > after { replay(state, identity, sub, out, &mut after).await?; }
                     }
                 }

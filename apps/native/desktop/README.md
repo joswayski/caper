@@ -35,6 +35,59 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
 - Account spaces, private-channel grants, pagination, typing,
   paginated member presence, owner space/channel/member management, and confirmed
   non-owner leave-space with immediate call teardown and conversation clearing.
+- File attachments, when the server has storage configured (otherwise the
+  attach control is hidden). Inline images show the uploaded preview, else
+  the PNG/JPEG/WebP/GIF original, decoded off the UI thread and cached by
+  attachment id. Videos show their poster with a play button. Clicking an
+  image or video opens the in-app viewer over the window (`viewer.rs`): the
+  message's images and videos with arrows, Left/Right, an "n / m" counter,
+  zoom (double-click, Ctrl+scroll or pinch) and pan, animated GIF/WebP,
+  Save (file dialog), Open in browser and Esc to close. Full-size AVIF/HEIC
+  decode through the bundled FFmpeg. Videos play in the app (`player.rs`):
+  FFmpeg decodes frames and PCM, rodio plays the sound and keeps time, with
+  play/pause (Space), a seek bar and volume; the signed URL streams through a
+  loopback range proxy (`media_proxy.rs`). Audio and other files show cards
+  that open in the system browser or player (PDFs open in a tab). Removed files
+  read "File removed". The parked server-processing fields stay supported
+  (absent `status` means ready): processing placeholders with the
+  `attachment.progress` percent, "Couldn't process this file", animated
+  ("GIF") posters, and `message.attachments` updates sequenced like
+  reactions. Signed URLs are
+  refreshed (`POST /api/assets/urls`) before they expire and once after a
+  403/404 image load, so a window left open for days keeps working.
+- Sending up to 10 files per message from the paperclip file dialog (Win32 on
+  Windows; on Linux the XDG desktop portal, which needs a file-chooser backend
+  such as xdg-desktop-portal-gtk, -gnome or -kde) or by dropping files on the
+  window. Files are compressed on the device, off the UI thread, with the
+  server's `GET /api/assets/usage` `compression` settings: lossless stills
+  (PNG, BMP, TIFF, lossless WebP) stay pixel-exact at full size, as the
+  smaller of an exact-palette indexed PNG (when the colours fit
+  `paletteColors`) and lossless WebP (libwebp, `method` 3 like the web
+  client), kept only when smaller; photos (JPEG, lossy WebP) are scaled to
+  `imageMaxEdge`, upright, without EXIF/GPS, and become AVIF at `avifQuality`
+  when `imageFormat` is `"avif"` (rav1e, 8-bit 4:2:0, sRGB or Display P3
+  signalled in `nclx`), else lossy WebP at `imageQuality` (libwebp), kept
+  only when at least 10% smaller. AVIF falls back to WebP for translucent
+  photos, other colour profiles and encoder errors, and WebP to JPEG. A
+  missing `imageFormat` means WebP. Videos are compressed with the bundled
+  FFmpeg by the same rules as web and phones (H.264/AAC MP4 when the short
+  edge is over `videoMaxHeight`, the codec isn't H.264, the container isn't
+  MP4/QuickTime/WebM or the bitrate is over 1.25× the target; HDR tone
+  mapped to SDR; Windows' hardware-backed Media Foundation encoder first,
+  then x264), with "Compressing… N%" on the chip, a poster preview, and the
+  original kept on any failure. HEIC, AVIF, GIF, SVG, audio and documents
+  upload as the original, as do videos when FFmpeg is missing. Originals lose their
+  metadata losslessly: JPEG APPn/comments except JFIF, ICC and Adobe (a
+  non-default orientation is kept), PNG text/eXIf chunks, and MP4/QuickTime
+  `udta`/`meta` boxes under `moov` and each `trak`, zero-filled as `free`
+  boxes of the same size. Large images get a JPEG preview (≤ `previewEdge`,
+  ≤ 512 KiB). The client reserves the exact stored size, PUTs the preview
+  and then the file straight to storage with exactly the presigned headers
+  and no Caper credentials, confirms (retrying while storage has not seen it
+  yet), and sends. Chips show the name, saving ("1.6 MB → 143 KB"), progress,
+  errors such as storage full, and remove, with a local thumbnail the sent
+  message keeps. Pasting images from the clipboard is not supported (egui
+  does not deliver image pastes).
 - Global two-person direct messages, including exact-username conversation
   creation, unread state, account-wide read cursors, paging, typing, retry, and gateway
   replay. An independent account gateway feed presents local OS notifications
@@ -288,6 +341,10 @@ mention you; click `@alex` or `@fixture_owner` for the cards, or type `@` in its
 composer for space suggestions.
 `parity-direct-no-spaces` previews the first-space page's Direct messages entry
 and the global list without any space membership.
+`parity-attachments` previews ready, processing (with poster and percent, and
+without a preview), failed, animated ("GIF") and removed files, file/audio
+cards and upload chips from synthetic local images; it never fetches media or
+uploads.
 `parity-requests` previews an open incoming request and the requests list;
 `parity-requests-outgoing` an unaccepted request you sent; `parity-blocked`
 Maya's #general messages collapsed after blocking her; `parity-blocked-dm` the

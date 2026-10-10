@@ -9,7 +9,10 @@ import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.putJsonObject
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
@@ -147,19 +150,89 @@ class CaperApi(
         author: ChatAuthor,
         clientMessageId: UUID,
         text: String,
+        attachmentIds: List<String> = emptyList(),
         threadRootId: String? = null,
         broadcast: Boolean = false,
     ): ChatMessage {
+        require(attachmentIds.size <= AttachmentPolicy.MAX_ATTACHMENTS) { "Attach up to 10 files." }
         val message: ChatMessage = post(
             "/api/chat/channels/${channel.pathId()}/messages",
             buildJsonObject {
                 put("clientMessageId", clientMessageId.toString()); put("text", text)
+                // Only when non-empty: text-only requests keep their original idempotency hash.
+                if (attachmentIds.isNotEmpty()) putJsonArray("attachmentIds") { attachmentIds.forEach { add(it.assetPathId()) } }
                 if (threadRootId != null) { put("threadRootId", threadRootId); put("broadcast", broadcast) }
             },
             token, mapOf("x-caper-chat-token" to chatToken),
         )
         require(message.threadRootId == threadRootId && message.broadcast == broadcast) { "Reply destination mismatch." }
         return message.validated(channel, author, clientMessageId, text)
+    }
+
+    /** Succeeds only when uploads are configured; anything else hides the attach control. */
+    suspend fun assetUsage(token: String): AssetUsage = get("/api/assets/usage", token)
+
+    /**
+     * Reserves one upload of the bytes this device will store (after compression): their exact
+     * size, the picked file's size, measured dimensions/duration and an optional preview.
+     */
+    suspend fun createAsset(
+        token: String, channel: String, filename: String, contentType: String, byteSize: Long,
+        sourceByteSize: Long? = null, width: Int? = null, height: Int? = null, durationMs: Long? = null,
+        previewContentType: String? = null, previewByteSize: Long? = null,
+    ): AssetReservation {
+        val reservation: AssetReservation = post("/api/assets", buildJsonObject {
+            put("channelId", channel.pathId()); put("filename", filename); put("contentType", contentType); put("byteSize", byteSize)
+            sourceByteSize?.let { put("sourceByteSize", it) }
+            width?.let { put("width", it) }; height?.let { put("height", it) }; durationMs?.let { put("durationMs", it) }
+            if (previewContentType != null && previewByteSize != null) putJsonObject("preview") {
+                put("contentType", previewContentType); put("byteSize", previewByteSize)
+            }
+        }, token)
+        reservation.id.assetPathId()
+        require(reservation.upload.method == "PUT" && reservation.upload.url.isStorageUrl()) { "The upload service returned an invalid response." }
+        reservation.previewUpload?.let { require(it.method == "PUT" && it.url.isStorageUrl()) { "The upload service returned an invalid response." } }
+        return reservation
+    }
+
+    /** `409` means storage has not seen the upload yet; [AttachmentUploader] retries a few times. */
+    suspend fun completeAsset(token: String, id: String): ChatAttachment =
+        post("/api/assets/${id.assetPathId()}/complete", token = token)
+
+    /** Re-signed delivery URLs for attachments this account can still see (at most 100 per call). */
+    suspend fun attachmentUrls(token: String, ids: List<String>): Map<String, AttachmentUrls> {
+        require(ids.size in 1..100) { "Request 1 to 100 files." }
+        val response: AttachmentUrlsResponse = post(
+            "/api/assets/urls", buildJsonObject { putJsonArray("ids") { ids.forEach { add(it.assetPathId()) } } }, token,
+        )
+        return response.urls.filter { (id, urls) ->
+            id in ids && (urls.url != null || urls.previewUrl != null) &&
+                urls.url?.isStorageUrl() != false && urls.previewUrl?.isStorageUrl() != false
+        }
+    }
+
+    /**
+     * PUT bytes straight to storage with exactly the presigned headers and a fixed
+     * Content-Length of [size]. No account or chat credential is attached, and redirects are
+     * never followed. The body streams from [open] without holding the file in memory.
+     */
+    suspend fun putUpload(upload: PresignedUpload, size: Long, open: () -> java.io.InputStream, progress: (Long) -> Unit = {}) {
+        val request = Request.Builder().url(upload.url).apply {
+            upload.headers.forEach { (name, value) -> header(name, value) }
+            put(StreamingUploadBody(size, open, progress))
+        }.build()
+        try {
+            storageClient.newCall(request).awaitDecoded { response ->
+                if (!response.isSuccessful) throw UploadException("Storage refused the upload (${response.code}).")
+            }
+        } catch (error: UploadException) { throw error } catch (error: IOException) {
+            throw UploadException("The upload was interrupted.")
+        }
+    }
+
+    private val storageClient: OkHttpClient by lazy {
+        client.newBuilder().callTimeout(java.time.Duration.ZERO).readTimeout(java.time.Duration.ofSeconds(60))
+            .writeTimeout(java.time.Duration.ofSeconds(60)).build()
     }
 
     suspend fun editMessage(token: String?, chatToken: String, channel: String, message: String, text: String, expectedRevision: Int): ChatMessage {
@@ -320,6 +393,35 @@ class CaperApi(
 }
 
 private val externalId = Regex("^[A-Za-z0-9]{12}$")
+private val assetId = Regex("^[A-Za-z0-9]{16}$")
+fun String.assetPathId(): String = also { require(assetId.matches(it)) { "Invalid file ID." } }
+private fun String.isStorageUrl() = startsWith("https://") || startsWith("http://")
+
+/**
+ * Streams exactly [size] bytes with upload progress. No content type: the presigned header is
+ * set verbatim. A source that turns out shorter or longer than declared fails the upload
+ * instead of sending bytes that do not match the signed length.
+ */
+private class StreamingUploadBody(
+    private val size: Long, private val open: () -> java.io.InputStream, private val progress: (Long) -> Unit,
+) : okhttp3.RequestBody() {
+    override fun contentType(): okhttp3.MediaType? = null
+    override fun contentLength(): Long = size
+    override fun writeTo(sink: okio.BufferedSink) {
+        open().use { input ->
+            val buffer = ByteArray(64 * 1024)
+            var sent = 0L
+            while (sent < size) {
+                val read = input.read(buffer, 0, minOf(buffer.size.toLong(), size - sent).toInt())
+                if (read < 0) throw UploadException("The file changed while uploading.")
+                sink.write(buffer, 0, read)
+                sent += read
+                progress(sent)
+            }
+            if (input.read() >= 0) throw UploadException("The file changed while uploading.")
+        }
+    }
+}
 private val messageId = Regex("^[A-Za-z0-9]{15}$")
 fun String.pathId(): String = also { require(externalId.matches(it)) { "Invalid resource ID." } }
 

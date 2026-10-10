@@ -20,6 +20,40 @@ Principal UI/network dependencies are eframe/egui/egui_extras (MIT OR Apache-2.0
 (MIT OR Apache-2.0), reqwest (MIT OR Apache-2.0), tungstenite (MIT OR
 Apache-2.0), and keyring (MIT OR Apache-2.0).
 
+## Attachments
+
+Attachment images are decoded with the pure-Rust `image` crate codecs
+(`png`, `zune-jpeg`, `image-webp`, `gif`, `tiff`, BMP; MIT OR Apache-2.0,
+zune-jpeg also Zlib) and encoded with `png` (MIT OR Apache-2.0),
+`jpeg-encoder` ((MIT OR Apache-2.0) AND IJG: this software is based in part
+on the work of the Independent JPEG Group), WebP through
+[libwebp](https://chromium.googlesource.com/webm/libwebp) 1.6.0
+(BSD-3-Clause, Copyright (c) 2010, Google Inc.; with Google's additional
+WebM patent grant), compiled from the source vendored in `libwebp-sys` 0.14.4
+(MIT) and called through `webpx` 0.4.0 (MIT OR Apache-2.0), and AVIF through
+[rav1e](https://github.com/xiph/rav1e) 0.8.1 (BSD-2-Clause, Copyright (c)
+2017-2023, the rav1e contributors; with the Alliance for Open Media Patent
+License 1.0) and `avif-serialize` 0.8.9 (BSD-3-Clause, Copyright (c) 2020,
+Cloudflare, Inc.). Their full licence texts ship beside the app as
+`libwebp-LICENSE.txt`, `rav1e-LICENSE.txt` and `avif-serialize-LICENSE.txt`. The
+exact-palette indexed PNG writer and JPEG settings are adapted from Caper's
+sibling project Captures (`joswayski/captures`, Apache-2.0). The file dialog
+uses `rfd` (MIT).
+
+## FFmpeg (video compression, playback and AVIF/HEIC decoding)
+
+Desktop packages include a separate `ffmpeg` executable: a static, trimmed
+[FFmpeg](https://ffmpeg.org) 9.0.2 with [x264](https://code.videolan.org/videolan/x264),
+[dav1d](https://code.videolan.org/videolan/dav1d) 1.5.4 and
+[zimg](https://github.com/sekrit-twc/zimg) 3.0.6, built from pinned sources by
+[joswayski/ffmpeg-desktop](https://github.com/joswayski/ffmpeg-desktop). Because it includes x264 it is licensed under the
+GNU GPL version 2 or later; Caper runs it as a separate program over pipes and
+does not link it. Its licence texts (`FFmpeg-COPYING.GPLv2`,
+`FFmpeg-LICENSE.md`, `x264-COPYING`, `dav1d-COPYING` (BSD-2-Clause),
+`zimg-COPYING` (WTFPL)), the exact source links and the build recipe ship
+beside it in `ffmpeg-licenses/`. On Windows it may use the operating system's
+Media Foundation H.264 encoder.
+
 ## Native audio
 
 The bundled DPDFNet-8 HR model is the same Apache-2.0 asset used by the web

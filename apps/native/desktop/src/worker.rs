@@ -6,6 +6,9 @@ use crate::model::{
 };
 use crate::notifications::{Change, Saved, Scope};
 use eframe::egui;
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::{
     Arc, Mutex,
     mpsc::{self, Receiver, Sender},
@@ -163,6 +166,26 @@ pub enum Command {
         text: String,
         thread_root_id: Option<String>,
         broadcast: bool,
+        /// Resent unchanged on retry: ids join the idempotency hash.
+        attachment_ids: Vec<String>,
+    },
+    /// Whether uploads are configured, and the compression settings.
+    AssetUsage {
+        token: String,
+    },
+    RefreshAttachmentUrls {
+        token: String,
+        ids: Vec<String>,
+    },
+    /// Prepare (compress) and upload one file off the UI thread, reporting
+    /// progress.
+    Upload {
+        key: u64,
+        token: String,
+        channel: String,
+        path: PathBuf,
+        settings: crate::compress::Compression,
+        cancel: Arc<AtomicBool>,
     },
     React {
         generation: u64,
@@ -541,6 +564,21 @@ pub enum Event {
         active: bool,
         result: Result<crate::model::ReactionUpdate, SendFailure>,
     },
+    /// Fenced by account token: channel loads advance the generation.
+    AssetUsage {
+        token: String,
+        settings: Option<crate::compress::Compression>,
+    },
+    AttachmentUrls {
+        token: String,
+        ids: Vec<String>,
+        result: Result<BTreeMap<String, crate::attachments::FreshUrl>, String>,
+    },
+    /// Fenced by draft key: removed or abandoned drafts ignore late updates.
+    Upload {
+        key: u64,
+        update: UploadUpdate,
+    },
     Reactors {
         generation: u64,
         channel: String,
@@ -583,6 +621,21 @@ pub enum Event {
         result: Result<AdminResult, String>,
     },
     Gateway(GatewayEvent),
+}
+
+pub enum UploadUpdate {
+    Prepared {
+        name: String,
+        kind: crate::model::AttachmentKind,
+        source_size: u64,
+        stored_size: u64,
+    },
+    /// The sender's own decoded copy, when the format decodes here.
+    Thumbnail(egui::ColorImage),
+    /// Video compression before upload, 0–1.
+    Compressing(f32),
+    Progress(f32),
+    Finished(Result<crate::model::Attachment, crate::uploads::UploadError>),
 }
 
 pub struct SendFailure {
@@ -976,8 +1029,108 @@ fn advance_generation(current: &mut u64, candidate: u64) -> bool {
     true
 }
 
+#[allow(clippy::too_many_arguments)]
+fn upload_file(
+    api: &Api,
+    key: u64,
+    token: &str,
+    channel: &str,
+    path: &std::path::Path,
+    settings: &crate::compress::Compression,
+    cancel: Arc<AtomicBool>,
+    events: &Sender<Event>,
+    context: &egui::Context,
+) {
+    let update = |update| send(events, context, Event::Upload { key, update });
+    // Whole-percent steps, like upload progress below.
+    let compressed = std::sync::Mutex::new(-1_i32);
+    let compressing = |fraction: f32| {
+        let percent = (fraction.clamp(0.0, 1.0) * 100.0) as i32;
+        let mut last = compressed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if percent > *last {
+            *last = percent;
+            update(UploadUpdate::Compressing(fraction));
+        }
+    };
+    let mut prepared =
+        match crate::uploads::prepare_path_with(path, settings, &compressing, &cancel) {
+            Ok(prepared) => prepared,
+            Err(message) => {
+                update(UploadUpdate::Finished(Err(
+                    crate::uploads::UploadError::new(message),
+                )));
+                return;
+            }
+        };
+    update(UploadUpdate::Prepared {
+        name: prepared.name.clone(),
+        kind: prepared.kind,
+        source_size: prepared.source_size,
+        stored_size: prepared.size,
+    });
+    if let Some(image) = prepared.thumbnail.take() {
+        update(UploadUpdate::Thumbnail(
+            egui::ColorImage::from_rgba_unmultiplied(
+                [image.width() as usize, image.height() as usize],
+                image.as_raw(),
+            ),
+        ));
+    }
+    // Whole-percent steps keep the event queue small for large files.
+    let progress: Arc<dyn Fn(f32) + Send + Sync> = {
+        let events = events.clone();
+        let context = context.clone();
+        let last = std::sync::Mutex::new(-1_i32);
+        Arc::new(move |fraction: f32| {
+            let percent = (fraction.clamp(0.0, 1.0) * 100.0) as i32;
+            let mut last = last
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if percent > *last {
+                *last = percent;
+                send(
+                    &events,
+                    &context,
+                    Event::Upload {
+                        key,
+                        update: UploadUpdate::Progress(fraction),
+                    },
+                );
+            }
+        })
+    };
+    let result = crate::uploads::upload(api, token, channel, prepared, progress, cancel);
+    update(UploadUpdate::Finished(result));
+}
+
 fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::Context) {
     let event = match command {
+        Command::Upload {
+            key,
+            token,
+            channel,
+            path,
+            settings,
+            cancel,
+        } => {
+            upload_file(
+                api, key, &token, &channel, &path, &settings, cancel, events, context,
+            );
+            return;
+        }
+        Command::AssetUsage { token } => Event::AssetUsage {
+            settings: api.asset_usage(&token).ok(),
+            token,
+        },
+        Command::RefreshAttachmentUrls { token, ids } => Event::AttachmentUrls {
+            result: api
+                .attachment_urls(&token, &ids)
+                .map_err(|error| error.to_string()),
+            token,
+            ids,
+        },
         Command::RefreshMembership {
             epoch,
             request,
@@ -1280,6 +1433,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             channel,
             client_id,
             text,
+            attachment_ids,
             thread_root_id,
             broadcast,
         } => Event::Sent {
@@ -1293,6 +1447,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                     &channel,
                     &client_id,
                     &text,
+                    &attachment_ids,
                     (thread_root_id.as_deref(), broadcast),
                 )
                 .map_err(|error| SendFailure {

@@ -27,7 +27,7 @@ pub(super) async fn edit(
     )
     .await?;
     chat.wake.notify_one();
-    Ok(Json(result))
+    Ok(Json(assets::sign_attachments(result, chat.cdn.as_deref())))
 }
 
 /// Membership changes lock space before channel. Check access in a fresh
@@ -97,7 +97,8 @@ async fn persist_edit(
     text: &str,
     expected_revision: i32,
 ) -> Result<Value, ApiError> {
-    let content = prepare_text(text)?;
+    // Text may be empty only for messages with files; checked once loaded.
+    prepare_content(text, true)?;
     if expected_revision < 1 {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -122,6 +123,13 @@ async fn persist_edit(
     .map_err(database_error)?;
     let (message_id, mut payload, author) =
         row.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "message not found"))?;
+    // Edits change the text only; the message keeps its files (whose state
+    // the media worker may still be updating).
+    let attachments = payload["content"].get("attachments").cloned();
+    let mut content = prepare_content(text, attachments.is_some())?;
+    if let Some(attachments) = attachments {
+        content["attachments"] = attachments;
+    }
     if user.is_none() || user != author {
         return Err(ApiError::new(
             StatusCode::FORBIDDEN,
@@ -229,10 +237,12 @@ pub(super) async fn message(
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "message not found"))?;
     // Like history, never serve a forward's stored snapshot: its source may
     // since have been deleted.
-    let mut payload = [enrich_author(payload, avatar, name.as_deref())];
-    forwarding::hydrate(&mut tx, &mut payload).await?;
-    let [payload] = payload;
-    Ok(Json(payload))
+    let mut messages = [enrich_author(payload, avatar, name.as_deref())];
+    forwarding::hydrate(&mut tx, &mut messages).await?;
+    drop(tx);
+    deliver(&chat.pool, chat.cdn.as_deref(), &mut messages).await?;
+    let [message] = messages;
+    Ok(Json(message))
 }
 
 async fn versions_page(

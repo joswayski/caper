@@ -1,22 +1,21 @@
 import { CHAT_SESSION_KEY } from "../account/client.ts";
 import { ChatConnection } from "./connection.ts";
-import { ChatTimeline } from "./timeline.ts";
 import { playSound } from "../audio/effects.ts";
 import { directMessageErrors } from "../spaces/direct-errors.ts";
 import { appGateway } from "../gateway/client.ts";
+import { ChatTimeline, type ChatTimelineEvent } from "./timeline.ts";
 import {
+  attachmentsOf,
   isChannelMessage,
   isChatMessage,
   isChatPinEvent,
   isChatReactionEvent,
   sequence,
+  type ChatAttachment,
+  type ChatAttachmentProgressEvent,
   type ChatAuthor,
-  type ChatEditEvent,
-  type ChatForwardEvent,
   type ChatHistory,
   type ChatMessage,
-  type ChatPinEvent,
-  type ChatReactionEvent,
   type ChatSession,
   type ChatThreadHistory,
   type ChatTypingEvent,
@@ -29,6 +28,8 @@ const SESSION_KEY = CHAT_SESSION_KEY;
 export interface PendingChatMessage {
   clientMessageId: string;
   text: string;
+  /** Uploaded files; URLs may be local object URLs until the server confirms. */
+  attachments?: ChatAttachment[];
   author?: ChatAuthor;
   createdAt: string;
   threadRootId?: string;
@@ -71,6 +72,8 @@ export interface ChatViewState {
   sendError?: string;
   sendRejected?: boolean;
   pendingSend?: PendingChatMessage;
+  /** Latest `attachment.progress` percent per still-processing attachment id. */
+  attachmentProgress: Record<string, number>;
   error?: string;
   thread?: ThreadViewState;
 }
@@ -85,7 +88,16 @@ const initialState: ChatViewState = {
   typingAuthors: [],
   hasMore: false,
   loadingOlder: false,
+  attachmentProgress: {},
 };
+
+/** Ids of attachments the server is still processing. */
+function processingIds(messages: ChatMessage[]) {
+  const ids = new Set<string>();
+  for (const message of messages)
+    for (const attachment of attachmentsOf(message)) if (attachment.status === "processing") ids.add(attachment.id);
+  return ids;
+}
 
 export function initialChatView(history?: GeneralChatHistory, error?: string): ChatViewState {
   if (error) return { ...initialState, phase: "error", error };
@@ -192,7 +204,11 @@ export async function loadMessageVersions(
     },
   );
   if (!response.ok) throw await apiError(response, "Message history could not be loaded.");
-  const page = (await response.json()) as { messageId?: string; versions?: MessageVersion[]; hasMore?: boolean };
+  const page = (await response.json()) as {
+    messageId?: string;
+    versions?: MessageVersion[];
+    hasMore?: boolean;
+  };
   if (
     page.messageId !== messageId ||
     typeof page.hasMore !== "boolean" ||
@@ -259,7 +275,14 @@ async function mintSession(name: string, signal: AbortSignal): Promise<ChatSessi
 // mint one per account for this page and share it across channel switches,
 // like the native clients. Logout reloads the page, which drops it.
 // A rename mints a fresh one, so its author name stays current.
-let accountSession: { accountId: string; name: string; session: Promise<ChatSession>; token?: string } | undefined;
+let accountSession:
+  | {
+      accountId: string;
+      name: string;
+      session: Promise<ChatSession>;
+      token?: string;
+    }
+  | undefined;
 
 function sharedAccountSession(accountId: string, name: string): Promise<ChatSession> {
   if (accountSession?.accountId === accountId && accountSession.name === name) return accountSession.session;
@@ -491,7 +514,9 @@ export class ChatClient {
 
   async openThread(rootId: string, around?: string) {
     if (around) {
-      this.update({ thread: { rootId, loading: true, loadingOlder: false, hasMore: false } });
+      this.update({
+        thread: { rootId, loading: true, loadingOlder: false, hasMore: false },
+      });
       await this.retryThread(around);
       return;
     }
@@ -500,7 +525,14 @@ export class ChatClient {
       return;
     }
     const cached = this.threadPages.get(rootId);
-    this.update({ thread: cached ?? { rootId, loading: true, loadingOlder: false, hasMore: false } });
+    this.update({
+      thread: cached ?? {
+        rootId,
+        loading: true,
+        loadingOlder: false,
+        hasMore: false,
+      },
+    });
     if (!cached) await this.loadThreadPage(rootId);
   }
 
@@ -532,7 +564,12 @@ export class ChatClient {
     if (pending) return pending.promise;
     const channelId = this.state.channelId;
     if (!channelId || this.controller.signal.aborted || this.loadingHistory) return Promise.resolve();
-    const thread = this.threadPages.get(rootId) ?? { rootId, loading: false, loadingOlder: false, hasMore: false };
+    const thread = this.threadPages.get(rootId) ?? {
+      rootId,
+      loading: false,
+      loadingOlder: false,
+      hasMore: false,
+    };
     const controller = new AbortController();
     const generation = this.generation;
     const current = () =>
@@ -540,7 +577,13 @@ export class ChatClient {
     const visible = () => current() && this.state.thread?.rootId === rootId;
     if (visible())
       this.update({
-        thread: { ...thread, error: undefined, loading: !older && !newer, loadingOlder: older, loadingNewer: newer },
+        thread: {
+          ...thread,
+          error: undefined,
+          loading: !older && !newer,
+          loadingOlder: older,
+          loadingNewer: newer,
+        },
       });
     const promise = (async () => {
       try {
@@ -628,7 +671,11 @@ export class ChatClient {
   discardRejected(): string | undefined {
     if (this.sending || !this.state.sendRejected) return;
     const text = this.state.pendingSend?.text;
-    this.update({ pendingSend: undefined, sendError: undefined, sendRejected: undefined });
+    this.update({
+      pendingSend: undefined,
+      sendError: undefined,
+      sendRejected: undefined,
+    });
     return text;
   }
 
@@ -669,7 +716,11 @@ export class ChatClient {
       for (const message of history.messages) this.threadOnlyRows.delete(message.id);
       this.timeline.prepend(history.messages);
       if (this.contextWindow && history.messages[0]) this.contextWindow.start = sequence(history.messages[0].seq);
-      this.update({ messages: this.timeline.messages, hasMore: history.hasMore, loadingOlder: false });
+      this.update({
+        messages: this.timeline.messages,
+        hasMore: history.hasMore,
+        loadingOlder: false,
+      });
     } catch (error) {
       if (
         !this.controller.signal.aborted &&
@@ -757,7 +808,11 @@ export class ChatClient {
         this.contextWindow.end = history.hasNewer ? sequence(history.messages.at(-1)?.seq ?? after) : undefined;
       for (const row of history.messages) this.threadOnlyRows.delete(row.id);
       this.timeline.prepend(history.messages);
-      this.update({ messages: this.timeline.messages, hasNewer: history.hasNewer, loadingNewer: false });
+      this.update({
+        messages: this.timeline.messages,
+        hasNewer: history.hasNewer,
+        loadingNewer: false,
+      });
     } catch (error) {
       if (
         !this.controller.signal.aborted &&
@@ -771,22 +826,32 @@ export class ChatClient {
     }
   }
 
-  async send(text: string, options: { threadRootId?: string; broadcast?: boolean } = {}): Promise<boolean> {
+  async send(
+    text: string,
+    options: {
+      threadRootId?: string;
+      broadcast?: boolean;
+      attachments?: ChatAttachment[];
+    } = {},
+  ): Promise<boolean> {
     if (this.controller.signal.aborted || this.sending || this.state.sendRejected) return false;
     if (this.state.pendingSend && this.state.pendingSend.threadRootId !== options.threadRootId) return false;
+    const { attachments = [], ...thread } = options;
     // A timeout is an unknown outcome. Enter/Send must retry the same command,
     // just like the explicit retry button, before allowing a new command.
     const pending = {
       ...(this.state.pendingSend ?? {
         clientMessageId: crypto.randomUUID(),
         text,
+        attachments: attachments.length ? attachments : undefined,
         createdAt: new Date().toISOString(),
-        ...options,
+        ...thread,
       }),
       author: this.session?.author,
     };
     const count = Array.from(pending.text).length;
-    if (!pending.text.trim() || count > 4_000)
+    const attachmentIds = (pending.attachments ?? []).map((attachment) => attachment.id);
+    if ((!pending.text.trim() && !attachmentIds.length) || count > 4_000)
       throw new Error(count > 4_000 ? "Messages can be at most 4,000 characters." : "Write a message first.");
     // oxlint-disable-next-line no-control-regex -- Validate message text while allowing tabs and newlines.
     if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/u.test(pending.text))
@@ -810,7 +875,11 @@ export class ChatClient {
     const confirmation = new Promise<ChatMessage>((resolve) => {
       this.confirmSend = resolve;
     });
-    this.update({ pendingSend: pending, sendError: undefined, sendRejected: undefined });
+    this.update({
+      pendingSend: pending,
+      sendError: undefined,
+      sendRejected: undefined,
+    });
     let rejected = false;
     try {
       // Either transport can prove acceptance. A late HTTP failure must not
@@ -818,12 +887,19 @@ export class ChatClient {
       const request = (async () => {
         const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages`, {
           method: "POST",
-          headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
+          headers: {
+            "content-type": "application/json",
+            "x-caper-chat-token": session.token,
+          },
           body: JSON.stringify({
             clientMessageId: pending.clientMessageId,
             text: pending.text,
+            ...(attachmentIds.length ? { attachmentIds } : {}),
             ...(pending.threadRootId
-              ? { threadRootId: pending.threadRootId, broadcast: pending.broadcast ?? false }
+              ? {
+                  threadRootId: pending.threadRootId,
+                  broadcast: pending.broadcast ?? false,
+                }
               : {}),
           }),
           signal: AbortSignal.any([this.controller.signal, controller.signal, AbortSignal.timeout(10_000)]),
@@ -913,7 +989,10 @@ export class ChatClient {
           `/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/reactions`,
           {
             method: "PUT",
-            headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
+            headers: {
+              "content-type": "application/json",
+              "x-caper-chat-token": session.token,
+            },
             body: JSON.stringify({ emoji, active }),
             signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
           },
@@ -953,6 +1032,24 @@ export class ChatClient {
     }
   }
 
+  /** Ephemeral, like typing: shown on the processing placeholder, dropped when
+   * the attachment leaves processing. Unknown attachments are ignored. */
+  private receiveProgress(event: ChatAttachmentProgressEvent) {
+    const message =
+      this.timeline.messages.find((item) => item.id === event.messageId) ??
+      this.timeline.pinnedMessages.find((item) => item.id === event.messageId);
+    const attachment = message && attachmentsOf(message).find((item) => item.id === event.attachmentId);
+    if (attachment?.status !== "processing") return;
+    const percent = Math.round(event.percent);
+    if (this.state.attachmentProgress[attachment.id] === percent) return;
+    this.update({
+      attachmentProgress: {
+        ...this.state.attachmentProgress,
+        [attachment.id]: percent,
+      },
+    });
+  }
+
   async setPin(messageId: string, active: boolean): Promise<void> {
     const generation = this.generation;
     const channelId = this.state.channelId;
@@ -973,7 +1070,10 @@ export class ChatClient {
         `/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/pin`,
         {
           method: "PUT",
-          headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
+          headers: {
+            "content-type": "application/json",
+            "x-caper-chat-token": session.token,
+          },
           body: JSON.stringify({ active }),
           signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
         },
@@ -999,8 +1099,16 @@ export class ChatClient {
       throw new Error("Your chat session is unavailable. Retry the session, then try again.");
     const response = await fetch(`/api/chat/channels/${encodeURIComponent(destination)}/forwards`, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
-      body: JSON.stringify({ sourceChannelId: channelId, sourceMessageId: messageId, clientMessageId, text }),
+      headers: {
+        "content-type": "application/json",
+        "x-caper-chat-token": session.token,
+      },
+      body: JSON.stringify({
+        sourceChannelId: channelId,
+        sourceMessageId: messageId,
+        clientMessageId,
+        text,
+      }),
       signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
     });
     // Without a server error, leave the message empty: the picker words it by status
@@ -1037,7 +1145,10 @@ export class ChatClient {
         `/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}`,
         {
           method: "PUT",
-          headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
+          headers: {
+            "content-type": "application/json",
+            "x-caper-chat-token": session.token,
+          },
           body: JSON.stringify({ text, expectedRevision }),
           signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
         },
@@ -1079,11 +1190,14 @@ export class ChatClient {
     if (generation !== this.generation || this.controller.signal.aborted)
       throw new Error("The conversation changed. Reopen the message to edit it.");
     this.timeline.mergeEdit(message);
-    this.update({ messages: this.timeline.messages, pinnedMessages: this.timeline.pinnedMessages });
+    this.update({
+      messages: this.timeline.messages,
+      pinnedMessages: this.timeline.pinnedMessages,
+    });
     return message;
   }
 
-  private receiveEvent(event: ChatMessage | ChatReactionEvent | ChatPinEvent | ChatEditEvent | ChatForwardEvent) {
+  private receiveEvent(event: ChatTimelineEvent) {
     const visible = new Set(this.timeline.messages.map((item) => item.id));
     const result = this.timeline.applyEvent(event);
     if (!("type" in event)) {
@@ -1179,7 +1293,10 @@ export class ChatClient {
       this.threadOnlyRows.clear();
       this.contextWindow =
         prepared?.hasNewer && prepared.messages.length
-          ? { start: sequence(prepared.messages[0].seq), end: sequence(prepared.messages.at(-1)!.seq) }
+          ? {
+              start: sequence(prepared.messages[0].seq),
+              end: sequence(prepared.messages.at(-1)!.seq),
+            }
           : undefined;
       this.timeline.reset([...history.messages, ...retained], history.cursor, history.pinnedMessages ?? []);
       this.update({
@@ -1198,6 +1315,8 @@ export class ChatClient {
         cursor: () => this.timeline.cursor,
         message: (message) => this.receiveEvent(message),
         reactions: (event) => this.receiveEvent(event),
+        attachments: (event) => this.receiveEvent(event),
+        progress: (event) => this.receiveProgress(event),
         pin: (event) => this.receiveEvent(event),
         forward: (event) => this.receiveEvent(event),
         edit: (event) => this.receiveEvent(event),
@@ -1226,7 +1345,14 @@ export class ChatClient {
         this.update({
           phase: previous && !denied ? "ready" : "error",
           online: false,
-          ...(denied ? { messages: [], pinnedMessages: [], channelId: undefined, thread: undefined } : {}),
+          ...(denied
+            ? {
+                messages: [],
+                pinnedMessages: [],
+                channelId: undefined,
+                thread: undefined,
+              }
+            : {}),
           error: error instanceof Error ? error.message : "Messages are unavailable.",
         });
       }
@@ -1253,7 +1379,9 @@ export class ChatClient {
       this.update({ author: session.author, sessionError: undefined });
     } catch (error) {
       if (!this.controller.signal.aborted && generation === this.sessionGeneration)
-        this.update({ sessionError: error instanceof Error ? error.message : "Guest messaging is unavailable." });
+        this.update({
+          sessionError: error instanceof Error ? error.message : "Guest messaging is unavailable.",
+        });
     }
   }
 
@@ -1277,7 +1405,13 @@ export class ChatClient {
             ...message,
             ...(pin ? { pin: pin.pin } : {}),
             ...(edit && (message.revision ?? 1) <= edit.expectedRevision
-              ? { content: { ...message.content, text: edit.text, mentions: [] } }
+              ? {
+                  content: {
+                    ...message.content,
+                    text: edit.text,
+                    mentions: [],
+                  },
+                }
               : {}),
           };
         const intents = this.reactionIntents.get(message.id);
@@ -1300,7 +1434,11 @@ export class ChatClient {
           if (message) pinned.set(id, message);
         }
       }
-      change = { ...change, messages: change.messages.map(project), pinnedMessages: [...pinned.values()].map(project) };
+      change = {
+        ...change,
+        messages: change.messages.map(project),
+        pinnedMessages: [...pinned.values()].map(project),
+      };
     }
     this.state = { ...this.state, ...change };
     if (change.messages)
@@ -1312,6 +1450,14 @@ export class ChatClient {
             (sequence(message.seq) >= this.contextWindow.start &&
               (this.contextWindow.end === undefined || sequence(message.seq) <= this.contextWindow.end))),
       );
+    if ((change.messages || change.pinnedMessages) && Object.keys(this.state.attachmentProgress).length) {
+      const processing = processingIds([...this.state.messages, ...this.state.pinnedMessages]);
+      const progress = Object.fromEntries(
+        Object.entries(this.state.attachmentProgress).filter(([id]) => processing.has(id)),
+      );
+      if (Object.keys(progress).length !== Object.keys(this.state.attachmentProgress).length)
+        this.state = { ...this.state, attachmentProgress: progress };
+    }
     if (change.author) {
       this.typers.delete(change.author.id);
       this.state = {
@@ -1331,7 +1477,12 @@ export class ChatClient {
       );
       if (accepted) {
         this.confirmSend?.(accepted);
-        this.state = { ...this.state, pendingSend: undefined, sendError: undefined, sendRejected: undefined };
+        this.state = {
+          ...this.state,
+          pendingSend: undefined,
+          sendError: undefined,
+          sendRejected: undefined,
+        };
       }
     }
     this.changed(this.state);

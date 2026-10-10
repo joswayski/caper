@@ -17,8 +17,10 @@ if ([BitConverter]::ToUInt16($Bytes, $Pe + 24 + 68) -ne 2) { throw 'Caper.exe mu
 foreach ($Attempt in 1..2) {
   $Process = Start-Process -FilePath $Setup -ArgumentList '/S' -Wait -PassThru
   if ($Process.ExitCode -ne 0) { throw "Installer failed: $($Process.ExitCode)" }
-  foreach ($File in Get-ChildItem $Stage -File) {
-    $Installed = Join-Path $Install "app\$($File.Name)"
+  # Recursive: FFmpeg's licences sit in ffmpeg-licenses\.
+  $StageRoot = (Resolve-Path $Stage).Path.TrimEnd('\')
+  foreach ($File in Get-ChildItem $Stage -File -Recurse) {
+    $Installed = Join-Path $Install ('app\' + $File.FullName.Substring($StageRoot.Length + 1))
     if ((Get-FileHash $Installed).Hash -ne (Get-FileHash $File.FullName).Hash) { throw "Installed file mismatch: $Installed" }
   }
   foreach ($Link in $Links) {

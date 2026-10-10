@@ -1529,6 +1529,23 @@ public final class ChatModel {
     private var windowEnd: String?
     public var typingNames: [String] = []
     public var reactionErrors: [String: String] = [:]
+    /// `GET /api/assets/usage` succeeded; otherwise the attach control stays hidden.
+    public private(set) var uploadsEnabled = false
+    /// Client compression settings served with usage.
+    public private(set) var attachmentCompression = AttachmentCompression()
+    public private(set) var attachmentDrafts: [AttachmentDraft] = []
+    /// Latest ephemeral `attachment.progress` percent per processing attachment id.
+    public private(set) var attachmentProgress: [String: Int] = [:]
+    /// Composer-level attachment message, such as the 10-file limit.
+    public var attachmentNotice: String?
+    public var canAttach: Bool { uploadsEnabled && !isPreview && session != nil && channelID != nil && !loadFailed }
+    /// The send control's enabled state: text or uploaded files, nothing still uploading.
+    public var canSubmit: Bool {
+        if sending || delivery.rejected { return false }
+        if delivery.pending != nil { return true }
+        return attachmentDrafts.allSatisfy { $0.attachment != nil }
+            && MessageValidation.error(for: draft, attachmentCount: attachmentDrafts.count) == nil
+    }
     public var pinErrors: [String: String] = [:]
     public var pendingPins: Set<String> = []
     public var threadRootID: String?
@@ -1607,6 +1624,10 @@ public final class ChatModel {
     private var generation = 0
     private var delivery = ChatDeliveryState()
     private var reactionSnapshots = ReactionSnapshots()
+    private var attachmentSnapshots = AttachmentSnapshots()
+    /// Staged originals this device sent, shown while the server processes
+    /// them; removed once the attachment is ready or failed.
+    private var localAttachmentCopies: [String: URL] = [:]
     private var pinSnapshots = PinSnapshots()
     private var forwardSnapshots = ForwardSnapshots()
     private var editSnapshots = EditSnapshots()
@@ -1632,6 +1653,13 @@ public final class ChatModel {
     private var typingTask: Task<Void, Never>?
     private var typingIdleTask: Task<Void, Never>?
     private var typingExpiryTask: Task<Void, Never>?
+    private var uploadTasks: [String: Task<Void, Never>] = [:]
+    private var uploadGeneration = 0
+    private var urlRefreshQueue: Set<String> = []
+    /// The URL each attachment held when its refresh was requested: a stale
+    /// URL is refreshed at most once, but a later expiry can refresh again.
+    private var urlRefreshAttempts: [String: String] = [:]
+    private var urlRefreshTask: Task<Void, Never>?
     @ObservationIgnored private lazy var gateway: Gateway = Gateway(baseURL: api.baseURL, token: { [api] in await api.authorizationToken() }) { [weak self] state, error in
         self?.receiveGatewayState(state, error: error)
     }
@@ -1722,8 +1750,8 @@ public final class ChatModel {
         return ChatHistory(
             space: HistoryIdentity(id: spaceID, name: spaceName),
             channel: HistoryIdentity(id: channelID, name: channelName),
-            messages: channelMessages.map { forwardSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0))) },
-            pinnedMessages: pinnedMessages.map { forwardSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0))) },
+            messages: channelMessages.map { attachmentSnapshots.overlay(forwardSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) },
+            pinnedMessages: pinnedMessages.map { attachmentSnapshots.overlay(forwardSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) },
             cursor: delivery.cursor,
             hasMore: hasMore, hasNewer: hasNewer
         )
@@ -1750,12 +1778,12 @@ public final class ChatModel {
         guard generation == requestGeneration else { return }
         canForward = signedIn
         channelID = history.channel?.id; spaceID = history.space?.id
-        reactionSnapshots.seed(history.messages + history.pinnedMessages)
+        seedSnapshots(history.messages + history.pinnedMessages)
         pinSnapshots.replace(history.messages + history.pinnedMessages, cursor: history.cursor)
         forwardSnapshots.seed(history.messages + history.pinnedMessages)
         editSnapshots.seed(history.messages + history.pinnedMessages)
-        messages = history.messages.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) }
-        pinnedMessages = history.pinnedMessages.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) }
+        messages = history.messages.map { overlaySnapshots($0) }
+        pinnedMessages = history.pinnedMessages.map { overlayPinned($0) }
         delivery.reset(cursor: history.cursor); hasMore = history.hasMore
         channelName = history.channel?.name ?? "general"; spaceName = history.space?.name ?? "Caper"
         session = nil; loading = false; loadFailed = false; sessionError = nil
@@ -1813,12 +1841,12 @@ public final class ChatModel {
         // history load (and must not flash the previous channel's title).
         if let prepared {
             self.channelID = prepared.channel?.id; spaceID = prepared.space?.id
-            reactionSnapshots.seed(prepared.messages + prepared.pinnedMessages)
+            seedSnapshots(prepared.messages + prepared.pinnedMessages)
             pinSnapshots.replace(prepared.messages + prepared.pinnedMessages, cursor: prepared.cursor)
             forwardSnapshots.seed(prepared.messages + prepared.pinnedMessages)
             editSnapshots.seed(messages + pinnedMessages + prepared.messages + prepared.pinnedMessages)
-            messages = prepared.messages.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) }
-            pinnedMessages = prepared.pinnedMessages.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) }
+            messages = prepared.messages.map { overlaySnapshots($0) }
+            pinnedMessages = prepared.pinnedMessages.map { overlayPinned($0) }
             delivery.reset(cursor: prepared.cursor); hasMore = prepared.hasMore
             hasNewer = prepared.hasNewer
             windowStart = prepared.hasNewer ? prepared.messages.first?.seq : nil
@@ -1864,8 +1892,9 @@ public final class ChatModel {
                 // Overflow requires fresh pages; never keep the resync flag latched.
                 if editSnapshots.unseenOverflowed { editSnapshots.reset() }
                 editSnapshots.seed(messages + pinnedMessages + history.messages + history.pinnedMessages)
+                attachmentSnapshots.seed(history.pinnedMessages)
                 let candidates = Dictionary((pinnedMessages + history.pinnedMessages).map { ($0.id, $0) }, uniquingKeysWith: { _, next in next })
-                pinnedMessages = candidates.values.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) }.filter { $0.pin != nil }
+                pinnedMessages = candidates.values.map { overlayPinned($0) }.filter { $0.pin != nil }
                     .sorted { (try? Sequence.compare($0.pinSeq ?? "0", $1.pinSeq ?? "0")) == .orderedDescending }
                 messages = channelMessages
                 threadOnlyRows = []
@@ -1875,10 +1904,10 @@ public final class ChatModel {
                 } else {
                     // Preserve a newer reaction revision on overlapping rows, but
                     // discard snapshots for rows no longer in the fresh window.
-                    reactionSnapshots.seed(history.messages)
-                    messages = history.messages.map { forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) }
-                    reactionSnapshots.reset()
-                    reactionSnapshots.seed(messages + pinnedMessages)
+                    seedSnapshots(history.messages)
+                    messages = history.messages.map { overlaySnapshots($0) }
+                    reactionSnapshots.reset(); attachmentSnapshots.reset()
+                    seedSnapshots(messages + pinnedMessages)
                 }
                 delivery.reset(cursor: history.cursor, preservingPending: preservingPending)
                 let retainedOlderPrefix = canRetain && firstRefreshed.map { first in
@@ -2085,11 +2114,37 @@ public final class ChatModel {
         guard !inThread || rootID != nil else { return }
         if let pending = delivery.pending, pending.threadRootId != rootID { return }
         let text = inThread ? threadDraft : draft
-        if delivery.pending == nil, let validation = MessageValidation.error(for: text) { error = validation; return }
+        // Files attach only from the channel composer.
+        let files: [AttachmentDraft] = inThread ? [] : attachmentDrafts
+        if delivery.pending == nil {
+            if files.contains(where: { $0.attachment == nil }) {
+                error = files.contains { $0.error != nil } ? "Remove files that failed to upload first." : "Wait for files to finish uploading."
+                return
+            }
+            if let validation = MessageValidation.error(for: text, attachmentCount: files.count) { error = validation; return }
+        }
         let newSubmission = delivery.pending == nil
-        let command = delivery.begin(text: text, threadRootId: rootID, broadcast: inThread && threadBroadcast)
-        // "Also send to channel" applies to one reply, so it resets with the draft.
-        if newSubmission { if inThread { threadDraft = ""; threadBroadcast = false } else { draft = "" } }
+        // The pending row previews the local originals (which this device can
+        // decode even when browsers cannot, e.g. HEIC) until the message is confirmed.
+        let localAttachments: [ChatAttachment] = newSubmission ? files.compactMap { item in
+            guard var attachment = item.attachment else { return nil }
+            attachment.kind = item.kind
+            attachment.status = .ready
+            attachment.animated = false
+            attachment.url = item.localURL.absoluteString
+            attachment.previewUrl = nil
+            return attachment
+        } : []
+        let command = delivery.begin(text: text, attachments: localAttachments, threadRootId: rootID, broadcast: inThread && threadBroadcast)
+        if newSubmission {
+            // "Also send to channel" applies to one reply, so it resets with the draft.
+            if inThread { threadDraft = ""; threadBroadcast = false } else {
+                // Kept for the pending row and the processing placeholder; removed
+                // when the file is ready or failed, or when the conversation closes.
+                for item in attachmentDrafts { if let id = item.attachment?.id { localAttachmentCopies[id] = item.localURL } }
+                draft = ""; attachmentDrafts = []; attachmentNotice = nil
+            }
+        }
         let requestGeneration = generation
         sending = true; error = nil
         defer {
@@ -2105,7 +2160,8 @@ public final class ChatModel {
         }
         await gateway.reportActivity()
         do {
-            let message = try await api.send(channelID: channelID, sessionToken: session.token, clientMessageID: command.id, text: command.text, threadRootId: command.threadRootId, broadcast: command.broadcast)
+            let message = try await api.send(channelID: channelID, sessionToken: session.token, clientMessageID: command.id, text: command.text,
+                                             attachmentIDs: command.attachmentIDs, threadRootId: command.threadRootId, broadcast: command.broadcast)
             guard self.channelID == channelID,
                   generation == requestGeneration || delivery.pending?.id == command.id else { return }
             guard MessageValidation.acceptsResponse(message, channelID: channelID, command: command, authorID: session.author.id) else {
@@ -2333,6 +2389,9 @@ public final class ChatModel {
         if let oldSubscription { await gateway.unsubscribe(oldSubscription) }
     }
 
+    /// The generation `receive` currently accepts (tests deliver gateway events with it).
+    var eventGeneration: Int { generation }
+
     func receive(_ event: [String: Any], generation eventGeneration: Int, channelID eventChannelID: String) {
         guard generation == eventGeneration, channelID == eventChannelID else { return }
         guard let type = event["type"] as? String else { return }
@@ -2363,6 +2422,26 @@ public final class ChatModel {
             applyReactions(reactionEvent)
             onReadCursor?()
             if reactionSnapshots.unseenOverflowed {
+                requestResync(generation: eventGeneration, channelID: eventChannelID)
+                return
+            }
+            if let subscriptionID {
+                let cursor = delivery.cursor
+                Task { await gateway.updateCursor(subscription: subscriptionID, after: cursor) }
+            }
+            return
+        }
+        if type == "message.attachments" {
+            guard let data = try? JSONSerialization.data(withJSONObject: event),
+                  let attachmentsEvent = try? JSONDecoder().decode(MessageAttachmentsEvent.self, from: data),
+                  attachmentsEvent.isValid, attachmentsEvent.channelId == eventChannelID,
+                  delivery.receive(seq: attachmentsEvent.seq) else {
+                requestResync(generation: eventGeneration, channelID: eventChannelID)
+                return
+            }
+            applyAttachments(attachmentsEvent)
+            onReadCursor?()
+            if attachmentSnapshots.unseenOverflowed {
                 requestResync(generation: eventGeneration, channelID: eventChannelID)
                 return
             }
@@ -2415,6 +2494,11 @@ public final class ChatModel {
                 let cursor = delivery.cursor
                 Task { await gateway.updateCursor(subscription: subscriptionID, after: cursor) }
             }
+            return
+        }
+        if type == "attachment.progress" {
+            // Ephemeral and unsequenced, like typing: never a resync.
+            if event["channelId"] as? String == eventChannelID { receiveAttachmentProgress(event) }
             return
         }
         if type == "message.created", let raw = event["message"], let data = try? JSONSerialization.data(withJSONObject: raw), let message = try? JSONDecoder().decode(ChatMessage.self, from: data) {
@@ -2477,7 +2561,14 @@ public final class ChatModel {
         typingTask = nil; typingIdleTask = nil; typingExpiryTask = nil
         typers = [:]; typingNames = []; typingActive = false; typingSent = false
         delivery.reset(preservingPending: preservingPending)
-        reactionSnapshots.reset(); pendingReactions = [:]; reactionWorkers = []; reactionErrors = [:]; failedReactions = [:]
+        reactionSnapshots.reset(); attachmentSnapshots.reset(); pendingReactions = [:]; reactionWorkers = []; reactionErrors = [:]; failedReactions = [:]
+        if !preservingPending {
+            discardAttachmentDrafts()
+            localAttachmentCopies.values.forEach { AttachmentStaging.remove($0) }
+            localAttachmentCopies = [:]
+        }
+        attachmentProgress = [:]
+        urlRefreshTask?.cancel(); urlRefreshTask = nil; urlRefreshQueue = []; urlRefreshAttempts = [:]
         reactorCache = [:]; reactorRequests = [:]; reactorFailures = []
         pinSnapshots.reset(); pinnedMessages = []; pendingPins = []; pinErrors = [:]
         forwardSnapshots.reset()
@@ -2496,7 +2587,7 @@ public final class ChatModel {
     }
 
     private func merge(_ incoming: [ChatMessage]) {
-        reactionSnapshots.seed(incoming)
+        seedSnapshots(incoming)
         pinSnapshots.seed(incoming)
         forwardSnapshots.seed(incoming)
         editSnapshots.seed(messages + pinnedMessages + incoming)
@@ -2507,9 +2598,9 @@ public final class ChatModel {
             let root = message.threadRootId ?? message.id
             if summaries[root] == nil || (try? Sequence.compare(summary.seq, summaries[root]!.seq)) == .orderedDescending { summaries[root] = summary }
         }
-        incoming.forEach { byID[$0.id] = forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) }
+        incoming.forEach { byID[$0.id] = overlaySnapshots($0) }
         byID = byID.mapValues { message in
-            var updated = forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay(message))))
+            var updated = overlaySnapshots(message)
             updated.thread = summaries[message.threadRootId ?? message.id] ?? message.thread
             return updated
         }
@@ -2519,11 +2610,11 @@ public final class ChatModel {
 
     private func applyPin(_ message: ChatMessage) {
         editSnapshots.seed(messages + pinnedMessages + [message])
-        reactionSnapshots.seed([message])
+        seedSnapshots([message])
         guard pinSnapshots.apply(message) else { renderReactions(); return }
-        messages = messages.map { editSnapshots.overlay(pinSnapshots.overlay($0)) }
+        messages = messages.map { attachmentSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay($0))) }
         pinnedMessages.removeAll { $0.id == message.id }
-        let updated = forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay(message))))
+        let updated = overlayPinned(message)
         if updated.pin != nil {
             pinnedMessages.append(updated)
             pinnedMessages.sort { (try? Sequence.compare($0.pinSeq ?? "0", $1.pinSeq ?? "0")) == .orderedDescending }
@@ -2531,6 +2622,48 @@ public final class ChatModel {
         renderReactions()
     }
 
+    private func seedSnapshots(_ incoming: [ChatMessage]) {
+        reactionSnapshots.seed(incoming)
+        attachmentSnapshots.seed(incoming)
+    }
+
+    /// Every per-message snapshot over a timeline row. Attachments go last so
+    /// an edit or forward overlay never restores an older attachment state.
+    private func overlaySnapshots(_ message: ChatMessage) -> ChatMessage {
+        attachmentSnapshots.overlay(forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay(message)))))
+    }
+
+    /// Pinned-list rows: the same snapshots as timeline rows, so pinned
+    /// copies show current reactions and files too.
+    private func overlayPinned(_ message: ChatMessage) -> ChatMessage {
+        overlaySnapshots(message)
+    }
+
+    /// Replaces a message's attachments when the event is newer than its
+    /// `attachmentsSeq`, then drops progress and local copies for files that
+    /// are no longer processing.
+    private func applyAttachments(_ event: MessageAttachmentsEvent) {
+        guard attachmentSnapshots.apply(messageID: event.messageId, seq: event.seq, attachments: event.attachments) else { return }
+        renderReactions()
+        pinnedMessages = pinnedMessages.map { attachmentSnapshots.overlay($0) }
+        for attachment in event.attachments where attachment.status != .processing || attachment.unavailable {
+            attachmentProgress[attachment.id] = nil
+            if let local = localAttachmentCopies.removeValue(forKey: attachment.id) { AttachmentStaging.remove(local) }
+        }
+    }
+
+    private func receiveAttachmentProgress(_ event: [String: Any]) {
+        guard let attachmentID = event["attachmentId"] as? String, APIClient.validAssetID(attachmentID),
+              let messageID = event["messageId"] as? String, !messageID.isEmpty,
+              let percent = (event["percent"] as? NSNumber)?.doubleValue, percent.isFinite else { return }
+        // Only files still shown as processing; a late frame after "ready" is dropped.
+        guard let message = messages.first(where: { $0.id == messageID }) ?? pinnedMessages.first(where: { $0.id == messageID }),
+              message.content.attachments?.contains(where: { $0.id == attachmentID && $0.status == .processing }) == true else { return }
+        attachmentProgress[attachmentID] = Int(min(100, max(0, percent)).rounded())
+    }
+
+    /// The original this device uploaded, while the server still processes it.
+    public func localCopy(for attachmentID: String) -> URL? { localAttachmentCopies[attachmentID] }
     private func applyReactions(_ event: MessageReactionsEvent) {
         guard reactionSnapshots.apply(messageID: event.messageId, seq: event.seq, reactions: event.reactions) else { return }
         renderReactions()
@@ -2539,7 +2672,7 @@ public final class ChatModel {
     private func renderReactions() {
         let authorID = session?.author.id
         let project: (ChatMessage) -> ChatMessage = { [self] message in
-            var result = reactionSnapshots.overlay(message)
+            var result = attachmentSnapshots.overlay(reactionSnapshots.overlay(message))
             guard let authorID, let pending = pendingReactions[message.id], !pending.isEmpty else { return result }
             var reactions = result.reactions ?? []
             for (emoji, intent) in pending {
@@ -2593,6 +2726,172 @@ public final class ChatModel {
                 }
             }
         }
+    }
+
+    // MARK: Attachments
+
+    /// Uploads are optional server configuration; only a successful usage
+    /// response shows the attach control.
+    public func checkUploadAvailability() async {
+        do {
+            let usage = try await api.assetUsage()
+            attachmentCompression = usage.compression
+            uploadsEnabled = true
+        } catch {
+            uploadsEnabled = false
+        }
+    }
+
+    /// Compresses (with the server's settings) and uploads staged files for
+    /// the next message, up to 10.
+    public func addAttachments(_ files: [LocalAttachmentFile]) {
+        guard canAttach, let channelID, !files.isEmpty else {
+            files.forEach { AttachmentStaging.remove($0.url) }
+            return
+        }
+        let room = AttachmentPolicy.maxAttachments - attachmentDrafts.count
+        guard room > 0 else {
+            attachmentNotice = "You can attach up to \(AttachmentPolicy.maxAttachments) files."
+            files.forEach { AttachmentStaging.remove($0.url) }
+            return
+        }
+        attachmentNotice = files.count > room ? "Only \(room) more file\(room == 1 ? "" : "s") can be attached." : nil
+        files.dropFirst(room).forEach { AttachmentStaging.remove($0.url) }
+        if error == "Write a message first." || error == "Wait for files to finish uploading." { error = nil }
+        let settings = attachmentCompression
+        let expectedGeneration = uploadGeneration
+        for file in files.prefix(room) {
+            let id = UUID().uuidString
+            attachmentDrafts.append(AttachmentDraft(id: id, name: file.name, kind: AttachmentKind.local(contentType: file.contentType),
+                                                    localURL: file.url, sourceSize: file.size))
+            uploadTasks[id] = Task { [weak self, api] in
+                let prepared = await AttachmentPreparer.prepare(file, settings: settings)
+                guard let self, self.uploadGeneration == expectedGeneration, !Task.isCancelled,
+                      self.attachmentDrafts.contains(where: { $0.id == id }) else {
+                    // Removed (or the conversation closed) while compressing.
+                    AttachmentStaging.remove(prepared.fileURL)
+                    if prepared.fileURL != file.url { AttachmentStaging.remove(file.url) }
+                    return
+                }
+                if prepared.fileURL != file.url { AttachmentStaging.remove(file.url) }
+                self.updateDraft(id) {
+                    $0.name = prepared.name
+                    $0.kind = AttachmentKind.local(contentType: prepared.contentType)
+                    $0.localURL = prepared.fileURL
+                    $0.storedSize = prepared.byteSize
+                    $0.preparing = false
+                }
+                do {
+                    let attachment = try await AttachmentUploader.upload(prepared, channelID: channelID, api: api) { fraction in
+                        Task { @MainActor [weak self] in
+                            guard let self, self.uploadGeneration == expectedGeneration else { return }
+                            self.updateDraft(id) { if $0.attachment == nil && $0.error == nil { $0.progress = fraction } }
+                        }
+                    }
+                    guard self.uploadGeneration == expectedGeneration else { return }
+                    self.updateDraft(id) { $0.attachment = attachment; $0.progress = 1; $0.error = nil }
+                } catch {
+                    guard self.uploadGeneration == expectedGeneration, !Task.isCancelled else { return }
+                    self.updateDraft(id) { $0.error = AttachmentPolicy.uploadErrorMessage(error) }
+                }
+                self.uploadTasks[id] = nil
+            }
+        }
+    }
+
+    public func removeAttachmentDraft(id: String) {
+        uploadTasks[id]?.cancel()
+        uploadTasks[id] = nil
+        if let draft = attachmentDrafts.first(where: { $0.id == id }) { AttachmentStaging.remove(draft.localURL) }
+        attachmentDrafts.removeAll { $0.id == id }
+        attachmentNotice = nil
+    }
+
+    private func discardAttachmentDrafts() {
+        uploadGeneration += 1
+        uploadTasks.values.forEach { $0.cancel() }
+        uploadTasks = [:]
+        attachmentDrafts.forEach { AttachmentStaging.remove($0.localURL) }
+        attachmentDrafts = []
+        attachmentNotice = nil
+    }
+
+    private func updateDraft(_ id: String, _ change: (inout AttachmentDraft) -> Void) {
+        guard let index = attachmentDrafts.firstIndex(where: { $0.id == id }) else { return }
+        change(&attachmentDrafts[index])
+    }
+
+    /// Batches `POST /api/assets/urls` for attachments whose signed URLs are
+    /// expiring or failed to load. Each stale URL is refreshed at most once.
+    public func requestFreshAttachmentURLs(ids: [String]) {
+        for id in ids {
+            guard let current = signedURL(id: id), !current.hasPrefix("file:"), urlRefreshAttempts[id] != current else { continue }
+            urlRefreshQueue.insert(id)
+        }
+        guard !urlRefreshQueue.isEmpty, urlRefreshTask == nil else { return }
+        urlRefreshTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(100))
+            guard !Task.isCancelled else { return }
+            await self?.flushAttachmentURLRefresh()
+        }
+    }
+
+    private func flushAttachmentURLRefresh() async {
+        urlRefreshTask = nil
+        let ids = Array(urlRefreshQueue.prefix(100))
+        urlRefreshQueue.subtract(ids)
+        for id in ids { urlRefreshAttempts[id] = signedURL(id: id) ?? "" }
+        if !urlRefreshQueue.isEmpty { requestFreshAttachmentURLs(ids: []) }
+        guard !ids.isEmpty else { return }
+        let requestChannel = channelID
+        guard let urls = try? await api.refreshAttachmentURLs(ids: ids), !urls.isEmpty, channelID == requestChannel else { return }
+        applyFreshAttachmentURLs(urls)
+    }
+
+    /// The URL to open or play now, refreshed first when it is expiring.
+    public func currentURL(for attachment: ChatAttachment) async -> URL? {
+        var latest = self.attachment(id: attachment.id) ?? attachment
+        if AttachmentURLPolicy.needsRefresh(latest.url) {
+            let requestChannel = channelID
+            if let urls = try? await api.refreshAttachmentURLs(ids: [attachment.id]), !urls.isEmpty, channelID == requestChannel {
+                applyFreshAttachmentURLs(urls)
+                latest = self.attachment(id: attachment.id) ?? latest
+            }
+        }
+        return latest.url.flatMap { URL(string: $0) }
+    }
+
+    private func attachment(id: String) -> ChatAttachment? {
+        for message in Array(messages.reversed()) + pinnedMessages {
+            if let match = message.content.attachments?.first(where: { $0.id == id }) { return match.unavailable ? nil : match }
+        }
+        return nil
+    }
+
+    /// The delivery URL a refresh replaces: the file, or a processing file's preview.
+    private func signedURL(id: String) -> String? {
+        guard let attachment = attachment(id: id) else { return nil }
+        return attachment.url ?? attachment.previewUrl
+    }
+
+    private func applyFreshAttachmentURLs(_ urls: [String: AttachmentURLs]) {
+        func refresh(_ attachment: ChatAttachment) -> ChatAttachment {
+            guard let fresh = urls[attachment.id], !attachment.unavailable else { return attachment }
+            var refreshed = attachment
+            // Only ready files have `url`; never clear a URL the response omits.
+            refreshed.url = fresh.url ?? attachment.url
+            refreshed.previewUrl = fresh.previewUrl ?? attachment.previewUrl
+            return refreshed
+        }
+        func refreshMessage(_ message: ChatMessage) -> ChatMessage {
+            guard let attachments = message.content.attachments, attachments.contains(where: { urls[$0.id] != nil }) else { return message }
+            var updated = message
+            updated.content.attachments = attachments.map(refresh)
+            return updated
+        }
+        attachmentSnapshots.updateAttachments(refresh)
+        messages = messages.map(refreshMessage)
+        pinnedMessages = pinnedMessages.map(refreshMessage)
     }
 
     private func flushTyping() {

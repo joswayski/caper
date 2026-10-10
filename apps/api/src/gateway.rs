@@ -121,7 +121,7 @@ impl Gateway {
                                 if let Ok(text) = message.get_payload::<String>()
                                     && let Ok(event) = serde_json::from_str::<Value>(&text) {
                                     state.application.dispatch(&event);
-                                    let sender = if event["type"] == "typing.updated" { &state.typing } else { &state.events };
+                                    let sender = if chat::ephemeral(&event) { &state.typing } else { &state.events };
                                     let _ = sender.send(event);
                                 }
                             }
@@ -314,7 +314,10 @@ async fn catch_up(
             }
             write(
                 socket,
-                crate::chat::enrich_author(payload, avatar_id, name.as_deref()),
+                crate::assets::sign_attachments(
+                    crate::chat::enrich_author(payload, avatar_id, name.as_deref()),
+                    state.chat.cdn.as_deref(),
+                ),
             )
             .await?;
             *after = seq;
@@ -388,7 +391,7 @@ async fn serve(
                     Ok(event) if event["channelId"].as_str() == Some(&external_id) => {
                         authorized(&state, &external_id, token_hash.as_deref()).await?;
                         let seq = event["seq"].as_str().and_then(|v| v.parse::<i64>().ok()).ok_or(())?;
-                        if seq == after + 1 { write(&mut socket, event).await?; after = seq; }
+                        if seq == after + 1 { write(&mut socket, crate::assets::sign_attachments(event, state.chat.cdn.as_deref())).await?; after = seq; }
                         else if seq > after { tokio::time::timeout(Duration::from_secs(10), catch_up(&mut socket, &state, channel, &external_id, token_hash.as_deref(), &mut after)).await.map_err(|_| ())??; }
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => { tokio::time::timeout(Duration::from_secs(10), catch_up(&mut socket, &state, channel, &external_id, token_hash.as_deref(), &mut after)).await.map_err(|_| ())??; }

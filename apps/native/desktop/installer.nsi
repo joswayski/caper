@@ -36,7 +36,8 @@ FunctionEnd
 
 Section "Caper"
   SetOutPath "$INSTDIR\app"
-  File "${STAGE}\*"
+  ; Recursive: FFmpeg's licences sit in ffmpeg-licenses\.
+  File /r "${STAGE}\*"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   CreateShortcut "$SMPROGRAMS\Caper.lnk" "$INSTDIR\app\Caper.exe"
   CreateShortcut "$DESKTOP\Caper.lnk" "$INSTDIR\app\Caper.exe"

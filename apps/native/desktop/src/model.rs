@@ -272,6 +272,14 @@ pub struct Content {
     #[serde(rename = "type")]
     pub kind: String,
     pub text: String,
+    /// Additive on version 1 `text` content. Malformed entries are skipped so
+    /// one bad file never rejects a message or a history page.
+    #[serde(
+        default,
+        deserialize_with = "tolerant_attachments",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub attachments: Vec<Attachment>,
     /// Server-resolved `@` mentions in first-appearance order. Older messages
     /// and older servers omit it.
     #[serde(
@@ -280,6 +288,165 @@ pub struct Content {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub mentions: Vec<Mention>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AttachmentKind {
+    Image,
+    Video,
+    Audio,
+    File,
+}
+
+/// Server-side processing state. Old payloads have none and are ready.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AttachmentStatus {
+    Processing,
+    #[default]
+    Ready,
+    Failed,
+}
+
+impl AttachmentStatus {
+    fn is_ready(&self) -> bool {
+        *self == Self::Ready
+    }
+}
+
+impl AttachmentKind {
+    fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "image" => Self::Image,
+            "video" => Self::Video,
+            "audio" => Self::Audio,
+            "file" => Self::File,
+            _ => return None,
+        })
+    }
+}
+
+/// A file on a message, as the API describes it. URLs are signed per response
+/// and expire; `preview` only says a preview object exists.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Attachment {
+    pub id: String,
+    pub kind: AttachmentKind,
+    pub content_type: String,
+    pub name: String,
+    pub size: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(
+        skip_serializing_if = "std::ops::Not::not",
+        serialize_with = "preview_marker"
+    )]
+    pub preview: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview_url: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub unavailable: bool,
+    /// Absent (ready) is not written back, so old payloads round-trip.
+    #[serde(skip_serializing_if = "AttachmentStatus::is_ready")]
+    pub status: AttachmentStatus,
+    /// A GIF or animated image stored as a silent looping MP4.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub animated: bool,
+}
+
+fn preview_marker<S: serde::Serializer>(_: &bool, serializer: S) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeMap;
+    serializer.serialize_map(Some(0))?.end()
+}
+
+impl Attachment {
+    /// Mirrors web `isChatAttachment`: required strings and kind, optional
+    /// non-negative numbers, and only http(s) URLs.
+    pub fn parse(value: &serde_json::Value) -> Option<Self> {
+        let object = value.as_object()?;
+        let text = |name: &str| object.get(name)?.as_str().map(str::to_owned);
+        let optional_number = |name: &str| -> Result<Option<u64>, ()> {
+            match object.get(name) {
+                None | Some(serde_json::Value::Null) => Ok(None),
+                Some(value) => value
+                    .as_u64()
+                    .or_else(|| {
+                        value
+                            .as_f64()
+                            .filter(|number| number.is_finite() && *number >= 0.0)
+                            .map(|number| number.round() as u64)
+                    })
+                    .map(Some)
+                    .ok_or(()),
+            }
+        };
+        let optional_url = |name: &str| -> Result<Option<String>, ()> {
+            match object.get(name) {
+                None | Some(serde_json::Value::Null) => Ok(None),
+                Some(serde_json::Value::String(url))
+                    if url.starts_with("https://") || url.starts_with("http://") =>
+                {
+                    Ok(Some(url.clone()))
+                }
+                Some(_) => Err(()),
+            }
+        };
+        let id = text("id").filter(|id| !id.is_empty())?;
+        let size = object.get("size")?;
+        let size = size.as_u64().or_else(|| {
+            size.as_f64()
+                .filter(|number| number.is_finite() && *number >= 0.0)
+                .map(|number| number as u64)
+        })?;
+        let dimension = |name: &str| -> Result<Option<u32>, ()> {
+            optional_number(name)?
+                .map(|value| u32::try_from(value).map_err(|_| ()))
+                .transpose()
+        };
+        Some(Self {
+            id,
+            kind: AttachmentKind::parse(object.get("kind")?.as_str()?)?,
+            content_type: text("contentType")?,
+            name: text("name")?,
+            size,
+            width: dimension("width").ok()?,
+            height: dimension("height").ok()?,
+            duration_ms: optional_number("durationMs").ok()?,
+            preview: object
+                .get("preview")
+                .is_some_and(serde_json::Value::is_object),
+            url: optional_url("url").ok()?,
+            preview_url: optional_url("previewUrl").ok()?,
+            unavailable: object.get("unavailable") == Some(&serde_json::Value::Bool(true)),
+            // Unknown future states read as ready: the URLs decide what shows.
+            status: match object.get("status").and_then(serde_json::Value::as_str) {
+                Some("processing") => AttachmentStatus::Processing,
+                Some("failed") => AttachmentStatus::Failed,
+                _ => AttachmentStatus::Ready,
+            },
+            animated: object.get("animated") == Some(&serde_json::Value::Bool(true)),
+        })
+    }
+}
+
+/// Never fails: a missing, null or non-array field is no attachments, and
+/// malformed entries are dropped.
+fn tolerant_attachments<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<Attachment>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value
+        .as_array()
+        .map(|items| items.iter().filter_map(Attachment::parse).collect())
+        .unwrap_or_default())
 }
 
 /// A `content.mentions` entry: `user` (with `id`/`username`), `everyone` or
@@ -468,6 +635,21 @@ pub struct ReactionUpdate {
     pub reactions: Vec<Reaction>,
 }
 
+/// `message.attachments`: the message's files after the media worker
+/// produced a preview, finished or failed. Sequenced like reactions.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentUpdate {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub schema_version: u8,
+    pub channel_id: String,
+    pub seq: String,
+    pub message_id: String,
+    #[serde(deserialize_with = "tolerant_attachments")]
+    pub attachments: Vec<Attachment>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Pin {
@@ -515,6 +697,10 @@ pub struct Message {
     pub reactions: Vec<Reaction>,
     #[serde(default)]
     pub reaction_seq: Option<String>,
+    /// Sequence of the last `message.attachments` update folded into this
+    /// payload, like `reaction_seq`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachments_seq: Option<String>,
     #[serde(default)]
     pub pin: Option<Pin>,
     #[serde(default)]
@@ -691,7 +877,10 @@ impl Message {
         if self.content.version != 1 || self.content.kind != "text" {
             return Err("unsupported message content".into());
         }
-        if let Some(revision) = &self.reaction_seq {
+        for revision in [&self.reaction_seq, &self.attachments_seq]
+            .into_iter()
+            .flatten()
+        {
             sequence(revision)?;
         }
         if let Some(revision) = &self.pin_seq {
@@ -703,12 +892,30 @@ impl Message {
         Ok(())
     }
 
+    /// Take `attachments` when `seq` is newer than this message's
+    /// `attachments_seq` (absent is "0").
+    fn adopt_newer_attachments(&mut self, attachments: Vec<Attachment>, seq: Option<String>) {
+        if revision(seq.as_deref()).unwrap_or(0)
+            > revision(self.attachments_seq.as_deref()).unwrap_or(0)
+        {
+            self.content.attachments = attachments;
+            self.attachments_seq = seq;
+        }
+    }
+
     fn merge_edit(&mut self, incoming: &Self) {
         if self.id == incoming.id
             && self.channel_id == incoming.channel_id
             && incoming.revision > self.revision
         {
+            // Edits change text only; files follow `attachments_seq`, so an
+            // older edit snapshot never turns ready files back into
+            // processing ones.
+            let attachments = std::mem::take(&mut self.content.attachments);
+            let attachments_seq = self.attachments_seq.take();
             self.content.clone_from(&incoming.content);
+            self.attachments_seq.clone_from(&incoming.attachments_seq);
+            self.adopt_newer_attachments(attachments, attachments_seq);
             self.revision = incoming.revision;
             self.edited_at.clone_from(&incoming.edited_at);
             self.edit_seq.clone_from(&incoming.edit_seq);
@@ -762,6 +969,7 @@ pub struct Timeline {
     ids: BTreeMap<String, u64>,
     buffered: BTreeMap<u64, Message>,
     unseen_reactions: BTreeMap<String, ReactionUpdate>,
+    unseen_attachments: BTreeMap<String, AttachmentUpdate>,
     unseen_pins: BTreeMap<String, Message>,
     forward_updates: BTreeMap<String, Message>,
     pinned: BTreeMap<u64, Message>,
@@ -848,6 +1056,7 @@ impl Timeline {
         self.ids.clear();
         self.buffered.clear();
         self.unseen_reactions.clear();
+        self.unseen_attachments.clear();
         self.unseen_pins.clear();
         self.forward_updates.clear();
         self.pinned.clear();
@@ -908,6 +1117,77 @@ impl Timeline {
             self.unseen_reactions.clear();
         }
         Ok(applied)
+    }
+
+    /// Same sequencing as [`Timeline::apply_reactions`].
+    pub fn apply_attachments(&mut self, update: AttachmentUpdate) -> Result<Apply, String> {
+        if !self.merge_attachments(&update)? {
+            self.unseen_attachments.clear();
+            return Ok(Apply::Resync);
+        }
+        let applied = self.apply_sequence(&update.seq)?;
+        if applied == Apply::Resync {
+            self.unseen_attachments.clear();
+        }
+        Ok(applied)
+    }
+
+    /// Replace a message's files when the update is newer than its
+    /// `attachments_seq`; updates for unloaded messages wait for them.
+    fn merge_attachments(&mut self, update: &AttachmentUpdate) -> Result<bool, String> {
+        let seq = sequence(&update.seq)?;
+        if update.kind != "message.attachments" || update.schema_version != 1 {
+            return Err("unsupported attachment update".into());
+        }
+        if update.channel_id.is_empty() || update.message_id.is_empty() {
+            return Err("invalid attachment update".into());
+        }
+        if let Some(message) = self
+            .messages
+            .values_mut()
+            .find(|item| item.id == update.message_id)
+        {
+            if message.channel_id != update.channel_id {
+                return Err("attachment update is for another channel".into());
+            }
+            if seq > revision(message.attachments_seq.as_deref())? {
+                message.content.attachments.clone_from(&update.attachments);
+                message.attachments_seq = Some(update.seq.clone());
+            }
+            self.merge_pinned_attachments(update);
+            return Ok(true);
+        }
+        if self
+            .messages
+            .values()
+            .next()
+            .is_some_and(|message| message.channel_id != update.channel_id)
+        {
+            return Err("attachment update is for another channel".into());
+        }
+        self.merge_pinned_attachments(update);
+        match self.unseen_attachments.get(&update.message_id) {
+            Some(current) if seq <= sequence(&current.seq)? => {}
+            None if self.unseen_attachments.len() >= 256 => return Ok(false),
+            _ => {
+                self.unseen_attachments
+                    .insert(update.message_id.clone(), update.clone());
+            }
+        }
+        Ok(true)
+    }
+
+    /// Pinned copies (including pins of unloaded messages) show the same
+    /// files as the timeline.
+    fn merge_pinned_attachments(&mut self, update: &AttachmentUpdate) {
+        for pinned in self
+            .pinned
+            .values_mut()
+            .chain(self.unseen_pins.values_mut())
+            .filter(|pinned| pinned.id == update.message_id)
+        {
+            pinned.adopt_newer_attachments(update.attachments.clone(), Some(update.seq.clone()));
+        }
     }
 
     /// Merge an HTTP acknowledgement without moving the gateway replay cursor.
@@ -1077,6 +1357,16 @@ impl Timeline {
     fn merge_pin_message(&mut self, message: Message) -> Result<(), String> {
         message.validate()?;
         let mut message = self.remember_edit(message);
+        if let Some(loaded) = self
+            .messages
+            .values()
+            .find(|loaded| loaded.id == message.id)
+        {
+            message.adopt_newer_attachments(
+                loaded.content.attachments.clone(),
+                loaded.attachments_seq.clone(),
+            );
+        }
         for snapshot in self
             .messages
             .get(&sequence(&message.seq)?)
@@ -1229,6 +1519,15 @@ impl Timeline {
 
     fn merge(&mut self, mut message: Message) -> Result<(), String> {
         message.validate()?;
+        if let Some(update) = self.unseen_attachments.remove(&message.id) {
+            if update.channel_id != message.channel_id {
+                return Err("attachment update is for another channel".into());
+            }
+            if sequence(&update.seq)? > revision(message.attachments_seq.as_deref())? {
+                message.content.attachments = update.attachments;
+                message.attachments_seq = Some(update.seq);
+            }
+        }
         if let Some(pinned) = self.pinned.values().find(|item| item.id == message.id) {
             overlay_reactions(&mut message, pinned);
         }
@@ -1336,6 +1635,14 @@ impl Timeline {
                 message.reactions = std::mem::take(&mut existing.reactions);
                 message.reaction_seq = existing.reaction_seq.take();
             }
+            // A stale page or replay never turns ready files back into
+            // processing ones.
+            if revision(existing.attachments_seq.as_deref())?
+                > revision(message.attachments_seq.as_deref())?
+            {
+                message.content.attachments = std::mem::take(&mut existing.content.attachments);
+                message.attachments_seq = existing.attachments_seq.take();
+            }
             let old_pin = existing
                 .pin_seq
                 .as_deref()
@@ -1369,6 +1676,14 @@ impl Timeline {
         }
         Ok(())
     }
+}
+
+/// An optional revision; absent is "0".
+fn revision(value: Option<&str>) -> Result<u64, String> {
+    value
+        .map(sequence)
+        .transpose()
+        .map(Option::unwrap_or_default)
 }
 
 fn overlay_reactions(current: &mut Message, incoming: &Message) {
@@ -1495,10 +1810,12 @@ mod tests {
                 version: 1,
                 kind: "text".into(),
                 text: id.into(),
+                attachments: Vec::new(),
                 mentions: Vec::new(),
             },
             reactions: Vec::new(),
             reaction_seq: None,
+            attachments_seq: None,
             pin: None,
             pin_seq: None,
             thread_root_id: None,
@@ -1879,6 +2196,90 @@ mod tests {
         assert!(timeline.merge_sent(invalid).is_err());
         assert_eq!(timeline.cursor(), "0");
         assert_eq!(timeline.messages().count(), 0);
+    }
+
+    fn wire_message(attachments: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "id": "m1", "channelId": "channel", "seq": "1", "createdAt": "2026-10-03T00:00:00Z",
+            "clientMessageId": "client", "author": {"id": "u", "name": "U", "isGuest": false},
+            "content": {"version": 1, "type": "text", "text": "", "attachments": attachments}
+        })
+    }
+
+    #[test]
+    fn attachments_parse_tolerantly_without_rejecting_messages() {
+        let message: Message = serde_json::from_value(wire_message(serde_json::json!([
+            {"id": "img", "kind": "image", "contentType": "image/png", "name": "a.png", "size": 1200,
+             "width": 640, "height": 480, "preview": {}, "url": "https://cdn.caper.chat/original/img?exp=9&sig=s",
+             "previewUrl": "https://cdn.caper.chat/preview/img?exp=9&sig=p", "futureField": 1},
+            {"id": "gone", "kind": "file", "contentType": "application/pdf", "name": "a.pdf", "size": 9,
+             "unavailable": true},
+            {"id": "video", "kind": "video", "contentType": "video/mp4", "name": "v.mp4", "size": 2.0,
+             "durationMs": 1500.4},
+            {"id": "bad-kind", "kind": "hologram", "contentType": "x/y", "name": "x", "size": 1},
+            {"id": "bad-url", "kind": "file", "contentType": "x/y", "name": "x", "size": 1, "url": "javascript:alert(1)"},
+            {"id": "bad-width", "kind": "image", "contentType": "image/png", "name": "x", "size": 1, "width": -4},
+            {"kind": "file", "contentType": "x/y", "name": "missing id", "size": 1},
+            {"id": "no-size", "kind": "file", "contentType": "x/y", "name": "x"},
+            "not an object",
+            null
+        ])))
+        .unwrap();
+        message.validate().unwrap();
+        let ids: Vec<_> = message
+            .content
+            .attachments
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect();
+        assert_eq!(ids, ["img", "gone", "video"]);
+        let image = &message.content.attachments[0];
+        assert_eq!(image.kind, AttachmentKind::Image);
+        assert_eq!((image.width, image.height), (Some(640), Some(480)));
+        assert!(image.preview);
+        assert!(image.preview_url.is_some());
+        assert!(message.content.attachments[1].unavailable);
+        assert_eq!(message.content.attachments[2].duration_ms, Some(1500));
+
+        // A non-array field is no attachments, never a failed message.
+        for value in [
+            serde_json::json!({"id": "x"}),
+            serde_json::json!("text"),
+            serde_json::Value::Null,
+        ] {
+            let message: Message = serde_json::from_value(wire_message(value)).unwrap();
+            assert!(message.content.attachments.is_empty());
+        }
+        let mut legacy = wire_message(serde_json::Value::Null);
+        legacy["content"]
+            .as_object_mut()
+            .unwrap()
+            .remove("attachments");
+        let message: Message = serde_json::from_value(legacy).unwrap();
+        assert!(message.content.attachments.is_empty());
+    }
+
+    #[test]
+    fn attachments_round_trip_through_serialization() {
+        let message: Message = serde_json::from_value(wire_message(serde_json::json!([
+            {"id": "img", "kind": "image", "contentType": "image/png", "name": "a.png", "size": 3,
+             "preview": {}, "url": "https://cdn.caper.chat/original/img?exp=9&sig=s"}
+        ])))
+        .unwrap();
+        let encoded = serde_json::to_value(&message).unwrap();
+        assert_eq!(
+            encoded["content"]["attachments"][0],
+            serde_json::json!({"id": "img", "kind": "image", "contentType": "image/png", "name": "a.png",
+                "size": 3, "preview": {}, "url": "https://cdn.caper.chat/original/img?exp=9&sig=s"})
+        );
+        let decoded: Message = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded, message);
+        let plain = serde_json::to_value(message_without_attachments()).unwrap();
+        assert!(plain["content"].get("attachments").is_none());
+    }
+
+    fn message_without_attachments() -> Message {
+        message("plain", 1)
     }
 
     #[test]
@@ -2640,5 +3041,167 @@ mod tests {
             serde_json::to_value(&privacy).unwrap(),
             serde_json::json!({"directMessages": "spaces"})
         );
+    }
+
+    fn file(id: &str, status: &str) -> serde_json::Value {
+        serde_json::json!({"id": id, "kind": "image", "contentType": "image/avif", "name": "a.avif",
+            "size": 5, "status": status})
+    }
+
+    fn attachment_update(message_id: &str, seq: u64, status: &str) -> AttachmentUpdate {
+        serde_json::from_value(serde_json::json!({
+            "type": "message.attachments", "schemaVersion": 1, "channelId": "channel",
+            "seq": seq.to_string(), "messageId": message_id,
+            "attachments": [file("img", status), {"bad": true}]
+        }))
+        .unwrap()
+    }
+
+    fn with_files(id: &str, seq: u64, status: &str, attachments_seq: Option<&str>) -> Message {
+        let mut message = message(id, seq);
+        message.content.attachments = vec![Attachment::parse(&file("img", status)).unwrap()];
+        message.attachments_seq = attachments_seq.map(str::to_owned);
+        message
+    }
+
+    fn status_of(timeline: &Timeline, id: &str) -> AttachmentStatus {
+        timeline
+            .messages()
+            .find(|message| message.id == id)
+            .unwrap()
+            .content
+            .attachments[0]
+            .status
+    }
+
+    #[test]
+    fn attachment_status_and_animation_parse_with_ready_default() {
+        let parse = |value| Attachment::parse(&value).unwrap();
+        assert_eq!(
+            parse(file("a", "processing")).status,
+            AttachmentStatus::Processing
+        );
+        assert_eq!(parse(file("a", "failed")).status, AttachmentStatus::Failed);
+        assert_eq!(parse(file("a", "ready")).status, AttachmentStatus::Ready);
+        assert_eq!(parse(file("a", "future")).status, AttachmentStatus::Ready);
+        let mut legacy = file("a", "");
+        legacy.as_object_mut().unwrap().remove("status");
+        let legacy = parse(legacy);
+        assert_eq!(legacy.status, AttachmentStatus::Ready);
+        assert!(!legacy.animated);
+        let mut gif = file("a", "ready");
+        gif["animated"] = serde_json::json!(true);
+        assert!(parse(gif).animated);
+        let encoded = serde_json::to_value(parse(file("a", "processing"))).unwrap();
+        assert_eq!(encoded["status"], "processing");
+        assert!(
+            serde_json::to_value(&legacy)
+                .unwrap()
+                .get("status")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn attachment_updates_are_sequenced_like_reactions() {
+        let mut timeline = Timeline::default();
+        timeline
+            .reset(vec![with_files("one", 1, "processing", None)], "1")
+            .unwrap();
+        let update = attachment_update("one", 2, "ready");
+        assert_eq!(update.attachments.len(), 1, "malformed entries are skipped");
+        assert_eq!(timeline.apply_attachments(update), Ok(Apply::Applied));
+        assert_eq!(timeline.cursor(), "2");
+        assert_eq!(status_of(&timeline, "one"), AttachmentStatus::Ready);
+        // A replayed older update is a duplicate and changes nothing.
+        assert_eq!(
+            timeline.apply_attachments(attachment_update("one", 2, "processing")),
+            Ok(Apply::Duplicate)
+        );
+        assert_eq!(status_of(&timeline, "one"), AttachmentStatus::Ready);
+        assert_eq!(
+            timeline.apply_attachments(attachment_update("one", 9, "failed")),
+            Ok(Apply::Resync)
+        );
+        let mut wrong = attachment_update("one", 3, "ready");
+        wrong.kind = "message.reactions".into();
+        assert!(timeline.apply_attachments(wrong).is_err());
+    }
+
+    #[test]
+    fn stale_snapshots_and_replays_never_regress_ready_files() {
+        let mut timeline = Timeline::default();
+        timeline
+            .reset(vec![with_files("one", 1, "ready", Some("7"))], "7")
+            .unwrap();
+        // An older history page or replayed message.created stays ready.
+        timeline
+            .prepend(vec![with_files("one", 1, "processing", None)])
+            .unwrap();
+        assert_eq!(status_of(&timeline, "one"), AttachmentStatus::Ready);
+        timeline
+            .prepend(vec![with_files("one", 1, "processing", Some("5"))])
+            .unwrap();
+        assert_eq!(status_of(&timeline, "one"), AttachmentStatus::Ready);
+        // A newer snapshot wins.
+        timeline
+            .prepend(vec![with_files("one", 1, "failed", Some("8"))])
+            .unwrap();
+        assert_eq!(status_of(&timeline, "one"), AttachmentStatus::Failed);
+    }
+
+    #[test]
+    fn attachment_update_before_its_message_is_overlaid() {
+        let mut timeline = Timeline::default();
+        timeline.reset(vec![message("newer", 10)], "10").unwrap();
+        assert_eq!(
+            timeline.apply_attachments(attachment_update("older", 11, "ready")),
+            Ok(Apply::Applied)
+        );
+        timeline
+            .prepend(vec![with_files("older", 1, "processing", None)])
+            .unwrap();
+        assert_eq!(status_of(&timeline, "older"), AttachmentStatus::Ready);
+        let older = timeline
+            .messages()
+            .find(|message| message.id == "older")
+            .unwrap();
+        assert_eq!(older.attachments_seq.as_deref(), Some("11"));
+    }
+
+    #[test]
+    fn edits_and_pins_keep_newer_files() {
+        let mut timeline = Timeline::default();
+        let processing = with_files("one", 1, "processing", None);
+        timeline.reset(vec![processing.clone()], "1").unwrap();
+        timeline.reset_pins(Vec::new()).unwrap();
+        assert_eq!(
+            timeline.apply_pin(pin_update(processing.clone(), 2, true)),
+            Ok(Apply::Applied)
+        );
+        assert_eq!(
+            timeline.apply_attachments(attachment_update("one", 3, "ready")),
+            Ok(Apply::Applied)
+        );
+        let pinned_status = |timeline: &Timeline| {
+            timeline
+                .pinned_messages()
+                .next()
+                .unwrap()
+                .content
+                .attachments[0]
+                .status
+        };
+        assert_eq!(pinned_status(&timeline), AttachmentStatus::Ready);
+        // The edit snapshot was captured while the file was processing.
+        assert_eq!(
+            timeline.apply_edit(edit_update(processing, 4, 2)),
+            Ok(Apply::Applied)
+        );
+        let edited = timeline.messages().next().unwrap();
+        assert_eq!(edited.content.text, "corrected");
+        assert_eq!(edited.attachments_seq.as_deref(), Some("3"));
+        assert_eq!(status_of(&timeline, "one"), AttachmentStatus::Ready);
+        assert_eq!(pinned_status(&timeline), AttachmentStatus::Ready);
     }
 }

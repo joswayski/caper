@@ -109,6 +109,10 @@ export default defineConfig(async () => {
     },
     // Preserve Vite 7's browser floor instead of silently raising it with Vite 8.
     build: { target: ["chrome107", "edge107", "firefox104", "safari16"] },
+    // Module workers may code-split (libwebp loads its SIMD or plain WASM build on demand).
+    worker: { format: "es" as const },
+    // Pre-bundling would move libwebp and libavif away from the .wasm files they locate via import.meta.url.
+    optimizeDeps: { exclude: ["@jsquash/webp", "@jsquash/avif"] },
     plugins: [
       tailwindcss(),
       tanstackStart({

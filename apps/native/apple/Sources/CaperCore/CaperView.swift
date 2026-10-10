@@ -631,6 +631,8 @@ private struct WorkspaceView: View {
             }
         }
         .modifier(LoginPresentation(sheet: $sheet, model: model))
+        // Timeline, thread and (on the Mac) pinned attachments open here, over the whole window.
+        .modifier(MediaViewerHost())
         .onChange(of: sheet?.id) { _, _ in modalDismissDisabled = false }
         .task(id: model.detail?.space.id) {
             guard sheet == nil, model.detail != nil else { return }
@@ -2345,7 +2347,13 @@ private struct ChatView: View {
                 MessageRequestBar(model: model, conversation: request) { blockTarget = BlockTarget(peer: request.peer) }
             } else if let conversation = peerConversation, conversation.blocked {
                 BlockedConversationBar(conversation: conversation) { unblock(conversation.peer.id) }
-            } else { HStack(alignment: .bottom, spacing: 8) {
+            } else { VStack(alignment: .leading, spacing: 8) {
+            if let notice = chat.attachmentNotice {
+                Text(notice).font(CaperTheme.font(11)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51))
+            }
+            AttachmentDraftsView(chat: chat)
+            HStack(alignment: .bottom, spacing: 8) {
+                if chat.canAttach { AttachmentPickerButton(chat: chat) }
                 VStack(spacing: 6) {
                     if let conversation = peerConversation, conversation.status == .outgoing {
                         Text(MessageRequests.waitingNotice(for: conversation.peer))
@@ -2390,11 +2398,12 @@ private struct ChatView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(PrimaryIconButton())
-                .disabled(chat.sending || chat.sendRejected || chat.pendingMessage?.threadRootId != nil || (chat.pendingMessage == nil && MessageValidation.error(for: chat.draft) != nil))
+                .disabled(!chat.canSubmit || chat.pendingMessage?.threadRootId != nil)
                 .help(chat.sending ? "Sending…" : chat.sendRejected ? "Edit or dismiss the rejected message before sending another." : "Send message")
                 .accessibilityLabel("Send message")
                 .accessibilityValue(chat.sending ? "Sending" : "")
                 .accessibilityIdentifier("send-message-button")
+            }
             }
             }
             }.padding(.horizontal, 18).padding(.top, 12)
@@ -2406,6 +2415,17 @@ private struct ChatView: View {
                 Text("\(chat.draft.unicodeScalars.count.formatted()) / 4,000").font(CaperTheme.font(10)).monospacedDigit().foregroundStyle(counterTone).padding(.bottom, 6)
             }
         }.background(CaperTheme.conversation)
+            // Uploads are optional server configuration; recheck per conversation.
+            .task(id: model.selectedDirectMessageID ?? model.selectedChannelID) { await chat.checkUploadAvailability() }
+            #if os(macOS)
+            .dropDestination(for: URL.self) { urls, _ in
+                guard chat.canAttach else { return false }
+                let files = urls.filter(\.isFileURL).prefix(AttachmentPolicy.maxAttachments).compactMap { try? AttachmentStaging.stage(copying: $0) }
+                guard !files.isEmpty else { return false }
+                chat.addAttachments(files)
+                return true
+            }
+            #endif
             #if os(macOS)
             // Drawn above the whole conversation so the timeline's clipping
             // and later rows never cover a hovered chip's tooltip.
@@ -2746,6 +2766,10 @@ private struct NativeThreadView: View {
             .onChange(of: reactionMessage?.id) { _, _ in showingEmojiPicker = false }
             .onChange(of: chat.editingContext) { _, _ in reactionMessage = nil; reactorsTarget = nil; forwardMessage = nil }
             .modifier(BlockConfirmation(target: $blockTarget) { await chat.block($0) })
+            #if os(iOS)
+            // The thread is a cover on iPhone, which only it can present over.
+            .modifier(MediaViewerHost())
+            #endif
             .accessibilityIdentifier("message-thread")
     }
 }
@@ -2911,6 +2935,8 @@ private struct MessageRow: View {
                     .padding(.trailing, actionsInset)
                     #endif
                 }
+                // File-only messages carry empty text; hide the empty row.
+                if !message.content.text.isEmpty || (grouped && edited) {
                 HStack(alignment: .lastTextBaseline, spacing: 7) {
                     rendered.text.font(CaperTheme.font(14)).foregroundStyle(Color(red: 222/255, green: 223/255, blue: 224/255))
                         // Links take the tint. Person pills are links too: keep them in
@@ -2924,6 +2950,10 @@ private struct MessageRow: View {
                 // Without a header, the first line sits beside the hover actions.
                 .padding(.trailing, grouped ? actionsInset : 0)
                 #endif
+                }
+                if let attachments = message.content.attachments, !attachments.isEmpty {
+                    MessageAttachmentsView(attachments: attachments, chat: chat)
+                }
                 ForwardCardView(message: message) { chat.forwardConversationTarget = message }
                 ReactionRow(message: message, chat: chat, reactors: reactors)
                 if let error = chat.pinErrors[message.id] {
@@ -3882,6 +3912,9 @@ private struct PinnedMessagesView: View {
     @State private var reactorsTarget: ReactorsTarget?
     @State private var mentionCard: MentionCardTarget?
     @State private var mentionPointer = MentionPointer()
+    #if os(macOS)
+    @Environment(\.mediaViewer) private var mediaViewer
+    #endif
     private var viewerID: String? { chat.currentAuthor?.id ?? model.account?.id }
     private var mentionCards: MentionCardContext {
         MentionCardContext(pointer: mentionPointer, name: { model.mentionPerson($0, viewerID: viewerID).title }, open: { pill in
@@ -3958,6 +3991,12 @@ private struct PinnedMessagesView: View {
             .popover(item: $actionTarget) { message in ReactionPicker { emoji in actionTarget = nil; Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) } } }
             #endif
             .onChange(of: chat.editingContext) { _, _ in actionTarget = nil; reactorsTarget = nil; close() }
+            #if os(iOS)
+            .modifier(MediaViewerHost())
+            #else
+            // The popover closes so the window's viewer fills the window.
+            .environment(\.mediaViewer, mediaViewer.map { show in MediaViewerAction { close(); show($0) } })
+            #endif
             .accessibilityIdentifier("pinned-messages")
     }
 
@@ -4069,8 +4108,14 @@ private struct PendingMessageRow: View {
             }
             VStack(alignment: .leading, spacing: 4) {
                 if !grouped { Text(author?.name ?? "Guest").font(CaperTheme.font(13, weight: .bold)) }
-                Text(pending.text).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                if !pending.text.isEmpty {
+                    Text(pending.text).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if !pending.attachments.isEmpty {
+                    // Local copies until the server's signed URLs arrive.
+                    MessageAttachmentsView(attachments: pending.attachments, chat: nil).opacity(0.7)
+                }
                 if let error {
                     VStack(alignment: .leading, spacing: 5) {
                         Text("\(rejected ? "Not sent." : "Not confirmed yet.") \(error)")

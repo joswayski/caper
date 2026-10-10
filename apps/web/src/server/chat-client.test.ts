@@ -293,6 +293,7 @@ test("public history loads before identity and remains visible while the send se
 interface SendBody {
   clientMessageId: string;
   text: string;
+  attachmentIds?: string[];
 }
 
 function committed(body: SendBody, seq: string): ChatMessage {
@@ -330,10 +331,17 @@ async function sendingFixture(t: TestContext) {
     assert.equal(String(input), "/api/chat/channels/general/messages");
     const body = JSON.parse(String(init?.body)) as SendBody;
     assert.deepEqual(
-      Object.keys(body).sort(),
+      Object.keys(body)
+        .filter((key) => key !== "attachmentIds")
+        .sort(),
       ["clientMessageId", "text"],
       "local metadata never enters the wire contract",
     );
+    if ("attachmentIds" in body)
+      assert.ok(
+        Array.isArray(body.attachmentIds) && body.attachmentIds.length > 0,
+        "attachment IDs are sent only when present",
+      );
     assert.ok(init?.signal);
     const signal = init.signal;
     return new Promise<Response>((resolve, reject) => posts.push({ body, signal, resolve, reject }));
@@ -911,6 +919,32 @@ test("optimistic send is immediate; HTTP-first confirmation uses server content/
     ["1", "2", "3"],
   );
   assert.deepEqual(f.state.messages[2], accepted);
+});
+
+test("file-only messages send attachment IDs, keep local previews while pending, and need content", async (t) => {
+  const f = await sendingFixture(t);
+  await assert.rejects(f.client.send("   "), /Write a message first/);
+  const local = {
+    id: "f1",
+    kind: "image" as const,
+    contentType: "image/webp",
+    name: "shot.webp",
+    size: 10,
+    url: "blob:local",
+    previewUrl: "blob:local",
+  };
+  const sending = f.client.send("", { attachments: [local] });
+  assert.deepEqual(f.posts[0].body.attachmentIds, ["f1"]);
+  assert.equal(f.posts[0].body.text, "");
+  assert.equal(f.state.pendingSend?.attachments?.[0].url, "blob:local");
+  const accepted = committed(f.posts[0].body, "1");
+  accepted.content = {
+    ...accepted.content,
+    attachments: [{ ...local, url: "https://cdn.test/original/f1?exp=1&sig=s", previewUrl: undefined }],
+  };
+  f.posts[0].resolve(Response.json(accepted));
+  assert.equal(await sending, true);
+  assert.equal(f.state.messages[0].content.attachments?.[0].url, "https://cdn.test/original/f1?exp=1&sig=s");
 });
 
 test("WebSocket-first confirmation requires the sender and cannot be undone by a late failed HTTP response", async (t) => {
@@ -1821,6 +1855,69 @@ test("older history from another channel is rejected without polluting the timel
   assert.equal(f.state.olderError, "The chat service returned messages from another channel.");
 });
 
+test("live attachment updates are sequenced, and progress is ephemeral and dropped once ready", async (t) => {
+  const f = await sendingFixture(t);
+  const file = {
+    id: "f1",
+    kind: "video" as const,
+    contentType: "video/quicktime",
+    name: "clip.mov",
+    size: 9,
+    status: "processing" as const,
+  };
+  const base = committed({ clientMessageId: "with-file", text: "" }, "1");
+  f.sockets[0].message({ ...base, content: { ...base.content, attachments: [file] } });
+  const historyLoads = () =>
+    vi.mocked(globalThis.fetch).mock.calls.filter((call) => String(call[0]) === "/api/chat/general").length;
+  const loadsBefore = historyLoads();
+  const progress = {
+    type: "attachment.progress" as const,
+    channelId: "general",
+    messageId: base.id,
+    attachmentId: "f1",
+    percent: 41.6,
+  };
+  f.sockets[0].frame(progress);
+  assert.deepEqual(f.state.attachmentProgress, { f1: 42 });
+  f.sockets[0].frame({ ...progress, channelId: "elsewhere", percent: 90 });
+  f.sockets[0].frame({ ...progress, attachmentId: "unknown", percent: 90 });
+  f.sockets[0].frame({ ...progress, percent: "lots" } as unknown as typeof progress);
+  assert.deepEqual(
+    f.state.attachmentProgress,
+    { f1: 42 },
+    "other channels, unknown files and malformed progress are ignored",
+  );
+  assert.equal(f.client.snapshotHistory()?.cursor, "1", "progress never advances replay");
+
+  const ready = {
+    ...file,
+    kind: "video" as const,
+    contentType: "video/mp4",
+    name: "clip.mp4",
+    status: "ready" as const,
+    animated: false,
+    url: "https://cdn.test/original/f1",
+    previewUrl: "https://cdn.test/preview/f1",
+  };
+  f.sockets[0].frame({
+    type: "message.attachments",
+    schemaVersion: 1,
+    channelId: "general",
+    seq: "2",
+    messageId: base.id,
+    attachments: [ready],
+    futureField: true,
+  } as never);
+  assert.deepEqual(f.state.messages[0].content.attachments, [ready]);
+  assert.equal(f.state.messages[0].attachmentsSeq, "2");
+  assert.equal(f.client.snapshotHistory()?.cursor, "2", "attachment updates advance replay like reactions");
+  assert.deepEqual(f.state.attachmentProgress, {}, "progress is dropped when processing ends");
+  f.sockets[0].frame(progress);
+  assert.deepEqual(f.state.attachmentProgress, {}, "late progress for a ready file is ignored");
+  await tick();
+  assert.equal(historyLoads(), loadsBefore, "no event forced a history reload");
+});
+
 test("old thread parents and broadcast replies do not move channel paging or survive a resync as channel rows", async (t) => {
   const f = await paginationFixture(t);
   const root = f.message(1);
@@ -2218,6 +2315,67 @@ test("edit PUTs keep expected revision, merge live updates and reject late aband
   );
   await assert.rejects(late, /conversation changed/);
   assert.equal(f.state, before);
+});
+
+test("thread replies send files and share attachment events and progress with the channel", async (t) => {
+  const f = await sendingFixture(t);
+  const bodies: Array<Record<string, unknown>> = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (_input: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body));
+    bodies.push(body);
+    const reply = committed(body, "1");
+    return Response.json({
+      ...reply,
+      threadRootId: body.threadRootId,
+      broadcast: body.broadcast,
+      content: {
+        ...reply.content,
+        attachments: [
+          { id: "f1", kind: "image", contentType: "image/png", name: "a.png", size: 1, status: "processing" },
+        ],
+      },
+    });
+  });
+  const local = {
+    id: "f1",
+    kind: "image" as const,
+    contentType: "image/png",
+    name: "a.png",
+    size: 1,
+    status: "processing" as const,
+  };
+  assert.equal(
+    await f.client.send("with a file", { threadRootId: "parent", broadcast: false, attachments: [local] }),
+    true,
+  );
+  assert.deepEqual(bodies[0], {
+    clientMessageId: bodies[0].clientMessageId,
+    text: "with a file",
+    attachmentIds: ["f1"],
+    threadRootId: "parent",
+    broadcast: false,
+  });
+  const reply = f.state.messages[0];
+  f.sockets[0].frame({
+    type: "attachment.progress",
+    channelId: "general",
+    messageId: reply.id,
+    attachmentId: "f1",
+    percent: 10,
+  });
+  assert.deepEqual(f.state.attachmentProgress, { f1: 10 }, "progress applies to thread replies");
+  f.sockets[0].message(reply);
+  f.sockets[0].frame({
+    type: "message.attachments",
+    schemaVersion: 1,
+    channelId: "general",
+    seq: "2",
+    messageId: reply.id,
+    attachments: [{ ...local, status: "ready", url: "https://cdn.test/original/f1" }],
+  });
+  assert.equal(f.state.messages[0].content.attachments?.[0].status, "ready");
+  assert.equal(f.state.messages[0].threadRootId, "parent");
+  assert.deepEqual(f.state.attachmentProgress, {});
 });
 
 test("failed optimistic edit reveals a newer remote revision while keeping independent pins", async (t) => {

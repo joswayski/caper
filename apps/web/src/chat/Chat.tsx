@@ -22,7 +22,17 @@ import { ForwardCard, ForwardConversation, ForwardPicker, type ForwardTarget } f
 import { dateDivider } from "./dates.ts";
 import { groupsWithPrevious } from "./grouping.ts";
 import LinkedText from "./LinkedText.tsx";
-import { isChannelMessage, type ChatAuthor, type GeneralChatHistory } from "./types.ts";
+import {
+  attachmentsOf,
+  isChannelMessage,
+  type ChatAttachment,
+  type ChatAuthor,
+  type GeneralChatHistory,
+} from "./types.ts";
+import { MessageAttachments, type DraftAttachment, type LocalPreview } from "./Attachments.tsx";
+import MediaViewer, { type ViewerTarget } from "./MediaViewer.tsx";
+import { MAX_ATTACHMENTS, browserTransport, refreshAttachmentUrls, uploadPrepared, uploadSettings } from "./uploads.ts";
+import { prepareFile, type CompressionSettings } from "./prepare.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
 import Avatar from "../components/Avatar";
 import Composer, { type ComposerHandle } from "./Composer.tsx";
@@ -209,8 +219,12 @@ export default function Chat({
   const [conversationTarget, setConversationTarget] = useState<ForwardTarget>();
   const [editTarget, setEditTarget] = useState<string>();
   const [historyTarget, setHistoryTarget] = useState<string>();
+  const [viewerTarget, setViewerTarget] = useState<ViewerTarget>();
   // Confirmations such as "Text copied." show briefly; `key` restarts the timer when repeated.
-  const [actionStatus, setActionStatusState] = useState<{ text: string; key: number }>();
+  const [actionStatus, setActionStatusState] = useState<{
+    text: string;
+    key: number;
+  }>();
   const setActionStatus = (text: string) =>
     setActionStatusState(text ? (current) => ({ text, key: (current?.key ?? 0) + 1 }) : undefined);
   useEffect(() => {
@@ -234,11 +248,20 @@ export default function Chat({
     setShowPins(false);
   }, []);
   const [pinning, setPinning] = useState<Set<string>>(() => new Set());
-  const [pinError, setPinError] = useState<{ messageId: string; active: boolean; text: string }>();
+  const [pinError, setPinError] = useState<{
+    messageId: string;
+    active: boolean;
+    text: string;
+  }>();
   // Runs of blocked messages the reader chose to show, by their first message.
   const [revealedRuns, setRevealedRuns] = useState<ReadonlySet<string>>(() => new Set());
   const blockedIds = useBlockedIds();
-  const press = useRef<{ timer: ReturnType<typeof setTimeout>; x: number; y: number; pointerId: number }>(undefined);
+  const press = useRef<{
+    timer: ReturnType<typeof setTimeout>;
+    x: number;
+    y: number;
+    pointerId: number;
+  }>(undefined);
   const suppressClick = useRef(false);
   const cancelPress = () => {
     clearTimeout(press.current?.timer);
@@ -252,6 +275,7 @@ export default function Chat({
     setConversationTarget(undefined);
     setEditTarget(undefined);
     setHistoryTarget(undefined);
+    setViewerTarget(undefined);
     setActionStatus("");
     setReactionSaves({});
     setShowPins(false);
@@ -360,6 +384,14 @@ export default function Chat({
   const closeConversation = useCallback(() => setConversationTarget(undefined), []);
   const editMessage = findMessage(editTarget);
   const historyMessage = findMessage(historyTarget);
+  // Forwarded originals live on the forwarding message; the viewer closes if either goes.
+  const viewerMessage = findMessage(viewerTarget?.messageId);
+  const viewerSource = viewerTarget?.forwarded ? (viewerMessage?.forward?.message ?? undefined) : viewerMessage;
+  const closeViewer = useCallback(() => setViewerTarget(undefined), []);
+  const viewFile =
+    (messageId: string, forwarded = false) =>
+    (attachmentId: string, anchor: HTMLElement) =>
+      setViewerTarget({ messageId, attachmentId, anchor, forwarded });
   const openEdit = (messageId: string) => {
     if (findMessage(messageId)?.forward) return;
     setActionTarget(undefined);
@@ -451,6 +483,16 @@ export default function Chat({
     }, 1_000);
     return () => clearTimeout(timer);
   }, [state.author?.id, readOnly]);
+  const [drafts, setDrafts] = useState<DraftAttachment[]>([]);
+  const [attachError, setAttachError] = useState<string>();
+  const uploads = useRef(new Map<string, AbortController>());
+  const objectUrls = useRef(new Set<string>());
+  // Present only when the API has uploads configured; carries its compression settings.
+  const [compression, setCompression] = useState<CompressionSettings>();
+  const uploadsEnabled = !!compression;
+  const [freshUrls, setFreshUrls] = useState<Record<string, { url?: string; previewUrl?: string }>>({});
+  // The sender's local copies of sent files, shown while the server processes them.
+  const [localPreviews, setLocalPreviews] = useState<Record<string, LocalPreview>>({});
   // The thread composer suggests the same people as the channel composer.
   const mentionPeople = useMemo(
     () => mentionMembers?.filter((member) => member.id !== state.author?.id),
@@ -461,8 +503,12 @@ export default function Chat({
   const latestMessage = state.messages.at(-1);
   const [announcement, setAnnouncement] = useState("");
   useEffect(() => {
-    if (state.phase === "ready" && latestMessage)
-      setAnnouncement(`${latestMessage.author.name}: ${latestMessage.content.text}`);
+    if (state.phase === "ready" && latestMessage) {
+      const files = attachmentsOf(latestMessage).length;
+      setAnnouncement(
+        `${latestMessage.author.name}: ${latestMessage.content.text || `sent ${files === 1 ? "a file" : `${files} files`}`}`,
+      );
+    }
   }, [latestMessage?.id, state.phase]);
   // Reaction events advance the conversation stream without adding a message.
   // HTTP reaction snapshots do not advance this committed replay cursor.
@@ -546,6 +592,133 @@ export default function Chat({
   useEffect(() => {
     clientRef.current?.setSounds(messageSounds);
   }, [messageSounds]);
+
+  useEffect(() => {
+    if (!signedIn) {
+      setCompression(undefined);
+      return;
+    }
+    let active = true;
+    void uploadSettings().then((settings) => {
+      if (active) setCompression(settings);
+    });
+    return () => {
+      active = false;
+    };
+  }, [signedIn]);
+
+  // Uploads belong to one channel; abandon them when it changes or unmounts.
+  useEffect(
+    () => () => {
+      for (const controller of uploads.current.values()) controller.abort();
+      uploads.current.clear();
+      setDrafts([]);
+    },
+    [channelId],
+  );
+  useEffect(
+    () => () => {
+      for (const url of objectUrls.current) URL.revokeObjectURL(url);
+    },
+    [],
+  );
+
+  const updateDraft = useCallback((key: string, change: Partial<DraftAttachment>) => {
+    setDrafts((current) => current.map((item) => (item.key === key ? { ...item, ...change } : item)));
+  }, []);
+
+  const addFiles = (files: File[]) => {
+    const channel = state.channelId;
+    const settings = compression;
+    if (!signedIn || !settings || !channel || !files.length) return;
+    const room = MAX_ATTACHMENTS - drafts.length;
+    if (room <= 0) {
+      setAttachError(`You can attach up to ${MAX_ATTACHMENTS} files.`);
+      return;
+    }
+    setAttachError(files.length > room ? `Only ${room} more file${room === 1 ? "" : "s"} can be attached.` : undefined);
+    for (const file of files.slice(0, room)) {
+      const key = crypto.randomUUID();
+      const localKind = file.type.startsWith("image/")
+        ? ("image" as const)
+        : file.type.startsWith("video/")
+          ? ("video" as const)
+          : undefined;
+      const localUrl = localKind ? URL.createObjectURL(file) : undefined;
+      if (localUrl) objectUrls.current.add(localUrl);
+      const controller = new AbortController();
+      uploads.current.set(key, controller);
+      setDrafts((current) => [
+        ...current,
+        {
+          key,
+          name: file.name,
+          localUrl,
+          localKind,
+          sourceSize: file.size,
+          progress: 0,
+        },
+      ]);
+      void (async () => {
+        try {
+          // Compressed in the browser first; the API only verifies what is stored.
+          const prepared = await prepareFile(
+            file,
+            settings,
+            (compressing) => updateDraft(key, { compressing }),
+            controller.signal,
+          );
+          if (controller.signal.aborted) return;
+          updateDraft(key, {
+            name: prepared.name,
+            storedSize: prepared.blob.size,
+          });
+          const attachment = await uploadPrepared(
+            channel,
+            prepared,
+            browserTransport,
+            (progress) => updateDraft(key, { progress }),
+            controller.signal,
+          );
+          updateDraft(key, { attachment, progress: 1 });
+        } catch (error) {
+          if (!controller.signal.aborted)
+            updateDraft(key, {
+              error: error instanceof Error ? error.message : "Upload failed.",
+            });
+        } finally {
+          uploads.current.delete(key);
+        }
+      })();
+    }
+  };
+
+  // A new local send takes its files out of the tray, as the composer clears its text.
+  const pendingSendId =
+    state.pendingSend && !state.pendingSend.threadRootId ? state.pendingSend.clientMessageId : undefined;
+  useLayoutEffect(() => {
+    const sent = new Set((state.pendingSend?.attachments ?? []).map((attachment) => attachment.id));
+    if (sent.size) setDrafts((current) => current.filter((item) => !item.attachment || !sent.has(item.attachment.id)));
+  }, [pendingSendId]);
+
+  const removeDraft = (key: string) => {
+    uploads.current.get(key)?.abort();
+    uploads.current.delete(key);
+    setDrafts((current) => current.filter((item) => item.key !== key));
+  };
+
+  const refreshUrls = useCallback((ids: string[]) => {
+    void refreshAttachmentUrls(ids).then((urls) => {
+      if (Object.keys(urls).length) setFreshUrls((current) => ({ ...current, ...urls }));
+    });
+  }, []);
+  // Only ready files have URLs worth refreshing; processing ones get theirs from events.
+  const withFreshUrls = (attachments: ChatAttachment[]) =>
+    attachments.map((attachment) =>
+      attachment.status === undefined || attachment.status === "ready"
+        ? { ...attachment, ...freshUrls[attachment.id] }
+        : attachment,
+    );
 
   useEffect(() => {
     onOnlineChange?.(state.online);
@@ -659,7 +832,10 @@ export default function Chat({
     if (scrollTarget === "latest" && state.hasNewer) return;
     if (scrollIndex === -1) return;
     const frame = requestAnimationFrame(() => {
-      listRef.current?.scrollToIndex({ index: scrollIndex, align: scrollTarget === "latest" ? "end" : "center" });
+      listRef.current?.scrollToIndex({
+        index: scrollIndex,
+        align: scrollTarget === "latest" ? "end" : "center",
+      });
       setScrollTarget(undefined);
     });
     return () => cancelAnimationFrame(frame);
@@ -718,15 +894,38 @@ export default function Chat({
     return () => clearTimeout(timer);
   }, [typingLabel]);
   const sendDraft = async (text: string) => {
-    if ((await clientRef.current?.send(text)) && state.hasNewer) {
+    if (!state.pendingSend && drafts.some((item) => !item.attachment))
+      throw new Error(
+        drafts.some((item) => item.error)
+          ? "Remove files that failed to upload first."
+          : "Wait for files to finish uploading.",
+      );
+    setAttachError(undefined);
+    // Sent files show the sender's local copies until processing finishes.
+    const attachments = drafts.flatMap((item) => (item.attachment ? [item.attachment] : []));
+    const local = Object.fromEntries(
+      drafts.flatMap((item) =>
+        item.attachment && item.localUrl && item.localKind
+          ? [[item.attachment.id, { url: item.localUrl, video: item.localKind === "video" }] as const]
+          : [],
+      ),
+    );
+    if (Object.keys(local).length) setLocalPreviews((current) => ({ ...current, ...local }));
+    if ((await clientRef.current?.send(text, { attachments })) && state.hasNewer) {
       setJumpMessage(undefined);
       setScrollTarget("latest");
     }
   };
 
   // Share the formatter across visible rows, but refresh locale/timezone on render.
-  const timeFormatter = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
-  const pinTimeFormatter = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
+  const timeFormatter = new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  const pinTimeFormatter = new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
   // Same person, within five minutes, same day, and no blocked-run bar in between.
   const joinsPrevious = (
     previous: (typeof messages)[number] | undefined,
@@ -944,11 +1143,19 @@ export default function Chat({
                   {grouped && edited && <> {edited}</>}
                 </p>
               )}
+              <MessageAttachments
+                attachments={"content" in message ? withFreshUrls(attachmentsOf(message)) : (message.attachments ?? [])}
+                progress={state.attachmentProgress}
+                localPreviews={localPreviews}
+                onExpired={pending ? undefined : refreshUrls}
+                onView={"content" in message ? viewFile(message.id) : undefined}
+              />
               {"content" in message && (
                 <>
                   <ForwardCard
                     message={message}
                     onOpen={(anchor) => setConversationTarget({ messageId: message.id, anchor })}
+                    onView={viewFile(message.id, true)}
                   />
                   <button
                     type="button"
@@ -1000,7 +1207,12 @@ export default function Chat({
                             inThread,
                           })
                     }
-                    onDismissError={() => setReactionSaves((current) => ({ ...current, [message.id]: undefined }))}
+                    onDismissError={() =>
+                      setReactionSaves((current) => ({
+                        ...current,
+                        [message.id]: undefined,
+                      }))
+                    }
                   />
                   {!inThread && !message.threadRootId && !!message.thread?.replyCount && (
                     <button
@@ -1062,6 +1274,7 @@ export default function Chat({
     );
   };
 
+  const canAttach = signedIn && uploadsEnabled && !readOnly && state.phase === "ready" && !!state.channelId;
   const pinsToggle = state.phase === "ready" && (
     <button
       type="button"
@@ -1083,9 +1296,35 @@ export default function Chat({
     });
   };
 
+  const pinsOpen = showPins && state.phase === "ready";
+  // Opened from pins, the viewer renders inside that dialog, which then treats it as its own layer.
+  const viewer = viewerTarget && viewerSource && (
+    <MediaViewer
+      // Forwarded originals have no URL refresh, like their inline previews.
+      attachments={viewerTarget.forwarded ? attachmentsOf(viewerSource) : withFreshUrls(attachmentsOf(viewerSource))}
+      attachmentId={viewerTarget.attachmentId}
+      anchor={viewerTarget.anchor}
+      author={viewerSource.author.name}
+      sentAt={viewerSource.createdAt}
+      onClose={closeViewer}
+      onExpired={viewerTarget.forwarded ? undefined : refreshUrls}
+    />
+  );
+
   return (
     <div className="chat-layout" data-thread-open={!!state.thread}>
-      <section className="chat-panel" aria-labelledby="chat-heading">
+      <section
+        className="chat-panel"
+        aria-labelledby="chat-heading"
+        onDragOver={(event) => {
+          if (canAttach && event.dataTransfer.types.includes("Files")) event.preventDefault();
+        }}
+        onDrop={(event) => {
+          if (!canAttach || !event.dataTransfer.files.length) return;
+          event.preventDefault();
+          addFiles([...event.dataTransfer.files]);
+        }}
+      >
         <header className="chat-heading">
           {headerLeading}
           <h2 id="chat-heading" className={showTitle ? "chat-channel-title" : "sr-only"}>
@@ -1129,7 +1368,7 @@ export default function Chat({
         </header>
 
         <div className="chat-messages" aria-busy={state.phase === "loading"}>
-          {showPins && state.phase === "ready" && (
+          {pinsOpen && (
             <PinsDialog
               onClose={closePins}
               actionsOpen={
@@ -1210,12 +1449,27 @@ export default function Chat({
                           {hydrated ? timeLabel(message.createdAt, pinTimeFormatter) : ""}
                         </time>
                       </header>
-                      <p>
-                        <LinkedText text={message.content.text} />
-                      </p>
+                      {message.content.text && (
+                        <p>
+                          <LinkedText text={message.content.text} />
+                        </p>
+                      )}
+                      <MessageAttachments
+                        attachments={withFreshUrls(attachmentsOf(message))}
+                        progress={state.attachmentProgress}
+                        localPreviews={localPreviews}
+                        onExpired={refreshUrls}
+                        onView={viewFile(message.id)}
+                      />
                       <ForwardCard
                         message={message}
-                        onOpen={(anchor) => setConversationTarget({ messageId: message.id, anchor })}
+                        onOpen={(anchor) =>
+                          setConversationTarget({
+                            messageId: message.id,
+                            anchor,
+                          })
+                        }
+                        onView={viewFile(message.id, true)}
                       />
                       <div className="chat-pinned-navigation">
                         <button type="button" disabled={!!jumping} onClick={() => void goToMessage(message)}>
@@ -1237,6 +1491,7 @@ export default function Chat({
                   ))
                 )}
               </div>
+              {viewer}
             </PinsDialog>
           )}
           <div className="chat-timeline" inert={showPins} aria-hidden={showPins}>
@@ -1309,7 +1564,10 @@ export default function Chat({
                 onKeyDown={(event) => {
                   if (event.target === event.currentTarget && event.key === "End") {
                     event.preventDefault();
-                    listRef.current?.scrollToIndex({ index: "LAST", align: "end" });
+                    listRef.current?.scrollToIndex({
+                      index: "LAST",
+                      align: "end",
+                    });
                   }
                 }}
                 itemContent={(index, message) => renderMessage(index - firstItemIndex, message)}
@@ -1322,7 +1580,13 @@ export default function Chat({
                 role="region"
                 aria-label={`Messages in ${channelName}`}
               >
-                <HistoryHeader context={{ hasMore: state.hasMore, loadingOlder: false, loadOlder }} />
+                <HistoryHeader
+                  context={{
+                    hasMore: state.hasMore,
+                    loadingOlder: false,
+                    loadOlder,
+                  }}
+                />
                 {messages.slice(previewStart).map((message, index) => renderMessage(previewStart + index, message))}
               </div>
             )}
@@ -1378,7 +1642,10 @@ export default function Chat({
             onPin={pin}
             canForward={signedIn && !!state.author && !state.author.isGuest && actionMessage.forward?.message !== null}
             onForward={() => {
-              setForwardTarget({ messageId: actionMessage.id, anchor: actionTarget.anchor });
+              setForwardTarget({
+                messageId: actionMessage.id,
+                anchor: actionTarget.anchor,
+              });
               setActionTarget(undefined);
             }}
             canEdit={
@@ -1502,6 +1769,17 @@ export default function Chat({
               onTyping={setTyping}
               onResize={keepLatestInView}
               onDraftPresence={setHasDraft}
+              attachments={
+                canAttach || drafts.length
+                  ? {
+                      enabled: canAttach,
+                      drafts,
+                      error: attachError,
+                      onAdd: addFiles,
+                      onRemove: removeDraft,
+                    }
+                  : undefined
+              }
             />
           </div>
         )}
@@ -1533,6 +1811,7 @@ export default function Chat({
           onClose={() => setHistoryTarget(undefined)}
         />
       )}
+      {!pinsOpen && viewer}
     </div>
   );
 }

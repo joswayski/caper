@@ -69,6 +69,8 @@ services:
       CF_SFU_APP_SECRET: ${CF_SFU_APP_SECRET:-}
       CF_TURN_KEY_ID: ${CF_TURN_KEY_ID:-}
       CF_TURN_API_TOKEN: ${CF_TURN_API_TOKEN:-}
+      # Uploads stay off until staging/apps/caper carries R2_* and ASSET_CDN_*.
+      ASSET_QUOTA_BYTES: ${ASSET_QUOTA_BYTES:-10737418240}
       LOG_FORMAT: ${LOG_FORMAT:-json}
       RUST_LOG: ${RUST_LOG:-caper_api=info,tower_http=info}
       ENVIRONMENT: staging

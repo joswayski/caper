@@ -9,11 +9,19 @@ struct SharedOriginalView: View {
                 Text(message.author.name).font(CaperTheme.font(13, weight: .bold))
                 if message.editedAt != nil { Text("edited").font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted) }
             }
-            // Links open in the system browser; selection would take their clicks on macOS.
-            if let linked = MessageLinks.attributed(message.content.text) {
-                Text(linked).font(CaperTheme.font(14)).tint(CaperTheme.terracottaBright)
-            } else {
-                Text(message.content.text).font(CaperTheme.font(14)).textSelection(.enabled)
+            // File-only messages carry empty text; hide the empty row.
+            if !message.content.text.isEmpty {
+                // Links open in the system browser; selection would take their clicks on macOS.
+                if let linked = MessageLinks.attributed(message.content.text) {
+                    Text(linked).font(CaperTheme.font(14)).tint(CaperTheme.terracottaBright)
+                } else {
+                    Text(message.content.text).font(CaperTheme.font(14)).textSelection(.enabled)
+                }
+            }
+            if let attachments = message.content.attachments, !attachments.isEmpty {
+                // Another conversation's files: shown as delivered, without
+                // this timeline's URL refresh or upload progress.
+                MessageAttachmentsView(attachments: attachments, chat: nil)
             }
             ReactionFlowLayout(spacing: 8) {
                 ForEach(message.reactions ?? []) { reaction in
@@ -130,6 +138,8 @@ struct ForwardPickerView: View {
             }
         }.background(CaperTheme.raised).foregroundStyle(CaperTheme.text)
             .frame(idealWidth: 460, idealHeight: 560)
+            // A sheet: only it can present the viewer over itself.
+            .modifier(MediaViewerHost())
             .onDisappear { sendTask?.cancel() }
             .task(id: attempt) {
                 do { destinations = try await chat.forwardDestinations().sorted { "\($0.spaceName) \($0.name)" < "\($1.spaceName) \($1.name)" }; error = nil }
@@ -172,6 +182,8 @@ struct ForwardConversationView: View {
                 }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
             }
         }.background(CaperTheme.raised).foregroundStyle(CaperTheme.text).frame(idealWidth: 520, idealHeight: 560)
+            // A sheet: only it can present the viewer over itself.
+            .modifier(MediaViewerHost())
             .task(id: "\(message?.forward?.seq ?? "0"):\(pages):\(attempt)") {
                 guard let message else { conversation = nil; return }
                 loading = true; error = nil

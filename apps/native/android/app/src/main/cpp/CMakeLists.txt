@@ -19,3 +19,22 @@ target_include_directories(caper_audio PRIVATE "${ORT}/headers" "${RN}/include" 
 target_compile_definitions(caper_audio PRIVATE RNNOISE_BUILD=1 DISABLE_DEBUG_FLOAT=1)
 target_link_options(caper_audio PRIVATE "-Wl,-z,max-page-size=16384" "-Wl,-z,common-page-size=16384")
 target_link_libraries(caper_audio PRIVATE onnxruntime log m)
+
+# AVIF photo encoder (prepare-avif.sh): libavif 1.4.2's sources compiled here over a prebuilt
+# static libaom 3.15.1. A library of its own, so photos fall back to WebP if it cannot load.
+set(AVIF "${DEPENDENCIES}/avif")
+add_library(aom STATIC IMPORTED)
+set_target_properties(aom PROPERTIES IMPORTED_LOCATION "${AVIF}/lib/${ANDROID_ABI}/libaom.a")
+set(LIBAVIF_SOURCES alpha avif colr colrconvert diag exif gainmap io mem obu properties rawdata read reformat
+    reformat_libsharpyuv reformat_libyuv sampletransform scale stream utils write codec_aom)
+list(TRANSFORM LIBAVIF_SOURCES PREPEND "${AVIF}/libavif/src/")
+list(TRANSFORM LIBAVIF_SOURCES APPEND ".c")
+set(LIBAVIF_YUV scale scale_common scale_any row_common planar_functions)
+list(TRANSFORM LIBAVIF_YUV PREPEND "${AVIF}/libavif/third_party/libyuv/source/")
+list(TRANSFORM LIBAVIF_YUV APPEND ".c")
+add_library(caper_avif SHARED CaperAvif.c ${LIBAVIF_SOURCES} ${LIBAVIF_YUV})
+target_include_directories(caper_avif PRIVATE "${AVIF}/libavif/include" "${AVIF}/libavif/third_party/libyuv/include" "${AVIF}/include")
+target_compile_definitions(caper_avif PRIVATE AVIF_CODEC_AOM=1 AVIF_CODEC_AOM_ENCODE=1)
+target_compile_options(caper_avif PRIVATE -O2 -fvisibility=hidden -ffunction-sections -fdata-sections -Wno-unused-parameter)
+target_link_options(caper_avif PRIVATE "-Wl,--gc-sections" "-Wl,--exclude-libs,ALL" "-Wl,-z,max-page-size=16384" "-Wl,-z,common-page-size=16384")
+target_link_libraries(caper_avif PRIVATE aom jnigraphics log m)
