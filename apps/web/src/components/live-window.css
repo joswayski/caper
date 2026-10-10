@@ -51,6 +51,7 @@
 .live-scene {
   --depth: 1;
   --counter-scale: 1.4;
+  --frame-radius: 6px;
   touch-action: pan-y pinch-zoom;
   position: absolute;
   left: var(--scene-left, 0);
@@ -107,11 +108,13 @@
   pointer-events: none;
 }
 .live-chassis {
-  --thickness: calc(25px * var(--depth));
+  --thickness: calc(48px * var(--depth));
   --half-thickness: calc(var(--thickness) / 2);
+  --body-top: var(--border);
+  --body-bottom: #252a2d;
   position: absolute;
   inset: 0;
-  border-radius: 6px;
+  border-radius: var(--frame-radius);
   transform-style: preserve-3d;
   pointer-events: none;
 }
@@ -124,30 +127,31 @@
   transform: translateZ(calc(-1 * var(--thickness))) rotateY(180deg);
   content: "";
 }
-.live-chassis > span {
+.live-chassis > [data-side] {
   position: absolute;
-  border-radius: inherit;
-  background: #111416;
   backface-visibility: hidden;
 }
+/* Subpixel overlap keeps antialiasing from opening seams between faces. */
 .live-chassis > :is([data-side="top"], [data-side="bottom"]) {
-  left: 0;
-  width: 100%;
+  left: calc(var(--frame-radius) - 0.2px);
+  width: calc(100% - 2 * var(--frame-radius) + 0.4px);
   height: var(--thickness);
 }
 .live-chassis > [data-side="top"] {
   top: calc(-1 * var(--half-thickness));
-  background: var(--surface);
+  background: var(--body-top);
   transform: translateZ(calc(-1 * var(--half-thickness))) rotateX(90deg);
 }
 .live-chassis > [data-side="bottom"] {
   bottom: calc(-1 * var(--half-thickness));
+  background: var(--body-bottom);
   transform: translateZ(calc(-1 * var(--half-thickness))) rotateX(-90deg);
 }
 .live-chassis > :is([data-side="left"], [data-side="right"]) {
-  top: 0;
+  top: calc(var(--frame-radius) - 0.2px);
   width: var(--thickness);
-  height: 100%;
+  height: calc(100% - 2 * var(--frame-radius) + 0.4px);
+  background: linear-gradient(var(--body-top), var(--body-bottom));
 }
 .live-chassis > [data-side="left"] {
   left: calc(-1 * var(--half-thickness));
@@ -155,8 +159,66 @@
 }
 .live-chassis > [data-side="right"] {
   right: calc(-1 * var(--half-thickness));
-  background: #0d1012;
   transform: translateZ(calc(-1 * var(--half-thickness))) rotateY(90deg);
+}
+
+/* Extrude the same rounded outline as the front, not rounded side rectangles.
+   Three 30-degree facets per quarter circle stay within 0.21px of its 6px arc.
+   Their chord width/centers are normalized to --frame-radius. */
+.live-chassis-corner {
+  --corner-color: var(--body-top);
+  position: absolute;
+  left: var(--frame-radius);
+  top: var(--frame-radius);
+  transform-style: preserve-3d;
+}
+.live-chassis-corner[data-corner="top-right"] {
+  left: auto;
+  right: var(--frame-radius);
+  transform: rotateZ(90deg);
+}
+.live-chassis-corner:is([data-corner="bottom-right"], [data-corner="bottom-left"]) {
+  --corner-color: var(--body-bottom);
+  top: auto;
+  bottom: var(--frame-radius);
+}
+.live-chassis-corner[data-corner="bottom-right"] {
+  left: auto;
+  right: var(--frame-radius);
+  transform: rotateZ(180deg);
+}
+.live-chassis-corner[data-corner="bottom-left"] {
+  transform: rotateZ(270deg);
+}
+.live-chassis-corner > span {
+  position: absolute;
+  left: calc(-0.258819045 * var(--frame-radius) - 0.2px);
+  top: calc(-1 * var(--half-thickness));
+  width: calc(0.51763809 * var(--frame-radius) + 0.4px);
+  height: var(--thickness);
+  background: var(--corner-color);
+  backface-visibility: hidden;
+  transform: translate3d(
+      calc(var(--cx) * var(--frame-radius)),
+      calc(var(--cy) * var(--frame-radius)),
+      calc(-1 * var(--half-thickness))
+    )
+    rotateZ(var(--arc-angle)) rotateX(90deg);
+}
+.live-chassis-corner > :nth-child(1) {
+  --cx: -0.9330127;
+  --cy: -0.25;
+  --arc-angle: 285deg;
+}
+.live-chassis-corner > :nth-child(2) {
+  --cx: -0.6830127;
+  --cy: -0.6830127;
+  --arc-angle: 315deg;
+}
+.live-chassis-corner > :nth-child(3) {
+  --cx: -0.25;
+  --cy: -0.9330127;
+  --arc-angle: 345deg;
 }
 
 .live-window {
@@ -165,7 +227,7 @@
   display: grid;
   grid-template-rows: minmax(0, 1fr);
   border: 1px solid #2b3134;
-  border-radius: 6px;
+  border-radius: var(--frame-radius);
   background: #111416;
   box-shadow:
     inset 0 1px 0 rgb(255 255 255 / 0.05),
