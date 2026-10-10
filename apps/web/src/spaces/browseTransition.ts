@@ -10,14 +10,16 @@ import { flushSync } from "react-dom";
 
 // Phones show the conversation or Browse (spaces and channels), never both.
 // Moving between them slides the conversation fully over or off the still
-// Browse, following a finger when swiped. Both
-// views share the room's DOM, so a view transition snapshots the outgoing view
-// while the incoming one renders live; the conversation's snapshot is posed by
-// hand so a swipe can scrub it and then settle forward or back.
+// Browse, following a finger when swiped, while Browse's account bar rises over
+// it from the bottom edge. Both views share the room's DOM, so a view
+// transition snapshots the outgoing view while the incoming one renders live;
+// the conversation's and bar's snapshots are posed by hand so a swipe can scrub
+// them and then settle forward or back.
 
 const NARROW = "(max-width: 760px)";
 const ROOM = ".call-room.spaces-room";
 const NAME = "browse-room";
+const BAR_NAME = "browse-bar";
 /** Browse's account and voice bar, which stays uncovered at the bottom. */
 const BAR = ":scope > .people-panel > .voice-panel";
 export const SETTLE = { duration: 320, easing: "cubic-bezier(0.32, 0.72, 0, 1)" };
@@ -47,8 +49,8 @@ export function browseTravel(room: Element) {
 
 /**
  * Keeps the hidden conversation laid out where it was on phones (the offset it
- * has below its channel row), and measures Browse's account bar, which the
- * sliding conversation lifts off so the bar's controls stay in view.
+ * has below its channel row), and measures Browse's account bar, which rises
+ * over the sliding conversation by that height.
  */
 export function useBrowseLayout(roomRef: RefObject<HTMLElement | null>, open: boolean) {
   useLayoutEffect(() => {
@@ -68,14 +70,7 @@ export function useBrowseLayout(roomRef: RefObject<HTMLElement | null>, open: bo
             "--browse-bar",
             `${room.getBoundingClientRect().bottom - bar.getBoundingClientRect().top + 12}px`,
           );
-        if (!open && stage) {
-          room.style.setProperty("--browse-stage-top", `${stage.offsetTop}px`);
-          // The channel row and account bar above the conversation, read by the slide.
-          room.style.setProperty(
-            "--browse-strip",
-            `${stage.getBoundingClientRect().top - room.getBoundingClientRect().top}px`,
-          );
-        }
+        if (!open && stage) room.style.setProperty("--browse-stage-top", `${stage.offsetTop}px`);
       };
       measure();
       observer = new ResizeObserver(measure);
@@ -172,27 +167,25 @@ class Slide implements BrowseDrag {
 
   /**
    * Moves the conversation's snapshot (outgoing when opening Browse) between two
-   * progress values, lifting its bottom edge off Browse's account bar on the way.
-   * Its top edge drops below the channel row and account bar, which the edge
-   * view in Browse leaves out, so they do not vanish in one frame as it lands.
+   * progress values, and raises Browse's account bar over it from the bottom edge.
    */
   private animate(from: number, to: number, timing: KeyframeAnimationOptions) {
-    const length = (name: string) => parseFloat(this.room?.style.getPropertyValue(name) ?? "") || 0;
-    const bar = length("--browse-bar"),
-      strip = length("--browse-strip");
-    const offset = (progress: number) => {
-      const uncovered = this.opening ? progress : 1 - progress;
-      return {
-        transform: `translateX(${uncovered * this.travel}px)`,
-        clipPath: `inset(${uncovered * strip}px 0 ${uncovered * bar}px -48px)`,
-      };
-    };
-    const animation = document.documentElement.animate([offset(from), offset(to)], {
-      ...timing,
-      pseudoElement: `::view-transition-${this.opening ? "old" : "new"}(${NAME})`,
-    });
-    this.animations.push(animation);
-    return [animation];
+    const bar = parseFloat(this.room?.style.getPropertyValue("--browse-bar") ?? "") || 0;
+    const uncovered = (progress: number) => (this.opening ? progress : 1 - progress);
+    const conversation = (progress: number) => ({ transform: `translateX(${uncovered(progress) * this.travel}px)` });
+    const account = (progress: number) => ({ transform: `translateY(${(1 - uncovered(progress)) * bar}px)` });
+    const animations = [
+      document.documentElement.animate([conversation(from), conversation(to)], {
+        ...timing,
+        pseudoElement: `::view-transition-${this.opening ? "old" : "new"}(${NAME})`,
+      }),
+      document.documentElement.animate([account(from), account(to)], {
+        ...timing,
+        pseudoElement: `::view-transition-${this.opening ? "new" : "old"}(${BAR_NAME})`,
+      }),
+    ];
+    this.animations.push(...animations);
+    return animations;
   }
 
   private settle() {

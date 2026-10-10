@@ -5301,6 +5301,8 @@ views swapping in place:
   channel list is laid out beside it.
 - **Account bar:** keeps the full width at the bottom, and the edge view stops
   above it. During the slide, the conversation's bottom edge lifts off the bar.
+  (Superseded October 10: the conversation keeps its full height and the bar
+  rises over it; see "Full-height Browse slide" below.)
 - **Edge view:** inert. Tapping it, or dragging it left, returns to the
   conversation.
 - **Release:** past halfway, or a flick of at least 300 CSS px/points per second
@@ -5496,3 +5498,41 @@ On narrow layouts the member list now behaves like Browse:
    Roll back web by deploying the previous known-good image SHA with the command
    above; for native clients ship a corrected higher-build-number build. No data
    rollback is required.
+
+### Full-height Browse slide (October 10, 2026)
+
+On phones, sliding between the conversation and Browse showed the conversation
+as a cut-down card: on iPhone it stopped below the status bar and above the home
+indicator, its bottom edge (and composer) was cut away as Browse was uncovered,
+and the timeline or channel list kept scrolling under a sideways drag.
+
+- **Full height:** the conversation keeps its full height while it slides and at
+  rest. On iPhone its background now reaches under the status bar and home
+  indicator; the slide clips only sideways.
+- **Account bar:** rises from the bottom edge over the conversation as Browse is
+  uncovered, on a blackout band reaching the screen edges (and, on iPhone, under
+  the home indicator). It keeps the full width. Settled Browse looks as before.
+- **No scrolling mid-slide:** once a drag is following a slide, the timeline or
+  channel list it started on stops scrolling until the finger lifts (iPhone and
+  Android). This also covers the member list's slide, which shares the swipe. Web already cancels the slide when the browser takes a vertical pan,
+  and its slide moves snapshots, so nothing scrolls under it.
+
+| Platform | Behavior and validation boundary |
+| --- | --- |
+| Web ≤760px | The conversation's snapshot is no longer clipped at the top (the channel-row strip from #436) or the bottom. The voice panel in Browse gets its own view-transition name (`browse-bar`) and is raised from the bottom with the same WAAPI scrub/settle as the conversation; its box moves to `::after` so a blackout `::before` band beneath it is part of its snapshot. `npm run check` passes; `npm test` passes except the known Node 22 `noise-assets` failure, which also fails on the base commit. Chromium touch emulation against the `test-desktop-navigation.mjs` fixture at 390px: opening and closing drags captured mid-slide and settled, and inspected. Not Safari or physical-device acceptance. |
+| Android narrow | The conversation layer only translates (no clip); the account bar is drawn above it and translated up from below the bottom edge by its own height. Once a drag is sliding, the container reads moves in the Initial pass and consumes them, so the timeline and channel list never start scrolling. System bars stay blackout outside the app's content, as before. `./gradlew :app:compileDebugKotlin` passes (Android SDK 36) with no new warnings. No emulator or device run. |
+| Apple narrow | The conversation layer is offset without a clip shape; the workspace clips only sideways (`SideClip`), so its background extends under the status bar and home indicator. The account bar rises over it, hidden once covered (it would show through a translucent keyboard). `BrowseSwipe` sets `scrollDisabled` while it tracks a slide. Swift 6.1 on Linux parses `CaperView.swift`; no Xcode build, type-check, simulator or device run. |
+| Rust desktop narrow | No touch gestures. The stage keeps the full content height; the account bar is drawn after it, rising from the bottom edge, with a click-absorbing backdrop so clicks on the bar's background don't reach the conversation. Fmt and application-package Clippy (`--no-deps`) pass; 329 tests pass (9 existing ignored). No rendered-frame inspection, macOS or Windows acceptance. |
+| Containers/services | No API, gateway, infrastructure, secret/configuration or database change. |
+
+**Deployment order.** No backend, infrastructure, secret/configuration or
+database step. Web, Android, Apple and Rust desktop can release independently,
+in any order; merging does not deploy. Deploy web with the existing workflow
+(`gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main
+-f git_sha="$MERGED_SHA"`, then `kubectl -n default rollout status
+deployment/caper-web --timeout=15m`) and build native clients with their existing
+scripts. On a real iPhone and Android phone, check slow, halfway and flick slides
+both ways, the status bar and home indicator areas mid-slide, the account bar's
+controls, and that the timeline doesn't move during a slide. Roll
+back web with the previous web image and native clients with a corrected
+higher-build-number release. No data rollback is required.
