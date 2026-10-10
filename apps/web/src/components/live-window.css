@@ -107,7 +107,8 @@
   pointer-events: none;
 }
 .live-chassis {
-  --thickness: calc(16px * var(--depth));
+  --thickness: calc(25px * var(--depth));
+  --half-thickness: calc(var(--thickness) / 2);
   position: absolute;
   inset: 0;
   border-radius: 6px;
@@ -119,13 +120,15 @@
   inset: 0;
   border-radius: inherit;
   background: var(--blackout);
-  transform: translateZ(calc(-1 * var(--thickness)));
+  backface-visibility: hidden;
+  transform: translateZ(calc(-1 * var(--thickness))) rotateY(180deg);
   content: "";
 }
 .live-chassis > span {
   position: absolute;
   border-radius: inherit;
   background: #111416;
+  backface-visibility: hidden;
 }
 .live-chassis > :is([data-side="top"], [data-side="bottom"]) {
   left: 0;
@@ -133,15 +136,13 @@
   height: var(--thickness);
 }
 .live-chassis > [data-side="top"] {
-  top: 0;
+  top: calc(-1 * var(--half-thickness));
   background: var(--surface);
-  transform-origin: top;
-  transform: rotateX(-90deg);
+  transform: translateZ(calc(-1 * var(--half-thickness))) rotateX(90deg);
 }
 .live-chassis > [data-side="bottom"] {
-  bottom: 0;
-  transform-origin: bottom;
-  transform: rotateX(90deg);
+  bottom: calc(-1 * var(--half-thickness));
+  transform: translateZ(calc(-1 * var(--half-thickness))) rotateX(-90deg);
 }
 .live-chassis > :is([data-side="left"], [data-side="right"]) {
   top: 0;
@@ -149,15 +150,13 @@
   height: 100%;
 }
 .live-chassis > [data-side="left"] {
-  left: 0;
-  transform-origin: left;
-  transform: rotateY(90deg);
+  left: calc(-1 * var(--half-thickness));
+  transform: translateZ(calc(-1 * var(--half-thickness))) rotateY(-90deg);
 }
 .live-chassis > [data-side="right"] {
-  right: 0;
+  right: calc(-1 * var(--half-thickness));
   background: #0d1012;
-  transform-origin: right;
-  transform: rotateY(-90deg);
+  transform: translateZ(calc(-1 * var(--half-thickness))) rotateY(90deg);
 }
 
 .live-window {
@@ -171,7 +170,9 @@
   box-shadow:
     inset 0 1px 0 rgb(255 255 255 / 0.05),
     0 30px 80px rgb(0 0 0 / calc(0.45 * (1 - var(--depth))));
-  transform-style: preserve-3d;
+  /* The conversation and its border are one front face. Raising the content
+     separately makes it intersect and cover the border under perspective. */
+  transform-style: flat;
 }
 
 .live-window > .live-status {
@@ -544,7 +545,6 @@
   overflow: hidden;
   border-radius: inherit;
   background: var(--surface-conversation);
-  transform: translateZ(1px);
 }
 /* Decorative content must not trigger the real app's hover styles or profile
    tooltips. Keep hit testing only on scroll regions; presses still reach the
