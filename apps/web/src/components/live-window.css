@@ -674,8 +674,10 @@
 .sim-messages {
   min-height: 0;
   overflow: hidden auto;
-  scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
+  scrollbar-width: none;
+}
+.sim-messages::-webkit-scrollbar {
+  display: none;
 }
 .sim-messages:focus-visible {
   outline: 2px solid var(--terracotta);
