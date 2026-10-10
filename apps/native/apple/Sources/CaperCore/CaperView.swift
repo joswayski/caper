@@ -505,10 +505,10 @@ private struct WorkspaceView: View {
                                                width: min(280, geometry.size.width - 64)) { membersPreference = false }
                             }
                         }
-                        .background(CaperTheme.blackout)
-                        .overlay(alignment: .leading) {
-                            LinearGradient(colors: [.clear, .black.opacity(0.35)], startPoint: .trailing, endPoint: .leading)
-                                .frame(width: 16).offset(x: -16).allowsHitTesting(false).accessibilityHidden(true)
+                        // A soft shadow cast from the conversation's edge onto Browse, like the web's.
+                        .background {
+                            Rectangle().fill(CaperTheme.blackout)
+                                .shadow(color: .black.opacity(0.45), radius: 16, x: -12)
                         }
                         .modifier(BrowseLayer(showsBrowse: showsBrowse, travel: geometry.size.width - peek, bar: browseBarHeight))
                         .allowsHitTesting(!showsBrowse)
